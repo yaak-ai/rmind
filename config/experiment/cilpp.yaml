@@ -1,0 +1,177 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - _self_
+
+d_model: 512
+
+model: 
+  _target_: cargpt.models.cilpp.CILpp
+  _recursive_: False
+
+  frame_encoder_backbone:
+    _target_: cargpt.models.encoding.ResnetBackbone
+    resnet:
+      _target_: torchvision.models.resnet34
+      weights: DEFAULT
+    freeze: True
+
+  frame_encoder_depth:
+    _target_: cargpt.models.cilpp.DepthFrameEncoder
+    disp_net:
+      _target_: builtins.getattr
+      _args_:
+        - _target_: deephouse.models.depth.DepthModule.load_from_wandb_artifact
+          _args_: ['yaak/self-supervised-depth/model-2gspf8bq:v0']
+        - disp_net
+
+    point_positional_encoder:
+      _target_: cargpt.models.encoding.PointPositionalEncoder3D
+      channels: ${d_model}
+      temperature: 1e4
+
+  positional_embedding:
+    _target_: torch.nn.Embedding
+    num_embeddings: 180 # = (H_feat * W_feat)
+    embedding_dim: ${d_model}
+
+  speed_projection:
+    _target_: torch.nn.Linear
+    in_features: 1
+    out_features: ${d_model}
+
+  transformer_encoder:
+    _target_: torch.nn.TransformerEncoder
+    num_layers: 4
+    encoder_layer:
+      _target_: torch.nn.TransformerEncoderLayer
+      d_model: ${d_model}
+      nhead: 4
+      dropout: 0
+      activation: 'relu'
+      batch_first: True
+
+  action_mlp:
+    _target_: torchvision.ops.MLP
+    in_channels: ${d_model}
+    hidden_channels: 
+      - ${d_model}
+      - 256
+      - 2
+    activation_layer: 
+      _target_: torch.nn.ReLU  
+      _partial_: True
+
+  loss:
+    acceleration:
+      _target_: torch.nn.L1Loss
+
+    steering_angle:
+      _target_: torch.nn.L1Loss
+
+    weights:
+      acceleration: 0.5
+      steering_angle: 0.5
+
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 1e-4
+    weight_decay: 1e-2
+
+  # TODO
+  # lr_scheduler:
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: gpu
+  devices: [0]
+  benchmark: true
+  max_steps: 100000
+  num_sanity_val_steps: 0
+  log_every_n_steps: 10
+  limit_val_batches: 0
+
+  logger:
+    _target_: pytorch_lightning.loggers.WandbLogger
+
+  callbacks:
+    - _target_: cargpt.callbacks.ModelSummary
+
+datamodule:
+  _target_: deephouse.datamodules.depth.DepthDataModule
+  train:
+    _target_: torch.utils.data.DataLoader
+    shuffle: true
+    batch_size: 128
+    num_workers: 32
+    pin_memory: false
+    persistent_workers: true
+    multiprocessing_context: fork
+    dataset:
+      _target_: yaak_datasets.Dataset
+      _recursive_: false
+      config:
+        version: 0.10.0
+        data:
+          drives:
+          - id: 2022-10-20--13-03-22
+            sources:
+            - camera: cam_front_right
+              params: ${paths.data_dir}/camera_calibration/gamma/cam-57-deg/calib-pinhole.json
+              reader:
+                _target_: yaak_datasets.FrameImageVideoReader
+                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
+                filename_format: '{:09d}.jpg'
+
+            metadata:
+              path: ${paths.data_dir}/frames/${..id}/metadata.log
+
+          metadata:
+            cameras:
+            - cam_front_right
+
+            select:
+            - message: ImageMetadata
+              fields:
+              - name: frame_idx
+              - name: camera_name
+
+            - message: VehicleMotion
+              fields:
+              - name: speed
+              - name: steering_angle_normalized
+              - name: gas_pedal_normalized
+              - name: brake_pedal_normalized
+
+            filter: VehicleMotion_speed between 0 and 80 
+
+        samples:
+          alignment:
+            ref_camera: cam_front_right
+            tolerance: 10ms
+
+          clips:
+            length: 1
+            step: 1
+            stride: 1
+            frame_mask: [1]
+
+          transforms:
+            - _target_: yaak_datasets.transforms.Scale
+              factor: 0.3
+
+            - _target_: yaak_datasets.transforms.Crop
+              offsets: [2, 2, 0, 0]
+
+        processing:
+          max_workers: null
+          metadata_cache:
+            enabled: true
+            path: ${paths.metadata_cache_dir}
+            size_limit: 1 GiB
+
+    collate_fn:
+      _target_: yaak_datasets.collate
+      _partial_: true
+
