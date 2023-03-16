@@ -86,7 +86,8 @@ class CILpp(pl.LightningModule):
         self.frame_encoder_backbone = instantiate(self.hparams.frame_encoder_backbone)
         self.frame_encoder_depth = instantiate(self.hparams.frame_encoder_depth)
         self.positional_embedding = instantiate(self.hparams.positional_embedding)
-        self.speed_projection = instantiate(self.hparams.speed_projection)
+        self.speed_norm = instantiate(self.hparams.speed.norm)
+        self.speed_projection = instantiate(self.hparams.speed.projection)
         self.transformer_encoder = instantiate(self.hparams.transformer_encoder)
         self.action_mlp = instantiate(self.hparams.action_mlp)
         self.loss = instantiate(self.hparams.loss)
@@ -105,7 +106,8 @@ class CILpp(pl.LightningModule):
         frame_feats.append(frame_feat_backbone)
 
         if self.frame_encoder_depth is not None:
-            assert camera is not None
+            if camera is None:
+                raise ValueError("camera required for depth-based frame encoder")
 
             _, H_feat, W_feat, _ = frame_feat_backbone.shape
             tgt_shape = torch.Size((H_feat, W_feat))
@@ -118,8 +120,7 @@ class CILpp(pl.LightningModule):
         frame_feat = sum(frame_feats)
         frame_feat = rearrange(frame_feat, "b h w c -> b (h w) c")
 
-        # TODO: pass max value in config?
-        speed_norm = speed / 80
+        speed_norm = self.speed_norm(speed)
         speed_proj = self.speed_projection(speed_norm)
         speed_proj = rearrange(speed_proj, "b c -> b 1 c")
 
@@ -137,7 +138,10 @@ class CILpp(pl.LightningModule):
 
         return pred
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, *args, **kwargs):
+        return self._step("train", *args, **kwargs)
+
+    def _step(self, stage, batch, batch_idx):
         clips = mit.one(batch["clips"].values())
         frames = rearrange(clips["frames"], "b 1 c h w -> b c h w")
 
@@ -165,7 +169,7 @@ class CILpp(pl.LightningModule):
         losses["total"] = sum(self.loss.weights[k] * v for k, v in losses.items())
 
         self.log_dict(
-            {f"loss/{k}": v for k, v in losses.items()},
+            {f"{stage}/loss/{k}": v for k, v in losses.items()},
             sync_dist=True,
             rank_zero_only=True,
         )

@@ -17,7 +17,10 @@ typecheck:
 lint:
 	poetry run ruff .
 
-check: check-format lint typecheck
+check-deps:
+	poetry run deptry .
+
+check: check-format lint typecheck check-deps
 
 train *ARGS:
 	PYTHONOPTIMIZE=1 ./train.py {{ARGS}}

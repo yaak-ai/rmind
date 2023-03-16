@@ -1,0 +1,29 @@
+version: 2.1
+orbs:
+  python: circleci/python@2.1.1
+
+executors:
+  ci-runner:
+    docker:
+      - image: cimg/python:3.10.10
+
+jobs:
+  build:
+    executor: ci-runner
+    steps: 
+      - checkout
+      - run: poetry self update --no-ansi --no-interaction --no-cache
+      - python/install-packages:
+          pkg-manager: poetry
+          args: --with lint
+          cache-version: v1 # bump to reset 
+      - run: poetry run black . --check
+      - run: poetry run ruff .
+      - run: poetry run mypy .
+      - run: poetry run deptry .
+
+workflows:
+  main: 
+    jobs:
+      - build:
+          context: builder-creds

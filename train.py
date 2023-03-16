@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 import multiprocessing as mp
 import sys
+from pathlib import Path
+from subprocess import check_output
 
 import hydra
 import pytorch_lightning as pl
@@ -10,6 +12,7 @@ from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 
 import wandb
+from cargpt.utils.logging import setup_logging
 
 
 def _train(cfg: DictConfig):
@@ -30,16 +33,19 @@ def _train(cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path="config", config_name="train.yaml")
 def train(cfg: DictConfig):
-    _run = wandb.init(
-        config=OmegaConf.to_container(  # type: ignore
-            cfg,
-            resolve=True,
-            throw_on_missing=True,
-        ),
+    run = wandb.init(
+        config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # type: ignore
         **cfg.wandb,
     )
 
-    # TODO: code logging
+    if run is not None:
+        paths = set(
+            Path(path).resolve()
+            for path in check_output(
+                ["git", "ls-files"], universal_newlines=True
+            ).splitlines()
+        )
+        run.log_code(root=".", include_fn=lambda path: Path(path).resolve() in paths)
 
     return _train(cfg)
 
@@ -47,6 +53,7 @@ def train(cfg: DictConfig):
 @logger.catch(onerror=lambda _: sys.exit(1))
 def main():
     mp.set_start_method("spawn", force=True)
+    setup_logging()
 
     train()
 

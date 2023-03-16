@@ -14,7 +14,7 @@ model:
     _target_: cargpt.models.encoding.ResnetBackbone
     resnet:
       _target_: torchvision.models.resnet34
-      weights: DEFAULT
+      weights: IMAGENET1K_V1
     freeze: True
 
   frame_encoder_depth:
@@ -23,7 +23,7 @@ model:
       _target_: builtins.getattr
       _args_:
         - _target_: deephouse.models.depth.DepthModule.load_from_wandb_artifact
-          _args_: ['yaak/self-supervised-depth/model-2gspf8bq:v0']
+          _args_: ['yaak/self-supervised-depth/model-usdyi67i:v0']
         - disp_net
 
     point_positional_encoder:
@@ -36,10 +36,15 @@ model:
     num_embeddings: 180 # = (H_feat * W_feat)
     embedding_dim: ${d_model}
 
-  speed_projection:
-    _target_: torch.nn.Linear
-    in_features: 1
-    out_features: ${d_model}
+  speed:
+    norm:
+      _target_: cargpt.norm.MinMaxScaler
+      in_range: [0, 80]
+      out_range: [0, 1]
+    projection:
+      _target_: torch.nn.Linear
+      in_features: 1
+      out_features: ${d_model}
 
   transformer_encoder:
     _target_: torch.nn.TransformerEncoder
@@ -97,6 +102,10 @@ trainer:
 
   callbacks:
     - _target_: cargpt.callbacks.ModelSummary
+    - _target_: pytorch_lightning.callbacks.ModelCheckpoint
+      save_weights_only: True
+      save_on_train_epoch_end: True
+      monitor: train/loss/total
 
 datamodule:
   _target_: deephouse.datamodules.depth.DepthDataModule
@@ -112,7 +121,7 @@ datamodule:
       _target_: yaak_datasets.Dataset
       _recursive_: false
       config:
-        version: 0.10.0
+        version: 0.11.1
         data:
           drives:
           - id: 2022-10-20--13-03-22
@@ -144,7 +153,7 @@ datamodule:
               - name: gas_pedal_normalized
               - name: brake_pedal_normalized
 
-            filter: VehicleMotion_speed between 0 and 80 
+            filter: VehicleMotion_speed between ${model.speed.norm.in_range[0]} and ${model.speed.norm.in_range[1]} 
 
         samples:
           alignment:
@@ -164,6 +173,11 @@ datamodule:
             - _target_: yaak_datasets.transforms.Crop
               offsets: [2, 2, 0, 0]
 
+            - _target_: yaak_datasets.transforms.Normalize
+              # ImageNet stats
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
         processing:
           max_workers: null
           metadata_cache:
@@ -174,4 +188,3 @@ datamodule:
     collate_fn:
       _target_: yaak_datasets.collate
       _partial_: true
-
