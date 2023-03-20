@@ -9,7 +9,7 @@ class ModelSummary(pl.callbacks.ModelSummary):
     def __init__(
         self,
         col_width: int = 16,
-        depth: int = 2,
+        depth: int = 4,
         col_names: Iterable[str] = ("trainable", "num_params"),
         row_settings: Iterable[str] = ("var_names",),
         **kwargs,

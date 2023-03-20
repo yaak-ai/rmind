@@ -138,3 +138,5 @@ lightning_logs/
 
 # env
 .cenv
+
+*.ipynb
