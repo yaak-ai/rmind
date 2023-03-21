@@ -1,5 +1,5 @@
 import torch
-from einops import einsum, rearrange
+from einops import einsum, rearrange, repeat
 from jaxtyping import Float, Shaped
 from torch import Tensor, nn
 from torchvision.models import ResNet
@@ -63,3 +63,20 @@ class PointPositionalEncoder3D(torch.nn.Module):
         pe = self.mlp(pe_sine)
 
         return pe
+
+
+class LearnablePositionalEmbedding1D(torch.nn.Module):
+    def __init__(self, seq_len, embedding_dim):
+        super().__init__()
+
+        self._emb = torch.nn.Embedding(
+            num_embeddings=seq_len,
+            embedding_dim=embedding_dim,
+        )
+
+    def forward(self, shape: torch.Size) -> Float[Tensor, "b s c"]:
+        b, s, *_ = shape
+        if s != self._emb.num_embeddings:
+            raise ValueError("invalid input sequence length")
+
+        return repeat(self._emb.weight, "s c -> b s c", b=b)

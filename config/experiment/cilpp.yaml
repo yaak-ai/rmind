@@ -10,41 +10,54 @@ model:
   _target_: cargpt.models.cilpp.CILpp
   _recursive_: False
 
-  frame_encoder_backbone:
-    _target_: cargpt.models.encoding.ResnetBackbone
-    resnet:
-      _target_: torchvision.models.resnet34
-      weights: IMAGENET1K_V1
-    freeze: True
+  state_embedding:
+    _target_: torch.nn.ModuleDict
+    modules:
+      frame:
+        _target_: torch.nn.ModuleDict
+        modules:
+          backbone:
+            _target_: cargpt.models.encoding.ResnetBackbone
+            resnet:
+              _target_: torchvision.models.resnet34
+              weights: IMAGENET1K_V1
+            freeze: True
 
-  frame_encoder_depth:
-    _target_: cargpt.models.cilpp.DepthFrameEncoder
-    disp_net:
-      _target_: builtins.getattr
-      _args_:
-        - _target_: deephouse.models.depth.DepthModule.load_from_wandb_artifact
-          _args_: ['yaak/self-supervised-depth/model-usdyi67i:v0']
-        - disp_net
+          depth:
+            _target_: cargpt.models.cilpp.DepthFrameEncoder
+            disp_net:
+              _target_: builtins.getattr
+              _args_:
+                - _target_: deephouse.models.depth.DepthModule.load_from_wandb_artifact
+                  _args_: ['yaak/self-supervised-depth/model-usdyi67i:v0']
+                - disp_net
 
-    point_positional_encoder:
-      _target_: cargpt.models.encoding.PointPositionalEncoder3D
-      channels: ${d_model}
-      temperature: 1e4
+            point_positional_encoder:
+              _target_: cargpt.models.encoding.PointPositionalEncoder3D
+              channels: ${d_model}
+              temperature: 1e4
 
-  positional_embedding:
-    _target_: torch.nn.Embedding
-    num_embeddings: 180 # = (H_feat * W_feat)
-    embedding_dim: ${d_model}
+            target_shape: [10, 18]
 
-  speed:
-    norm:
-      _target_: cargpt.norm.MinMaxScaler
-      in_range: [0, 80]
-      out_range: [0, 1]
-    projection:
-      _target_: torch.nn.Linear
-      in_features: 1
-      out_features: ${d_model}
+      speed:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: cargpt.norm.MinMaxScaler
+            in_range: [0.0, 80.0]
+            out_range: [0.0, 1.0]
+
+          - _target_: torch.nn.Linear
+            in_features: 1
+            out_features: ${d_model}
+
+          - _target_: einops.layers.torch.Rearrange
+            pattern: b c -> b 1 c
+
+      position:
+        _target_: cargpt.models.encoding.LearnablePositionalEmbedding1D
+        seq_len: 180 # = (10 * 18)
+        embedding_dim: ${d_model}
+
 
   transformer_encoder:
     _target_: torch.nn.TransformerEncoder
@@ -52,21 +65,28 @@ model:
     encoder_layer:
       _target_: torch.nn.TransformerEncoderLayer
       d_model: ${d_model}
+      dim_feedforward: ${d_model}
       nhead: 4
       dropout: 0
       activation: 'relu'
       batch_first: True
 
-  action_mlp:
-    _target_: torchvision.ops.MLP
-    in_channels: ${d_model}
-    hidden_channels: 
-      - ${d_model}
-      - 256
-      - 2
-    activation_layer: 
-      _target_: torch.nn.ReLU  
-      _partial_: True
+  action_prediction:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: einops.layers.torch.Reduce
+        pattern: b s c -> b 1 c
+        reduction: mean
+
+      - _target_: torchvision.ops.MLP
+        in_channels: ${d_model}
+        hidden_channels:
+          - ${d_model}
+          - 256
+          - 2
+        activation_layer: 
+          _target_: torch.nn.ReLU  
+          _partial_: True
 
   loss:
     acceleration:
@@ -82,10 +102,9 @@ model:
   optimizer:
     _target_: torch.optim.Adam
     lr: 1e-4
-    weight_decay: 1e-2
+    weight_decay: 0
 
-  # TODO
-  # lr_scheduler:
+  lr_scheduler: null
 
 trainer:
   _target_: pytorch_lightning.Trainer
@@ -99,6 +118,7 @@ trainer:
 
   logger:
     _target_: pytorch_lightning.loggers.WandbLogger
+    log_model: True
 
   callbacks:
     - _target_: cargpt.callbacks.ModelSummary
@@ -153,7 +173,7 @@ datamodule:
               - name: gas_pedal_normalized
               - name: brake_pedal_normalized
 
-            filter: VehicleMotion_speed between ${model.speed.norm.in_range[0]} and ${model.speed.norm.in_range[1]} 
+            filter: VehicleMotion_speed between ${model.state_embedding.modules.speed._args_[0].in_range[0]} and ${model.state_embedding.modules.speed._args_[0].in_range[1]} 
 
         samples:
           alignment:
