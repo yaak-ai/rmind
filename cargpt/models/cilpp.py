@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Annotated, Optional, Sequence, cast
+from typing import Annotated, Dict, Optional, Sequence, Tuple, cast
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -8,26 +8,32 @@ from deephouse.tools.camera import Camera
 from einops import rearrange, reduce, repeat
 from hydra.utils import instantiate
 from jaxtyping import Float, Shaped
+from omegaconf import DictConfig
+from pytorch_lightning.utilities import AttributeDict
 from torch import Tensor
+from torch.nn import Module, ModuleDict, TransformerEncoder
 from torchvision.transforms.functional import resize
 
+import wandb
 from cargpt.utils.wandb import LoadableFromArtifact
 
 
-class DepthFrameEncoder(torch.nn.Module):
+class DepthFrameEncoder(Module):
     def __init__(
         self,
         disp_net: pl.LightningModule,
-        point_positional_encoder: torch.nn.Module,
+        point_positional_encoder: Module,
         target_shape: Optional[Annotated[Sequence[int], 2]] = None,
-    ):
+    ) -> None:
         super().__init__()
 
         self.disp_net = disp_net
         self.disp_net.freeze()
 
         self.point_positional_encoder = point_positional_encoder
-        self.target_shape = tuple(target_shape) if target_shape is not None else None
+        self.target_shape: Optional[Tuple[int, ...]] = (
+            tuple(target_shape) if target_shape is not None else None
+        )
 
     def forward(
         self,
@@ -82,14 +88,18 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
     (https://arxiv.org/abs/2302.03198)
     """
 
-    def __init__(self, **kwargs):
+    hparams: AttributeDict
+
+    def __init__(self, **kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
 
-        self.state_embedding = instantiate(self.hparams.state_embedding)
-        self.transformer_encoder = instantiate(self.hparams.transformer_encoder)
-        self.action_prediction = instantiate(self.hparams.action_prediction)
-        self.loss = instantiate(self.hparams.loss)
+        self.state_embedding: ModuleDict = instantiate(self.hparams.state_embedding)
+        self.transformer_encoder: TransformerEncoder = instantiate(
+            self.hparams.transformer_encoder
+        )
+        self.action_prediction: Module = instantiate(self.hparams.action_prediction)
+        self.loss: DictConfig = instantiate(self.hparams.loss)
 
     def forward(
         self,
@@ -104,50 +114,162 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
 
         return pred
 
-    def training_step(self, *args, **kwargs):
-        return self._step("train", *args, **kwargs)
-
-    def _step(self, stage, batch, batch_idx):
+    def _compute_predictions(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
         clips = mit.one(batch["clips"].values())
         frames = rearrange(clips["frames"], "b 1 c h w -> b c h w")
-
-        camera_params = clips["camera_params"]
-        camera_model = mit.one(set(camera_params.pop("model")))
-        camera = Camera.from_params(model=camera_model, params=camera_params).to(frames)
 
         meta = clips["meta"]
         speed = meta["VehicleMotion_speed"].to(torch.float32)
 
+        if isinstance(_camera_params := clips.get("camera_params"), dict):
+            camera_params = _camera_params.copy()
+            camera_model = mit.one(set(camera_params.pop("model")))
+            camera = Camera.from_params(model=camera_model, params=camera_params)
+            camera = camera.to(frames)
+        else:
+            camera = None
+
         pred = self.forward(frames=frames, speed=speed, camera=camera)
         accel_pred, steering_pred = rearrange(pred, "b 1 c -> c b 1")
 
-        gas = meta["VehicleMotion_gas_pedal_normalized"].to(pred)
-        brake = meta["VehicleMotion_brake_pedal_normalized"].to(pred)
+        return {"acceleration": accel_pred, "steering_angle": steering_pred}
+
+    def _compute_labels(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
+        clips = mit.one(batch["clips"].values())
+        meta = clips["meta"]
+
+        gas = meta["VehicleMotion_gas_pedal_normalized"]
+        brake = meta["VehicleMotion_brake_pedal_normalized"]
         # NOTE: assuming (gas > 0) xor (brake > 0)
         accel_lbl = gas - brake
-        steering_lbl = meta["VehicleMotion_steering_angle_normalized"].to(pred)
+        steering_lbl = meta["VehicleMotion_steering_angle_normalized"]
+
+        return {
+            "acceleration": accel_lbl.to(torch.float32),
+            "steering_angle": steering_lbl.to(torch.float32),
+        }
+
+    def training_step(self, batch, batch_idx):
+        predictions = self._compute_predictions(batch)
+        labels = self._compute_labels(batch)
 
         losses = {
-            "acceleration": self.loss.acceleration(accel_pred, accel_lbl),
-            "steering_angle": self.loss.steering_angle(steering_pred, steering_lbl),
+            k: self.loss[k](predictions[k], labels[k])
+            for k in ("acceleration", "steering_angle")
         }
 
         losses["total"] = sum(self.loss.weights[k] * v for k, v in losses.items())
 
         self.log_dict(
-            {f"{stage}/loss/{k}": v for k, v in losses.items()},
+            {f"train/loss/{k}": v for k, v in losses.items()},
             sync_dist=True,
             rank_zero_only=True,
         )
 
         return losses["total"]
 
+    def validation_step(self, batch, batch_idx):
+        preds = self._compute_predictions(batch)
+        labels = self._compute_labels(batch)
+
+        losses = {
+            k: self.loss[k](preds[k], labels[k])
+            for k in ("acceleration", "steering_angle")
+        }
+
+        losses["total"] = sum(self.loss.weights[k] * v for k, v in losses.items())
+
+        self.log_dict(
+            {f"val/loss/{k}": v for k, v in losses.items()},
+            sync_dist=True,
+            rank_zero_only=True,
+        )
+
+        if hasattr(self, "_tables"):
+            if table := self._tables.get("frames"):
+                clips = batch["clips"]
+                frames = [clips[camera]["frames"] for camera in table.columns]
+                for row in zip(*frames):
+                    images = [wandb.Image(frame) for frame in row]
+                    table.add_data(*images)
+
+            if table := self._tables.get("outputs"):
+                data: Float[Tensor, "b 4"] = rearrange(
+                    [  # type: ignore
+                        preds["acceleration"],
+                        labels["acceleration"],
+                        preds["steering_angle"],
+                        labels["steering_angle"],
+                    ],
+                    "t b 1 -> b t",
+                )
+
+                for row in data.tolist():
+                    table.add_data(*row)
+
+        return losses["total"]
+
+    def on_validation_epoch_start(self):
+        if isinstance(self.logger, pl.loggers.WandbLogger) and (
+            log_cfg := self.hparams.get("log", {}).get("validation", {})
+        ):
+            self._tables = {}
+
+            if log_cfg.get(name := "frames") and self.current_epoch == 0:
+                dataset = self.trainer.val_dataloaders[0].dataset  # type: ignore[index]
+                cameras = [x.value for x in dataset.config.data.metadata.cameras]  # type: ignore[union-attr]
+                self._tables[name] = wandb.Table(columns=cameras)
+
+            if log_cfg.get(name := "outputs"):
+                self._tables[name] = wandb.Table(
+                    columns=[
+                        "acceleration_pred",
+                        "acceleration_label",
+                        "steering_angle_pred",
+                        "steering_angle_label",
+                    ]
+                )
+
+    def on_validation_epoch_end(self):
+        if hasattr(self, "_tables") and self.trainer.state.stage != "sanity_check":
+            run = self.logger.experiment  # type: ignore[union-attr]
+
+            if table := self._tables.get(name := "frames"):
+                table.add_column("_step", list(map(int, table.get_index())))
+                artifact = wandb.Artifact(f"run-{run.id}-val_{name}", "run_table")
+                artifact.add(table, name)
+                frame_artifact = run.log_artifact(artifact)
+            else:
+                frame_artifact = None
+
+            if table := self._tables.get(name := "outputs"):
+                table.add_column("_step", list(map(int, table.get_index())))
+
+                if frame_artifact is not None:
+                    frame_artifact.wait()
+                else:
+                    try:
+                        frame_artifact = run.use_artifact(f"run-{run.id}-val_frames:v0")
+                    except wandb.CommError:
+                        pass
+
+                artifact = wandb.Artifact(f"run-{run.id}-val_{name}", "run_table")
+
+                if frame_artifact is not None:
+                    frame_table = frame_artifact.get_path("frames.table.json")
+                    joined_table = wandb.JoinedTable(frame_table, table, "_step")
+                    artifact.add(joined_table, name)
+                else:
+                    artifact.add(table, name)
+
+                run.log_artifact(artifact)
+
     def _embed_state(
         self,
         *,
         frames: Float[Tensor, "b 3 h w"],
         speed: Float[Tensor, "b 1"],
-        camera: Camera,
+        camera: Optional[Camera] = None,
     ) -> Float[Tensor, "b s c"]:
         feats = []
 
@@ -157,6 +279,9 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
             feats.append(feat)
 
         if encoder := getattr(self.state_embedding.frame, "depth", None):
+            if camera is None:
+                raise ValueError("camera required for depth encoder")
+
             feat = encoder(frames=frames, camera=camera)
             feat = rearrange(feat, "b h w c -> b (h w) c")
             feats.append(feat)
