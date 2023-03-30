@@ -72,6 +72,7 @@ profile = "black"
 [tool.mypy]
 warn_unused_configs = true
 ignore_missing_imports = true
+check_untyped_defs = true
 exclude = [
   "wandb/.*"
 ]
