@@ -6,6 +6,10 @@ defaults:
 
 d_model: 512
 
+batch_size: ???
+clip_len: ???
+seq_len: ???
+
 model: 
   _target_: cargpt.models.cilpp.CILpp
   _recursive_: False
@@ -47,7 +51,7 @@ model:
             out_range: [0.0, 1.0]
 
           - _target_: torch.nn.Linear
-            in_features: 1
+            in_features: ${datamodule.train.dataset.config.samples.clips.length}
             out_features: ${d_model}
 
           - _target_: einops.layers.torch.Rearrange
@@ -55,7 +59,7 @@ model:
 
       position:
         _target_: cargpt.models.encoding.LearnablePositionalEmbedding1D
-        seq_len: 180 # = (10 * 18)
+        seq_len: ${seq_len}
         embedding_dim: ${d_model}
 
 
@@ -135,7 +139,7 @@ datamodule:
   train:
     _target_: torch.utils.data.DataLoader
     shuffle: true
-    batch_size: 128
+    batch_size: ${batch_size}
     num_workers: 32
     pin_memory: true
     persistent_workers: true
@@ -242,10 +246,9 @@ datamodule:
             tolerance: 10ms
 
           clips:
-            length: 1
-            step: 1
-            stride: 1
-            frame_mask: [1]
+            length: ${clip_len}
+            stride: 5
+            step: 5
 
           transforms:
             - _target_: yaak_datasets.transforms.Scale
@@ -273,7 +276,7 @@ datamodule:
   val:
     _target_: torch.utils.data.DataLoader
     shuffle: false
-    batch_size: 128
+    batch_size: ${batch_size}
     num_workers: 8
     pin_memory: true
     persistent_workers: true
@@ -320,10 +323,9 @@ datamodule:
             tolerance: 10ms
 
           clips:
-            length: 1
-            step: 1
-            stride: 1
-            frame_mask: [1]
+            length: ${clip_len}
+            stride: 5
+            step: 5
 
           transforms:
             - _target_: yaak_datasets.transforms.Scale

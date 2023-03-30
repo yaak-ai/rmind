@@ -15,17 +15,22 @@ class ResnetBackbone(torch.nn.Module):
             self.requires_grad_(False)
             self.eval()
 
-    def forward(self, x: Float[Tensor, "b c1 h1 w1"]) -> Float[Tensor, "b c2 h2 w2"]:
+    def forward(self, x: Float[Tensor, "*b c1 h1 w1"]) -> Float[Tensor, "*b c2 h2 w2"]:
+        *b, _, _, _ = x.shape
+        x = rearrange(x, "... c h w -> (...) c h w")
+
         x = self.resnet.conv1(x)
         x = self.resnet.bn1(x)
         x = self.resnet.relu(x)
         x = self.resnet.maxpool(x)
-        layer_1 = self.resnet.layer1(x)
-        layer_2 = self.resnet.layer2(layer_1)
-        layer_3 = self.resnet.layer3(layer_2)
-        layer_4 = self.resnet.layer4(layer_3)
+        x = self.resnet.layer1(x)
+        x = self.resnet.layer2(x)
+        x = self.resnet.layer3(x)
+        x = self.resnet.layer4(x)
 
-        return layer_4
+        x = x.view(*b, *x.shape[-3:])
+
+        return x
 
 
 class PointPositionalEncoder3D(torch.nn.Module):
@@ -74,9 +79,13 @@ class LearnablePositionalEmbedding1D(torch.nn.Module):
             embedding_dim=embedding_dim,
         )
 
+    @property
+    def _seq_len(self):
+        return self._emb.num_embeddings
+
     def forward(self, shape: torch.Size) -> Float[Tensor, "b s c"]:
         b, s, *_ = shape
-        if s != self._emb.num_embeddings:
-            raise ValueError("invalid input sequence length")
+        if s != self._seq_len:
+            raise ValueError(f"expected sequence length {self._seq_len}, got {s}")
 
         return repeat(self._emb.weight, "s c -> b s c", b=b)
