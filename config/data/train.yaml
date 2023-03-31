@@ -1,0 +1,89 @@
+# @package _global_
+
+paths:
+  data_dir: /mnt/extr_ssd/yaak_datasets
+  metadata_cache_dir: /tmp/cache/yaak-datasets/metadata
+
+clip_len: 1
+
+datamodule:
+  _target_: cargpt.datamodules.GenericDataModule
+  train:
+    _target_: torch.utils.data.DataLoader
+    shuffle: false
+    batch_size: 16
+    num_workers: 10
+    pin_memory: false
+    persistent_workers: true
+    multiprocessing_context: fork
+    dataset:
+      _target_: yaak_datasets.Dataset
+      _recursive_: false
+      config:
+        version: 0.11.1
+        data:
+          drives:
+          - id: 2022-10-24--12-00-53
+            sources:
+            - camera: cam_front_right
+              reader:
+                _target_: yaak_datasets.FrameImageVideoReader
+                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
+                filename_format: '{:09d}.jpg'
+            metadata:
+              path: ${paths.data_dir}/frames/${..id}/metadata.log
+
+          metadata:
+            cameras:
+            - cam_front_right
+
+            select:
+            - message: ImageMetadata
+              fields:
+              - name: frame_idx
+              - name: camera_name
+
+            - message: VehicleMotion
+              fields:
+              - name: speed
+              - name: steering_angle_normalized
+              - name: gas_pedal_normalized
+              - name: brake_pedal_normalized
+
+            filter: >
+              VehicleMotion_speed between 8.0 and 40.0
+              and VehicleMotion_brake_pedal_normalized > 0.18
+              and VehicleMotion_gas_pedal_normalized < 0.05
+
+        samples:
+          alignment:
+            ref_camera: cam_front_right
+            tolerance: 10ms
+
+          clips:
+            length: ${clip_len}
+            step: 20
+            stride: 1
+
+          transforms:
+            - _target_: yaak_datasets.transforms.Scale
+              factor: 0.3
+
+            - _target_: yaak_datasets.transforms.Crop
+              offsets: [2, 2, 0, 0]
+
+            - _target_: yaak_datasets.transforms.Normalize
+              # ImageNet stats
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
+        processing:
+          max_workers: null
+          metadata_cache:
+            enabled: true
+            path: ${paths.metadata_cache_dir}
+            size_limit: 1 GiB
+
+    collate_fn:
+      _target_: yaak_datasets.collate
+      _partial_: true
