@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Annotated, Dict, Optional, Sequence, Tuple, cast
+from typing import Annotated, Dict, Optional, Sequence, Tuple, Union, cast
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -8,6 +8,7 @@ from deephouse.tools.camera import Camera
 from einops import rearrange, reduce, repeat
 from hydra.utils import instantiate
 from jaxtyping import Float, Shaped
+from loguru import logger
 from omegaconf import DictConfig
 from pytorch_lightning.utilities import AttributeDict
 from torch import Tensor
@@ -38,17 +39,20 @@ class DepthFrameEncoder(Module):
     def forward(
         self,
         *,
-        frames: Float[Tensor, "b c1 h1 w1"],
+        frames: Float[Tensor, "*b c1 h1 w1"],
         camera: Camera,
-    ) -> Float[Tensor, "b h2 w2 c2"]:
+    ) -> Float[Tensor, "*b h2 w2 c2"]:
+        *b, _, _, _ = frames.shape
+        frames = rearrange(frames, "... c h w -> (...) c h w")
+
         # compute depth
         disp = self.disp_net(frames)[0]
         depth = rearrange(1 / disp, "b 1 h w -> b h w 1")
 
         # compute 3d points (equivalent to Eq 6 [https://arxiv.org/abs/2211.14710])
-        B, _, H_frame, W_frame = frames.shape
+        B_frame, _, H_frame, W_frame = frames.shape
         grid_2d = self._generate_2d_grid(height=H_frame, width=W_frame).to(depth)
-        pts_2d = repeat(grid_2d, "h w t -> b h w t", b=B)
+        pts_2d = repeat(grid_2d, "h w t -> b h w t", b=B_frame)
         pts = camera.unproject(pts_2d, depth)
 
         # normalize 3d points (Eq 7 [https://arxiv.org/abs/2211.14710])
@@ -64,6 +68,7 @@ class DepthFrameEncoder(Module):
             pts_norm = rearrange(pts_norm, "b c h w -> b h w c")
 
         pt_pos_enc = self.point_positional_encoder(pts_norm)
+        pt_pos_enc = pt_pos_enc.view(*b, *pt_pos_enc.shape[-3:])
 
         return pt_pos_enc
 
@@ -104,8 +109,8 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
     def forward(
         self,
         *,
-        frames: Float[Tensor, "b c h w"],
-        speed: Float[Tensor, "b 1"],
+        frames: Float[Tensor, "b t c h w"],
+        speed: Float[Tensor, "b t"],
         camera: Optional[Camera] = None,
     ) -> Float[Tensor, "b 1 2"]:
         state = self._embed_state(frames=frames, speed=speed, camera=camera)
@@ -116,14 +121,17 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
 
     def _compute_predictions(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
         clips = mit.one(batch["clips"].values())
-        frames = rearrange(clips["frames"], "b 1 c h w -> b c h w")
-
-        meta = clips["meta"]
-        speed = meta["VehicleMotion_speed"].to(torch.float32)
+        frames = clips["frames"]
+        speed = clips["meta"]["VehicleMotion_speed"].to(frames)
 
         if isinstance(_camera_params := clips.get("camera_params"), dict):
             camera_params = _camera_params.copy()
             camera_model = mit.one(set(camera_params.pop("model")))
+            _, t, *_ = frames.shape
+            # need one camera per frame
+            camera_params = {
+                k: repeat(v, "b -> (b t)", t=t) for k, v in camera_params.items()
+            }
             camera = Camera.from_params(model=camera_model, params=camera_params)
             camera = camera.to(frames)
         else:
@@ -137,16 +145,18 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
     def _compute_labels(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
         clips = mit.one(batch["clips"].values())
         meta = clips["meta"]
-
         gas = meta["VehicleMotion_gas_pedal_normalized"]
         brake = meta["VehicleMotion_brake_pedal_normalized"]
+        steering_angle = meta["VehicleMotion_steering_angle_normalized"]
+
+        # NOTE: taking last timestep as label
         # NOTE: assuming (gas > 0) xor (brake > 0)
-        accel_lbl = gas - brake
-        steering_lbl = meta["VehicleMotion_steering_angle_normalized"]
+        accel_lbl = gas[..., [-1]] - brake[..., [-1]]
+        steering_angle_lbl = steering_angle[..., [-1]]
 
         return {
             "acceleration": accel_lbl.to(torch.float32),
-            "steering_angle": steering_lbl.to(torch.float32),
+            "steering_angle": steering_angle_lbl.to(torch.float32),
         }
 
     def training_step(self, batch, batch_idx):
@@ -215,10 +225,14 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
         ):
             self._tables = {}
 
-            if log_cfg.get(name := "frames") and self.current_epoch == 0:
-                dataset = self.trainer.val_dataloaders[0].dataset  # type: ignore[index]
-                cameras = [x.value for x in dataset.config.data.metadata.cameras]  # type: ignore[union-attr]
-                self._tables[name] = wandb.Table(columns=cameras)
+            if log_cfg.get(name := "frames"):
+                run: Union[wandb.wandb_run.Run, wandb.sdk.lib.RunDisabled] = self.logger.experiment  # type: ignore[union-attr]
+                try:
+                    _ = run.use_artifact(f"run-{run.id}-val_frames:latest")
+                except wandb.CommError:
+                    dataset = self.trainer.val_dataloaders[0].dataset  # type: ignore[index]
+                    cameras = [x.value for x in dataset.config.data.metadata.cameras]  # type: ignore[union-attr]
+                    self._tables[name] = wandb.Table(columns=cameras)
 
             if log_cfg.get(name := "outputs"):
                 self._tables[name] = wandb.Table(
@@ -232,15 +246,15 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
 
     def on_validation_epoch_end(self):
         if hasattr(self, "_tables") and self.trainer.state.stage != "sanity_check":
-            run = self.logger.experiment  # type: ignore[union-attr]
+            run: Union[wandb.wandb_run.Run, wandb.sdk.lib.RunDisabled] = self.logger.experiment  # type: ignore[union-attr]
+
+            frame_artifact: Optional[wandb.wandb_sdk.wandb_artifacts.Artifact] = None
 
             if table := self._tables.get(name := "frames"):
                 table.add_column("_step", list(map(int, table.get_index())))
                 artifact = wandb.Artifact(f"run-{run.id}-val_{name}", "run_table")
                 artifact.add(table, name)
                 frame_artifact = run.log_artifact(artifact)
-            else:
-                frame_artifact = None
 
             if table := self._tables.get(name := "outputs"):
                 table.add_column("_step", list(map(int, table.get_index())))
@@ -249,33 +263,41 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
                     frame_artifact.wait()
                 else:
                     try:
-                        frame_artifact = run.use_artifact(f"run-{run.id}-val_frames:v0")
+                        frame_artifact = run.use_artifact(
+                            f"run-{run.id}-val_frames:latest"
+                        )
                     except wandb.CommError:
+                        # may have never been logged in the first place
                         pass
 
-                artifact = wandb.Artifact(f"run-{run.id}-val_{name}", "run_table")
-
+                frame_table: Optional[
+                    wandb.sdk.wandb_artifacts.ArtifactManifestEntry
+                ] = None
                 if frame_artifact is not None:
-                    frame_table = frame_artifact.get_path("frames.table.json")
-                    joined_table = wandb.JoinedTable(frame_table, table, "_step")
-                    artifact.add(joined_table, name)
-                else:
-                    artifact.add(table, name)
+                    with logger.catch(message="failed to get frame table"):
+                        frame_table = frame_artifact.get_path("frames.table.json")
 
+                _table = (
+                    table
+                    if frame_table is None
+                    else wandb.JoinedTable(frame_table, table, "_step")
+                )
+                artifact = wandb.Artifact(f"run-{run.id}-val_{name}", "run_table")
+                artifact.add(_table, name)
                 run.log_artifact(artifact)
 
     def _embed_state(
         self,
         *,
-        frames: Float[Tensor, "b 3 h w"],
-        speed: Float[Tensor, "b 1"],
+        frames: Float[Tensor, "b t 3 h w"],
+        speed: Float[Tensor, "b t"],
         camera: Optional[Camera] = None,
     ) -> Float[Tensor, "b s c"]:
         feats = []
 
         if encoder := getattr(self.state_embedding.frame, "backbone", None):
             feat = encoder(frames)
-            feat = rearrange(feat, "b c h w -> b (h w) c")
+            feat = rearrange(feat, "b t c h w -> b (t h w) c")
             feats.append(feat)
 
         if encoder := getattr(self.state_embedding.frame, "depth", None):
@@ -283,7 +305,7 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
                 raise ValueError("camera required for depth encoder")
 
             feat = encoder(frames=frames, camera=camera)
-            feat = rearrange(feat, "b h w c -> b (h w) c")
+            feat = rearrange(feat, "b t h w c -> b (t h w) c")
             feats.append(feat)
 
         if encoder := getattr(self.state_embedding, "speed"):
