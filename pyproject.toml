@@ -91,3 +91,10 @@ ignore_transitive = [
   "omegaconf",
   "wandb",
 ]
+
+[tool.poetry.group.vis]
+optional = true
+
+[tool.poetry.group.vis.dependencies]
+bertviz = "*"
+grad-cam = "*"
