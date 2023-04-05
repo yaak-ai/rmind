@@ -63,6 +63,12 @@ netron = "*"
 ipython-autoimport = "*"
 pyfzf = "*"
 
+[tool.poetry.group.vis]
+optional = true
+
+[tool.poetry.group.vis.dependencies]
+grad-cam = "*"
+
 [tool.black]
 line-length = 88
 
@@ -90,4 +96,11 @@ ignore_obsolete = [
 ignore_transitive = [
   "omegaconf",
   "wandb",
+  "numpy",
+]
+
+ignore_missing = [
+  # deptry doesn't handle groups different than dev
+  "cv2",
+  "pytorch_grad_cam",
 ]

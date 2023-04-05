@@ -119,7 +119,9 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
 
         return pred
 
-    def _compute_predictions(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
+    def unpack_batch_for_predictions(
+        self, batch
+    ) -> Tuple[Float[Tensor, "b t c h w"], Float[Tensor, "b t"], Optional[Camera]]:
         clips = mit.one(batch["clips"].values())
         frames = clips["frames"]
         speed = clips["meta"]["VehicleMotion_speed"].to(frames)
@@ -137,9 +139,12 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
         else:
             camera = None
 
+        return frames, speed, camera
+
+    def _compute_predictions(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
+        frames, speed, camera = self.unpack_batch_for_predictions(batch)
         pred = self.forward(frames=frames, speed=speed, camera=camera)
         accel_pred, steering_pred = rearrange(pred, "b 1 c -> c b 1")
-
         return {"acceleration": accel_pred, "steering_angle": steering_pred}
 
     def _compute_labels(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
