@@ -58,28 +58,35 @@ class CILppWrapper(pl.LightningModule):
         self.font = labels or DictConfig({})
         self.add_labels = bool(labels)
 
-    def prepare_input_tensor(self, batch) -> Float[Tensor, "b vals t c h w"]:
-        frames, speed, camera = self.cilpp.unpack_batch_for_predictions(batch)
+    def prepare_input_tensor(self, batch) -> Float[Tensor, "i b t c h w"]:
+        frames, speed, turn_signal, camera = self.cilpp.unpack_batch_for_predictions(
+            batch
+        )
         # keep the camera for the next forward call
         self._camera = camera
 
         # the speed and frames are tensors, so it's possible to put them into
         # a single tensor and unpack on self.forward to match CILpp forward
         b, t, c, h, w = frames.shape
-        speed = repeat(speed, "b sc -> b t c h w sc", t=t, c=c, h=h, w=w)
-        frames = rearrange(frames, "b t c h (w fc) -> b t c h w fc", fc=1)
-        input_tensor = torch.concat([frames, speed], dim=-1)
-        # the lib that does vis expect height and width to be the last two channels
-        input_tensor = rearrange(input_tensor, "b t c h w vals -> b vals t c h w")
+        speed = repeat(speed, "b t -> b t c h w", c=c, h=h, w=w)
+        turn_signal = repeat(turn_signal, "b t -> b t c h w", c=c, h=h, w=w)
+        input_tensor = torch.stack([frames, speed, turn_signal], dim=0)
+
         return input_tensor
 
     def forward(
-        self, input_tensor: Float[Tensor, "b vals t c h w"]
+        self, input_tensor: Float[Tensor, "i b t c h w"]
     ) -> Float[Tensor, "b c"]:
-        input_tensor = rearrange(input_tensor, "b vals t c h w -> b t c h w vals")
-        frames = input_tensor[..., 0]
-        speed = input_tensor[:, 0, 0, 0, 0, 1:]
-        pred = self.cilpp(frames=frames, speed=speed, camera=self._camera)
+        frames, speed, turn_signal = input_tensor.unbind(dim=0)
+        speed = speed[..., 0, 0, 0]
+        turn_signal = turn_signal[..., 0, 0, 0].to(torch.int64)
+
+        pred = self.cilpp(
+            frames=frames,
+            speed=speed,
+            turn_signal=turn_signal,
+            camera=self._camera,
+        )
         pred = rearrange(pred, "b 1 c -> b c")
         return pred
 

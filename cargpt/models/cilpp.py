@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Annotated, Dict, Optional, Sequence, Tuple, Union, cast
+from typing import Annotated, Dict, Optional, Sequence, Tuple
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -7,12 +7,13 @@ import torch
 from deephouse.tools.camera import Camera
 from einops import rearrange, reduce, repeat
 from hydra.utils import instantiate
-from jaxtyping import Float, Shaped
+from jaxtyping import Float, Int, Shaped
 from loguru import logger
 from omegaconf import DictConfig
 from pytorch_lightning.utilities import AttributeDict
 from torch import Tensor
 from torch.nn import Module, ModuleDict, TransformerEncoder
+from torch.nn import functional as F
 from torchvision.transforms.functional import resize
 
 import wandb
@@ -111,9 +112,15 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
         *,
         frames: Float[Tensor, "b t c h w"],
         speed: Float[Tensor, "b t"],
+        turn_signal: Int[Tensor, "b t"],
         camera: Optional[Camera] = None,
     ) -> Float[Tensor, "b 1 2"]:
-        state = self._embed_state(frames=frames, speed=speed, camera=camera)
+        state = self._embed_state(
+            frames=frames,
+            speed=speed,
+            turn_signal=turn_signal,
+            camera=camera,
+        )
         encoded = self.transformer_encoder(state)
         pred = self.action_prediction(encoded)
 
@@ -121,10 +128,16 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
 
     def unpack_batch_for_predictions(
         self, batch
-    ) -> Tuple[Float[Tensor, "b t c h w"], Float[Tensor, "b t"], Optional[Camera]]:
+    ) -> Tuple[
+        Float[Tensor, "b t c h w"],
+        Float[Tensor, "b t"],
+        Int[Tensor, "b t"],
+        Optional[Camera],
+    ]:
         clips = mit.one(batch["clips"].values())
         frames = clips["frames"]
         speed = clips["meta"]["VehicleMotion_speed"].to(frames)
+        turn_signal = clips["meta"]["VehicleState_turn_signal"]
 
         if isinstance(_camera_params := clips.get("camera_params"), dict):
             camera_params = _camera_params.copy()
@@ -139,12 +152,18 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
         else:
             camera = None
 
-        return frames, speed, camera
+        return frames, speed, turn_signal, camera
 
     def _compute_predictions(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
-        frames, speed, camera = self.unpack_batch_for_predictions(batch)
-        pred = self.forward(frames=frames, speed=speed, camera=camera)
+        frames, speed, turn_signal, camera = self.unpack_batch_for_predictions(batch)
+        pred = self.forward(
+            frames=frames,
+            speed=speed,
+            turn_signal=turn_signal,
+            camera=camera,
+        )
         accel_pred, steering_pred = rearrange(pred, "b 1 c -> c b 1")
+
         return {"acceleration": accel_pred, "steering_angle": steering_pred}
 
     def _compute_labels(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
@@ -225,13 +244,14 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
         return losses["total"]
 
     def on_validation_epoch_start(self):
-        if isinstance(self.logger, pl.loggers.WandbLogger) and (
-            log_cfg := self.hparams.get("log", {}).get("validation", {})
+        if (
+            isinstance(logger := self.logger, pl.loggers.WandbLogger)
+            and isinstance(run := logger.experiment, wandb.wandb_run.Run)
+            and (log_cfg := self.hparams.get("log", {}).get("validation", {}))
         ):
             self._tables = {}
 
             if log_cfg.get(name := "frames"):
-                run: Union[wandb.wandb_run.Run, wandb.sdk.lib.RunDisabled] = self.logger.experiment  # type: ignore[union-attr]
                 try:
                     _ = run.use_artifact(f"run-{run.id}-val_frames:latest")
                 except wandb.CommError:
@@ -251,7 +271,7 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
 
     def on_validation_epoch_end(self):
         if hasattr(self, "_tables") and self.trainer.state.stage != "sanity_check":
-            run: Union[wandb.wandb_run.Run, wandb.sdk.lib.RunDisabled] = self.logger.experiment  # type: ignore[union-attr]
+            run: wandb.wandb_run.Run = self.logger.experiment  # type: ignore[union-attr]
 
             frame_artifact: Optional[wandb.wandb_sdk.wandb_artifacts.Artifact] = None
 
@@ -296,13 +316,14 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
         *,
         frames: Float[Tensor, "b t 3 h w"],
         speed: Float[Tensor, "b t"],
+        turn_signal: Int[Tensor, "b t"],
         camera: Optional[Camera] = None,
     ) -> Float[Tensor, "b s c"]:
         feats = []
 
         if encoder := getattr(self.state_embedding.frame, "backbone", None):
             feat = encoder(frames)
-            feat = rearrange(feat, "b t c h w -> b (t h w) c")
+            feat = rearrange(feat, "b t c h w -> b t (h w) c")
             feats.append(feat)
 
         if encoder := getattr(self.state_embedding.frame, "depth", None):
@@ -310,18 +331,25 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
                 raise ValueError("camera required for depth encoder")
 
             feat = encoder(frames=frames, camera=camera)
-            feat = rearrange(feat, "b t h w c -> b (t h w) c")
+            feat = rearrange(feat, "b t h w c -> b t (h w) c")
             feats.append(feat)
 
         if encoder := getattr(self.state_embedding, "speed"):
+            speed = rearrange(speed, "b t -> b t 1")
             feat = encoder(speed)
+            feat = rearrange(feat, "b t c -> b t 1 c")
             feats.append(feat)
+
+        if encoder := getattr(self.state_embedding, "turn_signal"):
+            turn_signal = F.one_hot(turn_signal, encoder.in_features).float()
+            feat = encoder(turn_signal)
+            feat = rearrange(feat, "b t c -> b t 1 c")
+            feats.append(feat)
+
+        state = rearrange(sum(feats), "b t s c -> b (t s) c")
 
         if encoder := getattr(self.state_embedding, "position"):
-            feat = encoder(feats[0].shape)
-            feats.append(feat)
-
-        state = cast(Float[Tensor, "b s c"], sum(feats))
+            state += encoder(state.shape)
 
         return state
 

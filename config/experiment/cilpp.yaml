@@ -51,11 +51,13 @@ model:
             out_range: [0.0, 1.0]
 
           - _target_: torch.nn.Linear
-            in_features: ${datamodule.train.dataset.config.samples.clips.length}
+            in_features: 1
             out_features: ${d_model}
 
-          - _target_: einops.layers.torch.Rearrange
-            pattern: b c -> b 1 c
+      turn_signal: 
+        _target_: torch.nn.Linear
+        in_features: 3 # length of VehicleState::TurnSignal enum
+        out_features: ${d_model}
 
       position:
         _target_: cargpt.models.encoding.LearnablePositionalEmbedding1D
@@ -238,6 +240,10 @@ datamodule:
               - name: gas_pedal_normalized
               - name: brake_pedal_normalized
 
+            - message: VehicleState
+              fields:
+              - name: turn_signal
+
             filter: VehicleMotion_speed between ${model.state_embedding.modules.speed._args_[0].in_range[0]} and ${model.state_embedding.modules.speed._args_[0].in_range[1]} 
 
         samples:
@@ -277,7 +283,7 @@ datamodule:
     _target_: torch.utils.data.DataLoader
     shuffle: false
     batch_size: ${batch_size}
-    num_workers: 8
+    num_workers: 32
     pin_memory: true
     persistent_workers: true
     multiprocessing_context: fork
@@ -314,6 +320,10 @@ datamodule:
               - name: steering_angle_normalized
               - name: gas_pedal_normalized
               - name: brake_pedal_normalized
+
+            - message: VehicleState
+              fields:
+              - name: turn_signal
 
             filter: VehicleMotion_speed between ${model.state_embedding.modules.speed._args_[0].in_range[0]} and ${model.state_embedding.modules.speed._args_[0].in_range[1]} 
 
