@@ -1,5 +1,3 @@
-import string
-from collections import OrderedDict
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
@@ -172,12 +170,8 @@ class NegativeAndPositiveGradCAM(BaseCAM):
                     )
                 ]
             )
-
-        parsed_shape = OrderedDict(zip(string.ascii_letters, grads.shape))
-        parsed_str = " ".join(parsed_shape)
-        out = repeat(
-            self.scalars_outputs, f"({parsed_str[0]}) -> {parsed_str}", **parsed_shape
-        )
+        _, c, h, w = grads.shape
+        out = repeat(self.scalars_outputs, "b -> b c h w", c=c, h=h, w=w)
         axes = (-2, -1)
 
         negative_grads = np.where(np.logical_and(out < 0, grads < 0), -grads, 0)

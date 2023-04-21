@@ -27,3 +27,6 @@ train *ARGS:
 
 train-debug *ARGS:
 	PYTHONOPTIMIZE=0 HYDRA_FULL_ERROR=1 ./train.py {{ARGS}}
+
+visualize *ARGS:
+	PYTHONOPTIMIZE=1 ./predict.py inference=visualize {{ARGS}}

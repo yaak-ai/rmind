@@ -7,7 +7,6 @@ defaults:
 output_file: ???
 batch_size: ???
 clip_len: 4
-seq_len: 4
 
 trainer:
   callbacks:
@@ -23,6 +22,7 @@ model:
   model:
     _target_: cargpt.models.cilpp.CILpp.load_from_wandb_artifact
     _args_: ['yaak/cargpt/model-knmg1pgn:v0']
+  # The convolution layer to take for visualization, when multiple - mean is used
   visualize_layers:
     - model.state_embedding['frame']['backbone'].resnet.layer4[-1]
   images_transform:
@@ -34,6 +34,7 @@ model:
     font_scale: 1
     font_color: [255, 255, 255]
     font_thickness: 2
+  # Pick RawAccelerationTarget or RawSteeringTarget
   visualize_target:
     _target_: cargpt.utils.visualization.RawAccelerationTarget
 
