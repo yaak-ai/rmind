@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - inference: null
+  - _self_
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: gpu
+  devices: [0]
+  benchmark: true
