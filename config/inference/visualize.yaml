@@ -6,7 +6,7 @@ defaults:
 
 output_file: ???
 batch_size: ???
-clip_len: 4
+clip_len: ???
 
 trainer:
   callbacks:
@@ -21,7 +21,7 @@ model:
   _recursive_: False
   model:
     _target_: cargpt.models.cilpp.CILpp.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-knmg1pgn:v0']
+    _args_: ['yaak/cargpt/model-0mbtfm8x:v0']
   # The convolution layer to take for visualization, when multiple - mean is used
   visualize_layers:
     - model.state_embedding['frame']['backbone'].resnet.layer4[-1]
@@ -81,6 +81,10 @@ datamodule:
               - name: steering_angle_normalized
               - name: gas_pedal_normalized
               - name: brake_pedal_normalized
+
+            - message: VehicleState
+              fields:
+              - name: turn_signal
 
             filter: VehicleMotion_speed between 8 and 40
 
