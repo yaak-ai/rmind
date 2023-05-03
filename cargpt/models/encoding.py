@@ -93,26 +93,25 @@ class LearnablePositionalEmbedding1D(torch.nn.Module):
         return repeat(self._emb.weight, "s c -> b s c", b=b)
 
 
-class Undoable(ABC):
+class Invertible(ABC):
     @abstractmethod
-    def undo(self, *args, **kwargs):
+    def invert(self, *args, **kwargs):
         pass
 
 
-class MuLawCompressor(Undoable, torch.nn.Module):
+class MuLawCompressor(Invertible, torch.nn.Module):
     """Apply mu-law compression as in Gato paper.
 
     Appendix B, eq. 3. https://arxiv.org/abs/2205.06175
     """
 
+    M: Tensor
+    mu: Tensor
+
     def __init__(self, mu: int = 100, M: int = 256):
         super().__init__()
         self.register_buffer("mu", torch.tensor(mu, dtype=torch.int32))
         self.register_buffer("M", torch.tensor(M, dtype=torch.int32))
-
-        # for type checking
-        self.M: Tensor
-        self.mu: Tensor
 
     def forward(self, x: Float[Tensor, "b v"]) -> Float[Tensor, "b v"]:
         out = torch.log(x.abs() * self.mu + 1.0)
@@ -120,7 +119,7 @@ class MuLawCompressor(Undoable, torch.nn.Module):
         out = torch.sign(x) * out
         return out
 
-    def undo(self, x: Float[Tensor, "b v"]) -> Float[Tensor, "b v"]:
+    def invert(self, x: Float[Tensor, "b v"]) -> Float[Tensor, "b v"]:
         non_zeros = x != 0
         abs_x = (
             torch.pow(torch.e, x * torch.log(self.M * self.mu + 1.0) / torch.sign(x))
@@ -131,7 +130,7 @@ class MuLawCompressor(Undoable, torch.nn.Module):
         return x
 
 
-class Discretizer(Undoable, torch.nn.Module):
+class Discretizer(Invertible, torch.nn.Module):
     """Discretize floating point values from a defined range into bins
     of uniform width.
 
@@ -143,6 +142,11 @@ class Discretizer(Undoable, torch.nn.Module):
 
     Appendix B, as described after eq. 3. https://arxiv.org/abs/2205.06175
     """
+
+    range_min: Tensor
+    range_max: Tensor
+    start_index: Tensor
+    bins: Tensor
 
     def __init__(
         self,
@@ -159,12 +163,6 @@ class Discretizer(Undoable, torch.nn.Module):
         )
         self.register_buffer("bins", torch.tensor(bins, dtype=torch.int32))
 
-        # for type checking
-        self.range_min: Tensor
-        self.range_max: Tensor
-        self.start_index: Tensor
-        self.bins: Tensor
-
     def forward(self, x: Float[Tensor, "b v"]) -> Int[Tensor, "b v"]:
         bin_width = torch.abs(self.range_max - self.range_min) / self.bins
         x = torch.clamp(x, self.range_min, self.range_max)
@@ -172,7 +170,7 @@ class Discretizer(Undoable, torch.nn.Module):
         x = (x / bin_width).int()
         return x + self.start_index
 
-    def undo(self, x: Int[Tensor, "b v"]) -> Float[Tensor, "b v"]:
+    def invert(self, x: Int[Tensor, "b v"]) -> Float[Tensor, "b v"]:
         bin_width = torch.abs(self.range_max - self.range_min) / self.bins
         x = x - self.start_index
         x = x * bin_width + self.range_min
