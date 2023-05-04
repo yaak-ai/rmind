@@ -3,9 +3,16 @@ Self-supervised model trained on vehicle context and control signals from expert
 
 ## Training
 
+CIL++
 ```bash
 just train experiment=cilpp [++trainer.fast_dev_run=1 ...]
 ```
+
+Gato
+```bash
+just train experiment=gato [++trainer.fast_dev_run=1 ...]
+```
+
 
 
 ## Visualize

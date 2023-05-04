@@ -1,0 +1,160 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - _self_
+  -
+d_model: 512
+
+batch_size: 4
+clip_len: 96
+predict_clips_len: 48  # tail from clip_len
+cont_values_bins: 1024
+embedding_dim: 768
+
+model:
+  _target_: cargpt.models.gato.Gato
+  _recursive_: False
+
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 1e-4
+    weight_decay: 0
+
+  encodings:
+    _target_: torch.nn.ModuleDict
+    modules:
+      continues_values:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: cargpt.models.encoding.MuLawCompressor
+            mu: 100  # how steppy is the function
+            M: 256  # value of x that y = -1 / y = 1
+          - _target_: cargpt.models.encoding.Discretizer
+            range_min: -1.0
+            range_max: 1.0
+            start_index: 0
+            bins: ${cont_values_bins}  # 1024: bin width is 0.001953125 ~= 0.002
+
+  embeddings:
+    lookup_table:
+      _target_: torch.nn.Embedding
+      num_embeddings: ${cont_values_bins}
+      embedding_dim: ${embedding_dim}
+    local_position:
+      _target_: torch.nn.Embedding
+      num_embeddings: ${clip_len}
+      embedding_dim: ${embedding_dim}
+    action_position:
+      _target_: torch.nn.Embedding
+      num_embeddings: 1
+      embedding_dim: ${embedding_dim}
+
+  transformer_decoder:
+    _target_: torch.nn.TransformerDecoder
+    num_layers: 8
+    decoder_layer:
+      _target_: torch.nn.TransformerDecoderLayer
+      d_model: ${embedding_dim}
+      dim_feedforward: 3072
+      nhead: 16
+      dropout: 0.1
+      activation: 'gelu'
+      batch_first: True
+      norm_first: True
+  out:
+    _target_: torch.nn.Linear
+    in_features: ${embedding_dim}
+    out_features: ${cont_values_bins}
+
+  predict_steps: ${predict_clips_len}
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: gpu
+  devices: [0]
+  benchmark: true
+  max_steps: 100000
+  log_every_n_steps: 10
+
+datamodule:
+  _target_: cargpt.datamodules.GenericDataModule
+  train:
+    _target_: torch.utils.data.DataLoader
+    shuffle: true
+    batch_size: ${batch_size}
+    num_workers: 8
+    pin_memory: true
+    persistent_workers: true
+    multiprocessing_context: fork
+    dataset:
+      _target_: yaak_datasets.Dataset
+      _recursive_: false
+      config:
+        version: 0.11.1
+        data:
+          drives:
+          - id: 2022-10-24--12-00-53
+            sources:
+            - camera: cam_front_right
+              reader:
+                _target_: yaak_datasets.FrameImageVideoReader
+                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
+                filename_format: '{:09d}.jpg'
+            metadata:
+              path: ${paths.data_dir}/frames/${..id}/metadata.log
+
+          metadata:
+            cameras:
+            - cam_front_right
+
+            select:
+            - message: ImageMetadata
+              fields:
+              - name: frame_idx
+              - name: camera_name
+
+            - message: VehicleMotion
+              fields:
+              - name: speed
+              - name: steering_angle_normalized
+              - name: gas_pedal_normalized
+              - name: brake_pedal_normalized
+
+            - message: VehicleState
+              fields:
+              - name: turn_signal
+
+        samples:
+          alignment:
+            ref_camera: cam_front_right
+            tolerance: 10ms
+
+          clips:
+            length: ${clip_len}
+            stride: 5
+            step: 5
+            frame_mask: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+          transforms:
+            - _target_: yaak_datasets.transforms.Scale
+              factor: 0.3
+
+            - _target_: yaak_datasets.transforms.Crop
+              offsets: [2, 2, 0, 0]
+
+            - _target_: yaak_datasets.transforms.Normalize
+              # ImageNet stats
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
+        processing:
+          max_workers: null
+          metadata_cache:
+            enabled: true
+            path: ${paths.metadata_cache_dir}
+            size_limit: 1 GiB
+
+    collate_fn:
+      _target_: yaak_datasets.collate
+      _partial_: true
