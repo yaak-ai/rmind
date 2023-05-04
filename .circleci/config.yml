@@ -25,5 +25,4 @@ jobs:
 workflows:
   main: 
     jobs:
-      - build:
-          context: builder-creds
+      - build
