@@ -1,6 +1,8 @@
+from abc import ABC, abstractmethod
+
 import torch
 from einops import einsum, rearrange, repeat
-from jaxtyping import Float, Shaped
+from jaxtyping import Float, Int, Shaped
 from torch import Tensor, nn
 from torchvision.models import ResNet
 
@@ -89,3 +91,87 @@ class LearnablePositionalEmbedding1D(torch.nn.Module):
             raise ValueError(f"expected sequence length {self._seq_len}, got {s}")
 
         return repeat(self._emb.weight, "s c -> b s c", b=b)
+
+
+class Invertible(ABC):
+    @abstractmethod
+    def invert(self, *args, **kwargs):
+        pass
+
+
+class MuLawCompressor(Invertible, torch.nn.Module):
+    """Apply mu-law compression as in Gato paper.
+
+    Appendix B, eq. 3. https://arxiv.org/abs/2205.06175
+    """
+
+    M: Tensor
+    mu: Tensor
+
+    def __init__(self, mu: int = 100, M: int = 256):
+        super().__init__()
+        self.register_buffer("mu", torch.tensor(mu, dtype=torch.int32))
+        self.register_buffer("M", torch.tensor(M, dtype=torch.int32))
+
+    def forward(self, x: Float[Tensor, "b v"]) -> Float[Tensor, "b v"]:
+        out = torch.log(x.abs() * self.mu + 1.0)
+        out = out / torch.log(self.M * self.mu + 1.0)
+        out = torch.sign(x) * out
+        return out
+
+    def invert(self, x: Float[Tensor, "b v"]) -> Float[Tensor, "b v"]:
+        non_zeros = x != 0
+        abs_x = (
+            torch.pow(torch.e, x * torch.log(self.M * self.mu + 1.0) / torch.sign(x))
+            - 1.0
+        ) / self.mu
+        x = abs_x * torch.sign(x)
+        x = torch.where(non_zeros, x, torch.zeros_like(x))
+        return x
+
+
+class Discretizer(Invertible, torch.nn.Module):
+    """Discretize floating point values from a defined range into bins
+    of uniform width.
+
+    This is not a scaler, it uses range min and max to assume min and max
+    values and clamp.
+
+    The undo process is not precise, the error would be at most the bin width
+    (range divided by the number of bins).
+
+    Appendix B, as described after eq. 3. https://arxiv.org/abs/2205.06175
+    """
+
+    range_min: Tensor
+    range_max: Tensor
+    start_index: Tensor
+    bins: Tensor
+
+    def __init__(
+        self,
+        range_min: float = -1.0,
+        range_max: float = 1.0,
+        start_index: int = 0,
+        bins: int = 1024,
+    ):
+        super().__init__()
+        self.register_buffer("range_min", torch.tensor(range_min))
+        self.register_buffer("range_max", torch.tensor(range_max))
+        self.register_buffer(
+            "start_index", torch.tensor(start_index, dtype=torch.int32)
+        )
+        self.register_buffer("bins", torch.tensor(bins, dtype=torch.int32))
+
+    def forward(self, x: Float[Tensor, "b v"]) -> Int[Tensor, "b v"]:
+        bin_width = torch.abs(self.range_max - self.range_min) / self.bins
+        x = torch.clamp(x, self.range_min, self.range_max)
+        x = x - self.range_min
+        x = (x / bin_width).int()
+        return x + self.start_index
+
+    def invert(self, x: Int[Tensor, "b v"]) -> Float[Tensor, "b v"]:
+        bin_width = torch.abs(self.range_max - self.range_min) / self.bins
+        x = x - self.start_index
+        x = x * bin_width + self.range_min
+        return x
