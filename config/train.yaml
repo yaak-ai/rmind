@@ -1,6 +1,9 @@
 # @package _global_
 
 defaults:
+  - model: null
+  - datamodule: null
+  - trainer: null
   - experiment: null
   - _self_
 
@@ -11,7 +14,3 @@ wandb:
     start_method: thread
 
 seed: 1337
-
-model: ???
-datamodule: ???
-trainer: ???

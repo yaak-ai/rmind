@@ -1,14 +1,17 @@
 # @package _global_
 
 defaults:
-  - /paths: default
+  - /paths: default.yaml
+  - override /datamodule: default.yaml
   - _self_
+
+batch_size: 32
+clip_len: 1
+seq_len: 180
 
 d_model: 512
 
-batch_size: ???
-clip_len: ???
-seq_len: ???
+speed_range: [8.0, 40.0]
 
 model: 
   _target_: cargpt.models.cilpp.CILpp
@@ -47,7 +50,7 @@ model:
         _target_: torch.nn.Sequential
         _args_:
           - _target_: cargpt.norm.MinMaxScaler
-            in_range: [8.0, 40.0]
+            in_range: ${speed_range}
             out_range: [0.0, 1.0]
 
           - _target_: torch.nn.Linear
@@ -136,226 +139,34 @@ trainer:
       save_on_train_epoch_end: True
       monitor: train/loss/total
 
+
+_speed_range: ${model.state_embedding.modules.speed._args_[0]}
+
 datamodule:
-  _target_: cargpt.datamodules.GenericDataModule
   train:
-    _target_: torch.utils.data.DataLoader
-    shuffle: true
     batch_size: ${batch_size}
-    num_workers: 32
-    pin_memory: true
-    persistent_workers: true
-    multiprocessing_context: fork
     dataset:
-      _target_: yaak_datasets.Dataset
-      _recursive_: false
       config:
-        version: 0.11.1
         data:
-          drives:
-          - id: 2022-10-24--12-00-53
-            sources:
-            - camera: cam_front_right
-              reader:
-                _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
-                filename_format: '{:09d}.jpg'
-            metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
-
-          - id: 2022-10-25--10-00-56
-            sources:
-            - camera: cam_front_right
-              reader:
-                _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
-                filename_format: '{:09d}.jpg'
-            metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
-
-          - id: 2022-11-16--08-57-24
-            sources:
-            - camera: cam_front_right
-              reader:
-                _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
-                filename_format: '{:09d}.jpg'
-            metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
-
-          - id: 2022-11-16--10-29-28
-            sources:
-            - camera: cam_front_right
-              reader:
-                _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
-                filename_format: '{:09d}.jpg'
-            metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
-
-          - id: 2022-11-17--12-41-40
-            sources:
-            - camera: cam_front_right
-              reader:
-                _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
-                filename_format: '{:09d}.jpg'
-            metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
-
-          - id: 2022-11-17--14-31-19
-            sources:
-            - camera: cam_front_right
-              reader:
-                _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
-                filename_format: '{:09d}.jpg'
-            metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
-
-          - id: 2022-11-21--08-26-01
-            sources:
-            - camera: cam_front_right
-              reader:
-                _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
-                filename_format: '{:09d}.jpg'
-            metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
-
           metadata:
-            cameras:
-            - cam_front_right
-
-            select:
-            - message: ImageMetadata
-              fields:
-              - name: frame_idx
-              - name: camera_name
-
-            - message: VehicleMotion
-              fields:
-              - name: speed
-              - name: steering_angle_normalized
-              - name: gas_pedal_normalized
-              - name: brake_pedal_normalized
-
-            - message: VehicleState
-              fields:
-              - name: turn_signal
-
-            filter: VehicleMotion_speed between ${model.state_embedding.modules.speed._args_[0].in_range[0]} and ${model.state_embedding.modules.speed._args_[0].in_range[1]} 
+            filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]} 
 
         samples:
-          alignment:
-            ref_camera: cam_front_right
-            tolerance: 10ms
-
           clips:
             length: ${clip_len}
             stride: 5
             step: 5
-
-          transforms:
-            - _target_: yaak_datasets.transforms.Scale
-              factor: 0.3
-
-            - _target_: yaak_datasets.transforms.Crop
-              offsets: [2, 2, 0, 0]
-
-            - _target_: yaak_datasets.transforms.Normalize
-              # ImageNet stats
-              mean: [0.485, 0.456, 0.406]
-              std: [0.229, 0.224, 0.225]
-
-        processing:
-          max_workers: null
-          metadata_cache:
-            enabled: true
-            path: ${paths.metadata_cache_dir}
-            size_limit: 1 GiB
-
-    collate_fn:
-      _target_: yaak_datasets.collate
-      _partial_: true
 
   val:
-    _target_: torch.utils.data.DataLoader
-    shuffle: false
     batch_size: ${batch_size}
-    num_workers: 32
-    pin_memory: true
-    persistent_workers: true
-    multiprocessing_context: fork
     dataset:
-      _target_: yaak_datasets.Dataset
-      _recursive_: false
       config:
-        version: 0.11.1
         data:
-          drives:
-          - id: 2022-10-20--13-03-22
-            sources:
-            - camera: cam_front_right
-              reader:
-                _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
-                filename_format: '{:09d}.jpg'
-            metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
-
           metadata:
-            cameras:
-            - cam_front_right
-
-            select:
-            - message: ImageMetadata
-              fields:
-              - name: frame_idx
-              - name: camera_name
-
-            - message: VehicleMotion
-              fields:
-              - name: speed
-              - name: steering_angle_normalized
-              - name: gas_pedal_normalized
-              - name: brake_pedal_normalized
-
-            - message: VehicleState
-              fields:
-              - name: turn_signal
-
-            filter: VehicleMotion_speed between ${model.state_embedding.modules.speed._args_[0].in_range[0]} and ${model.state_embedding.modules.speed._args_[0].in_range[1]} 
+            filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]} 
 
         samples:
-          alignment:
-            ref_camera: cam_front_right
-            tolerance: 10ms
-
           clips:
             length: ${clip_len}
             stride: 5
             step: 5
-
-          transforms:
-            - _target_: yaak_datasets.transforms.Scale
-              factor: 0.3
-
-            - _target_: yaak_datasets.transforms.Crop
-              offsets: [2, 2, 0, 0]
-
-            - _target_: yaak_datasets.transforms.Normalize
-              # ImageNet stats
-              mean: [0.485, 0.456, 0.406]
-              std: [0.229, 0.224, 0.225]
-
-        processing:
-          max_workers: null
-          metadata_cache:
-            enabled: true
-            path: ${paths.metadata_cache_dir}
-            size_limit: 1 GiB
-
-    collate_fn:
-      _target_: yaak_datasets.collate
-      _partial_: true

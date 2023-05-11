@@ -1,0 +1,12 @@
+# @package _global_
+
+defaults:
+  - /paths: default.yaml
+  - /dataset/train@datasets.train
+  - /dataset/val@datasets.val
+  - _self_
+
+exporter:
+  _target_: yaak_datasets.io.exporters.fiftyone.FiftyOneDatasetExporter
+
+datasets: {}

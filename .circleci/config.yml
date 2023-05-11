@@ -18,7 +18,7 @@ jobs:
           args: --with lint
           cache-version: v1 # bump to reset 
       - run: poetry run black . --check
-      - run: poetry run ruff .
+      - run: poetry run ruff check . --no-fix
       - run: poetry run mypy .
       - run: poetry run deptry .
 
