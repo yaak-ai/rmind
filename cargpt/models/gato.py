@@ -6,8 +6,8 @@ from hydra.utils import instantiate
 from jaxtyping import Float, Int
 from pytorch_lightning.utilities import AttributeDict
 from torch import Tensor
-from torch.nn import ModuleDict
-from torch.nn.functional import log_softmax, relu
+from torch.nn import Linear, ModuleDict
+from torch.nn.functional import gelu, log_softmax, relu
 
 from cargpt.utils.wandb import LoadableFromArtifact
 
@@ -19,6 +19,53 @@ class TransformerDecoderLayer(torch.nn.TransformerDecoderLayer):
             state["activation"] = relu
         # Yup, skip the direct superclass and use its parent
         super(torch.nn.TransformerDecoderLayer, self).__setstate__(state)
+
+
+class TransformerDecoderLayerGEGLU(TransformerDecoderLayer):
+    """Replace the original linear transformation + ReLu with GEGLU.
+
+    The paper: https://arxiv.org/pdf/2002.05202v1.pdf
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        layer_norm_eps: float = 1e-5,
+        batch_first: bool = False,
+        norm_first: bool = False,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=lambda x: x,
+            layer_norm_eps=layer_norm_eps,
+            batch_first=batch_first,
+            norm_first=norm_first,
+            device=device,
+            dtype=dtype,
+        )
+        factory_kwargs = {"device": device, "dtype": dtype}
+        # Set activation to None, as GEGLU replaces both linear1 + activation
+        self.linear1 = Linear(d_model, dim_feedforward * 2, **factory_kwargs)
+        self.activation = None  # type: ignore[assignment]
+
+    def _ff_block(self, x: Tensor) -> Tensor:
+        # FFN_GEGLU eq. 6, https://arxiv.org/pdf/2002.05202v1.pdf
+        x = self.linear1(x)
+        size = self.linear1.out_features // 2
+        xW = x[..., :size]
+        xV = x[..., size:]
+        geglu = gelu(xW) * xV
+        # The original implementation with replacement
+        x = self.linear2(self.dropout(geglu))
+        return self.dropout3(x)
 
 
 class Gato(pl.LightningModule, LoadableFromArtifact):
