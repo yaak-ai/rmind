@@ -5,17 +5,18 @@ _default:
 
 format:
 	poetry run black .
-	poetry run isort .
+
+fix:
+	poetry run ruff check . --fix
+
+lint:
+	poetry run ruff check . --no-fix
 
 check-format:
 	poetry run black . --check
-	poetry run isort . --check
 
 typecheck:
 	poetry run mypy .
-
-lint:
-	poetry run ruff .
 
 check-deps:
 	poetry run deptry .
@@ -30,3 +31,6 @@ train-debug *ARGS:
 
 visualize *ARGS:
 	PYTHONOPTIMIZE=1 ./predict.py inference=visualize {{ARGS}}
+
+dataviz *ARGS:
+	PYTHONOPTIMIZE=1 ./dataviz.py {{ARGS}}

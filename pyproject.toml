@@ -29,14 +29,13 @@ optional = true
 [tool.poetry.group.train.dependencies]
 wandb = "*"
 omegaconf = "^2.3.0"
-yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", tag = "v0.11.1"}
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", tag = "v0.12.0"}
 
 [tool.poetry.group.lint]
 optional = true
 
 [tool.poetry.group.lint.dependencies]
 black = "*"
-isort = "*"
 mypy = "*"
 mypy-extensions = "*"
 ruff = "*"
@@ -49,7 +48,6 @@ optional = true
 ipdb = "*"
 ipython = "*"
 pudb = "*"
-pyls-isort = "*"
 pylsp-mypy = "*"
 pylsp-rope = "*"
 pytest-pudb = "*"
@@ -69,11 +67,15 @@ optional = true
 [tool.poetry.group.vis.dependencies]
 grad-cam = "*"
 
+[tool.poetry.group.dataviz]
+optional = true
+
+[tool.poetry.group.dataviz.dependencies]
+fiftyone = "*"
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", tag = "v0.12.0", extras = ["viz"]}
+
 [tool.black]
 line-length = 88
-
-[tool.isort]
-profile = "black"
 
 [tool.mypy]
 warn_unused_configs = true
@@ -89,8 +91,9 @@ fix = true
 ignore = ["E501", "F722", "F821"]
 
 [tool.deptry]
-ignore_obsolete = [
+ignore_unused = [
   "beartype",
+  "fiftyone",
 ]
 
 ignore_transitive = [
@@ -103,4 +106,5 @@ ignore_missing = [
   # deptry doesn't handle groups different than dev
   "cv2",
   "pytorch_grad_cam",
+  "fiftyone",
 ]

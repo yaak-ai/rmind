@@ -52,7 +52,7 @@ datamodule:
       _target_: yaak_datasets.Dataset
       _recursive_: false
       config:
-        version: 0.11.1
+        version: 0.12.0
         data:
           drives:
           - id: 2022-10-20--13-03-22
@@ -112,10 +112,11 @@ datamodule:
 
         processing:
           max_workers: null
-          metadata_cache:
-            enabled: true
-            path: ${paths.metadata_cache_dir}
-            size_limit: 1 GiB
+          metadata:
+            cache:
+              enabled: true
+              path: ${paths.metadata_cache_dir}
+              size_limit: 1 GiB
 
     collate_fn:
       _target_: yaak_datasets.collate

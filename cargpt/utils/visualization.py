@@ -118,8 +118,12 @@ class CILppWrapper(pl.LightningModule):
 
         if self.add_labels:
             labels = self.cilpp._compute_labels(batch)
-            put_labels(
-                visualizations, labels, predictions, target=self.target, **self.font
+            put_labels(  # type: ignore
+                visualizations,
+                labels,
+                predictions,
+                target=self.target,
+                **self.font,
             )
         return visualizations
 
