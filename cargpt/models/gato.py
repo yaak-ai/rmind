@@ -1,7 +1,7 @@
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
-from einops import repeat
+from einops import repeat, rearrange
 from hydra.utils import instantiate
 from jaxtyping import Float, Int
 from pytorch_lightning.utilities import AttributeDict
@@ -15,7 +15,7 @@ from cargpt.utils.wandb import LoadableFromArtifact
 class TransformerDecoderLayer(torch.nn.TransformerDecoderLayer):
     def __setstate__(self, state):
         # This is a workaround to a strange pytorch behaviour (bug?)
-        if "activation" not in {**state, **state.get("_modules", {})}:
+        if "activation" not in state or "activation" not in state.get("_modules", {}):
             state["activation"] = relu
         # Yup, skip the direct superclass and use its parent
         super(torch.nn.TransformerDecoderLayer, self).__setstate__(state)
@@ -34,13 +34,15 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         self.separator = torch.tensor([0.0])
 
         # for embeddings
-        self.lookup_table = instantiate(self.hparams.embeddings.lookup_table)  # type: ignore[union-attr]
+        self.discrete_cont_embedding = instantiate(
+            self.hparams.embeddings.discrete_cont_embedding
+        )  # type: ignore[union-attr]
         self.local_position = instantiate(self.hparams.embeddings.local_position)  # type: ignore[union-attr]
         self.action_position = instantiate(self.hparams.embeddings.action_position)  # type: ignore[union-attr]
 
         # network
         self.transformer_decoder = instantiate(self.hparams.transformer_decoder)
-        self.out = instantiate(self.hparams.out)
+        self.back_to_discrete = instantiate(self.hparams.back_to_discrete)
 
         self.predict_steps: int = self.hparams.predict_steps  # type: ignore[assignment]
 
@@ -69,11 +71,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
-    def validation_step(self, batch, batch_idx):
-        loss = self.training_step(batch, batch_idx)
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        return loss
-
     def forward(
         self,
         *,
@@ -81,7 +78,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         discrete_actions: Int[Tensor, "b t"],
     ):
         # encodings to embeddings - learnable!
-        tensors_embeddings: Float[Tensor, "b t e"] = self.lookup_table(tensors_encoded)
+        tensors_embeddings: Float[Tensor, "b t e"] = self.discrete_cont_embedding(
+            tensors_encoded
+        )
         b, t, e = tensors_embeddings.shape
 
         # construct observations and add local positional embedding
@@ -91,7 +90,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         observations_embeddings = observations + positions_encoded
 
         # Prepare actions, use the same position always
-        actions: Float[Tensor, "b t e"] = self.lookup_table(discrete_actions)
+        actions: Float[Tensor, "b t e"] = self.discrete_cont_embedding(discrete_actions)
         action_position_encoded: Float[Tensor, "1 e"] = self.action_position(
             torch.tensor([0], device=actions.device)
         )
@@ -108,17 +107,13 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         # construct full sequence: [[o, |, a], [o, |, a], ...]
         # appendix B of the paper (https://arxiv.org/abs/2205.06175)
-        full_sequence: Float[Tensor, "b L e"] = (
-            torch.stack(
-                (
-                    observations_embeddings[:, :split_point],
-                    separator[:, :split_point],
-                    actions_encoded[:, :split_point],
-                ),
-                dim=1,
-            )
-            .transpose(1, 2)
-            .reshape(b, -1, e)
+        full_sequence: Float[Tensor, "b L e"] = rearrange(
+            [
+                observations_embeddings[:, :split_point],
+                separator[:, :split_point],
+                actions_encoded[:, :split_point],
+            ],
+            "x b t e -> b (t x) e",
         )  # this is like python's zip on the 1st dim
 
         # pass through decoder
@@ -132,7 +127,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             memory=full_sequence,
             tgt_mask=tgt_mask,
         )
-        pred = self.out(pred)
+        pred = self.back_to_discrete(pred)
         return pred, discrete_actions[:, split_point:]
 
     def unpack_batch_for_predictions(self, batch) -> Float[Tensor, "b t"]:
