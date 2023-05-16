@@ -35,8 +35,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         # for embeddings
         self.discrete_cont_embedding = instantiate(
-            self.hparams.embeddings.discrete_cont_embedding
-        )  # type: ignore[union-attr]
+            self.hparams.embeddings.discrete_cont_embedding  # type: ignore[union-attr]
+        )
         self.local_position = instantiate(self.hparams.embeddings.local_position)  # type: ignore[union-attr]
         self.action_position = instantiate(self.hparams.embeddings.action_position)  # type: ignore[union-attr]
 
@@ -107,7 +107,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         # construct full sequence: [[o, |, a], [o, |, a], ...]
         # appendix B of the paper (https://arxiv.org/abs/2205.06175)
-        full_sequence: Float[Tensor, "b L e"] = rearrange(
+        full_sequence: Float[Tensor, "b L e"] = rearrange(  # type: ignore[assignment]
             [
                 observations_embeddings[:, :split_point],
                 separator[:, :split_point],
