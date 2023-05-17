@@ -59,9 +59,7 @@ class TransformerDecoderLayerGEGLU(TransformerDecoderLayer):
     def _ff_block(self, x: Tensor) -> Tensor:
         # FFN_GEGLU eq. 6, https://arxiv.org/pdf/2002.05202v1.pdf
         x = self.linear1(x)
-        size = self.linear1.out_features // 2
-        xW = x[..., :size]
-        xV = x[..., size:]
+        xW, xV = x.chunk(2, dim=-1)
         geglu = gelu(xW) * xV
         # The original implementation with replacement
         x = self.linear2(self.dropout(geglu))
