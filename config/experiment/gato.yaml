@@ -5,10 +5,13 @@ defaults:
   - override /datamodule: gato.yaml
   - _self_
 
+wandb:
+  group: Gato-speed-to-speed
+
 d_model: 512
 
 batch_size: 4
-clip_len: 96
+clip_len: 192
 predict_clips_len: 48  # tail from clip_len
 cont_values_bins: 1024
 embedding_dim: 768
@@ -55,12 +58,11 @@ model:
     _target_: torch.nn.TransformerDecoder
     num_layers: 8
     decoder_layer:
-      _target_: torch.nn.TransformerDecoderLayer
+      _target_: cargpt.models.gato.TransformerDecoderLayerGEGLU
       d_model: ${embedding_dim}
       dim_feedforward: 3072
       nhead: 16
       dropout: 0.1
-      activation: 'gelu'
       batch_first: True
       norm_first: True
   back_to_discrete:
@@ -70,13 +72,21 @@ model:
 
   predict_steps: ${predict_clips_len}
 
+  log:
+    validation:
+      outputs: true
+
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu
   devices: [0]
   benchmark: true
   max_steps: 100000
-  log_every_n_steps: 10
+  log_every_n_steps: 1
+
+  logger:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    log_model: false
 
 datamodule:
   train:
@@ -88,5 +98,14 @@ datamodule:
             length: ${clip_len}
             stride: 5
             step: 5
-            frame_mask: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-  val: null
+            frame_mask: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  val:
+    batch_size: ${batch_size}
+    dataset:
+      config:
+        samples:
+          clips:
+            length: ${clip_len}
+            stride: 5
+            step: 5
+            frame_mask: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
