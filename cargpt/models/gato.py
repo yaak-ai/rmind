@@ -231,7 +231,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         pred = self.back_to_discrete(pred)
 
         # Reverse shift from split point
-        pred = pred[:, 1:, :]
+        pred = pred[:, :-1, :]
         discrete_actions = discrete_actions[:, (split_point + 1) :]
         return pred, discrete_actions
 
