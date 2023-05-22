@@ -10,7 +10,7 @@ wandb:
 
 d_model: 512
 
-batch_size: 4
+batch_size: 64
 clip_len: 192
 predict_clips_len: 48  # tail from clip_len
 cont_values_bins: 1024

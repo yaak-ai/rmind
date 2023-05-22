@@ -210,9 +210,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         # appendix B of the paper (https://arxiv.org/abs/2205.06175)
         full_sequence: Float[Tensor, "b L e"] = rearrange(  # type: ignore[assignment]
             [
-                observations_embeddings[:, :split_point],
-                separator[:, :split_point],
-                actions_encoded[:, :split_point],
+                observations_embeddings,
+                # separator[:, :split_point],
+                # actions_encoded[:, :split_point],
             ],
             "x b t e -> b (t x) e",
         )  # this is like python's zip on the 1st dim
@@ -224,10 +224,11 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tgt_mask = tgt_mask.masked_fill(tgt_mask == 0.0, -torch.inf)
 
         pred = self.transformer_decoder(
-            tgt=tgt_seq,
-            memory=full_sequence,
+            tgt=full_sequence[:, split_point:],
+            memory=full_sequence[:, :split_point],
             tgt_mask=tgt_mask,
         )
+
         pred = self.back_to_discrete(pred)
 
         # Reverse shift from split point

@@ -4,7 +4,7 @@ config:
   version: 0.12.0
   data:
     drives:
-    - id: 2022-10-24--12-00-53
+    - id: 2022-10-20--13-03-22
       sources:
       - camera: cam_front_right
         reader:

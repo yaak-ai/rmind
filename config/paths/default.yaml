@@ -1,2 +1,2 @@
-data_dir: /nas/drives/yaak/yaak_dataset
-metadata_cache_dir: /tmp/cache/yaak-datasets/metadata
+data_dir: /home/perception/workspace/datasets/Niro102-HQ
+metadata_cache_dir: ./yaak-datasets/metadata
