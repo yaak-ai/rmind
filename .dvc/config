@@ -1,0 +1,10 @@
+[core]
+    remote = s3_yapi
+[cache]
+    type = symlink
+    dir = /nas/drives/yaak/data/.dvc
+    shared = group
+['remote "s3_yapi_staging"']
+    url = s3://yapi-staging
+['remote "s3_yapi"']
+    url = s3://yapi

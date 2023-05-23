@@ -1,4 +1,4 @@
-set shell := ["nu", "-c"]
+set shell := ["zsh", "-cu"]
 
 _default:
 	@just --list
@@ -34,3 +34,6 @@ visualize *ARGS:
 
 dataviz *ARGS:
 	PYTHONOPTIMIZE=1 ./dataviz.py {{ARGS}}
+
+datasync *ARGS:
+	dvc repro {{ARGS}}
