@@ -1,4 +1,5 @@
 defaults:
   - default
   - /dataset/train-tiny@train.dataset
+  - /dataset/val-tiny@val.dataset
   - _self_
