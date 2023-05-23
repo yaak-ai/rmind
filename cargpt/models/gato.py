@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -94,13 +94,20 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         self.predict_steps: int = self.hparams.predict_steps  # type: ignore[assignment]
 
-    def _step(self, speed):
+    def _step(
+        self,
+        speed,
+        gas_pedal_normalized,
+    ):
         speed_encoded = self.encodings.continues_values(speed)  # type: ignore[operator]
+        gas_pedal_normalized_encoded = self.encodings.continues_values(  # type: ignore[operator]
+            gas_pedal_normalized
+        )
 
         # when more input data is added - concat vectors and pass as tensors encoded
         pred, tgt_discrete_actions = self.forward(
             tensors_encoded=speed_encoded[..., :-1],
-            discrete_actions=speed_encoded[..., 1:],
+            discrete_actions_encoded=gas_pedal_normalized_encoded[..., 1:],
         )
 
         return pred, tgt_discrete_actions
@@ -118,8 +125,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         return loss
 
     def training_step(self, batch, batch_idx):
-        speed = self.unpack_batch_for_predictions(batch)
-        pred, tgt_discrete_actions = self._step(speed)
+        speed, gas_pedal_normalized = self.unpack_batch_for_predictions(batch)
+        pred, tgt_discrete_actions = self._step(speed, gas_pedal_normalized)
         loss = self._compute_loss(pred, tgt_discrete_actions)
         self.log(
             "train/loss",
@@ -133,8 +140,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        speed = self.unpack_batch_for_predictions(batch)
-        pred, tgt_discrete_actions = self._step(speed)
+        speed, gas_pedal_normalized = self.unpack_batch_for_predictions(batch)
+        pred, tgt_discrete_actions = self._step(speed, gas_pedal_normalized)
         loss = self._compute_loss(pred, tgt_discrete_actions)
         self.log(
             "val/loss",
@@ -176,7 +183,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         self,
         *,
         tensors_encoded: Int[Tensor, "b t"],
-        discrete_actions: Int[Tensor, "b t"],
+        discrete_actions_encoded: Int[Tensor, "b t"],
     ):
         # encodings to embeddings - learnable!
         tensors_embeddings: Float[Tensor, "b t e"] = self.discrete_cont_embedding(
@@ -191,16 +198,18 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         observations_embeddings = observations + positions_encoded
 
         # Prepare actions, use the same position always
-        actions: Float[Tensor, "b t e"] = self.discrete_cont_embedding(discrete_actions)
-        action_position_encoded: Float[Tensor, "1 e"] = self.action_position(
-            torch.tensor([0], device=actions.device)
+        actions_embeddings: Float[Tensor, "b t e"] = self.discrete_cont_embedding(
+            discrete_actions_encoded
         )
-        actions_encoded = actions + repeat(
+        action_position_encoded: Float[Tensor, "1 e"] = self.action_position(
+            torch.tensor([0], device=actions_embeddings.device)
+        )
+        actions_embeddings = actions_embeddings + repeat(
             action_position_encoded, "1 e -> b (t 1) e", b=b, t=t
         )
 
         # Make a separator of a correct shape, it's always the same
-        separator = torch.zeros_like(actions)
+        separator = torch.zeros_like(actions_embeddings)
 
         # Make split point: the first step from tgt is always visible to the network
         # so the split is shifted by one
@@ -212,13 +221,13 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             [
                 observations_embeddings[:, :split_point],
                 separator[:, :split_point],
-                actions_encoded[:, :split_point],
+                actions_embeddings[:, :split_point],
             ],
             "x b t e -> b (t x) e",
         )  # this is like python's zip on the 1st dim
 
         # pass through decoder
-        tgt_seq = actions_encoded[:, split_point:, ...]
+        tgt_seq = actions_embeddings[:, split_point:, ...]
         _, m, _ = tgt_seq.shape
         tgt_mask = torch.tril(torch.ones(m, m, device=tgt_seq.device)).float()
         tgt_mask = tgt_mask.masked_fill(tgt_mask == 0.0, -torch.inf)
@@ -232,14 +241,24 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         # Reverse shift from split point
         pred = pred[:, :-1, :]
-        discrete_actions = discrete_actions[:, (split_point + 1) :]
-        return pred, discrete_actions
+        discrete_actions_encoded = discrete_actions_encoded[:, (split_point + 1) :]
+        return pred, discrete_actions_encoded
 
-    def unpack_batch_for_predictions(self, batch) -> Float[Tensor, "b t"]:
+    def unpack_batch_for_predictions(
+        self, batch
+    ) -> Tuple[Float[Tensor, "b t"], Float[Tensor, "b t"],]:
         clips = mit.one(batch["clips"].values())
-        speed = clips["meta"]["VehicleMotion_speed"].to(self.device)
+        meta = clips["meta"]
 
-        return speed
+        speed = meta["VehicleMotion_speed"].to(self.device)
+
+        gas_pedal_normalized = meta["VehicleMotion_gas_pedal_normalized"].to(
+            self.device
+        )
+        return (
+            speed,
+            gas_pedal_normalized,
+        )
 
     def configure_optimizers(self):
         optimizer = instantiate(self.hparams.optimizer, params=self.parameters())
