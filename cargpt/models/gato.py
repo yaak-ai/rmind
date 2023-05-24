@@ -123,7 +123,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         special_token = torch.ones(size=(b, 1)).to(tensors_encoded)
         ground_truth: Int[Tensor, "b l"] = torch.cat(
             [
-                special_token * self.start_token_idx,
                 tensors_encoded[:, -1],
                 special_token * self.separator_idx,
                 discrete_actions_encoded[:, -1],
@@ -134,7 +133,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         ground_truth_mask: Int[Tensor, "b l"] = torch.ones_like(ground_truth)
         # The only thing we don't want to predict right now is separator
         # TODO: let it be configurabe from cfg if possible
-        separator_position = tensors_encoded[:, -1].shape[1] + 1
+        separator_position = tensors_encoded[:, -1].shape[1]
         ground_truth_mask[:, separator_position] = 0
 
         return pred, ground_truth, ground_truth_mask
@@ -253,12 +252,12 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             tokens=actions_tokens,
         )
         # Get start and end token plus separator
-        start_token, end_token, separator = self.discrete_embedding(
+        start_token, separator = self.discrete_embedding(
             torch.tensor(
-                [self.start_token_idx, self.end_token_idx, self.separator_idx],
+                [self.start_token_idx, self.separator_idx],
                 device=actions_embeddings.device,
             )
-        ).chunk(3, dim=0)
+        ).chunk(2, dim=0)
 
         # construct full sequence: [[o, |, a], [o, |, a], ...]
         # appendix B of the paper (https://arxiv.org/abs/2205.06175)
@@ -278,7 +277,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             [
                 repeat(start_token, "1 e -> b 1 e", b=b),
                 tgt_seq,
-                repeat(end_token, "1 e -> b 1 e", b=b),
             ],
             dim=1,
         )
