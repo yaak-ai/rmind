@@ -10,11 +10,14 @@ wandb:
 
 d_model: 512
 
-batch_size: 4
-clip_len: 192
-predict_clips_len: 48  # tail from clip_len
-cont_values_bins: 1024
+batch_size: 24
+clip_len: 48
+frame_mask: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+cont_values_bins: 2048
+shift_discrete: 3  # for separator, start and end token
+num_discrete_cont: 2051  # cont_values_bins + shift_discrete
 embedding_dim: 768
+
 
 model:
   _target_: cargpt.models.gato.Gato
@@ -37,14 +40,15 @@ model:
           - _target_: cargpt.models.encoding.Discretizer
             range_min: -1.0
             range_max: 1.0
-            start_index: 0
+            start_index: ${shift_discrete}
             bins: ${cont_values_bins}  # 1024: bin width is 0.001953125 ~= 0.002
 
   embeddings:
-    discrete_cont_embedding:
+    discrete_embedding:
       _target_: torch.nn.Embedding
-      num_embeddings: ${cont_values_bins}
+      num_embeddings: ${num_discrete_cont}
       embedding_dim: ${embedding_dim}
+      padding_idx: 0  # for separator
     local_position:
       _target_: torch.nn.Embedding
       num_embeddings: ${clip_len}
@@ -70,8 +74,6 @@ model:
     in_features: ${embedding_dim}
     out_features: ${cont_values_bins}
 
-  predict_steps: ${predict_clips_len}
-
   log:
     validation:
       outputs: true
@@ -86,7 +88,14 @@ trainer:
 
   logger:
     _target_: pytorch_lightning.loggers.WandbLogger
-    log_model: false
+    log_model: true
+
+  callbacks:
+    - _target_: cargpt.callbacks.ModelSummary
+    - _target_: pytorch_lightning.callbacks.ModelCheckpoint
+      save_weights_only: True
+      save_on_train_epoch_end: True
+      monitor: train/loss
 
 datamodule:
   train:
@@ -98,7 +107,7 @@ datamodule:
             length: ${clip_len}
             stride: 5
             step: 5
-            frame_mask: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            frame_mask: ${frame_mask}
   val:
     batch_size: ${batch_size}
     dataset:
@@ -108,4 +117,4 @@ datamodule:
             length: ${clip_len}
             stride: 5
             step: 5
-            frame_mask: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            frame_mask: ${frame_mask}
