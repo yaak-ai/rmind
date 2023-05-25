@@ -4,13 +4,14 @@ import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 import wandb
+from loguru import logger
 from einops import repeat, rearrange
 from hydra.utils import instantiate
 from jaxtyping import Float, Int
 from pytorch_lightning.utilities import AttributeDict
 from torch import Tensor
 from torch.nn import Linear, ModuleDict
-from torch.nn.functional import gelu, log_softmax, relu
+from torch.nn.functional import gelu, relu, cross_entropy
 
 from cargpt.utils.wandb import LoadableFromArtifact
 
@@ -78,49 +79,213 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         super().__init__()
         self.save_hyperparameters()
 
-        self.encodings: ModuleDict = instantiate(self.hparams.encodings)
+        logger.debug(
+            "Instantiating image encoder",
+            target=self.hparams.image_encoder._target_,  # type: ignore[union-attr]
+        )
+        self.image_encoder = instantiate(self.hparams.image_encoder)  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating sensor tokenizer",
+            target=self.hparams.sensor_tokenizer.modules.continues._target_,  # type: ignore[union-attr]
+        )
+        self.sensor_tokenizer: ModuleDict = instantiate(self.hparams.sensor_tokenizer)  # type: ignore[union-attr]
         self.separator = torch.tensor([0.0])
 
         # for embeddings
-        self.discrete_cont_embedding = instantiate(
-            self.hparams.embeddings.discrete_cont_embedding  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating sensor embeddings",
+            target=self.hparams.sensor_encoder.continous._target_,  # type: ignore[union-attr]
         )
-        self.local_position = instantiate(self.hparams.embeddings.local_position)  # type: ignore[union-attr]
-        self.action_position = instantiate(self.hparams.embeddings.action_position)  # type: ignore[union-attr]
+        self.sensor_encoder = instantiate(
+            self.hparams.sensor_encoder.continous  # type: ignore[union-attr]
+        )
+        # position encoding
+        logger.debug(
+            "Instantiating patch row positional encodings",
+            target=self.hparams.position_encoding.patch_row._target_,  # type: ignore[union-attr]
+        )
+        self.patch_row = instantiate(self.hparams.position_encoding.patch_row)  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating patch col positional encodings",
+            target=self.hparams.position_encoding.patch_col._target_,  # type: ignore[union-attr]
+        )
+        self.patch_col = instantiate(self.hparams.position_encoding.patch_col)  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating local positional encodings",
+            target=self.hparams.position_encoding.local._target_,  # type: ignore[union-attr]
+        )
+        self.local_position = instantiate(self.hparams.position_encoding.local)  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating action position encodings",
+            target=self.hparams.position_encoding.action._target_,  # type: ignore[union-attr]
+        )
+        self.action_position = instantiate(self.hparams.position_encoding.action)  # type: ignore[union-attr]
 
         # network
-        self.transformer_decoder = instantiate(self.hparams.transformer_decoder)
-        self.back_to_discrete = instantiate(self.hparams.back_to_discrete)
+        logger.debug(
+            "Instantiating gato model",
+            target=self.hparams.transformer_decoder._target_,  # type: ignore[union-attr]
+        )  # type: ignore[union-attr]
+        self.transformer_decoder = instantiate(self.hparams.transformer_decoder)  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating classifier layer",
+            target=self.hparams.classifier._target_,  # type: ignore[union-attr]
+        )
+        self.classifier = instantiate(self.hparams.classifier)  # type: ignore[union-attr]
 
-        self.predict_steps: int = self.hparams.predict_steps  # type: ignore[assignment]
+    def _image_embeddings_and_tokens(self, frames):
+        B, T, C, H, W = frames.shape
+        frames = frames.view(B * T, C, H, W)
+        image_features = self.image_encoder(frames)
+        _, D, H, W = image_features.shape
+        image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
 
-    def _step(self, speed):
-        speed_encoded = self.encodings.continues_values(speed)  # type: ignore[operator]
-
-        # when more input data is added - concat vectors and pass as tensors encoded
-        pred, tgt_discrete_actions = self.forward(
-            tensors_encoded=speed_encoded[..., :-1],
-            discrete_actions=speed_encoded[..., 1:],
+        row_index = repeat(
+            torch.arange(0, H, device=frames.device, dtype=torch.int),
+            "H -> B T H W",
+            B=B,
+            T=T,
+            W=W,
+        )
+        col_index = repeat(
+            torch.arange(0, W, device=frames.device, dtype=torch.int),
+            "W -> B T H W",
+            B=B,
+            T=T,
+            H=H,
         )
 
-        return pred, tgt_discrete_actions
+        # BTHW -> BTHWD
+        patch_pos_row: Float[Tensor, "B T H W D"] = self.patch_row(row_index)
+        patch_pos_col: Float[Tensor, "B T H W D"] = self.patch_col(col_index)
 
-    def _compute_loss(self, predictions, tgt_discrete_actions):
-        log_p = log_softmax(predictions, dim=-1)
-        # TODO: mask tokens when more than speed is available -> m(b,l) (2.3, eq 2)
-        loss = -(
-            torch.gather(
-                input=log_p,
-                dim=-1,
-                index=tgt_discrete_actions[:, :, None].to(torch.int64),
+        image_features += patch_pos_col + patch_pos_row
+        # BTHWD -> BT(HW)D
+        image_features = image_features.view(B, T, H * W, D)
+        # for resnet image tokens are fake labels but for VQ-VAE
+        # they would be index into the visual vocabulary
+        image_tokens = self.hparams.masks.image * torch.ones(  # type: ignore[union-attr]
+            B, T, H * W, device=image_features.device
+        )
+
+        return image_features, image_tokens
+
+    def _metadata_embeddings_and_tokens(self, sample, keys=[]):
+        embeddings = []
+        tokens = []
+
+        for key in keys:
+            # metadata tokenization
+            token = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
+
+            # token to embeddings - learnable!
+            embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
+
+            embeddings.append(embedding)
+            tokens.append(token)
+
+        # cat on tokens
+        embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
+        tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
+
+        # add local positional embedding
+        b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
+        positions = torch.arange(0, t, dtype=torch.int, device=embeddings.device)  # type: ignore[attr-defined]
+        positions_encoded = (
+            self.local_position(positions).view(1, t, 1, e).repeat(b, 1, n, 1)
+        )
+        embeddings += positions_encoded
+
+        return embeddings, tokens
+
+    def _action_embeddings_and_tokens(self, sample, keys=[]):
+        embeddings = []
+        tokens = []
+
+        for key in keys:
+            # metadata tokenization
+            token = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
+
+            # token to embeddings - learnable!
+            embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
+
+            embeddings.append(embedding)
+            tokens.append(token)
+
+        # cat on tokens
+        embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
+        tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
+        b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
+
+        position_encoded: Float[Tensor, "1 e"] = (
+            self.action_position(torch.tensor([0], device=embeddings.device))  # type: ignore[attr-defined]
+            .view(1, 1, 1, e)
+            .repeat(b, t, n, 1)
+        )
+
+        embeddings += position_encoded
+
+        return embeddings, tokens
+
+    def _step(self, sample):
+        # tokenization + embeddings
+        image_embeddings, image_tokens = self._image_embeddings_and_tokens(
+            sample["frames"]
+        )
+        metadata_embeddings, metadata_tokens = self._metadata_embeddings_and_tokens(
+            sample, keys=self.hparams.metadata_keys
+        )
+        action_embeddings, action_tokens = self._action_embeddings_and_tokens(
+            sample, keys=self.hparams.action_keys
+        )
+
+        observations = torch.cat([image_embeddings, metadata_embeddings], 2)
+        observation_tokens = torch.cat([image_tokens, metadata_tokens], 2)
+
+        b, t, o, d = observations.shape
+        _, _, a, _ = action_embeddings.shape
+
+        separator_tokens = (
+            torch.tensor(
+                [self.hparams.special_tokens.sep],  # type: ignore[union-attr]
+                dtype=torch.int,
+                device=observations.device,
             )
-        ).sum()
+            .view(1, 1, 1)
+            .repeat(b, t, 1)
+        )
+        separator: Float[Tensor, "b t 1 d"] = self.sensor_encoder(separator_tokens)
+
+        # construct full sequence: [[o, |, a], [o, |, a], ...]
+        episode = torch.cat([observations, separator, action_embeddings], dim=2)
+        episode_labels = torch.cat(
+            [observation_tokens, separator_tokens, action_tokens], dim=2
+        )
+
+        episode = episode.view(b, t * (o + 1 + a), d)
+        episode_labels = episode_labels.view(b, t * (o + 1 + a))
+
+        logits = self.forward(
+            episode=episode,
+        )
+
+        labels = episode_labels[:, 1:]
+
+        return logits, labels.to(torch.int64)
+
+    def _compute_loss(self, logits, labels):
+        b, t, c = logits.shape
+        # flatten on batch dimension
+        logits = logits.view(b * t, c)
+        labels = labels.view(b * t)
+        loss = cross_entropy(logits, labels, ignore_index=-1, reduction="sum")
         return loss
 
     def training_step(self, batch, batch_idx):
-        speed = self.unpack_batch_for_predictions(batch)
-        pred, tgt_discrete_actions = self._step(speed)
-        loss = self._compute_loss(pred, tgt_discrete_actions)
+        sample = self.prepare_batch(batch)
+        pred, tgt = self._step(sample)
+        loss = self._compute_loss(pred, tgt)
+
         self.log(
             "train/loss",
             loss,
@@ -129,13 +294,15 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             prog_bar=True,
             sync_dist=True,
             rank_zero_only=True,
+            batch_size=pred.shape[0],
         )
         return loss
 
     def validation_step(self, batch, batch_idx):
-        speed = self.unpack_batch_for_predictions(batch)
-        pred, tgt_discrete_actions = self._step(speed)
-        loss = self._compute_loss(pred, tgt_discrete_actions)
+        sample = self.prepare_batch(batch)
+        pred, tgt = self._step(sample)
+        loss = self._compute_loss(pred, tgt)
+
         self.log(
             "val/loss",
             loss,
@@ -144,23 +311,10 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             prog_bar=True,
             sync_dist=True,
             rank_zero_only=True,
+            batch_size=pred.shape[0],
         )
 
-        if hasattr(self, "_tables"):
-            speed_predicted: Float[Tensor, "b t"] = self.invert_predictions(pred)
-            speed_gt: Float[Tensor, "b t"] = speed[..., -speed_predicted.shape[-1] :]
-            if table := self._tables.get("outputs"):
-                data: Float[Tensor, "b tx"] = rearrange(
-                    [  # type: ignore
-                        speed_predicted,
-                        speed_gt,
-                    ],
-                    "x b t -> b (t x)",
-                )
-
-                for row in data.tolist():
-                    table.add_data(*row)
-
+        # TODO: Logging to table
         return loss
 
     def invert_predictions(
@@ -168,78 +322,48 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
     ) -> Float[Tensor, "b t"]:
         discrete: Int[Tensor, "b t"] = torch.argmax(predictions, dim=-1)
         inverted = discrete.clone()
-        for encoding in reversed(self.encodings.continues_values):  # type: ignore[arg-type]
+        for encoding in reversed(self.sensor_tokenizer.continues):  # type: ignore[arg-type]
             inverted = encoding.invert(inverted)
         return inverted
 
     def forward(
         self,
         *,
-        tensors_encoded: Int[Tensor, "b t"],
-        discrete_actions: Int[Tensor, "b t"],
+        episode: Float[Tensor, "b to d"],
     ):
-        # encodings to embeddings - learnable!
-        tensors_embeddings: Float[Tensor, "b t e"] = self.discrete_cont_embedding(
-            tensors_encoded
-        )
-        b, t, e = tensors_embeddings.shape
-
-        # construct observations and add local positional embedding
-        observations = tensors_embeddings
-        positions = torch.range(0, t - 1, dtype=torch.int, device=observations.device)
-        positions_encoded = repeat(self.local_position(positions), "t e -> b t e", b=b)
-        observations_embeddings = observations + positions_encoded
-
-        # Prepare actions, use the same position always
-        actions: Float[Tensor, "b t e"] = self.discrete_cont_embedding(discrete_actions)
-        action_position_encoded: Float[Tensor, "1 e"] = self.action_position(
-            torch.tensor([0], device=actions.device)
-        )
-        actions_encoded = actions + repeat(
-            action_position_encoded, "1 e -> b (t 1) e", b=b, t=t
-        )
-
-        # Make a separator of a correct shape, it's always the same
-        separator = torch.zeros_like(actions)
-
-        # Make split point: the first step from tgt is always visible to the network
-        # so the split is shifted by one
-        split_point = t - (self.predict_steps + 1)
-
-        # construct full sequence: [[o, |, a], [o, |, a], ...]
-        # appendix B of the paper (https://arxiv.org/abs/2205.06175)
-        full_sequence: Float[Tensor, "b L e"] = rearrange(  # type: ignore[assignment]
-            [
-                observations_embeddings[:, :split_point],
-                separator[:, :split_point],
-                actions_encoded[:, :split_point],
-            ],
-            "x b t e -> b (t x) e",
-        )  # this is like python's zip on the 1st dim
-
-        # pass through decoder
-        tgt_seq = actions_encoded[:, split_point:, ...]
-        _, m, _ = tgt_seq.shape
-        tgt_mask = torch.tril(torch.ones(m, m, device=tgt_seq.device)).float()
+        _, m, _ = episode.shape
+        tgt_mask = torch.tril(torch.ones(m - 1, m - 1, device=episode.device)).float()
         tgt_mask = tgt_mask.masked_fill(tgt_mask == 0.0, -torch.inf)
 
-        pred = self.transformer_decoder(
-            tgt=tgt_seq,
-            memory=full_sequence,
+        features = self.transformer_decoder(
+            tgt=episode[:, 1:],
+            memory=episode[:, :-1],
             tgt_mask=tgt_mask,
+            memory_mask=tgt_mask,
         )
-        pred = self.back_to_discrete(pred)
+        logits = self.classifier(features)
 
-        # Reverse shift from split point
-        pred = pred[:, :-1, :]
-        discrete_actions = discrete_actions[:, (split_point + 1) :]
-        return pred, discrete_actions
+        return logits
 
-    def unpack_batch_for_predictions(self, batch) -> Float[Tensor, "b t"]:
+    def prepare_batch(self, batch):
         clips = mit.one(batch["clips"].values())
+        frames = clips["frames"].to(self.device)
         speed = clips["meta"]["VehicleMotion_speed"].to(self.device)
+        steering = clips["meta"]["VehicleMotion_steering_angle_normalized"].to(
+            self.device
+        )
+        gas = clips["meta"]["VehicleMotion_gas_pedal_normalized"].to(self.device)
+        brake = clips["meta"]["VehicleMotion_brake_pedal_normalized"].to(self.device)
 
-        return speed
+        sample = {
+            "frames": frames,
+            "VehicleMotion_speed": speed,
+            "VehicleMotion_steering_angle_normalized": steering,
+            "VehicleMotion_gas_pedal_normalized": gas,
+            "VehicleMotion_brake_pedal_normalized": brake,
+        }
+
+        return sample
 
     def configure_optimizers(self):
         optimizer = instantiate(self.hparams.optimizer, params=self.parameters())
@@ -252,20 +376,11 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         return result
 
     def on_validation_epoch_start(self):
-        if (
-            isinstance(logger := self.logger, pl.loggers.WandbLogger)
-            and isinstance(logger.experiment, wandb.wandb_run.Run)
-            and (log_cfg := self.hparams.get("log", {}).get("validation", {}))
+        if isinstance(logger := self.logger, pl.loggers.WandbLogger) and isinstance(
+            logger.experiment, wandb.wandb_run.Run
         ):
             self._tables = {}
-
-            if log_cfg.get(name := "outputs"):
-                columns = [
-                    f"{col}_{i}"
-                    for i in range(self.predict_steps)
-                    for col in ("speed_pred", "speed_gt")
-                ]
-                self._tables[name] = wandb.Table(columns=columns)
+            # TODO
 
     def on_validation_epoch_end(self):
         if hasattr(self, "_tables") and self.trainer.state.stage != "sanity_check":
