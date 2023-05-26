@@ -16,16 +16,16 @@ from torch.nn.functional import gelu, relu, cross_entropy
 from cargpt.utils.wandb import LoadableFromArtifact
 
 
-class TransformerDecoderLayer(torch.nn.TransformerDecoderLayer):
+class TransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
     def __setstate__(self, state):
         # This is a workaround to a strange pytorch behaviour (bug?)
         if "activation" not in state or "activation" not in state.get("_modules", {}):
             state["activation"] = relu
         # Yup, skip the direct superclass and use its parent
-        super(torch.nn.TransformerDecoderLayer, self).__setstate__(state)
+        super(torch.nn.TransformerEncoderLayer, self).__setstate__(state)
 
 
-class TransformerDecoderLayerGEGLU(TransformerDecoderLayer):
+class TransformerEncoderLayerGEGLU(TransformerEncoderLayer):
     """Replace the original linear transformation + ReLu with GEGLU.
 
     The paper: https://arxiv.org/pdf/2002.05202v1.pdf
@@ -67,7 +67,7 @@ class TransformerDecoderLayerGEGLU(TransformerDecoderLayer):
         geglu = gelu(xW) * xV
         # The original implementation with replacement
         x = self.linear2(self.dropout(geglu))
-        return self.dropout3(x)
+        return x
 
 
 class Gato(pl.LightningModule, LoadableFromArtifact):
@@ -266,7 +266,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         episode_labels = episode_labels.view(b, t * (o + 1 + a))
 
         logits = self.forward(
-            episode=episode,
+            episode=episode[:, :-1],
         )
 
         labels = episode_labels[:, 1:]
@@ -332,14 +332,12 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         episode: Float[Tensor, "b to d"],
     ):
         _, m, _ = episode.shape
-        tgt_mask = torch.tril(torch.ones(m - 1, m - 1, device=episode.device)).float()
-        tgt_mask = tgt_mask.masked_fill(tgt_mask == 0.0, -torch.inf)
+        episode_mask = torch.tril(torch.ones(m, m, device=episode.device)).float()
+        episode_mask = episode_mask.masked_fill(episode_mask == 0.0, -torch.inf)
 
         features = self.transformer_decoder(
-            tgt=episode[:, 1:],
-            memory=episode[:, :-1],
-            tgt_mask=tgt_mask,
-            memory_mask=tgt_mask,
+            src=episode,
+            mask=episode_mask,
         )
         logits = self.classifier(features)
 
