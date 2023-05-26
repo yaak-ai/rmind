@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import more_itertools as mit
 import pytorch_lightning as pl
