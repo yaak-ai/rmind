@@ -204,7 +204,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         for key in keys:
             # metadata tokenization
-            token = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
+            token: Int[Tensor, "b t 1"] = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
 
             # token to embeddings - learnable!
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)

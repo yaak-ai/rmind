@@ -14,7 +14,10 @@ cont_values_bins: 1024
 shift_discrete: 3  # for special_tokens
 num_discrete_cont: 1027  # cont_values_bins + shift_discrete
 metadata_keys: ["VehicleMotion_speed"]
-action_keys: ["VehicleMotion_gas_pedal_normalized"]
+action_keys:
+  - "VehicleMotion_gas_pedal_normalized"
+  - "VehicleMotion_brake_pedal_normalized"
+  - "VehicleMotion_steering_angle_normalized"
 patch_row_bins: 10
 patch_col_bins: 18
 embedding_dim: 512
