@@ -90,6 +90,9 @@ model:
       dropout: 0.1
       batch_first: True
       norm_first: True
+    norm:
+      _target_: torch.nn.LayerNorm
+      normalized_shape: ${embedding_dim}
   classifier:
     _target_: torch.nn.Linear
     in_features: ${embedding_dim}
