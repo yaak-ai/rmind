@@ -167,18 +167,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = []
 
         for key in keys:
-            if sample[key].dtype is torch.float64:
-                # continous value tokenization
-                token: Int[Tensor, "b t 1"] = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
-                # token to embeddings - learnable!
-                embedding: Float[Tensor, "b t 1 e"] = self.continous_encoder(token)
-            elif sample[key].dtype is torch.int64:
-                token: Int[Tensor, "b t 1"] = token.unsqueeze(2)  # type: ignore[operator]
-                embedding: Float[Tensor, "b t 1 e"] = self.discrete_encoder(token)
-            else:
-                logger.error(
-                    "Unsupported data type found in sample {sample[key].dtype}"
-                )
+            token: Int[Tensor, "b t"] = (
+                self.sensor_tokenizer.continues(sample[key])
+                if sample[key].dtype is torch.float64
+                else sample[key]
+            )
+            token += self.hparams.tokens_shift[key]
+            token = rearrange(token, "b t -> b t 1")
+            embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -202,18 +198,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = []
 
         for key in keys:
-            if sample[key].dtype is torch.float64:
-                # continous value tokenization
-                token: Int[Tensor, "b t 1"] = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
-                # token to embeddings - learnable!
-                embedding: Float[Tensor, "b t 1 e"] = self.continous_encoder(token)
-            elif sample[key].dtype is torch.int64:
-                token: Int[Tensor, "b t 1"] = token.unsqueeze(2)  # type: ignore[operator]
-                embedding: Float[Tensor, "b t 1 e"] = self.discrete_encoder(token)
-            else:
-                logger.error(
-                    "Unsupported data type found in sample {sample[key].dtype}"
-                )
+            token: Int[Tensor, "b t"] = (
+                self.sensor_tokenizer.continues(sample[key])
+                if sample[key].dtype is torch.float64
+                else sample[key]
+            )
+            token += self.hparams.tokens_shift[key]
+            token = rearrange(token, "b t -> b t 1")
+            embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -322,15 +314,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         # TODO: Logging to table
         return loss
-
-    def invert_predictions(
-        self, predictions: Float[Tensor, "b t e"]
-    ) -> Float[Tensor, "b t"]:
-        discrete: Int[Tensor, "b t"] = torch.argmax(predictions, dim=-1)
-        inverted = discrete.clone()
-        for encoding in reversed(self.sensor_tokenizer.continues):  # type: ignore[arg-type]
-            inverted = encoding.invert(inverted)
-        return inverted
 
     def forward(
         self,
