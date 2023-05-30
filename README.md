@@ -1,6 +1,26 @@
 # carGPT
 Self-supervised model trained on vehicle context and control signals from expert drives
 
+## Data
+
+### Sync
+
+Managed with [dvc](https://dvc.org/), see [dvc.yaml](./dvc.yaml):
+
+```bash
+dvc repro
+```
+
+### Viz
+
+Launch [FiftyOne](https://docs.voxel51.com/) remotely:
+
+```bash
+export MAPBOX_TOKEN=...
+
+just dataviz
+```
+
 ## Training
 
 CIL++
@@ -13,8 +33,6 @@ Gato
 just train experiment=gato [++trainer.fast_dev_run=1 ...]
 ```
 
-
-
 ## Visualize
 
 ### Attention
@@ -24,14 +42,4 @@ You can use `predict.py` to visualize attention maps as heatmaps with
 
 ```bash
 just visualize output_file=test_vis.mp4 batch_size=4
-```
-
-### Datasets
-
-Launch FiftyOne remotely:
-
-```bash
-export MAPBOX_TOKEN=...
-
-just dataviz
 ```

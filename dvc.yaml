@@ -1,0 +1,99 @@
+vars:
+  - drives:
+      - Niro122-HQ/2023-03-27--10-46-50
+      - Niro106-HQ/2023-05-11--11-26-14
+      - Niro127-HQ/2023-04-27--11-33-40
+      - Niro110-HQ/2023-03-27--10-31-22
+      - Niro102-HQ/2023-05-03--06-40-23
+
+  - paths: 
+      s3: s3://yapi
+      data: /nas/drives/yaak/data
+
+  - frames:
+      filename_pattern: '%09d.jpg'
+      scale:
+        width: 576
+        height: 324
+
+stages:
+  sync_video:
+    foreach: ${drives}
+    do:
+      cmd: >-
+        aws s3 sync ${paths.s3}/${item} ${paths.data}/${item} 
+        --exclude "*" 
+        --include "cam_front_left.defish.mp4"
+        --include "cam_left_forward.defish.mp4"
+        --include "cam_right_forward.defish.mp4"
+
+      deps:
+        - ${paths.s3}/${item}/cam_front_left.defish.mp4
+        - ${paths.s3}/${item}/cam_left_forward.defish.mp4
+        - ${paths.s3}/${item}/cam_right_forward.defish.mp4
+
+      outs:
+        - ${paths.data}/${item}/cam_front_left.defish.mp4
+        - ${paths.data}/${item}/cam_left_forward.defish.mp4
+        - ${paths.data}/${item}/cam_right_forward.defish.mp4
+
+  sync_metadata:
+    foreach: ${drives}
+    do:
+      cmd: >-
+        aws s3 sync ${paths.s3}/${item} ${paths.data}/${item}  --exclude "*"  --include "*/metadata.log" &&
+        cat ${paths.data}/${item}/*/metadata.log > ${paths.data}/${item}/metadata.log
+
+      deps:
+        - ${paths.s3}/${item}
+
+      outs:
+        - ${paths.data}/${item}/metadata.log  
+
+  extract_frames@cam_front_left:
+    foreach: ${drives}
+    do:
+      cmd: >-
+        mkdir -p ${paths.data}/${item}/frames/cam_front_left.defish.mp4/${frames.scale.width}x${frames.scale.height} &&
+        ffmpeg -y -vsync 0 -threads 0 -hide_banner -loglevel error
+        -hwaccel cuda -hwaccel_output_format cuda -c:v hevc_cuvid -hwaccel_device 0 -i ${paths.data}/${item}/cam_front_left.defish.mp4 
+        -filter_complex "scale_npp=${frames.scale.width}:${frames.scale.height},hwdownload,format=nv12"
+        -f image2 -q:v 16 ${paths.data}/${item}/frames/cam_front_left.defish.mp4/${frames.scale.width}x${frames.scale.height}/${frames.filename_pattern}
+
+      deps:
+        - ${paths.data}/${item}/cam_front_left.defish.mp4
+
+      outs:
+        - ${paths.data}/${item}/frames/cam_front_left.defish.mp4/${frames.scale.width}x${frames.scale.height}/
+
+  extract_frames@cam_left_forward:
+    foreach: ${drives}
+    do:
+      cmd: >-
+        mkdir -p ${paths.data}/${item}/frames/cam_left_forward.defish.mp4/${frames.scale.width}x${frames.scale.height} &&
+        ffmpeg -y -vsync 0 -threads 0 -hide_banner -loglevel error
+        -hwaccel cuda -hwaccel_output_format cuda -c:v hevc_cuvid -hwaccel_device 0 -i ${paths.data}/${item}/cam_left_forward.defish.mp4 
+        -filter_complex "scale_npp=${frames.scale.width}:${frames.scale.height},hwdownload,format=nv12"
+        -f image2 -q:v 16 ${paths.data}/${item}/frames/cam_left_forward.defish.mp4/${frames.scale.width}x${frames.scale.height}/${frames.filename_pattern}
+
+      deps:
+        - ${paths.data}/${item}/cam_left_forward.defish.mp4
+
+      outs:
+        - ${paths.data}/${item}/frames/cam_left_forward.defish.mp4/${frames.scale.width}x${frames.scale.height}/
+
+  extract_frames@cam_right_forward:
+    foreach: ${drives}
+    do:
+      cmd: >-
+        mkdir -p ${paths.data}/${item}/frames/cam_right_forward.defish.mp4/${frames.scale.width}x${frames.scale.height} &&
+        ffmpeg -y -vsync 0 -threads 0 -hide_banner -loglevel error
+        -hwaccel cuda -hwaccel_output_format cuda -c:v hevc_cuvid -hwaccel_device 0 -i ${paths.data}/${item}/cam_right_forward.defish.mp4 
+        -filter_complex "scale_npp=${frames.scale.width}:${frames.scale.height},hwdownload,format=nv12"
+        -f image2 -q:v 16 ${paths.data}/${item}/frames/cam_right_forward.defish.mp4/${frames.scale.width}x${frames.scale.height}/${frames.filename_pattern}
+
+      deps:
+        - ${paths.data}/${item}/cam_right_forward.defish.mp4
+
+      outs:
+        - ${paths.data}/${item}/frames/cam_right_forward.defish.mp4/${frames.scale.width}x${frames.scale.height}/

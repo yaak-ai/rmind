@@ -29,7 +29,7 @@ optional = true
 [tool.poetry.group.train.dependencies]
 wandb = "*"
 omegaconf = "^2.3.0"
-yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", tag = "v0.12.0"}
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.12.1"}
 
 [tool.poetry.group.lint]
 optional = true
@@ -71,8 +71,16 @@ grad-cam = "*"
 optional = true
 
 [tool.poetry.group.dataviz.dependencies]
-fiftyone = "*"
-yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", tag = "v0.12.0", extras = ["viz"]}
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.12.1", extras = ["viz"]}
+fiftyone = "^0.20.1"
+botocore = "1.29.76"
+kaleido = "0.2.1"
+
+[tool.poetry.group.dvc]
+optional = true
+
+[tool.poetry.group.dvc.dependencies]
+dvc = {version = "^2.58.1", extras = ["s3"]}
 
 [tool.black]
 line-length = 88
@@ -100,6 +108,7 @@ ignore_transitive = [
   "omegaconf",
   "wandb",
   "numpy",
+  "fiftyone",
 ]
 
 ignore_missing = [
