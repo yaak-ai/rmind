@@ -167,11 +167,11 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         for key in keys:
             token: Int[Tensor, "b t"] = (
-                self.sensor_tokenizer.continues(sample[key])
+                self.sensor_tokenizer.continues(sample[key])  # type: ignore[operator]
                 if sample[key].dtype is torch.float64
                 else sample[key]
             )
-            token += self.hparams.tokens_shift[key]
+            token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
 
@@ -198,11 +198,11 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         for key in keys:
             token: Int[Tensor, "b t"] = (
-                self.sensor_tokenizer.continues(sample[key])
+                self.sensor_tokenizer.continues(sample[key])  # type: ignore[operator]
                 if sample[key].dtype is torch.float64
                 else sample[key]
             )
-            token += self.hparams.tokens_shift[key]
+            token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
 
