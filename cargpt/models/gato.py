@@ -70,6 +70,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         super().__init__()
         self.save_hyperparameters()
 
+        # for image embeddings
         logger.debug(
             "Instantiating image encoder",
             target=self.hparams.image_encoder._target_,  # type: ignore[union-attr]
@@ -82,13 +83,13 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         self.sensor_tokenizer: ModuleDict = instantiate(self.hparams.sensor_tokenizer)  # type: ignore[union-attr]
         self.separator = torch.tensor([0.0])
 
-        # for embeddings
+        # for sensor embeddings
         logger.debug(
             "Instantiating sensor embeddings",
-            target=self.hparams.sensor_encoder.continous._target_,  # type: ignore[union-attr]
+            target=self.hparams.sensor_embeddings._target_,  # type: ignore[union-attr]
         )
         self.sensor_encoder = instantiate(
-            self.hparams.sensor_encoder.continous  # type: ignore[union-attr]
+            self.hparams.sensor_embeddings  # type: ignore[union-attr]
         )
         # position encoding
         logger.debug(
@@ -166,11 +167,18 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = []
 
         for key in keys:
-            # metadata tokenization
-            token = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
-
-            # token to embeddings - learnable!
-            embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
+            if sample[key].dtype is torch.float64:
+                # continous value tokenization
+                token: Int[Tensor, "b t 1"] = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
+                # token to embeddings - learnable!
+                embedding: Float[Tensor, "b t 1 e"] = self.continous_encoder(token)
+            elif sample[key].dtype is torch.int64:
+                token: Int[Tensor, "b t 1"] = token.unsqueeze(2)  # type: ignore[operator]
+                embedding: Float[Tensor, "b t 1 e"] = self.discrete_encoder(token)
+            else:
+                logger.error(
+                    "Unsupported data type found in sample {sample[key].dtype}"
+                )
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -194,11 +202,18 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = []
 
         for key in keys:
-            # metadata tokenization
-            token: Int[Tensor, "b t 1"] = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
-
-            # token to embeddings - learnable!
-            embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
+            if sample[key].dtype is torch.float64:
+                # continous value tokenization
+                token: Int[Tensor, "b t 1"] = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
+                # token to embeddings - learnable!
+                embedding: Float[Tensor, "b t 1 e"] = self.continous_encoder(token)
+            elif sample[key].dtype is torch.int64:
+                token: Int[Tensor, "b t 1"] = token.unsqueeze(2)  # type: ignore[operator]
+                embedding: Float[Tensor, "b t 1 e"] = self.discrete_encoder(token)
+            else:
+                logger.error(
+                    "Unsupported data type found in sample {sample[key].dtype}"
+                )
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -343,6 +358,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         )
         gas = clips["meta"]["VehicleMotion_gas_pedal_normalized"].to(self.device)
         brake = clips["meta"]["VehicleMotion_brake_pedal_normalized"].to(self.device)
+        turn = clips["meta"]["VehicleState_turn_signal"].to(self.device)
 
         sample = {
             "frames": frames,
@@ -350,6 +366,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             "VehicleMotion_steering_angle_normalized": steering,
             "VehicleMotion_gas_pedal_normalized": gas,
             "VehicleMotion_brake_pedal_normalized": brake,
+            "VehicleState_turn_signal": turn,
         }
 
         return sample

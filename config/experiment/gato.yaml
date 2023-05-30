@@ -10,14 +10,17 @@ wandb:
 
 batch_size: 1
 clip_len: 16
-cont_values_bins: 1024
-shift_discrete: 3  # for special_tokens
-num_discrete_cont: 1027  # cont_values_bins + shift_discrete
+num_special_tokens: 3  # for special tokens SOS, SEP, OES
+num_continous_tokens: 1024 # real values -> bin
+num_discrete_tokens: 3 # only turn signals (left, right, none)
+num_tokens_total: 1030 # ${num_special_tokens} + ${num_continous_tokens} + ${num_discrete_tokens}
+discrete_token_shift: 1027
 metadata_keys: ["VehicleMotion_speed"]
 action_keys:
   - "VehicleMotion_gas_pedal_normalized"
   - "VehicleMotion_brake_pedal_normalized"
   - "VehicleMotion_steering_angle_normalized"
+  - "VehicleState_turn_signal"
 patch_row_bins: 10
 patch_col_bins: 18
 embedding_dim: 512
@@ -50,14 +53,13 @@ model:
           - _target_: cargpt.models.encoding.Discretizer
             range_min: -1.0
             range_max: 1.0
-            start_index: ${shift_discrete}
-            bins: ${cont_values_bins}  # 1024: bin width is 0.001953125 ~= 0.002
+            start_index: ${num_special_tokens}
+            bins: ${num_continous_tokens}  # 1024: bin width is 0.001953125 ~= 0.002
 
-  sensor_encoder:
-    continous:
-      _target_: torch.nn.Embedding
-      num_embeddings: ${num_discrete_cont}
-      embedding_dim: ${embedding_dim}
+  sensor_embeddings:
+    _target_: torch.nn.Embedding
+    num_embeddings: ${num_tokens_total}
+    embedding_dim: ${embedding_dim}
 
   position_encoding:
     patch_row:
@@ -91,7 +93,7 @@ model:
   classifier:
     _target_: torch.nn.Linear
     in_features: ${embedding_dim}
-    out_features: ${num_discrete_cont}
+    out_features: ${num_tokens_total}
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
@@ -99,6 +101,7 @@ model:
     bos: 0
     sep: 1
     eos: 2
+  discrete_token_shift: ${discrete_token_shift}
   masks:
     image: -1 # to ignore_index in torch.nn.functional.cross_entropy
     metadata: 1
