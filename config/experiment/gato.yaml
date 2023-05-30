@@ -74,7 +74,7 @@ model:
       num_embeddings: 1
       embedding_dim: ${embedding_dim}
 
-  transformer_decoder:
+  gpt:
     _target_: torch.nn.TransformerEncoder
     num_layers: 8
     encoder_layer:

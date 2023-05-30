@@ -11,21 +11,12 @@ from jaxtyping import Float, Int
 from pytorch_lightning.utilities import AttributeDict
 from torch import Tensor
 from torch.nn import Linear, ModuleDict
-from torch.nn.functional import gelu, relu, cross_entropy
+from torch.nn.functional import gelu, cross_entropy
 
 from cargpt.utils.wandb import LoadableFromArtifact
 
 
-class TransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
-    def __setstate__(self, state):
-        # This is a workaround to a strange pytorch behaviour (bug?)
-        if "activation" not in state or "activation" not in state.get("_modules", {}):
-            state["activation"] = relu
-        # Yup, skip the direct superclass and use its parent
-        super(torch.nn.TransformerEncoderLayer, self).__setstate__(state)
-
-
-class TransformerEncoderLayerGEGLU(TransformerEncoderLayer):
+class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
     """Replace the original linear transformation + ReLu with GEGLU.
 
     The paper: https://arxiv.org/pdf/2002.05202v1.pdf
@@ -124,9 +115,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         # network
         logger.debug(
             "Instantiating gato model",
-            target=self.hparams.transformer_decoder._target_,  # type: ignore[union-attr]
+            target=self.hparams.gpt._target_,  # type: ignore[union-attr]
         )  # type: ignore[union-attr]
-        self.transformer_decoder = instantiate(self.hparams.transformer_decoder)  # type: ignore[union-attr]
+        self.gpt = instantiate(self.hparams.gpt)  # type: ignore[union-attr]
         logger.debug(
             "Instantiating classifier layer",
             target=self.hparams.classifier._target_,  # type: ignore[union-attr]
@@ -335,7 +326,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         episode_mask = torch.tril(torch.ones(m, m, device=episode.device)).float()
         episode_mask = episode_mask.masked_fill(episode_mask == 0.0, -torch.inf)
 
-        features = self.transformer_decoder(
+        features = self.gpt(
             src=episode,
             mask=episode_mask,
         )
