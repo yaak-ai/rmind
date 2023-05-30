@@ -70,26 +70,24 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         super().__init__()
         self.save_hyperparameters()
 
+        # for image embeddings
         logger.debug(
             "Instantiating image encoder",
-            target=self.hparams.image_encoder._target_,  # type: ignore[union-attr]
+            target=self.hparams.image_embedding._target_,  # type: ignore[union-attr]
         )
-        self.image_encoder = instantiate(self.hparams.image_encoder)  # type: ignore[union-attr]
+        self.image_embedding = instantiate(self.hparams.image_embedding)  # type: ignore[union-attr]
         logger.debug(
             "Instantiating sensor tokenizer",
             target=self.hparams.sensor_tokenizer.modules.continues._target_,  # type: ignore[union-attr]
         )
         self.sensor_tokenizer: ModuleDict = instantiate(self.hparams.sensor_tokenizer)  # type: ignore[union-attr]
-        self.separator = torch.tensor([0.0])
 
-        # for embeddings
+        # for sensor embeddings
         logger.debug(
             "Instantiating sensor embeddings",
-            target=self.hparams.sensor_encoder.continous._target_,  # type: ignore[union-attr]
+            target=self.hparams.sensor_embedding._target_,  # type: ignore[union-attr]
         )
-        self.sensor_encoder = instantiate(
-            self.hparams.sensor_encoder.continous  # type: ignore[union-attr]
-        )
+        self.sensor_embedding = instantiate(self.hparams.sensor_embedding)  # type: ignore[union-attr]
         # position encoding
         logger.debug(
             "Instantiating patch row positional encodings",
@@ -127,7 +125,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
     def _image_embeddings_and_tokens(self, frames):
         B, T, C, H, W = frames.shape
         frames = frames.view(B * T, C, H, W)
-        image_features = self.image_encoder(frames)
+        image_features = self.image_embedding(frames)
         _, D, H, W = image_features.shape
         image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
 
@@ -166,11 +164,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = []
 
         for key in keys:
-            # metadata tokenization
-            token = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
-
-            # token to embeddings - learnable!
-            embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
+            token: Int[Tensor, "b t"] = (
+                self.sensor_tokenizer.continues(sample[key])  # type: ignore[operator]
+                if sample[key].dtype is torch.float64
+                else sample[key]
+            )
+            token += self.hparams.tokens_shift[key]  # type: ignore[index]
+            token = rearrange(token, "b t -> b t 1")
+            embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -194,11 +195,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = []
 
         for key in keys:
-            # metadata tokenization
-            token: Int[Tensor, "b t 1"] = self.sensor_tokenizer.continues(sample[key]).unsqueeze(2)  # type: ignore[operator]
-
-            # token to embeddings - learnable!
-            embedding: Float[Tensor, "b t 1 e"] = self.sensor_encoder(token)
+            token: Int[Tensor, "b t"] = (
+                self.sensor_tokenizer.continues(sample[key])  # type: ignore[operator]
+                if sample[key].dtype is torch.float64
+                else sample[key]
+            )
+            token += self.hparams.tokens_shift[key]  # type: ignore[index]
+            token = rearrange(token, "b t -> b t 1")
+            embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -245,7 +249,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             .view(1, 1, 1)
             .repeat(b, t, 1)
         )
-        separator: Float[Tensor, "b t 1 d"] = self.sensor_encoder(separator_tokens)
+        separator: Float[Tensor, "b t 1 d"] = self.sensor_embedding(separator_tokens)
 
         # construct full sequence: [[o, |, a], [o, |, a], ...]
         episode = torch.cat([observations, separator, action_embeddings], dim=2)
@@ -308,15 +312,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         # TODO: Logging to table
         return loss
 
-    def invert_predictions(
-        self, predictions: Float[Tensor, "b t e"]
-    ) -> Float[Tensor, "b t"]:
-        discrete: Int[Tensor, "b t"] = torch.argmax(predictions, dim=-1)
-        inverted = discrete.clone()
-        for encoding in reversed(self.sensor_tokenizer.continues):  # type: ignore[arg-type]
-            inverted = encoding.invert(inverted)
-        return inverted
-
     def forward(
         self,
         *,
@@ -343,6 +338,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         )
         gas = clips["meta"]["VehicleMotion_gas_pedal_normalized"].to(self.device)
         brake = clips["meta"]["VehicleMotion_brake_pedal_normalized"].to(self.device)
+        turn = clips["meta"]["VehicleState_turn_signal"].to(self.device)
 
         sample = {
             "frames": frames,
@@ -350,6 +346,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             "VehicleMotion_steering_angle_normalized": steering,
             "VehicleMotion_gas_pedal_normalized": gas,
             "VehicleMotion_brake_pedal_normalized": brake,
+            "VehicleState_turn_signal": turn,
         }
 
         return sample

@@ -31,6 +31,10 @@ config:
         - name: gas_pedal_normalized
         - name: brake_pedal_normalized
 
+      - message: VehicleState
+        fields:
+        - name: turn_signal
+
   samples:
     alignment:
       ref_camera: cam_front_right
