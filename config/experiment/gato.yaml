@@ -77,11 +77,11 @@ model:
       num_embeddings: 1
       embedding_dim: ${embedding_dim}
 
-  transformer_decoder:
-    _target_: torch.nn.TransformerDecoder
+  gpt:
+    _target_: torch.nn.TransformerEncoder
     num_layers: 8
-    decoder_layer:
-      _target_: cargpt.models.gato.TransformerDecoderLayerGEGLU
+    encoder_layer:
+      _target_: cargpt.models.gato.TransformerEncoderLayerGEGLU
       d_model: ${embedding_dim}
       dim_feedforward: 3072
       nhead: 16
