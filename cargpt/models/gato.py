@@ -81,7 +81,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             target=self.hparams.sensor_tokenizer.modules.continues._target_,  # type: ignore[union-attr]
         )
         self.sensor_tokenizer: ModuleDict = instantiate(self.hparams.sensor_tokenizer)  # type: ignore[union-attr]
-        self.separator = torch.tensor([0.0])
 
         # for sensor embeddings
         logger.debug(
