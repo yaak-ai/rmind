@@ -39,7 +39,7 @@ model:
     lr: 1e-4
     weight_decay: 0
 
-  image_encoder:
+  image_embedding:
     _target_: cargpt.models.encoding.ResnetBackbone
     resnet:
       _target_: torchvision.models.resnet18
@@ -60,7 +60,7 @@ model:
             range_max: 1.0
             bins: ${num_continous_tokens}  # 1024: bin width is 0.001953125 ~= 0.002
 
-  sensor_embeddings:
+  sensor_embedding:
     _target_: torch.nn.Embedding
     num_embeddings: ${num_tokens_total}
     embedding_dim: ${embedding_dim}
