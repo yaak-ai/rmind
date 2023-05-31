@@ -17,7 +17,7 @@ torch = "^1.13.1"
 torchvision = "^0.14.1"
 more-itertools = "^9.0.0"
 torchinfo = "^1.7.2"
-torchaudio = "0.13.1"
+torchaudio = "=0.13.1"
 deephouse = {git = "git@github.com:yaak-ai/deephouse.git", rev = "main"}
 
 [build-system]
