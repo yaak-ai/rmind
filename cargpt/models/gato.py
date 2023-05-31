@@ -3,6 +3,7 @@ from typing import Optional
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
+import torchaudio
 import wandb
 from loguru import logger
 from einops import repeat, rearrange
