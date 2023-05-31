@@ -176,7 +176,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         # add local positional embedding
         b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
         positions = torch.arange(0, t, dtype=torch.int, device=embeddings.device)  # type: ignore[attr-defined]
-        positions_encoded = self.local_position(positions).view(1, t, 1, e).repeat(b, 1, n, 1)
+        positions_encoded = (
+            self.local_position(positions).view(1, t, 1, e).repeat(b, 1, n, 1)
+        )
         embeddings += positions_encoded
 
         return embeddings, tokens
@@ -212,7 +214,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
     def _step(self, sample):
         # tokenization + embeddings
-        image_embeddings, image_tokens = self._image_embeddings_and_tokens(sample["frames"])
+        image_embeddings, image_tokens = self._image_embeddings_and_tokens(
+            sample["frames"]
+        )
         metadata_embeddings, metadata_tokens = self._metadata_embeddings_and_tokens(
             sample, keys=self.hparams.metadata_keys
         )
@@ -239,7 +243,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         # construct full sequence: [[o, |, a], [o, |, a], ...]
         episode = torch.cat([observations, separator, action_embeddings], dim=2)
-        episode_labels = torch.cat([observation_tokens, separator_tokens, action_tokens], dim=2)
+        episode_labels = torch.cat(
+            [observation_tokens, separator_tokens, action_tokens], dim=2
+        )
 
         episode = episode.view(b, t * (o + 1 + a), d)
         episode_labels = episode_labels.view(b, t * (o + 1 + a))
@@ -317,7 +323,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         clips = mit.one(batch["clips"].values())
         frames = clips["frames"].to(self.device)
         speed = clips["meta"]["VehicleMotion_speed"].to(self.device)
-        steering = clips["meta"]["VehicleMotion_steering_angle_normalized"].to(self.device)
+        steering = clips["meta"]["VehicleMotion_steering_angle_normalized"].to(
+            self.device
+        )
         gas = clips["meta"]["VehicleMotion_gas_pedal_normalized"].to(self.device)
         brake = clips["meta"]["VehicleMotion_brake_pedal_normalized"].to(self.device)
         turn = clips["meta"]["VehicleState_turn_signal"].to(self.device)
@@ -357,10 +365,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             if table := self._tables.get(name := "outputs"):
                 table.add_column("_step", list(map(int, table.get_index())))
 
-                frame_table: Optional[wandb.sdk.wandb_artifacts.ArtifactManifestEntry] = None
+                frame_table: Optional[
+                    wandb.sdk.wandb_artifacts.ArtifactManifestEntry
+                ] = None
 
                 _table = (
-                    table if frame_table is None else wandb.JoinedTable(frame_table, table, "_step")
+                    table
+                    if frame_table is None
+                    else wandb.JoinedTable(frame_table, table, "_step")
                 )
 
                 artifact = wandb.Artifact(f"run-{run.id}-val_{name}", "run_table")
