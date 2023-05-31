@@ -15,6 +15,7 @@ num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
 num_tokens_total: 1030 # ${num_special_tokens} + ${num_continous_tokens} + ${num_discrete_tokens}
 metadata_keys: ["VehicleMotion_speed"]
+speed_range: [0.0, 40.0]
 action_keys:
   - "VehicleMotion_gas_pedal_normalized"
   - "VehicleMotion_brake_pedal_normalized"
@@ -46,19 +47,29 @@ model:
       weights: IMAGENET1K_V1
     freeze: True
 
-  sensor_tokenizer:
+  sensor_tokenizers:
     _target_: torch.nn.ModuleDict
     modules:
-      continues:
+      VehicleMotion_speed:
         _target_: torch.nn.Sequential
         _args_:
-          - _target_: cargpt.models.encoding.MuLawCompressor
-            mu: 100  # how steppy is the function
-            M: 256  # value of x that y = -1 / y = 1
-          - _target_: cargpt.models.encoding.Discretizer
-            range_min: -1.0
-            range_max: 1.0
-            bins: ${num_continous_tokens}  # 1024: bin width is 0.001953125 ~= 0.002
+          - _target_: cargpt.norm.MinMaxScaler
+            in_range: ${speed_range}
+            out_range: [0.0, 1.0]
+          - _target_: torchaudio.transforms.MuLawEncoding
+            quantization_channels: ${num_continous_tokens}
+      VehicleMotion_gas_pedal_normalized:
+        _target_: torchaudio.transforms.MuLawEncoding
+        quantization_channels: ${num_continous_tokens}
+      VehicleMotion_brake_pedal_normalized:
+        _target_: torchaudio.transforms.MuLawEncoding
+        quantization_channels: ${num_continous_tokens}
+      VehicleMotion_steering_angle_normalized:
+        _target_: torchaudio.transforms.MuLawEncoding
+        quantization_channels: ${num_continous_tokens}
+      VehicleState_turn_signal:
+        _target_: cargpt.models.gato.DiscreteMock
+        num_states: 3
 
   sensor_embedding:
     _target_: torch.nn.Embedding
@@ -124,7 +135,7 @@ trainer:
 
   logger:
     _target_: pytorch_lightning.loggers.WandbLogger
-    log_model: true
+    log_model: all
 
   callbacks:
     - _target_: pytorch_lightning.callbacks.ModelCheckpoint
@@ -137,6 +148,9 @@ datamodule:
     batch_size: ${batch_size}
     dataset:
       config:
+        data:
+          metadata:
+            filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
         samples:
           clips:
             length: ${clip_len}
@@ -147,6 +161,9 @@ datamodule:
     batch_size: ${batch_size}
     dataset:
       config:
+        data:
+          metadata:
+            filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
         samples:
           clips:
             length: ${clip_len}
