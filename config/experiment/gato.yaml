@@ -8,12 +8,12 @@ defaults:
 wandb:
   group: Gato-Image-speed-to-control
 
-batch_size: 1
-clip_len: 16
+batch_size: 8
+clip_len: 6
 num_special_tokens: 3  # for special tokens SOS, SEP, OES
-num_continous_tokens: 128 # real values -> bin
+num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
-num_tokens_total: 518 # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens}
+num_tokens_total: 4102 # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens}
 metadata_keys: ["VehicleMotion_speed"]
 speed_range: [0.0, 80.0]
 action_keys:
@@ -23,10 +23,10 @@ action_keys:
   - "VehicleState_turn_signal"
 tokens_shift: # Shifting continous and discrete tokens since embeddings are shared
   VehicleMotion_speed: 3
-  VehicleMotion_gas_pedal_normalized: 131
-  VehicleMotion_brake_pedal_normalized: 259
-  VehicleMotion_steering_angle_normalized: 387
-  VehicleState_turn_signal: 515
+  VehicleMotion_gas_pedal_normalized: 1027
+  VehicleMotion_brake_pedal_normalized: 2501
+  VehicleMotion_steering_angle_normalized: 3075
+  VehicleState_turn_signal: 4099
 patch_row_bins: 10
 patch_col_bins: 18
 embedding_dim: 512
@@ -153,8 +153,8 @@ datamodule:
         samples:
           clips:
             length: ${clip_len}
-            stride: 5
-            step: 5
+            stride: 10
+            step: 10
 
   val:
     batch_size: ${batch_size}
@@ -166,5 +166,5 @@ datamodule:
         samples:
           clips:
             length: ${clip_len}
-            stride: 5
-            step: 5
+            stride: 10
+            step: 10

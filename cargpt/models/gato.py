@@ -303,6 +303,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         # TODO: Logging to table
         return loss
 
+    def invert(self, x, bins):
+        return torchaudio.transforms.mu_law_decode(x, bins)
+
     def forward(
         self,
         *,
