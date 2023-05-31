@@ -11,11 +11,11 @@ wandb:
 batch_size: 1
 clip_len: 16
 num_special_tokens: 3  # for special tokens SOS, SEP, OES
-num_continous_tokens: 1024 # real values -> bin
+num_continous_tokens: 128 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
-num_tokens_total: 1030 # ${num_special_tokens} + ${num_continous_tokens} + ${num_discrete_tokens}
+num_tokens_total: 518 # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens}
 metadata_keys: ["VehicleMotion_speed"]
-speed_range: [0.0, 40.0]
+speed_range: [0.0, 80.0]
 action_keys:
   - "VehicleMotion_gas_pedal_normalized"
   - "VehicleMotion_brake_pedal_normalized"
@@ -23,10 +23,10 @@ action_keys:
   - "VehicleState_turn_signal"
 tokens_shift: # Shifting continous and discrete tokens since embeddings are shared
   VehicleMotion_speed: 3
-  VehicleMotion_gas_pedal_normalized: 3
-  VehicleMotion_brake_pedal_normalized: 3
-  VehicleMotion_steering_angle_normalized: 3
-  VehicleState_turn_signal: 1027
+  VehicleMotion_gas_pedal_normalized: 131
+  VehicleMotion_brake_pedal_normalized: 259
+  VehicleMotion_steering_angle_normalized: 387
+  VehicleState_turn_signal: 515
 patch_row_bins: 10
 patch_col_bins: 18
 embedding_dim: 512
