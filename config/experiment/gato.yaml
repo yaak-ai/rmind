@@ -68,8 +68,7 @@ model:
         _target_: torchaudio.transforms.MuLawEncoding
         quantization_channels: ${num_continous_tokens}
       VehicleState_turn_signal:
-        _target_: cargpt.models.gato.DiscreteMock
-        num_states: 3
+        _target_: torch.nn.Identity
 
   sensor_embedding:
     _target_: torch.nn.Embedding

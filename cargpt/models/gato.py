@@ -16,14 +16,6 @@ from torch.nn.functional import gelu, cross_entropy
 from cargpt.utils.wandb import LoadableFromArtifact
 
 
-class DiscreteMock(torch.nn.Module):
-    def __init__(self, num_states=None):
-        self.num_states = num_states
-
-    def forward(self, x):
-        return x
-
-
 class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
     """Replace the original linear transformation + ReLu with GEGLU.
 
