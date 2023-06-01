@@ -116,6 +116,7 @@ model:
     sep: 1
     eos: 2
   tokens_shift: ${tokens_shift}
+  num_continous_tokens: ${num_continous_tokens}
   masks:
     image: -1 # to ignore_index in torch.nn.functional.cross_entropy
     metadata: 1

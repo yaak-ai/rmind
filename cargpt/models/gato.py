@@ -12,7 +12,7 @@ from jaxtyping import Float, Int
 from pytorch_lightning.utilities import AttributeDict
 from torch import Tensor
 from torch.nn import Linear, ModuleDict
-from torch.nn.functional import gelu, cross_entropy
+from torch.nn.functional import gelu, cross_entropy, softmax
 
 from cargpt.utils.wandb import LoadableFromArtifact
 
@@ -153,12 +153,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         image_tokens = self.hparams.masks.image * torch.ones(  # type: ignore[union-attr]
             B, T, H * W, device=image_features.device
         )
+        tokens_shift = torch.zeros(B, T, H * W, device=image_features.device)
 
-        return image_features, image_tokens
+        return image_features, image_tokens, tokens_shift
 
     def _metadata_embeddings_and_tokens(self, sample, keys=[]):
         embeddings = []
         tokens = []
+        tokens_shift = []
 
         for key in keys:
             tokenizer = getattr(self.tokenizers, key)
@@ -166,13 +168,16 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
+            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]
 
             embeddings.append(embedding)
             tokens.append(token)
+            tokens_shift.append(token_shift)
 
         # cat on tokens
         embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
         tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
+        tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
 
         # add local positional embedding
         b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
@@ -182,11 +187,12 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         )
         embeddings += positions_encoded
 
-        return embeddings, tokens
+        return embeddings, tokens, tokens_shift
 
     def _action_embeddings_and_tokens(self, sample, keys=[]):
         embeddings = []
         tokens = []
+        tokens_shift = []
 
         for key in keys:
             tokenizer = getattr(self.tokenizers, key)
@@ -194,13 +200,16 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
+            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]
 
             embeddings.append(embedding)
             tokens.append(token)
+            tokens_shift.append(token_shift)
 
         # cat on tokens
         embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
         tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
+        tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
         b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
 
         position_encoded: Float[Tensor, "1 e"] = (
@@ -211,19 +220,27 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         embeddings += position_encoded
 
-        return embeddings, tokens
+        return embeddings, tokens, tokens_shift
 
     def _step(self, sample):
         # tokenization + embeddings
-        image_embeddings, image_tokens = self._image_embeddings_and_tokens(
-            sample["frames"]
-        )
-        metadata_embeddings, metadata_tokens = self._metadata_embeddings_and_tokens(
+        (
+            image_embeddings,
+            image_tokens,
+            image_tokens_shift,
+        ) = self._image_embeddings_and_tokens(sample["frames"])
+        (
+            metadata_embeddings,
+            metadata_tokens,
+            metadata_tokens_shift,
+        ) = self._metadata_embeddings_and_tokens(
             sample, keys=self.hparams.metadata_keys
         )
-        action_embeddings, action_tokens = self._action_embeddings_and_tokens(
-            sample, keys=self.hparams.action_keys
-        )
+        (
+            action_embeddings,
+            action_tokens,
+            action_tokens_shift,
+        ) = self._action_embeddings_and_tokens(sample, keys=self.hparams.action_keys)
 
         observations = torch.cat([image_embeddings, metadata_embeddings], 2)
         observation_tokens = torch.cat([image_tokens, metadata_tokens], 2)
@@ -247,34 +264,94 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         episode_labels = torch.cat(
             [observation_tokens, separator_tokens, action_tokens], dim=2
         )
+        episode_labels_shift = torch.cat(
+            [
+                image_tokens_shift,
+                metadata_tokens_shift,
+                separator_tokens,
+                action_tokens_shift,
+            ],
+            dim=2,
+        )
 
         episode = episode.view(b, t * (o + 1 + a), d)
         episode_labels = episode_labels.view(b, t * (o + 1 + a))
+        episode_labels_shift = episode_labels_shift.view(b, t * (o + 1 + a))
 
         logits = self.forward(
             episode=episode[:, :-1],
         )
 
         labels = episode_labels[:, 1:]
+        labels_shift = episode_labels_shift[:, 1:]
 
-        return logits, labels.to(torch.int64)
+        return logits, labels.to(torch.int64), labels_shift.to(torch.int64)
+
+    def _compute_l1_diff(self, logits, tgt_labels, labels_shift):
+        logits = logits.detach().clone()
+        tgt_labels = tgt_labels.detach().clone()
+        b, t, c = logits.shape
+        # flatten on batch dimension
+        logits = logits.view(b * t, c)
+        tgt_labels = tgt_labels.view(b * t)
+        labels_shift = labels_shift.view(b * t)
+        # Kick out ignore_index labels (-1)
+        labels_mask = torch.where(tgt_labels >= 0)
+        #
+        # Softmax and take max
+        #
+        pred_labels = torch.argmax(softmax(logits, dim=1), axis=1)
+        pred_labels -= labels_shift
+        tgt_labels -= labels_shift
+        pred_labels = pred_labels[labels_mask]
+        tgt_labels = tgt_labels[labels_mask]
+        pred_value = self._invert(pred_labels, self.hparams.num_continous_tokens)
+        tgt_value = self._invert(tgt_labels, self.hparams.num_continous_tokens)
+        #
+        # if label prediction outside the class bin range
+        pred_value[pred_labels >= self.hparams.num_continous_tokens] = 1
+        pred_value[pred_labels < 0] = -1
+        # observation + sep (1) + action
+        # batch, timesteps, observation | action
+        pred_value = pred_value.view(
+            b, -1, len(self.hparams.metadata_keys) + 1 + len(self.hparams.action_keys)
+        )
+        tgt_value = tgt_value.view(
+            b, -1, len(self.hparams.metadata_keys) + 1 + len(self.hparams.action_keys)
+        )
+        diff = torch.abs(tgt_value - pred_value)
+        obs_diff, _, action_diff = torch.split(
+            diff,
+            [len(self.hparams.metadata_keys), 1, len(self.hparams.action_keys)],
+            dim=2,
+        )
+
+        l1_loss = {}
+        for idx, key in enumerate(self.hparams.metadata_keys):
+            l1_loss[key] = obs_diff[:, :, idx].mean()
+
+        for idx, key in enumerate(self.hparams.action_keys):
+            l1_loss[key] = action_diff[:, :, idx].mean()
+
+        return l1_loss
 
     def _compute_loss(self, logits, labels):
         b, t, c = logits.shape
         # flatten on batch dimension
         logits = logits.view(b * t, c)
         labels = labels.view(b * t)
-        loss = cross_entropy(logits, labels, ignore_index=-1, reduction="sum")
+        loss = cross_entropy(logits, labels, ignore_index=-1)
         return loss
 
     def training_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
-        pred, tgt = self._step(sample)
-        loss = self._compute_loss(pred, tgt)
+        pred, tgt, tgt_shift = self._step(sample)
+        loss_categorical = self._compute_loss(pred, tgt)
+        diff_l1 = self._compute_l1_diff(pred, tgt, tgt_shift)
 
         self.log(
             "train/loss",
-            loss,
+            loss_categorical,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
@@ -282,16 +359,30 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             rank_zero_only=True,
             batch_size=pred.shape[0],
         )
-        return loss
+
+        for key, value in diff_l1.items():
+            self.log(
+                f"train/diff_{key}",
+                value,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+                rank_zero_only=True,
+                batch_size=pred.shape[0],
+            )
+
+        return loss_categorical
 
     def validation_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
-        pred, tgt = self._step(sample)
-        loss = self._compute_loss(pred, tgt)
+        pred, tgt, tgt_shift = self._step(sample)
+        loss_categorical = self._compute_loss(pred, tgt)
+        diff_l1 = self._compute_l1_diff(pred, tgt, tgt_shift)
 
         self.log(
             "val/loss",
-            loss,
+            loss_categorical,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -300,11 +391,23 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             batch_size=pred.shape[0],
         )
 
-        # TODO: Logging to table
-        return loss
+        for key, value in diff_l1.items():
+            self.log(
+                f"train/diff_{key}",
+                value,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+                rank_zero_only=True,
+                batch_size=pred.shape[0],
+            )
 
-    def invert(self, x, bins):
-        return torchaudio.transforms.mu_law_decode(x, bins)
+        # TODO: Logging to table
+        return loss_categorical
+
+    def _invert(self, x, bins):
+        return torchaudio.functional.mu_law_decoding(x, bins)
 
     def forward(
         self,
