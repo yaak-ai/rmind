@@ -353,12 +353,12 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         diff_l1 = self._compute_l1_diff(pred, tgt, tgt_shift)
 
         metrics = {"train/loss": loss_categorical}
-        metrics.update({f"train/diff_{key}": value for key, value in diff_l1.items()})
+        metrics.update({f"diff/train_{key}": value for key, value in diff_l1.items()})
 
         self.log_dict(
             metrics,
             on_step=True,
-            on_epoch=True,
+            on_epoch=False,
             prog_bar=True,
             sync_dist=True,
             rank_zero_only=True,
@@ -373,7 +373,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         diff_l1 = self._compute_l1_diff(pred, tgt, tgt_shift)
 
         metrics = {"val/loss": loss_categorical}
-        metrics.update({f"val/diff_{key}": value for key, value in diff_l1.items()})
+        metrics.update({f"diff/val_{key}": value for key, value in diff_l1.items()})
 
         self.log_dict(
             metrics,
