@@ -3,6 +3,7 @@ from typing import Optional
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
+import torchaudio
 import wandb
 from loguru import logger
 from einops import repeat, rearrange
@@ -76,11 +77,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             target=self.hparams.image_embedding._target_,  # type: ignore[union-attr]
         )
         self.image_embedding = instantiate(self.hparams.image_embedding)  # type: ignore[union-attr]
-        logger.debug(
-            "Instantiating sensor tokenizer",
-            target=self.hparams.sensor_tokenizer.modules.continues._target_,  # type: ignore[union-attr]
-        )
-        self.sensor_tokenizer: ModuleDict = instantiate(self.hparams.sensor_tokenizer)  # type: ignore[union-attr]
+        self.tokenizers: ModuleDict = instantiate(self.hparams.sensor_tokenizers)
 
         # for sensor embeddings
         logger.debug(
@@ -164,11 +161,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = []
 
         for key in keys:
-            token: Int[Tensor, "b t"] = (
-                self.sensor_tokenizer.continues(sample[key])  # type: ignore[operator]
-                if sample[key].dtype is torch.float64
-                else sample[key]
-            )
+            tokenizer = getattr(self.tokenizers, key)
+            token: Int[Tensor, "b t"] = tokenizer(sample[key])  # type: ignore[operator]
             token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
@@ -195,11 +189,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = []
 
         for key in keys:
-            token: Int[Tensor, "b t"] = (
-                self.sensor_tokenizer.continues(sample[key])  # type: ignore[operator]
-                if sample[key].dtype is torch.float64
-                else sample[key]
-            )
+            tokenizer = getattr(self.tokenizers, key)
+            token: Int[Tensor, "b t"] = tokenizer(sample[key])  # type: ignore[operator]
             token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
@@ -311,6 +302,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         # TODO: Logging to table
         return loss
+
+    def invert(self, x, bins):
+        return torchaudio.transforms.mu_law_decode(x, bins)
 
     def forward(
         self,
