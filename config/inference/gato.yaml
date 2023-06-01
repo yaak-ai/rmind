@@ -1,0 +1,51 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - /dataset/train-tiny@datamodule.predict.dataset
+  - _self_
+
+model_path: ???
+output_file: ???
+batch_size: 1
+clip_len: 8
+
+paths:
+  data_dir: /mnt/extr_ssd/yaak_datasets/
+  metadata_cache_dir: /tmp/cache/yaak-datasets/metadata
+
+trainer:
+  benchmark: false
+  callbacks:
+    - _target_: cargpt.callbacks.CSVWriter
+      output_file: ${output_file}
+      overwrite: False
+
+model:
+  _recursive_: False
+  _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
+  name: ${model_path}
+#  _target_: cargpt.models.gato.Gato.load_from_checkpoint
+#  checkpoint_path: ${model_path}
+
+
+datamodule:
+  _target_: cargpt.datamodules.GenericDataModule
+  predict:
+    _target_: torch.utils.data.DataLoader
+    batch_size: ${batch_size}
+    shuffle: false
+    num_workers: 10
+    pin_memory: true
+    persistent_workers: true
+    multiprocessing_context: fork
+    collate_fn:
+      _target_: yaak_datasets.collate
+      _partial_: true
+    dataset:
+      config:
+        samples:
+          clips:
+            length: ${clip_len}
+            stride: 5
+            step: 5

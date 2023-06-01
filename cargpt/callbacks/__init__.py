@@ -1,4 +1,4 @@
 from .model_summary import ModelSummary
-from .video_writer import VideoWriter
+from .predictions_writer import VideoWriter, CSVWriter
 
-__all__ = ["ModelSummary", "VideoWriter"]
+__all__ = ["ModelSummary", "VideoWriter", "CSVWriter"]
