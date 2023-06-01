@@ -169,7 +169,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
-            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]
+            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]  # type: ignore[index]
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -201,7 +201,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
-            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]
+            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]  # type: ignore[index]
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -301,7 +301,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         #
         # Softmax and take max
         #
-        pred_labels = torch.argmax(softmax(logits, dim=1), axis=1)
+        pred_labels = torch.argmax(softmax(logits, dim=1), dim=1)
         # unshift pred, tgt labels to bring it to [0, 1024)
         pred_labels -= labels_shift
         tgt_labels -= labels_shift
@@ -317,23 +317,23 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         # observation + sep (1) + action
         # batch, timesteps, observation | action
         pred_value = pred_value.view(
-            b, -1, len(self.hparams.metadata_keys) + 1 + len(self.hparams.action_keys)
+            b, -1, len(self.hparams.metadata_keys) + 1 + len(self.hparams.action_keys)  # type: ignore[arg-type]
         )
         tgt_value = tgt_value.view(
-            b, -1, len(self.hparams.metadata_keys) + 1 + len(self.hparams.action_keys)
+            b, -1, len(self.hparams.metadata_keys) + 1 + len(self.hparams.action_keys)  # type: ignore[arg-type]
         )
         diff = torch.abs(tgt_value - pred_value)
         obs_diff, _, action_diff = torch.split(
             diff,
-            [len(self.hparams.metadata_keys), 1, len(self.hparams.action_keys)],
+            [len(self.hparams.metadata_keys), 1, len(self.hparams.action_keys)],  # type: ignore[arg-type]
             dim=2,
         )
 
         l1_loss = {}
-        for idx, key in enumerate(self.hparams.metadata_keys):
+        for idx, key in enumerate(self.hparams.metadata_keys):  # type: ignore[arg-type]
             l1_loss[key] = obs_diff[:, :, idx].mean()
 
-        for idx, key in enumerate(self.hparams.action_keys):
+        for idx, key in enumerate(self.hparams.action_keys):  # type: ignore[arg-type]
             l1_loss[key] = action_diff[:, :, idx].mean()
 
         return l1_loss
