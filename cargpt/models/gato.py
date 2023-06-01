@@ -312,7 +312,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tgt_value = self.sensor_decoder(tgt_labels)
         #
         # if label prediction outside the class bin range
-        pred_value[pred_labels >= self.hparams.num_continous_tokens] = 1
+        pred_value[pred_labels >= self.sensor_decoder.quantization_channels] = 1
         pred_value[pred_labels < 0] = -1
         # observation + sep (1) + action
         # batch, timesteps, observation | action
@@ -352,9 +352,11 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         loss_categorical = self._compute_loss(pred, tgt)
         diff_l1 = self._compute_l1_diff(pred, tgt, tgt_shift)
 
-        self.log(
-            "train/loss",
-            loss_categorical,
+        metrics = {"train/loss": loss_categorical}
+        metrics.update({f"train/diff_{key}": value for key, value in diff_l1.items()})
+
+        self.log_dict(
+            metrics,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
@@ -362,19 +364,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             rank_zero_only=True,
             batch_size=pred.shape[0],
         )
-
-        for key, value in diff_l1.items():
-            self.log(
-                f"train/diff_{key}",
-                value,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=True,
-                sync_dist=True,
-                rank_zero_only=True,
-                batch_size=pred.shape[0],
-            )
-
         return loss_categorical
 
     def validation_step(self, batch, batch_idx):
@@ -383,9 +372,11 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         loss_categorical = self._compute_loss(pred, tgt)
         diff_l1 = self._compute_l1_diff(pred, tgt, tgt_shift)
 
-        self.log(
-            "val/loss",
-            loss_categorical,
+        metrics = {"val/loss": loss_categorical}
+        metrics.update({f"val/diff_{key}": value for key, value in diff_l1.items()})
+
+        self.log_dict(
+            metrics,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -393,18 +384,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             rank_zero_only=True,
             batch_size=pred.shape[0],
         )
-
-        for key, value in diff_l1.items():
-            self.log(
-                f"val/diff_{key}",
-                value,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=True,
-                sync_dist=True,
-                rank_zero_only=True,
-                batch_size=pred.shape[0],
-            )
 
         # TODO: Logging to table
         return loss_categorical
