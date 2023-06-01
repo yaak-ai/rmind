@@ -78,6 +78,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         )
         self.image_embedding = instantiate(self.hparams.image_embedding)  # type: ignore[union-attr]
         self.tokenizers: ModuleDict = instantiate(self.hparams.sensor_tokenizers)
+        self.sensor_decoder = instantiate(self.hparams.sensor_decoder)
 
         # for sensor embeddings
         logger.debug(
@@ -301,12 +302,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         # Softmax and take max
         #
         pred_labels = torch.argmax(softmax(logits, dim=1), axis=1)
+        # unshift pred, tgt labels to bring it to [0, 1024)
         pred_labels -= labels_shift
         tgt_labels -= labels_shift
         pred_labels = pred_labels[labels_mask]
         tgt_labels = tgt_labels[labels_mask]
-        pred_value = self._invert(pred_labels, self.hparams.num_continous_tokens)
-        tgt_value = self._invert(tgt_labels, self.hparams.num_continous_tokens)
+        # mulaw decode
+        pred_value = self.sensor_decoder(pred_labels)
+        tgt_value = self.sensor_decoder(tgt_labels)
         #
         # if label prediction outside the class bin range
         pred_value[pred_labels >= self.hparams.num_continous_tokens] = 1
@@ -365,7 +368,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
                 f"train/diff_{key}",
                 value,
                 on_step=True,
-                on_epoch=True,
+                on_epoch=False,
                 prog_bar=True,
                 sync_dist=True,
                 rank_zero_only=True,
@@ -393,10 +396,10 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         for key, value in diff_l1.items():
             self.log(
-                f"train/diff_{key}",
+                f"val/diff_{key}",
                 value,
                 on_step=True,
-                on_epoch=True,
+                on_epoch=False,
                 prog_bar=True,
                 sync_dist=True,
                 rank_zero_only=True,
