@@ -397,8 +397,9 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         episode: Float[Tensor, "b to d"],
     ):
         _, m, _ = episode.shape
-        episode_mask = torch.tril(torch.ones(m, m, device=episode.device)).float()
-        episode_mask = episode_mask.masked_fill(episode_mask == 0.0, -torch.inf)
+        episode_mask = torch.triu(
+            torch.ones(m, m, device=episode.device) * float("-inf"), diagonal=1
+        )
 
         features = self.gpt(
             src=episode,
