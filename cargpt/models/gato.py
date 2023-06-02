@@ -182,14 +182,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
         tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
 
-        # add local positional embedding
-        b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
-        positions = torch.arange(0, t, dtype=torch.int, device=embeddings.device)  # type: ignore[attr-defined]
-        positions_encoded = (
-            self.local_position(positions).view(1, t, 1, e).repeat(b, 1, n, 1)
-        )
-        embeddings += positions_encoded
-
         return embeddings, tokens, tokens_shift
 
     def _action_embeddings_and_tokens(self, sample, keys=[]):
@@ -259,6 +251,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         observations = torch.cat([image_embeddings, metadata_embeddings], 2)
         observation_tokens = torch.cat([image_tokens, metadata_tokens], 2)
+
+        # add local positional (along n) embedding to all observations image + metadata
+        b, t, n, e = observations.shape  # type: ignore[attr-defined]
+        positions = torch.arange(0, n, dtype=torch.int, device=observations.device)  # type: ignore[attr-defined]
+        positions_encoded = (
+            self.local_position(positions).view(1, 1, n, e).repeat(b, t, 1, 1)
+        )
+        observations += positions_encoded
 
         b, t, o, d = observations.shape
         _, _, a, _ = action_embeddings.shape

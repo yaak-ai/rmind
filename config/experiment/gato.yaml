@@ -27,8 +27,9 @@ tokens_shift: # Shifting continous and discrete tokens since embeddings are shar
   VehicleMotion_brake_pedal_normalized: 2501
   VehicleMotion_steering_angle_normalized: 3075
   VehicleState_turn_signal: 4099
-patch_row_bins: 10
-patch_col_bins: 18
+patch_row_tokens: 10
+patch_col_tokens: 18
+local_position_tokens: 256
 embedding_dim: 512
 
 model:
@@ -98,15 +99,15 @@ model:
   position_encoding:
     patch_row:
       _target_: torch.nn.Embedding
-      num_embeddings: ${patch_row_bins}
+      num_embeddings: ${patch_row_tokens}
       embedding_dim: ${embedding_dim}
     patch_col:
       _target_: torch.nn.Embedding
-      num_embeddings: ${patch_col_bins}
+      num_embeddings: ${patch_col_tokens}
       embedding_dim: ${embedding_dim}
     local:
       _target_: torch.nn.Embedding
-      num_embeddings: ${clip_len}
+      num_embeddings: ${local_position_tokens}
       embedding_dim: ${embedding_dim}
     action:
       _target_: torch.nn.Embedding
