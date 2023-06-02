@@ -397,7 +397,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
         sample = self.prepare_batch(batch)
-        full_episode, _ = self._make_episode(sample)
+        full_episode, *_ = self._make_episode(sample)
         B, timesteps, *_ = sample["frames"].shape
         ts_len = int(full_episode.shape[1] / timesteps)
 
@@ -415,7 +415,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             )
             for key in action_keys:
                 logits = self.forward(episode=episode).detach()
-                token: Int[Tensor, "b 1"] = torch.argmax(logits[:, -1:, :], dim=-1)
+                token: Int[Tensor, "b 1"] = torch.argmax(torch.softmax(logits[:, -1:, :], dim=-1), dim=-1)
 
                 # embed prediction
                 embedded: Float[Tensor, "b 1 e"] = self.sensor_embedding(token)
