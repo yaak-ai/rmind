@@ -103,6 +103,7 @@ ignore = ["E501", "F722", "F821"]
 ignore_unused = [
   "beartype",
   "fiftyone",
+  "torchaudio",
 ]
 
 ignore_transitive = [

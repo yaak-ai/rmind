@@ -1,9 +1,9 @@
-from typing import Optional
+from collections import defaultdict
+from typing import Optional, Any, Dict, List
 
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
-import torchaudio
 import wandb
 from loguru import logger
 from einops import repeat, rearrange
@@ -120,6 +120,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         )
         self.classifier = instantiate(self.hparams.classifier)  # type: ignore[union-attr]
 
+        self.sensor_actions_decode = instantiate(self.hparams.sensor_actions_decode)
+
     def _image_embeddings_and_tokens(self, frames):
         B, T, C, H, W = frames.shape
         frames = frames.view(B * T, C, H, W)
@@ -165,7 +167,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         for key in keys:
             tokenizer = getattr(self.tokenizers, key)
-            token: Int[Tensor, "b t"] = tokenizer(sample[key])  # type: ignore[operator]
+            token: Int[Tensor, "b t"] = tokenizer(sample[key].clone())  # type: ignore[operator]
             token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
@@ -197,7 +199,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         for key in keys:
             tokenizer = getattr(self.tokenizers, key)
-            token: Int[Tensor, "b t"] = tokenizer(sample[key])  # type: ignore[operator]
+            token: Int[Tensor, "b t"] = tokenizer(sample[key].clone())  # type: ignore[operator]
             token += self.hparams.tokens_shift[key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
@@ -213,7 +215,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
         b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
 
-        position_encoded: Float[Tensor, "1 e"] = (
+        position_encoded: Float[Tensor, "b t n e"] = (
             self.action_position(torch.tensor([0], device=embeddings.device))  # type: ignore[attr-defined]
             .view(1, 1, 1, e)
             .repeat(b, t, n, 1)
@@ -224,6 +226,18 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         return embeddings, tokens, tokens_shift
 
     def _step(self, sample):
+        episode, episode_labels, episode_labels_shift = self._make_episode(sample)
+
+        logits = self.forward(
+            episode=episode[:, :-1],
+        )
+
+        labels = episode_labels[:, 1:]
+        labels_shift = episode_labels_shift[:, 1:]
+
+        return logits, labels.to(torch.int64), labels_shift.to(torch.int64)
+
+    def _make_episode(self, sample):
         # tokenization + embeddings
         (
             image_embeddings,
@@ -279,14 +293,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         episode_labels = episode_labels.view(b, t * (o + 1 + a))
         episode_labels_shift = episode_labels_shift.view(b, t * (o + 1 + a))
 
-        logits = self.forward(
-            episode=episode[:, :-1],
-        )
-
-        labels = episode_labels[:, 1:]
-        labels_shift = episode_labels_shift[:, 1:]
-
-        return logits, labels.to(torch.int64), labels_shift.to(torch.int64)
+        return episode, episode_labels, episode_labels_shift
 
     def _compute_l1_diff(self, logits, tgt_labels, labels_shift):
         logits = logits.detach().clone()
@@ -388,8 +395,54 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         # TODO: Logging to table
         return loss_categorical
 
-    def _invert(self, x, bins):
-        return torchaudio.functional.mu_law_decoding(x, bins)
+    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
+        sample = self.prepare_batch(batch)
+        full_episode, *_ = self._make_episode(sample)
+        B, timesteps, *_ = sample["frames"].shape
+        ts_len = int(full_episode.shape[1] / timesteps)
+
+        predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]] = {
+            b: {ts: defaultdict(dict) for ts in range(timesteps)} for b in range(B)
+        }
+        action_keys: List[str] = self.hparams.action_keys  # type: ignore[assignment]
+        actions_to_predict = len(action_keys)
+        history = torch.tensor([], device=full_episode.device)
+        for ts in range(timesteps):
+            observations_start_idx = ts * ts_len
+            actions_start_idx = (ts + 1) * ts_len - actions_to_predict
+            next_observations_with_sep = full_episode[
+                :, observations_start_idx:actions_start_idx, :
+            ].clone()
+            history = torch.cat([history, next_observations_with_sep], dim=1)
+            for key in action_keys:
+                logits = self.forward(episode=history).detach()
+                token: Int[Tensor, "b 1"] = torch.argmax(
+                    torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
+                )
+
+                # embed prediction
+                embedded: Float[Tensor, "b 1 e"] = self.sensor_embedding(token)
+                position: Float[Tensor, "1 e"] = self.action_position(
+                    torch.tensor([0], device=embedded.device)
+                )
+                embedded += repeat(
+                    position, "1 e -> b t e", b=embedded.shape[0], t=embedded.shape[1]
+                )
+
+                # append to episode
+                history = torch.concat([history, embedded], dim=1)
+
+                # get real value
+                token -= self.hparams.tokens_shift[key]  # type: ignore[index]
+                prediction: Float[Tensor, "b 1"] = self.sensor_actions_decode[key](
+                    token.clone()
+                )
+
+                for b in range(B):
+                    predictions[b][ts][key]["pred"] = prediction[b, 0].item()
+                    predictions[b][ts][key]["gt"] = sample[key][b, ts].item()
+
+        return predictions
 
     def forward(
         self,

@@ -33,6 +33,13 @@ Gato
 just train experiment=gato [++trainer.fast_dev_run=1 ...]
 ```
 
+## Inference
+
+Gato
+```bash
+just predict inference=gato model_path=<wandb_path> output_file=<csv_file_name>
+```
+
 ## Visualize
 
 ### Attention

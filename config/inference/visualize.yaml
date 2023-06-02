@@ -9,6 +9,7 @@ batch_size: ???
 clip_len: ???
 
 trainer:
+  benchmark: true
   callbacks:
     - _target_: cargpt.callbacks.VideoWriter
       output_file: ${output_file}
