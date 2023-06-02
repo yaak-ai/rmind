@@ -406,16 +406,19 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         }
         action_keys: List[str] = self.hparams.action_keys  # type: ignore[assignment]
         actions_to_predict = len(action_keys)
-        episode = torch.tensor([], device=full_episode.device)
+        history = torch.tensor([], device=full_episode.device)
         for ts in range(timesteps):
-            start_idx = ts * ts_len
-            end_idx = (ts + 1) * ts_len - actions_to_predict
-            episode = torch.cat(
-                [episode, full_episode[:, start_idx:end_idx, :].clone()], dim=1
-            )
+            observations_start_idx = ts * ts_len
+            actions_start_idx = (ts + 1) * ts_len - actions_to_predict
+            next_observations_with_sep = full_episode[
+                :, observations_start_idx:actions_start_idx, :
+            ].clone()
+            history = torch.cat([history, next_observations_with_sep], dim=1)
             for key in action_keys:
-                logits = self.forward(episode=episode).detach()
-                token: Int[Tensor, "b 1"] = torch.argmax(torch.softmax(logits[:, -1:, :], dim=-1), dim=-1)
+                logits = self.forward(episode=history).detach()
+                token: Int[Tensor, "b 1"] = torch.argmax(
+                    torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
+                )
 
                 # embed prediction
                 embedded: Float[Tensor, "b 1 e"] = self.sensor_embedding(token)
@@ -427,7 +430,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
                 )
 
                 # append to episode
-                episode = torch.concat([episode, embedded], dim=1)
+                history = torch.concat([history, embedded], dim=1)
 
                 # get real value
                 token -= self.hparams.tokens_shift[key]  # type: ignore[index]
