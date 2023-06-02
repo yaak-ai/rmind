@@ -32,6 +32,9 @@ train-debug *ARGS:
 visualize *ARGS:
 	PYTHONOPTIMIZE=1 ./predict.py inference=visualize {{ARGS}}
 
+predict *ARGS:
+	PYTHONOPTIMIZE=1 ./predict.py {{ARGS}}
+
 dataviz *ARGS:
 	PYTHONOPTIMIZE=1 ./dataviz.py {{ARGS}}
 
