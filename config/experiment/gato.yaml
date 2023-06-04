@@ -108,6 +108,10 @@ model:
       _target_: torch.nn.Embedding
       num_embeddings: ${local_position_tokens}
       embedding_dim: ${embedding_dim}
+    global_pos:
+      _target_: torch.nn.Embedding
+      num_embeddings: ${clip_len}
+      embedding_dim: ${embedding_dim}
     action:
       _target_: torch.nn.Embedding
       num_embeddings: 1
