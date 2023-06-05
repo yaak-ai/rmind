@@ -14,21 +14,21 @@ num_special_tokens: 3  # for special tokens SOS, SEP, OES
 num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
 num_tokens_total: 4102 # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens}
-metadata_keys: ["VehicleMotion_speed"]
+metadata_keys: ["VehicleMotion_speed", "VehicleState_turn_signal"]
 speed_range: [0.0, 80.0]
 action_keys:
   - "VehicleMotion_gas_pedal_normalized"
   - "VehicleMotion_brake_pedal_normalized"
   - "VehicleMotion_steering_angle_normalized"
-  - "VehicleState_turn_signal"
 tokens_shift: # Shifting continous and discrete tokens since embeddings are shared
   VehicleMotion_speed: 3
   VehicleMotion_gas_pedal_normalized: 1027
   VehicleMotion_brake_pedal_normalized: 2501
   VehicleMotion_steering_angle_normalized: 3075
   VehicleState_turn_signal: 4099
-patch_row_bins: 10
-patch_col_bins: 18
+patch_row_tokens: 10
+patch_col_tokens: 18
+local_position_tokens: 256
 embedding_dim: 512
 
 model:
@@ -98,13 +98,17 @@ model:
   position_encoding:
     patch_row:
       _target_: torch.nn.Embedding
-      num_embeddings: ${patch_row_bins}
+      num_embeddings: ${patch_row_tokens}
       embedding_dim: ${embedding_dim}
     patch_col:
       _target_: torch.nn.Embedding
-      num_embeddings: ${patch_col_bins}
+      num_embeddings: ${patch_col_tokens}
       embedding_dim: ${embedding_dim}
     local:
+      _target_: torch.nn.Embedding
+      num_embeddings: ${local_position_tokens}
+      embedding_dim: ${embedding_dim}
+    global_pos:
       _target_: torch.nn.Embedding
       num_embeddings: ${clip_len}
       embedding_dim: ${embedding_dim}
@@ -115,12 +119,12 @@ model:
 
   gpt:
     _target_: torch.nn.TransformerEncoder
-    num_layers: 8
+    num_layers: 1
     encoder_layer:
       _target_: cargpt.models.gato.TransformerEncoderLayerGEGLU
       d_model: ${embedding_dim}
-      dim_feedforward: 3072
-      nhead: 16
+      dim_feedforward: 1024
+      nhead: 8
       dropout: 0.1
       batch_first: True
       norm_first: True

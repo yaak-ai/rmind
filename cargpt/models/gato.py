@@ -103,6 +103,11 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         )
         self.local_position = instantiate(self.hparams.position_encoding.local)  # type: ignore[union-attr]
         logger.debug(
+            "Instantiating global position encodings",
+            target=self.hparams.position_encoding.global_pos._target_,  # type: ignore[union-attr]
+        )
+        self.global_position = instantiate(self.hparams.position_encoding.global_pos)  # type: ignore[union-attr]
+        logger.debug(
             "Instantiating action position encodings",
             target=self.hparams.position_encoding.action._target_,  # type: ignore[union-attr]
         )
@@ -182,14 +187,6 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
         tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
 
-        # add local positional embedding
-        b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
-        positions = torch.arange(0, t, dtype=torch.int, device=embeddings.device)  # type: ignore[attr-defined]
-        positions_encoded = (
-            self.local_position(positions).view(1, t, 1, e).repeat(b, 1, n, 1)
-        )
-        embeddings += positions_encoded
-
         return embeddings, tokens, tokens_shift
 
     def _action_embeddings_and_tokens(self, sample, keys=[]):
@@ -263,6 +260,13 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         b, t, o, d = observations.shape
         _, _, a, _ = action_embeddings.shape
 
+        # add local positional (along o) embedding to all observations image + metadata
+        local_positions = torch.arange(0, o, dtype=torch.int, device=observations.device)  # type: ignore[attr-defined]
+        local_positions_encoded = (
+            self.local_position(local_positions).view(1, 1, o, d).repeat(b, t, 1, 1)
+        )
+        observations += local_positions_encoded
+
         separator_tokens = (
             torch.tensor(
                 [self.hparams.special_tokens.sep],  # type: ignore[union-attr]
@@ -288,6 +292,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             ],
             dim=2,
         )
+
+        b, t, s, d = episode.shape
+        # add global positional (along t) embedding to all tokens
+        global_positions = torch.arange(0, t, dtype=torch.int, device=episode.device)  # type: ignore[attr-defined]
+        global_positions_encoded = (
+            self.global_position(global_positions).view(1, t, 1, d).repeat(b, 1, s, 1)
+        )
+        episode += global_positions_encoded
 
         episode = episode.view(b, t * (o + 1 + a), d)
         episode_labels = episode_labels.view(b, t * (o + 1 + a))
