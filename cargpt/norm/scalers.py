@@ -28,3 +28,14 @@ class MinMaxScaler(torch.nn.Module):
         x_scaled = x_std * (new_max - new_min) + new_min
 
         return x_scaled
+
+
+class Clamp(torch.nn.Module):
+    def __init__(self, *, min_value: float, max_value: float):
+        super().__init__()
+
+        self.register_buffer("min_value", torch.tensor(min_value))
+        self.register_buffer("max_value", torch.tensor(max_value))
+
+    def forward(self, x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
+        return torch.clamp(x, min=self.min_value, max=self.max_value)  # type: ignore[arg-type]

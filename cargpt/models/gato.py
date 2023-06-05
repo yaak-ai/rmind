@@ -78,7 +78,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         )
         self.image_embedding = instantiate(self.hparams.image_embedding)  # type: ignore[union-attr]
         self.tokenizers: ModuleDict = instantiate(self.hparams.sensor_tokenizers)
-        self.sensor_decoder = instantiate(self.hparams.sensor_decoder)
+        self.sensor_detokenization = instantiate(self.hparams.sensor_detokenization)
 
         # for sensor embeddings
         logger.debug(
@@ -125,7 +125,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         )
         self.classifier = instantiate(self.hparams.classifier)  # type: ignore[union-attr]
 
-        self.sensor_actions_decode = instantiate(self.hparams.sensor_actions_decode)
+        self.action_keys: List[str] = self.hparams.action_keys  # type: ignore[assignment]
+        self.metadata_keys: List[str] = self.hparams.metadata_keys  # type: ignore[assignment]
 
     def _image_embeddings_and_tokens(self, frames):
         B, T, C, H, W = frames.shape
@@ -245,14 +246,12 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             metadata_embeddings,
             metadata_tokens,
             metadata_tokens_shift,
-        ) = self._metadata_embeddings_and_tokens(
-            sample, keys=self.hparams.metadata_keys
-        )
+        ) = self._metadata_embeddings_and_tokens(sample, keys=self.metadata_keys)
         (
             action_embeddings,
             action_tokens,
             action_tokens_shift,
-        ) = self._action_embeddings_and_tokens(sample, keys=self.hparams.action_keys)
+        ) = self._action_embeddings_and_tokens(sample, keys=self.action_keys)
 
         observations = torch.cat([image_embeddings, metadata_embeddings], 2)
         observation_tokens = torch.cat([image_tokens, metadata_tokens], 2)
@@ -326,33 +325,51 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         tgt_labels -= labels_shift
         pred_labels = pred_labels[labels_mask]
         tgt_labels = tgt_labels[labels_mask]
-        # mulaw decode
-        pred_value = self.sensor_decoder(pred_labels)
-        tgt_value = self.sensor_decoder(tgt_labels)
-        #
-        # if label prediction outside the class bin range
-        pred_value[pred_labels >= self.sensor_decoder.quantization_channels] = 1
-        pred_value[pred_labels < 0] = -1
-        # observation + sep (1) + action
-        # batch, timesteps, observation | action
-        pred_value = pred_value.view(
-            b, -1, len(self.hparams.metadata_keys) + 1 + len(self.hparams.action_keys)  # type: ignore[arg-type]
+
+        # reverse view
+        parts = [len(self.metadata_keys), 1, len(self.action_keys)]
+        view_reshape = (b, -1, sum(parts))
+
+        pred_observations_labels, _, pred_actions_labels = torch.split(
+            pred_labels.view(*view_reshape), parts, dim=2
         )
-        tgt_value = tgt_value.view(
-            b, -1, len(self.hparams.metadata_keys) + 1 + len(self.hparams.action_keys)  # type: ignore[arg-type]
+        tgt_observations_labels, _, tgt_actions_labels = torch.split(
+            tgt_labels.view(*view_reshape), parts, dim=2
         )
-        diff = torch.abs(tgt_value - pred_value)
-        obs_diff, _, action_diff = torch.split(
-            diff,
-            [len(self.hparams.metadata_keys), 1, len(self.hparams.action_keys)],  # type: ignore[arg-type]
-            dim=2,
+
+        # detokenize (tokens to real values)
+        pred_observations_values = torch.zeros_like(
+            pred_observations_labels, dtype=torch.float
         )
+        pred_actions_values = torch.zeros_like(pred_actions_labels, dtype=torch.float)
+        tgt_observations_values = torch.zeros_like(
+            tgt_observations_labels, dtype=torch.float
+        )
+        tgt_actions_values = torch.zeros_like(tgt_actions_labels, dtype=torch.float)
+
+        for idx, key in enumerate(self.metadata_keys):
+            inv_func = self.sensor_detokenization[key]
+            pred_observations_values[:, :, idx] = inv_func(
+                pred_observations_labels[:, :, idx]
+            )
+            tgt_observations_values[:, :, idx] = inv_func(
+                tgt_observations_labels[:, :, idx]
+            )
+
+        for idx, key in enumerate(self.action_keys):
+            inv_func = self.sensor_detokenization[key]
+            pred_actions_values[:, :, idx] = inv_func(pred_actions_labels[:, :, idx])
+            tgt_actions_values[:, :, idx] = inv_func(tgt_actions_labels[:, :, idx])
+
+        # Calculate L1
+        obs_diff = torch.abs(tgt_observations_values - pred_observations_values)
+        action_diff = torch.abs(tgt_actions_values - pred_actions_values)
 
         l1_loss = {}
-        for idx, key in enumerate(self.hparams.metadata_keys):  # type: ignore[arg-type]
+        for idx, key in enumerate(self.metadata_keys):
             l1_loss[key] = obs_diff[:, :, idx].mean()
 
-        for idx, key in enumerate(self.hparams.action_keys):  # type: ignore[arg-type]
+        for idx, key in enumerate(self.action_keys):
             l1_loss[key] = action_diff[:, :, idx].mean()
 
         return l1_loss
@@ -416,8 +433,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]] = {
             b: {ts: defaultdict(dict) for ts in range(timesteps)} for b in range(B)
         }
-        action_keys: List[str] = self.hparams.action_keys  # type: ignore[assignment]
-        actions_to_predict = len(action_keys)
+
+        actions_to_predict = len(self.action_keys)
         history = torch.tensor([], device=full_episode.device)
         for ts in range(timesteps):
             observations_start_idx = ts * ts_len
@@ -426,7 +443,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
                 :, observations_start_idx:actions_start_idx, :
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
-            for key in action_keys:
+            for key in self.action_keys:
                 logits = self.forward(episode=history).detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
                     torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
@@ -446,7 +463,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
                 # get real value
                 token -= self.hparams.tokens_shift[key]  # type: ignore[index]
-                prediction: Float[Tensor, "b 1"] = self.sensor_actions_decode[key](
+                prediction: Float[Tensor, "b 1"] = self.sensor_detokenization[key](
                     token.clone()
                 )
 
