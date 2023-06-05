@@ -11,6 +11,12 @@ Managed with [dvc](https://dvc.org/), see [dvc.yaml](./dvc.yaml):
 dvc repro
 ```
 
+### YAML templating
+
+```
+ytt --ignore-unknown-comments -f config/dataset/templates/ --output yaml --output-files config/dataset/
+```
+
 ### Viz
 
 Launch [FiftyOne](https://docs.voxel51.com/) remotely:
@@ -44,7 +50,7 @@ just predict inference=gato model_path=<wandb_path> output_file=<csv_file_name>
 
 ### Attention
 
-You can use `predict.py` to visualize attention maps as heatmaps with 
+You can use `predict.py` to visualize attention maps as heatmaps with
 [Grad-CAM](https://github.com/jacobgil/pytorch-grad-cam).
 
 ```bash

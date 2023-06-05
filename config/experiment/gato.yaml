@@ -123,8 +123,8 @@ model:
     encoder_layer:
       _target_: cargpt.models.gato.TransformerEncoderLayerGEGLU
       d_model: ${embedding_dim}
-      dim_feedforward: 1024
-      nhead: 8
+      dim_feedforward: 512
+      nhead: 4
       dropout: 0.1
       batch_first: True
       norm_first: True
