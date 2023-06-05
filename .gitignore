@@ -140,3 +140,5 @@ lightning_logs/
 .cenv
 
 *.ipynb
+config/dataset/train.yaml
+config/dataset/val.yaml
