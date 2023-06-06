@@ -1,3 +1,3 @@
-from .minmaxscaler import MinMaxScaler
+from .scalers import MinMaxScaler, Clamp
 
-__all__ = ["MinMaxScaler"]
+__all__ = ["MinMaxScaler", "Clamp"]
