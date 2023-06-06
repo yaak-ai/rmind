@@ -1,10 +1,9 @@
 from collections import defaultdict
-from typing import Optional, Any, Dict, List
+from typing import Any, Dict, List
 
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
-import wandb
 from loguru import logger
 from einops import repeat, rearrange
 from hydra.utils import instantiate
@@ -14,7 +13,7 @@ from torch import Tensor
 from torch.nn import Linear, ModuleDict
 from torch.nn.functional import gelu, cross_entropy, softmax
 
-from cargpt.utils.wandb import LoadableFromArtifact
+from cargpt.utils.wandb import LoadableFromArtifact, ValOutputsLoggingTableMixin
 
 
 class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
@@ -62,7 +61,7 @@ class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
         return x
 
 
-class Gato(pl.LightningModule, LoadableFromArtifact):
+class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact):
     """A Generalist Agent (Gato) https://arxiv.org/abs/2205.06175"""
 
     hparams: AttributeDict
@@ -127,6 +126,12 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         self.action_keys: List[str] = self.hparams.action_keys  # type: ignore[assignment]
         self.metadata_keys: List[str] = self.hparams.metadata_keys  # type: ignore[assignment]
+
+        self.val_table_main_columns = [
+            f"{key}_{label}"
+            for key in self.metadata_keys + self.action_keys
+            for label in ("pred", "tgt")
+        ]
 
     def _image_embeddings_and_tokens(self, frames):
         B, T, C, H, W = frames.shape
@@ -366,13 +371,18 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         action_diff = torch.abs(tgt_actions_values - pred_actions_values)
 
         l1_loss = {}
+        values = {}
         for idx, key in enumerate(self.metadata_keys):
             l1_loss[key] = obs_diff[:, :, idx].mean()
+            values[f"{key}_pred"] = pred_observations_values[:, :, idx]
+            values[f"{key}_tgt"] = tgt_observations_values[:, :, idx]
 
         for idx, key in enumerate(self.action_keys):
             l1_loss[key] = action_diff[:, :, idx].mean()
+            values[f"{key}_pred"] = pred_actions_values[:, :, idx]
+            values[f"{key}_tgt"] = tgt_actions_values[:, :, idx]
 
-        return l1_loss
+        return l1_loss, values
 
     def _compute_loss(self, logits, labels):
         b, t, c = logits.shape
@@ -386,7 +396,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         sample = self.prepare_batch(batch)
         pred, tgt, tgt_shift = self._step(sample)
         loss_categorical = self._compute_loss(pred, tgt)
-        diff_l1 = self._compute_l1_diff(pred, tgt, tgt_shift)
+        diff_l1, _ = self._compute_l1_diff(pred, tgt, tgt_shift)
 
         metrics = {"train/loss": loss_categorical}
         metrics.update({f"diff/train_{key}": value for key, value in diff_l1.items()})
@@ -406,7 +416,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         sample = self.prepare_batch(batch)
         pred, tgt, tgt_shift = self._step(sample)
         loss_categorical = self._compute_loss(pred, tgt)
-        diff_l1 = self._compute_l1_diff(pred, tgt, tgt_shift)
+        diff_l1, numeric_values = self._compute_l1_diff(pred, tgt, tgt_shift)
 
         metrics = {"val/loss": loss_categorical}
         metrics.update({f"diff/val_{key}": value for key, value in diff_l1.items()})
@@ -420,8 +430,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             rank_zero_only=True,
             batch_size=pred.shape[0],
         )
+        self._log_val_outputs_dict(outputs_dict=numeric_values)
 
-        # TODO: Logging to table
         return loss_categorical
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
@@ -523,30 +533,5 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         return result
 
-    def on_validation_epoch_start(self):
-        if isinstance(logger := self.logger, pl.loggers.WandbLogger) and isinstance(
-            logger.experiment, wandb.wandb_run.Run
-        ):
-            self._tables = {}
-            # TODO
-
-    def on_validation_epoch_end(self):
-        if hasattr(self, "_tables") and self.trainer.state.stage != "sanity_check":
-            run: wandb.wandb_run.Run = self.logger.experiment  # type: ignore[union-attr]
-
-            if table := self._tables.get(name := "outputs"):
-                table.add_column("_step", list(map(int, table.get_index())))
-
-                frame_table: Optional[
-                    wandb.sdk.wandb_artifacts.ArtifactManifestEntry
-                ] = None
-
-                _table = (
-                    table
-                    if frame_table is None
-                    else wandb.JoinedTable(frame_table, table, "_step")
-                )
-
-                artifact = wandb.Artifact(f"run-{run.id}-val_{name}", "run_table")
-                artifact.add(_table, name)
-                run.log_artifact(artifact)
+    def on_validation_epoch_end(self) -> None:
+        self._finish_val_outputs_logging()
