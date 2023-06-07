@@ -12,7 +12,7 @@ from jaxtyping import Float, Int
 from pytorch_lightning.utilities import AttributeDict
 from torch import Tensor
 from torch.nn import Linear, ModuleDict
-from torch.nn.functional import gelu, cross_entropy, softmax
+from torch.nn.functional import gelu, softmax
 
 from cargpt.utils.wandb import LoadableFromArtifact
 
@@ -124,6 +124,12 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             target=self.hparams.classifier._target_,  # type: ignore[union-attr]
         )
         self.classifier = instantiate(self.hparams.classifier)  # type: ignore[union-attr]
+
+        logger.debug(
+            "Instantiating loss",
+            target=self.hparams.loss._target_,  # type: ignore[union-attr]
+        )
+        self.loss = instantiate(self.hparams.loss)
 
         self.action_keys: List[str] = self.hparams.action_keys  # type: ignore[assignment]
         self.metadata_keys: List[str] = self.hparams.metadata_keys  # type: ignore[assignment]
@@ -379,7 +385,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         # flatten on batch dimension
         logits = logits.view(b * t, c)
         labels = labels.view(b * t)
-        loss = cross_entropy(logits, labels, ignore_index=-1)
+        loss = self.loss(logits, labels)
         return loss
 
     def training_step(self, batch, batch_idx):

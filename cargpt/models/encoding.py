@@ -5,6 +5,7 @@ from einops import einsum, rearrange, repeat
 from jaxtyping import Float, Int, Shaped
 from torch import Tensor, nn
 from torchvision.models import ResNet
+from dall_e import load_model
 
 
 class ResnetBackbone(torch.nn.Module):
@@ -175,3 +176,33 @@ class Discretizer(Invertible, torch.nn.Module):
         x = x - self.start_index
         x = x * bin_width + self.range_min
         return x
+
+
+class DVAEFeatures(torch.nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, bias: bool = True):
+        super().__init__()
+        self.model = torch.nn.Linear(in_channels, out_channels, bias=bias)
+
+    def forward(self, x):
+        x = rearrange(x, "B D H W -> B H W D")
+        x = self.model(x)
+        x = rearrange(x, "B H W D -> B D H W")
+
+        return x
+
+
+# https://github.com/openai/DALL-E/tree/master
+class dalleDVAE(torch.nn.Module):
+    def __init__(self, enc_weights: str, freeze: bool = True):
+        super().__init__()
+
+        self.enc = load_model(enc_weights)
+
+        if freeze:
+            self.requires_grad_(False)
+            self.enc.eval()
+
+    def forward(self, x: Float[Tensor, "*b c1 h1 w1"]) -> Float[Tensor, "*b c2 h2 w2"]:
+        logits = self.enc(x)
+
+        return logits

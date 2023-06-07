@@ -142,3 +142,4 @@ lightning_logs/
 *.ipynb
 config/dataset/train.yaml
 config/dataset/val.yaml
+pretrained/*

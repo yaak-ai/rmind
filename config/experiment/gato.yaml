@@ -26,10 +26,57 @@ tokens_shift: # Shifting continous and discrete tokens since embeddings are shar
   VehicleMotion_brake_pedal_normalized: 2501
   VehicleMotion_steering_angle_normalized: 3075
   VehicleState_turn_signal: 4099
-patch_row_tokens: 10
-patch_col_tokens: 18
-local_position_tokens: 256
+
 embedding_dim: 512
+
+resnet:
+  patch_row_tokens: 10
+  patch_col_tokens: 18
+  local_position_tokens: 256
+  backbone:
+    _target_: cargpt.models.encoding.ResnetBackbone
+    resnet:
+      _target_: torchvision.models.resnet18
+      weights: IMAGENET1K_V1
+    freeze: True
+  transforms:
+    - _target_: yaak_datasets.transforms.Scale
+      factor: 0.3
+
+    - _target_: yaak_datasets.transforms.Crop
+      offsets: [2, 2, 0, 0]
+
+    - _target_: yaak_datasets.transforms.Normalize
+      # ImageNet stats
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+  lr: 1e-4
+
+dall_e:
+  patch_row_tokens: 40
+  patch_col_tokens: 72
+  local_position_tokens: 3000
+  backbone:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: cargpt.models.encoding.dalleDVAE
+        enc_weights: ${dalle_encoder_weights}
+        freeze: True
+      - _target_: cargpt.models.encoding.DVAEFeatures
+        in_channels: 8192
+        out_channels: ${embedding_dim}
+        bias: False
+
+  transforms:
+    - _target_: yaak_datasets.transforms.Scale
+      factor: 0.3
+
+  lr: 1e-8
+
+# chose between dall_e or resnet [preferred]
+image_encoder: resnet
+
+dalle_encoder_weights: pretrained/dalle/encoder.pkl
 
 model:
   _target_: cargpt.models.gato.Gato
@@ -37,15 +84,10 @@ model:
 
   optimizer:
     _target_: torch.optim.Adam
-    lr: 1e-4
+    lr: ${${image_encoder}.lr}
     weight_decay: 0
 
-  image_embedding:
-    _target_: cargpt.models.encoding.ResnetBackbone
-    resnet:
-      _target_: torchvision.models.resnet18
-      weights: IMAGENET1K_V1
-    freeze: True
+  image_embedding: ${${image_encoder}.backbone}
 
   sensor_tokenizers:
     _target_: torch.nn.ModuleDict
@@ -104,15 +146,15 @@ model:
   position_encoding:
     patch_row:
       _target_: torch.nn.Embedding
-      num_embeddings: ${patch_row_tokens}
+      num_embeddings: ${${image_encoder}.patch_row_tokens}
       embedding_dim: ${embedding_dim}
     patch_col:
       _target_: torch.nn.Embedding
-      num_embeddings: ${patch_col_tokens}
+      num_embeddings: ${${image_encoder}.patch_col_tokens}
       embedding_dim: ${embedding_dim}
     local:
       _target_: torch.nn.Embedding
-      num_embeddings: ${local_position_tokens}
+      num_embeddings: ${${image_encoder}.local_position_tokens}
       embedding_dim: ${embedding_dim}
     global_pos:
       _target_: torch.nn.Embedding
@@ -138,6 +180,11 @@ model:
     _target_: torch.nn.Linear
     in_features: ${embedding_dim}
     out_features: ${num_tokens_total}
+
+  loss:
+    _target_: torch.nn.CrossEntropyLoss
+    ignore_index: -1
+    reduction: mean
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
@@ -185,6 +232,7 @@ datamodule:
             length: ${clip_len}
             stride: 10
             step: 10
+          transforms: ${${image_encoder}.transforms}
 
   val:
     batch_size: ${batch_size}
@@ -198,3 +246,4 @@ datamodule:
             length: ${clip_len}
             stride: 10
             step: 10
+          transforms: ${${image_encoder}.transforms}
