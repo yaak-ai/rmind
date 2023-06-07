@@ -27,6 +27,15 @@ export MAPBOX_TOKEN=...
 just dataviz
 ```
 
+## Get Dalle models
+TODO: Download once and cache
+```
+mkdir -p pretrained/dalle
+wget https://cdn.openai.com/dall-e/encoder.pkl -P pretrained/dalle
+wget https://cdn.openai.com/dall-e/decoder.pkl -P pretrained/dalle
+```
+
+
 ## Training
 
 CIL++
