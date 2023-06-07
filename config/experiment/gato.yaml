@@ -216,7 +216,6 @@ datamodule:
             length: ${clip_len}
             stride: 10
             step: 10
-          transforms: ${${image_encoder}.transforms}
 
   val:
     batch_size: ${batch_size}
@@ -230,4 +229,3 @@ datamodule:
             length: ${clip_len}
             stride: 10
             step: 10
-          transforms: ${${image_encoder}.transforms}
