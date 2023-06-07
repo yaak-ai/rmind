@@ -40,8 +40,10 @@ resnet:
       weights: IMAGENET1K_V1
     freeze: True
   transforms:
-    - _target_: yaak_datasets.transforms.Scale
-      factor: 0.3
+    # Uncomment if working with your local copy of data and not from `/nas`
+    # Where images are already downscaled
+    # - _target_: yaak_datasets.transforms.Scale
+    #   factor: 0.3
 
     - _target_: yaak_datasets.transforms.Crop
       offsets: [2, 2, 0, 0]
@@ -68,8 +70,12 @@ dall_e:
         bias: False
 
   transforms:
-    - _target_: yaak_datasets.transforms.Scale
-      factor: 0.3
+    # Uncomment if working with your local copy of data and not from `/nas`
+    # Where images are already downscaled
+    # - _target_: yaak_datasets.transforms.Scale
+    #   factor: 0.3
+    - _target_: yaak_datasets.transforms.Crop
+      offsets: [2, 2, 0, 0]
 
   lr: 1e-8
 
