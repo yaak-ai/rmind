@@ -85,14 +85,29 @@ model:
             in_range: [0.0, 1.0]
             out_range: ${speed_range}
       VehicleMotion_gas_pedal_normalized:
-        _target_: torchaudio.transforms.MuLawDecoding
-        quantization_channels: ${num_continous_tokens}
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torchaudio.transforms.MuLawDecoding
+            quantization_channels: ${num_continous_tokens}
+          - _target_: cargpt.norm.Clamp
+            min_value: 0.0
+            max_value: 1.0
       VehicleMotion_brake_pedal_normalized:
-        _target_: torchaudio.transforms.MuLawDecoding
-        quantization_channels: ${num_continous_tokens}
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torchaudio.transforms.MuLawDecoding
+            quantization_channels: ${num_continous_tokens}
+          - _target_: cargpt.norm.Clamp
+            min_value: 0.0
+            max_value: 1.0
       VehicleMotion_steering_angle_normalized:
-        _target_: torchaudio.transforms.MuLawDecoding
-        quantization_channels: ${num_continous_tokens}
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torchaudio.transforms.MuLawDecoding
+            quantization_channels: ${num_continous_tokens}
+          - _target_: cargpt.norm.Clamp
+            min_value: -1.0
+            max_value: 1.0
       VehicleState_turn_signal:
         _target_: torch.nn.Identity
 
