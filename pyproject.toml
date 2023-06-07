@@ -19,6 +19,7 @@ more-itertools = "^9.0.0"
 torchinfo = "^1.7.2"
 torchaudio = "=0.13.1"
 deephouse = {git = "git@github.com:yaak-ai/deephouse.git", rev = "main"}
+dall-e = {git = "git@github.com:openai/DALL-E.git", rev = "master"}
 
 [build-system]
 requires = ["poetry-core>=1.5.0"]
@@ -31,7 +32,6 @@ optional = true
 wandb = "*"
 omegaconf = "^2.3.0"
 yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.12.1"}
-dall-e = {git = "git@github.com:openai/DALL-E.git", rev = "master"}
 
 [tool.poetry.group.lint]
 optional = true
