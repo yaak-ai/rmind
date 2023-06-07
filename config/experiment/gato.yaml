@@ -39,7 +39,6 @@ resnet:
       _target_: torchvision.models.resnet18
       weights: IMAGENET1K_V1
     freeze: True
-  lr: 1e-4
 
 dall_e:
   patch_row_tokens: 40
@@ -55,7 +54,6 @@ dall_e:
         in_channels: 8192
         out_channels: ${embedding_dim}
         bias: False
-  lr: 1e-8
 
 # chose between dall_e or resnet [preferred]
 image_encoder: resnet
@@ -68,7 +66,7 @@ model:
 
   optimizer:
     _target_: torch.optim.Adam
-    lr: ${${image_encoder}.lr}
+    lr: 1e-4
     weight_decay: 0
 
   image_embedding: ${${image_encoder}.backbone}

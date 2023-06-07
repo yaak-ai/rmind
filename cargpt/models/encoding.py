@@ -183,7 +183,7 @@ class DVAEFeatures(torch.nn.Module):
         super().__init__()
         self.model = torch.nn.Linear(in_channels, out_channels, bias=bias)
 
-    def forward(self, x):
+    def forward(self, x: Float[Tensor, "b c1 h w"]) -> Float[Tensor, "b c2 h w"]:
         x = rearrange(x, "B D H W -> B H W D")
         x = self.model(x)
         x = rearrange(x, "B H W D -> B D H W")
@@ -202,7 +202,7 @@ class dalleDVAE(torch.nn.Module):
             self.requires_grad_(False)
             self.enc.eval()
 
-    def forward(self, x: Float[Tensor, "*b c1 h1 w1"]) -> Float[Tensor, "*b c2 h2 w2"]:
+    def forward(self, x: Float[Tensor, "b c1 h1 w1"]) -> Float[Tensor, "b c2 h2 w2"]:
         logits = self.enc(x)
 
         return logits
