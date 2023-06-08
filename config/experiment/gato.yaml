@@ -164,7 +164,7 @@ model:
 
   gpt:
     _target_: torch.nn.TransformerEncoder
-    num_layers: 1
+    num_layers: 2
     encoder_layer:
       _target_: cargpt.models.gato.TransformerEncoderLayerGEGLU
       d_model: ${embedding_dim}
