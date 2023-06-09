@@ -179,7 +179,7 @@ model:
     out_features: ${num_tokens_total}
 
   loss:
-    _target_: cargpt.models.losses.CrossEntropyLoss
+    _target_: cargpt.models.losses.DetokenizedL1Loss
     ignore_index: -1
     reduction: mean
   diff:

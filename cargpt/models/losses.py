@@ -40,6 +40,8 @@ class DetokenizedL1Loss(nn.Module):
         logits = logits.clone()
         labels = labels.clone()
 
+        breakpoint()
+
         b, t, c = logits.shape
         # flatten on batch dimension
         logits = logits.view(b * t, c)
@@ -103,8 +105,8 @@ class DetokenizedL1Loss(nn.Module):
             l1_loss = 0.5 * (obs_diff.mean() + action_diff.mean())
             return l1_loss
         elif self.reduction is None:
-            l1_loss = {}
-            values = {}
+            l1_loss = {}  # type: ignore[assignment]
+            values = {}  # type: ignore[assignment]
             for idx, key in enumerate(metadata_keys):
                 l1_loss[key] = obs_diff[:, :, idx].mean()
                 values[f"{key}_pred"] = pred_observations_values[:, :, idx]
