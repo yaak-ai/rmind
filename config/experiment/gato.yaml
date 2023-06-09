@@ -179,9 +179,13 @@ model:
     out_features: ${num_tokens_total}
 
   loss:
-    _target_: torch.nn.CrossEntropyLoss
+    _target_: cargpt.models.losses.CrossEntropyLoss
     ignore_index: -1
     reduction: mean
+  diff:
+    _target_: cargpt.models.losses.DetokenizedL1Loss
+    ignore_index: -1
+    reduction:
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
