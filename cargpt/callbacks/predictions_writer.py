@@ -44,7 +44,7 @@ class VideoWriter(BasePredictionWriter):
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
-        predictions: List[np.ndarray],
+        predictions: Union[List[np.ndarray], np.ndarray],
         batch_indices: Optional[Sequence[int]],
         batch: Any,
         batch_idx: int,
