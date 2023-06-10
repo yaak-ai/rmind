@@ -38,5 +38,5 @@ predict *ARGS:
 dataviz *ARGS:
 	PYTHONOPTIMIZE=1 ./dataviz.py {{ARGS}}
 
-datasync *ARGS:
-	dvc repro {{ARGS}}
+dvc *ARGS:
+	SHELL=$(which zsh) dvc {{ARGS}}
