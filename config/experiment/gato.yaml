@@ -177,15 +177,21 @@ model:
     _target_: torch.nn.Linear
     in_features: ${embedding_dim}
     out_features: ${num_tokens_total}
+  regressor:
+    _target_: torch.nn.Linear
+    in_features: ${embedding_dim}
+    out_features: 1
+
+  diff: cargpt.models.losses.DetokenizedL1Loss
 
   loss:
-    _target_: cargpt.models.losses.DetokenizedL1Loss
-    ignore_index: -1
-    reduction: mean
-  diff:
-    _target_: cargpt.models.losses.DetokenizedL1Loss
-    ignore_index: -1
-    reduction:
+    categorical:
+      _target_: torch.nn.CrossEntropyLoss
+      ignore_index: -1
+      reduction: mean
+    l1:
+      _target_: torch.nn.L1Loss
+      reduction: mean
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}

@@ -4,23 +4,6 @@ import torch.nn.functional as F
 from loguru import logger
 
 
-class CrossEntropyLoss(nn.Module):
-    def __init__(self, ignore_index=-1, reduction="mean"):
-        super().__init__()
-        self.criterion = nn.CrossEntropyLoss(
-            ignore_index=ignore_index, reduction=reduction
-        )
-
-    def forward(self, logits, labels, labels_shift, **kwargs):
-        b, t, c = logits.shape
-        # flatten on batch dimension
-        logits = logits.view(b * t, c)
-        labels = labels.view(b * t)
-        labels_shift = labels_shift.view(b * t)
-        # No label shift needed here
-        return self.criterion(logits, labels)
-
-
 class DetokenizedL1Loss(nn.Module):
     def __init__(self, ignore_index=-1, reduction="mean"):
         super().__init__()
@@ -39,8 +22,6 @@ class DetokenizedL1Loss(nn.Module):
 
         logits = logits.clone()
         labels = labels.clone()
-
-        breakpoint()
 
         b, t, c = logits.shape
         # flatten on batch dimension
