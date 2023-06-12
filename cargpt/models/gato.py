@@ -392,16 +392,17 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # flatten on batch dimension
         pred = pred.clone().view(b * t * c)
         tgt = tgt.clone().view(b * t)
-        mask = torch.where(tgt == float("inf"))
-
-        breakpoint()
 
         loss = self.loss_l1(
             pred,
             tgt,
         )
 
+        # Ignore tokens which have been set to inf, f.ex image and sep
+        # Since the don't correspont to real values
+        mask = tgt == float("inf")
         loss[mask] = 0
+
         return loss.mean()
 
     def training_step(self, batch, batch_idx):
@@ -411,7 +412,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, _ = self._compute_diff(pred, tgt, tgt_shift)
 
-        metrics = {"train/loss": loss_categorical}
+        loss = (
+            self.hparams.loss.weights.categorical * loss_categorical
+            + self.hparams.loss.weights.l1 * loss_l1
+        )
+
+        metrics = {"train/loss": loss_categorical, "train/loss_l1": loss_l1}
         metrics.update({f"diff/train_{key}": value for key, value in diff_l1.items()})
 
         self.log_dict(
@@ -423,7 +429,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             rank_zero_only=True,
             batch_size=pred.shape[0],
         )
-        return loss_categorical
+        return loss
 
     def validation_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
@@ -432,7 +438,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, numeric_values = self._compute_diff(pred, tgt, tgt_shift)
 
-        metrics = {"val/loss": loss_categorical}
+        loss = (
+            self.hparams.loss.weights.categorical * loss_categorical
+            + self.hparams.loss.weights.l1 * loss_l1
+        )
+
+        metrics = {"val/loss": loss_categorical, "val/loss_l1": loss_l1}
         metrics.update({f"diff/val_{key}": value for key, value in diff_l1.items()})
 
         self.log_dict(
@@ -446,7 +457,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         )
         self._log_val_outputs_dict(outputs_dict=numeric_values)
 
-        return loss_categorical
+        return loss
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
         sample = self.prepare_batch(batch)

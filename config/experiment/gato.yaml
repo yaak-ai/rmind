@@ -186,13 +186,16 @@ model:
     _target_: cargpt.models.losses.DetokenizedL1
 
   loss:
+    weights:
+      categorical: 0.5
+      l1: 0.5
     categorical:
       _target_: torch.nn.CrossEntropyLoss
       ignore_index: -1
       reduction: mean
     l1:
       _target_: torch.nn.L1Loss
-      reduction:
+      reduction: none
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
