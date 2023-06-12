@@ -133,12 +133,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             "Instantiating categorical loss",
             target=self.hparams.loss.categorical._target_,  # type: ignore[union-attr]
         )
-        self.loss_categorical = instantiate(self.hparams.loss.categorical)
+        self.loss_categorical = instantiate(self.hparams.loss.categorical)  # type: ignore[union-attr]
         logger.debug(
             "Instantiating l1 loss",
             target=self.hparams.loss.l1._target_,  # type: ignore[union-attr]
         )
-        self.loss_l1 = instantiate(self.hparams.loss.l1)
+        self.loss_l1 = instantiate(self.hparams.loss.l1)  # type: ignore[union-attr]
         logger.debug(
             "Instantiating diff",
             target=self.hparams.diff._target_,  # type: ignore[union-attr]
@@ -413,8 +413,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         diff_l1, _ = self._compute_diff(pred, tgt, tgt_shift)
 
         loss = (
-            self.hparams.loss.weights.categorical * loss_categorical
-            + self.hparams.loss.weights.l1 * loss_l1
+            self.hparams.loss.weights.categorical * loss_categorical  # type: ignore[union-attr]
+            + self.hparams.loss.weights.l1 * loss_l1  # type: ignore[union-attr]
         )
 
         metrics = {"train/loss": loss_categorical, "train/loss_l1": loss_l1}
@@ -439,8 +439,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         diff_l1, numeric_values = self._compute_diff(pred, tgt, tgt_shift)
 
         loss = (
-            self.hparams.loss.weights.categorical * loss_categorical
-            + self.hparams.loss.weights.l1 * loss_l1
+            self.hparams.loss.weights.categorical * loss_categorical  # type: ignore[union-attr]
+            + self.hparams.loss.weights.l1 * loss_l1  # type: ignore[union-attr]
         )
 
         metrics = {"val/loss": loss_categorical, "val/loss_l1": loss_l1}
