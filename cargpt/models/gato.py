@@ -190,9 +190,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         )
         tokens_shift = torch.zeros(B, T, H * W, device=image_features.device)
         # Is ignore in L1 loss since only computed over metadata and actions values
-        values = torch.float("inf") * torch.ones(
-            B, T, H * W, device=image_features.device
-        )
+        values = float("inf") * torch.ones(B, T, H * W, device=image_features.device)
 
         return image_features, image_tokens, tokens_shift, values
 
@@ -246,7 +244,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
         tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
         tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
-        values = values.cat(values, 2)  # type: ignore[assignment]
+        values = torch.cat(values, 2)  # type: ignore[assignment]
         b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
 
         position_encoded: Float[Tensor, "b t n e"] = (
@@ -273,6 +271,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         labels = episode_labels[:, 1:]
         labels_shift = episode_labels_shift[:, 1:]
+        episode_values = episode_values[:, 1:]
 
         return (
             logits,
@@ -345,7 +344,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             [
                 image_values,
                 metadata_values,
-                torch.float("inf") * torch.ones_like(separator_tokens),
+                float("-inf") * torch.ones_like(separator_tokens),
                 action_values,
             ],
             dim=2,
@@ -362,6 +361,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         episode = episode.view(b, t * (o + 1 + a), d)
         episode_labels = episode_labels.view(b, t * (o + 1 + a))
         episode_labels_shift = episode_labels_shift.view(b, t * (o + 1 + a))
+        episode_values = episode_values.view(b, t * (o + 1 + a))
 
         return episode, episode_labels, episode_labels_shift, episode_values
 
@@ -388,19 +388,26 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     def _compute_loss_l1(self, pred, tgt):
         b, t, c = pred.shape
+
         # flatten on batch dimension
-        pred = pred.view(b * t, c)
-        tgt = tgt.view(b * t)
+        pred = pred.clone().view(b * t * c)
+        tgt = tgt.clone().view(b * t)
+        mask = torch.where(tgt == float("inf"))
+
+        breakpoint()
+
         loss = self.loss_l1(
             pred,
             tgt,
         )
-        return loss
+
+        loss[mask] = 0
+        return loss.mean()
 
     def training_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
-        loss_categorical = self._compute_loss_categorical(pred, tgt, tgt_shift)
+        loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, _ = self._compute_diff(pred, tgt, tgt_shift)
 
@@ -421,7 +428,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
     def validation_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
-        loss_categorical = self._compute_loss_categorical(pred, tgt, tgt_shift)
+        loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, numeric_values = self._compute_diff(pred, tgt, tgt_shift)
 

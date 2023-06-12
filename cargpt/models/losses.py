@@ -4,16 +4,9 @@ import torch.nn.functional as F
 from loguru import logger
 
 
-class DetokenizedL1Loss(nn.Module):
+class DetokenizedL1(nn.Module):
     def __init__(self, ignore_index=-1, reduction="mean"):
         super().__init__()
-        self.ignore_index = ignore_index
-        self.reduction = reduction
-
-        assert self.reduction in [
-            "mean",
-            None,
-        ], "Reduction can either be 'mean' or None (for each indivisual metadata/action key loss)"
 
     def forward(self, logits, labels, labels_shift, **kwargs):
         detokenizer = kwargs["detokenizer"]
@@ -82,23 +75,16 @@ class DetokenizedL1Loss(nn.Module):
         obs_diff = torch.abs(tgt_observations_values - pred_observations_values)
         action_diff = torch.abs(tgt_actions_values - pred_actions_values)
 
-        if self.reduction == "mean":
-            l1_loss = 0.5 * (obs_diff.mean() + action_diff.mean())
-            return l1_loss
-        elif self.reduction is None:
-            l1_loss = {}  # type: ignore[assignment]
-            values = {}  # type: ignore[assignment]
-            for idx, key in enumerate(metadata_keys):
-                l1_loss[key] = obs_diff[:, :, idx].mean()
-                values[f"{key}_pred"] = pred_observations_values[:, :, idx]
-                values[f"{key}_tgt"] = tgt_observations_values[:, :, idx]
+        l1_loss = {}  # type: ignore[assignment]
+        values = {}  # type: ignore[assignment]
+        for idx, key in enumerate(metadata_keys):
+            l1_loss[key] = obs_diff[:, :, idx].mean()
+            values[f"{key}_pred"] = pred_observations_values[:, :, idx]
+            values[f"{key}_tgt"] = tgt_observations_values[:, :, idx]
 
-            for idx, key in enumerate(action_keys):
-                l1_loss[key] = action_diff[:, :, idx].mean()
-                values[f"{key}_pred"] = pred_actions_values[:, :, idx]
-                values[f"{key}_tgt"] = tgt_actions_values[:, :, idx]
+        for idx, key in enumerate(action_keys):
+            l1_loss[key] = action_diff[:, :, idx].mean()
+            values[f"{key}_pred"] = pred_actions_values[:, :, idx]
+            values[f"{key}_tgt"] = tgt_actions_values[:, :, idx]
 
-            return l1_loss, values
-
-        else:
-            logger.error(f"u wot m8?, {self.reduction}")
+        return l1_loss, values

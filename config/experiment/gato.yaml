@@ -182,7 +182,8 @@ model:
     in_features: ${embedding_dim}
     out_features: 1
 
-  diff: cargpt.models.losses.DetokenizedL1Loss
+  diff:
+    _target_: cargpt.models.losses.DetokenizedL1
 
   loss:
     categorical:
@@ -191,7 +192,7 @@ model:
       reduction: mean
     l1:
       _target_: torch.nn.L1Loss
-      reduction: mean
+      reduction:
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
