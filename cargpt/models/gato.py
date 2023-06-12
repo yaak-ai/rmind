@@ -344,7 +344,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             [
                 image_values,
                 metadata_values,
-                float("-inf") * torch.ones_like(separator_tokens),
+                float("inf") * torch.ones_like(separator_tokens),
                 action_values,
             ],
             dim=2,
