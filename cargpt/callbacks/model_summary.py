@@ -2,10 +2,11 @@ from typing import Any, Dict, Iterable
 
 import pytorch_lightning as pl
 from loguru import logger
+from pytorch_lightning.callbacks import ModelSummary as _ModelSummary
 from torchinfo import summary
 
 
-class ModelSummary(pl.callbacks.ModelSummary):
+class ModelSummary(_ModelSummary):
     def __init__(
         self,
         col_width: int = 16,

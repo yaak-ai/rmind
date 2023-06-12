@@ -59,5 +59,5 @@ def main():
 
 
 if __name__ == "__main__":
-    with install_import_hook("cargpt", ("beartype", "beartype")):
+    with install_import_hook("cargpt", ("beartype", "beartype")):  # type: ignore
         main()

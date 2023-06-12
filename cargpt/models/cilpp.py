@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Annotated, Dict, Optional, Sequence, Tuple, Mapping, Any, cast, List
+from typing import Annotated, Any, Dict, List, Mapping, Optional, Sequence, Tuple, cast
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -10,7 +10,8 @@ from hydra.utils import instantiate
 from jaxtyping import Float, Int, Shaped
 from loguru import logger
 from omegaconf import DictConfig
-from pytorch_lightning.utilities import AttributeDict
+from pytorch_lightning.loggers.wandb import WandbLogger
+from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor
 from torch.nn import Module, ModuleDict, TransformerEncoder
 from torch.nn import functional as F
@@ -18,6 +19,10 @@ from torchvision.transforms.functional import resize
 
 import wandb
 from cargpt.utils.wandb import LoadableFromArtifact
+from wandb.data_types import JoinedTable
+from wandb.errors import CommError
+from wandb.sdk.interface.artifacts import Artifact, ArtifactManifestEntry
+from wandb.wandb_run import Run
 
 
 class DepthFrameEncoder(Module):
@@ -54,7 +59,7 @@ class DepthFrameEncoder(Module):
         B_frame, _, H_frame, W_frame = frames.shape
         grid_2d = self._generate_2d_grid(height=H_frame, width=W_frame).to(depth)
         pts_2d = repeat(grid_2d, "h w t -> b h w t", b=B_frame)
-        pts = camera.unproject(pts_2d, depth)
+        pts = camera.unproject(pts_2d, depth)  # type: ignore
 
         # normalize 3d points (Eq 7 [https://arxiv.org/abs/2211.14710])
         pts_min = reduce(pts, "b h w c -> b 1 1 c", "min")
@@ -82,7 +87,7 @@ class DepthFrameEncoder(Module):
             indexing="xy",
         )
 
-        grid = rearrange([x_mesh, y_mesh], "t h w -> h w t")  # type: ignore
+        grid = rearrange([x_mesh, y_mesh], "t h w -> h w t")
 
         return grid
 
@@ -241,7 +246,7 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
 
             if table := self._tables.get("outputs"):
                 data: Float[Tensor, "b 4"] = rearrange(
-                    [  # type: ignore
+                    [
                         preds["acceleration"],
                         labels["acceleration"],
                         preds["steering_angle"],
@@ -257,8 +262,8 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
 
     def on_validation_epoch_start(self):
         if (
-            isinstance(logger := self.logger, pl.loggers.WandbLogger)
-            and isinstance(run := logger.experiment, wandb.wandb_run.Run)
+            isinstance(logger := self.logger, WandbLogger)
+            and isinstance(run := logger.experiment, Run)
             and (log_cfg := self.hparams.get("log", {}).get("validation", {}))
         ):
             self._tables = {}
@@ -266,9 +271,9 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
             if log_cfg.get(name := "frames"):
                 try:
                     _ = run.use_artifact(f"run-{run.id}-val_frames:latest")
-                except wandb.CommError:
-                    dataset = self.trainer.val_dataloaders[0].dataset  # type: ignore[index]
-                    cameras = [x.value for x in dataset.config.data.metadata.cameras]  # type: ignore[union-attr]
+                except CommError:
+                    dataset = self.trainer.val_dataloaders[0].dataset  # type: ignore
+                    cameras = [x.value for x in dataset.config.data.metadata.cameras]  # type: ignore
                     self._tables[name] = wandb.Table(columns=cameras)
 
             if log_cfg.get(name := "outputs"):
@@ -283,9 +288,9 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
 
     def on_validation_epoch_end(self):
         if hasattr(self, "_tables") and self.trainer.state.stage != "sanity_check":
-            run: wandb.wandb_run.Run = self.logger.experiment  # type: ignore[union-attr]
+            run: Run = self.logger.experiment  # type: ignore
 
-            frame_artifact: Optional[wandb.wandb_sdk.wandb_artifacts.Artifact] = None
+            frame_artifact: Optional[Artifact] = None
 
             if table := self._tables.get(name := "frames"):
                 table.add_column("_step", list(map(int, table.get_index())))
@@ -303,13 +308,11 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
                         frame_artifact = run.use_artifact(
                             f"run-{run.id}-val_frames:latest"
                         )
-                    except wandb.CommError:
+                    except CommError:
                         # may have never been logged in the first place
                         pass
 
-                frame_table: Optional[
-                    wandb.sdk.wandb_artifacts.ArtifactManifestEntry
-                ] = None
+                frame_table: Optional[ArtifactManifestEntry] = None
                 if frame_artifact is not None:
                     with logger.catch(message="failed to get frame table"):
                         frame_table = frame_artifact.get_path("frames.table.json")
@@ -317,7 +320,7 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
                 _table = (
                     table
                     if frame_table is None
-                    else wandb.JoinedTable(frame_table, table, "_step")
+                    else JoinedTable(frame_table, table, "_step")
                 )
                 artifact = wandb.Artifact(f"run-{run.id}-val_{name}", "run_table")
                 artifact.add(_table, name)

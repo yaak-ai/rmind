@@ -4,9 +4,10 @@ from typing import Any, List, Optional, Sequence, Union, Dict, Tuple
 import cv2
 import numpy as np
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import BasePredictionWriter
 
 
-class VideoWriter(pl.callbacks.BasePredictionWriter):
+class VideoWriter(BasePredictionWriter):
     def __init__(
         self,
         output_file: Union[str, Path],
@@ -32,9 +33,9 @@ class VideoWriter(pl.callbacks.BasePredictionWriter):
             self.video_writer.release()
 
     def _set_video_writer(self, width: int, height: int) -> None:
-        self.video_writer = cv2.VideoWriter(
+        self.video_writer = cv2.VideoWriter(  # type: ignore
             str(self.output_file),
-            cv2.VideoWriter_fourcc(*self.fourcc),
+            cv2.VideoWriter_fourcc(*self.fourcc),  # type: ignore
             self.fps,
             (width, height),
         )
@@ -64,7 +65,7 @@ class VideoWriter(pl.callbacks.BasePredictionWriter):
             self.video_writer.release()
 
 
-class CSVWriter(pl.callbacks.BasePredictionWriter):
+class CSVWriter(BasePredictionWriter):
     def __init__(
         self,
         output_file: Union[str, Path],

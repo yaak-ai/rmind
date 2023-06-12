@@ -37,11 +37,11 @@ yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.12.
 optional = true
 
 [tool.poetry.group.lint.dependencies]
+pyright = "*"
 black = "*"
-mypy = "*"
-mypy-extensions = "*"
 ruff = "*"
 deptry = "*"
+opencv-stubs = "*"
 
 [tool.poetry.group.dev]
 optional = true
@@ -50,18 +50,14 @@ optional = true
 ipdb = "*"
 ipython = "*"
 pudb = "*"
-pylsp-mypy = "*"
-pylsp-rope = "*"
 pytest-pudb = "*"
-python-lsp-black = "*"
-python-lsp-server = "*"
 jupyterlab = "*"
 jupyterlab-vim = "*"
 torchshow = "*"
-netron = "*"
 ipython-autoimport = "*"
 pyfzf = "*"
 ruff-lsp = "*"
+pyright = "*"
 
 [tool.poetry.group.vis]
 optional = true
@@ -84,16 +80,17 @@ optional = true
 [tool.poetry.group.dvc.dependencies]
 dvc = {version = "^2.58.1", extras = ["s3"]}
 
+[tool.pyright]
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+reportMissingImports = false
+exclude = [
+  'wandb/',
+]
+
+
 [tool.black]
 line-length = 88
-
-[tool.mypy]
-warn_unused_configs = true
-ignore_missing_imports = true
-check_untyped_defs = true
-exclude = [
-  "wandb/.*"
-]
 
 [tool.ruff]
 fix = true

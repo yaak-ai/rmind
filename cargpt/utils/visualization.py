@@ -25,12 +25,12 @@ class Unnormalize(Normalize):
         std: Sequence[float],
         **kwargs: Any,
     ) -> None:
-        mean: Float[Tensor, "c"] = torch.tensor(mean)  # type: ignore[no-redef]
-        std: Float[Tensor, "c"] = torch.tensor(std)  # type: ignore[no-redef]
+        _mean: Float[Tensor, "c"] = torch.tensor(mean)
+        _std: Float[Tensor, "c"] = torch.tensor(std)
 
         super().__init__(
-            mean=(-mean / std).tolist(),  # type: ignore
-            std=(1.0 / std).tolist(),  # type: ignore
+            mean=(-_mean / _std).tolist(),
+            std=(1.0 / _std).tolist(),
             **kwargs,
         )
 
@@ -123,7 +123,7 @@ class CILppWrapper(pl.LightningModule):
                 labels,
                 predictions,
                 target=self.target,
-                **self.font,
+                **self.font,  # type: ignore
             )
         return visualizations
 
@@ -176,8 +176,8 @@ class NegativeAndPositiveGradCAM(BaseCAM):
             self.scalars_outputs = np.array(
                 [
                     target(output).detach().cpu().numpy()
-                    for target, output in zip(  # type: ignore
-                        targets, self.activations_and_grads.outputs
+                    for target, output in zip(
+                        targets, self.activations_and_grads.outputs  # type: ignore
                     )
                 ]
             )
@@ -251,7 +251,13 @@ def put_labels(
         pred_position = (10 + gt_width + 20, gt_height + 10)
 
         cv2.putText(
-            image, gt_text, gt_position, font, font_scale, font_color, font_thickness
+            image,
+            gt_text,
+            gt_position,
+            font,
+            font_scale,
+            font_color,  # type: ignore
+            font_thickness,
         )
         cv2.putText(
             image,
@@ -259,6 +265,6 @@ def put_labels(
             pred_position,
             font,
             font_scale,
-            font_color,
+            font_color,  # type: ignore
             font_thickness,
         )
