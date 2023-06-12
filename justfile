@@ -23,10 +23,13 @@ check-deps:
 
 check: check-format lint typecheck check-deps
 
-train *ARGS:
+generate-dataset-config:
+	ytt --ignore-unknown-comments -f config/dataset/templates --output yaml --output-files config/dataset
+
+train *ARGS: generate-dataset-config
 	PYTHONOPTIMIZE=1 ./train.py {{ARGS}}
 
-train-debug *ARGS:
+train-debug *ARGS: generate-dataset-config
 	PYTHONOPTIMIZE=0 HYDRA_FULL_ERROR=1 ./train.py {{ARGS}}
 
 visualize *ARGS:
@@ -35,7 +38,7 @@ visualize *ARGS:
 predict *ARGS:
 	PYTHONOPTIMIZE=1 ./predict.py {{ARGS}}
 
-dataviz *ARGS:
+dataviz *ARGS: generate-dataset-config
 	PYTHONOPTIMIZE=1 ./dataviz.py {{ARGS}}
 
 dvc *ARGS:

@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Annotated, Dict, Optional, Sequence, Tuple
+from typing import Annotated, Dict, Optional, Sequence, Tuple, Mapping, Any, cast, List
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -110,7 +110,7 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
     def forward(
         self,
         *,
-        frames: Float[Tensor, "b t c h w"],
+        frames: Float[Tensor, "b t v c h w"],
         speed: Float[Tensor, "b t"],
         turn_signal: Int[Tensor, "b t"],
         camera: Optional[Camera] = None,
@@ -127,17 +127,27 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
         return pred
 
     def unpack_batch_for_predictions(
-        self, batch
+        self, batch: Mapping[str, Any]
     ) -> Tuple[
-        Float[Tensor, "b t c h w"],
+        Float[Tensor, "b t v c h w"],
         Float[Tensor, "b t"],
         Int[Tensor, "b t"],
         Optional[Camera],
     ]:
-        clips = mit.one(batch["clips"].values())
-        frames = clips["frames"]
-        speed = clips["meta"]["VehicleMotion_speed"].to(frames)
-        turn_signal = clips["meta"]["VehicleState_turn_signal"]
+        clips = batch["clips"]
+        camera_names = sorted(clips.keys())
+        frames = cast(
+            Float[Tensor, "b t v c h w"],
+            rearrange(
+                [clips[k]["frames"] for k in camera_names],
+                "v b t c h w -> b t v c h w",
+            ),
+        )
+
+        meta = clips[camera_names[0]]["meta"]
+
+        speed = meta["VehicleMotion_speed"].to(torch.float32)
+        turn_signal = meta["VehicleState_turn_signal"]
 
         if isinstance(_camera_params := clips.get("camera_params"), dict):
             camera_params = _camera_params.copy()
@@ -167,8 +177,10 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
         return {"acceleration": accel_pred, "steering_angle": steering_pred}
 
     def _compute_labels(self, batch) -> Dict[str, Float[Tensor, "b 1"]]:
-        clips = mit.one(batch["clips"].values())
-        meta = clips["meta"]
+        clips = batch["clips"]
+        camera_names = sorted(clips.keys())
+        meta = clips[camera_names[0]]["meta"]
+
         gas = meta["VehicleMotion_gas_pedal_normalized"]
         brake = meta["VehicleMotion_brake_pedal_normalized"]
         steering_angle = meta["VehicleMotion_steering_angle_normalized"]
@@ -314,16 +326,16 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
     def _embed_state(
         self,
         *,
-        frames: Float[Tensor, "b t 3 h w"],
+        frames: Float[Tensor, "b t v c h w"],
         speed: Float[Tensor, "b t"],
         turn_signal: Int[Tensor, "b t"],
         camera: Optional[Camera] = None,
     ) -> Float[Tensor, "b s c"]:
-        feats = []
+        feats: List[Float[Tensor, "b t s c"]] = []
 
         if encoder := getattr(self.state_embedding.frame, "backbone", None):
             feat = encoder(frames)
-            feat = rearrange(feat, "b t c h w -> b t (h w) c")
+            feat = rearrange(feat, "b t v c h w -> b t (v w h) c")
             feats.append(feat)
 
         if encoder := getattr(self.state_embedding.frame, "depth", None):
@@ -331,7 +343,7 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
                 raise ValueError("camera required for depth encoder")
 
             feat = encoder(frames=frames, camera=camera)
-            feat = rearrange(feat, "b t h w c -> b t (h w) c")
+            feat = rearrange(feat, "b t h w c -> b t (w h) c")
             feats.append(feat)
 
         if encoder := getattr(self.state_embedding, "speed"):
@@ -346,7 +358,10 @@ class CILpp(pl.LightningModule, LoadableFromArtifact):
             feat = rearrange(feat, "b t c -> b t 1 c")
             feats.append(feat)
 
-        state = rearrange(sum(feats), "b t s c -> b (t s) c")
+        state = cast(
+            Float[Tensor, "b s c"],
+            rearrange(sum(feats), "b t s c -> b (t s) c"),
+        )
 
         if encoder := getattr(self.state_embedding, "position"):
             state += encoder(state.shape)

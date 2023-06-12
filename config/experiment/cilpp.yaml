@@ -2,7 +2,7 @@
 
 defaults:
   - /paths: default.yaml
-  - override /datamodule: default.yaml
+  - override /datamodule: cil.yaml
   - _self_
 
 batch_size: 32
@@ -110,22 +110,30 @@ model:
 
   optimizer:
     _target_: torch.optim.Adam
-    lr: 1e-4
+    lr: 4e-4
     weight_decay: 0
 
-  lr_scheduler: null
+  lr_scheduler:
+    interval: epoch 
+    monitor: val/loss/total
+    scheduler:
+      _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+      mode: min
+      factor: 0.5
+      patience: 2
+      min_lr: 1e-5
 
   log:
     validation:
-      frames: true
-      outputs: true
+      frames: false
+      outputs: false
 
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu
   devices: [0]
   benchmark: true
-  max_steps: 100000
+  max_epochs: 10
   log_every_n_steps: 10
 
   logger:
@@ -134,13 +142,14 @@ trainer:
 
   callbacks:
     - _target_: cargpt.callbacks.ModelSummary
+
     - _target_: pytorch_lightning.callbacks.ModelCheckpoint
       save_weights_only: True
       save_on_train_epoch_end: True
       monitor: train/loss/total
 
-
-_speed_range: ${model.state_embedding.modules.speed._args_[0]}
+    - _target_: pytorch_lightning.callbacks.LearningRateMonitor
+      logging_interval: step
 
 datamodule:
   train:
@@ -149,13 +158,30 @@ datamodule:
       config:
         data:
           metadata:
+            select:
+            - message: ImageMetadata
+              fields:
+              - name: frame_idx
+              - name: camera_name
+
+            - message: VehicleMotion
+              fields:
+              - name: speed
+              - name: steering_angle_normalized
+              - name: gas_pedal_normalized
+              - name: brake_pedal_normalized
+
+            - message: VehicleState
+              fields:
+              - name: turn_signal
+
             filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]} 
 
         samples:
           clips:
             length: ${clip_len}
-            stride: 5
-            step: 5
+            stride: 4
+            step: 1
 
   val:
     batch_size: ${batch_size}
@@ -163,10 +189,7 @@ datamodule:
       config:
         data:
           metadata:
-            filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]} 
+            select: ${datamodule.train.dataset.config.data.metadata.select}
+            filter: ${datamodule.train.dataset.config.data.metadata.filter}
 
-        samples:
-          clips:
-            length: ${clip_len}
-            stride: 5
-            step: 5
+        samples: ${datamodule.train.dataset.config.samples}
