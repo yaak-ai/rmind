@@ -19,7 +19,7 @@ jobs:
           cache-version: v1 # bump to reset 
       - run: poetry run black . --check
       - run: poetry run ruff check . --no-fix
-      - run: poetry run mypy .
+      - run: poetry run pyright .
       - run: poetry run deptry .
 
 workflows:
