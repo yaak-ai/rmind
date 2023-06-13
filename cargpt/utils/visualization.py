@@ -106,8 +106,8 @@ class CILppWrapper(pl.LightningModule):
             with self.cam_cls(
                 model=self,
                 target_layers=self.target_layers,
-                use_cuda=True,
                 reshape_transform=partial(reshape_transform, batch_size=batch_size),
+                use_cuda=True,
             ) as cam:
                 heatmaps = cam(input_tensor=input_tensor, targets=targets)
                 predictions = cam.scalars_outputs
@@ -133,7 +133,7 @@ class ActivationsAndGradientsWithMemory(ActivationsAndGradients):
         self,
         model: torch.nn.Module,
         target_layers: List[torch.nn.Module],
-        reshape_transform: Optional[Callable] = None,
+        reshape_transform: Union[Callable, None] = None,
     ) -> None:
         super().__init__(model, target_layers, reshape_transform)
         self.outputs = None
@@ -152,8 +152,8 @@ class NegativeAndPositiveGradCAM(BaseCAM):
         self,
         model: torch.nn.Module,
         target_layers: List[torch.nn.Module],
+        reshape_transform: Callable,
         use_cuda: bool = False,
-        reshape_transform: Optional[Callable] = None,
     ) -> None:
         super().__init__(model, target_layers, use_cuda, reshape_transform)
         # Replace activations with gradients with a subclass that keeps outputs

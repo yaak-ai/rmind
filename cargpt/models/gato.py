@@ -481,7 +481,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
             for key in self.action_keys:
-                logits, _ = self.forward(episode=history).detach()
+                logits, _ = self.forward(episode=history)
+                logits = logits.detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
                     torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
                 )
