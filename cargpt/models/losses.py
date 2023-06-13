@@ -4,14 +4,12 @@ import torch.nn.functional as F
 
 
 class DetokenizedL1(nn.Module):
-    def __init__(self, ignore_index=-1, reduction="mean"):
+    def __init__(self):
         super().__init__()
 
-    def forward(self, logits, labels, labels_shift, **kwargs):
-        detokenizer = kwargs["detokenizer"]
-        metadata_keys = kwargs["metadata_keys"]
-        action_keys = kwargs["action_keys"]
-
+    def forward(
+        self, logits, labels, labels_shift, detokenizer, metadata_keys, action_keys
+    ):
         logits = logits.clone()
         labels = labels.clone()
 

@@ -370,9 +370,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             logits.detach(),
             tgt_labels.detach(),
             labels_shift,
-            metadata_keys=self.metadata_keys,
-            action_keys=self.action_keys,
-            detokenizer=self.sensor_detokenization,
+            self.sensor_detokenization,
+            self.metadata_keys,
+            self.action_keys,
         )
 
     def _compute_loss_categorical(self, logits, labels):
@@ -403,7 +403,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         mask = tgt == float("inf")
         loss[mask] = 0
 
-        return loss.mean()
+        loss_masked = loss.sum() / (~mask).sum()
+
+        return loss_masked
 
     def training_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
