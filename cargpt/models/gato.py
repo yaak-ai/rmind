@@ -157,7 +157,21 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
     def _image_embeddings_and_tokens(self, frames):
         B, T, C, H, W = frames.shape
         frames = frames.view(B * T, C, H, W)
-        image_features = self.image_embedding(frames)
+        image_encodings = self.image_embedding(frames)
+        if type(image_encodings) == tuple:
+            # for dVAE image tokens are index into the visual vocabulary
+            image_features, logits = image_encodings
+            image_tokens = (
+                torch.argmax(logits.detach(), dim=1) + self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+            )
+            tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+        else:
+            # for resnet image tokens are fake labels and match ignore_index in cross_entropy loss
+            image_features = image_encodings
+            image_tokens = self.hparams.masks.image * torch.ones(  # type: ignore[union-attr]
+                B * T, H, W, device=image_features.device
+            )
+            tokens_shift = torch.zeros(B * T, H, W, device=image_features.device)
         _, D, H, W = image_features.shape
         image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
 
@@ -183,12 +197,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         image_features += patch_pos_col + patch_pos_row
         # BTHWD -> BT(HW)D
         image_features = image_features.view(B, T, H * W, D)
-        # for resnet image tokens are fake labels but for VQ-VAE
-        # they would be index into the visual vocabulary
-        image_tokens = self.hparams.masks.image * torch.ones(  # type: ignore[union-attr]
-            B, T, H * W, device=image_features.device
-        )
-        tokens_shift = torch.zeros(B, T, H * W, device=image_features.device)
+        image_tokens = image_tokens.view(B, T, H * W)
+        tokens_shift = tokens_shift.view(B, T, H * W)
         # Is ignore in L1 loss since only computed over metadata and actions values
         values = float("inf") * torch.ones(B, T, H * W, device=image_features.device)
 
@@ -365,7 +375,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return episode, episode_labels, episode_labels_shift, episode_values
 
-    def _compute_diff(self, logits, tgt_labels, labels_shift):
+    def _compute_diff(self, logits, tgt_labels, labels_shift, image_tokens_start):
         return self.diff(
             logits.detach(),
             tgt_labels.detach(),
@@ -373,6 +383,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             self.sensor_detokenization,
             self.metadata_keys,
             self.action_keys,
+            image_tokens_start,
         )
 
     def _compute_loss_categorical(self, logits, labels):
@@ -412,7 +423,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
-        diff_l1, _ = self._compute_diff(pred, tgt, tgt_shift)
+        diff_l1, _ = self._compute_diff(
+            pred, tgt, tgt_shift, self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+        )
 
         loss = (
             self.hparams.loss.weights.categorical * loss_categorical  # type: ignore[union-attr]
@@ -438,7 +451,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
-        diff_l1, numeric_values = self._compute_diff(pred, tgt, tgt_shift)
+        diff_l1, numeric_values = self._compute_diff(
+            pred, tgt, tgt_shift, self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+        )
 
         loss = (
             self.hparams.loss.weights.categorical * loss_categorical  # type: ignore[union-attr]

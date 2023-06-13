@@ -8,7 +8,14 @@ class DetokenizedL1(nn.Module):
         super().__init__()
 
     def forward(
-        self, logits, labels, labels_shift, detokenizer, metadata_keys, action_keys
+        self,
+        logits,
+        labels,
+        labels_shift,
+        detokenizer,
+        metadata_keys,
+        action_keys,
+        image_tokens_start,
     ):
         logits = logits.clone()
         labels = labels.clone()
@@ -19,8 +26,9 @@ class DetokenizedL1(nn.Module):
         tgt_labels = labels.view(b * t)
         labels_shift = labels_shift.view(b * t)
 
-        # Kick out ignore_index labels (-1)
-        labels_mask = torch.where(tgt_labels >= 0)
+        # Kick out ignore_index labels (-1) or if labels belong to image tokens
+        labels_mask = ~((tgt_labels >= image_tokens_start) | (tgt_labels < 0))
+
         #
         # Softmax and sample from distribution
         #
@@ -36,6 +44,8 @@ class DetokenizedL1(nn.Module):
         # reverse view
         parts = [len(metadata_keys), 1, len(action_keys)]
         view_reshape = (b, -1, sum(parts))
+
+        # we only detokenize metadata and action keys here
 
         pred_observations_labels, _, pred_actions_labels = torch.split(
             masked_pred_labels.view(*view_reshape), parts, dim=2
