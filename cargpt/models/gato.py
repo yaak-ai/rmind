@@ -369,7 +369,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         return self.diff(
             logits.detach(),
             tgt_labels.detach(),
-            labels_shift,
+            labels_shift.detach(),
             self.sensor_detokenization,
             self.metadata_keys,
             self.action_keys,
