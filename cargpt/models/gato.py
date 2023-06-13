@@ -11,7 +11,7 @@ from jaxtyping import Float, Int
 from pytorch_lightning.utilities import AttributeDict
 from torch import Tensor
 from torch.nn import Linear, ModuleDict
-from torch.nn.functional import gelu, softmax
+from torch.nn.functional import gelu
 
 from cargpt.utils.wandb import LoadableFromArtifact, ValOutputsLoggingTableMixin
 
@@ -123,12 +123,27 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             target=self.hparams.classifier._target_,  # type: ignore[union-attr]
         )
         self.classifier = instantiate(self.hparams.classifier)  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating regressor layer",
+            target=self.hparams.classifier._target_,  # type: ignore[union-attr]
+        )
+        self.regressor = instantiate(self.hparams.regressor)  # type: ignore[union-attr]
 
         logger.debug(
-            "Instantiating loss",
-            target=self.hparams.loss._target_,  # type: ignore[union-attr]
+            "Instantiating categorical loss",
+            target=self.hparams.loss.categorical._target_,  # type: ignore[union-attr]
         )
-        self.loss = instantiate(self.hparams.loss)
+        self.loss_categorical = instantiate(self.hparams.loss.categorical)  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating l1 loss",
+            target=self.hparams.loss.l1._target_,  # type: ignore[union-attr]
+        )
+        self.loss_l1 = instantiate(self.hparams.loss.l1)  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating diff",
+            target=self.hparams.diff._target_,  # type: ignore[union-attr]
+        )
+        self.diff = instantiate(self.hparams.diff)
 
         self.action_keys: List[str] = self.hparams.action_keys  # type: ignore[assignment]
         self.metadata_keys: List[str] = self.hparams.metadata_keys  # type: ignore[assignment]
@@ -174,13 +189,16 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             B, T, H * W, device=image_features.device
         )
         tokens_shift = torch.zeros(B, T, H * W, device=image_features.device)
+        # Is ignore in L1 loss since only computed over metadata and actions values
+        values = float("inf") * torch.ones(B, T, H * W, device=image_features.device)
 
-        return image_features, image_tokens, tokens_shift
+        return image_features, image_tokens, tokens_shift, values
 
     def _metadata_embeddings_and_tokens(self, sample, keys=[]):
         embeddings = []
         tokens = []
         tokens_shift = []
+        values = []
 
         for key in keys:
             tokenizer = getattr(self.tokenizers, key)
@@ -193,18 +211,21 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             embeddings.append(embedding)
             tokens.append(token)
             tokens_shift.append(token_shift)
+            values.append(sample[key].unsqueeze(-1))
 
         # cat on tokens
         embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
         tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
         tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
+        values = torch.cat(values, 2)  # type: ignore[assignment]
 
-        return embeddings, tokens, tokens_shift
+        return embeddings, tokens, tokens_shift, values
 
     def _action_embeddings_and_tokens(self, sample, keys=[]):
         embeddings = []
         tokens = []
         tokens_shift = []
+        values = []
 
         for key in keys:
             tokenizer = getattr(self.tokenizers, key)
@@ -217,11 +238,13 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             embeddings.append(embedding)
             tokens.append(token)
             tokens_shift.append(token_shift)
+            values.append(sample[key].unsqueeze(-1))
 
         # cat on tokens
         embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
         tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
         tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
+        values = torch.cat(values, 2)  # type: ignore[assignment]
         b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
 
         position_encoded: Float[Tensor, "b t n e"] = (
@@ -232,19 +255,31 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         embeddings += position_encoded
 
-        return embeddings, tokens, tokens_shift
+        return embeddings, tokens, tokens_shift, values
 
     def _step(self, sample):
-        episode, episode_labels, episode_labels_shift = self._make_episode(sample)
+        (
+            episode,
+            episode_labels,
+            episode_labels_shift,
+            episode_values,
+        ) = self._make_episode(sample)
 
-        logits = self.forward(
+        logits, values = self.forward(
             episode=episode[:, :-1],
         )
 
         labels = episode_labels[:, 1:]
         labels_shift = episode_labels_shift[:, 1:]
+        episode_values = episode_values[:, 1:]
 
-        return logits, labels.to(torch.int64), labels_shift.to(torch.int64)
+        return (
+            logits,
+            values,
+            labels.to(torch.int64),
+            labels_shift.to(torch.int64),
+            episode_values,
+        )
 
     def _make_episode(self, sample):
         # tokenization + embeddings
@@ -252,16 +287,19 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             image_embeddings,
             image_tokens,
             image_tokens_shift,
+            image_values,
         ) = self._image_embeddings_and_tokens(sample["frames"])
         (
             metadata_embeddings,
             metadata_tokens,
             metadata_tokens_shift,
+            metadata_values,
         ) = self._metadata_embeddings_and_tokens(sample, keys=self.metadata_keys)
         (
             action_embeddings,
             action_tokens,
             action_tokens_shift,
+            action_values,
         ) = self._action_embeddings_and_tokens(sample, keys=self.action_keys)
 
         observations = torch.cat([image_embeddings, metadata_embeddings], 2)
@@ -302,6 +340,15 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             ],
             dim=2,
         )
+        episode_values = torch.cat(
+            [
+                image_values,
+                metadata_values,
+                float("inf") * torch.ones_like(separator_tokens),
+                action_values,
+            ],
+            dim=2,
+        )
 
         b, t, s, d = episode.shape
         # add global positional (along t) embedding to all tokens
@@ -314,97 +361,65 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         episode = episode.view(b, t * (o + 1 + a), d)
         episode_labels = episode_labels.view(b, t * (o + 1 + a))
         episode_labels_shift = episode_labels_shift.view(b, t * (o + 1 + a))
+        episode_values = episode_values.view(b, t * (o + 1 + a))
 
-        return episode, episode_labels, episode_labels_shift
+        return episode, episode_labels, episode_labels_shift, episode_values
 
-    def _compute_l1_diff(self, logits, tgt_labels, labels_shift):
-        logits = logits.detach().clone()
-        tgt_labels = tgt_labels.detach().clone()
-        b, t, c = logits.shape
-        # flatten on batch dimension
-        logits = logits.view(b * t, c)
-        tgt_labels = tgt_labels.view(b * t)
-        labels_shift = labels_shift.view(b * t)
-        # Kick out ignore_index labels (-1)
-        labels_mask = torch.where(tgt_labels >= 0)
-        #
-        # Softmax and take max
-        #
-        pred_labels = torch.argmax(softmax(logits, dim=1), dim=1)
-        # unshift pred, tgt labels to bring it to [0, 1024)
-        pred_labels -= labels_shift
-        tgt_labels -= labels_shift
-        pred_labels = pred_labels[labels_mask]
-        tgt_labels = tgt_labels[labels_mask]
-
-        # reverse view
-        parts = [len(self.metadata_keys), 1, len(self.action_keys)]
-        view_reshape = (b, -1, sum(parts))
-
-        pred_observations_labels, _, pred_actions_labels = torch.split(
-            pred_labels.view(*view_reshape), parts, dim=2
-        )
-        tgt_observations_labels, _, tgt_actions_labels = torch.split(
-            tgt_labels.view(*view_reshape), parts, dim=2
+    def _compute_diff(self, logits, tgt_labels, labels_shift):
+        return self.diff(
+            logits.detach(),
+            tgt_labels.detach(),
+            labels_shift.detach(),
+            self.sensor_detokenization,
+            self.metadata_keys,
+            self.action_keys,
         )
 
-        # detokenize (tokens to real values)
-        pred_observations_values = torch.zeros_like(
-            pred_observations_labels, dtype=torch.float
-        )
-        pred_actions_values = torch.zeros_like(pred_actions_labels, dtype=torch.float)
-        tgt_observations_values = torch.zeros_like(
-            tgt_observations_labels, dtype=torch.float
-        )
-        tgt_actions_values = torch.zeros_like(tgt_actions_labels, dtype=torch.float)
-
-        for idx, key in enumerate(self.metadata_keys):
-            inv_func = self.sensor_detokenization[key]
-            pred_observations_values[:, :, idx] = inv_func(
-                pred_observations_labels[:, :, idx]
-            )
-            tgt_observations_values[:, :, idx] = inv_func(
-                tgt_observations_labels[:, :, idx]
-            )
-
-        for idx, key in enumerate(self.action_keys):
-            inv_func = self.sensor_detokenization[key]
-            pred_actions_values[:, :, idx] = inv_func(pred_actions_labels[:, :, idx])
-            tgt_actions_values[:, :, idx] = inv_func(tgt_actions_labels[:, :, idx])
-
-        # Calculate L1
-        obs_diff = torch.abs(tgt_observations_values - pred_observations_values)
-        action_diff = torch.abs(tgt_actions_values - pred_actions_values)
-
-        l1_loss = {}
-        values = {}
-        for idx, key in enumerate(self.metadata_keys):
-            l1_loss[key] = obs_diff[:, :, idx].mean()
-            values[f"{key}_pred"] = pred_observations_values[:, :, idx]
-            values[f"{key}_tgt"] = tgt_observations_values[:, :, idx]
-
-        for idx, key in enumerate(self.action_keys):
-            l1_loss[key] = action_diff[:, :, idx].mean()
-            values[f"{key}_pred"] = pred_actions_values[:, :, idx]
-            values[f"{key}_tgt"] = tgt_actions_values[:, :, idx]
-
-        return l1_loss, values
-
-    def _compute_loss(self, logits, labels):
+    def _compute_loss_categorical(self, logits, labels):
         b, t, c = logits.shape
         # flatten on batch dimension
         logits = logits.view(b * t, c)
         labels = labels.view(b * t)
-        loss = self.loss(logits, labels)
+        loss = self.loss_categorical(
+            logits,
+            labels,
+        )
         return loss
+
+    def _compute_loss_l1(self, pred, tgt):
+        b, t, c = pred.shape
+
+        # flatten on batch dimension
+        pred = pred.clone().view(b * t * c)
+        tgt = tgt.clone().view(b * t)
+
+        loss = self.loss_l1(
+            pred,
+            tgt,
+        )
+
+        # Ignore tokens which have been set to inf, f.ex image and sep
+        # Since the don't correspont to real values
+        mask = tgt == float("inf")
+        loss[mask] = 0
+
+        loss_masked = loss.sum() / (~mask).sum()
+
+        return loss_masked
 
     def training_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
-        pred, tgt, tgt_shift = self._step(sample)
-        loss_categorical = self._compute_loss(pred, tgt)
-        diff_l1, _ = self._compute_l1_diff(pred, tgt, tgt_shift)
+        pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
+        loss_categorical = self._compute_loss_categorical(pred, tgt)
+        loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
+        diff_l1, _ = self._compute_diff(pred, tgt, tgt_shift)
 
-        metrics = {"train/loss": loss_categorical}
+        loss = (
+            self.hparams.loss.weights.categorical * loss_categorical  # type: ignore[union-attr]
+            + self.hparams.loss.weights.l1 * loss_l1  # type: ignore[union-attr]
+        )
+
+        metrics = {"train/loss": loss_categorical, "train/loss_l1": loss_l1}
         metrics.update({f"diff/train_{key}": value for key, value in diff_l1.items()})
 
         self.log_dict(
@@ -416,15 +431,21 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             rank_zero_only=True,
             batch_size=pred.shape[0],
         )
-        return loss_categorical
+        return loss
 
     def validation_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
-        pred, tgt, tgt_shift = self._step(sample)
-        loss_categorical = self._compute_loss(pred, tgt)
-        diff_l1, numeric_values = self._compute_l1_diff(pred, tgt, tgt_shift)
+        pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
+        loss_categorical = self._compute_loss_categorical(pred, tgt)
+        loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
+        diff_l1, numeric_values = self._compute_diff(pred, tgt, tgt_shift)
 
-        metrics = {"val/loss": loss_categorical}
+        loss = (
+            self.hparams.loss.weights.categorical * loss_categorical  # type: ignore[union-attr]
+            + self.hparams.loss.weights.l1 * loss_l1  # type: ignore[union-attr]
+        )
+
+        metrics = {"val/loss": loss_categorical, "val/loss_l1": loss_l1}
         metrics.update({f"diff/val_{key}": value for key, value in diff_l1.items()})
 
         self.log_dict(
@@ -438,7 +459,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         )
         self._log_val_outputs_dict(outputs_dict=numeric_values)
 
-        return loss_categorical
+        return loss
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
         sample = self.prepare_batch(batch)
@@ -460,7 +481,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
             for key in self.action_keys:
-                logits = self.forward(episode=history).detach()
+                logits, _ = self.forward(episode=history).detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
                     torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
                 )
@@ -504,8 +525,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             mask=episode_mask,
         )
         logits = self.classifier(features)
+        values = self.regressor(features)
 
-        return logits
+        return logits, values
 
     def prepare_batch(self, batch):
         clips = mit.one(batch["clips"].values())
