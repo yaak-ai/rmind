@@ -140,6 +140,12 @@ lightning_logs/
 .cenv
 
 *.ipynb
+
+# generated
 config/dataset/train.yaml
 config/dataset/val.yaml
-pretrained/*
+config/dataset/train-cil.yaml
+config/dataset/val-cil.yaml
+
+# editor
+.helix/

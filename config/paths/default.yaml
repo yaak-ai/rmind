@@ -1,2 +1,2 @@
-data_dir: /nas/drives/yaak/yaak_dataset
+data_dir: /nas/drives/yaak/data
 metadata_cache_dir: /tmp/cache/yaak-datasets/metadata

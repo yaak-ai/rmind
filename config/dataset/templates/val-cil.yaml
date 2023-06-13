@@ -1,0 +1,79 @@
+#@ drives = [
+#@    'Niro104-HQ/2022-12-20--13-57-20',
+#@    'Niro115-HQ/2023-05-16--10-47-33',
+#@    'Niro107-HQ/2023-05-12--12-05-15',
+#@    'Niro122-HQ/2023-04-05--12-06-39',
+#@    'Niro102-HQ/2022-12-03--11-30-20',
+#@ ]
+
+#@ cameras = [
+#@   'cam_front_left',
+#@   'cam_left_forward',
+#@   'cam_right_forward',
+#@ ]
+#@
+
+_target_: yaak_datasets.Dataset
+_recursive_: false
+config:
+  version: 0.12.3
+  data:
+    drives:
+      #@ for drive in drives:
+      - id: #@ drive
+        sources:
+          #@ for camera in cameras:
+          - camera: #@ camera
+            reader:
+              _target_: yaak_datasets.FrameImageVideoReader
+              path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324
+              filename_format: '{:09d}.jpg'
+          #@ end
+        metadata:
+          path: ${paths.data_dir}/${..id}/metadata.log
+      #@ end
+
+    metadata:
+      cameras: #@ cameras
+      select:
+        - message: ImageMetadata
+          fields:
+          - name: frame_idx
+          - name: camera_name
+
+        - message: VehicleMotion
+          fields:
+          - name: speed
+          - name: steering_angle_normalized
+          - name: gas_pedal_normalized
+          - name: brake_pedal_normalized
+
+        - message: VehicleState
+          fields:
+          - name: turn_signal
+
+  samples:
+    alignment:
+      ref_camera: #@ cameras[0]
+      tolerance: 10ms
+
+    clips:
+      length: 1
+      step: 1
+      stride: 1
+
+    transforms:
+      - _target_: yaak_datasets.transforms.Crop
+        offsets: [2, 2, 0, 0]
+
+      - _target_: yaak_datasets.transforms.Normalize
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
+
+  processing:
+    max_workers: null
+    metadata:
+      cache:
+        enabled: true
+        path: ${paths.metadata_cache_dir}
+        size_limit: 1 GiB
