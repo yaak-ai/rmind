@@ -133,7 +133,7 @@ class ActivationsAndGradientsWithMemory(ActivationsAndGradients):
         self,
         model: torch.nn.Module,
         target_layers: List[torch.nn.Module],
-        reshape_transform: Union[Callable, None] = None,
+        reshape_transform: Callable | None,
     ) -> None:
         super().__init__(model, target_layers, reshape_transform)
         self.outputs = None
