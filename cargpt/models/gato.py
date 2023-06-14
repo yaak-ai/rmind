@@ -158,7 +158,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         B, T, C, H, W = frames.shape
         frames = frames.view(B * T, C, H, W)
         image_encodings = self.image_embedding(frames)
-        if self.hparams.image_tokens > 0:
+        if self.hparams.image_tokens > 0:  # type: ignore[operator]
             # for dVAE image tokens are index into the visual vocabulary
             image_features, probs = image_encodings
             image_tokens = (
@@ -398,10 +398,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             return self.loss_categorical(logits, labels)
 
         # If non zero image tokens label expected compute separate loss for image
-        w = self.hparams.loss.weights.ImageEncoder
-        mask = torch.bitwise_and(
-            0 <= labels, labels < self.hparams.tokens_shift["ImageEncoder"]
-        )
+        w = self.hparams.loss.weights.ImageEncoder  # type: ignore[union-attr]
+        mask = torch.bitwise_and(0 <= labels, labels < self.hparams.tokens_shift["ImageEncoder"])  # type: ignore[index]
         metadata_logits = logits[mask]
         metadata_labels = labels[mask]
         metadata_loss = self.loss_categorical(
