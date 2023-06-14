@@ -158,20 +158,23 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         B, T, C, H, W = frames.shape
         frames = frames.view(B * T, C, H, W)
         image_encodings = self.image_embedding(frames)
-        if type(image_encodings) == tuple:
+        if self.hparams.image_tokens > 0:
             # for dVAE image tokens are index into the visual vocabulary
-            image_features, logits = image_encodings
+            image_features, probs = image_encodings
             image_tokens = (
-                torch.argmax(logits.detach(), dim=1) + self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+                torch.argmax(probs.detach(), dim=1) + self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
             )
             tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
-        else:
+        elif self.hparams.image_tokens == 0:
             # for resnet image tokens are fake labels and match ignore_index in cross_entropy loss
             image_features = image_encodings
+            _, _, fH, fW = image_features.shape
             image_tokens = self.hparams.masks.image * torch.ones(  # type: ignore[union-attr]
-                B * T, H, W, device=image_features.device
+                B * T, fH, fW, device=image_features.device
             )
-            tokens_shift = torch.zeros(B * T, H, W, device=image_features.device)
+            tokens_shift = torch.zeros(B * T, fH, fW, device=image_features.device)
+        else:
+            logger.error("Only resnet or dall_e are supported as image encoder")
         _, D, H, W = image_features.shape
         image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
 
@@ -391,10 +394,28 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # flatten on batch dimension
         logits = logits.view(b * t, c)
         labels = labels.view(b * t)
-        loss = self.loss_categorical(
-            logits,
-            labels,
+        if self.hparams.image_tokens == 0:
+            return self.loss_categorical(logits, labels)
+
+        # If non zero image tokens label expected compute separate loss for image
+        w = self.hparams.loss.weights.ImageEncoder
+        mask = torch.bitwise_and(
+            0 <= labels, labels < self.hparams.tokens_shift["ImageEncoder"]
         )
+        metadata_logits = logits[mask]
+        metadata_labels = labels[mask]
+        metadata_loss = self.loss_categorical(
+            metadata_logits,
+            metadata_labels,
+        )
+        image_logits = logits[~mask]
+        image_labels = labels[~mask]
+        image_loss = self.loss_categorical(
+            image_logits,
+            image_labels,
+        )
+        loss = w * image_loss + (1 - w) * metadata_loss
+
         return loss
 
     def _compute_loss_l1(self, pred, tgt):

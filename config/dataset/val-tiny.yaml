@@ -45,17 +45,7 @@ config:
       stride: 1
       step: 1
 
-    transforms:
-      - _target_: yaak_datasets.transforms.Scale
-        factor: 0.25
-
-      - _target_: yaak_datasets.transforms.Crop
-        offsets: [7, 7, 0, 0]
-
-      - _target_: yaak_datasets.transforms.Normalize
-        # ImageNet stats
-        mean: [-0.8, -0.8, -0.8]
-        std: [1.25, 1.25, 1.25]
+    transforms: ${image_encoder.transforms}
 
   processing:
     max_workers: null

@@ -7,6 +7,7 @@ from typing import Tuple
 from torch import Tensor, nn
 from torchvision.models import ResNet
 from dall_e import load_model
+from torch.nn.functional import softmax
 
 
 class ResnetBackbone(torch.nn.Module):
@@ -184,12 +185,14 @@ class DVAEFeatures(torch.nn.Module):
         super().__init__()
         self.model = torch.nn.Linear(in_channels, out_channels, bias=bias)
 
-    def forward(self, logits: Float[Tensor, "b c1 h w"]) -> Tuple[Tensor, Tensor]:
-        x = rearrange(logits, "B D H W -> B H W D")
+    def forward(
+        self, probs: Float[Tensor, "b c1 h w"]
+    ) -> Tuple[Float[Tensor, "b c2 h w"], Float[Tensor, "b c1 h w"]]:
+        x = rearrange(probs, "B D H W -> B H W D")
         x = self.model(x)
         x = rearrange(x, "B H W D -> B D H W")
 
-        return x, logits
+        return x, probs
 
 
 # https://github.com/openai/DALL-E/tree/master
@@ -205,5 +208,6 @@ class dalleDVAE(torch.nn.Module):
 
     def forward(self, x: Float[Tensor, "b c1 h1 w1"]) -> Float[Tensor, "b c2 h2 w2"]:
         logits = self.enc(x)
+        probs = softmax(logits, dim=1)
 
-        return logits
+        return probs
