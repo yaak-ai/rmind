@@ -27,7 +27,7 @@ class DetokenizedL1(nn.Module):
         labels_shift = labels_shift.view(b * t)
 
         # Kick out ignore_index labels (-1) or if labels belong to image tokens
-        labels_mask = 0 < tgt_labels
+        labels_mask = 0 <= tgt_labels
         labels_mask = labels_mask if self.image_tokens_start == 0 else torch.bitwise_and(labels_mask, tgt_labels < self.image_tokens_start)  # type: ignore[index]
 
         #
