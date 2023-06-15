@@ -1,14 +1,13 @@
 from abc import ABC, abstractmethod
+from typing import Tuple
 
 import torch
 from dall_e import load_model
 from einops import einsum, rearrange, repeat
 from jaxtyping import Float, Int, Shaped
-from typing import Tuple
 from torch import Tensor, nn
-from torchvision.models import ResNet
-from dall_e import load_model
 from torch.nn.functional import softmax
+from torchvision.models import ResNet
 
 
 class ResnetBackbone(torch.nn.Module):
