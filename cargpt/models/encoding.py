@@ -10,6 +10,7 @@ from torchvision.models import ResNet
 from dall_e import load_model
 from torch.nn.functional import softmax
 
+
 class ResnetBackbone(torch.nn.Module):
     def __init__(self, resnet: ResNet, freeze: bool = True):
         super().__init__()
