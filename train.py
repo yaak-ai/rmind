@@ -6,12 +6,12 @@ from subprocess import check_output
 
 import hydra
 import pytorch_lightning as pl
+import wandb
 from hydra.utils import instantiate
 from jaxtyping import install_import_hook
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 
-import wandb
 from cargpt.utils.logging import setup_logging
 
 
