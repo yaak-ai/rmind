@@ -1,10 +1,12 @@
 from abc import ABC, abstractmethod
+from typing import Tuple
 
 import torch
 from dall_e import load_model
 from einops import einsum, rearrange, repeat
 from jaxtyping import Float, Int, Shaped
 from torch import Tensor, nn
+from torch.nn.functional import softmax
 from torchvision.models import ResNet
 
 
@@ -178,17 +180,37 @@ class Discretizer(Invertible, torch.nn.Module):
         return x
 
 
+class ResNetTokens(torch.nn.Module):
+    def __init__(self, tokens_mask=-1):
+        super().__init__()
+        self.tokens_mask = tokens_mask
+
+    def forward(
+        self, x: Float[Tensor, "b c1 h w"]
+    ) -> Tuple[Float[Tensor, "b c2 h w"], Float[Tensor, "b h w"]]:
+        BT, _, fH, fW = x.shape
+        tokens = self.tokens_mask * torch.ones(  # type: ignore[union-attr]
+            BT, fH, fW, device=x.device
+        )
+
+        return x, tokens
+
+
 class DVAEFeatures(torch.nn.Module):
     def __init__(self, in_channels: int, out_channels: int, bias: bool = True):
         super().__init__()
         self.model = torch.nn.Linear(in_channels, out_channels, bias=bias)
 
-    def forward(self, x: Float[Tensor, "b c1 h w"]) -> Float[Tensor, "b c2 h w"]:
-        x = rearrange(x, "B D H W -> B H W D")
+    def forward(
+        self, probs: Float[Tensor, "b c1 h w"]
+    ) -> Tuple[Float[Tensor, "b c2 h w"], Int[Tensor, "b h w"]]:
+        x = rearrange(probs, "B D H W -> B H W D")
         x = self.model(x)
         x = rearrange(x, "B H W D -> B D H W")
 
-        return x
+        tokens = torch.argmax(probs.detach(), dim=1)
+
+        return x, tokens
 
 
 # https://github.com/openai/DALL-E/tree/master
@@ -204,5 +226,6 @@ class dalleDVAE(torch.nn.Module):
 
     def forward(self, x: Float[Tensor, "b c1 h1 w1"]) -> Float[Tensor, "b c2 h2 w2"]:
         logits = self.enc(x)
+        probs = softmax(logits, dim=1)
 
-        return logits
+        return probs
