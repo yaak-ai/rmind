@@ -4,8 +4,9 @@ import torch.nn.functional as F
 
 
 class DetokenizedL1(nn.Module):
-    def __init__(self):
+    def __init__(self, image_tokens_start):
         super().__init__()
+        self.image_tokens_start = image_tokens_start
 
     def forward(
         self,
@@ -15,7 +16,6 @@ class DetokenizedL1(nn.Module):
         detokenizer,
         metadata_keys,
         action_keys,
-        image_tokens_start,
     ):
         logits = logits.clone()
         labels = labels.clone()
@@ -27,7 +27,8 @@ class DetokenizedL1(nn.Module):
         labels_shift = labels_shift.view(b * t)
 
         # Kick out ignore_index labels (-1) or if labels belong to image tokens
-        labels_mask = ~((tgt_labels >= image_tokens_start) | (tgt_labels < 0))
+        labels_mask = 0 < tgt_labels
+        labels_mask = labels_mask if self.image_tokens_start == 0 else torch.bitwise_and(labels_mask, tgt_labels < self.image_tokens_start)  # type: ignore[index]
 
         #
         # Softmax and sample from distribution

@@ -157,24 +157,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
     def _image_embeddings_and_tokens(self, frames):
         B, T, C, H, W = frames.shape
         frames = frames.view(B * T, C, H, W)
-        image_encodings = self.image_embedding(frames)
-        if self.hparams.image_tokens > 0:  # type: ignore[operator]
-            # for dVAE image tokens are index into the visual vocabulary
-            image_features, probs = image_encodings
-            image_tokens = (
-                torch.argmax(probs.detach(), dim=1) + self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
-            )
-            tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
-        elif self.hparams.image_tokens == 0:
-            # for resnet image tokens are fake labels and match ignore_index in cross_entropy loss
-            image_features = image_encodings
-            _, _, fH, fW = image_features.shape
-            image_tokens = self.hparams.masks.image * torch.ones(  # type: ignore[union-attr]
-                B * T, fH, fW, device=image_features.device
-            )
-            tokens_shift = torch.zeros(B * T, fH, fW, device=image_features.device)
-        else:
-            logger.error("Only resnet or dall_e are supported as image encoder")
+        image_features, image_tokens = self.image_embedding(frames)
+        image_tokens += self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+        tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
         _, D, H, W = image_features.shape
         image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
 
@@ -378,7 +363,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return episode, episode_labels, episode_labels_shift, episode_values
 
-    def _compute_diff(self, logits, tgt_labels, labels_shift, image_tokens_start):
+    def _compute_diff(self, logits, tgt_labels, labels_shift):
         return self.diff(
             logits.detach(),
             tgt_labels.detach(),
@@ -386,7 +371,6 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             self.sensor_detokenization,
             self.metadata_keys,
             self.action_keys,
-            image_tokens_start,
         )
 
     def _compute_loss_categorical(self, logits, labels):
@@ -394,11 +378,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # flatten on batch dimension
         logits = logits.view(b * t, c)
         labels = labels.view(b * t)
-        if self.hparams.image_tokens == 0:
+        if self.hparams.ignore_image_tokens:
+            # ignore_index takes care of masking classes
             return self.loss_categorical(logits, labels)
 
         # If non zero image tokens label expected compute separate loss for image
-        w = self.hparams.loss.weights.ImageEncoder  # type: ignore[union-attr]
+        w = self.hparams.loss.weights.image  # type: ignore[union-attr]
         mask = torch.bitwise_and(0 <= labels, labels < self.hparams.tokens_shift["ImageEncoder"])  # type: ignore[index]
         metadata_logits = logits[mask]
         metadata_labels = labels[mask]
@@ -442,9 +427,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
-        diff_l1, _ = self._compute_diff(
-            pred, tgt, tgt_shift, self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
-        )
+        diff_l1, _ = self._compute_diff(pred, tgt, tgt_shift)
 
         loss = (
             self.hparams.loss.weights.categorical * loss_categorical  # type: ignore[union-attr]
@@ -470,9 +453,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
-        diff_l1, numeric_values = self._compute_diff(
-            pred, tgt, tgt_shift, self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
-        )
+        diff_l1, numeric_values = self._compute_diff(pred, tgt, tgt_shift)
 
         loss = (
             self.hparams.loss.weights.categorical * loss_categorical  # type: ignore[union-attr]

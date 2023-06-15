@@ -180,6 +180,22 @@ class Discretizer(Invertible, torch.nn.Module):
         return x
 
 
+class ResNetTokens(torch.nn.Module):
+    def __init__(self, tokens_mask=-1):
+        super().__init__()
+        self.tokens_mask = tokens_mask
+
+    def forward(
+        self, x: Float[Tensor, "b c1 h w"]
+    ) -> Tuple[Float[Tensor, "b c2 h w"], Float[Tensor, "b h w"]]:
+        BT, _, fH, fW = x.shape
+        tokens = self.tokens_mask * torch.ones(  # type: ignore[union-attr]
+            BT, fH, fW, device=x.device
+        )
+
+        return x, tokens
+
+
 class DVAEFeatures(torch.nn.Module):
     def __init__(self, in_channels: int, out_channels: int, bias: bool = True):
         super().__init__()
@@ -187,12 +203,14 @@ class DVAEFeatures(torch.nn.Module):
 
     def forward(
         self, probs: Float[Tensor, "b c1 h w"]
-    ) -> Tuple[Float[Tensor, "b c2 h w"], Float[Tensor, "b c1 h w"]]:
+    ) -> Tuple[Float[Tensor, "b c2 h w"], Int[Tensor, "b h w"]]:
         x = rearrange(probs, "B D H W -> B H W D")
         x = self.model(x)
         x = rearrange(x, "B H W D -> B D H W")
 
-        return x, probs
+        tokens = torch.argmax(probs.detach(), dim=1)
+
+        return x, tokens
 
 
 # https://github.com/openai/DALL-E/tree/master

@@ -27,7 +27,7 @@ tokens_shift: # Shifting continous and discrete tokens since embeddings are shar
   VehicleMotion_brake_pedal_normalized: 2501
   VehicleMotion_steering_angle_normalized: 3075
   VehicleState_turn_signal: 4099
-  ImageEncoder: 4102
+  ImageEncoder: ${image_encoder.tokens_shift}
 
 embedding_dim: 512
 
@@ -157,12 +157,14 @@ model:
 
   diff:
     _target_: cargpt.models.losses.DetokenizedL1
+    image_tokens_start: ${image_encoder.tokens_shift}
 
   loss:
     weights:
       categorical: 0.5
       l1: 0.5
-      ImageEncoder: ${image_encoder.loss.weights.ImageEncoder}
+      image: ${image_encoder.loss.weights.ImageEncoder}
+      ignore_image_tokens: ${image_encoder.ignore_image_tokens}
     categorical:
       _target_: torch.nn.CrossEntropyLoss
       ignore_index: -1
@@ -173,14 +175,14 @@ model:
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
-  image_tokens: ${image_encoder.tokens}
+  ignore_image_tokens: ${image_encoder.ignore_image_tokens}
   special_tokens:
     bos: 0
     sep: 1
     eos: 2
   tokens_shift: ${tokens_shift}
   masks:
-    image: -1 # to ignore_index in torch.nn.functional.cross_entropy
+    image: ${image_encoder.tokens_mask}
     metadata: 1
     action: 1
   log:
