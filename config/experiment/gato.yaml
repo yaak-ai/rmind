@@ -15,7 +15,7 @@ num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
 num_tokens_total: 4102 # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens}
 metadata_keys: ["VehicleMotion_speed", "VehicleState_turn_signal"]
-speed_range: [0.0, 120.0]
+speed_range: [0.0, 80.0]
 action_keys:
   - "VehicleMotion_gas_pedal_normalized"
   - "VehicleMotion_brake_pedal_normalized"
