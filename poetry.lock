@@ -5299,13 +5299,13 @@ test = ["coverage[toml] (>=5.2)", "hypothesis", "pytest (>=6.0)", "pytest-benchm
 
 [[package]]
 name = "pyright"
-version = "1.1.313"
+version = "1.1.314"
 description = "Command line wrapper for pyright"
 optional = false
 python-versions = ">=3.7"
 files = [
-    {file = "pyright-1.1.313-py3-none-any.whl", hash = "sha256:1aeed72d5563e97461cb9d17847bfa918f7ec0cf79912bb3d2432fbe014daa23"},
-    {file = "pyright-1.1.313.tar.gz", hash = "sha256:95fa963337e2cfd4900601197d0f866d8c51732dea6c0bb12f962f92a79c77e3"},
+    {file = "pyright-1.1.314-py3-none-any.whl", hash = "sha256:5008a2e04b71e35c5f1b78b16adae9d012601197442ae6c798e9bb3456d1eecb"},
+    {file = "pyright-1.1.314.tar.gz", hash = "sha256:bd104c206fe40eaf5f836efa9027f07cc0efcbc452e6d22dfae36759c5fd28b3"},
 ]
 
 [package.dependencies]
@@ -6066,23 +6066,23 @@ files = [
 
 [[package]]
 name = "ruff-lsp"
-version = "0.0.27"
+version = "0.0.29"
 description = "A Language Server Protocol implementation for Ruff."
 optional = false
 python-versions = ">=3.7"
 files = [
-    {file = "ruff_lsp-0.0.27-py3-none-any.whl", hash = "sha256:6337b719d5a003f8313dc1f5a5f6736d552f91df0d8789444279a697946ca7cc"},
-    {file = "ruff_lsp-0.0.27.tar.gz", hash = "sha256:329e4f5fced415400397f20dc59a6d4ec1d407136969246a76c3e044d9cb09a4"},
+    {file = "ruff_lsp-0.0.29-py3-none-any.whl", hash = "sha256:1a6f445b0a8afb8a9c013d433698979bbba709f67fcc98b9b70510a460a88d4c"},
+    {file = "ruff_lsp-0.0.29.tar.gz", hash = "sha256:607db227949dae3b11ac18a179a2d486efbfc6ade7c56fd6f6f7f7ad8c2575c2"},
 ]
 
 [package.dependencies]
 lsprotocol = ">=2023.0.0a1"
 pygls = ">=1.0.1"
-ruff = ">=0.0.267"
+ruff = ">=0.0.272"
 typing-extensions = "*"
 
 [package.extras]
-dev = ["black (==22.12.0)", "mypy (==1.3.0)", "python-lsp-jsonrpc (==1.0.0)"]
+dev = ["black (==23.3.0)", "mypy (==1.3.0)", "pip-tools (>=6.13.0,<7.0.0)", "pytest (>=7.3.1,<8.0.0)", "python-lsp-jsonrpc (==1.0.0)"]
 
 [[package]]
 name = "s3fs"
@@ -7648,4 +7648,4 @@ test = ["zope.testing"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.11"
-content-hash = "55016d8dea3e61c230d6549ac5be0b410f49fd576bd1689861472960ff12461c"
+content-hash = "441829d20400db4dec6f33b6e90cf99c48b31e133dcbd6a969c6deda6b5a9710"

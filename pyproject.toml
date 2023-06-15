@@ -20,6 +20,7 @@ torchinfo = "^1.7.2"
 torchaudio = "=0.13.1"
 deephouse = {git = "git@github.com:yaak-ai/deephouse.git", rev = "main"}
 dall-e = {git = "git@github.com:openai/DALL-E.git", rev = "master"}
+wandb = "*"
 
 [build-system]
 requires = ["poetry-core>=1.5.0"]
@@ -29,7 +30,6 @@ build-backend = "poetry.core.masonry.api"
 optional = true
 
 [tool.poetry.group.train.dependencies]
-wandb = "*"
 omegaconf = "^2.3.0"
 yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.12.3"}
 
@@ -95,6 +95,7 @@ line-length = 88
 [tool.ruff]
 fix = true
 ignore = ["E501", "F722", "F821"]
+select = ["I001"]
 
 [tool.deptry]
 ignore_unused = [

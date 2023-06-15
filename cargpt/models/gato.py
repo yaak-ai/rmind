@@ -4,16 +4,16 @@ from typing import Any, Dict, List
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
-from loguru import logger
-from einops import repeat, rearrange
+from einops import rearrange, repeat
 from hydra.utils import instantiate
 from jaxtyping import Float, Int
+from loguru import logger
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor
 from torch.nn import Linear, ModuleDict
 from torch.nn.functional import gelu
 
-from cargpt.utils.wandb import LoadableFromArtifact, ValOutputsLoggingTableMixin
+from cargpt.utils._wandb import LoadableFromArtifact, ValOutputsLoggingTableMixin
 
 
 class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
