@@ -4,6 +4,7 @@ from typing import Annotated, Any, Dict, List, Mapping, Optional, Sequence, Tupl
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
+import wandb
 from deephouse.tools.camera import Camera
 from einops import rearrange, reduce, repeat
 from hydra.utils import instantiate
@@ -16,13 +17,12 @@ from torch import Tensor
 from torch.nn import Module, ModuleDict, TransformerEncoder
 from torch.nn import functional as F
 from torchvision.transforms.functional import resize
-
-import wandb
-from cargpt.utils.wandb import LoadableFromArtifact
 from wandb.data_types import JoinedTable
 from wandb.errors import CommError
 from wandb.sdk.interface.artifacts import Artifact, ArtifactManifestEntry
 from wandb.wandb_run import Run
+
+from cargpt.utils._wandb import LoadableFromArtifact
 
 
 class DepthFrameEncoder(Module):

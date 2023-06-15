@@ -1,11 +1,11 @@
 from abc import ABC, abstractmethod
 
 import torch
+from dall_e import load_model
 from einops import einsum, rearrange, repeat
 from jaxtyping import Float, Int, Shaped
 from torch import Tensor, nn
 from torchvision.models import ResNet
-from dall_e import load_model
 
 
 class ResnetBackbone(torch.nn.Module):
