@@ -47,15 +47,10 @@ config:
           fields:
           - name: turn_signal
 
-        - message: Gnss
-          fields:
-          - name: hp_loc_latitude
-          - name: hp_loc_longitude
-
   samples:
     alignment:
       ref_camera: #@ cameras[0]
-      tolerance: 100ms
+      tolerance: 10ms
 
     clips:
       length: 1

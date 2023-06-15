@@ -161,7 +161,6 @@
 #@    'Niro107-HQ/2023-05-17--09-11-52',
 #@    'Niro108-HQ/2023-04-18--07-21-18',
 #@    'Niro108-HQ/2023-04-18--07-47-30',
-#@    'Niro108-HQ/2023-04-20--10-16-44',
 #@    'Niro108-HQ/2023-05-11--05-59-39',
 #@    'Niro108-HQ/2023-05-14--07-13-33',
 #@    'Niro108-HQ/2023-05-14--10-41-37',
@@ -726,15 +725,10 @@ config:
           fields:
           - name: turn_signal
 
-        - message: Gnss
-          fields:
-          - name: hp_loc_latitude
-          - name: hp_loc_longitude
-
   samples:
     alignment:
       ref_camera: #@ cameras[0]
-      tolerance: 100ms
+      tolerance: 10ms
 
     clips:
       length: 1
