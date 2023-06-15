@@ -11,7 +11,7 @@
 _target_: yaak_datasets.Dataset
 _recursive_: false
 config:
-  version: 0.12.1
+  version: 0.12.3
   data:
     drives:
       #@ for drive in drives:
@@ -55,7 +55,7 @@ config:
   samples:
     alignment:
       ref_camera: #@ cameras[0]
-      tolerance: 10ms
+      tolerance: 100ms
 
     clips:
       length: 1
