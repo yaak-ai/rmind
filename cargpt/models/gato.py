@@ -8,7 +8,7 @@ from loguru import logger
 from einops import repeat, rearrange
 from hydra.utils import instantiate
 from jaxtyping import Float, Int
-from pytorch_lightning.utilities import AttributeDict
+from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor
 from torch.nn import Linear, ModuleDict
 from torch.nn.functional import gelu
@@ -48,7 +48,7 @@ class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
         )
         factory_kwargs = {"device": device, "dtype": dtype}
         # Set activation to None, as GEGLU replaces both linear1 + activation
-        self.linear1 = Linear(d_model, dim_feedforward * 2, **factory_kwargs)
+        self.linear1 = Linear(d_model, dim_feedforward * 2, **factory_kwargs)  # type: ignore
         self.activation = None  # type: ignore[assignment]
 
     def _ff_block(self, x: Tensor) -> Tensor:
@@ -150,7 +150,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         self.val_table_main_columns = [
             f"{key}_{label}"
-            for key in self.metadata_keys + self.action_keys
+            for key in self.metadata_keys + self.action_keys  # type: ignore
             for label in ("pred", "tgt")
         ]
 
@@ -515,7 +515,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
             for key in self.action_keys:
-                logits, _ = self.forward(episode=history).detach()
+                logits, _ = self.forward(episode=history)
+                logits = logits.detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
                     torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
                 )

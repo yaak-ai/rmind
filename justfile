@@ -16,7 +16,7 @@ check-format:
 	poetry run black . --check
 
 typecheck:
-	poetry run mypy .
+	poetry run pyright .
 
 check-deps:
 	poetry run deptry .
