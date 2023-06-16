@@ -4,7 +4,7 @@ defaults:
   - /paths: default
   - _self_
 
-output_file: ???
+output_file: video.mp4
 clip_len: 32
 
 trainer:
@@ -23,8 +23,8 @@ model:
   inference_model: null
 
   ground_truth_trajectory:
-    steps: 500
-    time_interval: 0.01  # [s]
+    steps: 30
+    time_interval: 0.1  # [s]
 
   images_transform:
     _target_: cargpt.visualization.Unnormalize
@@ -54,19 +54,19 @@ datamodule:
           drives:
           - id: 2022-10-20--13-03-22
             sources:
-            - camera: cam_front_right  # TODO: probably wanna front center, but extrinsics should also be fine
-              params: ${paths.data_dir}/camera_calibration/gamma/cam-57-deg/calib-pinhole.json
+            - camera: cam_front_left  # TODO: probably wanna front center, but extrinsics should also be fine
+              params: ${paths.data_dir}/calibration/gamma/cam-90-deg/calib-pinhole.json
               reader:
                 _target_: yaak_datasets.FrameImageVideoReader
                 path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
                 filename_format: '{:09d}.jpg'
             metadata:
               path: ${paths.data_dir}/frames/${..id}/metadata.log
-              filter: ImageMetadata_frame_idx between 11600 and 11800  # TODO: remove
+              filter: ImageMetadata_frame_idx between 360 and 720  # TODO: remove
 
           metadata:
             cameras:
-            - cam_front_right
+            - cam_front_left
 
             select:
             - message: ImageMetadata
@@ -78,12 +78,15 @@ datamodule:
               fields:
               - name: speed
               - name: steering_angle_normalized
+              - name: brake_pedal_normalized
+              - name: gas_pedal_normalized
               - name: acceleration_x
+              - name: acceleration_y
               - name: acceleration_z
 
         samples:
           alignment:
-            ref_camera: cam_front_right
+            ref_camera: cam_front_left
             tolerance: 10ms
 
           clips:

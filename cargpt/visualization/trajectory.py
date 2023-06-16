@@ -79,7 +79,10 @@ class Trajectory(pl.LightningModule):
         in_to_out = {
             "VehicleMotion_speed": "speed",  # km / h
             "VehicleMotion_steering_angle_normalized": "steering_norm",
-            "VehicleMotion_acceleration_x": "acceleration_x",  # m / s
+            "VehicleMotion_gas_pedal_normalized": "gas_pedal_norm",
+            "VehicleMotion_brake_pedal_normalized": "brake_pedal_norm",
+            "VehicleMotion_acceleration_x": "acceleration_x",  # m / s2
+            "VehicleMotion_acceleration_y": "acceleration_y",  # m / s2
             "VehicleMotion_acceleration_z": "acceleration_z",
         }
         out = {
@@ -101,8 +104,11 @@ class Trajectory(pl.LightningModule):
         time_interval,
         speed,
         acceleration_x,
+        acceleration_y,
         acceleration_z,
         steering_norm,
+        gas_pedal_norm,
+        brake_pedal_norm,
     ) -> Float[Tensor, "f n 3"]:
         clips, *_ = speed.shape
         points_3d: List[List[Tuple[float, float, float]]] = []
@@ -112,17 +118,20 @@ class Trajectory(pl.LightningModule):
                 x=0.0,
                 y=1.5,
                 z=1e-6,
-                phi=math.radians(90.0),
+                phi=math.radians(0.0),
                 v=speed[i].item(),
                 t=0.0,
             )
             curr_points = self.calculate_trajectory(
+                last_elem=start_point,
                 steps=steps,
                 time_interval=time_interval,
                 acceleration_x=acceleration_x[i].item(),
+                acceleration_y=acceleration_y[i].item(),
                 acceleration_z=acceleration_z[i].item(),
+                gas_norm=gas_pedal_norm[i].item(),
+                brake_norm=brake_pedal_norm[i].item(),
                 steering_wheel_norm=steering_norm[i].item(),
-                last_elem=start_point,
             )
             points_3d.append([(p.x, p.y, p.z) for p in [start_point] + curr_points])
 
@@ -141,26 +150,32 @@ class Trajectory(pl.LightningModule):
         steps: int,
         time_interval: float,
         acceleration_x: float,
+        acceleration_y: float,
         acceleration_z: float,
-        steering_wheel_norm: float = 0.0,
+        gas_norm: float,
+        brake_norm: float,
+        steering_wheel_norm: float,
     ) -> List[TrajectoryPoint]:
         # https://thomasfermi.github.io/Algorithms-for-Automated-Driving/Control/BicycleModel.html
         # Fig. 26.
         # Their y-axis is z-axis, their time_interval is 1., their delta is our beta
         elems: List[TrajectoryPoint] = []
-        a = math.sqrt(acceleration_x**2 + acceleration_z**2)
-        beta = math.radians(
-            -steering_wheel_norm * self.max_beta
-        )  # norm: minus means left, plus means right
+        # https://yaakai.slack.com/archives/CQKL412BC/p1685447717475339
+        a = math.copysign(acceleration_y, gas_norm - brake_norm)
+        beta = steering_wheel_norm * self.max_beta
+        # norm: minus means left, plus means right
         for step in range(steps):
             p = last_elem
+            x = p.x + p.v * math.sin(p.phi) * time_interval
+            z = p.z + p.v * math.cos(p.phi) * time_interval
+            phi = p.phi + (p.v * math.tan(beta) / self.wheelbase) * time_interval
             v = p.v + a * time_interval
             p_next = TrajectoryPoint(
-                x=p.x + v * math.cos(p.phi + beta) * time_interval,
+                x=x,
                 y=p.y,
-                z=p.z + v * math.sin(p.phi + beta) * time_interval,
-                phi=p.phi + time_interval * math.tan(beta) * v / self.wheelbase,
-                v=v + a * time_interval,
+                z=z,
+                phi=phi,
+                v=v,
                 t=p.t + time_interval,
             )
             elems.append(p_next)
@@ -188,7 +203,5 @@ def draw_trajectory(
             line_thickness,
         )
         for point in points:
-            vis = cv2.circle(
-                vis, point, point_radius, point_color, point_thickness  # type: ignore
-            )
+            vis = cv2.circle(vis, point, point_radius, point_color, point_thickness)  # type: ignore
         visualizations[i] = vis
