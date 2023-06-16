@@ -13,7 +13,7 @@ trainer:
     - _target_: cargpt.callbacks.VideoWriter
       output_file: ${output_file}
       overwrite: true
-      fourcc: vp09
+      fourcc: mp4v
       fps: 30
 
 model:
