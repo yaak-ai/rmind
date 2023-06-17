@@ -70,7 +70,6 @@ class Trajectory(pl.LightningModule):
             (images * 255).int().cpu().numpy().astype(np.uint8)
         )
         draw_trajectory(visualizations, gt_points_2d)
-        # TODO: add debug drawings: straigh line + 1/4 circle
         return visualizations
 
     def prepare_metadata(self, batch):
