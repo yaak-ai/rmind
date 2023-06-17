@@ -35,6 +35,9 @@ train-debug *ARGS: generate-dataset-config
 visualize *ARGS:
 	PYTHONOPTIMIZE=1 ./predict.py inference=visualize {{ARGS}}
 
+trajectory *ARGS:
+	PYTHONOPTIMIZE=1 ./predict.py inference=trajectory {{ARGS}}
+
 predict *ARGS:
 	PYTHONOPTIMIZE=1 ./predict.py {{ARGS}}
 

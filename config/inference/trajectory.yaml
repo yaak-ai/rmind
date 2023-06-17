@@ -4,47 +4,43 @@ defaults:
   - /paths: default
   - _self_
 
-output_file: ???
-batch_size: ???
-clip_len: ???
+output_file: video.mp4
+clip_len: 32
 
 trainer:
   benchmark: true
   callbacks:
     - _target_: cargpt.callbacks.VideoWriter
       output_file: ${output_file}
-      overwrite: false
-      fourcc: vp09
+      overwrite: true
+      fourcc: mp4v
       fps: 30
 
 model:
-  _target_: cargpt.visualization.CILppWrapper
+  _target_: cargpt.visualization.Trajectory
   _recursive_: False
-  model:
-    _target_: cargpt.models.cilpp.CILpp.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-0mbtfm8x:v0']
-  # The convolution layer to take for visualization, when multiple - mean is used
-  visualize_layers:
-    - model.state_embedding['frame']['backbone'].resnet.layer4[-1]
+  # Let the model be optional so that we can use both gt and preds
+  inference_model: null
+
+  ground_truth_trajectory:
+    steps: 30
+    time_interval: 0.1  # [s]
+
   images_transform:
     _target_: cargpt.visualization.Unnormalize
     mean: [0.485, 0.456, 0.406]
     std: [0.229, 0.224, 0.225]
-  labels:
-    cv2_font: FONT_HERSHEY_SIMPLEX
-    font_scale: 1
-    font_color: [255, 255, 255]
-    font_thickness: 2
-  # Pick RawAccelerationTarget or RawSteeringTarget
-  visualize_target:
-    _target_: cargpt.visualization.RawAccelerationTarget
+
+  car:
+    wheelbase: 2.7  # [m], 2700 [mm]
+    max_beta: 35.75  # [deg]  # TODO: find the real middle beta
 
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
     _target_: torch.utils.data.DataLoader
     shuffle: false
-    batch_size: ${batch_size}
+    batch_size: 1
     num_workers: 8
     pin_memory: true
     persistent_workers: true
@@ -53,22 +49,24 @@ datamodule:
       _target_: yaak_datasets.Dataset
       _recursive_: false
       config:
-        version: 0.12.0
+        version: 0.12.3
         data:
           drives:
           - id: 2022-10-20--13-03-22
             sources:
-            - camera: cam_front_right
+            - camera: cam_front_left  # TODO: probably wanna front center, but extrinsics should also be fine
+              params: ${paths.data_dir}/calibration/gamma/cam-90-deg/calib-pinhole.json
               reader:
                 _target_: yaak_datasets.FrameImageVideoReader
                 path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
                 filename_format: '{:09d}.jpg'
             metadata:
               path: ${paths.data_dir}/frames/${..id}/metadata.log
+              filter: ImageMetadata_frame_idx between 3600 and 4200  # TODO: remove
 
           metadata:
             cameras:
-            - cam_front_right
+            - cam_front_left
 
             select:
             - message: ImageMetadata
@@ -80,24 +78,21 @@ datamodule:
               fields:
               - name: speed
               - name: steering_angle_normalized
-              - name: gas_pedal_normalized
               - name: brake_pedal_normalized
-
-            - message: VehicleState
-              fields:
-              - name: turn_signal
-
-            filter: VehicleMotion_speed between 8 and 40
+              - name: gas_pedal_normalized
+              - name: acceleration_x
+              - name: acceleration_y
+              - name: acceleration_z
 
         samples:
           alignment:
-            ref_camera: cam_front_right
+            ref_camera: cam_front_left
             tolerance: 10ms
 
           clips:
             length: ${clip_len}
             stride: 1
-            step: 1
+            step: ${clip_len}
 
           transforms:
             - _target_: yaak_datasets.transforms.Scale

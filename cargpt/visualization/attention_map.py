@@ -2,7 +2,6 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 import cv2
-import more_itertools as mit
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -15,24 +14,8 @@ from pytorch_grad_cam.base_cam import BaseCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from torch import Tensor
-from torchvision.transforms import Normalize
 
-
-class Unnormalize(Normalize):
-    def __init__(
-        self,
-        mean: Sequence[float],
-        std: Sequence[float],
-        **kwargs: Any,
-    ) -> None:
-        _mean: Float[Tensor, "c"] = torch.tensor(mean)
-        _std: Float[Tensor, "c"] = torch.tensor(std)
-
-        super().__init__(
-            mean=(-_mean / _std).tolist(),
-            std=(1.0 / _std).tolist(),
-            **kwargs,
-        )
+from cargpt.visualization.utils import get_images
 
 
 class CILppWrapper(pl.LightningModule):
@@ -94,7 +77,7 @@ class CILppWrapper(pl.LightningModule):
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
     ) -> List[np.ndarray]:
         images = rearrange(
-            get_images(batch, self.images_transform), "b c h w -> b h w c"
+            get_images(batch, self.images_transform, clip_idx=-1), "b c h w -> b h w c"
         )
         batch_size = images.shape[0]
         targets = [self.target] * batch_size
@@ -213,13 +196,6 @@ def reshape_transform(
     # pick only the last frame from t
     tensor = tensor[:, -1, ...]
     return tensor
-
-
-def get_images(batch, transform: Callable) -> Float[Tensor, "..."]:
-    clips = mit.one(batch["clips"].values())
-    frames = clips["frames"][:, -1, ...]
-    imgs = transform(frames)
-    return imgs.clamp(min=0.0, max=1.0)
 
 
 def put_labels(
