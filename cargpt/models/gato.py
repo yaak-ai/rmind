@@ -157,7 +157,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
     def _image_embeddings_and_tokens(self, frames):
         B, T, C, H, W = frames.shape
         frames = frames.view(B * T, C, H, W)
-        image_features = self.image_embedding(frames)
+        image_features, image_tokens = self.image_embedding(frames)
+        image_tokens += self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+        tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
         _, D, H, W = image_features.shape
         image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
 
@@ -183,12 +185,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         image_features += patch_pos_col + patch_pos_row
         # BTHWD -> BT(HW)D
         image_features = image_features.view(B, T, H * W, D)
-        # for resnet image tokens are fake labels but for VQ-VAE
-        # they would be index into the visual vocabulary
-        image_tokens = self.hparams.masks.image * torch.ones(  # type: ignore[union-attr]
-            B, T, H * W, device=image_features.device
-        )
-        tokens_shift = torch.zeros(B, T, H * W, device=image_features.device)
+        image_tokens = image_tokens.view(B, T, H * W)
+        tokens_shift = tokens_shift.view(B, T, H * W)
         # Is ignore in L1 loss since only computed over metadata and actions values
         values = float("inf") * torch.ones(B, T, H * W, device=image_features.device)
 
@@ -380,10 +378,27 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # flatten on batch dimension
         logits = logits.view(b * t, c)
         labels = labels.view(b * t)
-        loss = self.loss_categorical(
-            logits,
-            labels,
+        if self.hparams.ignore_image_tokens:
+            # ignore_index takes care of masking classes
+            return self.loss_categorical(logits, labels)
+
+        # If non zero image tokens label expected compute separate loss for image
+        w = self.hparams.loss.weights.image  # type: ignore[union-attr]
+        mask = torch.bitwise_and(0 <= labels, labels < self.hparams.tokens_shift["ImageEncoder"])  # type: ignore[index]
+        metadata_logits = logits[mask]
+        metadata_labels = labels[mask]
+        metadata_loss = self.loss_categorical(
+            metadata_logits,
+            metadata_labels,
         )
+        image_logits = logits[~mask]
+        image_labels = labels[~mask]
+        image_loss = self.loss_categorical(
+            image_logits,
+            image_labels,
+        )
+        loss = w * image_loss + (1 - w) * metadata_loss
+
         return loss
 
     def _compute_loss_l1(self, pred, tgt):

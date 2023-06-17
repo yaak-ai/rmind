@@ -1,0 +1,35 @@
+batch_size: 8
+clip_len: 6
+patch_row_tokens: 10
+patch_col_tokens: 18
+local_position_tokens: 256
+total_tokens: 4102
+tokens_shift: 0
+tokens_mask: -1
+ignore_image_tokens: True
+backbone:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: cargpt.models.encoding.ResnetBackbone
+      resnet:
+        _target_: torchvision.models.resnet18
+        weights: IMAGENET1K_V1
+      freeze: True
+    - _target_: cargpt.models.encoding.ResNetTokens
+      tokens_mask: ${....tokens_mask} # should match ignore_index in cross_entropy loss
+
+loss:
+  weights:
+    ImageEncoder: 0
+
+transforms:
+  - _target_: yaak_datasets.transforms.Scale
+    factor: 0.3
+
+  - _target_: yaak_datasets.transforms.Crop
+    offsets: [2, 2, 0, 0]
+
+  - _target_: yaak_datasets.transforms.Normalize
+    # ImageNet stats
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]

@@ -1,19 +1,20 @@
 # @package _global_
-
+# image_encoder: chose between dall_e or resnet [preferred]
 defaults:
   - /paths: default
+  - /image_encoder: resnet.yaml
   - override /datamodule: gato.yaml
   - _self_
 
 wandb:
   group: Gato-Image-speed-to-control
 
-batch_size: 8
-clip_len: 6
+batch_size: ${image_encoder.batch_size}
+clip_len: ${image_encoder.clip_len}
 num_special_tokens: 3  # for special tokens SOS, SEP, OES
 num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
-num_tokens_total: 4102 # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens}
+num_tokens_total: ${image_encoder.total_tokens} # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens} + ${image_encoder.tokens}
 metadata_keys: ["VehicleMotion_speed", "VehicleState_turn_signal"]
 speed_range: [0.0, 80.0]
 action_keys:
@@ -26,37 +27,9 @@ tokens_shift: # Shifting continous and discrete tokens since embeddings are shar
   VehicleMotion_brake_pedal_normalized: 2501
   VehicleMotion_steering_angle_normalized: 3075
   VehicleState_turn_signal: 4099
+  ImageEncoder: ${image_encoder.tokens_shift}
 
 embedding_dim: 512
-
-resnet:
-  patch_row_tokens: 10
-  patch_col_tokens: 18
-  local_position_tokens: 256
-  backbone:
-    _target_: cargpt.models.encoding.ResnetBackbone
-    resnet:
-      _target_: torchvision.models.resnet18
-      weights: IMAGENET1K_V1
-    freeze: True
-
-dall_e:
-  patch_row_tokens: 40
-  patch_col_tokens: 72
-  local_position_tokens: 3000
-  backbone:
-    _target_: torch.nn.Sequential
-    _args_:
-      - _target_: cargpt.models.encoding.dalleDVAE
-        enc_weights: ${dalle_encoder_weights}
-        freeze: True
-      - _target_: cargpt.models.encoding.DVAEFeatures
-        in_channels: 8192
-        out_channels: ${embedding_dim}
-        bias: False
-
-# chose between dall_e or resnet [preferred]
-image_encoder: resnet
 
 dalle_encoder_weights: pretrained/dalle/encoder.pkl
 
@@ -69,7 +42,7 @@ model:
     lr: 1e-4
     weight_decay: 0
 
-  image_embedding: ${${image_encoder}.backbone}
+  image_embedding: ${image_encoder.backbone}
 
   sensor_tokenizers:
     _target_: torch.nn.ModuleDict
@@ -143,15 +116,15 @@ model:
   position_encoding:
     patch_row:
       _target_: torch.nn.Embedding
-      num_embeddings: ${${image_encoder}.patch_row_tokens}
+      num_embeddings: ${image_encoder.patch_row_tokens}
       embedding_dim: ${embedding_dim}
     patch_col:
       _target_: torch.nn.Embedding
-      num_embeddings: ${${image_encoder}.patch_col_tokens}
+      num_embeddings: ${image_encoder.patch_col_tokens}
       embedding_dim: ${embedding_dim}
     local:
       _target_: torch.nn.Embedding
-      num_embeddings: ${${image_encoder}.local_position_tokens}
+      num_embeddings: ${image_encoder.local_position_tokens}
       embedding_dim: ${embedding_dim}
     global_pos:
       _target_: torch.nn.Embedding
@@ -184,11 +157,14 @@ model:
 
   diff:
     _target_: cargpt.models.losses.DetokenizedL1
+    image_tokens_start: ${image_encoder.tokens_shift}
 
   loss:
     weights:
       categorical: 0.5
       l1: 0.5
+      image: ${image_encoder.loss.weights.ImageEncoder}
+      ignore_image_tokens: ${image_encoder.ignore_image_tokens}
     categorical:
       _target_: torch.nn.CrossEntropyLoss
       ignore_index: -1
@@ -199,13 +175,14 @@ model:
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
+  ignore_image_tokens: ${image_encoder.ignore_image_tokens}
   special_tokens:
     bos: 0
     sep: 1
     eos: 2
   tokens_shift: ${tokens_shift}
   masks:
-    image: -1 # to ignore_index in torch.nn.functional.cross_entropy
+    image: ${image_encoder.tokens_mask}
     metadata: 1
     action: 1
   log:
