@@ -7,6 +7,7 @@ import more_itertools as mit
 import numpy as np
 import pytorch_lightning as pl
 import torch
+import torch.nn.functional as F
 from deephouse.tools.camera import Camera
 from einops import rearrange
 from hydra.utils import instantiate
@@ -17,6 +18,7 @@ from torch import Tensor
 from cargpt.visualization.utils import get_images
 
 TrajectoryPoint = namedtuple("TrajectoryPoint", "x,y,z,phi,t,v")
+np.set_printoptions(suppress=True)
 
 
 class Trajectory(pl.LightningModule):
@@ -29,6 +31,7 @@ class Trajectory(pl.LightningModule):
     ):
         super().__init__()
         self.model = instantiate(inference_model)
+        self.model.eval()
         self.images_transform = instantiate(images_transform)
 
         self.wheelbase: float = car.wheelbase
@@ -38,9 +41,64 @@ class Trajectory(pl.LightningModule):
         self.gt_steps: int = ground_truth_trajectory.steps
         self.gt_time_interval: float = ground_truth_trajectory.time_interval
 
+    def get_model_trajactories(self, batch):
+        sample = self.model.prepare_batch(batch)
+
+        b, clips, c, h, w = sample["frames"].shape
+        episode, labels, _, episode_values = self.model._make_episode(sample)
+        b, seqlen, d = episode.shape
+        num_actions = len(self.model.action_keys)
+        # Take out action we don't use it for predictions
+        observations, _ = torch.split(
+            episode, [seqlen - num_actions, num_actions], dim=1
+        )
+
+        action_values = []
+        action_tokens = []
+        for idx in range(num_actions):
+            action_key = self.model.action_keys[idx]
+            # we only pass observations to the model and let it predict action 1 at a time
+            pred, _ = self.model.forward(episode=observations)
+            # can be argmax of multinomial sampling
+            action_class = torch.argmax(F.softmax(pred, dim=2), dim=2)
+            # get last action predicted
+            action_token = action_class[:, [-1]]
+            action_tokens.append(action_token.clone())
+            action_embedding = self.model.sensor_embedding(action_token)
+            # add action position embedding
+            action_embedding += self.model.action_position(
+                torch.tensor([0], device=action_embedding.device)
+            ).view(b, 1, d)
+            global_positions = torch.tensor([clips - 1]).to(action_embedding.device)
+            global_positions_encoded = self.model.global_position(
+                global_positions
+            ).view(1, 1, d)
+            action_embedding += global_positions_encoded
+            # next observation takes the past action
+            observations = torch.cat([observations, action_embedding], dim=1)
+            # unshift and detokenize
+            action_token -= self.model.hparams.tokens_shift[action_key]
+            detokenizer = self.model.sensor_detokenization[action_key]
+            action_value = detokenizer(action_token)
+            action_values.append(action_value)
+
+        # computed_actions.append(detokenized_actions)
+        prediction_actions = torch.cat(action_values)
+        # predected_tokens = torch.cat(action_tokens).flatten().cpu().numpy().tolist()
+        # print(f"pred {np.array2string(prediction_actions, precision=3, floatmode='fixed')}")
+        # print(
+        #     f"gt: {np.array2string(episode_values[:, -num_actions:].cpu().numpy(), precision=3,floatmode='fixed')}"
+        # )
+        # print(f"pred {predected_tokens}")
+        # print(f"gt: {labels[:, -num_actions:].cpu().numpy()}")
+
+        return prediction_actions
+
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
     ) -> np.ndarray:
+        model_actions = self.get_model_trajactories(batch)
+
         images = rearrange(
             get_images(batch, self.images_transform), "b f c h w -> b f h w c"
         )
@@ -52,8 +110,12 @@ class Trajectory(pl.LightningModule):
             )
 
         images = images.squeeze(0)  # kick out batch dimension
+        images = images[[clip_len - 1]]
         camera = self.get_camera(batch)
-        metadata = self.prepare_metadata(batch)
+        metadata = self.prepare_metadata(batch, clip_len - 1)
+
+        # Ground-truth trajactories
+
         gt_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
             steps=self.gt_steps,
             time_interval=self.gt_time_interval,
@@ -63,16 +125,36 @@ class Trajectory(pl.LightningModule):
         gt_points_2d: Float[Tensor, "f n 2"] = rearrange(
             camera.project(rearrange(gt_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
             "(f n) 1 1 d -> f n (1 1 d)",
-            f=clip_len,
+            f=1,
         )
 
         visualizations: np.ndarray = np.ascontiguousarray(
             (images * 255).int().cpu().numpy().astype(np.uint8)
         )
         draw_trajectory(visualizations, gt_points_2d)
+
+        # Model prediction trajactories
+        metadata["gas_pedal_norm"][:] = model_actions[0]
+        metadata["brake_pedal_norm"][:] = model_actions[1]
+        metadata["steering_norm"][:] = model_actions[2]
+
+        pred_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
+            steps=self.gt_steps,
+            time_interval=self.gt_time_interval,
+            **metadata,
+        )
+
+        pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
+            camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+            "(f n) 1 1 d -> f n (1 1 d)",
+            f=1,
+        )
+
+        draw_trajectory(visualizations, pred_points_2d, point_color=[0, 255, 0])
+
         return visualizations
 
-    def prepare_metadata(self, batch):
+    def prepare_metadata(self, batch, clip_index):
         clips = mit.one(batch["clips"].values())
         meta = clips["meta"]
         in_to_out = {
@@ -85,7 +167,7 @@ class Trajectory(pl.LightningModule):
             "VehicleMotion_acceleration_z": "acceleration_z",
         }
         out = {
-            out_key: meta[in_key].to(self.device)
+            out_key: meta[in_key][:, [clip_index]].to(self.device)
             for in_key, out_key in in_to_out.items()
         }
         # units change
@@ -203,4 +285,5 @@ def draw_trajectory(
         )
         for point in points:
             vis = cv2.circle(vis, point, point_radius, point_color, point_thickness)  # type: ignore
+        visualizations[i] = vis
         visualizations[i] = vis

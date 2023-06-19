@@ -5,7 +5,7 @@ defaults:
   - _self_
 
 output_file: video.mp4
-clip_len: 32
+clip_len: 6
 
 trainer:
   benchmark: true
@@ -20,7 +20,9 @@ model:
   _target_: cargpt.visualization.Trajectory
   _recursive_: False
   # Let the model be optional so that we can use both gt and preds
-  inference_model: null
+  inference_model:
+    _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
+    _args_: ['yaak/cargpt/model-geci9ej3:v4']
 
   ground_truth_trajectory:
     steps: 30
@@ -83,6 +85,9 @@ datamodule:
               - name: acceleration_x
               - name: acceleration_y
               - name: acceleration_z
+            - message: VehicleState
+              fields:
+              - name: turn_signal
 
         samples:
           alignment:
@@ -91,8 +96,8 @@ datamodule:
 
           clips:
             length: ${clip_len}
-            stride: 1
-            step: ${clip_len}
+            stride: 10
+            step: 1
 
           transforms:
             - _target_: yaak_datasets.transforms.Scale
