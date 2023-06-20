@@ -45,7 +45,7 @@ class Trajectory(pl.LightningModule):
         sample = self.model.prepare_batch(batch)
 
         b, clips, c, h, w = sample["frames"].shape
-        episode, labels, _, episode_values = self.model._make_episode(sample)
+        episode, labels, _, episode_mask = self.model._make_episode(sample)
         b, seqlen, d = episode.shape
         num_actions = len(self.model.action_keys)
         # Take out action we don't use it for predictions
@@ -58,7 +58,10 @@ class Trajectory(pl.LightningModule):
         for idx in range(num_actions):
             action_key = self.model.action_keys[idx]
             # we only pass observations to the model and let it predict action 1 at a time
-            pred, _ = self.model.forward(episode=observations)
+            _, o, _ = observations.shape
+            pred = self.model.forward(
+                episode=observations, episode_mask=episode_mask[:o, :o]
+            )
             # can be argmax of multinomial sampling
             action_class = torch.argmax(F.softmax(pred, dim=2), dim=2)
             # get last action predicted
@@ -89,12 +92,8 @@ class Trajectory(pl.LightningModule):
         print(
             f"pred {np.array2string(prediction_actions.flatten().cpu().numpy(), precision=3, floatmode='fixed')}"
         )
-        print(
-            f"gt: {np.array2string(episode_values[:, -num_actions:].cpu().numpy(), precision=3,floatmode='fixed')}"
-        )
         print(f"pred {predected_tokens}")
         print(f"gt: {labels[:, -num_actions:].cpu().numpy()}")
-        breakpoint()
 
         return prediction_actions
 
