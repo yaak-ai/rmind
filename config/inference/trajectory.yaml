@@ -64,7 +64,7 @@ datamodule:
                 filename_format: '{:09d}.jpg'
             metadata:
               path: ${paths.data_dir}/frames/${..id}/metadata.log
-              filter: ImageMetadata_frame_idx between 3600 and 4200  # TODO: remove
+              filter: ImageMetadata_frame_idx between 24900 and 25410  # TODO: remove
 
           metadata:
             cameras:

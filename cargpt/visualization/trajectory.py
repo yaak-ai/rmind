@@ -83,14 +83,18 @@ class Trajectory(pl.LightningModule):
             action_values.append(action_value)
 
         # computed_actions.append(detokenized_actions)
+
         prediction_actions = torch.cat(action_values)
-        # predected_tokens = torch.cat(action_tokens).flatten().cpu().numpy().tolist()
-        # print(f"pred {np.array2string(prediction_actions, precision=3, floatmode='fixed')}")
-        # print(
-        #     f"gt: {np.array2string(episode_values[:, -num_actions:].cpu().numpy(), precision=3,floatmode='fixed')}"
-        # )
-        # print(f"pred {predected_tokens}")
-        # print(f"gt: {labels[:, -num_actions:].cpu().numpy()}")
+        predected_tokens = torch.cat(action_tokens).flatten().cpu().numpy().tolist()
+        print(
+            f"pred {np.array2string(prediction_actions.flatten().cpu().numpy(), precision=3, floatmode='fixed')}"
+        )
+        print(
+            f"gt: {np.array2string(episode_values[:, -num_actions:].cpu().numpy(), precision=3,floatmode='fixed')}"
+        )
+        print(f"pred {predected_tokens}")
+        print(f"gt: {labels[:, -num_actions:].cpu().numpy()}")
+        breakpoint()
 
         return prediction_actions
 
