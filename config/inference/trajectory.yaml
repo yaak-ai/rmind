@@ -1,0 +1,124 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - _self_
+
+output_file: video.mp4
+clip_len: 6
+
+trainer:
+  benchmark: true
+  callbacks:
+    - _target_: cargpt.callbacks.VideoWriter
+      output_file: ${output_file}
+      overwrite: true
+      fourcc: mp4v
+      fps: 30
+
+model:
+  _target_: cargpt.visualization.Trajectory
+  _recursive_: False
+  # Let the model be optional so that we can use both gt and preds
+  inference_model:
+    _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
+    _args_: ['yaak/cargpt/model-geci9ej3:v4']
+
+  ground_truth_trajectory:
+    steps: 30
+    time_interval: 0.1  # [s]
+
+  images_transform:
+    _target_: cargpt.visualization.Unnormalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+
+  car:
+    wheelbase: 2.7  # [m], 2700 [mm]
+    max_beta: 35.75  # [deg]  # TODO: find the real middle beta
+
+datamodule:
+  _target_: cargpt.datamodules.GenericDataModule
+  predict:
+    _target_: torch.utils.data.DataLoader
+    shuffle: false
+    batch_size: 1
+    num_workers: 8
+    pin_memory: true
+    persistent_workers: true
+    multiprocessing_context: fork
+    dataset:
+      _target_: yaak_datasets.Dataset
+      _recursive_: false
+      config:
+        version: 0.12.3
+        data:
+          drives:
+          - id: 2022-10-20--13-03-22
+            sources:
+            - camera: cam_front_left  # TODO: probably wanna front center, but extrinsics should also be fine
+              params: ${paths.data_dir}/calibration/gamma/cam-90-deg/calib-pinhole.json
+              reader:
+                _target_: yaak_datasets.FrameImageVideoReader
+                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
+                filename_format: '{:09d}.jpg'
+            metadata:
+              path: ${paths.data_dir}/frames/${..id}/metadata.log
+              filter: ImageMetadata_frame_idx between 3600 and 4200  # TODO: remove
+
+          metadata:
+            cameras:
+            - cam_front_left
+
+            select:
+            - message: ImageMetadata
+              fields:
+              - name: frame_idx
+              - name: camera_name
+
+            - message: VehicleMotion
+              fields:
+              - name: speed
+              - name: steering_angle_normalized
+              - name: brake_pedal_normalized
+              - name: gas_pedal_normalized
+              - name: acceleration_x
+              - name: acceleration_y
+              - name: acceleration_z
+            - message: VehicleState
+              fields:
+              - name: turn_signal
+
+        samples:
+          alignment:
+            ref_camera: cam_front_left
+            tolerance: 10ms
+
+          clips:
+            length: ${clip_len}
+            stride: 10
+            step: 1
+
+          transforms:
+            - _target_: yaak_datasets.transforms.Scale
+              factor: 0.3
+
+            - _target_: yaak_datasets.transforms.Crop
+              offsets: [2, 2, 0, 0]
+
+            - _target_: yaak_datasets.transforms.Normalize
+              # ImageNet stats
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
+        processing:
+          max_workers: null
+          metadata:
+            cache:
+              enabled: true
+              path: ${paths.metadata_cache_dir}
+              size_limit: 1 GiB
+
+    collate_fn:
+      _target_: yaak_datasets.collate
+      _partial_: true
