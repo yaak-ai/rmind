@@ -235,10 +235,18 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         return embeddings, tokens, tokens_shift
 
     def _step(self, sample):
-        episode, episode_labels, episode_labels_shift = self._make_episode(sample)
+        (
+            episode,
+            episode_labels,
+            episode_labels_shift,
+            episode_mask,
+        ) = self._make_episode(sample)
+
+        m, n = episode_mask.shape
 
         logits = self.forward(
             episode=episode[:, :-1],
+            episode_mask=episode_mask[: m - 1, : n - 1],
         )
 
         labels = episode_labels[:, 1:]
@@ -267,6 +275,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         observations = torch.cat([image_embeddings, metadata_embeddings], 2)
         observation_tokens = torch.cat([image_tokens, metadata_tokens], 2)
 
+        _, _, n_i, _ = image_embeddings.shape
         b, t, o, d = observations.shape
         _, _, a, _ = action_embeddings.shape
 
@@ -315,7 +324,21 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         episode_labels = episode_labels.view(b, t * (o + 1 + a))
         episode_labels_shift = episode_labels_shift.view(b, t * (o + 1 + a))
 
-        return episode, episode_labels, episode_labels_shift
+        # causal masking fr fr
+        _, m, _ = episode.shape
+        episode_mask = torch.triu(
+            torch.ones(m, m, device=episode.device) * float("-inf"), diagonal=1
+        )
+        num_self_censor = len(self.metadata_keys) + 1 + len(self.action_keys)
+
+        # Self masking
+        for timestep in range(1, t):
+            for i in range(num_self_censor):
+                row = (o + 1 + a) * timestep + n_i + i
+                col = (o + 1 + a) * (timestep - 1) + n_i + i
+                episode_mask[row, col] = float("-inf")
+
+        return episode, episode_labels, episode_labels_shift, episode_mask
 
     def _compute_l1_diff(self, logits, tgt_labels, labels_shift):
         logits = logits.detach().clone()
@@ -490,15 +513,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         return predictions
 
     def forward(
-        self,
-        *,
-        episode: Float[Tensor, "b to d"],
+        self, *, episode: Float[Tensor, "b to d"], episode_mask: Float[Tensor, "to to"]
     ):
-        _, m, _ = episode.shape
-        episode_mask = torch.triu(
-            torch.ones(m, m, device=episode.device) * float("-inf"), diagonal=1
-        )
-
         features = self.gpt(
             src=episode,
             mask=episode_mask,
