@@ -1,6 +1,7 @@
 from collections import defaultdict
 from typing import Any, Dict, List
 
+import torchvision
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
@@ -334,13 +335,16 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # Self masking
         for ts_row in range(0, t):
             row = (o + 1 + a) * ts_row + n_i - 1
-            for ts_col in range(0, t):
+            for ts_col in range(0, ts_row + 1):
                 col = (o + 1 + a) * ts_col + n_i
                 episode_mask[
                     row : row + num_self_censor, col : col + num_self_censor
                 ] = float("-inf")
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
+
+        # mask = episode_mask != 0
+        # torchvision.utils.save_image(mask.float(), "image.png")
 
         return episode, episode_labels, episode_labels_shift, episode_mask
 
