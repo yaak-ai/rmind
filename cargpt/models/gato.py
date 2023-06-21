@@ -332,12 +332,15 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         num_self_censor = len(self.metadata_keys) + 1 + len(self.action_keys)
 
         # Self masking
-        for ts_row in range(1, t):
-            for ts_col in range(0, ts_row):
+        for ts_row in range(0, t):
+            row = (o + 1 + a) * ts_row + n_i - 1
+            for ts_col in range(0, t):
+                col = (o + 1 + a) * ts_col + n_i
+                episode_mask[
+                    row : row + num_self_censor, col : col + num_self_censor
+                ] = float("-inf")
                 for i in range(num_self_censor):
-                    row = (o + 1 + a) * ts_row + n_i + i - 1
-                    col = (o + 1 + a) * ts_col + n_i + i
-                    episode_mask[row, col] = float("-inf")
+                    episode_mask[row + i + 1, col + i] = 0
 
         return episode, episode_labels, episode_labels_shift, episode_mask
 
