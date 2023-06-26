@@ -1,12 +1,12 @@
 from typing import Any, List
+
+import numpy as np
+import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
-import numpy as np
-import pytorch_lightning as pl
 from hydra.utils import instantiate
 from pytorch_lightning.utilities.parsing import AttributeDict
-
 
 np.set_printoptions(suppress=True)
 
