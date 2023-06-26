@@ -135,6 +135,9 @@ model:
       num_embeddings: 1
       embedding_dim: ${embedding_dim}
 
+  attention_mask:
+    _target_: cargpt.models.gato.causal_attention_mask
+
   gpt:
     _target_: torch.nn.TransformerEncoder
     num_layers: 2

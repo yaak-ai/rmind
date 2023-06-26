@@ -270,10 +270,11 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             episode_labels,
             episode_labels_shift,
             episode_values,
+            episode_mask,
         ) = self._make_episode(sample)
 
         logits, values = self.forward(
-            episode=episode[:, :-1],
+            episode=episode[:, :-1], episode_mask=episode_mask[:, :-1, :-1]
         )
 
         labels = episode_labels[:, 1:]
@@ -370,7 +371,60 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         episode_labels_shift = episode_labels_shift.view(b, t * (o + 1 + a))
         episode_values = episode_values.view(b, t * (o + 1 + a))
 
-        return episode, episode_labels, episode_labels_shift, episode_values
+        episode_mask = self.attention_mask(
+            image_embeddings, metadata_embeddings, separator, action_embeddings
+        )
+
+        return (
+            episode,
+            episode_labels,
+            episode_labels_shift,
+            episode_values,
+            episode_mask,
+        )
+
+    def causal_attention_mask(
+        self, image_embeddings, metadata_embeddings, separator, action_embeddings
+    ):
+        # causal masking fr fr
+        _, t, n_i, _ = image_embeddings.shape
+        _, _, m, _ = metadata_embeddings.shape
+        _, _, s, _ = separator.shape
+        _, _, a, _ = action_embeddings.shape
+        seqlen = n_i + m + s + a
+        episode_mask = torch.triu(
+            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
+            diagonal=1,
+        )
+
+        return episode_mask
+
+    def causal_and_sensor_attention_mask(
+        self, image_embeddings, metadata_embeddings, separator, action_embeddings
+    ):
+        _, t, n_i, _ = image_embeddings.shape
+        _, _, m, _ = metadata_embeddings.shape
+        _, _, s, _ = separator.shape
+        _, _, a, _ = action_embeddings.shape
+        seqlen = n_i + m + s + a
+        episode_mask = torch.triu(
+            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
+            diagonal=1,
+        )
+        num_self_censor = m + s + a
+
+        # Self masking
+        for ts_row in range(0, t):
+            row = seqlen * ts_row + n_i - 1
+            for ts_col in range(0, ts_row + 1):
+                col = seqlen * ts_col + n_i
+                episode_mask[
+                    row : row + num_self_censor, col : col + num_self_censor
+                ] = float("-inf")
+                for i in range(num_self_censor):
+                    episode_mask[row + i + 1, col + i] = 0
+
+        return episode_mask
 
     def _compute_diff(self, logits, tgt_labels, labels_shift):
         return self.diff(
@@ -536,9 +590,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         return predictions
 
     def forward(
-        self,
-        *,
-        episode: Float[Tensor, "b to d"],
+        self, *, episode: Float[Tensor, "b to d"], episode_mask: Float[Tensor, "to to"]
     ):
         _, m, _ = episode.shape
         episode_mask = torch.triu(
