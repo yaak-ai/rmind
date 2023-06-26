@@ -399,7 +399,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return episode_mask
 
-    def causal_and_sensor_attention_mask(
+    def causal_and_sensor_and_block_on_image_attention_mask(
         self, image_embeddings, metadata_embeddings, separator, action_embeddings
     ):
         _, t, n_i, _ = image_embeddings.shape
@@ -414,13 +414,11 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         num_self_censor = m + s + a
 
         # Self masking
-        for ts_row in range(0, t):
-            row = seqlen * ts_row + n_i - 1
-            for ts_col in range(0, ts_row + 1):
-                col = seqlen * ts_col + n_i
-                episode_mask[
-                    row : row + num_self_censor, col : col + num_self_censor
-                ] = float("-inf")
+        for ts_col in range(0, t):
+            col = seqlen * ts_col + n_i
+            episode_mask[:, col : col + num_self_censor] = float("-inf")
+            for ts_row in range(ts_col, t):
+                row = seqlen * ts_row + n_i - 1
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
 
