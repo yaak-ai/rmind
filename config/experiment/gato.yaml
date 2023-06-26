@@ -136,8 +136,8 @@ model:
       embedding_dim: ${embedding_dim}
 
   attention_mask:
-    _target_: cargpt.models.gato.causal_attention_mask
-    partial: True
+    _target_: cargpt.models.gato.Gato.causal_attention_mask
+    _partial_: True
 
   gpt:
     _target_: torch.nn.TransformerEncoder
