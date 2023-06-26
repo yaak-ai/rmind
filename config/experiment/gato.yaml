@@ -30,7 +30,6 @@ tokens_shift: # Shifting continous and discrete tokens since embeddings are shar
   ImageEncoder: ${image_encoder.tokens_shift}
 
 embedding_dim: 512
-
 dalle_encoder_weights: pretrained/dalle/encoder.pkl
 
 model:
@@ -43,6 +42,7 @@ model:
     weight_decay: 0
 
   image_embedding: ${image_encoder.backbone}
+  image_tokens: ${image_encoder.tokenizer}
 
   sensor_tokenizers:
     _target_: torch.nn.ModuleDict
@@ -161,8 +161,8 @@ model:
 
   loss:
     weights:
-      categorical: 0.5
-      l1: 0.5
+      categorical: 1.0
+      l1: 0
       image: ${image_encoder.loss.weights.ImageEncoder}
       ignore_image_tokens: ${image_encoder.ignore_image_tokens}
     categorical:

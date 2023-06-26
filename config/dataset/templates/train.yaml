@@ -725,6 +725,11 @@ config:
           fields:
           - name: turn_signal
 
+        - message: Gnss
+          fields:
+          - name: hp_loc_latitude
+          - name: hp_loc_longitude
+
   samples:
     alignment:
       ref_camera: #@ cameras[0]
@@ -735,14 +740,7 @@ config:
       step: 1
       stride: 1
 
-    transforms:
-
-      - _target_: yaak_datasets.transforms.Crop
-        offsets: [2, 2, 0, 0]
-
-      - _target_: yaak_datasets.transforms.Normalize
-        mean: [0.485, 0.456, 0.406]
-        std: [0.229, 0.224, 0.225]
+    transforms: ${image_encoder.transforms}
 
   processing:
     max_workers: null

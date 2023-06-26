@@ -1,5 +1,5 @@
 batch_size: 1
-clip_len: 3
+clip_len: 6
 patch_row_tokens: 32
 patch_col_tokens: 60
 local_position_tokens: 2000
@@ -13,23 +13,22 @@ backbone:
     - _target_: cargpt.models.encoding.dalleDVAE
       enc_weights: ${dalle_encoder_weights}
       freeze: True
-    - _target_: cargpt.models.encoding.DVAEFeatures
-      in_channels: 8192
-      out_channels: ${embedding_dim}
-      bias: False
+tokenizer:
+  _target_: cargpt.models.encoding.DVAETokens
 
 loss:
   weights:
-    ImageEncoder: 0.1
+    ImageEncoder: 0.8
 
 transforms:
+
   - _target_: yaak_datasets.transforms.Scale
-    factor: 0.25
+    factor: 0.84
 
   - _target_: yaak_datasets.transforms.Crop
-    offsets: [7, 7, 0, 0]
+    offsets: [8, 8, 1, 2]
 
   - _target_: yaak_datasets.transforms.Normalize
     # https://github.com/openai/DALL-E/blob/master/dall_e/utils.py#L45
-    mean: [-0.8, -0.8, -0.8]
+    mean: [-0.125, -0.125, -0.125]
     std: [1.25, 1.25, 1.25]

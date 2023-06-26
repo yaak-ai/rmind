@@ -15,16 +15,15 @@ backbone:
         _target_: torchvision.models.resnet18
         weights: IMAGENET1K_V1
       freeze: True
-    - _target_: cargpt.models.encoding.ResNetTokens
-      tokens_mask: ${....tokens_mask} # should match ignore_index in cross_entropy loss
+tokenizer:
+  _target_: cargpt.models.encoding.ResNetTokens
+  tokens_mask: ${....tokens_mask} # should match ignore_index in cross_entropy loss
 
 loss:
   weights:
     ImageEncoder: 0
 
 transforms:
-  - _target_: yaak_datasets.transforms.Scale
-    factor: 0.3
 
   - _target_: yaak_datasets.transforms.Crop
     offsets: [2, 2, 0, 0]

@@ -186,29 +186,34 @@ class ResNetTokens(torch.nn.Module):
         self.tokens_mask = tokens_mask
 
     def forward(
-        self, x: Float[Tensor, "b c1 h w"]
+        self,
+        x: Float[Tensor, "b c1 h w"],
+        token_shift: int,
+        embeddings: torch.nn.Module,
     ) -> Tuple[Float[Tensor, "b c2 h w"], Float[Tensor, "b h w"]]:
         BT, _, fH, fW = x.shape
         tokens = self.tokens_mask * torch.ones(  # type: ignore[union-attr]
             BT, fH, fW, device=x.device
         )
+        tokens += token_shift
 
         return x, tokens
 
 
-class DVAEFeatures(torch.nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, bias: bool = True):
+class DVAETokens(torch.nn.Module):
+    def __init__(self):
         super().__init__()
-        self.model = torch.nn.Linear(in_channels, out_channels, bias=bias)
 
     def forward(
-        self, probs: Float[Tensor, "b c1 h w"]
+        self,
+        probs: Float[Tensor, "b c1 h w"],
+        tokens_shift: int,
+        embeddings: torch.nn.Module,
     ) -> Tuple[Float[Tensor, "b c2 h w"], Int[Tensor, "b h w"]]:
-        x = rearrange(probs, "B D H W -> B H W D")
-        x = self.model(x)
-        x = rearrange(x, "B H W D -> B D H W")
-
         tokens = torch.argmax(probs.detach(), dim=1)
+        tokens += tokens_shift
+        x = embeddings(tokens)
+        x = rearrange(x, "b h w d -> b d h w")
 
         return x, tokens
 
@@ -224,7 +229,10 @@ class dalleDVAE(torch.nn.Module):
             self.requires_grad_(False)
             self.enc.eval()
 
-    def forward(self, x: Float[Tensor, "b c1 h1 w1"]) -> Float[Tensor, "b c2 h2 w2"]:
+    def forward(
+        self,
+        x: Float[Tensor, "b c1 h1 w1"],
+    ) -> Float[Tensor, "b c2 h2 w2"]:
         logits = self.enc(x)
         probs = softmax(logits, dim=1)
 
