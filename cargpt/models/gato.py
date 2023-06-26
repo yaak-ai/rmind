@@ -5,7 +5,7 @@ import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from einops import rearrange, repeat
-from hydra.utils import instantiate
+from hydra.utils import instantiate, call
 from jaxtyping import Float, Int
 from loguru import logger
 from pytorch_lightning.utilities.parsing import AttributeDict
@@ -122,7 +122,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             "Instantiating attention masking",
             target=self.hparams.attention_mask._target_,  # type: ignore[union-attr]
         )  # type: ignore[union-attr]
-        self.attention_mask = instantiate(self.hparams.attention_mask)  # type: ignore[union-attr]
+        self.attention_mask = call(self.hparams.attention_mask)  # type: ignore[union-attr]
         # network
         logger.debug(
             "Instantiating gato model",
@@ -280,7 +280,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         ) = self._make_episode(sample)
 
         logits, values = self.forward(
-            episode=episode[:, :-1], episode_mask=episode_mask[:, :-1, :-1]
+            episode=episode[:, :-1], episode_mask=episode_mask[:-1, :-1]
         )
 
         labels = episode_labels[:, 1:]
@@ -389,8 +389,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             episode_mask,
         )
 
+    @staticmethod
     def causal_attention_mask(
-        self, image_embeddings, metadata_embeddings, separator, action_embeddings
+        image_embeddings, metadata_embeddings, separator, action_embeddings
     ):
         # causal masking fr fr
         _, t, n_i, _ = image_embeddings.shape
@@ -405,8 +406,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return episode_mask
 
+    @staticmethod
     def block_causal_sensor_attention_mask(
-        self, image_embeddings, metadata_embeddings, separator, action_embeddings
+        image_embeddings, metadata_embeddings, separator, action_embeddings
     ):
         _, t, n_i, _ = image_embeddings.shape
         _, _, m, _ = metadata_embeddings.shape
@@ -429,8 +431,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return episode_mask
 
+    @staticmethod
     def block_all_sensor_attention_mask(
-        self, image_embeddings, metadata_embeddings, separator, action_embeddings
+        image_embeddings, metadata_embeddings, separator, action_embeddings
     ):
         _, t, n_i, _ = image_embeddings.shape
         _, _, m, _ = metadata_embeddings.shape
@@ -456,6 +459,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return episode_mask
 
+    @staticmethod
     def block_all_sensor_and_image_from_sensor_attention_mask(
         self, image_embeddings, metadata_embeddings, separator, action_embeddings
     ):
