@@ -17,14 +17,10 @@ from torch import Tensor
 from torch.nn import Module, ModuleDict, TransformerEncoder
 from torch.nn import functional as F
 from torchvision.transforms.functional import resize
-
-
 from wandb.data_types import JoinedTable
 from wandb.errors import CommError
 from wandb.sdk.interface.artifacts import Artifact, ArtifactManifestEntry
 from wandb.wandb_run import Run
-
-
 from cargpt.utils._wandb import LoadableFromArtifact
 
 

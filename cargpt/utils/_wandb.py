@@ -9,7 +9,6 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor
-
 from wandb.sdk.interface.artifacts import Artifact
 from wandb.sdk.lib import RunDisabled
 from wandb.wandb_run import Run
