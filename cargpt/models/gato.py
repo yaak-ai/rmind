@@ -5,7 +5,7 @@ import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from einops import rearrange, repeat
-from hydra.utils import instantiate, call
+from hydra.utils import call, instantiate
 from jaxtyping import Float, Int
 from loguru import logger
 from pytorch_lightning.utilities.parsing import AttributeDict
