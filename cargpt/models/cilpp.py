@@ -21,6 +21,7 @@ from wandb.data_types import JoinedTable
 from wandb.errors import CommError
 from wandb.sdk.interface.artifacts import Artifact, ArtifactManifestEntry
 from wandb.wandb_run import Run
+
 from cargpt.utils._wandb import LoadableFromArtifact
 
 
