@@ -8,7 +8,7 @@ output_file: video.mp4
 clip_len: 6
 
 trainer:
-  benchmark: true
+  benchmark: false
   callbacks:
     - _target_: cargpt.callbacks.VideoWriter
       output_file: ${output_file}

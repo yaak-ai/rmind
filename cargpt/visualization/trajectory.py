@@ -31,7 +31,6 @@ class Trajectory(pl.LightningModule):
     ):
         super().__init__()
         self.model = instantiate(inference_model)
-        self.model.eval()
         self.images_transform = instantiate(images_transform)
 
         self.wheelbase: float = car.wheelbase
@@ -41,68 +40,35 @@ class Trajectory(pl.LightningModule):
         self.gt_steps: int = ground_truth_trajectory.steps
         self.gt_time_interval: float = ground_truth_trajectory.time_interval
 
+        self.in_to_out = {
+            "VehicleMotion_speed": "speed",  # km / h
+            "VehicleMotion_steering_angle_normalized": "steering_norm",
+            "VehicleMotion_gas_pedal_normalized": "gas_pedal_norm",
+            "VehicleMotion_brake_pedal_normalized": "brake_pedal_norm",
+            "VehicleMotion_acceleration_x": "acceleration_x",  # m / s2
+            "VehicleMotion_acceleration_y": "acceleration_y",  # m / s2
+            "VehicleMotion_acceleration_z": "acceleration_z",
+        }
+
     def get_model_trajactories(self, batch):
-        sample = self.model.prepare_batch(batch)
+        preds_last = self.model.predict_step(batch, batch_idx=0, start_timestep=-1)
 
-        b, clips, c, h, w = sample["frames"].shape
-        episode, labels, _, episode_values = self.model._make_episode(sample)
-        b, seqlen, d = episode.shape
-        num_actions = len(self.model.action_keys)
-        # Take out action we don't use it for predictions
-        observations, _ = torch.split(
-            episode, [seqlen - num_actions, num_actions], dim=1
-        )
+        prediction_actions_ = []
+        for batch_key, batch_dict in sorted(preds_last.items()):
+            ts_key = list(batch_dict)[0]  # there is only one key for the last timestep
+            prediction_actions_.append(
+                [batch_dict[ts_key][key]["pred"] for key in self.model.action_keys]
+            )
+        prediction_actions_ = torch.tensor(prediction_actions_, device=self.device)
 
-        action_values = []
-        action_tokens = []
-        for idx in range(num_actions):
-            action_key = self.model.action_keys[idx]
-            # we only pass observations to the model and let it predict action 1 at a time
-            pred, _ = self.model.forward(episode=observations)
-            # can be argmax of multinomial sampling
-            action_class = torch.argmax(F.softmax(pred, dim=2), dim=2)
-            # get last action predicted
-            action_token = action_class[:, [-1]]
-            action_tokens.append(action_token.clone())
-            action_embedding = self.model.sensor_embedding(action_token)
-            # add action position embedding
-            action_embedding += self.model.action_position(
-                torch.tensor([0], device=action_embedding.device)
-            ).view(b, 1, d)
-            global_positions = torch.tensor([clips - 1]).to(action_embedding.device)
-            global_positions_encoded = self.model.global_position(
-                global_positions
-            ).view(1, 1, d)
-            action_embedding += global_positions_encoded
-            # next observation takes the past action
-            observations = torch.cat([observations, action_embedding], dim=1)
-            # unshift and detokenize
-            action_token -= self.model.hparams.tokens_shift[action_key]
-            detokenizer = self.model.sensor_detokenization[action_key]
-            action_value = detokenizer(action_token)
-            action_values.append(action_value)
-
-        # computed_actions.append(detokenized_actions)
-
-        prediction_actions = torch.cat(action_values)
-        predected_tokens = torch.cat(action_tokens).flatten().cpu().numpy().tolist()
-        print(
-            f"pred {np.array2string(prediction_actions.flatten().cpu().numpy(), precision=3, floatmode='fixed')}"
-        )
-        print(
-            f"gt: {np.array2string(episode_values[:, -num_actions:].cpu().numpy(), precision=3,floatmode='fixed')}"
-        )
-        print(f"pred {predected_tokens}")
-        print(f"gt: {labels[:, -num_actions:].cpu().numpy()}")
-        breakpoint()
-
-        return prediction_actions
+        return {
+            self.in_to_out[in_key]: prediction_actions_[:, idx]
+            for idx, in_key in enumerate(self.model.action_keys)
+        }
 
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
     ) -> np.ndarray:
-        model_actions = self.get_model_trajactories(batch)
-
         images = rearrange(
             get_images(batch, self.images_transform), "b f c h w -> b f h w c"
         )
@@ -119,7 +85,6 @@ class Trajectory(pl.LightningModule):
         metadata = self.prepare_metadata(batch, clip_len - 1)
 
         # Ground-truth trajactories
-
         gt_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
             steps=self.gt_steps,
             time_interval=self.gt_time_interval,
@@ -138,9 +103,10 @@ class Trajectory(pl.LightningModule):
         draw_trajectory(visualizations, gt_points_2d)
 
         # Model prediction trajactories
-        metadata["gas_pedal_norm"][:] = model_actions[0]
-        metadata["brake_pedal_norm"][:] = model_actions[1]
-        metadata["steering_norm"][:] = model_actions[2]
+        model_actions = self.get_model_trajactories(batch)
+        metadata["gas_pedal_norm"] = model_actions["gas_pedal_norm"]
+        metadata["brake_pedal_norm"] = model_actions["brake_pedal_norm"]
+        metadata["steering_norm"] = model_actions["steering_norm"]
 
         pred_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
             steps=self.gt_steps,
@@ -154,25 +120,17 @@ class Trajectory(pl.LightningModule):
             f=1,
         )
 
-        draw_trajectory(visualizations, pred_points_2d, point_color=[0, 255, 0])
+        draw_trajectory(visualizations, pred_points_2d, point_color=(0, 255, 0))
 
         return visualizations
 
     def prepare_metadata(self, batch, clip_index):
         clips = mit.one(batch["clips"].values())
         meta = clips["meta"]
-        in_to_out = {
-            "VehicleMotion_speed": "speed",  # km / h
-            "VehicleMotion_steering_angle_normalized": "steering_norm",
-            "VehicleMotion_gas_pedal_normalized": "gas_pedal_norm",
-            "VehicleMotion_brake_pedal_normalized": "brake_pedal_norm",
-            "VehicleMotion_acceleration_x": "acceleration_x",  # m / s2
-            "VehicleMotion_acceleration_y": "acceleration_y",  # m / s2
-            "VehicleMotion_acceleration_z": "acceleration_z",
-        }
+
         out = {
             out_key: meta[in_key][:, [clip_index]].to(self.device)
-            for in_key, out_key in in_to_out.items()
+            for in_key, out_key in self.in_to_out.items()
         }
         # units change
         out["speed"] *= 10 / 36  # change to m / s

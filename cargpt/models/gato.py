@@ -476,19 +476,29 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return loss
 
-    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
+    def predict_step(
+        self,
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int = 0,
+        start_timestep: int = 0,
+    ) -> Any:
         sample = self.prepare_batch(batch)
         full_episode, *_ = self._make_episode(sample)
         B, timesteps, *_ = sample["frames"].shape
         ts_len = int(full_episode.shape[1] / timesteps)
 
+        actions_to_predict = len(self.action_keys)
+        if start_timestep < 0:
+            start_timestep = timesteps + start_timestep
+        timesteps_to_predict = tuple(range(start_timestep, timesteps))
+        history = full_episode[:, : (start_timestep * ts_len)].clone()
+
         predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]] = {
-            b: {ts: defaultdict(dict) for ts in range(timesteps)} for b in range(B)
+            b: {ts: defaultdict(dict) for ts in timesteps_to_predict} for b in range(B)
         }
 
-        actions_to_predict = len(self.action_keys)
-        history = torch.tensor([], device=full_episode.device)
-        for ts in range(timesteps):
+        for ts in timesteps_to_predict:
             observations_start_idx = ts * ts_len
             actions_start_idx = (ts + 1) * ts_len - actions_to_predict
             next_observations_with_sep = full_episode[
@@ -504,12 +514,15 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
                 # embed prediction
                 embedded: Float[Tensor, "b 1 e"] = self.sensor_embedding(token)
+                b, t, _ = embedded.shape
                 position: Float[Tensor, "1 e"] = self.action_position(
                     torch.tensor([0], device=embedded.device)
                 )
-                embedded += repeat(
-                    position, "1 e -> b t e", b=embedded.shape[0], t=embedded.shape[1]
+                embedded += repeat(position, "1 e -> b t e", b=b, t=t)
+                global_position: Float[Tensor, "1 e"] = self.global_position(
+                    torch.tensor([ts]).to(self.device)
                 )
+                embedded += repeat(global_position, "1 e -> b t e", b=b, t=t)
 
                 # append to episode
                 history = torch.concat([history, embedded], dim=1)
