@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Tuple
+from typing import List, Tuple
 
 import torch
 from dall_e import load_model
@@ -237,3 +237,27 @@ class dalleDVAE(torch.nn.Module):
         probs = softmax(logits, dim=1)
 
         return probs
+
+
+class SenorDropout(torch.nn.Module):
+    def __init__(self, prob: float):
+        super().__init__()
+        self.prob = prob
+
+    def forward(
+        self, embeddings: List[Float[Tensor, "b t c d"]]
+    ) -> List[Float[Tensor, "b t c d"]]:
+        if len(embeddings) == 0:
+            return embeddings
+
+        b, t, _, d = embeddings[0].shape
+        num_samples_to_drop = int(b * self.prob)
+        indices = torch.randperm(b)[:num_samples_to_drop]
+
+        dropped_embeddings = []
+        for embedding in embeddings:
+            # drop everything except last timestep
+            embedding[indices, : t - 1] = 0
+            dropped_embeddings.append(embedding)
+
+        return dropped_embeddings

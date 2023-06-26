@@ -113,6 +113,11 @@ model:
     num_embeddings: ${num_tokens_total}
     embedding_dim: ${embedding_dim}
 
+  # https://arxiv.org/pdf/1812.03079.pdf
+  sensor_dropout:
+    _target_: cargpt.models.encoding.SenorDropout
+    prob: 0.5
+
   position_encoding:
     patch_row:
       _target_: torch.nn.Embedding
@@ -135,9 +140,13 @@ model:
       num_embeddings: 1
       embedding_dim: ${embedding_dim}
 
+  attention_mask:
+    _target_: cargpt.models.gato.Gato.causal_attention_mask
+    _partial_: True
+
   gpt:
     _target_: torch.nn.TransformerEncoder
-    num_layers: 4
+    num_layers: 8
     encoder_layer:
       _target_: cargpt.models.gato.TransformerEncoderLayerGEGLU
       d_model: ${embedding_dim}
