@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Callable, Dict, List
 
 import more_itertools as mit
+import wandb
 from einops import rearrange
 from jaxtyping import Float
 from pytorch_lightning import Trainer
@@ -9,7 +10,6 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor
 
-import wandb
 from wandb.sdk.interface.artifacts import Artifact
 from wandb.sdk.lib import RunDisabled
 from wandb.wandb_run import Run
