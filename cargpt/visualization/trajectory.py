@@ -38,6 +38,32 @@ class Trajectory(pl.LightningModule):
         self.gt_steps: int = ground_truth_trajectory.steps
         self.gt_time_interval: float = ground_truth_trajectory.time_interval
 
+        self.in_to_out = {
+            "VehicleMotion_speed": "speed",  # km / h
+            "VehicleMotion_steering_angle_normalized": "steering_norm",
+            "VehicleMotion_gas_pedal_normalized": "gas_pedal_norm",
+            "VehicleMotion_brake_pedal_normalized": "brake_pedal_norm",
+            "VehicleMotion_acceleration_x": "acceleration_x",  # m / s2
+            "VehicleMotion_acceleration_y": "acceleration_y",  # m / s2
+            "VehicleMotion_acceleration_z": "acceleration_z",
+        }
+
+    def get_model_trajactories(self, batch):
+        preds_last = self.model.predict_step(batch, batch_idx=0, start_timestep=-1)
+
+        prediction_actions_ = []
+        for batch_key, batch_dict in sorted(preds_last.items()):
+            ts_key = list(batch_dict)[0]  # there is only one key for the last timestep
+            prediction_actions_.append(
+                [batch_dict[ts_key][key]["pred"] for key in self.model.action_keys]
+            )
+        prediction_actions_ = torch.tensor(prediction_actions_, device=self.device)
+
+        return {
+            self.in_to_out[in_key]: prediction_actions_[:, idx]
+            for idx, in_key in enumerate(self.model.action_keys)
+        }
+
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
     ) -> np.ndarray:
@@ -52,8 +78,11 @@ class Trajectory(pl.LightningModule):
             )
 
         images = images.squeeze(0)  # kick out batch dimension
+        images = images[[clip_len - 1]]
         camera = self.get_camera(batch)
-        metadata = self.prepare_metadata(batch)
+        metadata = self.prepare_metadata(batch, clip_len - 1)
+
+        # Ground-truth trajactories
         gt_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
             steps=self.gt_steps,
             time_interval=self.gt_time_interval,
@@ -63,30 +92,43 @@ class Trajectory(pl.LightningModule):
         gt_points_2d: Float[Tensor, "f n 2"] = rearrange(
             camera.project(rearrange(gt_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
             "(f n) 1 1 d -> f n (1 1 d)",
-            f=clip_len,
+            f=1,
         )
 
         visualizations: np.ndarray = np.ascontiguousarray(
             (images * 255).int().cpu().numpy().astype(np.uint8)
         )
         draw_trajectory(visualizations, gt_points_2d)
+
+        # Model prediction trajactories
+        model_actions = self.get_model_trajactories(batch)
+        metadata["gas_pedal_norm"] = model_actions["gas_pedal_norm"]
+        metadata["brake_pedal_norm"] = model_actions["brake_pedal_norm"]
+        metadata["steering_norm"] = model_actions["steering_norm"]
+
+        pred_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
+            steps=self.gt_steps,
+            time_interval=self.gt_time_interval,
+            **metadata,
+        )
+
+        pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
+            camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+            "(f n) 1 1 d -> f n (1 1 d)",
+            f=1,
+        )
+
+        draw_trajectory(visualizations, pred_points_2d, point_color=(0, 255, 0))
+
         return visualizations
 
-    def prepare_metadata(self, batch):
+    def prepare_metadata(self, batch, clip_index):
         clips = mit.one(batch["clips"].values())
         meta = clips["meta"]
-        in_to_out = {
-            "VehicleMotion_speed": "speed",  # km / h
-            "VehicleMotion_steering_angle_normalized": "steering_norm",
-            "VehicleMotion_gas_pedal_normalized": "gas_pedal_norm",
-            "VehicleMotion_brake_pedal_normalized": "brake_pedal_norm",
-            "VehicleMotion_acceleration_x": "acceleration_x",  # m / s2
-            "VehicleMotion_acceleration_y": "acceleration_y",  # m / s2
-            "VehicleMotion_acceleration_z": "acceleration_z",
-        }
+
         out = {
-            out_key: meta[in_key].to(self.device)
-            for in_key, out_key in in_to_out.items()
+            out_key: meta[in_key][:, [clip_index]].to(self.device)
+            for in_key, out_key in self.in_to_out.items()
         }
         # units change
         out["speed"] *= 10 / 36  # change to m / s
