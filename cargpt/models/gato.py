@@ -76,6 +76,11 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             target=self.hparams.image_embedding._target_,  # type: ignore[union-attr]
         )
         self.image_embedding = instantiate(self.hparams.image_embedding)  # type: ignore[union-attr]
+        logger.debug(
+            "Instantiating image tokens",
+            target=self.hparams.image_tokens._target_,  # type: ignore[union-attr]
+        )
+        self.image_tokens = instantiate(self.hparams.image_tokens)  # type: ignore[union-attr]
         self.tokenizers: ModuleDict = instantiate(self.hparams.sensor_tokenizers)
         self.sensor_detokenization = instantiate(self.hparams.sensor_detokenization)
 
@@ -157,8 +162,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
     def _image_embeddings_and_tokens(self, frames):
         B, T, C, H, W = frames.shape
         frames = frames.view(B * T, C, H, W)
-        image_features, image_tokens = self.image_embedding(frames)
-        image_tokens += self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+        image_features = self.image_embedding(frames)
+        image_features, image_tokens = self.image_tokens(
+            image_features,
+            self.hparams.tokens_shift["ImageEncoder"],  # type: ignore
+            self.sensor_embedding,
+        )
         tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
         _, D, H, W = image_features.shape
         image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
