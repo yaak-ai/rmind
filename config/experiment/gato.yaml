@@ -137,6 +137,7 @@ model:
 
   attention_mask:
     _target_: cargpt.models.gato.causal_attention_mask
+    partial: True
 
   gpt:
     _target_: torch.nn.TransformerEncoder

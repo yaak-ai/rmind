@@ -117,6 +117,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         )
         self.action_position = instantiate(self.hparams.position_encoding.action)  # type: ignore[union-attr]
 
+        # masking
+        logger.debug(
+            "Instantiating attention masking",
+            target=self.hparams.attention_mask._target_,  # type: ignore[union-attr]
+        )  # type: ignore[union-attr]
+        self.attention_mask = instantiate(self.hparams.attention_mask)  # type: ignore[union-attr]
         # network
         logger.debug(
             "Instantiating gato model",
@@ -590,7 +596,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
         sample = self.prepare_batch(batch)
-        full_episode, *_ = self._make_episode(sample)
+        full_episode, *_, episode_mask = self._make_episode(sample)
         B, timesteps, *_ = sample["frames"].shape
         ts_len = int(full_episode.shape[1] / timesteps)
 
@@ -608,7 +614,10 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
             for key in self.action_keys:
-                logits, _ = self.forward(episode=history)
+                _, m, _ = episode_mask.shape
+                logits, _ = self.forward(
+                    episode=history, episode_mask=episode_mask[:m, :m]
+                )
                 logits = logits.detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
                     torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
