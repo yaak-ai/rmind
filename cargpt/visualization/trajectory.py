@@ -7,7 +7,6 @@ import more_itertools as mit
 import numpy as np
 import pytorch_lightning as pl
 import torch
-import torch.nn.functional as F
 from deephouse.tools.camera import Camera
 from einops import rearrange
 from hydra.utils import instantiate
@@ -18,7 +17,6 @@ from torch import Tensor
 from cargpt.visualization.utils import get_images
 
 TrajectoryPoint = namedtuple("TrajectoryPoint", "x,y,z,phi,t,v")
-np.set_printoptions(suppress=True)
 
 
 class Trajectory(pl.LightningModule):
@@ -247,5 +245,4 @@ def draw_trajectory(
         )
         for point in points:
             vis = cv2.circle(vis, point, point_radius, point_color, point_thickness)  # type: ignore
-        visualizations[i] = vis
         visualizations[i] = vis
