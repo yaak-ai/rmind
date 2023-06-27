@@ -300,7 +300,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         # construct full sequence: [[o, |, a], [o, |, a], ...]
         episode = torch.cat([observations, separator, action_embeddings], dim=2)
-        episode_labels = torch.cat([observation_tokens, separator_tokens, action_tokens], dim=2)
+        episode_labels = torch.cat(
+            [observation_tokens, separator_tokens, action_tokens], dim=2
+        )
         episode_labels_shift = torch.cat(
             [
                 image_tokens_shift,
@@ -331,18 +333,27 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         num_self_censor = len(self.metadata_keys) + 1 + len(self.action_keys)
 
         # Self masking
-        for ts_row in range(0, t):
-            row = (o + 1 + a) * ts_row + n_i - 1
-            for ts_col in range(0, ts_row + 1):
-                col = (o + 1 + a) * ts_col + n_i
-                episode_mask[row : row + num_self_censor, col : col + num_self_censor] = float(
-                    "-inf"
-                )
+        # for ts_row in range(0, t):
+        #     row = (o + 1 + a) * ts_row + n_i - 1
+        #     for ts_col in range(0, ts_row + 1):
+        #         col = (o + 1 + a) * ts_col + n_i
+        #         episode_mask[
+        #             row: row + num_self_censor, col: col + num_self_censor
+        #         ] = float("-inf")
+        #         for i in range(num_self_censor):
+        #             episode_mask[row + i + 1, col + i] = 0
+
+        for ts_col in range(0, t):
+            col = (o + 1 + a) * ts_col + n_i
+            episode_mask[:, col : col + num_self_censor] = float("-inf")
+            for ts_row in range(ts_col, t):
+                row = (o + 1 + a) * ts_row + n_i - 1
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
 
         # mask = episode_mask != 0
         # torchvision.utils.save_image(mask.float(), "image.png")
+        # breakpoint()
 
         return episode, episode_labels, episode_labels_shift, episode_mask
 
@@ -378,15 +389,23 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         )
 
         # detokenize (tokens to real values)
-        pred_observations_values = torch.zeros_like(pred_observations_labels, dtype=torch.float)
+        pred_observations_values = torch.zeros_like(
+            pred_observations_labels, dtype=torch.float
+        )
         pred_actions_values = torch.zeros_like(pred_actions_labels, dtype=torch.float)
-        tgt_observations_values = torch.zeros_like(tgt_observations_labels, dtype=torch.float)
+        tgt_observations_values = torch.zeros_like(
+            tgt_observations_labels, dtype=torch.float
+        )
         tgt_actions_values = torch.zeros_like(tgt_actions_labels, dtype=torch.float)
 
         for idx, key in enumerate(self.metadata_keys):
             inv_func = self.sensor_detokenization[key]
-            pred_observations_values[:, :, idx] = inv_func(pred_observations_labels[:, :, idx])
-            tgt_observations_values[:, :, idx] = inv_func(tgt_observations_labels[:, :, idx])
+            pred_observations_values[:, :, idx] = inv_func(
+                pred_observations_labels[:, :, idx]
+            )
+            tgt_observations_values[:, :, idx] = inv_func(
+                tgt_observations_labels[:, :, idx]
+            )
 
         for idx, key in enumerate(self.action_keys):
             inv_func = self.sensor_detokenization[key]
@@ -500,7 +519,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
                 # get real value
                 token -= self.hparams.tokens_shift[key]  # type: ignore[index]
-                prediction: Float[Tensor, "b 1"] = self.sensor_detokenization[key](token.clone())
+                prediction: Float[Tensor, "b 1"] = self.sensor_detokenization[key](
+                    token.clone()
+                )
 
                 for b in range(B):
                     predictions[b][ts][key]["pred"] = prediction[b, 0].item()
@@ -508,7 +529,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return predictions
 
-    def forward(self, *, episode: Float[Tensor, "b to d"], episode_mask: Float[Tensor, "to to"]):
+    def forward(
+        self, *, episode: Float[Tensor, "b to d"], episode_mask: Float[Tensor, "to to"]
+    ):
         features = self.gpt(
             src=episode,
             mask=episode_mask,
@@ -521,7 +544,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         clips = mit.one(batch["clips"].values())
         frames = clips["frames"].to(self.device)
         speed = clips["meta"]["VehicleMotion_speed"].to(self.device)
-        steering = clips["meta"]["VehicleMotion_steering_angle_normalized"].to(self.device)
+        steering = clips["meta"]["VehicleMotion_steering_angle_normalized"].to(
+            self.device
+        )
         gas = clips["meta"]["VehicleMotion_gas_pedal_normalized"].to(self.device)
         brake = clips["meta"]["VehicleMotion_brake_pedal_normalized"].to(self.device)
         turn = clips["meta"]["VehicleState_turn_signal"].to(self.device)

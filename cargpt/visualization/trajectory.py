@@ -41,8 +41,12 @@ class Trajectory(pl.LightningModule):
         self.gt_steps: int = ground_truth_trajectory.steps
         self.gt_time_interval: float = ground_truth_trajectory.time_interval
 
-    def get_model_trajactories(self, batch):
+    def get_model_trajactories(self, batch, batch_idx):
         sample = self.model.prepare_batch(batch)
+
+        # sample["VehicleMotion_brake_pedal_normalized"][:] = 0
+        # sample["VehicleMotion_steering_angle_normalized"][:] = 0
+        # sample["VehicleMotion_steering_angle_normalized"][:] = 0
 
         b, clips, c, h, w = sample["frames"].shape
         episode, labels, _, episode_mask = self.model._make_episode(sample)
@@ -100,8 +104,6 @@ class Trajectory(pl.LightningModule):
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
     ) -> np.ndarray:
-        model_actions = self.get_model_trajactories(batch)
-
         images = rearrange(
             get_images(batch, self.images_transform), "b f c h w -> b f h w c"
         )
@@ -136,6 +138,7 @@ class Trajectory(pl.LightningModule):
         )
         draw_trajectory(visualizations, gt_points_2d)
 
+        model_actions = self.get_model_trajactories(batch, batch_idx)
         # Model prediction trajactories
         metadata["gas_pedal_norm"][:] = model_actions[0]
         metadata["brake_pedal_norm"][:] = model_actions[1]
