@@ -377,9 +377,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         episode_labels_shift = episode_labels_shift.view(b, t * (o + 1 + a))
         episode_values = episode_values.view(b, t * (o + 1 + a))
 
-        episode_mask = self.attention_mask(
-            image_embeddings, metadata_embeddings, separator, action_embeddings
-        )
+        episode_mask = self.attention_mask(episode.device)
 
         return (
             episode,
@@ -391,16 +389,14 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     @staticmethod
     def causal_attention_mask(
-        image_embeddings, metadata_embeddings, separator, action_embeddings
+        patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
     ):
         # causal masking fr fr
-        _, t, n_i, _ = image_embeddings.shape
-        _, _, m, _ = metadata_embeddings.shape
-        _, _, s, _ = separator.shape
-        _, _, a, _ = action_embeddings.shape
-        seqlen = n_i + m + s + a
+        seqlen = (
+            patch_row * patch_col + len(nun_metadata_keys) + 1 + len(num_action_keys)
+        )
         episode_mask = torch.triu(
-            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
+            torch.ones(seqlen, seqlen, device=device) * float("-inf"),
             diagonal=1,
         )
 
@@ -408,21 +404,17 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     @staticmethod
     def block_causal_sensor_attention_mask(
-        image_embeddings, metadata_embeddings, separator, action_embeddings
+        patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
     ):
-        _, t, n_i, _ = image_embeddings.shape
-        _, _, m, _ = metadata_embeddings.shape
-        _, _, s, _ = separator.shape
-        _, _, a, _ = action_embeddings.shape
-        seqlen = n_i + m + s + a
-        episode_mask = torch.triu(
-            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
-            diagonal=1,
+        episode_mask = Gato.causal_attention_mask(
+            patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
         )
-        num_self_censor = m + s + a
+        n_i = patch_row * patch_row
+        num_self_censor = len(nun_metadata_keys) + 1 + len(num_action_keys)
+        seqlen = n_i + num_self_censor
 
         # Self masking
-        for ts_row in range(0, t):
+        for ts_row in range(0, clip_len):
             row = seqlen * ts_row + n_i - 1
             for ts_col in range(0, ts_row + 1):
                 col = seqlen * ts_col + n_i
@@ -433,26 +425,22 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     @staticmethod
     def block_all_sensor_attention_mask(
-        image_embeddings, metadata_embeddings, separator, action_embeddings
+        patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
     ):
-        _, t, n_i, _ = image_embeddings.shape
-        _, _, m, _ = metadata_embeddings.shape
-        _, _, s, _ = separator.shape
-        _, _, a, _ = action_embeddings.shape
-        seqlen = n_i + m + s + a
-        episode_mask = torch.triu(
-            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
-            diagonal=1,
+        episode_mask = Gato.causal_attention_mask(
+            patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
         )
-        num_self_censor = m + s + a
+        n_i = patch_row * patch_row
+        num_self_censor = len(nun_metadata_keys) + 1 + len(num_action_keys)
+        seqlen = n_i + num_self_censor
 
         # Self masking
-        for ts_row in range(0, t):
+        for ts_row in range(0, clip_len):
             row = seqlen * ts_row + n_i - 1
             for ts_col in range(0, ts_row + 1):
                 col = seqlen * ts_col + n_i
                 episode_mask[
-                    row : row + num_self_censor, col : col + num_self_censor
+                    row: row + num_self_censor, col: col + num_self_censor
                 ] = float("-inf")
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
@@ -461,24 +449,20 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     @staticmethod
     def block_all_sensor_and_image_from_sensor_attention_mask(
-        image_embeddings, metadata_embeddings, separator, action_embeddings
+        patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
     ):
-        _, t, n_i, _ = image_embeddings.shape
-        _, _, m, _ = metadata_embeddings.shape
-        _, _, s, _ = separator.shape
-        _, _, a, _ = action_embeddings.shape
-        seqlen = n_i + m + s + a
-        episode_mask = torch.triu(
-            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
-            diagonal=1,
+        episode_mask = Gato.causal_attention_mask(
+            patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
         )
-        num_self_censor = m + s + a
+        n_i = patch_row * patch_row
+        num_self_censor = len(nun_metadata_keys) + 1 + len(num_action_keys)
+        seqlen = n_i + num_self_censor
 
         # Self masking
-        for ts_col in range(0, t):
+        for ts_col in range(0, clip_len):
             col = seqlen * ts_col + n_i
-            episode_mask[:, col : col + num_self_censor] = float("-inf")
-            for ts_row in range(ts_col, t):
+            episode_mask[:, col: col + num_self_censor] = float("-inf")
+            for ts_row in range(ts_col, clip_len):
                 row = seqlen * ts_row + n_i - 1
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0

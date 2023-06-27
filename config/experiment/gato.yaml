@@ -137,6 +137,12 @@ model:
 
   attention_mask:
     _target_: cargpt.models.gato.Gato.causal_attention_mask
+    _args_:
+      - ${image_encoder.patch_row_tokens}
+      - ${image_encoder.patch_col_tokens}
+      - ${metadata_keys}
+      - ${action_keys}
+      - ${clip_len}
     _partial_: True
 
   gpt:
