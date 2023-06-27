@@ -620,6 +620,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             b: {ts: defaultdict(dict) for ts in timesteps_to_predict} for b in range(B)
         }
 
+        m, n = episode_mask.shape
         for ts in timesteps_to_predict:
             observations_start_idx = ts * ts_len
             actions_start_idx = (ts + 1) * ts_len - actions_to_predict
@@ -628,9 +629,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
             for key in self.action_keys:
-                _, m, _ = episode_mask.shape
                 logits, _ = self.forward(
-                    episode=history, episode_mask=episode_mask[:m, :m]
+                    episode=history, episode_mask=episode_mask[:m, :n]
                 )
                 logits = logits.detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
