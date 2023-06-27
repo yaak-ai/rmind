@@ -461,7 +461,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     @staticmethod
     def block_all_sensor_and_image_from_sensor_attention_mask(
-        self, image_embeddings, metadata_embeddings, separator, action_embeddings
+        image_embeddings, metadata_embeddings, separator, action_embeddings
     ):
         _, t, n_i, _ = image_embeddings.shape
         _, _, m, _ = metadata_embeddings.shape

@@ -5,6 +5,7 @@ patch_col_tokens: 18
 local_position_tokens: 256
 total_tokens: 4102
 tokens_shift: 0
+tokens_mask: -1
 ignore_image_tokens: True
 backbone:
   _target_: cargpt.models.encoding.ResnetBackbone
@@ -14,7 +15,7 @@ backbone:
   freeze: True
 tokenizer:
   _target_: cargpt.models.encoding.ResNetTokens
-  tokens_mask: -1 # should match ignore_index in cross_entropy loss
+  tokens_mask: ${..tokens_mask} # should match ignore_index in cross_entropy loss
 
 loss:
   weights:
