@@ -5,7 +5,7 @@ import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from einops import rearrange, repeat
-from hydra.utils import call, instantiate
+from hydra.utils import instantiate
 from jaxtyping import Float, Int
 from loguru import logger
 from pytorch_lightning.utilities.parsing import AttributeDict
@@ -122,7 +122,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             "Instantiating attention masking",
             target=self.hparams.attention_mask._target_,  # type: ignore[union-attr]
         )  # type: ignore[union-attr]
-        self.attention_mask = call(self.hparams.attention_mask)  # type: ignore[union-attr]
+        self.attention_mask = instantiate(self.hparams.attention_mask)  # type: ignore[union-attr]
         # network
         logger.debug(
             "Instantiating gato model",
@@ -452,7 +452,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             for ts_col in range(0, ts_row + 1):
                 col = seqlen * ts_col + n_i
                 episode_mask[
-                    row : row + num_self_censor, col : col + num_self_censor
+                    row: row + num_self_censor, col: col + num_self_censor
                 ] = float("-inf")
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
@@ -477,7 +477,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # Self masking
         for ts_col in range(0, t):
             col = seqlen * ts_col + n_i
-            episode_mask[:, col : col + num_self_censor] = float("-inf")
+            episode_mask[:, col: col + num_self_censor] = float("-inf")
             for ts_row in range(ts_col, t):
                 row = seqlen * ts_row + n_i - 1
                 for i in range(num_self_censor):
