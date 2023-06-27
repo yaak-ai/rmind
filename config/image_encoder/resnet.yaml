@@ -1,4 +1,4 @@
-batch_size: 8
+batch_size: 2
 clip_len: 6
 patch_row_tokens: 10
 patch_col_tokens: 18
@@ -21,6 +21,8 @@ loss:
   weights:
     ImageEncoder: 0
 
+mean: [0.485, 0.456, 0.406]
+std: [0.229, 0.224, 0.225]
 transforms:
 
   - _target_: yaak_datasets.transforms.Crop
@@ -28,5 +30,5 @@ transforms:
 
   - _target_: yaak_datasets.transforms.Normalize
     # ImageNet stats
-    mean: [0.485, 0.456, 0.406]
-    std: [0.229, 0.224, 0.225]
+    mean: ${...mean}
+    std: ${...std}

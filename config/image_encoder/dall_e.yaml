@@ -18,6 +18,8 @@ loss:
   weights:
     ImageEncoder: 0.8
 
+mean: [-0.125, -0.125, -0.125]
+std: [1.25, 1.25, 1.25]
 transforms:
 
   - _target_: yaak_datasets.transforms.Scale
@@ -28,5 +30,5 @@ transforms:
 
   - _target_: yaak_datasets.transforms.Normalize
     # https://github.com/openai/DALL-E/blob/master/dall_e/utils.py#L45
-    mean: [-0.125, -0.125, -0.125]
-    std: [1.25, 1.25, 1.25]
+    mean: ${...mean}
+    std: ${...std}

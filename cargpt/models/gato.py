@@ -13,7 +13,11 @@ from torch import Tensor
 from torch.nn import Linear, ModuleDict
 from torch.nn.functional import gelu
 
-from cargpt.utils._wandb import LoadableFromArtifact, ValOutputsLoggingTableMixin
+from cargpt.utils._wandb import (
+    LoadableFromArtifact,
+    TrainAttnMapLoggingMixin,
+    ValOutputsLoggingTableMixin,
+)
 
 
 class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
@@ -61,7 +65,12 @@ class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
         return x
 
 
-class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact):
+class Gato(
+    pl.LightningModule,
+    ValOutputsLoggingTableMixin,
+    TrainAttnMapLoggingMixin,
+    LoadableFromArtifact,
+):
     """A Generalist Agent (Gato) https://arxiv.org/abs/2205.06175"""
 
     hparams: AttributeDict
@@ -292,6 +301,10 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         labels = episode_labels[:, 1:]
         labels_shift = episode_labels_shift[:, 1:]
         episode_values = episode_values[:, 1:]
+
+        self._log_attn_maps(
+            episode=episode[:, :-1], episode_mask=episode_mask[:-1, :-1], **sample
+        )
 
         return (
             logits,
@@ -697,6 +710,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         brake = clips["meta"]["VehicleMotion_brake_pedal_normalized"].to(self.device)
         turn = clips["meta"]["VehicleState_turn_signal"].to(self.device)
 
+        drive_ids = batch["meta"]["drive_id"]
+        frame_idxs = clips["meta"]["ImageMetadata_frame_idx"]
+
         sample = {
             "frames": frames,
             "VehicleMotion_speed": speed,
@@ -704,6 +720,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             "VehicleMotion_gas_pedal_normalized": gas,
             "VehicleMotion_brake_pedal_normalized": brake,
             "VehicleState_turn_signal": turn,
+            "drive_ids": drive_ids,
+            "frame_idxs": frame_idxs,
         }
 
         return sample

@@ -203,6 +203,17 @@ model:
   log:
     validation:
       outputs: true
+    training:
+      attention_maps:
+        layer: -1
+        rows: ${image_encoder.patch_row_tokens}
+        cols: ${image_encoder.patch_col_tokens}
+        imgs_mean: ${image_encoder.mean}
+        imgs_std: ${image_encoder.std}
+        norm: max  # softmax or max
+        strength: 1.0
+        reverse: false
+        color: [255, 0, 0]  # RGB
 
 trainer:
   _target_: pytorch_lightning.Trainer
