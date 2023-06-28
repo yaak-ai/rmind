@@ -116,7 +116,7 @@ model:
   # https://arxiv.org/pdf/1812.03079.pdf
   sensor_dropout:
     _target_: cargpt.models.encoding.SenorDropout
-    prob: 0.5
+    prob: 1.0
 
   position_encoding:
     patch_row:

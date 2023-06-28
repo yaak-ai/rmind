@@ -128,7 +128,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             "Instantiating attention masking",
             target=self.hparams.attention_mask._target_,  # type: ignore[union-attr]
         )  # type: ignore[union-attr]
-        self.attention_mask = call(self.hparams.attention_mask)  # type: ignore[union-attr]
+        self.attention_mask = instantiate(self.hparams.attention_mask)  # type: ignore[union-attr]
         # network
         logger.debug(
             "Instantiating gato model",
@@ -412,7 +412,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         _, _, a, _ = action_embeddings.shape
         seqlen = n_i + m + s + a
         episode_mask = torch.triu(
-            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
+            torch.ones(seqlen * t, seqlen * t, device=image_embeddings.device)
+            * float("-inf"),
             diagonal=1,
         )
 
@@ -428,7 +429,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         _, _, a, _ = action_embeddings.shape
         seqlen = n_i + m + s + a
         episode_mask = torch.triu(
-            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
+            torch.ones(seqlen * t, seqlen * t, device=image_embeddings.device)
+            * float("-inf"),
             diagonal=1,
         )
         num_self_censor = m + s + a
@@ -453,7 +455,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         _, _, a, _ = action_embeddings.shape
         seqlen = n_i + m + s + a
         episode_mask = torch.triu(
-            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
+            torch.ones(seqlen * t, seqlen * t, device=image_embeddings.device)
+            * float("-inf"),
             diagonal=1,
         )
         num_self_censor = m + s + a
@@ -464,7 +467,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             for ts_col in range(0, ts_row + 1):
                 col = seqlen * ts_col + n_i
                 episode_mask[
-                    row : row + num_self_censor, col : col + num_self_censor
+                    row: row + num_self_censor, col: col + num_self_censor
                 ] = float("-inf")
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
@@ -481,7 +484,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         _, _, a, _ = action_embeddings.shape
         seqlen = n_i + m + s + a
         episode_mask = torch.triu(
-            torch.ones(seqlen, seqlen, device=image_embeddings.device) * float("-inf"),
+            torch.ones(seqlen * t, seqlen * t, device=image_embeddings.device)
+            * float("-inf"),
             diagonal=1,
         )
         num_self_censor = m + s + a
@@ -489,7 +493,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # Self masking
         for ts_col in range(0, t):
             col = seqlen * ts_col + n_i
-            episode_mask[:, col : col + num_self_censor] = float("-inf")
+            episode_mask[:, col: col + num_self_censor] = float("-inf")
             for ts_row in range(ts_col, t):
                 row = seqlen * ts_row + n_i - 1
                 for i in range(num_self_censor):
@@ -636,6 +640,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             b: {ts: defaultdict(dict) for ts in timesteps_to_predict} for b in range(B)
         }
 
+        m, n = episode_mask.shape
         for ts in timesteps_to_predict:
             observations_start_idx = ts * ts_len
             actions_start_idx = (ts + 1) * ts_len - actions_to_predict
@@ -643,10 +648,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
                 :, observations_start_idx:actions_start_idx, :
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
-            for key in self.action_keys:
-                _, m, _ = episode_mask.shape
+            for idx, key in enumerate(self.action_keys):
                 logits, _ = self.forward(
-                    episode=history, episode_mask=episode_mask[:m, :m]
+                    episode=history,
+                    episode_mask=episode_mask[
+                        : m - actions_to_predict + idx, : n - actions_to_predict + idx
+                    ],
                 )
                 logits = logits.detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
@@ -674,20 +681,20 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
                     token.clone()
                 )
 
+                log_message = ""
                 for b in range(B):
                     predictions[b][ts][key]["pred"] = prediction[b, 0].item()
                     predictions[b][ts][key]["gt"] = sample[key][b, ts].item()
+                    pred = prediction[b, 0].item()
+                    gt = sample[key][b, ts].item()
+                    log_message += f"[{batch_idx}][{key}] gt:{gt:.3f} pred:{pred:.3f}"
+                logger.info(log_message)
 
         return predictions
 
     def forward(
         self, *, episode: Float[Tensor, "b to d"], episode_mask: Float[Tensor, "to to"]
     ):
-        _, m, _ = episode.shape
-        episode_mask = torch.triu(
-            torch.ones(m, m, device=episode.device) * float("-inf"), diagonal=1
-        )
-
         features = self.gpt(
             src=episode,
             mask=episode_mask,

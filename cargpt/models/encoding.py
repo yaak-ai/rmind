@@ -248,14 +248,15 @@ class SenorDropout(torch.nn.Module):
         self, embeddings: List[Float[Tensor, "b t c d"]]
     ) -> List[Float[Tensor, "b t c d"]]:
         if len(embeddings) == 0:
-            return embeddings
+            return []
 
         b, t, _, d = embeddings[0].shape
-        num_samples_to_drop = int(b * self.prob)
+        num_samples_to_drop = 1 if b == 1 else int(b * self.prob)
         indices = torch.randperm(b)[:num_samples_to_drop]
 
         dropped_embeddings = []
         for embedding in embeddings:
+            embedding = embedding.clone()
             # drop everything except last timestep
             embedding[indices, : t - 1] = 0
             dropped_embeddings.append(embedding)
