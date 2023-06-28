@@ -1,22 +1,22 @@
 _target_: yaak_datasets.Dataset
 _recursive_: false
 config:
-  version: 0.12.1
+  version: 0.12.3
   data:
     drives:
-    - id: 2022-10-24--12-00-53
+    - id: Niro096-HQ/2023-01-11--13-47-36
+      metadata:
+        path: /nas/drives/yaak/data/Niro096-HQ/2023-01-11--13-47-36/metadata.log
       sources:
-      - camera: cam_front_right
+      - camera: cam_front_left
         reader:
           _target_: yaak_datasets.FrameImageVideoReader
-          path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
           filename_format: '{:09d}.jpg'
-      metadata:
-        path: ${paths.data_dir}/frames/${..id}/metadata.log
+          path: /nas/drives/yaak/data/Niro096-HQ/2023-01-11--13-47-36/frames/cam_front_left.defish.mp4/576x324
 
     metadata:
       cameras:
-      - cam_front_right
+      - cam_front_left
 
       select:
       - message: ImageMetadata
@@ -37,7 +37,7 @@ config:
 
   samples:
     alignment:
-      ref_camera: cam_front_right
+      ref_camera: cam_front_left
       tolerance: 10ms
 
     clips:
