@@ -113,6 +113,11 @@ model:
     num_embeddings: ${num_tokens_total}
     embedding_dim: ${embedding_dim}
 
+  # https://arxiv.org/pdf/1812.03079.pdf
+  sensor_dropout:
+    _target_: cargpt.models.encoding.SenorDropout
+    prob: 1.0
+
   position_encoding:
     patch_row:
       _target_: torch.nn.Embedding

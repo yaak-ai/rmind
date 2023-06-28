@@ -5,7 +5,7 @@ import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from einops import rearrange, repeat
-from hydra.utils import instantiate
+from hydra.utils import call, instantiate
 from jaxtyping import Float, Int
 from loguru import logger
 from pytorch_lightning.utilities.parsing import AttributeDict
@@ -90,6 +90,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             target=self.hparams.sensor_embedding._target_,  # type: ignore[union-attr]
         )
         self.sensor_embedding = instantiate(self.hparams.sensor_embedding)  # type: ignore[union-attr]
+        # for sensor dropout (only activated in training)
+        logger.debug(
+            "Instantiating sensor dropout",
+            target=self.hparams.sensor_dropout._target_,  # type: ignore[union-attr]
+        )
+        self.sensor_dropout = instantiate(self.hparams.sensor_dropout)  # type: ignore[union-attr]
         # position encoding
         logger.debug(
             "Instantiating patch row positional encodings",
@@ -270,14 +276,14 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return embeddings, tokens, tokens_shift, values
 
-    def _step(self, sample):
+    def _step(self, sample: Any, is_training: bool = False):
         (
             episode,
             episode_labels,
             episode_labels_shift,
             episode_values,
             episode_mask,
-        ) = self._make_episode(sample)
+        ) = self._make_episode(sample, is_training=is_training)
 
         logits, values = self.forward(
             episode=episode[:, :-1], episode_mask=episode_mask[:-1, :-1]
@@ -295,7 +301,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             episode_values,
         )
 
-    def _make_episode(self, sample):
+    def _make_episode(self, sample: Any, is_training: bool = False):
         # tokenization + embeddings
         (
             image_embeddings,
@@ -315,6 +321,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             action_tokens_shift,
             action_values,
         ) = self._action_embeddings_and_tokens(sample, keys=self.action_keys)
+
+        # https://arxiv.org/pdf/1905.11979.pdf
+        # https://arxiv.org/pdf/1812.03079.pdf
+        if is_training:
+            embeddings = self.sensor_dropout([metadata_embeddings, action_embeddings])
+            metadata_embeddings, action_embeddings = embeddings
 
         observations = torch.cat([image_embeddings, metadata_embeddings], 2)
         observation_tokens = torch.cat([image_tokens, metadata_tokens], 2)
@@ -530,7 +542,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     def training_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
-        pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
+        pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
+            sample, is_training=True
+        )
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, _ = self._compute_diff(pred, tgt, tgt_shift)
@@ -556,7 +570,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     def validation_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
-        pred, pred_values, tgt, tgt_shift, tgt_values = self._step(sample)
+        pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
+            sample, is_training=False
+        )
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, numeric_values = self._compute_diff(pred, tgt, tgt_shift)
