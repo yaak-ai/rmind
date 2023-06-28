@@ -667,7 +667,6 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
     def forward(
         self, *, episode: Float[Tensor, "b to d"], episode_mask: Float[Tensor, "to to"]
     ):
-
         features = self.gpt(
             src=episode,
             mask=episode_mask,
