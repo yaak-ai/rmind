@@ -406,7 +406,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # causal masking fr fr
         seqlen = (
             patch_row * patch_col + len(nun_metadata_keys) + 1 + len(num_action_keys)
-        )
+        ) * clip_len
         episode_mask = torch.triu(
             torch.ones(seqlen, seqlen, device=device) * float("-inf"),
             diagonal=1,
@@ -667,11 +667,6 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
     def forward(
         self, *, episode: Float[Tensor, "b to d"], episode_mask: Float[Tensor, "to to"]
     ):
-        _, m, _ = episode.shape
-        episode_mask = torch.triu(
-            torch.ones(m, m, device=episode.device) * float("-inf"), diagonal=1
-        )
-
         features = self.gpt(
             src=episode,
             mask=episode_mask,
