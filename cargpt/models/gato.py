@@ -406,7 +406,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # causal masking fr fr
         seqlen = (
             patch_row * patch_col + len(nun_metadata_keys) + 1 + len(num_action_keys)
-        )
+        ) * clip_len
         episode_mask = torch.triu(
             torch.ones(seqlen, seqlen, device=device) * float("-inf"),
             diagonal=1,
