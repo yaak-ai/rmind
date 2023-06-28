@@ -117,6 +117,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         )
         self.action_position = instantiate(self.hparams.position_encoding.action)  # type: ignore[union-attr]
 
+        # masking
+        logger.debug(
+            "Instantiating attention masking",
+            target=self.hparams.attention_mask._target_,  # type: ignore[union-attr]
+        )  # type: ignore[union-attr]
+        self.attention_mask = instantiate(self.hparams.attention_mask)  # type: ignore[union-attr]
         # network
         logger.debug(
             "Instantiating gato model",
@@ -270,10 +276,11 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             episode_labels,
             episode_labels_shift,
             episode_values,
+            episode_mask,
         ) = self._make_episode(sample)
 
         logits, values = self.forward(
-            episode=episode[:, :-1],
+            episode=episode[:, :-1], episode_mask=episode_mask[:-1, :-1]
         )
 
         labels = episode_labels[:, 1:]
@@ -370,7 +377,97 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         episode_labels_shift = episode_labels_shift.view(b, t * (o + 1 + a))
         episode_values = episode_values.view(b, t * (o + 1 + a))
 
-        return episode, episode_labels, episode_labels_shift, episode_values
+        episode_mask = self.attention_mask(episode.device)
+
+        return (
+            episode,
+            episode_labels,
+            episode_labels_shift,
+            episode_values,
+            episode_mask,
+        )
+
+    @staticmethod
+    def causal_attention_mask(
+        patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
+    ):
+        # causal masking fr fr
+        seqlen = (
+            patch_row * patch_col + len(nun_metadata_keys) + 1 + len(num_action_keys)
+        )
+        episode_mask = torch.triu(
+            torch.ones(seqlen, seqlen, device=device) * float("-inf"),
+            diagonal=1,
+        )
+
+        return episode_mask
+
+    @staticmethod
+    def block_causal_sensor_attention_mask(
+        patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
+    ):
+        episode_mask = Gato.causal_attention_mask(
+            patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
+        )
+        n_i = patch_row * patch_row
+        num_self_censor = len(nun_metadata_keys) + 1 + len(num_action_keys)
+        seqlen = n_i + num_self_censor
+
+        # Self masking
+        for ts_row in range(0, clip_len):
+            row = seqlen * ts_row + n_i - 1
+            for ts_col in range(0, ts_row + 1):
+                col = seqlen * ts_col + n_i
+                for i in range(num_self_censor):
+                    episode_mask[row + i + 1, col + i] = 0
+
+        return episode_mask
+
+    @staticmethod
+    def block_all_sensor_attention_mask(
+        patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
+    ):
+        episode_mask = Gato.causal_attention_mask(
+            patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
+        )
+        n_i = patch_row * patch_row
+        num_self_censor = len(nun_metadata_keys) + 1 + len(num_action_keys)
+        seqlen = n_i + num_self_censor
+
+        # Self masking
+        for ts_row in range(0, clip_len):
+            row = seqlen * ts_row + n_i - 1
+            for ts_col in range(0, ts_row + 1):
+                col = seqlen * ts_col + n_i
+                episode_mask[
+                    row : row + num_self_censor, col : col + num_self_censor
+                ] = float("-inf")
+                for i in range(num_self_censor):
+                    episode_mask[row + i + 1, col + i] = 0
+
+        return episode_mask
+
+    @staticmethod
+    def block_all_sensor_and_image_from_sensor_attention_mask(
+        patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
+    ):
+        episode_mask = Gato.causal_attention_mask(
+            patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
+        )
+        n_i = patch_row * patch_row
+        num_self_censor = len(nun_metadata_keys) + 1 + len(num_action_keys)
+        seqlen = n_i + num_self_censor
+
+        # Self masking
+        for ts_col in range(0, clip_len):
+            col = seqlen * ts_col + n_i
+            episode_mask[:, col : col + num_self_censor] = float("-inf")
+            for ts_row in range(ts_col, clip_len):
+                row = seqlen * ts_row + n_i - 1
+                for i in range(num_self_censor):
+                    episode_mask[row + i + 1, col + i] = 0
+
+        return episode_mask
 
     def _compute_diff(self, logits, tgt_labels, labels_shift):
         return self.diff(
@@ -493,7 +590,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         start_timestep: int = 0,
     ) -> Any:
         sample = self.prepare_batch(batch)
-        full_episode, *_ = self._make_episode(sample)
+        full_episode, *_, episode_mask = self._make_episode(sample)
         B, timesteps, *_ = sample["frames"].shape
         ts_len = int(full_episode.shape[1] / timesteps)
 
@@ -507,6 +604,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             b: {ts: defaultdict(dict) for ts in timesteps_to_predict} for b in range(B)
         }
 
+        m, n = episode_mask.shape
         for ts in timesteps_to_predict:
             observations_start_idx = ts * ts_len
             actions_start_idx = (ts + 1) * ts_len - actions_to_predict
@@ -515,7 +613,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
             for key in self.action_keys:
-                logits, _ = self.forward(episode=history)
+                logits, _ = self.forward(
+                    episode=history, episode_mask=episode_mask[:m, :n]
+                )
                 logits = logits.detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
                     torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
@@ -549,9 +649,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         return predictions
 
     def forward(
-        self,
-        *,
-        episode: Float[Tensor, "b to d"],
+        self, *, episode: Float[Tensor, "b to d"], episode_mask: Float[Tensor, "to to"]
     ):
         _, m, _ = episode.shape
         episode_mask = torch.triu(

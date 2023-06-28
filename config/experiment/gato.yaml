@@ -135,9 +135,19 @@ model:
       num_embeddings: 1
       embedding_dim: ${embedding_dim}
 
+  attention_mask:
+    _target_: cargpt.models.gato.Gato.causal_attention_mask
+    _args_:
+      - ${image_encoder.patch_row_tokens}
+      - ${image_encoder.patch_col_tokens}
+      - ${metadata_keys}
+      - ${action_keys}
+      - ${clip_len}
+    _partial_: True
+
   gpt:
     _target_: torch.nn.TransformerEncoder
-    num_layers: 4
+    num_layers: 8
     encoder_layer:
       _target_: cargpt.models.gato.TransformerEncoderLayerGEGLU
       d_model: ${embedding_dim}

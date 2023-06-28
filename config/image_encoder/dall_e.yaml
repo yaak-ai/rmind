@@ -8,11 +8,9 @@ tokens_shift: 4102
 tokens_mask: 1
 ignore_image_tokens: False
 backbone:
-  _target_: torch.nn.Sequential
-  _args_:
-    - _target_: cargpt.models.encoding.dalleDVAE
-      enc_weights: ${dalle_encoder_weights}
-      freeze: True
+  _target_: cargpt.models.encoding.dalleDVAE
+  enc_weights: ${dalle_encoder_weights}
+  freeze: True
 tokenizer:
   _target_: cargpt.models.encoding.DVAETokens
 
