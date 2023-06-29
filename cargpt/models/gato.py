@@ -705,7 +705,6 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
                 self.device
             )
 
-        breakpoint()
         sample = {
             "frames": frames[:, :clip_len].clone(),
         }
@@ -724,5 +723,4 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         return result
 
     def on_validation_epoch_end(self) -> None:
-        self._finish_val_outputs_logging()
         self._finish_val_outputs_logging()
