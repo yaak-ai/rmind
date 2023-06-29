@@ -1,8 +1,8 @@
-import parse
 from collections import defaultdict
 from typing import Any, Dict, List
 
 import more_itertools as mit
+import parse
 import pytorch_lightning as pl
 import torch
 from einops import rearrange, repeat
