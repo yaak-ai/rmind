@@ -22,7 +22,7 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-geci9ej3:v4']
+    _args_: ['yaak/cargpt/model-w6b4pq8b:v9']
 
   ground_truth_trajectory:
     steps: 30
@@ -36,6 +36,9 @@ model:
   car:
     wheelbase: 2.7  # [m], 2700 [mm]
     max_beta: 35.75  # [deg]  # TODO: find the real middle beta
+
+  logging:
+    log_to_terminal: False
 
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule

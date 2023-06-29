@@ -604,6 +604,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         batch_idx: int,
         dataloader_idx: int = 0,
         start_timestep: int = 0,
+        verbose: bool = False,
     ) -> Any:
         sample = self.prepare_batch(batch)
         full_episode, *_, episode_mask = self._make_episode(sample)
@@ -628,9 +629,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
                 :, observations_start_idx:actions_start_idx, :
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
-            for key in self.action_keys:
+            for idx, key in enumerate(self.action_keys):
                 logits, _ = self.forward(
-                    episode=history, episode_mask=episode_mask[:m, :n]
+                    episode=history,
+                    episode_mask=episode_mask[
+                        : m - actions_to_predict + idx, : n - actions_to_predict + idx
+                    ],
                 )
                 logits = logits.detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
@@ -658,9 +662,15 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
                     token.clone()
                 )
 
+                log_message = ""
                 for b in range(B):
                     predictions[b][ts][key]["pred"] = prediction[b, 0].item()
                     predictions[b][ts][key]["gt"] = sample[key][b, ts].item()
+                    pred = prediction[b, 0].item()
+                    gt = sample[key][b, ts].item()
+                    log_message += f"[{batch_idx}][{key}] gt:{gt:.3f} pred:{pred:.3f}"
+                if verbose:
+                    logger.info(log_message)
 
         return predictions
 
