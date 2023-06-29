@@ -1,3 +1,4 @@
+import parse
 from collections import defaultdict
 from typing import Any, Dict, List
 
@@ -164,6 +165,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         self.action_keys: List[str] = self.hparams.action_keys  # type: ignore[assignment]
         self.metadata_keys: List[str] = self.hparams.metadata_keys  # type: ignore[assignment]
+        self.key_parser = instantiate(self.hparams.key_parser)  # type: ignore[assignment]
 
         self.val_table_main_columns = [
             f"{key}_{label}"
@@ -220,12 +222,13 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         values = []
 
         for key in keys:
-            tokenizer = getattr(self.tokenizers, key)
+            attr_key = self.key_parser.parse(key).fixed[0]
+            tokenizer = getattr(self.tokenizers, attr_key)
             token: Int[Tensor, "b t"] = tokenizer(sample[key].clone())  # type: ignore[operator]
-            token += self.hparams.tokens_shift[key]  # type: ignore[index]
+            token += self.hparams.tokens_shift[attr_key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
-            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]  # type: ignore[index]
+            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[attr_key]  # type: ignore[index]
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -247,12 +250,13 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         values = []
 
         for key in keys:
-            tokenizer = getattr(self.tokenizers, key)
+            attr_key = self.key_parser.parse(key).fixed[0]
+            tokenizer = getattr(self.tokenizers, attr_key)
             token: Int[Tensor, "b t"] = tokenizer(sample[key].clone())  # type: ignore[operator]
-            token += self.hparams.tokens_shift[key]  # type: ignore[index]
+            token += self.hparams.tokens_shift[attr_key]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
-            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]  # type: ignore[index]
+            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[attr_key]  # type: ignore[index]
 
             embeddings.append(embedding)
             tokens.append(token)
@@ -489,6 +493,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             self.sensor_detokenization,
             self.metadata_keys,
             self.action_keys,
+            self.key_parser,
         )
 
     def _compute_loss_categorical(self, logits, labels):
@@ -630,6 +635,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
             for idx, key in enumerate(self.action_keys):
+                attr_key = self.key_parser.parse(key).fixed[0]
                 logits, _ = self.forward(
                     episode=history,
                     episode_mask=episode_mask[
@@ -657,8 +663,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
                 history = torch.concat([history, embedded], dim=1)
 
                 # get real value
-                token -= self.hparams.tokens_shift[key]  # type: ignore[index]
-                prediction: Float[Tensor, "b 1"] = self.sensor_detokenization[key](
+                token -= self.hparams.tokens_shift[attr_key]  # type: ignore[index]
+                prediction: Float[Tensor, "b 1"] = self.sensor_detokenization[attr_key](
                     token.clone()
                 )
 
@@ -687,24 +693,23 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         return logits, values
 
     def prepare_batch(self, batch):
+        clip_len = self.global_position.num_embeddings
         clips = mit.one(batch["clips"].values())
         frames = clips["frames"].to(self.device)
-        speed = clips["meta"]["VehicleMotion_speed"].to(self.device)
-        steering = clips["meta"]["VehicleMotion_steering_angle_normalized"].to(
-            self.device
-        )
-        gas = clips["meta"]["VehicleMotion_gas_pedal_normalized"].to(self.device)
-        brake = clips["meta"]["VehicleMotion_brake_pedal_normalized"].to(self.device)
-        turn = clips["meta"]["VehicleState_turn_signal"].to(self.device)
+        sensor_keys = self.hparams.metadata_keys + self.action_keys
+        measurements = {}
+        for sensor_key in sensor_keys:
+            results = self.key_parser.parse(sensor_key).fixed
+            key, skip = results[0], int(results[1])
+            measurements[sensor_key] = clips["meta"][key][:, skip : clip_len + skip].to(
+                self.device
+            )
 
+        breakpoint()
         sample = {
-            "frames": frames,
-            "VehicleMotion_speed": speed,
-            "VehicleMotion_steering_angle_normalized": steering,
-            "VehicleMotion_gas_pedal_normalized": gas,
-            "VehicleMotion_brake_pedal_normalized": brake,
-            "VehicleState_turn_signal": turn,
+            "frames": frames[:, :clip_len].clone(),
         }
+        sample.update(measurements)
 
         return sample
 
@@ -719,4 +724,5 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         return result
 
     def on_validation_epoch_end(self) -> None:
+        self._finish_val_outputs_logging()
         self._finish_val_outputs_logging()

@@ -15,12 +15,13 @@ num_special_tokens: 3  # for special tokens SOS, SEP, OES
 num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
 num_tokens_total: ${image_encoder.total_tokens} # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens} + ${image_encoder.tokens}
-metadata_keys: ["VehicleMotion_speed", "VehicleState_turn_signal"]
+metadata_keys: ["VehicleMotion_speed:0", "VehicleState_turn_signal:0"]
 speed_range: [0.0, 80.0]
 action_keys:
-  - "VehicleMotion_gas_pedal_normalized"
-  - "VehicleMotion_brake_pedal_normalized"
-  - "VehicleMotion_steering_angle_normalized"
+  - "VehicleMotion_gas_pedal_normalized:0"
+  - "VehicleMotion_brake_pedal_normalized:0"
+  - "VehicleMotion_steering_angle_normalized:0"
+  - "VehicleMotion_speed:1"
 tokens_shift: # Shifting continous and discrete tokens since embeddings are shared
   VehicleMotion_speed: 3
   VehicleMotion_gas_pedal_normalized: 1027
@@ -190,6 +191,10 @@ model:
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
+  key_parser:
+    _target_: parse.compile
+    _args_:
+      - "{}:{}"
   ignore_image_tokens: ${image_encoder.ignore_image_tokens}
   special_tokens:
     bos: 0
@@ -232,7 +237,7 @@ datamodule:
             filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
         samples:
           clips:
-            length: ${clip_len}
+            length: ${image_encoder.dataset_clip_len}
             stride: 10
             step: 10
 
@@ -245,6 +250,6 @@ datamodule:
             filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
         samples:
           clips:
-            length: ${clip_len}
+            length: ${image_encoder.dataset_clip_len}
             stride: 10
             step: 10

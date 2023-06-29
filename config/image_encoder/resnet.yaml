@@ -1,4 +1,5 @@
 batch_size: 8
+dataset_clip_len: 7
 clip_len: 6
 patch_row_tokens: 10
 patch_col_tokens: 18

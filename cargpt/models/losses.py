@@ -16,6 +16,7 @@ class DetokenizedL1(nn.Module):
         detokenizer,
         metadata_keys,
         action_keys,
+        key_parser,
     ):
         logits = logits.clone()
         labels = labels.clone()
@@ -66,7 +67,8 @@ class DetokenizedL1(nn.Module):
         tgt_actions_values = torch.zeros_like(tgt_actions_labels, dtype=torch.float)
 
         for idx, key in enumerate(metadata_keys):
-            inv_func = detokenizer[key]
+            attr_key = key_parser.parse(key).fixed[0]
+            inv_func = getattr(detokenizer, attr_key)
             pred_observations_values[:, :, idx] = inv_func(
                 pred_observations_labels[:, :, idx]
             )
@@ -75,7 +77,8 @@ class DetokenizedL1(nn.Module):
             )
 
         for idx, key in enumerate(action_keys):
-            inv_func = detokenizer[key]
+            attr_key = key_parser.parse(key).fixed[0]
+            inv_func = getattr(detokenizer, attr_key)
             pred_actions_values[:, :, idx] = inv_func(pred_actions_labels[:, :, idx])
             tgt_actions_values[:, :, idx] = inv_func(tgt_actions_labels[:, :, idx])
 
