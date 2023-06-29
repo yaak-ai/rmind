@@ -1,6 +1,6 @@
 import math
 from collections import namedtuple
-from typing import Any, List, Tuple
+from typing import Any, List, Tuple, Dict
 
 import cv2
 import more_itertools as mit
@@ -26,6 +26,7 @@ class Trajectory(pl.LightningModule):
         images_transform: DictConfig,
         ground_truth_trajectory: DictConfig,
         car: DictConfig,
+        logging: DictConfig,
     ):
         super().__init__()
         self.model = instantiate(inference_model)
@@ -37,19 +38,22 @@ class Trajectory(pl.LightningModule):
 
         self.gt_steps: int = ground_truth_trajectory.steps
         self.gt_time_interval: float = ground_truth_trajectory.time_interval
+        self.logging = logging
 
         self.in_to_out = {
-            "VehicleMotion_speed": "speed",  # km / h
-            "VehicleMotion_steering_angle_normalized": "steering_norm",
-            "VehicleMotion_gas_pedal_normalized": "gas_pedal_norm",
-            "VehicleMotion_brake_pedal_normalized": "brake_pedal_norm",
-            "VehicleMotion_acceleration_x": "acceleration_x",  # m / s2
-            "VehicleMotion_acceleration_y": "acceleration_y",  # m / s2
-            "VehicleMotion_acceleration_z": "acceleration_z",
+            "VehicleMotion_speed": "VehicleMotion_speed",  # km / h
+            "VehicleMotion_steering_angle_normalized": "VehicleMotion_steering_angle_normalized",
+            "VehicleMotion_gas_pedal_normalized": "VehicleMotion_gas_pedal_normalized",
+            "VehicleMotion_brake_pedal_normalized": "VehicleMotion_brake_pedal_normalized",
+            "VehicleMotion_acceleration_x": "VehicleMotion_acceleration_x",  # m / s2
+            "VehicleMotion_acceleration_y": "VehicleMotion_acceleration_y",  # m / s2
+            "VehicleMotion_acceleration_z": "VehicleMotion_acceleration_z",
         }
 
     def get_model_trajactories(self, batch):
-        preds_last = self.model.predict_step(batch, batch_idx=0, start_timestep=-1)
+        preds_last = self.model.predict_step(
+            batch, batch_idx=0, start_timestep=-1, verbose=self.logging.log_to_terminal
+        )
 
         prediction_actions_ = []
         for batch_key, batch_dict in sorted(preds_last.items()):
@@ -102,9 +106,15 @@ class Trajectory(pl.LightningModule):
 
         # Model prediction trajactories
         model_actions = self.get_model_trajactories(batch)
-        metadata["gas_pedal_norm"] = model_actions["gas_pedal_norm"]
-        metadata["brake_pedal_norm"] = model_actions["brake_pedal_norm"]
-        metadata["steering_norm"] = model_actions["steering_norm"]
+        metadata["VehicleMotion_gas_pedal_normalized"] = model_actions[
+            "VehicleMotion_gas_pedal_normalized"
+        ]
+        metadata["VehicleMotion_brake_pedal_normalized"] = model_actions[
+            "VehicleMotion_brake_pedal_normalized"
+        ]
+        metadata["VehicleMotion_steering_angle_normalized"] = model_actions[
+            "VehicleMotion_steering_angle_normalized"
+        ]
 
         pred_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
             steps=self.gt_steps,
@@ -118,7 +128,7 @@ class Trajectory(pl.LightningModule):
             f=1,
         )
 
-        draw_trajectory(visualizations, pred_points_2d, point_color=(0, 255, 0))
+        draw_preds(visualizations, metadata, line_color=(0, 255, 0))
 
         return visualizations
 
@@ -131,7 +141,7 @@ class Trajectory(pl.LightningModule):
             for in_key, out_key in self.in_to_out.items()
         }
         # units change
-        out["speed"] *= 10 / 36  # change to m / s
+        out["VehicleMotion_speed"] *= 10 / 36  # change to m / s
 
         # Assumption: batch size = 1
         # if the assumption changes, kick out the flattening
@@ -143,15 +153,15 @@ class Trajectory(pl.LightningModule):
         *,
         steps,
         time_interval,
-        speed,
-        acceleration_x,
-        acceleration_y,
-        acceleration_z,
-        steering_norm,
-        gas_pedal_norm,
-        brake_pedal_norm,
+        VehicleMotion_speed,
+        VehicleMotion_acceleration_x,
+        VehicleMotion_acceleration_y,
+        VehicleMotion_acceleration_z,
+        VehicleMotion_steering_angle_normalized,
+        VehicleMotion_gas_pedal_normalized,
+        VehicleMotion_brake_pedal_normalized,
     ) -> Float[Tensor, "f n 3"]:
-        clips, *_ = speed.shape
+        clips, *_ = VehicleMotion_speed.shape
         points_3d: List[List[Tuple[float, float, float]]] = []
 
         for i in range(clips):
@@ -160,19 +170,19 @@ class Trajectory(pl.LightningModule):
                 y=1.5,
                 z=1e-6,
                 phi=math.radians(0.0),
-                v=speed[i].item(),
+                v=VehicleMotion_speed[i].item(),
                 t=0.0,
             )
             curr_points = self.calculate_trajectory(
                 last_elem=start_point,
                 steps=steps,
                 time_interval=time_interval,
-                acceleration_x=acceleration_x[i].item(),
-                acceleration_y=acceleration_y[i].item(),
-                acceleration_z=acceleration_z[i].item(),
-                gas_norm=gas_pedal_norm[i].item(),
-                brake_norm=brake_pedal_norm[i].item(),
-                steering_wheel_norm=steering_norm[i].item(),
+                acceleration_x=VehicleMotion_acceleration_z[i].item(),
+                acceleration_y=VehicleMotion_acceleration_y[i].item(),
+                acceleration_z=VehicleMotion_acceleration_z[i].item(),
+                gas_norm=VehicleMotion_gas_pedal_normalized[i].item(),
+                brake_norm=VehicleMotion_brake_pedal_normalized[i].item(),
+                steering_wheel_norm=VehicleMotion_steering_angle_normalized[i].item(),
             )
             points_3d.append([(p.x, p.y, p.z) for p in [start_point] + curr_points])
 
@@ -222,6 +232,27 @@ class Trajectory(pl.LightningModule):
             elems.append(p_next)
             last_elem = p_next
         return elems
+
+
+def draw_preds(
+    visualizations: np.ndarray,
+    metadata: Dict,
+    line_color: Tuple[int, int, int] = (255, 255, 255),
+):
+    image = visualizations[0]
+    h, w = image.shape[:2]
+    brake = metadata["VehicleMotion_brake_pedal_normalized"].item()
+    steer = metadata["VehicleMotion_steering_angle_normalized"].item()
+    image = cv2.putText(
+        image,
+        f"brake: {brake:.3f}, steer: {steer:.3f}",
+        (0, w // 2),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        color=line_color,
+        thickness=2,
+        lineType=cv2.LINE_AA,
+    )
 
 
 def draw_trajectory(
