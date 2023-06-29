@@ -1,6 +1,6 @@
 import math
 from collections import namedtuple
-from typing import Any, List, Tuple, Dict
+from typing import Any, Dict, List, Tuple
 
 import cv2
 import more_itertools as mit
