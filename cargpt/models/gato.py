@@ -1,8 +1,8 @@
+import parse
 from collections import defaultdict
 from typing import Any, Dict, List
 
 import more_itertools as mit
-import parse
 import pytorch_lightning as pl
 import torch
 from einops import rearrange, repeat
@@ -456,7 +456,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             for ts_col in range(0, ts_row + 1):
                 col = seqlen * ts_col + n_i
                 episode_mask[
-                    row : row + num_self_censor, col : col + num_self_censor
+                    row: row + num_self_censor, col: col + num_self_censor
                 ] = float("-inf")
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
@@ -477,7 +477,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         # Self masking
         for ts_col in range(0, clip_len):
             col = seqlen * ts_col + n_i
-            episode_mask[:, col : col + num_self_censor] = float("-inf")
+            episode_mask[:, col: col + num_self_censor] = float("-inf")
             for ts_row in range(ts_col, clip_len):
                 row = seqlen * ts_row + n_i - 1
                 for i in range(num_self_censor):
@@ -701,7 +701,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         for sensor_key in sensor_keys:
             results = self.key_parser.parse(sensor_key).fixed
             key, skip = results[0], int(results[1])
-            measurements[sensor_key] = clips["meta"][key][:, skip : clip_len + skip].to(
+            measurements[sensor_key] = clips["meta"][key][:, skip: clip_len + skip].to(
                 self.device
             )
 
