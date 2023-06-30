@@ -151,20 +151,17 @@ model:
     _partial_: True
 
   gpt:
-    _target_: torch.nn.TransformerEncoder
-    num_layers: 8
-    encoder_layer:
-      _target_: cargpt.models.gato.TransformerEncoderLayerGEGLU
-      d_model: ${embedding_dim}
-      dim_feedforward: 512
-      nhead: 4
-      dropout: 0.1
-      batch_first: True
-      norm_first: True
-  classifier:
-    _target_: torch.nn.Linear
-    in_features: ${embedding_dim}
-    out_features: ${num_tokens_total}
+    _target_: transformers.GPT2LMHeadModel
+    _args_:
+      - _target_: transformers.GPT2Config
+        vocab_size: ${image_encoder.total_tokens}
+        n_positions: 2048
+        n_embd: ${embedding_dim}
+        n_layer: 4
+        n_head: 8
+        n_inner: 2048
+        nhead: 4
+        activation_function: gelu
   regressor:
     _target_: torch.nn.Linear
     in_features: ${embedding_dim}

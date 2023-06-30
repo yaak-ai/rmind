@@ -136,13 +136,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         )  # type: ignore[union-attr]
         self.gpt = instantiate(self.hparams.gpt)  # type: ignore[union-attr]
         logger.debug(
-            "Instantiating classifier layer",
-            target=self.hparams.classifier._target_,  # type: ignore[union-attr]
-        )
-        self.classifier = instantiate(self.hparams.classifier)  # type: ignore[union-attr]
-        logger.debug(
             "Instantiating regressor layer",
-            target=self.hparams.classifier._target_,  # type: ignore[union-attr]
+            target=self.hparams.regressor._target_,  # type: ignore[union-attr]
         )
         self.regressor = instantiate(self.hparams.regressor)  # type: ignore[union-attr]
 
@@ -170,6 +165,11 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             for key in self.metadata_keys + self.action_keys  # type: ignore
             for label in ("pred", "tgt")
         ]
+        # tie input sensor embeddings to LM Head of GPT2
+        self.sensor_embedding.weight = self.gpt.get_output_embeddings().weight
+        assert torch.all(
+            self.sensor_embedding.weight == self.gpt.get_output_embeddings().weight
+        )
 
     def _image_embeddings_and_tokens(self, frames):
         B, T, C, H, W = frames.shape
@@ -285,8 +285,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             episode_mask,
         ) = self._make_episode(sample, is_training=is_training)
 
-        logits, values = self.forward(
-            episode=episode[:, :-1], episode_mask=episode_mask[:-1, :-1]
+        loss, logits, values = self.forward(
+            episode=episode, episode_labels=episode_labels
         )
 
         labels = episode_labels[:, 1:]
@@ -294,6 +294,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         episode_values = episode_values[:, 1:]
 
         return (
+            loss,
             logits,
             values,
             labels.to(torch.int64),
@@ -542,10 +543,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     def training_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
-        pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
+        loss_categorical, pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
             sample, is_training=True
         )
-        loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, _ = self._compute_diff(pred, tgt, tgt_shift)
 
@@ -570,10 +570,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
     def validation_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
-        pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
-            sample, is_training=False
+        loss_categorical, pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
+            sample, is_training=True
         )
-        loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, numeric_values = self._compute_diff(pred, tgt, tgt_shift)
 
@@ -675,16 +674,22 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         return predictions
 
     def forward(
-        self, *, episode: Float[Tensor, "b to d"], episode_mask: Float[Tensor, "to to"]
+        self, *, episode: Float[Tensor, "b to d"], episode_labels: Int[Tensor, "b to"]
     ):
-        features = self.gpt(
-            src=episode,
-            mask=episode_mask,
+        output = self.gpt(
+            inputs_embeds=episode,
+            labels=episode_labels.to(torch.long),
+            return_dict=True,
+            output_hidden_states=True,
         )
-        logits = self.classifier(features)
+        # last layer features
+        features = output["hidden_states"][-1]
         values = self.regressor(features)
 
-        return logits, values
+        loss = output["loss"]
+        logits = output["logits"]
+
+        return loss, logits, values
 
     def prepare_batch(self, batch):
         clips = mit.one(batch["clips"].values())
