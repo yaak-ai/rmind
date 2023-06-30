@@ -41,10 +41,11 @@ class Trajectory(pl.LightningModule):
         self.logging = logging
 
         self.in_to_out = {
-            "VehicleMotion_speed": "VehicleMotion_speed",  # km / h
-            "VehicleMotion_steering_angle_normalized": "VehicleMotion_steering_angle_normalized",
-            "VehicleMotion_gas_pedal_normalized": "VehicleMotion_gas_pedal_normalized",
-            "VehicleMotion_brake_pedal_normalized": "VehicleMotion_brake_pedal_normalized",
+            "VehicleMotion_speed:0": "VehicleMotion_speed",  # km / h
+            "VehicleMotion_steering_angle_normalized:0": "VehicleMotion_steering_angle_normalized",
+            "VehicleMotion_gas_pedal_normalized:0": "VehicleMotion_gas_pedal_normalized",
+            "VehicleMotion_brake_pedal_normalized:0": "VehicleMotion_brake_pedal_normalized",
+            "VehicleMotion_speed:1": "VehicleMotion_speed",  # km / h
             "VehicleMotion_acceleration_x": "VehicleMotion_acceleration_x",  # m / s2
             "VehicleMotion_acceleration_y": "VehicleMotion_acceleration_y",  # m / s2
             "VehicleMotion_acceleration_z": "VehicleMotion_acceleration_z",
@@ -137,7 +138,7 @@ class Trajectory(pl.LightningModule):
         meta = clips["meta"]
 
         out = {
-            out_key: meta[in_key][:, [clip_index]].to(self.device)
+            out_key: meta[out_key][:, [clip_index]].to(self.device)
             for in_key, out_key in self.in_to_out.items()
         }
         # units change
