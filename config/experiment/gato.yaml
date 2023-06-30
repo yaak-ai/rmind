@@ -18,10 +18,10 @@ num_tokens_total: ${image_encoder.total_tokens} # ${num_special_tokens} + 4 x ${
 metadata_keys: ["VehicleMotion_speed:0", "VehicleState_turn_signal:0"]
 speed_range: [0.0, 80.0]
 action_keys:
+  - "VehicleMotion_speed:1"
   - "VehicleMotion_gas_pedal_normalized:0"
   - "VehicleMotion_brake_pedal_normalized:0"
   - "VehicleMotion_steering_angle_normalized:0"
-  - "VehicleMotion_speed:1"
 tokens_shift: # Shifting continous and discrete tokens since embeddings are shared
   VehicleMotion_speed: 3
   VehicleMotion_gas_pedal_normalized: 1027
