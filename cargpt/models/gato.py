@@ -289,9 +289,13 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             episode=episode, episode_labels=episode_labels
         )
 
+        # left shift gt
         labels = episode_labels[:, 1:]
         labels_shift = episode_labels_shift[:, 1:]
         episode_values = episode_values[:, 1:]
+        # GPT2 parses whole sequence
+        logits = logits[:, :-1]
+        values = values[:, :-1]
 
         return (
             loss,
