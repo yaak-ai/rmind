@@ -22,7 +22,7 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-rpvsjnpy:v6']
+    _args_: ['yaak/cargpt/model-xmccs4wo:v7']
 
   ground_truth_trajectory:
     steps: 30
@@ -67,7 +67,7 @@ datamodule:
                 filename_format: '{:09d}.jpg'
             metadata:
               path: ${paths.data_dir}/frames/${..id}/metadata.log
-              filter: ImageMetadata_frame_idx between 24900 and 25410  # TODO: remove
+              filter: ImageMetadata_frame_idx between 6570 and 6870  # TODO: remove
 
           metadata:
             cameras:
