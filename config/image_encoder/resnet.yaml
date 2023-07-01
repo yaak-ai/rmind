@@ -1,4 +1,4 @@
-batch_size: 32
+batch_size: 16
 clip_len: 6
 patch_row_tokens: 10
 patch_col_tokens: 18
