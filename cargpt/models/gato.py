@@ -633,12 +633,12 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
             for idx, key in enumerate(self.action_keys):
-                logits, _ = self.forward(
-                    episode=history,
-                    episode_mask=episode_mask[
-                        : m - actions_to_predict + idx, : n - actions_to_predict + idx
-                    ],
+                output = self.gpt(
+                    inputs_embeds=history,
+                    return_dict=True,
+                    output_hidden_states=True,
                 )
+                logits = output["logits"]
                 logits = logits.detach()
                 token: Int[Tensor, "b 1"] = torch.argmax(
                     torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
