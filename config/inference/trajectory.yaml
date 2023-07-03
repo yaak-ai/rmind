@@ -22,7 +22,7 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-ue2avzcz:v6']
+    _args_: ['yaak/cargpt/model-7wjtw2s2:v9']
     strict: False
 
   ground_truth_trajectory:
