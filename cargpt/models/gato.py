@@ -15,7 +15,7 @@ from torch.nn.functional import gelu
 
 from cargpt.utils._wandb import (
     LoadableFromArtifact,
-    TrainAttnMapLoggingMixin,
+    TrainValAttnMapLoggingMixin,
     ValOutputsLoggingTableMixin,
 )
 
@@ -68,7 +68,7 @@ class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
 class Gato(
     pl.LightningModule,
     ValOutputsLoggingTableMixin,
-    TrainAttnMapLoggingMixin,
+    TrainValAttnMapLoggingMixin,
     LoadableFromArtifact,
 ):
     """A Generalist Agent (Gato) https://arxiv.org/abs/2205.06175"""
@@ -285,7 +285,7 @@ class Gato(
 
         return embeddings, tokens, tokens_shift, values
 
-    def _step(self, sample: Any, is_training: bool = False):
+    def _step(self, sample: Any, batch_idx: int, is_training: bool = False):
         (
             episode,
             episode_labels,
@@ -303,7 +303,10 @@ class Gato(
         episode_values = episode_values[:, 1:]
 
         self._log_attn_maps(
-            episode=episode[:, :-1], episode_mask=episode_mask[:-1, :-1], **sample
+            episode=episode[:, :-1],
+            episode_mask=episode_mask[:-1, :-1],
+            batch_idx=batch_idx,
+            **sample,
         )
 
         return (
@@ -556,7 +559,7 @@ class Gato(
     def training_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
-            sample, is_training=True
+            sample, batch_idx=batch_idx, is_training=True
         )
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
@@ -584,7 +587,7 @@ class Gato(
     def validation_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
-            sample, is_training=False
+            sample, batch_idx=batch_idx, is_training=False
         )
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)

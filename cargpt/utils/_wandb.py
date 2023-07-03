@@ -120,7 +120,7 @@ class ValOutputsLoggingTableMixin:
             self.val_table.add_data(*row)
 
 
-class TrainAttnMapLoggingMixin:
+class TrainValAttnMapLoggingMixin:
     trainer: Trainer
     logger: WandbLogger
     hparams: AttributeDict
@@ -130,13 +130,29 @@ class TrainAttnMapLoggingMixin:
     metadata_keys: List[str]
 
     def is_attn_map_logging_active(self):
+        log_params = self.hparams.get("log", {})
+        if self.trainer.state.stage == RunningStage.TRAINING:
+            params = log_params.get("training", {}).get("attention_maps")
+        elif self.trainer.state.stage == RunningStage.VALIDATING:
+            params = log_params.get("validation", {}).get("attention_maps")
+        else:
+            params = None
+
         return (
-            isinstance(logger := self.logger, WandbLogger)
+            bool(params)
+            and isinstance(logger := self.logger, WandbLogger)
             and isinstance(logger.experiment, Run)
-            and self.hparams.get("log", {}).get("training", {}).get("attention_maps")
-            and self.trainer.state.stage
-            in (RunningStage.TRAINING, RunningStage.VALIDATING)
         )
+
+    def _should_attn_map_log_now(self, batch_idx):
+        if self.trainer.state.stage == RunningStage.TRAINING:
+            curr_step = self.global_step
+            params: Dict[str, Any] = self.hparams["log"]["training"]["attention_maps"]
+        else:  # validation
+            curr_step = batch_idx
+            params: Dict[str, Any] = self.hparams["log"]["validation"]["attention_maps"]
+        log_freq = params.get("log_freq") or 50
+        return curr_step % log_freq == 0
 
     def get_attention_maps(self, x, mask=None):
         attention_maps = []
@@ -156,6 +172,7 @@ class TrainAttnMapLoggingMixin:
         drive_ids,
         frame_idxs,
         frames,
+        batch_idx: int,
         episode: Float[Tensor, "b to d"],
         episode_mask: Optional[Float[Tensor, "to to"]] = None,
         **kwargs,
@@ -163,7 +180,7 @@ class TrainAttnMapLoggingMixin:
         if not self.is_attn_map_logging_active():
             return
 
-        if self.global_step % self.trainer.log_every_n_steps != 0:  # type: ignore
+        if not self._should_attn_map_log_now(batch_idx):
             return
 
         # Pick only one sample from batch - consistent with deephouse approach
@@ -208,7 +225,8 @@ class TrainAttnMapLoggingMixin:
                 ]
             }
         )
-        self.logger.experiment.log(data=data, step=self.global_step)
+        # Don't pass step, don't commit - let it be committed with logs
+        self.logger.experiment.log(data=data, commit=False)
 
     def _postprocess_attn_maps(
         self,
