@@ -103,6 +103,7 @@ ignore_unused = [
   "beartype",
   "fiftyone",
   "torchaudio",
+  "transformers",
 ]
 
 ignore_transitive = [
