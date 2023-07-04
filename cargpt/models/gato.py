@@ -306,6 +306,8 @@ class Gato(
             episode=episode[:, :-1],
             episode_mask=episode_mask[:-1, :-1],
             batch_idx=batch_idx,
+            episode_values=episode_values,
+            logits=logits,
             **sample,
         )
 

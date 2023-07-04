@@ -128,6 +128,7 @@ class TrainValAttnMapLoggingMixin:
     global_step: int
     action_keys: List[str]
     metadata_keys: List[str]
+    sensor_detokenization: Dict[str, Callable]
 
     def is_attn_map_logging_active(self):
         try:
@@ -157,8 +158,10 @@ class TrainValAttnMapLoggingMixin:
         params: Dict[str, Any] = self.hparams["log"]
         if self.trainer.state.stage == RunningStage.TRAINING:
             params = params["training"]["attention_maps"]
-        else:  # validation
+        elif self.trainer.state.stage == RunningStage.VALIDATING:
             params = params["validation"]["attention_maps"]
+        else:
+            raise KeyError("wrong stage")
         return params
 
     def get_attention_maps(self, x, mask=None):
@@ -173,6 +176,17 @@ class TrainValAttnMapLoggingMixin:
                 x = layer(x)
         return attention_maps
 
+    def _logits_to_real(self, logits: Float[Tensor, "to e"]) -> List[float]:
+        action_logits = logits[-len(self.action_keys) :, ...]
+        tokens = torch.argmax(torch.softmax(action_logits, dim=-1), dim=-1)
+
+        out = []
+        for token, action_key in zip(tokens, self.action_keys):
+            t = token - self.hparams.tokens_shift[action_key]  # type: ignore
+            prediction = self.sensor_detokenization[action_key](t.clone())
+            out.append(prediction.item())
+        return out
+
     def _log_attn_maps(
         self,
         *,
@@ -180,6 +194,8 @@ class TrainValAttnMapLoggingMixin:
         frame_idxs,
         frames,
         batch_idx: int,
+        episode_values: Float[Tensor, "b to"],
+        logits: Float[Tensor, "b to e"],
         episode: Float[Tensor, "b to d"],
         episode_mask: Optional[Float[Tensor, "to to"]] = None,
         **kwargs,
@@ -198,38 +214,39 @@ class TrainValAttnMapLoggingMixin:
             episode_mask,
         )
 
-        frames = frames[batch_idx]
+        batch_frames: Float[Tensor, "ts c h w"] = frames[batch_idx]
         images, metas_actions = self._postprocess_attn_maps(
             attn_maps=attn_maps,
-            frames=frames,
+            frames=batch_frames,
             tokens=episode.shape[1],
         )
 
         drive_id = drive_ids[batch_idx]
         frame_idxs = frame_idxs[batch_idx].tolist()
-        # TODO: update captions
-        caption = f"{frame_idxs[0]}-{frame_idxs[-1]} [{drive_id}]"
+        gt_actions_values = episode_values[batch_idx, -len(self.action_keys) :].tolist()
+        pred_actions_values = self._logits_to_real(logits[batch_idx])
 
         stage = self.trainer.state.stage
         data = {
-            f"{stage}/attn_map/img-{self.action_keys[idx]}": [
-                wandb.Image(img, caption=caption) for img in ts_images
+            f"{stage}/attn_map/{prefix}-{self.action_keys[idx]}": [
+                wandb.Image(
+                    img,
+                    caption=(
+                        f"gt:{gt_actions_values[idx]:.4f}, "
+                        f"pred: {pred_actions_values[idx]:.4f}, "
+                        f"({frame_idxs[frame_idx]}) [{drive_id}]"
+                    ),
+                )
+                for frame_idx, img in enumerate(ts_images)
             ]
-            for idx, ts_images in enumerate(images)
+            for prefix, values in (("img", images), ("meta+actions", metas_actions))
+            for idx, ts_images in enumerate(values)
         }
-        data.update(
-            {
-                f"{stage}/attn_map/meta+actions-{self.action_keys[idx]}": [
-                    wandb.Image(img, caption=caption) for img in ts_images
-                ]
-                for idx, ts_images in enumerate(metas_actions)
-            }
-        )
         data.update(
             {
                 f"{stage}/attn_map/frames": [
                     wandb.Image(img, caption=f"{frame_idxs[idx]} [{drive_id}]")
-                    for idx, img in enumerate(frames)
+                    for idx, img in enumerate(batch_frames)
                 ]
             }
         )
