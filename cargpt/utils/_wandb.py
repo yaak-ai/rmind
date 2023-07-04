@@ -130,29 +130,36 @@ class TrainValAttnMapLoggingMixin:
     metadata_keys: List[str]
 
     def is_attn_map_logging_active(self):
-        log_params = self.hparams.get("log", {})
-        if self.trainer.state.stage == RunningStage.TRAINING:
-            params = log_params.get("training", {}).get("attention_maps")
-        elif self.trainer.state.stage == RunningStage.VALIDATING:
-            params = log_params.get("validation", {}).get("attention_maps")
+        try:
+            self._get_attn_map_logging_params()
+        except KeyError:
+            params_fine = False
         else:
-            params = None
+            params_fine = True
 
         return (
-            bool(params)
+            params_fine
             and isinstance(logger := self.logger, WandbLogger)
             and isinstance(logger.experiment, Run)
         )
 
     def _should_attn_map_log_now(self, batch_idx):
+        params: Dict[str, Any] = self._get_attn_map_logging_params()
         if self.trainer.state.stage == RunningStage.TRAINING:
             curr_step = self.global_step
-            params: Dict[str, Any] = self.hparams["log"]["training"]["attention_maps"]
         else:  # validation
             curr_step = batch_idx
-            params: Dict[str, Any] = self.hparams["log"]["validation"]["attention_maps"]
+
         log_freq = params.get("log_freq") or 50
         return curr_step % log_freq == 0
+
+    def _get_attn_map_logging_params(self):
+        params: Dict[str, Any] = self.hparams["log"]
+        if self.trainer.state.stage == RunningStage.TRAINING:
+            params = params["training"]["attention_maps"]
+        else:  # validation
+            params = params["validation"]["attention_maps"]
+        return params
 
     def get_attention_maps(self, x, mask=None):
         attention_maps = []
@@ -200,6 +207,7 @@ class TrainValAttnMapLoggingMixin:
 
         drive_id = drive_ids[batch_idx]
         frame_idxs = frame_idxs[batch_idx].tolist()
+        # TODO: update captions
         caption = f"{frame_idxs[0]}-{frame_idxs[-1]} [{drive_id}]"
 
         stage = self.trainer.state.stage
@@ -234,8 +242,8 @@ class TrainValAttnMapLoggingMixin:
         frames: Float[Tensor, "ts c h w"],
         tokens: int,
     ) -> Tuple[List[List[Image]], List[List[Image]]]:
-        timesteps, _, img_height, img_width = frames.shape
-        params = self.hparams["log"]["training"]["attention_maps"]
+        # Extract and prepare parameters
+        params = self._get_attn_map_logging_params()
         layer = params["layer"]
         norm = params.get("norm") or "softmax"
         strength = params.get("strength") or 1.0
@@ -249,6 +257,8 @@ class TrainValAttnMapLoggingMixin:
         unnormalize = Unnormalize(mean=mean, std=std)
         frames = unnormalize(frames.clone())
 
+        # Extract and calculate dimensions
+        timesteps, _, img_height, img_width = frames.shape
         actions_len = len(self.action_keys)
         metadata_len = len(self.metadata_keys)
         meta_sep_act_len = actions_len + 1 + metadata_len
@@ -260,6 +270,7 @@ class TrainValAttnMapLoggingMixin:
         attn_map = attn_maps[layer].clone()
         last_meta_actions = attn_map[-actions_len:]
 
+        # Normalize values using requested method
         if norm == "softmax":
             last_meta_actions = softmax(last_meta_actions, dim=1)
         elif norm == "max":
@@ -267,6 +278,7 @@ class TrainValAttnMapLoggingMixin:
         else:
             raise NotImplementedError(f"unknown norm for attention maps: {norm}")
 
+        # Split attention map into multiple images
         images = []
         metas_actions = []
         for row in last_meta_actions:
@@ -274,6 +286,7 @@ class TrainValAttnMapLoggingMixin:
             row_metas_actions: List[Image] = []
 
             for ts in range(timesteps):
+                # Get frame attention mixed with real frame
                 img_start_idx = ts * seq_len
                 img_end_idx = img_start_idx + images_len
                 mask = row[img_start_idx:img_end_idx].reshape(rows, cols).clone()
@@ -295,6 +308,7 @@ class TrainValAttnMapLoggingMixin:
                 img = (img.permute(1, 2, 0) * 255).int().cpu().numpy().astype(np.uint8)
                 row_images.append(fromarray(img))
 
+                # Get non-image tokens visualization
                 ma_start_idx = img_end_idx
                 ma_end_idx = ma_start_idx + meta_sep_act_len
                 ma = row[ma_start_idx:ma_end_idx]
