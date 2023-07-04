@@ -221,6 +221,7 @@ class TrainValAttnMapLoggingMixin:
             tokens=episode.shape[1],
         )
 
+        # Log images
         drive_id = drive_ids[batch_idx]
         frame_idxs = frame_idxs[batch_idx].tolist()
         gt_actions_values = episode_values[batch_idx, -len(self.action_keys) :].tolist()
