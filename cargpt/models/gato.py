@@ -13,7 +13,11 @@ from torch import Tensor
 from torch.nn import Linear, ModuleDict
 from torch.nn.functional import gelu
 
-from cargpt.utils._wandb import LoadableFromArtifact, ValOutputsLoggingTableMixin
+from cargpt.utils._wandb import (
+    LoadableFromArtifact,
+    TrainValAttnMapLoggingMixin,
+    ValOutputsLoggingTableMixin,
+)
 
 
 class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
@@ -61,7 +65,12 @@ class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
         return x
 
 
-class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact):
+class Gato(
+    pl.LightningModule,
+    ValOutputsLoggingTableMixin,
+    TrainValAttnMapLoggingMixin,
+    LoadableFromArtifact,
+):
     """A Generalist Agent (Gato) https://arxiv.org/abs/2205.06175"""
 
     hparams: AttributeDict
@@ -276,7 +285,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
 
         return embeddings, tokens, tokens_shift, values
 
-    def _step(self, sample: Any, is_training: bool = False):
+    def _step(self, sample: Any, batch_idx: int, is_training: bool = False):
         (
             episode,
             episode_labels,
@@ -292,6 +301,15 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         labels = episode_labels[:, 1:]
         labels_shift = episode_labels_shift[:, 1:]
         episode_values = episode_values[:, 1:]
+
+        self._log_attn_maps(
+            episode=episode[:, :-1],
+            episode_mask=episode_mask[:-1, :-1],
+            batch_idx=batch_idx,
+            episode_values=episode_values,
+            logits=logits,
+            **sample,
+        )
 
         return (
             logits,
@@ -543,7 +561,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
     def training_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
-            sample, is_training=True
+            sample, batch_idx=batch_idx, is_training=True
         )
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
@@ -571,7 +589,7 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
     def validation_step(self, batch, batch_idx):
         sample = self.prepare_batch(batch)
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
-            sample, is_training=False
+            sample, batch_idx=batch_idx, is_training=False
         )
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
@@ -697,6 +715,9 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
         brake = clips["meta"]["VehicleMotion_brake_pedal_normalized"].to(self.device)
         turn = clips["meta"]["VehicleState_turn_signal"].to(self.device)
 
+        drive_ids = batch["meta"]["drive_id"]
+        frame_idxs = clips["meta"]["ImageMetadata_frame_idx"]
+
         sample = {
             "frames": frames,
             "VehicleMotion_speed": speed,
@@ -704,6 +725,8 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             "VehicleMotion_gas_pedal_normalized": gas,
             "VehicleMotion_brake_pedal_normalized": brake,
             "VehicleState_turn_signal": turn,
+            "drive_ids": drive_ids,
+            "frame_idxs": frame_idxs,
         }
 
         return sample

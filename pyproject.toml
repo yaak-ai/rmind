@@ -21,6 +21,7 @@ torchaudio = "=0.13.1"
 deephouse = {git = "git@github.com:yaak-ai/deephouse.git", rev = "main"}
 dall-e = {git = "git@github.com:openai/DALL-E.git", rev = "master"}
 wandb = "*"
+pillow = ">=9.5.0"
 
 [build-system]
 requires = ["poetry-core>=1.5.0"]
