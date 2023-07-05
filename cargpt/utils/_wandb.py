@@ -1,11 +1,12 @@
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import more_itertools as mit
 import numpy as np
 import torch.nn
 import wandb
 from einops import rearrange, repeat
+from hydra.utils import instantiate
 from jaxtyping import Float
 from PIL.Image import Image, fromarray
 from pytorch_lightning import Trainer
@@ -252,7 +253,9 @@ class TrainValAttnMapLoggingMixin:
             }
         )
         # Don't pass step, don't commit - let it be committed with logs
-        self.logger.experiment.log(data=data, commit=False)
+        params = self._get_attn_map_logging_params()
+        commit = params.get("force_commit") or False
+        self.logger.experiment.log(data=data, commit=commit)
 
     def _postprocess_attn_maps(
         self,
@@ -263,9 +266,10 @@ class TrainValAttnMapLoggingMixin:
         # Extract and prepare parameters
         params = self._get_attn_map_logging_params()
         layer = params["layer"]
-        norm = params.get("norm") or "softmax"
         strength = params.get("strength") or 1.0
         reverse = params.get("reverse") or False
+        row_transform = params.get("row_transform")
+        histograms = params.get("histograms") or False
 
         color = params.get("color") or [255, 255, 255]
         color = rearrange(torch.tensor(color).to(frames) / 255.0, "(c 1 1) -> c 1 1")
@@ -288,20 +292,19 @@ class TrainValAttnMapLoggingMixin:
         attn_map = attn_maps[layer].clone()
         last_meta_actions = attn_map[-actions_len:]
 
-        # Normalize values using requested method
-        if norm == "softmax":
-            last_meta_actions = softmax(last_meta_actions, dim=1)
-        elif norm == "max":
-            last_meta_actions /= last_meta_actions.max(dim=1)[0][..., None]
-        else:
-            raise NotImplementedError(f"unknown norm for attention maps: {norm}")
-
         # Split attention map into multiple images
         images = []
         metas_actions = []
-        for row in last_meta_actions:
+        for idx, row in enumerate(last_meta_actions):
             row_images: List[Image] = []
             row_metas_actions: List[Image] = []
+
+            if histograms:
+                self._process_attn_row_as_histogram(
+                    row, action_key=self.action_keys[idx]
+                )
+
+            row = self._preprocess_attn_row(row_vector=row, transforms=row_transform)
 
             for ts in range(timesteps):
                 # Get frame attention mixed with real frame
@@ -342,3 +345,22 @@ class TrainValAttnMapLoggingMixin:
             metas_actions.append(row_metas_actions)
 
         return images, metas_actions
+
+    def _preprocess_attn_row(
+        self, row_vector: Float[Tensor, "to"], transforms: Iterable[Any]
+    ) -> Float[Tensor, "to"]:
+        out = row_vector.clone()
+        for transform_cfg in transforms:
+            transform: Callable = instantiate(transform_cfg)
+            out = transform(out)
+        return out
+
+    def _process_attn_row_as_histogram(
+        self, row_vector: Float[Tensor, "to"], action_key: str
+    ) -> None:
+        weights = row_vector.clone()
+        histogram = wandb.Histogram(weights.detach().cpu(), num_bins=512)  # type: ignore
+        self.logger.experiment.log(
+            data={f"{self.trainer.state.stage}-histograms/{action_key}": histogram},
+            commit=False,
+        )

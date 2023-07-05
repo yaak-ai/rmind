@@ -209,11 +209,20 @@ model:
         cols: ${image_encoder.patch_col_tokens}
         imgs_mean: ${image_encoder.mean}
         imgs_std: ${image_encoder.std}
-        norm: max  # softmax or max
         strength: 1.0
         reverse: false
         color: [255, 0, 0]  # RGB
-        log_freq: 50
+        log_freq: 10
+        force_commit: true  # on validate there could be only one other commit, force if want to log with freq
+        row_transform:
+          - _target_: torch.nn.Threshold
+            threshold: 0.05
+            value: 0.0
+          - _target_: torch.nn.functional.normalize
+            _partial_: true
+            p: !!float inf
+            dim: 0
+        histograms: true
     training:
       attention_maps:
         layer: -1
@@ -221,11 +230,19 @@ model:
         cols: ${image_encoder.patch_col_tokens}
         imgs_mean: ${image_encoder.mean}
         imgs_std: ${image_encoder.std}
-        norm: max  # softmax or max
+        row_transform:
+          - _target_: torch.nn.Threshold
+            threshold: 0.05
+            value: 0.0
+          - _target_: torch.nn.functional.normalize
+            _partial_: true
+            p: !!float inf
+            dim: 0
         strength: 1.0
         reverse: false
         color: [255, 0, 0]  # RGB
         log_freq: 100
+        histograms: true
 
 trainer:
   _target_: pytorch_lightning.Trainer
