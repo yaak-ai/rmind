@@ -14,7 +14,7 @@ trainer:
       output_file: ${output_file}
       overwrite: true
       fourcc: mp4v
-      fps: 30
+      fps: 3
 
 model:
   _target_: cargpt.visualization.Trajectory
@@ -22,6 +22,7 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
+    # _args_: ['yaak/cargpt/model-7wjtw2s2:v9']
     _args_: ['yaak/cargpt/model-qup5qpc8:v9']
     strict: False
 
@@ -68,13 +69,12 @@ datamodule:
                 filename_format: '{:09d}.jpg'
             metadata:
               path: ${paths.data_dir}/frames/${..id}/metadata.log
-              filter: (ImageMetadata_frame_idx between 2940 and 3600) or
-                      (ImageMetadata_frame_idx between 4230 and 5100) or
-                      (ImageMetadata_frame_idx between 5610 and 6000) or
-                      (ImageMetadata_frame_idx between 10980 and 12150) or
+              # filter: (ImageMetadata_frame_idx between 5610 and 5930)
+
+              filter: (ImageMetadata_frame_idx between 5610 and 5930) or
+                      (ImageMetadata_frame_idx between 11030 and 12020) or
                       (ImageMetadata_frame_idx between 22560 and 22860) or
                       (ImageMetadata_frame_idx between 24900 and 25310)
-
           metadata:
             cameras:
             - cam_front_left
@@ -106,7 +106,7 @@ datamodule:
           clips:
             length: ${clip_len}
             stride: 10
-            step: 1
+            step: 10
 
           transforms:
             - _target_: yaak_datasets.transforms.Scale

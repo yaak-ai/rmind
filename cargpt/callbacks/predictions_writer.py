@@ -3,8 +3,16 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
+from einops import rearrange
+from torch import Tensor
 import pytorch_lightning as pl
+from jaxtyping import Float
 from pytorch_lightning.callbacks import BasePredictionWriter
+from cargpt.visualization.trajectory import (
+    draw_trajectory,
+    draw_preds,
+    smooth_predictions,
+)
 
 
 class VideoWriter(BasePredictionWriter):
@@ -27,6 +35,7 @@ class VideoWriter(BasePredictionWriter):
         self.fourcc = fourcc
         self.fps = fps
         self.video_writer = None
+        self.predictions = []
 
     def __del__(self) -> None:
         if self.video_writer is not None:
@@ -50,17 +59,43 @@ class VideoWriter(BasePredictionWriter):
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
+        frame, _ = predictions
         if self.video_writer is None:
-            height, width, _ = predictions[0].shape
+            height, width, _ = frame[0].shape
             self._set_video_writer(width, height)
-        for vis in predictions:
-            self.video_writer.write(vis[:, :, ::-1])  # type: ignore[attr-defined]
+        self.predictions.append(predictions)
 
     def on_predict_end(
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
     ) -> None:
+        images, metadatas = zip(*self.predictions)
+
+        # Numpy interpolate here
+        metadatas = smooth_predictions(metadatas, window_size=1)
+
+        for vis, metadata in zip(images, metadatas):
+            pred_points_3d: Float[Tensor, "f n 3"] = pl_module.get_trajectory_3d_points(
+                steps=pl_module.gt_steps,
+                time_interval=pl_module.gt_time_interval,
+                **metadata,
+            )
+
+            pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
+                pl_module.camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+                "(f n) 1 1 d -> f n (1 1 d)",
+                f=1,
+            )
+            draw_trajectory(
+                vis,
+                pred_points_2d,
+                point_color=(0, 255, 0),
+                line_color=(0, 255, 0),
+            )
+            draw_preds(vis, metadata, line_color=(0, 255, 0))
+            self.video_writer.write(vis[0, :, :, ::-1])  # type: ignore[attr-defined]
+
         if self.video_writer is not None:
             self.video_writer.release()
 
