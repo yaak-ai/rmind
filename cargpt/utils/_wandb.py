@@ -190,15 +190,12 @@ class TrainValAttnMapLoggingMixin:
     def _log_attn_maps(
         self,
         *,
-        drive_ids,
-        frame_idxs,
-        frames,
+        batch,
         batch_idx: int,
         episode_values: Float[Tensor, "b to"],
         logits: Float[Tensor, "b to e"],
         episode: Float[Tensor, "b to d"],
         episode_mask: Optional[Float[Tensor, "to to"]] = None,
-        **kwargs,
     ):
         if not self.is_attn_map_logging_active():
             return
@@ -207,25 +204,35 @@ class TrainValAttnMapLoggingMixin:
             return
 
         # Pick only one sample from batch - consistent with deephouse approach
-        batch_idx = 0
+        idx = 0
 
         attn_maps: List[Float[Tensor, "to to"]] = self.get_attention_maps(
-            episode[batch_idx],
+            episode[idx],
             episode_mask,
         )
 
-        batch_frames: Float[Tensor, "ts c h w"] = frames[batch_idx]
+        camera = mit.only(batch["frames"].keys())
+
+        frames: Float[Tensor, "ts c h w"] = batch["frames"][camera][idx]
         images, metas_actions = self._postprocess_attn_maps(
             attn_maps=attn_maps,
-            frames=batch_frames,
+            frames=frames,
             tokens=episode.shape[1],
         )
 
         # Log images
-        drive_id = drive_ids[batch_idx]
-        frame_idxs = frame_idxs[batch_idx].tolist()
-        gt_actions_values = episode_values[batch_idx, -len(self.action_keys) :].tolist()
-        pred_actions_values = self._logits_to_real(logits[batch_idx])
+        drive_id = (
+            batch["meta"]["drive_id"][idx]
+            .type(torch.uint8)
+            .cpu()
+            .numpy()
+            .tobytes()
+            .decode("ascii")
+            .strip()
+        )
+        frame_idxs = batch["meta"][f"{camera}/ImageMetadata_frame_idx"][idx].tolist()
+        gt_actions_values = episode_values[idx, -len(self.action_keys) :].tolist()
+        pred_actions_values = self._logits_to_real(logits[idx])
 
         stage = self.trainer.state.stage
         data = {
@@ -247,7 +254,7 @@ class TrainValAttnMapLoggingMixin:
             {
                 f"{stage}/attn_map/frames": [
                     wandb.Image(img, caption=f"{frame_idxs[idx]} [{drive_id}]")
-                    for idx, img in enumerate(batch_frames)
+                    for idx, img in enumerate(frames)
                 ]
             }
         )

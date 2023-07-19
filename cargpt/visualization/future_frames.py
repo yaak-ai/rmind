@@ -22,10 +22,7 @@ class Frames(pl.LightningModule):
         self.decoder = instantiate(self.hparams.image_decoder)
 
     def get_future_frames(self, batch: Any) -> List[np.ndarray]:
-        sample = self.model.prepare_batch(batch)
-
-        b, clips, c, h, w = sample["frames"].shape
-        episode, labels, _, episode_values = self.model._make_episode(sample)
+        episode, labels, _, episode_values = self.model._make_episode(batch)
         b, seqlen, d = episode.shape
         future_images = []
 
@@ -93,7 +90,7 @@ class Frames(pl.LightningModule):
                     pass
 
                 # update sample and build a new episode
-                episode, labels, _, episode_values = self.model._make_episode(sample)
+                episode, labels, _, episode_values = self.model._make_episode(batch)
 
         # computed_actions.append(detokenized_actions)
 
