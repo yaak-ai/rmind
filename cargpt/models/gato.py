@@ -527,34 +527,6 @@ class Gato(pl.LightningModule, ValOutputsLoggingTableMixin, LoadableFromArtifact
             self.action_keys,
         )
 
-    def _compute_loss_categorical(self, logits, labels):
-        b, t, c = logits.shape
-        # flatten on batch dimension
-        logits = logits.view(b * t, c)
-        labels = labels.view(b * t)
-        if self.hparams.ignore_image_tokens:
-            # ignore_index takes care of masking classes
-            return self.loss_categorical(logits, labels)
-
-        # If non zero image tokens label expected compute separate loss for image
-        w = self.hparams.loss.weights.image  # type: ignore[union-attr]
-        mask = torch.bitwise_and(0 <= labels, labels < self.hparams.tokens_shift["ImageEncoder"])  # type: ignore[index]
-        metadata_logits = logits[mask]
-        metadata_labels = labels[mask]
-        metadata_loss = self.loss_categorical(
-            metadata_logits,
-            metadata_labels,
-        )
-        image_logits = logits[~mask]
-        image_labels = labels[~mask]
-        image_loss = self.loss_categorical(
-            image_logits,
-            image_labels,
-        )
-        loss = w * image_loss + (1 - w) * metadata_loss
-
-        return loss
-
     def _compute_loss_l1(self, pred, tgt):
         b, t, c = pred.shape
 
