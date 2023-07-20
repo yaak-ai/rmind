@@ -34,6 +34,9 @@ tokens_shift: # Shifting continous and discrete tokens since embeddings are shar
 
 embedding_dim: 512
 dalle_encoder_weights: pretrained/dalle/encoder.pkl
+local_position_encoding: True
+action_position_encoding: True
+global_position_encoding: True
 
 model:
   _target_: cargpt.models.gato.Gato
