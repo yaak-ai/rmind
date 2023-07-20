@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence, Tuple
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -222,24 +222,24 @@ class Gato(
 
         return image_features, image_tokens, tokens_shift, values
 
-    def _metadata_embeddings_and_tokens(self, sample, keys=[]):
+    def _metadata_embeddings_and_tokens(self, metadata: Sequence[Tuple[str, Tensor]]):
         embeddings = []
         tokens = []
         tokens_shift = []
         values = []
 
-        for key in keys:
-            tokenizer = getattr(self.tokenizers, key)
-            token: Int[Tensor, "b t"] = tokenizer(sample[key].clone())  # type: ignore[operator]
-            token += self.hparams.tokens_shift[key]  # type: ignore[index]
+        for k, v in metadata:
+            tokenizer = getattr(self.tokenizers, k)
+            token: Int[Tensor, "b t"] = tokenizer(v.clone())  # type: ignore[operator]
+            token += self.hparams.tokens_shift[k]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
-            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]  # type: ignore[index]
+            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[k]  # type: ignore[index]
 
             embeddings.append(embedding)
             tokens.append(token)
             tokens_shift.append(token_shift)
-            values.append(sample[key].unsqueeze(-1))
+            values.append(v.unsqueeze(-1))
 
         # cat on tokens
         embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
@@ -249,24 +249,24 @@ class Gato(
 
         return embeddings, tokens, tokens_shift, values
 
-    def _action_embeddings_and_tokens(self, sample, keys=[]):
+    def _action_embeddings_and_tokens(self, actions: Sequence[Tuple[str, Tensor]]):
         embeddings = []
         tokens = []
         tokens_shift = []
         values = []
 
-        for key in keys:
-            tokenizer = getattr(self.tokenizers, key)
-            token: Int[Tensor, "b t"] = tokenizer(sample[key].clone())  # type: ignore[operator]
-            token += self.hparams.tokens_shift[key]  # type: ignore[index]
+        for k, v in actions:
+            tokenizer = getattr(self.tokenizers, k)
+            token: Int[Tensor, "b t"] = tokenizer(v.clone())  # type: ignore[operator]
+            token += self.hparams.tokens_shift[k]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
-            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[key]  # type: ignore[index]
+            token_shift = torch.ones_like(token) * self.hparams.tokens_shift[k]  # type: ignore[index]
 
             embeddings.append(embedding)
             tokens.append(token)
             tokens_shift.append(token_shift)
-            values.append(sample[key].unsqueeze(-1))
+            values.append(v.unsqueeze(-1))
 
         # cat on tokens
         embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
@@ -285,14 +285,14 @@ class Gato(
 
         return embeddings, tokens, tokens_shift, values
 
-    def _step(self, sample: Any, batch_idx: int, is_training: bool = False):
+    def _step(self, batch: Any, batch_idx: int, is_training: bool = False):
         (
             episode,
             episode_labels,
             episode_labels_shift,
             episode_values,
             episode_mask,
-        ) = self._make_episode(sample, is_training=is_training)
+        ) = self._make_episode(batch, is_training=is_training)
 
         logits, values = self.forward(
             episode=episode[:, :-1], episode_mask=episode_mask[:-1, :-1]
@@ -303,12 +303,12 @@ class Gato(
         episode_values = episode_values[:, 1:]
 
         self._log_attn_maps(
+            batch=batch,
+            batch_idx=batch_idx,
             episode=episode[:, :-1],
             episode_mask=episode_mask[:-1, :-1],
-            batch_idx=batch_idx,
             episode_values=episode_values,
             logits=logits,
-            **sample,
         )
 
         return (
@@ -319,26 +319,30 @@ class Gato(
             episode_values,
         )
 
-    def _make_episode(self, sample: Any, is_training: bool = False):
+    def _make_episode(self, batch: Any, is_training: bool = False):
+        frames = mit.only(batch["frames"].values())
+        metadata = [(k, batch["meta"][k]) for k in self.metadata_keys]
+        actions = [(k, batch["meta"][k]) for k in self.action_keys]
+
         # tokenization + embeddings
         (
             image_embeddings,
             image_tokens,
             image_tokens_shift,
             image_values,
-        ) = self._image_embeddings_and_tokens(sample["frames"])
+        ) = self._image_embeddings_and_tokens(frames)
         (
             metadata_embeddings,
             metadata_tokens,
             metadata_tokens_shift,
             metadata_values,
-        ) = self._metadata_embeddings_and_tokens(sample, keys=self.metadata_keys)
+        ) = self._metadata_embeddings_and_tokens(metadata)
         (
             action_embeddings,
             action_tokens,
             action_tokens_shift,
             action_values,
-        ) = self._action_embeddings_and_tokens(sample, keys=self.action_keys)
+        ) = self._action_embeddings_and_tokens(actions)
 
         # https://arxiv.org/pdf/1905.11979.pdf
         # https://arxiv.org/pdf/1812.03079.pdf
@@ -559,9 +563,8 @@ class Gato(
         return loss_masked
 
     def training_step(self, batch, batch_idx):
-        sample = self.prepare_batch(batch)
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
-            sample, batch_idx=batch_idx, is_training=True
+            batch, batch_idx=batch_idx, is_training=True
         )
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
@@ -584,12 +587,12 @@ class Gato(
             rank_zero_only=True,
             batch_size=pred.shape[0],
         )
+
         return loss
 
     def validation_step(self, batch, batch_idx):
-        sample = self.prepare_batch(batch)
         pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
-            sample, batch_idx=batch_idx, is_training=False
+            batch, batch_idx=batch_idx, is_training=False
         )
         loss_categorical = self._compute_loss_categorical(pred, tgt)
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
@@ -624,9 +627,8 @@ class Gato(
         start_timestep: int = 0,
         verbose: bool = False,
     ) -> Any:
-        sample = self.prepare_batch(batch)
-        full_episode, *_, episode_mask = self._make_episode(sample)
-        B, timesteps, *_ = sample["frames"].shape
+        full_episode, *_, episode_mask = self._make_episode(batch)
+        B, timesteps, *_ = mit.only(batch["frames"].values()).shape  # pyright: ignore
         ts_len = int(full_episode.shape[1] / timesteps)
 
         actions_to_predict = len(self.action_keys)
@@ -682,10 +684,10 @@ class Gato(
 
                 log_message = ""
                 for b in range(B):
-                    predictions[b][ts][key]["pred"] = prediction[b, 0].item()
-                    predictions[b][ts][key]["gt"] = sample[key][b, ts].item()
                     pred = prediction[b, 0].item()
-                    gt = sample[key][b, ts].item()
+                    gt = batch["meta"][key][b, ts].item()
+                    predictions[b][ts][key]["pred"] = pred
+                    predictions[b][ts][key]["gt"] = gt
                     log_message += f"[{batch_idx}][{key}] gt:{gt:.3f} pred:{pred:.3f}"
                 if verbose:
                     logger.info(log_message)
@@ -703,33 +705,6 @@ class Gato(
         values = self.regressor(features)
 
         return logits, values
-
-    def prepare_batch(self, batch):
-        clips = mit.one(batch["clips"].values())
-        frames = clips["frames"].to(self.device)
-        speed = clips["meta"]["VehicleMotion_speed"].to(self.device)
-        steering = clips["meta"]["VehicleMotion_steering_angle_normalized"].to(
-            self.device
-        )
-        gas = clips["meta"]["VehicleMotion_gas_pedal_normalized"].to(self.device)
-        brake = clips["meta"]["VehicleMotion_brake_pedal_normalized"].to(self.device)
-        turn = clips["meta"]["VehicleState_turn_signal"].to(self.device)
-
-        drive_ids = batch["meta"]["drive_id"]
-        frame_idxs = clips["meta"]["ImageMetadata_frame_idx"]
-
-        sample = {
-            "frames": frames,
-            "VehicleMotion_speed": speed,
-            "VehicleMotion_steering_angle_normalized": steering,
-            "VehicleMotion_gas_pedal_normalized": gas,
-            "VehicleMotion_brake_pedal_normalized": brake,
-            "VehicleState_turn_signal": turn,
-            "drive_ids": drive_ids,
-            "frame_idxs": frame_idxs,
-        }
-
-        return sample
 
     def configure_optimizers(self):
         optimizer = instantiate(self.hparams.optimizer, params=self.parameters())

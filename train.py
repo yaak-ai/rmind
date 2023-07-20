@@ -53,6 +53,7 @@ def train(cfg: DictConfig):
 @logger.catch(onerror=lambda _: sys.exit(1))
 def main():
     mp.set_start_method("spawn", force=True)
+    mp.set_forkserver_preload(["torch"])
     setup_logging()
 
     train()
