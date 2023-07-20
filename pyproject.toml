@@ -18,11 +18,10 @@ torchvision = "^0.14.1"
 more-itertools = "^9.0.0"
 torchinfo = "^1.7.2"
 torchaudio = "=0.13.1"
+transformers = "=4.30.2"
 deephouse = {git = "git@github.com:yaak-ai/deephouse.git", rev = "main"}
 dall-e = {git = "git@github.com:openai/DALL-E.git", rev = "master"}
 wandb = "*"
-pillow = ">=9.5.0"
-dill = "^0.3.6"
 
 [build-system]
 requires = ["poetry-core>=1.5.0"]
@@ -33,7 +32,7 @@ optional = true
 
 [tool.poetry.group.train.dependencies]
 omegaconf = "^2.3.0"
-yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.13.0"}
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.12.3"}
 
 [tool.poetry.group.lint]
 optional = true
@@ -67,6 +66,15 @@ optional = true
 [tool.poetry.group.vis.dependencies]
 grad-cam = "*"
 
+[tool.poetry.group.dataviz]
+optional = true
+
+[tool.poetry.group.dataviz.dependencies]
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.12.3", extras = ["viz"]}
+fiftyone = "^0.20.1"
+botocore = "1.29.76"
+kaleido = "0.2.1"
+
 [tool.poetry.group.dvc]
 optional = true
 
@@ -90,8 +98,24 @@ fix = true
 ignore = ["E501", "F722", "F821"]
 select = ["I001"]
 
-[tool.deptry.per_rule_ignores]
-DEP001 = ["cv2", "fiftyone", "pytorch_grad_cam"]
-DEP002 = ["beartype", "torchaudio", "dill"]
-DEP003 = ["numpy"]
-DEP004 = ["omegaconf", "pytorch_grad_cam"]
+[tool.deptry]
+ignore_unused = [
+  "beartype",
+  "fiftyone",
+  "torchaudio",
+  "transformers",
+]
+
+ignore_transitive = [
+  "omegaconf",
+  "wandb",
+  "numpy",
+  "fiftyone",
+]
+
+ignore_missing = [
+  # deptry doesn't handle groups different than dev
+  "cv2",
+  "pytorch_grad_cam",
+  "fiftyone",
+]

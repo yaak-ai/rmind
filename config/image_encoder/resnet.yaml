@@ -1,11 +1,12 @@
-batch_size: 2
+batch_size: 8
 clip_len: 6
 patch_row_tokens: 10
 patch_col_tokens: 18
 local_position_tokens: 256
+max_seq_len: 2000
 total_tokens: 4102
 tokens_shift: 0
-tokens_mask: -1
+tokens_mask: -100
 ignore_image_tokens: True
 backbone:
   _target_: cargpt.models.encoding.ResnetBackbone
@@ -21,8 +22,6 @@ loss:
   weights:
     ImageEncoder: 0
 
-mean: [0.485, 0.456, 0.406]
-std: [0.229, 0.224, 0.225]
 transforms:
 
   - _target_: yaak_datasets.transforms.Crop
@@ -30,5 +29,5 @@ transforms:
 
   - _target_: yaak_datasets.transforms.Normalize
     # ImageNet stats
-    mean: ${...mean}
-    std: ${...std}
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]

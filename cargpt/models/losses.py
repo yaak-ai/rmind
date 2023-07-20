@@ -22,9 +22,9 @@ class DetokenizedL1(nn.Module):
 
         b, t, c = logits.shape
         # flatten on batch dimension
-        logits = logits.view(b * t, c)
-        tgt_labels = labels.view(b * t)
-        labels_shift = labels_shift.view(b * t)
+        logits = logits.reshape(b * t, c)
+        tgt_labels = labels.reshape(b * t)
+        labels_shift = labels_shift.reshape(b * t)
 
         # Kick out ignore_index labels (-1) or if labels belong to image tokens
         labels_mask = 0 <= tgt_labels

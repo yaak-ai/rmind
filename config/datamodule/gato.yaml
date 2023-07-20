@@ -8,9 +8,9 @@ train:
   _target_: torch.utils.data.DataLoader
   shuffle: true
   num_workers: 32
+  pin_memory: true
   persistent_workers: true
-  multiprocessing_context: forkserver
-  pin_memory: false
+  multiprocessing_context: fork
   collate_fn:
     _target_: yaak_datasets.collate
     _partial_: true
@@ -19,9 +19,9 @@ val:
   _target_: torch.utils.data.DataLoader
   shuffle: false
   num_workers: 32
+  pin_memory: true
   persistent_workers: true
-  multiprocessing_context: forkserver
-  pin_memory: false
+  multiprocessing_context: fork
   collate_fn:
     _target_: yaak_datasets.collate
     _partial_: true

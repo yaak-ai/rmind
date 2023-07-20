@@ -6,7 +6,8 @@ defaults:
   - _self_
 
 output_file: video.mp4
-clip_len: 5
+clip_len: 4
+speed_range: [0.0, 80.0]
 
 trainer:
   benchmark: true
@@ -23,7 +24,8 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-2hndnzr1:v5']
+    _args_: ['yaak/cargpt/model-121o7hfn:v229']
+    strict: False
 
   image_decoder:
     _target_: cargpt.models.decoding.dalleDVAE
@@ -31,7 +33,7 @@ model:
     vocab_size: 8192
     freeze: True
 
-  future_timestep: 120
+  future_timestep: 6
   patch_row: ${image_encoder.patch_row_tokens}
   patch_col: ${image_encoder.patch_col_tokens}
 
@@ -52,17 +54,19 @@ datamodule:
         version: 0.12.3
         data:
           drives:
-          - id: Niro115-HQ/2023-05-16--10-47-33
+          - id: 2022-10-20--13-03-22
             sources:
-            - camera: cam_front_left
+            - camera: cam_front_left  # TODO: probably wanna front center, but extrinsics should also be fine
+              params: ${paths.data_dir}/calibration/gamma/cam-90-deg/calib-pinhole.json
               reader:
                 _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324
+                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
                 filename_format: '{:09d}.jpg'
             metadata:
-              path: ${paths.data_dir}/${..id}/metadata.log
-              filter: ImageMetadata_frame_idx between 24900 and 25410  # TODO: remove
-
+              path: ${paths.data_dir}/frames/${..id}/metadata.log
+              filter: (ImageMetadata_frame_idx between 11250 and 12150) or
+                      (ImageMetadata_frame_idx between 24900 and 25410) and
+                      VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
           metadata:
             cameras:
             - cam_front_left
@@ -95,10 +99,10 @@ datamodule:
 
           transforms:
             - _target_: yaak_datasets.transforms.Scale
-              factor: 0.84
+              factor: 0.253
 
             - _target_: yaak_datasets.transforms.Crop
-              offsets: [8, 8, 1, 2]
+              offsets: [9, 8, 2, 3]
 
             - _target_: yaak_datasets.transforms.Normalize
               # https://github.com/openai/DALL-E/blob/master/dall_e/utils.py#L45

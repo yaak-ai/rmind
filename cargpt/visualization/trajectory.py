@@ -243,15 +243,24 @@ def draw_preds(
     h, w = image.shape[:2]
     brake = metadata["VehicleMotion_brake_pedal_normalized"].item()
     steer = metadata["VehicleMotion_steering_angle_normalized"].item()
+    if steer > 0.05:
+        steer = "RIGHT"
+    elif steer < -0.05:
+        steer = "LEFT"
+    else:
+        steer = "STRAIGHT "
+
+    brake = "BRAKE" if brake > 0.1 else ""
+
     image = cv2.putText(
         image,
-        f"brake: {brake:.3f}, steer: {steer:.3f}",
-        (0, w // 2),
+        f"steer:{steer} {brake}",
+        (0, h - 8),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        color=line_color,
-        thickness=2,
-        lineType=cv2.LINE_AA,
+        1.0,
+        line_color,
+        2,
+        cv2.LINE_AA,
     )
 
 
