@@ -17,9 +17,6 @@ class DetokenizedL1(nn.Module):
         metadata_keys,
         action_keys,
     ):
-        logits = logits.clone()
-        labels = labels.clone()
-
         b, t, c = logits.shape
         # flatten on batch dimension
         logits = logits.reshape(b * t, c)

@@ -40,15 +40,19 @@ class TorchGPT2(pl.LightningModule):
         output = {}
         x = self.transformer(inputs_embeds)
         logits = self.classifier(x)
-        b, t, c = logits.shape
+        output["logits"] = logits
+        output["hidden_states"] = [x]
+        # left shift logits
+        shifted_logits = logits[:, :-1]
+        b, t, c = shifted_logits.shape
+        # right shift labels
+        shifted_labels = labels[:, 1:]
         # flatten on batch dimension
-        logits_flattened = logits.view(b * t, c)
-        labels_flattened = labels.view(b * t)
+        logits_flattened = shifted_logits.reshape(b * t, c)
+        labels_flattened = shifted_labels.reshape(b * t)
         loss = self.loss_fn(logits_flattened, labels_flattened)
 
-        output["logits"] = logits
         output["loss"] = loss
-        output["hidden_states"] = [x]
 
         return output
 
