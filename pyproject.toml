@@ -95,6 +95,6 @@ select = ["I001"]
 
 [tool.deptry.per_rule_ignores]
 DEP001 = ["cv2", "fiftyone", "pytorch_grad_cam"]
-DEP002 = ["beartype", "torchaudio", "dill"]
+DEP002 = ["beartype", "torchaudio", "dill", "transformers"]
 DEP003 = ["numpy"]
 DEP004 = ["omegaconf", "pytorch_grad_cam"]
