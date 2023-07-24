@@ -11,6 +11,7 @@ from hydra.utils import instantiate
 from jaxtyping import install_import_hook
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning.utilities import rank_zero_only
 
 from cargpt.utils.logging import setup_logging
 
@@ -33,10 +34,12 @@ def _train(cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path="config", config_name="train.yaml")
 def train(cfg: DictConfig):
-    run = wandb.init(
-        config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # type: ignore
-        **cfg.wandb,
-    )
+    run = None
+    if rank_zero_only.rank == 0:
+        run = wandb.init(
+            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # type: ignore
+            **cfg.wandb,
+        )
 
     if run is not None:
         paths = set(

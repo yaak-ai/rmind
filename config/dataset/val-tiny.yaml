@@ -6,13 +6,13 @@ config:
     drives:
     - id: Niro104-HQ/2022-12-20--13-57-20
       metadata:
-        path: /nas/drives/yaak/data/Niro104-HQ/2022-12-20--13-57-20/metadata.log
+        path: ${paths.data_dir}/${..id}/metadata.log
       sources:
       - camera: cam_front_left
         reader:
           _target_: yaak_datasets.FrameImageVideoReader
           filename_format: '{:09d}.jpg'
-          path: /nas/drives/yaak/data/Niro104-HQ/2022-12-20--13-57-20/frames/cam_front_left.defish.mp4/576x324
+          path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324
 
     metadata:
       cameras:
