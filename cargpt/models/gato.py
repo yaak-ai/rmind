@@ -46,7 +46,6 @@ class HFGPT2(pl.LightningModule):
         return output
 
     def get_output_embeddings(self):
-
         return self.llm.get_output_embeddings()
 
 
