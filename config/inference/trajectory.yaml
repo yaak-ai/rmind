@@ -23,7 +23,7 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-7wjtw2s2:v9']
+    _args_: ['yaak/cargpt/model-kqr5p2v0:v1']
     strict: False
 
   ground_truth_trajectory:
@@ -49,20 +49,19 @@ datamodule:
     shuffle: false
     batch_size: 1
     num_workers: 8
-    pin_memory: true
+    pin_memory: false
     persistent_workers: true
-    multiprocessing_context: fork
+    multiprocessing_context: forkserver
     dataset:
       _target_: yaak_datasets.Dataset
       _recursive_: false
       config:
-        version: 0.12.3
+        version: 0.13.0
         data:
           drives:
           - id: 2022-10-20--13-03-22
             sources:
             - camera: cam_front_left  # TODO: probably wanna front center, but extrinsics should also be fine
-              params: ${paths.data_dir}/calibration/gamma/cam-90-deg/calib-pinhole.json
               reader:
                 _target_: yaak_datasets.FrameImageVideoReader
                 path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4

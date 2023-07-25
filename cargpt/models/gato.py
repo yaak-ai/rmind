@@ -33,8 +33,8 @@ class HFGPT2(pl.LightningModule):
         inputs_embeds: Tensor,
         episode_mask: Tensor,
         return_dict: bool,
-        labels: Tensor,
         output_hidden_states: bool,
+        labels: Tensor = None,
     ) -> Any:
         output = self.llm(
             inputs_embeds=inputs_embeds,
@@ -64,8 +64,8 @@ class TorchGPT2(pl.LightningModule):
         inputs_embeds: Tensor,
         episode_mask: Tensor,
         return_dict: bool,
-        labels: Tensor,
         output_hidden_states: bool,
+        labels: Tensor = None,
     ) -> Any:
         output = {}
         x = self.llm(src=inputs_embeds, mask=episode_mask)
@@ -73,16 +73,18 @@ class TorchGPT2(pl.LightningModule):
         output["logits"] = logits
         output["hidden_states"] = [x]
         # right shift logits
-        shifted_logits = logits[:, :-1, :].contiguous()
-        b, t, c = shifted_logits.shape
-        # left shift labels
-        shifted_labels = labels[:, 1:].contiguous()
-        # flatten on batch dimension
-        logits_flattened = shifted_logits.view(b * t, c)
-        labels_flattened = shifted_labels.view(b * t)
-        loss = self.loss_fn(logits_flattened, labels_flattened)
 
-        output["loss"] = loss
+        if labels is not None:
+            shifted_logits = logits[:, :-1, :].contiguous()
+            b, t, c = shifted_logits.shape
+            # left shift labels
+            shifted_labels = labels[:, 1:].contiguous()
+            # flatten on batch dimension
+            logits_flattened = shifted_logits.view(b * t, c)
+            labels_flattened = shifted_labels.view(b * t)
+            loss = self.loss_fn(logits_flattened, labels_flattened)
+
+            output["loss"] = loss
 
         return output
 
@@ -617,7 +619,7 @@ class Gato(
             for ts_col in range(0, ts_row + 1):
                 col = seqlen * ts_col + n_i
                 episode_mask[
-                    row : row + num_self_censor, col : col + num_self_censor
+                    row: row + num_self_censor, col: col + num_self_censor
                 ] = float("-inf")
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
@@ -638,7 +640,7 @@ class Gato(
         # Self masking
         for ts_col in range(0, clip_len):
             col = seqlen * ts_col + n_i
-            episode_mask[:, col : col + num_self_censor] = float("-inf")
+            episode_mask[:, col: col + num_self_censor] = float("-inf")
             for ts_row in range(ts_col, clip_len):
                 row = seqlen * ts_row + n_i - 1
                 for i in range(num_self_censor):
@@ -764,6 +766,7 @@ class Gato(
             for idx, key in enumerate(self.action_keys):
                 output = self.gpt(
                     inputs_embeds=history,
+                    mask=episode_mask,
                     return_dict=True,
                     output_hidden_states=True,
                 )
