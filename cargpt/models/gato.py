@@ -42,14 +42,15 @@ class TorchGPT2(pl.LightningModule):
         logits = self.classifier(x)
         output["logits"] = logits
         output["hidden_states"] = [x]
-        # left shift logits
+        # right shift logits
         shifted_logits = logits[:, :-1]
         b, t, c = shifted_logits.shape
-        # right shift labels
+        # left shift labels
         shifted_labels = labels[:, 1:]
         # flatten on batch dimension
         logits_flattened = shifted_logits.reshape(b * t, c)
         labels_flattened = shifted_labels.reshape(b * t)
+        breakpoint()
         loss = self.loss_fn(logits_flattened, labels_flattened)
 
         output["loss"] = loss
@@ -342,25 +343,25 @@ class Gato(
             episode_mask,
         ) = self._make_episode(batch, is_training=is_training)
 
-        loss, logits, values = self.forward(
+        episode_loss, episode_logits, episode_pred_values = self.forward(
             episode=episode, episode_labels=episode_labels
         )
 
         # left shift gt
-        labels = episode_labels[:, 1:]
-        labels_shift = episode_labels_shift[:, 1:]
-        episode_values = episode_values[:, 1:]
+        episode_gt_labels = episode_labels[:, 1:]
+        episode_gt_labels_shift = episode_labels_shift[:, 1:]
+        episode_gt_values = episode_values[:, 1:]
         # GPT2 parses whole sequence
-        logits = logits[:, :-1]
-        values = values[:, :-1]
+        episode_logits = episode_logits[:, :-1]
+        episode_pred_values = episode_pred_values[:, :-1]
 
         return (
-            loss,
-            logits,
-            values,
-            labels.to(torch.int64),
-            labels_shift.to(torch.int64),
-            episode_values,
+            episode_loss,
+            episode_logits,
+            episode_pred_values,
+            episode_gt_labels,
+            episode_gt_labels_shift,
+            episode_gt_values,
         )
 
     def add_special_tokens(
