@@ -11,7 +11,7 @@ have_special_tokens:
 model:
   _target_: cargpt.models.gato.TorchGPT2
   _recursive_: False
-  transformer:
+  llm:
     _target_: torch.nn.TransformerEncoder
     num_layers: 8
     encoder_layer:
@@ -26,6 +26,7 @@ model:
     _target_: torch.nn.Linear
     in_features: ${embedding_dim}
     out_features: ${num_tokens_total}
+    bias: False
   loss:
     _target_: torch.nn.CrossEntropyLoss
     ignore_index: -100

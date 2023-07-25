@@ -20,37 +20,67 @@ from cargpt.utils._wandb import (
 )
 
 
+class HFGPT2(pl.LightningModule):
+    hparams: AttributeDict
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__()
+        self.save_hyperparameters()
+        self.llm = instantiate(self.hparams.llm)
+
+    def forward(
+        self,
+        inputs_embeds: Tensor,
+        episode_mask: Tensor,
+        return_dict: bool,
+        labels: Tensor,
+        output_hidden_states: bool,
+    ) -> Any:
+        output = self.llm(
+            inputs_embeds=inputs_embeds,
+            return_dict=return_dict,
+            labels=labels,
+            output_hidden_states=output_hidden_states,
+        )
+
+        return output
+
+    def get_output_embeddings(self):
+
+        return self.llm.get_output_embeddings()
+
+
 class TorchGPT2(pl.LightningModule):
     hparams: AttributeDict
 
     def __init__(self, **kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
-        self.transformer = instantiate(self.hparams.transformer)
+        self.llm = instantiate(self.hparams.llm)
         self.classifier = instantiate(self.hparams.classifier)
         self.loss_fn = instantiate(self.hparams.loss)
 
     def forward(
         self,
         inputs_embeds: Tensor,
+        episode_mask: Tensor,
         return_dict: bool,
         labels: Tensor,
         output_hidden_states: bool,
     ) -> Any:
         output = {}
-        x = self.transformer(inputs_embeds)
+        x = self.transformer(src=inputs_embeds, mask=episode_mask)
         logits = self.classifier(x)
         output["logits"] = logits
         output["hidden_states"] = [x]
         # right shift logits
-        shifted_logits = logits[:, :-1]
+        shifted_logits = logits[:, :-1, :].contiguous()
         b, t, c = shifted_logits.shape
         # left shift labels
-        shifted_labels = labels[:, 1:]
+        shifted_labels = labels[:, 1:].contiguous()
         # flatten on batch dimension
-        logits_flattened = shifted_logits.reshape(b * t, c)
-        labels_flattened = shifted_labels.reshape(b * t)
-        breakpoint()
+        logits_flattened = shifted_logits.view(b * t, c)
+        labels_flattened = shifted_labels.view(b * t)
         loss = self.loss_fn(logits_flattened, labels_flattened)
 
         output["loss"] = loss
@@ -344,7 +374,7 @@ class Gato(
         ) = self._make_episode(batch, is_training=is_training)
 
         episode_loss, episode_logits, episode_pred_values = self.forward(
-            episode=episode, episode_labels=episode_labels
+            episode=episode, episode_labels=episode_labels, episode_mask=episode_mask
         )
 
         # left shift gt
@@ -488,7 +518,7 @@ class Gato(
 
         (
             episode,
-            episode_tokens,
+            episode_labels,
             episode_labels_shift,
             episode_values,
         ) = self.add_special_tokens(
@@ -504,7 +534,7 @@ class Gato(
 
         # construct full sequence: [[o, |, a], [o, |, a], ...]
         episode = torch.cat(episode, dim=2)
-        episode_labels = torch.cat(episode_tokens, dim=2)
+        episode_labels = torch.cat(episode_labels, dim=2)
         episode_labels_shift = torch.cat(episode_labels_shift, dim=2)
         episode_values = torch.cat(episode_values, dim=2)
 
@@ -780,11 +810,16 @@ class Gato(
         return predictions
 
     def forward(
-        self, *, episode: Float[Tensor, "b to d"], episode_labels: Int[Tensor, "b to"]
+        self,
+        *,
+        episode: Float[Tensor, "b to d"],
+        episode_labels: Int[Tensor, "b to"],
+        episode_mask: Float[Tensor, "d d"],
     ):
         output = self.gpt(
             inputs_embeds=episode,
             labels=episode_labels.to(torch.long),
+            episode_mask=episode_mask,
             return_dict=True,
             output_hidden_states=True,
         )
