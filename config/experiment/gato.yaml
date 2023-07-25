@@ -12,8 +12,6 @@ defaults:
 wandb:
   group: Gato-Image-speed-to-control
 
-batch_size: ${image_encoder.batch_size}
-clip_len: ${image_encoder.clip_len}
 num_special_tokens: 3  # for special tokens SOS, SEP, OES
 num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
@@ -70,7 +68,7 @@ model:
       embedding_dim: ${embedding_dim}
     global_pos:
       _target_: torch.nn.Embedding
-      num_embeddings: ${clip_len}
+      num_embeddings: ${image_encoder.clip_len}
       embedding_dim: ${embedding_dim}
     action:
       _target_: torch.nn.Embedding
@@ -84,7 +82,7 @@ model:
       - ${image_encoder.patch_col_tokens}
       - ${metadata_keys}
       - ${action_keys}
-      - ${clip_len}
+      - ${image_encoder.clip_len}
     _partial_: True
 
   gpt: ${llm.model}
@@ -169,7 +167,7 @@ trainer:
 
 datamodule:
   train:
-    batch_size: ${batch_size}
+    batch_size: ${image_encoder.batch_size}
     dataset:
       config:
         data:
@@ -177,12 +175,12 @@ datamodule:
             filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
         samples:
           clips:
-            length: ${clip_len}
+            length: ${image_encoder.clip_len}
             stride: 10
             step: 10
 
   val:
-    batch_size: ${batch_size}
+    batch_size: ${image_encoder.batch_size}
     dataset:
       config:
         data:
@@ -190,6 +188,6 @@ datamodule:
             filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
         samples:
           clips:
-            length: ${clip_len}
+            length: ${image_encoder.clip_len}
             stride: 10
             step: 10
