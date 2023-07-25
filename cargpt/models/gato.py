@@ -68,7 +68,7 @@ class TorchGPT2(pl.LightningModule):
         output_hidden_states: bool,
     ) -> Any:
         output = {}
-        x = self.transformer(src=inputs_embeds, mask=episode_mask)
+        x = self.llm(src=inputs_embeds, mask=episode_mask)
         logits = self.classifier(x)
         output["logits"] = logits
         output["hidden_states"] = [x]
@@ -617,7 +617,7 @@ class Gato(
             for ts_col in range(0, ts_row + 1):
                 col = seqlen * ts_col + n_i
                 episode_mask[
-                    row : row + num_self_censor, col : col + num_self_censor
+                    row: row + num_self_censor, col: col + num_self_censor
                 ] = float("-inf")
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
@@ -638,7 +638,7 @@ class Gato(
         # Self masking
         for ts_col in range(0, clip_len):
             col = seqlen * ts_col + n_i
-            episode_mask[:, col : col + num_self_censor] = float("-inf")
+            episode_mask[:, col: col + num_self_censor] = float("-inf")
             for ts_row in range(ts_col, clip_len):
                 row = seqlen * ts_row + n_i - 1
                 for i in range(num_self_censor):
