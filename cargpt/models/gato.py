@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -31,10 +31,10 @@ class HFGPT2(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        episode_mask: Tensor,
         return_dict: bool,
         output_hidden_states: bool,
-        labels: Tensor = None,
+        episode_mask: Optional[Tensor] = None,
+        labels: Optional[Tensor] = None,
     ) -> Any:
         output = self.llm(
             inputs_embeds=inputs_embeds,
@@ -65,7 +65,7 @@ class TorchGPT2(pl.LightningModule):
         episode_mask: Tensor,
         return_dict: bool,
         output_hidden_states: bool,
-        labels: Tensor = None,
+        labels: Optional[Tensor] = None,
     ) -> Any:
         output = {}
         x = self.llm(src=inputs_embeds, mask=episode_mask)

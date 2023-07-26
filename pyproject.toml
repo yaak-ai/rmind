@@ -35,7 +35,7 @@ optional = true
 
 [tool.poetry.group.train.dependencies]
 omegaconf = "^2.3.0"
-yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.13.0"}
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.13.1"}
 
 [tool.poetry.group.lint]
 optional = true

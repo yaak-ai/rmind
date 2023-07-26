@@ -6176,7 +6176,7 @@ files = [
 
 [[package]]
 name = "yaak-datasets"
-version = "0.13.0"
+version = "0.13.1"
 description = "yaak datasets"
 optional = false
 python-versions = ">=3.8,<3.11"
@@ -6209,8 +6209,8 @@ viz = ["fiftyone (>=0.20.1,<0.21.0)"]
 [package.source]
 type = "git"
 url = "git@github.com:yaak-ai/yaak-datasets.git"
-reference = "v0.13.0"
-resolved_reference = "7ee11f5a39cd6e26b75640a5ca1cf8df16b341ae"
+reference = "v0.13.1"
+resolved_reference = "75fd7aeac8e4d0c76ec18b85d435dd35f69a8749"
 
 [[package]]
 name = "yarl"
@@ -6319,4 +6319,4 @@ test = ["zope.testing"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.11"
-content-hash = "b663a9ef9f36bd26f702218848b0ebfa9b173d2f2021729447ac58f5024b72cd"
+content-hash = "b4b439e260a203e29a4a2b3efeaa29f1a456437f1c4d3460f3f58716c6f02a1c"
