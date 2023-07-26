@@ -258,6 +258,7 @@ datamodule:
             length: ${clip_len}
             stride: 10
             step: 10
+            frame_mask: [1, 1, 1, 1, 1, 1]
 
   val:
     batch_size: ${batch_size}
@@ -271,3 +272,4 @@ datamodule:
             length: ${clip_len}
             stride: 10
             step: 10
+            frame_mask: [1, 1, 1, 1, 1, 1]
