@@ -14,7 +14,7 @@ trainer:
       output_file: ${output_file}
       overwrite: true
       fourcc: mp4v
-      fps: 3
+      fps: 30
 
 model:
   _target_: cargpt.visualization.Trajectory
@@ -22,8 +22,10 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-    # _args_: ['yaak/cargpt/model-7wjtw2s2:v9']
-    _args_: ['yaak/cargpt/model-qup5qpc8:v9']
+    # This is hf_gpt2 model which does braking quite well
+    _args_: ['yaak/cargpt/model-7wjtw2s2:v9']
+    # This is torch transformer model which is trained with causal confounders
+    # _args_: ['yaak/cargpt/model-qup5qpc8:v9']
     strict: False
 
   ground_truth_trajectory:
@@ -69,7 +71,7 @@ datamodule:
                 filename_format: '{:09d}.jpg'
             metadata:
               path: ${paths.data_dir}/frames/${..id}/metadata.log
-              filter: (ImageMetadata_frame_idx between 22560 and 22860)
+              filter: (ImageMetadata_frame_idx between 24900 and 25310)
 
               # filter: (ImageMetadata_frame_idx between 5610 and 5930) or
               #         (ImageMetadata_frame_idx between 11030 and 12020) or
@@ -106,7 +108,7 @@ datamodule:
           clips:
             length: ${clip_len}
             stride: 10
-            step: 10
+            step: 1
 
           transforms:
             - _target_: yaak_datasets.transforms.Scale

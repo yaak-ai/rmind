@@ -73,7 +73,8 @@ class VideoWriter(BasePredictionWriter):
         images, metadatas = zip(*self.predictions)
 
         # Numpy interpolate here
-        metadatas = smooth_predictions(metadatas, window_size=8)
+        # choese window_size from [1, 3, 5, 7]
+        metadatas = smooth_predictions(metadatas, window_size=1)
 
         for vis, metadata in zip(images, metadatas):
             pred_points_3d: Float[Tensor, "f n 3"] = pl_module.get_trajectory_3d_points(
