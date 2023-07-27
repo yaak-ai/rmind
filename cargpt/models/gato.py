@@ -741,7 +741,7 @@ class Gato(
         start_timestep: int = 0,
         verbose: bool = False,
     ) -> Any:
-        full_episode, *_, episode_mask = self._make_episode(batch)
+        full_episode, *_, episode_mask = self._make_episode(batch, is_training=True)
         B, timesteps, *_ = mit.only(batch["frames"].values()).shape  # pyright: ignore
         ts_len = int(full_episode.shape[1] / timesteps)
 
@@ -763,10 +763,14 @@ class Gato(
                 :, observations_start_idx:actions_start_idx, :
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
+            _, to, d = history.shape
             for idx, key in enumerate(self.action_keys):
                 output = self.gpt(
                     inputs_embeds=history,
-                    mask=episode_mask,
+                    episode_mask=episode_mask[
+                        : m - len(self.action_keys) + idx,
+                        : n - len(self.action_keys) + idx,
+                    ],
                     return_dict=True,
                     output_hidden_states=True,
                 )

@@ -133,8 +133,7 @@ class Trajectory(pl.LightningModule):
         return visualizations
 
     def prepare_metadata(self, batch, clip_index):
-        clips = mit.one(batch["clips"].values())
-        meta = clips["meta"]
+        meta = batch["meta"]
 
         out = {
             out_key: meta[in_key][:, [clip_index]].to(self.device)
@@ -189,10 +188,17 @@ class Trajectory(pl.LightningModule):
         return torch.tensor(points_3d, device=self.device)
 
     def get_camera(self, batch) -> Camera:
-        clips = mit.one(batch["clips"].values())
-        camera_params = dict(clips["camera_params"])
-        model = mit.one(camera_params.pop("model"))
-        camera = Camera.from_params(model=model, params=camera_params)
+        # Hard coding cam_front_left till new yaak-datasets supports camera params
+        frames = mit.one(batch["frames"].values())
+        camera = Camera.from_params(
+            model="CameraModelOpenCVFisheye",
+            params={
+                "fx": torch.tensor([[1298.0]], device=frames.device),
+                "fy": torch.tensor([[1298.0]], device=frames.device),
+                "cx": torch.tensor([[287.7]], device=frames.device),
+                "cy": torch.tensor([[161.8]], device=frames.device),
+            },
+        )
         return camera
 
     def calculate_trajectory(
