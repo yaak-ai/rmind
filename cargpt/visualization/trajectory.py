@@ -203,7 +203,7 @@ class Trajectory(pl.LightningModule):
         frames = mit.one(batch["frames"].values())
         camera = Camera.from_params(
             model="CameraModelOpenCVFisheye",
-            params={ # type: ignore[union-attr]
+            params={  # type: ignore[union-attr]
                 "fx": torch.tensor([[389.4]], device=frames.device),
                 "fy": torch.tensor([[389.4]], device=frames.device),
                 "cx": torch.tensor([[287.7]], device=frames.device),

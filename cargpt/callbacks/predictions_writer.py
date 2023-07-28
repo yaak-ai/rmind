@@ -3,14 +3,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
-from einops import rearrange
-from torch import Tensor
 import pytorch_lightning as pl
+from einops import rearrange
 from jaxtyping import Float
 from pytorch_lightning.callbacks import BasePredictionWriter
+from torch import Tensor
+
 from cargpt.visualization.trajectory import (
-    draw_trajectory,
     draw_preds,
+    draw_trajectory,
     smooth_predictions,
 )
 
@@ -85,7 +86,7 @@ class VideoWriter(BasePredictionWriter):
             for vis, metadata in zip(images, metadatas):
                 pred_points_3d: Float[
                     Tensor, "f n 3"
-                ] = pl_module.get_trajectory_3d_points( # type: ignore[union-attr]
+                ] = pl_module.get_trajectory_3d_points(  # type: ignore[union-attr]
                     steps=pl_module.gt_steps,
                     time_interval=pl_module.gt_time_interval,
                     **metadata,
