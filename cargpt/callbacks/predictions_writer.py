@@ -3,15 +3,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
-import pytorch_lightning as pl
 from einops import rearrange
+from torch import Tensor
+import pytorch_lightning as pl
 from jaxtyping import Float
 from pytorch_lightning.callbacks import BasePredictionWriter
-from torch import Tensor
-
 from cargpt.visualization.trajectory import (
-    draw_preds,
     draw_trajectory,
+    draw_preds,
     smooth_predictions,
 )
 
@@ -63,7 +62,7 @@ class VideoWriter(BasePredictionWriter):
         if self.video_writer is None:
             height, width, _ = predictions[0][0].shape
             self._set_video_writer(width, height)
-        if not pl_module.logging.smooth_predictions:
+        if not pl_module.logging.smooth_predictions:  # type: ignore[union-attr]
             vis, _ = predictions
             self.video_writer.write(vis[0, :, :, ::-1])  # type: ignore[attr-defined]
         else:
@@ -74,19 +73,19 @@ class VideoWriter(BasePredictionWriter):
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
     ) -> None:
-        if pl_module.logging.smooth_predictions:
+        if pl_module.logging.smooth_predictions:  # type: ignore[union-attr]
             images, metadatas = zip(*self.predictions)
 
             # Numpy interpolate here
             # choese window_size from [1, 3, 5, 7]
             metadatas = smooth_predictions(
-                metadatas, window_size=pl_module.logging.smooth_kernel_size
+                metadatas, window_size=pl_module.logging.smooth_kernel_size  # type: ignore[union-attr]
             )
 
             for vis, metadata in zip(images, metadatas):
                 pred_points_3d: Float[
                     Tensor, "f n 3"
-                ] = pl_module.get_trajectory_3d_points(
+                ] = pl_module.get_trajectory_3d_points( # type: ignore[union-attr]
                     steps=pl_module.gt_steps,
                     time_interval=pl_module.gt_time_interval,
                     **metadata,

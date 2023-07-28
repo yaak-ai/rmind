@@ -73,7 +73,7 @@ class Trajectory(pl.LightningModule):
 
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, dict[str, Any]]:
         images = rearrange(
             get_images(batch, self.images_transform), "b f c h w -> b f h w c"
         )
@@ -203,7 +203,7 @@ class Trajectory(pl.LightningModule):
         frames = mit.one(batch["frames"].values())
         camera = Camera.from_params(
             model="CameraModelOpenCVFisheye",
-            params={
+            params={ # type: ignore[union-attr]
                 "fx": torch.tensor([[389.4]], device=frames.device),
                 "fy": torch.tensor([[389.4]], device=frames.device),
                 "cx": torch.tensor([[287.7]], device=frames.device),
@@ -301,7 +301,7 @@ def draw_trajectory(
         visualizations[i] = vis
 
 
-def smooth_predictions(metadatas, window_size=6):
+def smooth_predictions(metadatas, window_size: int = 6):
     gas = (
         torch.cat([m["VehicleMotion_gas_pedal_normalized"] for m in metadatas])
         .cpu()
@@ -328,5 +328,4 @@ def smooth_predictions(metadatas, window_size=6):
         metadata["VehicleMotion_brake_pedal_normalized"][:] = b
         metadata["VehicleMotion_steering_angle_normalized"][:] = s
 
-    return metadatas
     return metadatas
