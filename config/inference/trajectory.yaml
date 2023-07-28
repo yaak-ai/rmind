@@ -23,7 +23,7 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-fk3icppo:v5']
+    _args_: ['yaak/cargpt/model-mi2tm3vy:v11']
     strict: False
 
   ground_truth_trajectory:
@@ -41,6 +41,8 @@ model:
 
   logging:
     log_to_terminal: False
+    smooth_predictions: False
+    smooth_kernel_size: 7
 
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
@@ -69,6 +71,11 @@ datamodule:
             metadata:
               path: ${paths.data_dir}/frames/${..id}/metadata.log
               filter: (ImageMetadata_frame_idx between 24900 and 25310)
+
+              # filter: (ImageMetadata_frame_idx between 5610 and 5930) or
+              #         (ImageMetadata_frame_idx between 11030 and 12020) or
+              #         (ImageMetadata_frame_idx between 22560 and 22860) or
+              #         (ImageMetadata_frame_idx between 24900 and 25310)
 
           metadata:
             cameras:

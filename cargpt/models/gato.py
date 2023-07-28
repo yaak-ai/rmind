@@ -741,7 +741,9 @@ class Gato(
         start_timestep: int = 0,
         verbose: bool = False,
     ) -> Any:
-        full_episode, *_, episode_mask = self._make_episode(batch, is_training=True)
+        full_episode, full_episode_labels, *_, episode_mask = self._make_episode(
+            batch, is_training=True
+        )
         B, timesteps, *_ = mit.only(batch["frames"].values()).shape  # pyright: ignore
         ts_len = int(full_episode.shape[1] / timesteps)
 
