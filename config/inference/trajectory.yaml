@@ -5,7 +5,10 @@ defaults:
   - /image_encoder: dall_e.yaml
   - _self_
 
-output_file: video.mp4
+run_id: fk3icppo
+version: v10
+output_file: video-${run_id}-${version}.mp4
+wandb_artifact: yaak/cargpt/model-${run_id}:${version}
 clip_len: 6
 
 trainer:
@@ -23,7 +26,7 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-mi2tm3vy:v11']
+    _args_: ['${wandb_artifact}']
     strict: False
 
   ground_truth_trajectory:
@@ -108,7 +111,7 @@ datamodule:
           clips:
             length: ${clip_len}
             stride: 10
-            step: 10
+            step: 1
 
           transforms:
             - _target_: yaak_datasets.transforms.Scale

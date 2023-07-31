@@ -5,9 +5,12 @@ defaults:
   - /image_encoder: dall_e.yaml
   - _self_
 
-output_file: video.mp4
-clip_len: 4
-speed_range: [0.0, 80.0]
+run_id: lq29aa4q
+version: v12
+output_file: video-${run_id}-${version}.mp4
+wandb_artifact: yaak/cargpt/model-${run_id}:${version}
+clip_len: 3
+speed_range: ${image_encoder.speed_range}
 
 trainer:
   benchmark: true
@@ -24,7 +27,7 @@ model:
   # Let the model be optional so that we can use both gt and preds
   inference_model:
     _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-    _args_: ['yaak/cargpt/model-121o7hfn:v229']
+    _args_: ['${wandb_artifact}']
     strict: False
 
   image_decoder:
@@ -37,35 +40,40 @@ model:
   patch_row: ${image_encoder.patch_row_tokens}
   patch_col: ${image_encoder.patch_col_tokens}
 
+  logging:
+    log_to_terminal: False
+    smooth_predictions: False
+    smooth_kernel_size: 7
+
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
     _target_: torch.utils.data.DataLoader
     shuffle: false
     batch_size: 1
-    num_workers: 8
-    pin_memory: true
+    num_workers: 1
+    pin_memory: false
     persistent_workers: true
-    multiprocessing_context: fork
+    multiprocessing_context: forkserver
     dataset:
       _target_: yaak_datasets.Dataset
       _recursive_: false
       config:
-        version: 0.12.3
+        version: 0.13.1
         data:
           drives:
           - id: 2022-10-20--13-03-22
             sources:
             - camera: cam_front_left  # TODO: probably wanna front center, but extrinsics should also be fine
-              params: ${paths.data_dir}/calibration/gamma/cam-90-deg/calib-pinhole.json
+              # TODO: uncomment after yaak-datasets support calibration files
+              # params: ${paths.data_dir}/calibration/gamma/cam-90-deg/calib-pinhole.json
               reader:
                 _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
+                path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324
                 filename_format: '{:09d}.jpg'
             metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
-              filter: (ImageMetadata_frame_idx between 11250 and 12150) or
-                      (ImageMetadata_frame_idx between 24900 and 25410) and
+              path: ${paths.data_dir}/${..id}/metadata.log
+              filter: (ImageMetadata_frame_idx between 5550 and 5850) and
                       VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
           metadata:
             cameras:
@@ -97,17 +105,7 @@ datamodule:
             stride: 10
             step: 1
 
-          transforms:
-            - _target_: yaak_datasets.transforms.Scale
-              factor: 0.253
-
-            - _target_: yaak_datasets.transforms.Crop
-              offsets: [9, 8, 2, 3]
-
-            - _target_: yaak_datasets.transforms.Normalize
-              # https://github.com/openai/DALL-E/blob/master/dall_e/utils.py#L45
-              mean: [-0.125, -0.125, -0.125]
-              std: [1.25, 1.25, 1.25]
+          transforms: ${image_encoder.transforms}
 
         processing:
           max_workers: null

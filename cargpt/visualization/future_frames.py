@@ -1,5 +1,6 @@
 from typing import Any, List
 
+import more_itertools as mit
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -22,15 +23,15 @@ class Frames(pl.LightningModule):
         self.model = instantiate(self.hparams.inference_model)
         self.model.eval()
         self.decoder = instantiate(self.hparams.image_decoder)
+        self.logging = self.hparams.logging
 
     def get_future_frames(self, batch: Any) -> List[np.ndarray]:
-        sample = self.model.prepare_batch(batch)
-
         with torch.no_grad():
             future_images = []
-            b, clips, c, h, w = sample["frames"].shape
+            frames = mit.one(batch["frames"].values())
+            b, clips, c, h, w = frames.shape
             episode, labels, _, episode_values, _ = self.model._make_episode(
-                sample, is_training=True
+                batch, is_training=True
             )
             b, seqlen, d = episode.shape
 
@@ -40,6 +41,7 @@ class Frames(pl.LightningModule):
                 inputs_embeds=episode,
                 return_dict=True,
                 use_cache=True,
+                output_hidden_states=True,
             )
             logits = output["logits"]
             past_key_values = output["past_key_values"]
@@ -48,10 +50,10 @@ class Frames(pl.LightningModule):
             # last_token = labels[:, [0]]
             # TODO: My humor is DRY unlike my code
             # Lot of duplicated code below, i beg your pardon upfront.
-            torchvision.utils.save_image(sample["frames"][0], "inputs.png")
+            torchvision.utils.save_image(frames[0], "inputs.png")
 
             global_timestep_embedding = self.model.sensor_embedding(
-                torch.tensor([clips - 1], dtype=episode.device).view(1, 1)
+                torch.tensor([clips], device=episode.device).view(1, 1)
             ).view(1, 1, d)
 
             for timestep in tqdm.tqdm(range(self.hparams.future_timestep), ascii=True, unit="img"):  # type: ignore
@@ -122,9 +124,12 @@ class Frames(pl.LightningModule):
                 x_rec = T.ToPILImage(mode="RGB")(image[0].detach().cpu())
                 x_rec.save(f"timestep_{timestep:03}.png")
                 future_images.append(
-                    (image[0].detach().permute(1, 2, 0).cpu().numpy() * 255).astype(
-                        np.uint8
-                    )
+                    [
+                        (image.detach().permute(0, 2, 3, 1).cpu().numpy() * 255).astype(
+                            np.uint8
+                        ),
+                        None,
+                    ]
                 )
 
                 for idx, metadata_key in enumerate(self.model.metadata_keys):
@@ -185,7 +190,7 @@ class Frames(pl.LightningModule):
                     past_key_values = output["past_key_values"]
                     last_token = torch.argmax(F.softmax(logits[:, [-1]], dim=2), dim=2)
 
-        return future_images
+        return future_images[0]
 
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0

@@ -31,8 +31,10 @@ class HFGPT2(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        return_dict: bool,
-        output_hidden_states: bool,
+        return_dict: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        output_hidden_states: Optional[bool] = False,
+        past_key_values: Optional[List[Tensor]] = None,
         episode_mask: Optional[Tensor] = None,
         labels: Optional[Tensor] = None,
     ) -> Any:
@@ -41,6 +43,8 @@ class HFGPT2(pl.LightningModule):
             return_dict=return_dict,
             labels=labels,
             output_hidden_states=output_hidden_states,
+            use_cache=use_cache,
+            past_key_values=past_key_values,
         )
 
         return output
@@ -62,9 +66,11 @@ class TorchGPT2(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        episode_mask: Tensor,
-        return_dict: bool,
-        output_hidden_states: bool,
+        return_dict: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        output_hidden_states: Optional[bool] = False,
+        past_key_values: Optional[List[Tensor]] = None,
+        episode_mask: Optional[Tensor] = None,
         labels: Optional[Tensor] = None,
     ) -> Any:
         output = {}
