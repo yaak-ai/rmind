@@ -21,7 +21,7 @@ val:
   num_workers: 4
   pin_memory: false
   persistent_workers: true
-  multiprocessing_context: fork
+  multiprocessing_context: forkserver
   collate_fn:
     _target_: yaak_datasets.collate
     _partial_: true
