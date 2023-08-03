@@ -1,5 +1,6 @@
 vars:
   - drives:
+      - Niro102-HQ/2022-10-20--13-03-22
       # https://metabase.yaak.dev/question/137-drive-information-by-session-id
       # Winter cohort, between 09h00 and 14h00, no rain/snow, few drives in snow
       - Niro102-HQ/2022-11-23--11-02-49
