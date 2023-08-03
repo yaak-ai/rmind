@@ -50524,3 +50524,44 @@ stages:
       md5: ed2e7362ecd22cae60fbb18de6f0a008.dir
       size: 415978159
       nfiles: 31188
+  sync_video@cam_front_left@Niro102-HQ/2022-10-20--13-03-22:
+    cmd: aws s3 cp s3://yapi/Niro102-HQ/2022-10-20--13-03-22/cam_front_left.defish.mp4
+      /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/cam_front_left.defish.mp4
+    deps:
+    - path: s3://yapi/Niro102-HQ/2022-10-20--13-03-22/cam_front_left.defish.mp4
+      etag: 17a2e4f856f97684750164749dce4e01-221
+      size: 1851726359
+    outs:
+    - path: /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/cam_front_left.defish.mp4
+      md5: 2c325271b444a08265bff88bb2835a41
+      size: 1851726359
+  sync_metadata@Niro102-HQ/2022-10-20--13-03-22:
+    cmd: aws s3 sync s3://yapi/Niro102-HQ/2022-10-20--13-03-22 /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22  --exclude
+      "*"  --include "*/metadata.log" && cat /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/*/metadata.log
+      > /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/metadata.log
+    deps:
+    - path: s3://yapi/Niro102-HQ/2022-10-20--13-03-22
+      md5: 9cd798f37b575f60c69c17f38a1445d9.dir
+      size: 53423925835
+      nfiles: 1265
+    outs:
+    - path: /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/metadata.log
+      md5: 2996ae8c667851ed95588eee94cf3d11
+      size: 26659080
+  extract_frames@cam_front_left@Niro102-HQ/2022-10-20--13-03-22:
+    cmd: mkdir -p 
+      /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/frames/cam_front_left.defish.mp4/576x324
+      && ffmpeg -y -vsync 0 -threads 0 -hide_banner -loglevel error -hwaccel cuda
+      -hwaccel_output_format cuda -c:v hevc_cuvid -hwaccel_device 0 -i /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/cam_front_left.defish.mp4
+      -filter_complex "scale_npp=576:324,hwdownload,format=nv12" -f image2 -q:v 16
+      /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/frames/cam_front_left.defish.mp4/576x324/%09d.jpg
+    deps:
+    - path: /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/cam_front_left.defish.mp4
+      md5: 2c325271b444a08265bff88bb2835a41
+      size: 1851726359
+    outs:
+    - path: 
+        /nas/drives/yaak/data/Niro102-HQ/2022-10-20--13-03-22/frames/cam_front_left.defish.mp4/576x324/
+      md5: 1669282622e26a98a44945c42c7ea42c.dir
+      size: 684552462
+      nfiles: 46274
