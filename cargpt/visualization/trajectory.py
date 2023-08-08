@@ -52,7 +52,10 @@ class Trajectory(pl.LightningModule):
 
     def get_model_trajactories(self, batch):
         preds_last = self.model.predict_step(
-            batch, batch_idx=0, start_timestep=-1, verbose=self.logging.log_to_terminal
+            batch,
+            batch_idx=0,
+            start_timestep=-1,
+            verbose=self.logging.log_to_terminal,
         )
 
         prediction_actions_ = []
@@ -70,7 +73,7 @@ class Trajectory(pl.LightningModule):
 
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, dict[str, Any]]:
         images = rearrange(
             get_images(batch, self.images_transform), "b f c h w -> b f h w c"
         )
@@ -83,7 +86,7 @@ class Trajectory(pl.LightningModule):
 
         images = images.squeeze(0)  # kick out batch dimension
         images = images[[clip_len - 1]]
-        camera = self.get_camera(batch)
+        self.camera = self.get_camera(batch)
         metadata = self.prepare_metadata(batch, clip_len - 1)
 
         # Ground-truth trajactories
@@ -94,7 +97,7 @@ class Trajectory(pl.LightningModule):
         )
 
         gt_points_2d: Float[Tensor, "f n 2"] = rearrange(
-            camera.project(rearrange(gt_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+            self.camera.project(rearrange(gt_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
             "(f n) 1 1 d -> f n (1 1 d)",
             f=1,
         )
@@ -123,18 +126,25 @@ class Trajectory(pl.LightningModule):
         )
 
         pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
-            camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+            self.camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
             "(f n) 1 1 d -> f n (1 1 d)",
             f=1,
         )
 
-        draw_preds(visualizations, metadata, line_color=(0, 255, 0))
+        if not self.logging.smooth_predictions:
+            draw_trajectory(
+                visualizations,
+                pred_points_2d,
+                point_color=(0, 255, 0),
+                line_color=(0, 255, 0),
+            )
 
-        return visualizations
+            draw_preds(visualizations, metadata, line_color=(0, 255, 0))
+
+        return (visualizations, metadata)
 
     def prepare_metadata(self, batch, clip_index):
-        clips = mit.one(batch["clips"].values())
-        meta = clips["meta"]
+        meta = batch["meta"]
 
         out = {
             out_key: meta[in_key][:, [clip_index]].to(self.device)
@@ -189,10 +199,17 @@ class Trajectory(pl.LightningModule):
         return torch.tensor(points_3d, device=self.device)
 
     def get_camera(self, batch) -> Camera:
-        clips = mit.one(batch["clips"].values())
-        camera_params = dict(clips["camera_params"])
-        model = mit.one(camera_params.pop("model"))
-        camera = Camera.from_params(model=model, params=camera_params)
+        # Hard coding cam_front_left till new yaak-datasets supports camera params
+        frames = mit.one(batch["frames"].values())
+        camera = Camera.from_params(
+            model="CameraModelOpenCVFisheye",
+            params={  # type: ignore[union-attr]
+                "fx": torch.tensor([[389.4]], device=frames.device),
+                "fy": torch.tensor([[389.4]], device=frames.device),
+                "cx": torch.tensor([[287.7]], device=frames.device),
+                "cy": torch.tensor([[161.8]], device=frames.device),
+            },
+        )
         return camera
 
     def calculate_trajectory(
@@ -242,16 +259,21 @@ def draw_preds(
     image = visualizations[0]
     h, w = image.shape[:2]
     brake = metadata["VehicleMotion_brake_pedal_normalized"].item()
-    steer = metadata["VehicleMotion_steering_angle_normalized"].item()
+    text = f"[Brake:{brake:.3f}]"
+    text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
+    text_w, text_h = text_size
+    pos = (0, w // 2)
+    x, y = pos
+    cv2.rectangle(image, pos, (x + text_w, y + text_h), (0, 0, 0), -1)
     image = cv2.putText(
         image,
-        f"brake: {brake:.3f}, steer: {steer:.3f}",
-        (0, w // 2),
+        text,
+        pos,
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        color=line_color,
-        thickness=2,
-        lineType=cv2.LINE_AA,
+        0.7,
+        line_color,
+        2,
+        cv2.LINE_AA,
     )
 
 
@@ -277,3 +299,33 @@ def draw_trajectory(
         for point in points:
             vis = cv2.circle(vis, point, point_radius, point_color, point_thickness)  # type: ignore
         visualizations[i] = vis
+
+
+def smooth_predictions(metadatas, window_size: int = 6):
+    gas = (
+        torch.cat([m["VehicleMotion_gas_pedal_normalized"] for m in metadatas])
+        .cpu()
+        .numpy()
+    )
+    brake = (
+        torch.cat([m["VehicleMotion_brake_pedal_normalized"] for m in metadatas])
+        .cpu()
+        .numpy()
+    )
+    steer = (
+        torch.cat([m["VehicleMotion_steering_angle_normalized"] for m in metadatas])
+        .cpu()
+        .numpy()
+    )
+
+    window = np.ones(window_size) / window_size
+    gas = np.convolve(gas, window, mode="same")
+    brake = np.convolve(brake, window, mode="same")
+    steer = np.convolve(steer, window, mode="same")
+
+    for g, b, s, metadata in zip(gas, brake, steer, metadatas):
+        metadata["VehicleMotion_gas_pedal_normalized"][:] = g
+        metadata["VehicleMotion_brake_pedal_normalized"][:] = b
+        metadata["VehicleMotion_steering_angle_normalized"][:] = s
+
+    return metadatas

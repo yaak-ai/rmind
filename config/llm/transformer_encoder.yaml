@@ -1,0 +1,33 @@
+have_position_encoding:
+  patch: True
+  local: True
+  action: True
+  global_pos: True
+have_special_tokens:
+  bos: False
+  sep: True
+  eos: False
+
+model:
+  _target_: cargpt.models.gato.TorchGPT2
+  _recursive_: False
+  llm:
+    _target_: torch.nn.TransformerEncoder
+    num_layers: 8
+    encoder_layer:
+      _target_: cargpt.models.gato.TransformerEncoderLayerGEGLU
+      d_model: ${embedding_dim}
+      dim_feedforward: 512
+      nhead: 4
+      dropout: 0.1
+      batch_first: True
+      norm_first: True
+  classifier:
+    _target_: torch.nn.Linear
+    in_features: ${embedding_dim}
+    out_features: ${num_tokens_total}
+    bias: False
+  loss:
+    _target_: torch.nn.CrossEntropyLoss
+    ignore_index: -100
+    reduction: mean
