@@ -250,6 +250,9 @@ class SenorDropout(torch.nn.Module):
         if len(embeddings) == 0:
             return []
 
+        if self.prob == 0:
+            return embeddings
+
         b, t, _, d = embeddings[0].shape
         num_samples_to_drop = 1 if b == 1 else int(b * self.prob)
         indices = torch.randperm(b)[:num_samples_to_drop]

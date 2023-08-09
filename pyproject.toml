@@ -23,6 +23,8 @@ dall-e = {git = "git@github.com:openai/DALL-E.git", rev = "master"}
 wandb = "*"
 pillow = ">=9.5.0"
 dill = "^0.3.6"
+tqdm = "=4.65.0"
+transformers = "=4.30.2"
 
 [build-system]
 requires = ["poetry-core>=1.5.0"]
@@ -33,7 +35,7 @@ optional = true
 
 [tool.poetry.group.train.dependencies]
 omegaconf = "^2.3.0"
-yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.13.0"}
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.13.1"}
 
 [tool.poetry.group.lint]
 optional = true
@@ -77,6 +79,7 @@ dvc = {version = "^2.58.1", extras = ["s3"]}
 typeCheckingMode = "basic"
 reportMissingTypeStubs = false
 reportMissingImports = false
+reportPrivateImportUsage = false
 exclude = [
   'wandb/',
 ]
@@ -92,6 +95,6 @@ select = ["I001"]
 
 [tool.deptry.per_rule_ignores]
 DEP001 = ["cv2", "fiftyone", "pytorch_grad_cam"]
-DEP002 = ["beartype", "torchaudio", "dill"]
+DEP002 = ["beartype", "torchaudio", "dill", "transformers"]
 DEP003 = ["numpy"]
 DEP004 = ["omegaconf", "pytorch_grad_cam"]

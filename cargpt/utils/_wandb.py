@@ -5,7 +5,7 @@ import more_itertools as mit
 import numpy as np
 import torch.nn
 import wandb
-from einops import rearrange, repeat
+from einops import rearrange
 from jaxtyping import Float
 from PIL.Image import Image, fromarray
 from pytorch_lightning import Trainer

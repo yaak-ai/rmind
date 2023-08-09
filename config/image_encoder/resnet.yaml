@@ -3,10 +3,12 @@ clip_len: 6
 patch_row_tokens: 10
 patch_col_tokens: 18
 local_position_tokens: 256
+max_seq_len: 2000
 total_tokens: 4102
 tokens_shift: 0
-tokens_mask: -1
+tokens_mask: -100
 ignore_image_tokens: True
+speed_range: [0.0, 130.0]
 backbone:
   _target_: cargpt.models.encoding.ResnetBackbone
   resnet:
@@ -23,6 +25,7 @@ loss:
 
 mean: [0.485, 0.456, 0.406]
 std: [0.229, 0.224, 0.225]
+
 transforms:
 
   - _target_: yaak_datasets.transforms.Crop

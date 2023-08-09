@@ -7,10 +7,10 @@ _target_: cargpt.datamodules.GenericDataModule
 train:
   _target_: torch.utils.data.DataLoader
   shuffle: true
-  num_workers: 32
+  num_workers: 4
+  pin_memory: false
   persistent_workers: true
   multiprocessing_context: forkserver
-  pin_memory: false
   collate_fn:
     _target_: yaak_datasets.collate
     _partial_: true
@@ -18,10 +18,10 @@ train:
 val:
   _target_: torch.utils.data.DataLoader
   shuffle: false
-  num_workers: 32
+  num_workers: 4
+  pin_memory: false
   persistent_workers: true
   multiprocessing_context: forkserver
-  pin_memory: false
   collate_fn:
     _target_: yaak_datasets.collate
     _partial_: true

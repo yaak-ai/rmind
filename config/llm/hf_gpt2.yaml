@@ -1,0 +1,24 @@
+have_position_encoding:
+  patch: True
+  local: False
+  action: False
+  global_pos: False
+have_special_tokens:
+  bos: False
+  sep: True
+  eos: False
+
+model:
+  _target_: cargpt.models.gato.HFGPT2
+  _recursive_: False
+  llm:
+    _target_: transformers.GPT2LMHeadModel
+    _args_:
+      - _target_: transformers.GPT2Config
+        vocab_size: ${image_encoder.total_tokens}
+        n_positions: ${image_encoder.max_seq_len}
+        n_embd: ${embedding_dim}
+        n_layer: 8
+        n_head: 4
+        n_inner: 512
+        activation_function: gelu
