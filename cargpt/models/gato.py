@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
+import torch._dynamo
 from einops import rearrange, repeat
 from hydra.utils import instantiate
 from jaxtyping import Float, Int
@@ -18,6 +19,8 @@ from cargpt.utils._wandb import (
     TrainValAttnMapLoggingMixin,
     ValOutputsLoggingTableMixin,
 )
+
+torch._dynamo.config.verbose = True
 
 
 class HFGPT2(pl.LightningModule):
@@ -162,7 +165,7 @@ class Gato(
             "Instantiating image encoder",
             target=self.hparams.image_embedding._target_,  # type: ignore[union-attr]
         )
-        self.image_embedding = instantiate(self.hparams.image_embedding)  # type: ignore[union-attr]
+        self.image_embedding = torch.compile(instantiate(self.hparams.image_embedding))  # type: ignore[union-attr]
         logger.debug(
             "Instantiating image tokens",
             target=self.hparams.image_tokens._target_,  # type: ignore[union-attr]
@@ -857,4 +860,5 @@ class Gato(
         return result
 
     def on_validation_epoch_end(self) -> None:
+        self._finish_val_outputs_logging()
         self._finish_val_outputs_logging()
