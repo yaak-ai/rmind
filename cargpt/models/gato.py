@@ -858,4 +858,3 @@ class Gato(
 
     def on_validation_epoch_end(self) -> None:
         self._finish_val_outputs_logging()
-        self._finish_val_outputs_logging()
