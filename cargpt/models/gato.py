@@ -738,7 +738,7 @@ class Gato(
             rank_zero_only=True,
             batch_size=pred.shape[0],
         )
-        self._log_val_outputs_dict(outputs_dict=numeric_values.detach().cpu())
+        self._log_val_outputs_dict(outputs_dict=numeric_values)
 
         return loss
 
