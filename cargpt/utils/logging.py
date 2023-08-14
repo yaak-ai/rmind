@@ -1,6 +1,8 @@
 import sys
-
+import logging
 from loguru import logger
+
+logging.getLogger("xformers").setLevel(logging.ERROR)
 
 
 def _patcher(record):

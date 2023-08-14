@@ -1,0 +1,58 @@
+have_position_encoding:
+  patch: True
+  local: True
+  action: True
+  global_pos: True
+have_special_tokens:
+  bos: False
+  sep: True
+  eos: False
+
+num_heads: 4
+num_layers: 8
+
+model:
+  _target_: cargpt.models.llm.xFormerGPT
+  _recursive_: False
+  llm:
+    seq_len: ${image_encoder.seq_len}
+    config:
+      _target_: xformers.factory.model_factory.xFormerConfig
+      stack_configs:
+        - reversible: False  # set True for gradient checkpointing
+          block_type: encoder
+          num_layers: ${......num_layers}
+          dim_model: ${embedding_dim}
+          residual_norm_style: pre
+          multi_head_config:
+            dim_model: ${embedding_dim}
+            num_heads: ${.......num_heads}
+            residual_dropout: 0.1
+            attention:
+              name: scaled_dot_product
+              dropout: 0.1
+              causal: False
+              seq_len: ${image_encoder.seq_len}
+          feedforward_config:
+            name: MLP
+            dropout: 0.1
+            activation: gelu
+            hidden_layer_multiplier: 1
+  classifier:
+    _target_: torch.nn.Sequential
+    _args_:
+        - _target_: torch.nn.LayerNorm
+          _args_:
+            - ${embedding_dim}
+        - _target_: torch.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: ${image_encoder.total_tokens}
+          bias: False
+  loss:
+    _target_: torch.nn.CrossEntropyLoss
+    ignore_index: -100
+    reduction: mean
+  mask:
+    attn_config:
+      _target_: xformers.components.attention.attention_mask.AttentionMask.make_causal
+      seq_len: ${image_encoder.seq_len}
