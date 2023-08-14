@@ -4,7 +4,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import more_itertools as mit
 import numpy as np
 import torch.nn
-import wandb
 from einops import rearrange
 from jaxtyping import Float
 from PIL.Image import Image, fromarray
@@ -13,11 +12,12 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.trainer.states import RunningStage
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor, softmax
+
+import wandb
+from cargpt.visualization import Unnormalize
 from wandb.sdk.interface.artifacts import Artifact
 from wandb.sdk.lib import RunDisabled
 from wandb.wandb_run import Run
-
-from cargpt.visualization import Unnormalize
 
 
 class LoadableFromArtifact:

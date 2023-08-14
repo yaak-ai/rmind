@@ -1,5 +1,6 @@
-import sys
 import logging
+import sys
+
 from loguru import logger
 
 logging.getLogger("xformers").setLevel(logging.ERROR)

@@ -1,4 +1,4 @@
-from typing import Any, List, Optional, Dict, Union
+from typing import Any, Dict, List, Optional, Union
 
 import pytorch_lightning as pl
 import torch
@@ -7,15 +7,15 @@ from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor
 from torch.nn import Linear
 from torch.nn.functional import gelu
-from xformers.factory.model_factory import xFormer
-from xformers.factory.weight_init import xFormerWeightInit
 from xformers.components.attention import AttentionMask
-from xformers.ops.fmha.attn_bias import AttentionBias
-from xformers.components.attention._sputnik_sparse import SparseCS
 from xformers.components.attention import attention_patterns as AP
+from xformers.components.attention._sputnik_sparse import SparseCS
 from xformers.factory.block_configs import (
     xFormerBlockConfig,
 )
+from xformers.factory.model_factory import xFormer
+from xformers.factory.weight_init import xFormerWeightInit
+from xformers.ops.fmha.attn_bias import AttentionBias
 
 
 class HFGPT2(pl.LightningModule):
