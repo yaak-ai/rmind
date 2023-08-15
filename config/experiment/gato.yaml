@@ -178,6 +178,7 @@ datamodule:
             length: ${image_encoder.clip_len}
             stride: 10
             step: 10
+            frame_mask: [1, 1, 1, 1, 1, 1]
 
   val:
     batch_size: ${image_encoder.batch_size}
@@ -191,3 +192,4 @@ datamodule:
             length: ${image_encoder.clip_len}
             stride: 10
             step: 10
+            frame_mask: [1, 1, 1, 1, 1, 1]

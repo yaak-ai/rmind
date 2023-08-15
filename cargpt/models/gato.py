@@ -723,7 +723,10 @@ class Gato(
             + self.hparams.loss.weights.l1 * loss_l1  # type: ignore[union-attr]
         )
 
-        metrics = {"val/loss": loss_categorical, "val/loss_l1": loss_l1}
+        metrics = {
+            "val/loss": loss_categorical,
+            "val/loss_l1": loss_l1,
+        }
         metrics.update({f"diff/val_{key}": value for key, value in diff_l1.items()})
 
         self.log_dict(
