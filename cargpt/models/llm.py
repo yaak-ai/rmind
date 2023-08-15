@@ -261,7 +261,7 @@ class MLPGLU(Feedforward):
         self,
         dim_model: int,
         dropout: float,
-        activation: str | Activation,
+        activation: str,
         hidden_layer_multiplier: int,
         bias: bool = True,
         *args,
@@ -270,7 +270,7 @@ class MLPGLU(Feedforward):
         super().__init__()
         dim_mlp = hidden_layer_multiplier * dim_model
         self.l1 = nn.Linear(in_features=dim_model, out_features=dim_mlp * 2, bias=bias)
-        self.a1 = build_activation(activation)
+        self.a1 = build_activation(Activation(activation))
         self.d1 = nn.Dropout(dropout)
         self.l2 = nn.Linear(in_features=dim_mlp, out_features=dim_model, bias=bias)
         self.d2 = nn.Dropout(dropout)
