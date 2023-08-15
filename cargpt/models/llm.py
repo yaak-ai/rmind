@@ -33,11 +33,10 @@ class HFGPT2(pl.LightningModule):
     ) -> Any:
         output = self.llm(
             inputs_embeds=inputs_embeds,
-            return_dict=True,
             labels=labels,
+            return_dict=True,
             output_hidden_states=True,
             use_cache=True,
-            past_key_values=True,
         )
 
         return output
