@@ -34,7 +34,7 @@ model:
               causal: False
               seq_len: ${image_encoder.seq_len}
           feedforward_config:
-            name: MLP
+            name: MLPGLU
             dropout: 0.1
             activation: gelu
             hidden_layer_multiplier: 1

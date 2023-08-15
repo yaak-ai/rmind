@@ -2,13 +2,17 @@ from typing import Any, Dict, List, Optional, Union
 
 import pytorch_lightning as pl
 import torch
+import xformers
 from hydra.utils import instantiate
 from pytorch_lightning.utilities.parsing import AttributeDict
-from torch import Tensor
+from torch import Tensor, nn
 from torch.nn import Linear
 from torch.nn.functional import gelu
+from xformers.components import Activation, build_activation
 from xformers.components.attention import AttentionMask
 from xformers.components.attention._sputnik_sparse import SparseCS
+from xformers.components.feedforward import register_feedforward
+from xformers.components.feedforward.mlp import Feedforward, MlpConfig
 from xformers.factory.block_configs import (
     xFormerBlockConfig,
 )
@@ -248,3 +252,34 @@ class SparseFormer(xFormer):
             return tgt
 
         return None
+
+
+# replicating https://github.com/yaak-ai/carGPT/blob/feat/xformers/cargpt/models/llm.py#L124
+@register_feedforward("MLPGLU", MlpConfig)
+class MLPGLU(Feedforward):
+    def __init__(
+        self,
+        dim_model: int,
+        dropout: float,
+        activation: str | Activation,
+        hidden_layer_multiplier: int,
+        bias: bool = True,
+        *args,
+        **kwargs,
+    ):
+        super().__init__()
+        dim_mlp = hidden_layer_multiplier * dim_model
+        self.l1 = nn.Linear(in_features=dim_model, out_features=dim_mlp * 2, bias=bias)
+        self.a1 = build_activation(activation)
+        self.d1 = nn.Dropout(dropout)
+        self.l2 = nn.Linear(in_features=dim_mlp, out_features=dim_model, bias=bias)
+        self.d2 = nn.Dropout(dropout)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        # FFN_GEGLU eq. 6, https://arxiv.org/pdf/2002.05202v1.pdf
+        x = self.l1(inputs)
+        xW, xV = x.chunk(2, dim=-1)
+        geglu = self.a1(xW) * xV
+        x = self.l2(self.d1(geglu))
+        x = self.d2(x)
+        return x
