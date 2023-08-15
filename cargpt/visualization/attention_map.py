@@ -168,11 +168,15 @@ class NegativeAndPositiveGradCAM(BaseCAM):
         out = repeat(self.scalars_outputs, "b -> b c h w", c=c, h=h, w=w)
         axes = (-2, -1)
 
-        negative_grads = np.where(np.logical_and(out < 0, grads < 0), -grads, 0)
+        negative_grads = np.where(
+            np.logical_and(out < np.array(0), grads < np.array(0)), -grads, 0
+        )
         negative_elems = np.sum(grads < 0, axis=axes)
         negative_mean = np.sum(negative_grads, axis=axes) / (negative_elems + 1e-8)
 
-        positive_grads = np.where(np.logical_and(out >= 0, grads >= 0), grads, 0)
+        positive_grads = np.where(
+            np.logical_and(out >= np.array(0), grads >= np.array(0)), grads, 0
+        )
         positive_elems = np.sum(grads >= 0, axis=axes)
         positive_mean = np.sum(positive_grads, axis=axes) / (positive_elems + 1e-8)
 
