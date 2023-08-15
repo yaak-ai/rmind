@@ -32,7 +32,7 @@ class HFGPT2(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        labels: Optional[Tensor] = None,
+        labels: Tensor | None,
         **kwargs,
     ) -> Any:
         output = self.llm(
@@ -62,8 +62,8 @@ class TorchGPT2(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        episode_mask: Optional[Tensor] = None,
-        labels: Optional[Tensor] = None,
+        episode_mask: Tensor | None,
+        labels: Tensor | None,
     ) -> Any:
         output = {}
         x = self.llm(src=inputs_embeds, mask=episode_mask)
@@ -152,8 +152,8 @@ class xFormerGPT(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        episode_mask: Optional[Tensor] = None,
-        labels: Optional[Tensor] = None,
+        episode_mask: Tensor | None,
+        labels: Tensor | None,
     ) -> Any:
         output = {}
         x = self.llm(inputs_embeds=inputs_embeds, labels=labels, att_mask=episode_mask)
@@ -200,14 +200,12 @@ class SparseFormer(xFormer):
 
     def forward(
         self,
-        inputs_embeds: torch.Tensor,
-        labels: Optional[torch.Tensor] = None,
-        att_mask: Optional[
-            torch.Tensor | SparseCS | AttentionMask | AttentionBias | None
-        ] = None,
-        encoder_input_mask: Optional[torch.Tensor] = None,
-        decoder_input_mask: Optional[torch.Tensor] = None,
-    ) -> Optional[torch.Tensor]:
+        inputs_embeds: Tensor,
+        labels: Tensor | None,
+        att_mask: Tensor | SparseCS | AttentionMask | AttentionBias | None,
+        encoder_input_mask: Tensor | None,
+        decoder_input_mask: Tensor | None,
+    ) -> Tensor | None:
         # Encode to latent space if encoder is present
         memory = inputs_embeds.clone()
         if len(list(self.encoders.parameters())) > 0:
@@ -275,7 +273,7 @@ class MLPGLU(Feedforward):
         self.l2 = nn.Linear(in_features=dim_mlp, out_features=dim_model, bias=bias)
         self.d2 = nn.Dropout(dropout)
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: Tensor) -> Tensor:
         # FFN_GEGLU eq. 6, https://arxiv.org/pdf/2002.05202v1.pdf
         x = self.l1(inputs)
         xW, xV = x.chunk(2, dim=-1)
