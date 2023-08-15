@@ -11,6 +11,7 @@ defaults:
 
 wandb:
   group: Gato-Image-speed-to-control
+  dir: ./wandb-runs
 
 num_special_tokens: 3  # for special tokens SOS, SEP, OES
 num_continous_tokens: 1024 # real values -> bin
