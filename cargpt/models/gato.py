@@ -657,8 +657,6 @@ class Gato(
                         : m - len(self.action_keys) + idx,
                         : n - len(self.action_keys) + idx,
                     ],
-                    return_dict=True,
-                    output_hidden_states=True,
                 )
                 logits = output["logits"]
                 logits = logits.detach()
@@ -712,8 +710,6 @@ class Gato(
             inputs_embeds=episode,
             labels=episode_labels.to(torch.long),
             episode_mask=episode_mask,
-            return_dict=True,
-            output_hidden_states=True,
         )
         # last layer features
         features = output["hidden_states"][-1]

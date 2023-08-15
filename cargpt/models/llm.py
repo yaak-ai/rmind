@@ -8,7 +8,6 @@ from torch import Tensor
 from torch.nn import Linear
 from torch.nn.functional import gelu
 from xformers.components.attention import AttentionMask
-from xformers.components.attention import attention_patterns as AP
 from xformers.components.attention._sputnik_sparse import SparseCS
 from xformers.factory.block_configs import (
     xFormerBlockConfig,
@@ -29,20 +28,16 @@ class HFGPT2(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        return_dict: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        output_hidden_states: Optional[bool] = False,
-        past_key_values: Optional[List[Tensor]] = None,
-        episode_mask: Optional[Tensor] = None,
         labels: Optional[Tensor] = None,
+        **kwargs,
     ) -> Any:
         output = self.llm(
             inputs_embeds=inputs_embeds,
-            return_dict=return_dict,
+            return_dict=True,
             labels=labels,
-            output_hidden_states=output_hidden_states,
-            use_cache=use_cache,
-            past_key_values=past_key_values,
+            output_hidden_states=True,
+            use_cache=True,
+            past_key_values=True,
         )
 
         return output
@@ -64,10 +59,6 @@ class TorchGPT2(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        return_dict: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        output_hidden_states: Optional[bool] = False,
-        past_key_values: Optional[List[Tensor]] = None,
         episode_mask: Optional[Tensor] = None,
         labels: Optional[Tensor] = None,
     ) -> Any:
@@ -158,11 +149,7 @@ class xFormerGPT(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        return_dict: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        output_hidden_states: Optional[bool] = False,  # Not used
-        past_key_values: Optional[List[Tensor]] = None,  # Not used
-        episode_mask: Optional[Tensor] = None,  # Not used
+        episode_mask: Optional[Tensor] = None,
         labels: Optional[Tensor] = None,
     ) -> Any:
         output = {}
@@ -213,7 +200,7 @@ class SparseFormer(xFormer):
         inputs_embeds: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
         att_mask: Optional[
-            Union[torch.Tensor, SparseCS, AttentionMask, AttentionBias]
+            torch.Tensor | SparseCS | AttentionMask | AttentionBias | None
         ] = None,
         encoder_input_mask: Optional[torch.Tensor] = None,
         decoder_input_mask: Optional[torch.Tensor] = None,

@@ -47,5 +47,5 @@ dataviz *ARGS: generate-dataset-config
 dvc *ARGS:
 	SHELL=$(which zsh) dvc {{ARGS}}
 
-clean: 
+clean:
 	rm -rf dist outputs lightning_logs wandb
