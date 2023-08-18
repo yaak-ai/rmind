@@ -32,7 +32,7 @@ class HFGPT2(pl.LightningModule):
     def forward(
         self,
         inputs_embeds: Tensor,
-        labels: Tensor | None,
+        labels: Tensor | None = None,
         **kwargs,
     ) -> Any:
         output = self.llm(
@@ -63,7 +63,7 @@ class TorchGPT2(pl.LightningModule):
         self,
         inputs_embeds: Tensor,
         episode_mask: Tensor | None,
-        labels: Tensor | None,
+        labels: Tensor | None = None,
     ) -> Any:
         output = {}
         x = self.llm(src=inputs_embeds, mask=episode_mask)
@@ -201,10 +201,10 @@ class SparseFormer(xFormer):
     def forward(
         self,
         inputs_embeds: Tensor,
-        labels: Tensor | None,
         att_mask: Tensor | SparseCS | AttentionMask | AttentionBias | None,
-        encoder_input_mask: Tensor | None,
-        decoder_input_mask: Tensor | None,
+        labels: Tensor | None = None,
+        encoder_input_mask: Tensor | None = None,
+        decoder_input_mask: Tensor | None = None,
     ) -> Tensor | None:
         # Encode to latent space if encoder is present
         memory = inputs_embeds.clone()
