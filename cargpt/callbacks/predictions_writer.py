@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import cv2
 import numpy as np
 import pytorch_lightning as pl
+import torch
 from einops import rearrange
 from jaxtyping import Float
 from pytorch_lightning.callbacks import BasePredictionWriter
@@ -29,8 +30,7 @@ class FeatureWriter(BasePredictionWriter):
             raise ValueError(
                 f"The output file {str(self.output_dir.resolve())} exists!"
             )
-        self.output_dir.parent.mkdir(parents=True, exist_ok=True)
-        self.predictions = []
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def write_on_batch_end(
         self,
@@ -42,7 +42,8 @@ class FeatureWriter(BasePredictionWriter):
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
-        features = predictions
+        obj = {"features": predictions, "meta": batch["meta"]}
+        torch.save(obj, f"{self.output_dir}/{batch_idx:06}.pt")
 
     def on_predict_end(
         self,
