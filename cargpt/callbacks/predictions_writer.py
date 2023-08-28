@@ -16,6 +16,42 @@ from cargpt.visualization.trajectory import (
 )
 
 
+class FeatureWriter(BasePredictionWriter):
+    def __init__(
+        self,
+        output_dir: Union[str, Path],
+        overwrite: bool = False,
+    ) -> None:
+        super().__init__(write_interval="batch")
+
+        self.output_dir = Path(output_dir)
+        if self.output_dir.exists() and not overwrite:
+            raise ValueError(
+                f"The output file {str(self.output_dir.resolve())} exists!"
+            )
+        self.output_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.predictions = []
+
+    def write_on_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        predictions: np.ndarray | List[np.ndarray] | Tensor,
+        batch_indices: Optional[Sequence[int]],
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int,
+    ) -> None:
+        features = predictions
+
+    def on_predict_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        pass
+
+
 class VideoWriter(BasePredictionWriter):
     def __init__(
         self,

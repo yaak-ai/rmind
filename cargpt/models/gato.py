@@ -617,6 +617,24 @@ class Gato(
 
         return loss
 
+    def features_step(self, batch, batch_idx):
+        (
+            episode,
+            episode_labels,
+            episode_labels_shift,
+            episode_values,
+            episode_mask,
+        ) = self._make_episode(batch, is_training=True)
+
+        output = self.gpt(
+            inputs_embeds=episode,
+            episode_mask=episode_mask,
+        )
+        # last layer features
+        features = output["hidden_states"][-1]
+
+        return features[:, -1]
+
     def predict_step(
         self,
         batch: Any,

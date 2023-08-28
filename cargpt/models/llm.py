@@ -153,7 +153,7 @@ class xFormerGPT(pl.LightningModule):
         self,
         inputs_embeds: Tensor,
         episode_mask: Tensor | None,
-        labels: Tensor | None,
+        labels: Tensor | None = None,
     ) -> Any:
         output = {}
         x = self.llm(inputs_embeds=inputs_embeds, labels=labels, att_mask=episode_mask)
@@ -279,5 +279,5 @@ class MLPGLU(Feedforward):
         xW, xV = x.chunk(2, dim=-1)
         geglu = self.a1(xW) * xV
         x = self.l2(self.d1(geglu))
-        x = self.d2(x)
+        # x = self.d2(x)
         return x

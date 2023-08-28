@@ -41,12 +41,12 @@ model:
   classifier:
     _target_: torch.nn.Sequential
     _args_:
-        - _target_: torch.nn.LayerNorm
+        - _target_: torch.nn.Identity
           _args_:
             - ${embedding_dim}
         - _target_: torch.nn.Linear
           in_features: ${embedding_dim}
-          out_features: ${image_encoder.total_tokens}
+          out_features: ${num_tokens_total}
           bias: False
   loss:
     _target_: torch.nn.CrossEntropyLoss
