@@ -1,0 +1,47 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - /image_encoder: resnet.yaml
+  - override /datamodule: gato.yaml
+  - _self_
+
+run_id: 0jvqpv0k
+version: v15
+output_dir: outputs/model-${run_id}-${version}/train
+wandb_artifact: yaak/cargpt/model-${run_id}:${version}
+speed_range: ${image_encoder.speed_range}
+
+trainer:
+  benchmark: false
+  callbacks:
+    - _target_: cargpt.callbacks.FeatureWriter
+      output_dir: ${output_dir}
+      overwrite: true
+
+model:
+  _target_: cargpt.utils.Features
+  _recursive_: False
+  # Let the model be optional so that we can use both gt and preds
+  inference_model:
+    _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
+    _args_: ['${wandb_artifact}']
+    strict: False
+
+datamodule:
+  predict:
+    batch_size: 128
+    dataset:
+      config:
+        data:
+          metadata:
+            filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
+        samples:
+          clips:
+            length: ${image_encoder.clip_len}
+            stride: 10
+            step: 10
+
+    collate_fn:
+      _target_: yaak_datasets.collate
+      _partial_: true
