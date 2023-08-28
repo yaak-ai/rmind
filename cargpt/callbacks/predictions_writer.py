@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+import more_itertools as mit
 
 import cv2
 import numpy as np
@@ -42,7 +43,25 @@ class FeatureWriter(BasePredictionWriter):
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
-        obj = {"features": predictions, "meta": batch["meta"]}
+        camera_name = mit.one(batch["frames"].keys())
+        meta = batch["meta"]
+        drive_ids = meta.pop("drive_id").detach()
+
+        for key in list(meta.keys()):
+            match key.split("/"):
+                case [camera_name, _key]:
+                    meta.rename_key_(key, _key)
+        drive_ids = [
+            drive_id.type(torch.uint8).cpu().numpy().tobytes().decode("ascii").strip()
+            for drive_id in drive_ids
+        ]
+        frame_idxs = meta["ImageMetadata_frame_idx"].tolist()
+
+        obj = {
+            "features": predictions.detach().cpu(),
+            "frame_idx": frame_idxs,
+            "drive_id": drive_ids,
+        }
         torch.save(obj, f"{self.output_dir}/{batch_idx:06}.pt")
 
     def on_predict_end(
