@@ -8,8 +8,8 @@ have_special_tokens:
   sep: True
   eos: False
 
-num_heads: 4
-num_layers: 8
+num_heads: 8
+num_layers: 24
 
 model:
   _target_: cargpt.models.llm.xFormerGPT
@@ -19,7 +19,7 @@ model:
     config:
       _target_: xformers.factory.model_factory.xFormerConfig
       stack_configs:
-        - reversible: False  # set True for gradient checkpointing
+        - reversible: True  # set True for gradient checkpointing
           block_type: encoder
           num_layers: ${......num_layers}
           dim_model: ${embedding_dim}
@@ -41,7 +41,7 @@ model:
   classifier:
     _target_: torch.nn.Sequential
     _args_:
-        - _target_: torch.nn.LayerNorm
+        - _target_: torch.nn.Identity
           _args_:
             - ${embedding_dim}
         - _target_: torch.nn.Linear
