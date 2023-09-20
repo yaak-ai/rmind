@@ -37,7 +37,7 @@ class FeatureWriter(BasePredictionWriter):
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
-        predictions: np.ndarray | List[np.ndarray] | Tensor,
+        predictions: Tensor,
         batch_indices: Optional[Sequence[int]],
         batch: Any,
         batch_idx: int,
