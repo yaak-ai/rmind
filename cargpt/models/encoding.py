@@ -80,8 +80,7 @@ class LearnablePositionalEmbedding1D(torch.nn.Module):
         super().__init__()
 
         self._emb = torch.nn.Embedding(
-            num_embeddings=seq_len,
-            embedding_dim=embedding_dim,
+            num_embeddings=seq_len, embedding_dim=embedding_dim,
         )
 
     @property
@@ -229,10 +228,7 @@ class dalleDVAE(torch.nn.Module):
             self.requires_grad_(False)
             self.enc.eval()
 
-    def forward(
-        self,
-        x: Float[Tensor, "b c1 h1 w1"],
-    ) -> Float[Tensor, "b c2 h2 w2"]:
+    def forward(self, x: Float[Tensor, "b c1 h1 w1"],) -> Float[Tensor, "b c2 h2 w2"]:
         logits = self.enc(x)
         probs = softmax(logits, dim=1)
 

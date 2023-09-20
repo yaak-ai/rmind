@@ -9,13 +9,7 @@ class DetokenizedL1(nn.Module):
         self.image_tokens_start = image_tokens_start
 
     def forward(
-        self,
-        logits,
-        labels,
-        labels_shift,
-        detokenizer,
-        metadata_keys,
-        action_keys,
+        self, logits, labels, labels_shift, detokenizer, metadata_keys, action_keys,
     ):
         b, t, c = logits.shape
         # flatten on batch dimension

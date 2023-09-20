@@ -52,10 +52,7 @@ class Trajectory(pl.LightningModule):
 
     def get_model_trajactories(self, batch):
         preds_last = self.model.predict_step(
-            batch,
-            batch_idx=0,
-            start_timestep=-1,
-            verbose=self.logging.log_to_terminal,
+            batch, batch_idx=0, start_timestep=-1, verbose=self.logging.log_to_terminal,
         )
 
         prediction_actions_ = []
@@ -91,9 +88,7 @@ class Trajectory(pl.LightningModule):
 
         # Ground-truth trajactories
         gt_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
-            steps=self.gt_steps,
-            time_interval=self.gt_time_interval,
-            **metadata,
+            steps=self.gt_steps, time_interval=self.gt_time_interval, **metadata,
         )
 
         gt_points_2d: Float[Tensor, "f n 2"] = rearrange(
@@ -120,9 +115,7 @@ class Trajectory(pl.LightningModule):
         ]
 
         pred_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
-            steps=self.gt_steps,
-            time_interval=self.gt_time_interval,
-            **metadata,
+            steps=self.gt_steps, time_interval=self.gt_time_interval, **metadata,
         )
 
         pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
@@ -239,12 +232,7 @@ class Trajectory(pl.LightningModule):
             phi = p.phi + (p.v * math.tan(beta) / self.wheelbase) * time_interval
             v = p.v + a * time_interval
             p_next = TrajectoryPoint(
-                x=x,
-                y=p.y,
-                z=z,
-                phi=phi,
-                v=v,
-                t=p.t + time_interval,
+                x=x, y=p.y, z=z, phi=phi, v=v, t=p.t + time_interval,
             )
             elems.append(p_next)
             last_elem = p_next
@@ -266,14 +254,7 @@ def draw_preds(
     x, y = pos
     cv2.rectangle(image, pos, (x + text_w, y + text_h), (0, 0, 0), -1)
     image = cv2.putText(
-        image,
-        text,
-        pos,
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        line_color,
-        2,
-        cv2.LINE_AA,
+        image, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.7, line_color, 2, cv2.LINE_AA,
     )
 
 
@@ -289,13 +270,7 @@ def draw_trajectory(
     points_2d = points_2d.cpu().numpy().astype(np.int32)
     close_polygon = False
     for i, (vis, points) in enumerate(zip(visualizations, points_2d)):
-        vis = cv2.polylines(
-            vis,
-            [points],
-            close_polygon,
-            line_color,
-            line_thickness,
-        )
+        vis = cv2.polylines(vis, [points], close_polygon, line_color, line_thickness,)
         for point in points:
             vis = cv2.circle(vis, point, point_radius, point_color, point_thickness)  # type: ignore
         visualizations[i] = vis

@@ -9,18 +9,13 @@ from torchvision.transforms import Normalize
 
 class Unnormalize(Normalize):
     def __init__(
-        self,
-        mean: Sequence[float],
-        std: Sequence[float],
-        **kwargs: Any,
+        self, mean: Sequence[float], std: Sequence[float], **kwargs: Any,
     ) -> None:
         _mean: Float[Tensor, "c"] = torch.tensor(mean)
         _std: Float[Tensor, "c"] = torch.tensor(std)
 
         super().__init__(
-            mean=(-_mean / _std).tolist(),
-            std=(1.0 / _std).tolist(),
-            **kwargs,
+            mean=(-_mean / _std).tolist(), std=(1.0 / _std).tolist(), **kwargs,
         )
 
 

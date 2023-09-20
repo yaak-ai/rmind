@@ -13,9 +13,7 @@ from xformers.components.attention import AttentionMask
 from xformers.components.attention._sputnik_sparse import SparseCS
 from xformers.components.feedforward import register_feedforward
 from xformers.components.feedforward.mlp import Feedforward, MlpConfig
-from xformers.factory.block_configs import (
-    xFormerBlockConfig,
-)
+from xformers.factory.block_configs import xFormerBlockConfig
 from xformers.factory.model_factory import xFormer
 from xformers.factory.weight_init import xFormerWeightInit
 from xformers.ops.fmha.attn_bias import AttentionBias
@@ -30,10 +28,7 @@ class HFGPT2(pl.LightningModule):
         self.llm = instantiate(self.hparams.llm)
 
     def forward(
-        self,
-        inputs_embeds: Tensor,
-        labels: Tensor | None = None,
-        **kwargs,
+        self, inputs_embeds: Tensor, labels: Tensor | None = None, **kwargs,
     ) -> Any:
         output = self.llm(
             inputs_embeds=inputs_embeds,
@@ -279,5 +274,4 @@ class MLPGLU(Feedforward):
         xW, xV = x.chunk(2, dim=-1)
         geglu = self.a1(xW) * xV
         x = self.l2(self.d1(geglu))
-        # x = self.d2(x)
         return x
