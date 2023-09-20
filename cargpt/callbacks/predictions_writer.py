@@ -1,8 +1,8 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-import more_itertools as mit
 
 import cv2
+import more_itertools as mit
 import numpy as np
 import pytorch_lightning as pl
 import torch
