@@ -35,6 +35,13 @@ wget https://cdn.openai.com/dall-e/encoder.pkl -P pretrained/dalle
 wget https://cdn.openai.com/dall-e/decoder.pkl -P pretrained/dalle
 ```
 
+## Installation
+```
+poetry install --with train,dev,lint
+poetry shell
+# https://github.com/facebookresearch/xformers/issues/705
+pip install triton==2.0.0.dev20221105 --no-deps
+```
 
 ## Training
 

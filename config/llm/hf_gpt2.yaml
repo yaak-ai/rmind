@@ -9,7 +9,7 @@ have_special_tokens:
   eos: False
 
 model:
-  _target_: cargpt.models.gato.HFGPT2
+  _target_: cargpt.models.llm.HFGPT2
   _recursive_: False
   llm:
     _target_: transformers.GPT2LMHeadModel

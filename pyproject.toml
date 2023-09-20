@@ -15,6 +15,7 @@ jaxtyping = "*"
 beartype = "*"
 torch = {version = "^2.0.1", source = "torch-cu118"}
 torchvision = {version = "^0.15.2", source = "torch-cu118"}
+xformers = "=0.0.20"
 more-itertools = "^9.0.0"
 torchinfo = "^1.7.2"
 torchaudio = {version = "^2.0.2", source = "torch-cu118"}
@@ -40,7 +41,7 @@ optional = true
 
 [tool.poetry.group.train.dependencies]
 omegaconf = "^2.3.0"
-yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.15.1"}
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.16.0"}
 
 [tool.poetry.group.lint]
 optional = true
@@ -100,6 +101,6 @@ select = ["I001"]
 
 [tool.deptry.per_rule_ignores]
 DEP001 = ["cv2", "fiftyone", "pytorch_grad_cam"]
-DEP002 = ["beartype", "torchaudio", "dill", "transformers"]
+DEP002 = ["beartype", "torchaudio", "dill", "transformers", "triton"]
 DEP003 = ["numpy"]
 DEP004 = ["omegaconf", "pytorch_grad_cam"]

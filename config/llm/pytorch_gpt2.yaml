@@ -9,20 +9,19 @@ have_special_tokens:
   eos: False
 
 model:
-  _target_: cargpt.models.gato.TorchGPT2
+  _target_: cargpt.models.llm.TorchGPT2
   _recursive_: False
   llm:
     _target_: torch.nn.TransformerEncoder
     num_layers: 8
     encoder_layer:
-      _target_: torch.nn.TransformerEncoderLayer
+      _target_: cargpt.models.llm.TransformerEncoderLayerGEGLU
       d_model: ${embedding_dim}
       dim_feedforward: 512
       nhead: 4
       dropout: 0.1
       batch_first: True
       norm_first: True
-      activation: gelu
   classifier:
     _target_: torch.nn.Linear
     in_features: ${embedding_dim}
