@@ -500,7 +500,7 @@ class Gato(
             for ts_col in range(0, ts_row + 1):
                 col = seqlen * ts_col + n_i
                 episode_mask[
-                    row: row + num_self_censor, col: col + num_self_censor
+                    row : row + num_self_censor, col : col + num_self_censor
                 ] = float("-inf")
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
@@ -521,7 +521,7 @@ class Gato(
         # Self masking
         for ts_col in range(0, clip_len):
             col = seqlen * ts_col + n_i
-            episode_mask[:, col: col + num_self_censor] = float("-inf")
+            episode_mask[:, col : col + num_self_censor] = float("-inf")
             for ts_row in range(ts_col, clip_len):
                 row = seqlen * ts_row + n_i - 1
                 for i in range(num_self_censor):
@@ -619,23 +619,23 @@ class Gato(
 
     def features_step(self, batch, batch_idx):
         (
-                episode,
-                episode_labels,
-                episode_labels_shift,
-                episode_values,
-                episode_mask,
-            ) = self._make_episode(batch, is_training=True)
+            episode,
+            episode_labels,
+            episode_labels_shift,
+            episode_values,
+            episode_mask,
+        ) = self._make_episode(batch, is_training=True)
 
         output = self.gpt(
-                inputs_embeds=episode,
-                episode_mask=episode_mask,
-            )
+            inputs_embeds=episode,
+            episode_mask=episode_mask,
+        )
         # last layer features
         features = output["hidden_states"][-1]
 
         key_len = len(self.metadata_keys) + 1 + len(self.action_keys)
 
-        return features[:, -(key_len + 1): -1]
+        return features[:, -(key_len + 1) : -1]
 
     def predict_step(
         self,

@@ -28,7 +28,10 @@ class HFGPT2(pl.LightningModule):
         self.llm = instantiate(self.hparams.llm)
 
     def forward(
-        self, inputs_embeds: Tensor, labels: Tensor | None = None, **kwargs,
+        self,
+        inputs_embeds: Tensor,
+        labels: Tensor | None = None,
+        **kwargs,
     ) -> Any:
         output = self.llm(
             inputs_embeds=inputs_embeds,

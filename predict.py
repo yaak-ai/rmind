@@ -24,7 +24,9 @@ def predict(cfg: DictConfig):
 
     logger.debug("starting prediction")
     trainer.predict(
-        model=model, datamodule=datamodule, return_predictions=False,
+        model=model,
+        datamodule=datamodule,
+        return_predictions=False,
     )
 
 

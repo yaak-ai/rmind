@@ -65,7 +65,10 @@ class CILppWrapper(pl.LightningModule):
         turn_signal = turn_signal[..., 0, 0, 0].to(torch.int64)
 
         pred = self.cilpp(
-            frames=frames, speed=speed, turn_signal=turn_signal, camera=self._camera,
+            frames=frames,
+            speed=speed,
+            turn_signal=turn_signal,
+            camera=self._camera,
         )
         pred = rearrange(pred, "b 1 c -> b c")
         return pred

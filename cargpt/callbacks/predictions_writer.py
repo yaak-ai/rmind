@@ -17,6 +17,7 @@ from cargpt.visualization.trajectory import (
     smooth_predictions,
 )
 
+
 class FeatureWriter(BasePredictionWriter):
     def __init__(
         self,
@@ -69,6 +70,7 @@ class FeatureWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
     ) -> None:
         pass
+
 
 class VideoWriter(BasePredictionWriter):
     def __init__(
