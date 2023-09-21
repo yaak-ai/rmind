@@ -1,15 +1,15 @@
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Union
 
 import pytorch_lightning as pl
 import torch
-import xformers
 from hydra.utils import instantiate
 from pytorch_lightning.utilities.parsing import AttributeDict
+from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor, nn
 from torch.nn import Linear
 from torch.nn.functional import gelu
 from xformers.components import Activation, build_activation
-from xformers.components.attention import AttentionMask
+from xformers.components.attention import AttentionMask, attention_patterns
 from xformers.components.attention._sputnik_sparse import SparseCS
 from xformers.components.feedforward import register_feedforward
 from xformers.components.feedforward.mlp import Feedforward, MlpConfig
@@ -145,7 +145,15 @@ class xFormerGPT(pl.LightningModule):
         self.classifier = instantiate(self.hparams.classifier)
         self.loss = instantiate(self.hparams.loss)
         # TODO: Not used as of now attention mask should be an input param independent of model
-        self.mask = instantiate(self.hparams.mask.attn_config)  # type: ignore[union-attr]
+        attn_config = instantiate(self.hparams.mask.attn_config)  # type: ignore[union-attr]
+        layout = attn_config.make_layout(self.hparams.seq_len)
+        mask = attention_patterns.layout_to_pattern(
+            layout, block_size=self.hparams.block_size
+        )
+        self.mask = torch.tril(mask).to(f"cuda:{rank_zero_only.rank}") == 1
+        # import torchvision
+        #
+        # torchvision.utils.save_image(self.mask.float(), "mask.png")
 
     def forward(
         self,
@@ -154,7 +162,7 @@ class xFormerGPT(pl.LightningModule):
         labels: Tensor | None = None,
     ) -> Any:
         output = {}
-        x = self.llm(inputs_embeds=inputs_embeds, labels=labels, att_mask=episode_mask)
+        x = self.llm(inputs_embeds=inputs_embeds, labels=labels, att_mask=self.mask)
         logits = self.classifier(x)
 
         output["logits"] = logits

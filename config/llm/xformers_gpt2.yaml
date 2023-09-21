@@ -8,8 +8,8 @@ have_special_tokens:
   sep: True
   eos: False
 
-num_heads: 8
-num_layers: 24
+num_heads: 4
+num_layers: 8
 
 model:
   _target_: cargpt.models.llm.xFormerGPT
@@ -52,7 +52,13 @@ model:
     _target_: torch.nn.CrossEntropyLoss
     ignore_index: -100
     reduction: mean
+  block_size: 1
+  num_local_blocks: 18
+  seq_len: ${image_encoder.seq_len}
   mask:
     attn_config:
-      _target_: xformers.components.attention.attention_mask.AttentionMask.make_causal
-      seq_len: ${image_encoder.seq_len}
+      _target_: xformers.components.attention.sparsity_config.FixedSparsityConfig
+      num_heads: ${....num_heads}
+      block_size: ${...block_size}
+      num_local_blocks: ${...num_local_blocks}
+      attention: unidirectional

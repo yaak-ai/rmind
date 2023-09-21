@@ -4,11 +4,13 @@ patch_row_tokens: 32
 patch_col_tokens: 60
 local_position_tokens: 2000
 max_seq_len: 12000 # (${patch_row_tokens} * ${patch_col_tokens} + ${actions}) * ${clip_len}
+seq_len: 11556
 total_tokens: 12294
 tokens_shift: 4102
 tokens_mask: 1
 ignore_image_tokens: False
 speed_range: [10.0, 130.0]
+frame_mask: [1, 1, 1, 1]
 backbone:
   _target_: cargpt.models.encoding.dalleDVAE
   enc_weights: ${dalle_encoder_weights}

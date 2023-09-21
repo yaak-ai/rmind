@@ -155,6 +155,7 @@ trainer:
   benchmark: true
   max_steps: 100000
   log_every_n_steps: 1
+  precision: 16
 
   logger:
     _target_: pytorch_lightning.loggers.WandbLogger
@@ -179,7 +180,7 @@ datamodule:
             length: ${image_encoder.clip_len}
             stride: 10
             step: 10
-            frame_mask: [1, 1, 1, 1, 1, 1]
+            frame_mask: ${image_encoder.frame_mask}
 
   val:
     batch_size: ${image_encoder.batch_size}
@@ -193,4 +194,4 @@ datamodule:
             length: ${image_encoder.clip_len}
             stride: 10
             step: 10
-            frame_mask: [1, 1, 1, 1, 1, 1]
+            frame_mask: ${image_encoder.frame_mask}
