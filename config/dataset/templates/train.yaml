@@ -688,7 +688,7 @@
 _target_: yaak_datasets.Dataset
 _recursive_: false
 config:
-  version: 0.13.1
+  version: 0.16.0
   data:
     drives:
       #@ for drive in drives:
@@ -698,8 +698,7 @@ config:
           - camera: #@ camera
             reader:
               _target_: yaak_datasets.FrameImageVideoReader
-              path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324
-              filename_format: '{:09d}.jpg'
+              path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg
           #@ end
         metadata:
           path: ${paths.data_dir}/${..id}/metadata.log

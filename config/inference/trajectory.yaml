@@ -5,8 +5,8 @@ defaults:
   - /image_encoder: dall_e.yaml
   - _self_
 
-run_id: fk3icppo
-version: v10
+run_id: 0jvqpv0k
+version: v15
 output_file: video-${run_id}-${version}.mp4
 wandb_artifact: yaak/cargpt/model-${run_id}:${version}
 clip_len: 6
@@ -61,7 +61,7 @@ datamodule:
       _target_: yaak_datasets.Dataset
       _recursive_: false
       config:
-        version: 0.13.1
+        version: 0.16.0
         data:
           drives:
           - id: 2022-10-20--13-03-22
@@ -69,8 +69,7 @@ datamodule:
             - camera: cam_front_left  # TODO: probably wanna front center, but extrinsics should also be fine
               reader:
                 _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4
-                filename_format: '{:09d}.jpg'
+                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4/{:09d}.jpg
             metadata:
               path: ${paths.data_dir}/frames/${..id}/metadata.log
               filter: (ImageMetadata_frame_idx between 24900 and 25310)

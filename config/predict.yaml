@@ -2,6 +2,7 @@
 
 defaults:
   - inference: null
+  - datamodule: null
   - _self_
 
 trainer:
