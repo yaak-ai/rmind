@@ -18,6 +18,8 @@ from xformers.factory.model_factory import xFormer
 from xformers.factory.weight_init import xFormerWeightInit
 from xformers.ops.fmha.attn_bias import AttentionBias
 
+torch.set_float32_matmul_precision('high')
+
 
 class HFGPT2(pl.LightningModule):
     hparams: AttributeDict
