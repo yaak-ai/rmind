@@ -101,15 +101,12 @@ model:
     weights:
       categorical: 1.0
       l1: 0
-      image: ${image_encoder.loss.weights.ImageEncoder}
-      ignore_image_tokens: ${image_encoder.ignore_image_tokens}
     l1:
       _target_: torch.nn.L1Loss
       reduction: none
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
-  ignore_image_tokens: ${image_encoder.ignore_image_tokens}
   special_tokens:
     bos: 0
     sep: 1
@@ -179,7 +176,7 @@ datamodule:
             length: ${image_encoder.clip_len}
             stride: 10
             step: 10
-            frame_mask: [1, 1, 1, 1, 1, 1]
+            frame_mask: ${image_encoder.frame_mask}
 
   val:
     batch_size: ${image_encoder.batch_size}
@@ -193,4 +190,4 @@ datamodule:
             length: ${image_encoder.clip_len}
             stride: 10
             step: 10
-            frame_mask: [1, 1, 1, 1, 1, 1]
+            frame_mask: ${image_encoder.frame_mask}

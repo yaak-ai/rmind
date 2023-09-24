@@ -5,8 +5,8 @@ defaults:
   - /image_encoder: dall_e.yaml
   - _self_
 
-run_id: 0jvqpv0k
-version: v15
+run_id: wfzb5qvy
+version: v17
 output_file: video-${run_id}-${version}.mp4
 wandb_artifact: yaak/cargpt/model-${run_id}:${version}
 clip_len: 6
@@ -43,7 +43,7 @@ model:
     max_beta: 35.75  # [deg]  # TODO: find the real middle beta
 
   logging:
-    log_to_terminal: False
+    log_to_terminal: True
     smooth_predictions: False
     smooth_kernel_size: 7
 
@@ -69,9 +69,9 @@ datamodule:
             - camera: cam_front_left  # TODO: probably wanna front center, but extrinsics should also be fine
               reader:
                 _target_: yaak_datasets.FrameImageVideoReader
-                path: ${paths.data_dir}/frames/${....id}/${..camera}.defish.mp4/{:09d}.jpg
+                path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg
             metadata:
-              path: ${paths.data_dir}/frames/${..id}/metadata.log
+              path: ${paths.data_dir}/${..id}/metadata.log
               filter: (ImageMetadata_frame_idx between 24900 and 25310)
 
               # filter: (ImageMetadata_frame_idx between 5610 and 5930) or
@@ -113,9 +113,6 @@ datamodule:
             step: 1
 
           transforms:
-            - _target_: yaak_datasets.transforms.Scale
-              factor: 0.3
-
             - _target_: yaak_datasets.transforms.Crop
               offsets: [2, 2, 0, 0]
 
