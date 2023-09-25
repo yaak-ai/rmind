@@ -8,8 +8,8 @@ seq_len: 1116
 total_tokens: 4102
 tokens_shift: 0
 tokens_mask: -100
-ignore_image_tokens: True
 speed_range: [0.0, 130.0]
+frame_mask: [1, 1, 1, 1, 1, 1]
 backbone:
   _target_: cargpt.models.encoding.ResnetBackbone
   resnet:
@@ -19,10 +19,6 @@ backbone:
 tokenizer:
   _target_: cargpt.models.encoding.ResNetTokens
   tokens_mask: ${..tokens_mask} # should match ignore_index in cross_entropy loss
-
-loss:
-  weights:
-    ImageEncoder: 0
 
 mean: [0.485, 0.456, 0.406]
 std: [0.229, 0.224, 0.225]

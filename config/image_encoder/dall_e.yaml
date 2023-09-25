@@ -3,22 +3,19 @@ clip_len: 4
 patch_row_tokens: 32
 patch_col_tokens: 60
 local_position_tokens: 2000
-max_seq_len: 12000 # (${patch_row_tokens} * ${patch_col_tokens} + ${actions}) * ${clip_len}
+max_seq_len: 12000
+seq_len: 7704 # (${patch_row_tokens} * ${patch_col_tokens} + ${actions}) * ${clip_len}
 total_tokens: 12294
 tokens_shift: 4102
 tokens_mask: 1
-ignore_image_tokens: False
 speed_range: [10.0, 130.0]
+frame_mask: [1, 1, 1, 1]
 backbone:
   _target_: cargpt.models.encoding.dalleDVAE
   enc_weights: ${dalle_encoder_weights}
   freeze: True
 tokenizer:
   _target_: cargpt.models.encoding.DVAETokens
-
-loss:
-  weights:
-    ImageEncoder: 0.8
 
 mean: [-0.125, -0.125, -0.125]
 std: [1.25, 1.25, 1.25]
