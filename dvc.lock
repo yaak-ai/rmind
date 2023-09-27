@@ -50565,3 +50565,167 @@ stages:
       md5: 1669282622e26a98a44945c42c7ea42c.dir
       size: 684552462
       nfiles: 46274
+  sync_metadata@Niro104-HQ/2023-04-18--17-42-03:
+    cmd: aws s3 sync s3://yapi/Niro104-HQ/2023-04-18--17-42-03 /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03  --exclude
+      "*"  --include "*/metadata.log" && cat /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/*/metadata.log
+      > /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/metadata.log
+    deps:
+    - path: s3://yapi/Niro104-HQ/2023-04-18--17-42-03
+      md5: 3834c6ea35d90a621ee50ef1c7569bd1.dir
+      size: 150359668074
+      nfiles: 3761
+    outs:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/metadata.log
+      md5: 07b0e59f8e11ca93d5e023ed616014af
+      size: 93317292
+  sync_video@cam_front_left@Niro104-HQ/2023-04-18--17-42-03:
+    cmd: aws s3 cp s3://yapi/Niro104-HQ/2023-04-18--17-42-03/cam_front_left.defish.mp4
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/cam_front_left.defish.mp4
+    deps:
+    - path: s3://yapi/Niro104-HQ/2023-04-18--17-42-03/cam_front_left.defish.mp4
+      etag: 223f28789a57bcfc89fbdf083884de4f-666
+      size: 5578958648
+    outs:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/cam_front_left.defish.mp4
+      md5: c826f4ecf6b9ffe4a600762a0ff41eed
+      size: 5578958648
+  extract_frames@cam_front_left@Niro104-HQ/2023-04-18--17-42-03:
+    cmd: mkdir -p 
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/frames/cam_front_left.defish.mp4/576x324
+      && ffmpeg -y -vsync 0 -threads 0 -hide_banner -loglevel error -hwaccel cuda
+      -hwaccel_output_format cuda -c:v hevc_cuvid -hwaccel_device 0 -i /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/cam_front_left.defish.mp4
+      -filter_complex "scale_npp=576:324,hwdownload,format=nv12" -f image2 -q:v 16
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/frames/cam_front_left.defish.mp4/576x324/%09d.jpg
+    deps:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/cam_front_left.defish.mp4
+      md5: c826f4ecf6b9ffe4a600762a0ff41eed
+      size: 5578958648
+    outs:
+    - path: 
+        /nas/drives/yaak/data/Niro104-HQ/2023-04-18--17-42-03/frames/cam_front_left.defish.mp4/576x324/
+      md5: e64bbb84ac0ffd6cf71c1582850172ed.dir
+      size: 865471686
+      nfiles: 139428
+  sync_video@cam_front_left@Niro104-HQ/2023-04-27--08-23-53:
+    cmd: aws s3 cp s3://yapi/Niro104-HQ/2023-04-27--08-23-53/cam_front_left.defish.mp4
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/cam_front_left.defish.mp4
+    deps:
+    - path: s3://yapi/Niro104-HQ/2023-04-27--08-23-53/cam_front_left.defish.mp4
+      etag: 9ff7838121930a64c10d9680d100b763-280
+      size: 2345983335
+    outs:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/cam_front_left.defish.mp4
+      md5: 8fe6b32aae1869b3d65082cd918261f0
+      size: 2345983335
+  extract_frames@cam_front_left@Niro104-HQ/2023-04-27--08-23-53:
+    cmd: mkdir -p 
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/frames/cam_front_left.defish.mp4/576x324
+      && ffmpeg -y -vsync 0 -threads 0 -hide_banner -loglevel error -hwaccel cuda
+      -hwaccel_output_format cuda -c:v hevc_cuvid -hwaccel_device 0 -i /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/cam_front_left.defish.mp4
+      -filter_complex "scale_npp=576:324,hwdownload,format=nv12" -f image2 -q:v 16
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/frames/cam_front_left.defish.mp4/576x324/%09d.jpg
+    deps:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/cam_front_left.defish.mp4
+      md5: 8fe6b32aae1869b3d65082cd918261f0
+      size: 2345983335
+    outs:
+    - path: 
+        /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/frames/cam_front_left.defish.mp4/576x324/
+      md5: 9453064bc689acfb7fe690c748efbcd7.dir
+      size: 760455605
+      nfiles: 58624
+  sync_metadata@Niro104-HQ/2023-04-27--08-23-53:
+    cmd: aws s3 sync s3://yapi/Niro104-HQ/2023-04-27--08-23-53 /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53  --exclude
+      "*"  --include "*/metadata.log" && cat /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/*/metadata.log
+      > /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/metadata.log
+    deps:
+    - path: s3://yapi/Niro104-HQ/2023-04-27--08-23-53
+      md5: 75bf800bd254409b2e16041a882956fb.dir
+      size: 63479247298
+      nfiles: 1597
+    outs:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-27--08-23-53/metadata.log
+      md5: 2700288c38bbf53da8e1ef716810b609
+      size: 39131742
+  sync_video@cam_front_left@Niro104-HQ/2023-04-06--06-52-49:
+    cmd: aws s3 cp s3://yapi/Niro104-HQ/2023-04-06--06-52-49/cam_front_left.defish.mp4
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/cam_front_left.defish.mp4
+    deps:
+    - path: s3://yapi/Niro104-HQ/2023-04-06--06-52-49/cam_front_left.defish.mp4
+      etag: 88e0417be6edd64a25f1bda5c648c303-846
+      size: 7093320312
+    outs:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/cam_front_left.defish.mp4
+      md5: f51273cc0ede81d62310ad6a31711da6
+      size: 7093320312
+  extract_frames@cam_front_left@Niro104-HQ/2023-04-06--06-52-49:
+    cmd: mkdir -p 
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/frames/cam_front_left.defish.mp4/576x324
+      && ffmpeg -y -vsync 0 -threads 0 -hide_banner -loglevel error -hwaccel cuda
+      -hwaccel_output_format cuda -c:v hevc_cuvid -hwaccel_device 0 -i /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/cam_front_left.defish.mp4
+      -filter_complex "scale_npp=576:324,hwdownload,format=nv12" -f image2 -q:v 16
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/frames/cam_front_left.defish.mp4/576x324/%09d.jpg
+    deps:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/cam_front_left.defish.mp4
+      md5: f51273cc0ede81d62310ad6a31711da6
+      size: 7093320312
+    outs:
+    - path: 
+        /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/frames/cam_front_left.defish.mp4/576x324/
+      md5: 64de0823b24cb312b3790702f38df731.dir
+      size: 2181749373
+      nfiles: 177267
+  sync_video@cam_front_left@Niro104-HQ/2023-04-24--14-43-09:
+    cmd: aws s3 cp s3://yapi/Niro104-HQ/2023-04-24--14-43-09/cam_front_left.defish.mp4
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/cam_front_left.defish.mp4
+    deps:
+    - path: s3://yapi/Niro104-HQ/2023-04-24--14-43-09/cam_front_left.defish.mp4
+      etag: 2691331ef1cb2f57255da5ec4b668400-658
+      size: 5513877697
+    outs:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/cam_front_left.defish.mp4
+      md5: 702a06249fa18b25cbec0ff4bdb4a333
+      size: 5513877697
+  sync_metadata@Niro104-HQ/2023-04-24--14-43-09:
+    cmd: aws s3 sync s3://yapi/Niro104-HQ/2023-04-24--14-43-09 /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09  --exclude
+      "*"  --include "*/metadata.log" && cat /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/*/metadata.log
+      > /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/metadata.log
+    deps:
+    - path: s3://yapi/Niro104-HQ/2023-04-24--14-43-09
+      md5: 04f70ce5db64c3227a701e702a1d3e9b.dir
+      size: 148981473083
+      nfiles: 3716
+    outs:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/metadata.log
+      md5: e875c436e265efea0087f1e36e8f62e5
+      size: 91853844
+  extract_frames@cam_front_left@Niro104-HQ/2023-04-24--14-43-09:
+    cmd: mkdir -p 
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/frames/cam_front_left.defish.mp4/576x324
+      && ffmpeg -y -vsync 0 -threads 0 -hide_banner -loglevel error -hwaccel cuda
+      -hwaccel_output_format cuda -c:v hevc_cuvid -hwaccel_device 0 -i /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/cam_front_left.defish.mp4
+      -filter_complex "scale_npp=576:324,hwdownload,format=nv12" -f image2 -q:v 16
+      /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/frames/cam_front_left.defish.mp4/576x324/%09d.jpg
+    deps:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/cam_front_left.defish.mp4
+      md5: 702a06249fa18b25cbec0ff4bdb4a333
+      size: 5513877697
+    outs:
+    - path: 
+        /nas/drives/yaak/data/Niro104-HQ/2023-04-24--14-43-09/frames/cam_front_left.defish.mp4/576x324/
+      md5: 1afad3bdfdbe132b51abaaa27511b9de.dir
+      size: 1587511503
+      nfiles: 137800
+  sync_metadata@Niro104-HQ/2023-04-06--06-52-49:
+    cmd: aws s3 sync s3://yapi/Niro104-HQ/2023-04-06--06-52-49 /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49  --exclude
+      "*"  --include "*/metadata.log" && cat /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/*/metadata.log
+      > /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/metadata.log
+    deps:
+    - path: s3://yapi/Niro104-HQ/2023-04-06--06-52-49
+      md5: 6de8705e6be1236600ccd5a629fefbca.dir
+      size: 191330272318
+      nfiles: 4777
+    outs:
+    - path: /nas/drives/yaak/data/Niro104-HQ/2023-04-06--06-52-49/metadata.log
+      md5: d8bc9496fc8345d91d929d6690581452
+      size: 119528012
