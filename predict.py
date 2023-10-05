@@ -12,6 +12,7 @@ from cargpt.utils.logging import setup_logging
 
 OmegaConf.register_new_resolver("eval", eval)
 
+
 @hydra.main(version_base=None, config_path="config", config_name="predict.yaml")
 def predict(cfg: DictConfig):
     logger.debug("instantiating model", target=cfg.model._target_)

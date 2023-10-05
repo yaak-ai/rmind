@@ -12,6 +12,7 @@ from cargpt.utils.logging import setup_logging
 
 OmegaConf.register_new_resolver("eval", eval)
 
+
 @hydra.main(version_base=None, config_path="config", config_name="dataviz.yaml")
 def dataviz(cfg: DictConfig):
     exporter = instantiate(cfg.exporter)
