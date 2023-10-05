@@ -24,13 +24,15 @@ action_keys:
   - "VehicleMotion_brake_pedal_normalized"
   - "VehicleMotion_steering_angle_normalized"
 tokens_shift: # Shifting continous and discrete tokens since embeddings are shared
-  VehicleMotion_speed: 3
-  VehicleMotion_gas_pedal_normalized: 1027
-  VehicleMotion_brake_pedal_normalized: 2501
-  VehicleMotion_steering_angle_normalized: 3075
-  VehicleState_turn_signal: 4099
+  VehicleMotion_speed: ${num_special_tokens}
+  VehicleMotion_gas_pedal_normalized: "${eval:'${num_special_tokens} + 1 * ${num_continous_tokens}'}"
+  VehicleMotion_brake_pedal_normalized: "${eval:'${num_special_tokens} + 2 * ${num_continous_tokens}'}"
+  VehicleMotion_steering_angle_normalized: "${eval:'${num_special_tokens} + 3 * ${num_continous_tokens}'}"
+  VehicleState_turn_signal: "${eval:'${num_special_tokens} + 4 * ${num_continous_tokens}'}"
   ImageEncoder: ${image_encoder.tokens_shift}
 
+num_heads: 8
+num_layers: 24
 embedding_dim: 512
 dalle_encoder_weights: pretrained/dalle/encoder.pkl
 

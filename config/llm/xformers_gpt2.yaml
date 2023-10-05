@@ -8,9 +8,6 @@ have_special_tokens:
   sep: True
   eos: False
 
-num_heads: 8
-num_layers: 24
-
 model:
   _target_: cargpt.models.llm.xFormerGPT
   _recursive_: False
@@ -21,12 +18,12 @@ model:
       stack_configs:
         - reversible: True  # set True for gradient checkpointing
           block_type: encoder
-          num_layers: ${......num_layers}
+          num_layers: ${num_layers}
           dim_model: ${embedding_dim}
           residual_norm_style: pre
           multi_head_config:
             dim_model: ${embedding_dim}
-            num_heads: ${.......num_heads}
+            num_heads: ${num_heads}
             residual_dropout: 0.1
             attention:
               name: scaled_dot_product

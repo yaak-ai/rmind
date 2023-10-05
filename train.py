@@ -15,6 +15,8 @@ from pytorch_lightning.utilities import rank_zero_only
 
 from cargpt.utils.logging import setup_logging
 
+OmegaConf.register_new_resolver("eval", eval)
+
 
 def _train(cfg: DictConfig):
     pl.seed_everything(cfg.seed, workers=True)

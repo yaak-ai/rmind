@@ -18,7 +18,7 @@ model:
         vocab_size: ${image_encoder.total_tokens}
         n_positions: ${image_encoder.max_seq_len}
         n_embd: ${embedding_dim}
-        n_layer: 8
-        n_head: 4
+        n_layer: ${num_layers}
+        n_head: ${num_heads}
         n_inner: 512
         activation_function: gelu
