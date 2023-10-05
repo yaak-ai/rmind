@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
+from deephouse.tools.camera import Camera
 from einops import rearrange, repeat
 from hydra.utils import instantiate
 from jaxtyping import Float, Int
@@ -36,9 +37,9 @@ class Gato(
         # for image embeddings
         logger.debug(
             "Instantiating image encoder",
-            target=self.hparams.image_embedding._target_,  # type: ignore[union-attr]
+            target=self.hparams.image_encoder._target_,  # type: ignore[union-attr]
         )
-        self.image_embedding = instantiate(self.hparams.image_embedding)  # type: ignore[union-attr]
+        self.image_encoder = instantiate(self.hparams.image_encoder)  # type: ignore[union-attr]
         logger.debug(
             "Instantiating image tokens",
             target=self.hparams.image_tokens._target_,  # type: ignore[union-attr]
@@ -139,16 +140,23 @@ class Gato(
             )
             self.action_position = instantiate(self.hparams.position_encoding.action)  # type: ignore[union-attr]
 
-    def _image_embeddings_and_tokens(self, frames):
-        B, T, C, H, W = frames.shape
-        frames = frames.view(B * T, C, H, W)
-        image_features = self.image_embedding(frames)
+    def _image_embeddings_and_tokens(self, frames, camera: Camera | None = None):
+        _image_features = {}
+        for name, encoder in self.image_encoder.items():
+            kwargs = {"camera": camera} if name == "depth" else {}
+            _image_features[name] = encoder(frames, **kwargs)
+
+        image_features = sum(_image_features.values())
+        image_features = rearrange(image_features, "... c h w -> (...) c h w")
+
         image_features, image_tokens = self.image_tokens(
             image_features,
             self.hparams.tokens_shift["ImageEncoder"],  # type: ignore
             self.sensor_embedding,
         )
         tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+
+        B, T, *_ = frames.shape
         _, D, H, W = image_features.shape
         image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
 
@@ -351,16 +359,21 @@ class Gato(
         return episode, tokens, shift, values
 
     def _make_episode(self, batch: Any, is_training: bool = False):
-        frames = mit.only(batch["frames"].values())
+        camera_name, frames = mit.one(batch["frames"].items())
         metadata = [(k, batch["meta"][k]) for k in self.metadata_keys]
         actions = [(k, batch["meta"][k]) for k in self.action_keys]
+        camera = (
+            Camera.from_params(params[camera_name])
+            if (params := batch.get("camera_params")) is not None
+            else None
+        )
         # tokenization + embeddings
         (
             image_embeddings,
             image_tokens,
             image_tokens_shift,
             image_values,
-        ) = self._image_embeddings_and_tokens(frames)
+        ) = self._image_embeddings_and_tokens(frames, camera=camera)
         (
             metadata_embeddings,
             metadata_tokens,

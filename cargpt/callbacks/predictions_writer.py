@@ -49,8 +49,9 @@ class FeatureWriter(BasePredictionWriter):
 
         for key in list(meta.keys()):
             match key.split("/"):
-                case [camera_name, _key]:
+                case [_name, _key] if _name == camera_name:
                     meta.rename_key_(key, _key)
+
         drive_ids = [
             drive_id.type(torch.uint8).cpu().numpy().tobytes().decode("ascii").strip()
             for drive_id in drive_ids
