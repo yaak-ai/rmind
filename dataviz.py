@@ -6,7 +6,7 @@ import fiftyone as fo
 import hydra
 from hydra.utils import instantiate
 from loguru import logger
-from omegaconf import OmegaConf, DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from cargpt.utils.logging import setup_logging
 
