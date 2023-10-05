@@ -13,12 +13,12 @@ model:
   _recursive_: False
   llm:
     _target_: torch.nn.TransformerEncoder
-    num_layers: 8
+    num_layers: ${num_layers}
     encoder_layer:
       _target_: cargpt.models.llm.TransformerEncoderLayerGEGLU
       d_model: ${embedding_dim}
       dim_feedforward: 512
-      nhead: 4
+      nhead: ${num_heads}
       dropout: 0.1
       batch_first: True
       norm_first: True

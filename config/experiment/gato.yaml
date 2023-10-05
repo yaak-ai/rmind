@@ -31,6 +31,8 @@ tokens_shift: # Shifting continous and discrete tokens since embeddings are shar
   VehicleState_turn_signal: "${eval:'${num_special_tokens} + 4 * ${num_continous_tokens}'}"
   ImageEncoder: ${image_encoder.tokens_shift}
 
+num_heads: 8
+num_layers: 24
 embedding_dim: 512
 dalle_encoder_weights: pretrained/dalle/encoder.pkl
 
