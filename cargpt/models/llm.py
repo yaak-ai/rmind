@@ -1,8 +1,7 @@
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Union
 
 import pytorch_lightning as pl
 import torch
-import xformers
 from hydra.utils import instantiate
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor, nn

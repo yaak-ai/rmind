@@ -9,16 +9,20 @@ defaults:
   - override /datamodule: gato.yaml
   - _self_
 
+
 wandb:
   group: Gato-Image-speed-to-control
   dir: ./wandb-runs
+
+batch_size: 16
+clip_len: 6
+speed_range: [0.0, 130.0]
 
 num_special_tokens: 3  # for special tokens SOS, SEP, OES
 num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
 num_tokens_total: ${image_encoder.total_tokens} # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens} + ${image_encoder.tokens}
 metadata_keys: ["VehicleMotion_speed", "VehicleState_turn_signal"]
-speed_range: ${image_encoder.speed_range}
 action_keys:
   - "VehicleMotion_gas_pedal_normalized"
   - "VehicleMotion_brake_pedal_normalized"
@@ -45,7 +49,7 @@ model:
     lr: 1e-4
     weight_decay: 0
 
-  image_embedding: ${image_encoder.backbone}
+  image_encoder: ${image_encoder.encoder}
   image_tokens: ${image_encoder.tokenizer}
   sensor_embedding: ${sensor_encoder.sensor_embedding}
   sensor_tokenizers: ${sensor_encoder.sensor_tokenizers}
@@ -71,7 +75,7 @@ model:
       embedding_dim: ${embedding_dim}
     global_pos:
       _target_: torch.nn.Embedding
-      num_embeddings: ${image_encoder.clip_len}
+      num_embeddings: ${clip_len}
       embedding_dim: ${embedding_dim}
     action:
       _target_: torch.nn.Embedding
@@ -85,7 +89,7 @@ model:
       - ${image_encoder.patch_col_tokens}
       - ${metadata_keys}
       - ${action_keys}
-      - ${image_encoder.clip_len}
+      - ${clip_len}
     _partial_: True
 
   gpt: ${llm.model}
@@ -167,7 +171,7 @@ trainer:
 
 datamodule:
   train:
-    batch_size: ${image_encoder.batch_size}
+    batch_size: ${batch_size}
     dataset:
       config:
         data:
@@ -175,13 +179,12 @@ datamodule:
             filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
         samples:
           clips:
-            length: ${image_encoder.clip_len}
+            length: ${clip_len}
             stride: 10
             step: 10
-            frame_mask: ${image_encoder.frame_mask}
 
   val:
-    batch_size: ${image_encoder.batch_size}
+    batch_size: ${batch_size}
     dataset:
       config:
         data:
@@ -189,7 +192,6 @@ datamodule:
             filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
         samples:
           clips:
-            length: ${image_encoder.clip_len}
+            length: ${clip_len}
             stride: 10
             step: 10
-            frame_mask: ${image_encoder.frame_mask}

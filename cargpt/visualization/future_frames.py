@@ -132,7 +132,7 @@ class Frames(pl.LightningModule):
                     ]
                 )
 
-                for idx, metadata_key in enumerate(self.model.metadata_keys):
+                for idx, _metadata_key in enumerate(self.model.metadata_keys):
                     # add local time step if metadata
                     embedding = self.model.sensor_embedding(last_token)
                     metadata_action_tokens.append(last_token)
@@ -160,7 +160,7 @@ class Frames(pl.LightningModule):
                     last_token = torch.argmax(F.softmax(logits[:, [-1]], dim=2), dim=2)
 
                 # Here last token is SEP
-                for idx, action_key in enumerate(["sep"] + self.model.action_keys):
+                for action_key in ["sep"] + self.model.action_keys:
                     # add action position if action
                     embedding = self.model.sensor_embedding(last_token)
                     metadata_action_tokens.append(last_token)
