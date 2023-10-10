@@ -6,28 +6,32 @@ defaults:
   - _self_
 
 wandb:
+  project: cargpt
   group: Gato-benchmarks
   dir: ./wandb-runs
 
-run_id: ypbk82xo
-version: v9
-video_file: video-${run_id}-${version}.mp4
-predictions_file: predictions-${run_id}-${version}.json
+run_id: wfzb5qvy
+version: v17
+output_file: score-${run_id}-${version}.json
+overwrite: True
 wandb_artifact: yaak/cargpt/model-${run_id}:${version}
+incidents_file: /nas/drives/yaak/incidents/student.json
 clip_len: 6
 
 trainer:
-  benchmark: false
+  benchmark: true
   callbacks:
-    - _target_: cargpt.callbacks.VideoWriter
-      video_file: ${video_file}
-      predictions_file: ${predictions_file}
-      overwrite: true
-      fourcc: mp4v
-      fps: 30
+    - _target_: cargpt.callbacks.ScoreWriter
+      incidents_file: ${incidents_file}
+      output_file: ${output_file}
+      overwrite: ${overwrite}
+  logger:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: ${wandb.project}
+
 
 model:
-  _target_: cargpt.visualization.Trajectory
+  _target_: cargpt.utils.SafetyScore
   _recursive_: False
   # Let the model be optional so that we can use both gt and preds
   inference_model:
@@ -35,32 +39,13 @@ model:
     _args_: ['${wandb_artifact}']
     strict: False
 
-  ground_truth_trajectory:
-    steps: 30
-    time_interval: 0.1  # [s]
-
-  images_transform:
-    _target_: cargpt.visualization.Unnormalize
-    mean: [0.485, 0.456, 0.406]
-    std: [0.229, 0.224, 0.225]
-
-  car:
-    canonical_camera: cam_front_left
-    wheelbase: 2.7  # [m], 2700 [mm]
-    max_beta: 35.75  # [deg]  # TODO: find the real middle beta
-
-  logging:
-    log_to_terminal: False
-    smooth_predictions: False
-    smooth_kernel_size: 7
-
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
     _target_: torch.utils.data.DataLoader
     shuffle: false
     batch_size: 1
-    num_workers: 8
+    num_workers: 1
     pin_memory: false
     persistent_workers: true
     multiprocessing_context: forkserver
@@ -73,18 +58,13 @@ datamodule:
           drives:
           - id: Niro104-HQ/2023-04-18--17-42-03
             sources:
-            - camera: cam_front_left  # TODO: probably wanna front center, but extrinsics should also be fine
+            - camera: cam_front_left
               reader:
                 _target_: yaak_datasets.FrameImageVideoReader
                 path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg
             metadata:
               path: ${paths.data_dir}/${..id}/metadata.log
-              # filter: (ImageMetadata_frame_idx between 24900 and 25310)
-
-              filter: (ImageMetadata_frame_idx between 5610 and 5930) or
-                      (ImageMetadata_frame_idx between 11030 and 12020) or
-                      (ImageMetadata_frame_idx between 22560 and 22860) or
-                      (ImageMetadata_frame_idx between 24900 and 25310)
+              filter: (ImageMetadata_frame_idx between 24900 and 25310)
 
           metadata:
             cameras:
@@ -102,9 +82,6 @@ datamodule:
               - name: steering_angle_normalized
               - name: brake_pedal_normalized
               - name: gas_pedal_normalized
-              - name: acceleration_x
-              - name: acceleration_y
-              - name: acceleration_z
             - message: VehicleState
               fields:
               - name: turn_signal
@@ -119,14 +96,7 @@ datamodule:
             stride: 10
             step: 1
 
-          transforms:
-            - _target_: yaak_datasets.transforms.Crop
-              offsets: [2, 2, 0, 0]
-
-            - _target_: yaak_datasets.transforms.Normalize
-              # ImageNet stats
-              mean: [0.485, 0.456, 0.406]
-              std: [0.229, 0.224, 0.225]
+          transforms: ${image_encoder.transforms}
 
         processing:
           max_workers: null

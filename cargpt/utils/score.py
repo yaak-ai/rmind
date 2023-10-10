@@ -1,12 +1,12 @@
 from typing import Any, Tuple
 
-import numpy as np
 import pytorch_lightning as pl
 from hydra.utils import instantiate
 from omegaconf import DictConfig
+from torch import Tensor
 
 
-class Features(pl.LightningModule):
+class SafetyScore(pl.LightningModule):
     def __init__(
         self,
         inference_model: DictConfig,
@@ -17,7 +17,7 @@ class Features(pl.LightningModule):
 
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
-    ) -> Tuple[np.ndarray, dict[str, Any]]:
-        features = self.model.features_step(batch, batch_idx=0)
+    ) -> Tensor:
+        score = self.model.score_step(batch, batch_idx)
 
-        return features
+        return score

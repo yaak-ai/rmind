@@ -41,6 +41,7 @@ class Trajectory(pl.LightningModule):
         self.logging = logging
 
         self.in_to_out = {
+            f"{car.canonical_camera}/ImageMetadata_frame_idx": f"ImageMetadata_frame_idx",
             "VehicleMotion_speed": "VehicleMotion_speed",  # km / h
             "VehicleMotion_steering_angle_normalized": "VehicleMotion_steering_angle_normalized",
             "VehicleMotion_gas_pedal_normalized": "VehicleMotion_gas_pedal_normalized",
@@ -49,6 +50,7 @@ class Trajectory(pl.LightningModule):
             "VehicleMotion_acceleration_y": "VehicleMotion_acceleration_y",  # m / s2
             "VehicleMotion_acceleration_z": "VehicleMotion_acceleration_z",
         }
+        self.model.eval()
 
     def get_model_trajactories(self, batch):
         preds_last = self.model.predict_step(
@@ -163,6 +165,7 @@ class Trajectory(pl.LightningModule):
         *,
         steps,
         time_interval,
+        ImageMetadata_frame_idx,
         VehicleMotion_speed,
         VehicleMotion_acceleration_x,
         VehicleMotion_acceleration_y,

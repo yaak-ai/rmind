@@ -650,6 +650,11 @@ class Gato(
 
         return features[:, -(key_len + 1) : -1]
 
+    def score_step(self, batch, batch_idx):
+        loss, *_ = self._step(batch, is_training=True)
+
+        return torch.exp(-loss)
+
     def predict_step(
         self,
         batch: Any,
@@ -663,6 +668,9 @@ class Gato(
         )
         B, timesteps, *_ = mit.only(batch["frames"].values()).shape  # pyright: ignore
         ts_len = int(full_episode.shape[1] / timesteps)
+        meta = batch["meta"]
+        camera_name = mit.one(batch["frames"].keys())
+        frame_idxs = meta[f"{camera_name}/ImageMetadata_frame_idx"].tolist()
 
         actions_to_predict = len(self.action_keys)
         if start_timestep < 0:
@@ -721,12 +729,13 @@ class Gato(
                 )
 
                 log_message = ""
+                frame_idx = frame_idxs[0][-1]
                 for b in range(B):
                     pred = prediction[b, 0].item()
                     gt = batch["meta"][key][b, ts].item()
                     predictions[b][ts][key]["pred"] = pred
                     predictions[b][ts][key]["gt"] = gt
-                    log_message += f"[{batch_idx}][{key}] gt:{gt:.3f} pred:{pred:.3f}"
+                    log_message += f"[{frame_idx}][{key}] gt:{gt:.3f} pred:{pred:.3f}"
                 if verbose:
                     logger.info(log_message)
 
