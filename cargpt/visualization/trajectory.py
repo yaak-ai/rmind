@@ -41,6 +41,7 @@ class Trajectory(pl.LightningModule):
         self.logging = logging
 
         self.in_to_out = {
+            f"{car.canonical_camera}/ImageMetadata_frame_idx": f"ImageMetadata_frame_idx",
             "VehicleMotion_speed": "VehicleMotion_speed",  # km / h
             "VehicleMotion_steering_angle_normalized": "VehicleMotion_steering_angle_normalized",
             "VehicleMotion_gas_pedal_normalized": "VehicleMotion_gas_pedal_normalized",
@@ -49,6 +50,7 @@ class Trajectory(pl.LightningModule):
             "VehicleMotion_acceleration_y": "VehicleMotion_acceleration_y",  # m / s2
             "VehicleMotion_acceleration_z": "VehicleMotion_acceleration_z",
         }
+        self.model.eval()
 
     def get_model_trajactories(self, batch):
         preds_last = self.model.predict_step(
@@ -59,7 +61,7 @@ class Trajectory(pl.LightningModule):
         )
 
         prediction_actions_ = []
-        for batch_key, batch_dict in sorted(preds_last.items()):
+        for _batch_key, batch_dict in sorted(preds_last.items()):
             ts_key = list(batch_dict)[0]  # there is only one key for the last timestep
             prediction_actions_.append(
                 [batch_dict[ts_key][key]["pred"] for key in self.model.action_keys]
@@ -86,7 +88,7 @@ class Trajectory(pl.LightningModule):
 
         images = images.squeeze(0)  # kick out batch dimension
         images = images[[clip_len - 1]]
-        self.camera = self.get_camera(batch)
+        camera = Camera.from_params(mit.one(batch["camera_params"].values()))
         metadata = self.prepare_metadata(batch, clip_len - 1)
 
         # Ground-truth trajactories
@@ -97,7 +99,7 @@ class Trajectory(pl.LightningModule):
         )
 
         gt_points_2d: Float[Tensor, "f n 2"] = rearrange(
-            self.camera.project(rearrange(gt_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+            camera.project(rearrange(gt_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
             "(f n) 1 1 d -> f n (1 1 d)",
             f=1,
         )
@@ -126,7 +128,7 @@ class Trajectory(pl.LightningModule):
         )
 
         pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
-            self.camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+            camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
             "(f n) 1 1 d -> f n (1 1 d)",
             f=1,
         )
@@ -163,6 +165,7 @@ class Trajectory(pl.LightningModule):
         *,
         steps,
         time_interval,
+        ImageMetadata_frame_idx,
         VehicleMotion_speed,
         VehicleMotion_acceleration_x,
         VehicleMotion_acceleration_y,
@@ -198,20 +201,6 @@ class Trajectory(pl.LightningModule):
 
         return torch.tensor(points_3d, device=self.device)
 
-    def get_camera(self, batch) -> Camera:
-        # Hard coding cam_front_left till new yaak-datasets supports camera params
-        frames = mit.one(batch["frames"].values())
-        camera = Camera.from_params(
-            model="CameraModelOpenCVFisheye",
-            params={  # type: ignore[union-attr]
-                "fx": torch.tensor([[389.4]], device=frames.device),
-                "fy": torch.tensor([[389.4]], device=frames.device),
-                "cx": torch.tensor([[287.7]], device=frames.device),
-                "cy": torch.tensor([[161.8]], device=frames.device),
-            },
-        )
-        return camera
-
     def calculate_trajectory(
         self,
         last_elem: TrajectoryPoint,
@@ -232,7 +221,7 @@ class Trajectory(pl.LightningModule):
         a = math.copysign(acceleration_y, gas_norm - brake_norm)
         beta = steering_wheel_norm * self.max_beta
         # norm: minus means left, plus means right
-        for step in range(steps):
+        for _step in range(steps):
             p = last_elem
             x = p.x + p.v * math.sin(p.phi) * time_interval
             z = p.z + p.v * math.cos(p.phi) * time_interval

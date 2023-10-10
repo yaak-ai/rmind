@@ -1,11 +1,14 @@
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import more_itertools as mit
 import numpy as np
+import parse
 import pytorch_lightning as pl
 import torch
+import wandb
 from einops import rearrange
 from jaxtyping import Float
 from pytorch_lightning.callbacks import BasePredictionWriter
@@ -16,6 +19,107 @@ from cargpt.visualization.trajectory import (
     draw_trajectory,
     smooth_predictions,
 )
+
+
+class ScoreWriter(BasePredictionWriter):
+    def __init__(
+        self,
+        output_file: str | Path,
+        incidents_file: str | Path,
+        overwrite: bool = False,
+    ) -> None:
+        super().__init__(write_interval="batch")
+
+        self.output_file = Path(output_file)
+        if self.output_file.exists() and not overwrite:
+            raise ValueError(
+                f"The output file {str(self.output_file.resolve())} exists!"
+            )
+        self.output_file.parent.mkdir(parents=True, exist_ok=True)
+        self.incidents_file = Path(incidents_file)
+        self.scores = []
+
+    def write_on_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        score: Tensor,
+        batch_indices: Optional[Sequence[int]],
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int,
+    ) -> None:
+        camera_name = mit.one(batch["frames"].keys())
+        meta = batch["meta"]
+        drive_ids = meta.pop("drive_id").detach()
+
+        drive_ids = [
+            drive_id.type(torch.uint8).cpu().numpy().tobytes().decode("ascii").strip()
+            for drive_id in drive_ids
+        ]
+        frame_idxs = meta[f"{camera_name}/ImageMetadata_frame_idx"].tolist()
+        score = score.detach().cpu().numpy()
+
+        obj = {
+            "batch_id": batch_idx,
+            "score": f"{score:.6f}",
+            "frame_idx": frame_idxs[0][-1],
+            "drive_id": drive_ids,
+        }
+        self.scores.append(obj)
+
+    def on_predict_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        with self.output_file.open("w") as pfile:
+            json.dump(self.scores, pfile)
+
+        with self.incidents_file.open("r") as pfile:
+            incidents = json.load(pfile)
+
+        drive_ids = [s["drive_id"] for s in self.scores]
+        preds = [[s["frame_idx"], s["score"]] for s in self.scores]
+
+        # Gehacked af
+        drive_ids = list(mit.value_chain(*[s["drive_id"] for s in self.scores]))
+        for incident in incidents:
+            dongle_id = incident["dongle_id"]
+            canonical_name = incident["canonical_name"]
+            incident["drive_id"] = f"{dongle_id}/{canonical_name}"
+
+        incidentds_in_drive = [
+            incident for incident in incidents if incident["drive_id"] in drive_ids
+        ]
+
+        annotations = []
+
+        for incident in incidentds_in_drive:
+            annotation_start = incident["annotation_start"]
+            annotation_end = incident["annotation_end"]
+            start = parse.parse(
+                "{:d} years {:d} mons {:d} days {:d} hours {:d} mins {:f} secs",
+                annotation_start,
+            )
+            end = parse.parse(
+                "{:d} years {:d} mons {:d} days {:d} hours {:d} mins {:f} secs",
+                annotation_end,
+            )
+            # HH:MM:SS * FPS
+            start_idx = (
+                (start[3] * 60 + start[4]) * 60 + start[5]
+            ) * 30  # pyright: ignore
+            end_idx = ((end[3] * 60 + end[4]) * 60 + end[5]) * 30  # pyright: ignore
+            annotation_idx = (start_idx + end_idx) // 2
+            annotations.append([annotation_idx, 0.0])
+
+        trainer.logger.log_table(  # pyright: ignore
+            key="predict/SafetyScore", columns=["frame_idxs", "score"], data=preds  # type: ignore[union-attr]
+        )
+        trainer.logger.log_table(  # pyright: ignore
+            key="predict/Incidents", columns=["frame_idxs", "score"], data=annotations  # type: ignore[union-attr]
+        )
 
 
 class FeatureWriter(BasePredictionWriter):
@@ -49,8 +153,9 @@ class FeatureWriter(BasePredictionWriter):
 
         for key in list(meta.keys()):
             match key.split("/"):
-                case [camera_name, _key]:
+                case [_name, _key] if _name == camera_name:
                     meta.rename_key_(key, _key)
+
         drive_ids = [
             drive_id.type(torch.uint8).cpu().numpy().tobytes().decode("ascii").strip()
             for drive_id in drive_ids
@@ -75,19 +180,22 @@ class FeatureWriter(BasePredictionWriter):
 class VideoWriter(BasePredictionWriter):
     def __init__(
         self,
-        output_file: Union[str, Path],
+        video_file: Union[str, Path],
+        predictions_file: Union[str, Path],
         fourcc: str = "vp09",
         fps: int = 30,
         overwrite: bool = False,
     ) -> None:
         super().__init__(write_interval="batch")
 
-        self.output_file = Path(output_file)
+        self.output_file = Path(video_file)
+        self.predictions_file = Path(predictions_file)
         if self.output_file.exists() and not overwrite:
             raise ValueError(
                 f"The output file {str(self.output_file.resolve())} exists!"
             )
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
+        self.predictions_file.parent.mkdir(parents=True, exist_ok=True)
 
         self.fourcc = fourcc
         self.fps = fps
@@ -119,11 +227,10 @@ class VideoWriter(BasePredictionWriter):
         if self.video_writer is None:
             height, width, _ = predictions[0][0].shape
             self._set_video_writer(width, height)
+        self.predictions.append(predictions)
         if not pl_module.logging.smooth_predictions:  # type: ignore[union-attr]
             vis, _ = predictions
             self.video_writer.write(vis[0, :, :, ::-1])  # type: ignore[attr-defined]
-        else:
-            self.predictions.append(predictions)
 
     def on_predict_end(
         self,
@@ -164,6 +271,14 @@ class VideoWriter(BasePredictionWriter):
 
         if self.video_writer is not None:
             self.video_writer.release()
+
+        with self.predictions_file.open("w") as pfile:
+            images, metadatas = zip(*self.predictions)
+            metadatas = [
+                {key: value.item() for key, value in m.items()}
+                for idx, m in enumerate(metadatas)
+            ]
+            json.dump(metadatas, pfile)
 
 
 class CSVWriter(BasePredictionWriter):
