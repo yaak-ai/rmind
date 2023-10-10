@@ -1,6 +1,5 @@
 import math
-from collections import namedtuple
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, NamedTuple, Tuple
 
 import cv2
 import more_itertools as mit
@@ -16,7 +15,14 @@ from torch import Tensor
 
 from cargpt.visualization.utils import get_images
 
-TrajectoryPoint = namedtuple("TrajectoryPoint", "x,y,z,phi,t,v")
+
+class TrajectoryPoint(NamedTuple):
+    x: float
+    y: float
+    z: float
+    phi: float
+    t: float
+    v: float
 
 
 class Trajectory(pl.LightningModule):
@@ -27,7 +33,7 @@ class Trajectory(pl.LightningModule):
         ground_truth_trajectory: DictConfig,
         car: DictConfig,
         logging: DictConfig,
-    ):
+    ) -> None:
         super().__init__()
         self.model = instantiate(inference_model)
         self.images_transform = instantiate(images_transform)
@@ -60,9 +66,11 @@ class Trajectory(pl.LightningModule):
 
         prediction_actions_ = []
         for _batch_key, batch_dict in sorted(preds_last.items()):
-            ts_key = list(batch_dict)[0]  # there is only one key for the last timestep
+            ts_key = next(
+                iter(batch_dict),
+            )  # there is only one key for the last timestep
             prediction_actions_.append(
-                [batch_dict[ts_key][key]["pred"] for key in self.model.action_keys]
+                [batch_dict[ts_key][key]["pred"] for key in self.model.action_keys],
             )
         prediction_actions_ = torch.tensor(prediction_actions_, device=self.device)
 
@@ -72,17 +80,23 @@ class Trajectory(pl.LightningModule):
         }
 
     def predict_step(
-        self, batch: Any, batch_idx: int, dataloader_idx: int = 0
+        self,
+        batch: Any,
+        _batch_idx: int,
+        _dataloader_idx: int = 0,
     ) -> Tuple[np.ndarray, dict[str, Any]]:
         images = rearrange(
-            get_images(batch, self.images_transform), "b f c h w -> b f h w c"
+            get_images(batch, self.images_transform),
+            "b f c h w -> b f h w c",
         )
         batch_size, clip_len, *_ = images.shape
         # assume batch_size is 1, at least for now
         if batch_size > 1:
-            raise NotImplementedError(
+            msg = (
                 "Assumed batch size equals 1, increase clip length to process more data"
             )
+
+            raise NotImplementedError(msg)
 
         images = images.squeeze(0)  # kick out batch dimension
         images = images[[clip_len - 1]]
@@ -97,13 +111,13 @@ class Trajectory(pl.LightningModule):
         )
 
         gt_points_2d: Float[Tensor, "f n 2"] = rearrange(
-            camera.project(rearrange(gt_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+            camera.project(rearrange(gt_points_3d, "f n d -> (f n) 1 1 d")),
             "(f n) 1 1 d -> f n (1 1 d)",
             f=1,
         )
 
         visualizations: np.ndarray = np.ascontiguousarray(
-            (images * 255).int().cpu().numpy().astype(np.uint8)
+            (images * 255).int().cpu().numpy().astype(np.uint8),
         )
         draw_trajectory(visualizations, gt_points_2d)
 
@@ -126,7 +140,7 @@ class Trajectory(pl.LightningModule):
         )
 
         pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
-            camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+            camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),
             "(f n) 1 1 d -> f n (1 1 d)",
             f=1,
         )
@@ -155,8 +169,7 @@ class Trajectory(pl.LightningModule):
 
         # Assumption: batch size = 1
         # if the assumption changes, kick out the flattening
-        out = {k: v.squeeze(0) for k, v in out.items()}
-        return out
+        return {k: v.squeeze(0) for k, v in out.items()}
 
     def get_trajectory_3d_points(
         self,
@@ -164,9 +177,7 @@ class Trajectory(pl.LightningModule):
         steps,
         time_interval,
         VehicleMotion_speed,
-        VehicleMotion_acceleration_x,
         VehicleMotion_acceleration_y,
-        VehicleMotion_acceleration_z,
         VehicleMotion_steering_angle_normalized,
         VehicleMotion_gas_pedal_normalized,
         VehicleMotion_brake_pedal_normalized,
@@ -187,14 +198,12 @@ class Trajectory(pl.LightningModule):
                 last_elem=start_point,
                 steps=steps,
                 time_interval=time_interval,
-                acceleration_x=VehicleMotion_acceleration_z[i].item(),
                 acceleration_y=VehicleMotion_acceleration_y[i].item(),
-                acceleration_z=VehicleMotion_acceleration_z[i].item(),
                 gas_norm=VehicleMotion_gas_pedal_normalized[i].item(),
                 brake_norm=VehicleMotion_brake_pedal_normalized[i].item(),
                 steering_wheel_norm=VehicleMotion_steering_angle_normalized[i].item(),
             )
-            points_3d.append([(p.x, p.y, p.z) for p in [start_point] + curr_points])
+            points_3d.append([(p.x, p.y, p.z) for p in [start_point, *curr_points]])
 
         return torch.tensor(points_3d, device=self.device)
 
@@ -203,9 +212,7 @@ class Trajectory(pl.LightningModule):
         last_elem: TrajectoryPoint,
         steps: int,
         time_interval: float,
-        acceleration_x: float,
         acceleration_y: float,
-        acceleration_z: float,
         gas_norm: float,
         brake_norm: float,
         steering_wheel_norm: float,
@@ -243,14 +250,14 @@ def draw_preds(
     line_color: Tuple[int, int, int] = (255, 255, 255),
 ):
     image = visualizations[0]
-    h, w = image.shape[:2]
+    w = image.shape[1]
     brake = metadata["VehicleMotion_brake_pedal_normalized"].item()
     text = f"[Brake:{brake:.3f}]"
     text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
     text_w, text_h = text_size
     pos = (0, w // 2)
     x, y = pos
-    cv2.rectangle(image, pos, (x + text_w, y + text_h), (0, 0, 0), -1)
+    _ = cv2.rectangle(image, pos, (x + text_w, y + text_h), (0, 0, 0), -1)
     image = cv2.putText(
         image,
         text,
@@ -274,9 +281,9 @@ def draw_trajectory(
 ) -> None:
     points_2d = points_2d.cpu().numpy().astype(np.int32)
     close_polygon = False
-    for i, (vis, points) in enumerate(zip(visualizations, points_2d)):
+    for i, (_vis, points) in enumerate(zip(visualizations, points_2d)):
         vis = cv2.polylines(
-            vis,
+            _vis,
             [points],
             close_polygon,
             line_color,

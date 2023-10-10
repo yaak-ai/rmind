@@ -2,7 +2,7 @@
 import multiprocessing as mp
 import sys
 
-import fiftyone as fo
+import fiftyone as fo  # pyright: ignore[reportMissingImports]
 import hydra
 from hydra.utils import instantiate
 from loguru import logger

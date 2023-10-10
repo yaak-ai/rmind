@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import Any, List, cast
 
 import more_itertools as mit
 import numpy as np
@@ -17,7 +17,7 @@ np.set_printoptions(suppress=True)
 class Frames(pl.LightningModule):
     hparams: AttributeDict
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **_kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
         self.model = instantiate(self.hparams.inference_model)
@@ -29,11 +29,12 @@ class Frames(pl.LightningModule):
         with torch.no_grad():
             future_images = []
             frames = mit.one(batch["frames"].values())
-            b, clips, c, h, w = frames.shape
-            episode, labels, _, episode_values, _ = self.model._make_episode(
-                batch, is_training=True
+            b, clips, *_ = frames.shape
+            episode, labels, *_ = self.model._make_episode(
+                batch,
+                is_training=True,
             )
-            b, seqlen, d = episode.shape
+            b, _, d = episode.shape
 
             max_length = labels.shape[1]
 
@@ -47,32 +48,36 @@ class Frames(pl.LightningModule):
             past_key_values = output["past_key_values"]
 
             last_token = torch.argmax(F.softmax(logits[:, [-1]], dim=2), dim=2)
-            # last_token = labels[:, [0]]
             # TODO: My humor is DRY unlike my code
             # Lot of duplicated code below, i beg your pardon upfront.
             torchvision.utils.save_image(frames[0], "inputs.png")
 
             global_timestep_embedding = self.model.sensor_embedding(
-                torch.tensor([clips], device=episode.device).view(1, 1)
+                torch.tensor([clips], device=episode.device).view(1, 1),
             ).view(1, 1, d)
 
-            for timestep in tqdm.tqdm(range(self.hparams.future_timestep), ascii=True, unit="img"):  # type: ignore
+            for timestep in tqdm.tqdm(
+                range(cast(int, self.hparams.future_timestep)),
+                ascii=True,
+                unit="img",
+            ):
                 past_key_values = [
                     [key[:, :, -max_length:], value[:, :, -max_length:]]
                     for key, value in past_key_values
                 ]
-                # history = episode[:, :timestep_size]
                 # first image token
                 # add local timestep token
                 image_tokens = []
                 metadata_action_tokens = []
 
-                for image_token_index in range(self.hparams.patch_row * self.hparams.patch_col):  # type: ignore
+                for image_token_index in range(
+                    self.hparams.patch_row * self.hparams.patch_col,  # pyright: ignore
+                ):
                     embedding = self.model.sensor_embedding(last_token)
                     last_token -= self.model.hparams.tokens_shift["ImageEncoder"]
                     image_tokens.append(last_token)
 
-                    if self.model.hparams.have_position_encoding.patch:  # type: ignore[union-attr]
+                    if self.model.hparams.have_position_encoding.patch:
                         row = (
                             torch.tensor(
                                 [image_token_index // self.hparams.patch_col],  # type: ignore
@@ -91,10 +96,10 @@ class Frames(pl.LightningModule):
                         )
                         # add patch row / col position
                         embedding += self.model.patch_row(row) + self.model.patch_col(
-                            col
+                            col,
                         )
 
-                    if self.model.hparams.have_position_encoding.local:  # type: ignore[union-attr]
+                    if self.model.hparams.have_position_encoding.local:
                         # add local timestep
                         local_pos = (
                             torch.tensor([image_token_index], device=embedding.device)
@@ -102,7 +107,7 @@ class Frames(pl.LightningModule):
                             .repeat(b, 1)
                         )
                         embedding += self.model.local_position(local_pos)
-                    if self.model.hparams.have_position_encoding.global_pos:  # type: ignore[union-attr]
+                    if self.model.hparams.have_position_encoding.global_pos:
                         # global timstep
                         embedding += global_timestep_embedding
 
@@ -117,7 +122,9 @@ class Frames(pl.LightningModule):
                     last_token = torch.argmax(F.softmax(logits[:, [-1]], dim=2), dim=2)
 
                 image_tokens = torch.cat(image_tokens, 1).view(
-                    b, self.hparams.patch_row, self.hparams.patch_col  # type: ignore
+                    b,
+                    self.hparams.patch_row,  # pyright: ignore
+                    self.hparams.patch_col,  # pyright: ignore
                 )
                 image_tokens[image_tokens < 0] = 0
                 image = self.decoder.reconstruct(image_tokens)
@@ -126,17 +133,17 @@ class Frames(pl.LightningModule):
                 future_images.append(
                     [
                         (image.detach().permute(0, 2, 3, 1).cpu().numpy() * 255).astype(
-                            np.uint8
+                            np.uint8,
                         ),
                         None,
-                    ]
+                    ],
                 )
 
                 for idx, _metadata_key in enumerate(self.model.metadata_keys):
                     # add local time step if metadata
                     embedding = self.model.sensor_embedding(last_token)
                     metadata_action_tokens.append(last_token)
-                    if self.model.hparams.have_position_encoding.local:  # type: ignore[union-attr]
+                    if self.model.hparams.have_position_encoding.local:
                         # add local timestep
                         local_pos = (
                             torch.tensor(
@@ -147,7 +154,7 @@ class Frames(pl.LightningModule):
                             .repeat(b, 1)
                         )
                         embedding += self.model.local_position(local_pos)
-                    if self.model.hparams.have_position_encoding.global_pos:  # type: ignore[union-attr]
+                    if self.model.hparams.have_position_encoding.global_pos:
                         embedding += global_timestep_embedding
                     output = self.model.gpt(
                         inputs_embeds=embedding,
@@ -160,24 +167,24 @@ class Frames(pl.LightningModule):
                     last_token = torch.argmax(F.softmax(logits[:, [-1]], dim=2), dim=2)
 
                 # Here last token is SEP
-                for action_key in ["sep"] + self.model.action_keys:
+                for action_key in ["sep", *self.model.action_keys]:
                     # add action position if action
                     embedding = self.model.sensor_embedding(last_token)
                     metadata_action_tokens.append(last_token)
-                    if self.model.hparams.have_position_encoding.action:  # type: ignore[union-attr]
+                    if self.model.hparams.have_position_encoding.action:
                         # add action position
                         action_position = (
                             self.model.action_position(
                                 torch.tensor([0], device=embedding.device)
                                 .view(1, 1)
-                                .repeat(b, 1)
+                                .repeat(b, 1),
                             )
                             if action_key != "sep"
                             else 0
                         )
                         embedding += action_position
                     # global timstep
-                    if self.model.hparams.have_position_encoding.global_pos:  # type: ignore[union-attr]
+                    if self.model.hparams.have_position_encoding.global_pos:
                         embedding += global_timestep_embedding
                     output = self.model.gpt(
                         inputs_embeds=embedding,
@@ -193,8 +200,9 @@ class Frames(pl.LightningModule):
         return future_images[0]
 
     def predict_step(
-        self, batch: Any, batch_idx: int, dataloader_idx: int = 0
+        self,
+        batch: Any,
+        _batch_idx: int,
+        _dataloader_idx: int = 0,
     ) -> List[np.ndarray]:
-        future_images = self.get_future_frames(batch)
-
-        return future_images
+        return self.get_future_frames(batch)

@@ -8,10 +8,10 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = ">=3.10,<3.11"
 pytorch-lightning = "^2.0.9"
-einops = "^0.6.0"
+einops = "^0.6.1"
 hydra-core = "^1.3.0"
 loguru = "^0.6.0"
-jaxtyping = "*"
+jaxtyping = "^0.2.23"
 beartype = "*"
 torch = {version = "^2.0.1", source = "torch-cu118"}
 torchvision = {version = "^0.15.2", source = "torch-cu118"}
@@ -26,6 +26,7 @@ pillow = ">=9.5.0"
 dill = "^0.3.6"
 tqdm = "=4.65.0"
 transformers = "=4.30.2"
+tensordict = "^0.2.1"
 
 [[tool.poetry.source]]
 name = "torch-cu118"
@@ -48,7 +49,6 @@ optional = true
 
 [tool.poetry.group.lint.dependencies]
 pyright = "*"
-black = "*"
 ruff = "*"
 deptry = "*"
 opencv-stubs = "*"
@@ -68,14 +68,8 @@ ipython-autoimport = "*"
 pyfzf = "*"
 ruff-lsp = "*"
 pyright = "*"
-lovely-tensors = "^0.1.15"
-nvitop = "^1.3.0"
-
-[tool.poetry.group.vis]
-optional = true
-
-[tool.poetry.group.vis.dependencies]
-grad-cam = "*"
+lovely-tensors = "*"
+pre-commit = "*"
 
 [tool.poetry.group.dvc]
 optional = true
@@ -85,27 +79,35 @@ dvc = {version = "^2.58.1", extras = ["s3"]}
 
 [tool.pyright]
 typeCheckingMode = "basic"
-reportMissingTypeStubs = false
-reportMissingImports = false
-reportPrivateImportUsage = false
-exclude = [
-  'wandb/',
-]
+reportUnusedImport = true
+reportUnusedVariable = true
+reportUnusedFunction = true
+reportMissingSuperCall = true
+reportUnnecessaryIsInstance = true
+reportUnnecessaryCast = true
+reportUnnecessaryTypeIgnoreComment = true
+reportUnnecessaryComparison= true
+reportUnusedCallResult = true
+reportUnusedExpression = true
+reportMatchNotExhaustive = true
 
-
-[tool.black]
-line-length = 88
+exclude = ['wandb/']
 
 [tool.ruff]
-fix = true
-extend-select = ["B", "I", "Q"]
-ignore = ["E501", "F722", "F821"]
+preview = true
+unsafe-fixes = true
 
-[tool.ruff.isort]
+[tool.ruff.lint]
+select = ["ALL"]
+fixable = ["ALL"]
+ignore = ["E501", "F722", "F821", "E203", "D", "CPY", "ANN", "PGH", "FA", "FBT", "PLR", "N", "TD", "FIX", "S101", "SLF", "C901", "COM812", "ISC001", "A001", "A002"]
+
+[tool.ruff.lint.isort]
 known-third-party = ["wandb"]
 
+
 [tool.deptry.per_rule_ignores]
-DEP001 = ["cv2", "fiftyone", "pytorch_grad_cam"]
+DEP001 = ["cv2", "fiftyone"]
 DEP002 = ["beartype", "torchaudio", "dill", "transformers", "triton"]
-DEP003 = ["numpy"]
-DEP004 = ["omegaconf", "pytorch_grad_cam"]
+DEP003 = ["numpy", "lightning_utilities"]
+DEP004 = ["omegaconf"]

@@ -1,6 +1,6 @@
 #@ drives = [
-#@    'Niro104-HQ/2022-12-20--13-57-20',
 #@    'Niro115-HQ/2023-05-16--10-47-33',
+#@    'Niro104-HQ/2022-12-20--13-57-20',
 #@    'Niro107-HQ/2023-05-12--12-05-15',
 #@    'Niro122-HQ/2023-04-05--12-06-39',
 #@    'Niro102-HQ/2022-12-03--11-30-20',
@@ -22,7 +22,7 @@ config:
             reader:
               _target_: yaak_datasets.FrameImageVideoReader
               path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg
-            params: /nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json
+            #! params: /nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json
           #@ end
         metadata:
           path: ${paths.data_dir}/${..id}/metadata.log
@@ -30,38 +30,16 @@ config:
 
     metadata:
       cameras: #@ cameras
-      select:
-        - message: ImageMetadata
-          fields:
-          - name: frame_idx
-          - name: camera_name
+      select: ???
+      filter: ???
 
-        - message: VehicleMotion
-          fields:
-          - name: speed
-          - name: steering_angle_normalized
-          - name: gas_pedal_normalized
-          - name: brake_pedal_normalized
-
-        - message: VehicleState
-          fields:
-          - name: turn_signal
-
-        - message: Gnss
-          fields:
-          - name: hp_loc_latitude
-          - name: hp_loc_longitude
   samples:
     alignment:
       ref_camera: #@ cameras[0]
       tolerance: 10ms
 
-    clips:
-      length: 1
-      step: 1
-      stride: 1
-
-    transforms: ${image_encoder.transforms}
+    clips: ???
+    transforms: ???
 
   processing:
     max_workers: null

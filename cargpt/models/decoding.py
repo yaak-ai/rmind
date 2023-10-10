@@ -6,18 +6,15 @@ from torch import Tensor, nn
 
 # https://github.com/openai/DALL-E/tree/master
 class dalleDVAE(torch.nn.Module):
-    def __init__(self, dec_weights: str, vocab_size: int, freeze: bool = True):
+    def __init__(self, dec_weights: str, vocab_size: int, freeze: bool = True) -> None:
         super().__init__()
 
-        self.dec = load_model(dec_weights)
+        self.dec = load_model(dec_weights).requires_grad_(not freeze).train(not freeze)
         self.vocab_size = vocab_size
 
-        if freeze:
-            self.requires_grad_(False)
-            self.dec.eval()
-
     def forward(
-        self, z_logits: Float[Tensor, "b c h1 w1"]
+        self,
+        z_logits: Float[Tensor, "b c h1 w1"],
     ) -> Float[Tensor, "b c2 h2 w2"]:
         z = torch.argmax(z_logits, dim=1)
         z_one_hot = (
@@ -27,9 +24,7 @@ class dalleDVAE(torch.nn.Module):
         )
 
         x_stats = self.dec(z_one_hot).float()
-        x_rec = unmap_pixels(torch.sigmoid(x_stats[:, :3]))
-
-        return x_rec
+        return unmap_pixels(torch.sigmoid(x_stats[:, :3]))
 
     def reconstruct(self, z):
         z_one_hot = (
@@ -39,6 +34,4 @@ class dalleDVAE(torch.nn.Module):
         )
 
         x_stats = self.dec(z_one_hot).float()
-        x_rec = unmap_pixels(torch.sigmoid(x_stats[:, :3]))
-
-        return x_rec
+        return unmap_pixels(torch.sigmoid(x_stats[:, :3]))

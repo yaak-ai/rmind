@@ -1,14 +1,17 @@
 #!/usr/bin/env python
 import multiprocessing as mp
 import sys
+from typing import TYPE_CHECKING
 
 import hydra
-import pytorch_lightning as pl
 from hydra.utils import instantiate
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 
 from cargpt.utils.logging import setup_logging
+
+if TYPE_CHECKING:
+    import pytorch_lightning as pl
 
 OmegaConf.register_new_resolver("eval", eval)
 
@@ -25,7 +28,7 @@ def predict(cfg: DictConfig):
     trainer: pl.Trainer = instantiate(cfg.trainer)
 
     logger.debug("starting prediction")
-    trainer.predict(
+    return trainer.predict(
         model=model,
         datamodule=datamodule,
         return_predictions=False,
@@ -35,6 +38,7 @@ def predict(cfg: DictConfig):
 @logger.catch(onerror=lambda _: sys.exit(1))
 def main():
     mp.set_start_method("spawn", force=True)
+    mp.set_forkserver_preload(["torch"])
     setup_logging()
 
     predict()

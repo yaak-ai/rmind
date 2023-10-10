@@ -699,7 +699,7 @@ config:
             reader:
               _target_: yaak_datasets.FrameImageVideoReader
               path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg
-            params: /nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json
+            #! params: /nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json
           #@ end
         metadata:
           path: ${paths.data_dir}/${..id}/metadata.log
@@ -707,39 +707,16 @@ config:
 
     metadata:
       cameras: #@ cameras
-      select:
-        - message: ImageMetadata
-          fields:
-          - name: frame_idx
-          - name: camera_name
-
-        - message: VehicleMotion
-          fields:
-          - name: speed
-          - name: steering_angle_normalized
-          - name: gas_pedal_normalized
-          - name: brake_pedal_normalized
-
-        - message: VehicleState
-          fields:
-          - name: turn_signal
-
-        - message: Gnss
-          fields:
-          - name: hp_loc_latitude
-          - name: hp_loc_longitude
+      select: ???
+      filter: ???
 
   samples:
     alignment:
       ref_camera: #@ cameras[0]
       tolerance: 10ms
 
-    clips:
-      length: 1
-      step: 1
-      stride: 1
-
-    transforms: ${image_encoder.transforms}
+    clips: ???
+    transforms: ???
 
   processing:
     max_workers: null

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import more_itertools as mit
 import numpy as np
@@ -13,11 +13,13 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.trainer.states import RunningStage
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor, softmax
-from wandb.sdk import Artifact
 from wandb.sdk.lib import RunDisabled
 from wandb.wandb_run import Run
 
 from cargpt.visualization import Unnormalize
+
+if TYPE_CHECKING:
+    from wandb.sdk.artifacts.artifact import Artifact
 
 
 class LoadableFromArtifact:
@@ -63,8 +65,7 @@ class ValOutputsLoggingTableMixin:
 
     def is_outputs_logging_active(self):
         return (
-            isinstance(logger := self.logger, WandbLogger)
-            and isinstance(logger.experiment, Run)
+            isinstance(self.logger.experiment, Run)
             and self.hparams.get("log", {}).get("validation", {}).get("outputs")
             and self.trainer.state.stage != "sanity_check"
         )
@@ -77,16 +78,16 @@ class ValOutputsLoggingTableMixin:
             return
 
         if set(outputs_dict.keys()) != set(self.val_table_main_columns):
+            msg = f"different keys provided {list(outputs_dict)} than declared in val_table_main_columns"
             raise ValueError(
-                f"different keys provided {list(outputs_dict)} than "
-                f"declared in val_table_main_columns"
+                msg,
             )
 
         columns = []
         for key in self.val_table_main_columns:
             _, TS = outputs_dict[key].shape
             for ts in range(TS):
-                columns.append(f"{key}_{ts}")
+                columns.append(f"{key}_{ts}")  # noqa: PERF401
 
         self.val_table = wandb.Table(columns=columns)
 
@@ -99,7 +100,10 @@ class ValOutputsLoggingTableMixin:
         assert self.val_table is not None
         self.val_table.add_column("_step", list(map(int, self.val_table.get_index())))
         artifact = wandb.Artifact(f"run-{run.id}-val_outputs", "run_table")
-        artifact.add(self.val_table, "outputs")
+        artifact.add(
+            self.val_table,
+            "outputs",
+        )  # pyright: ignore[reportUnusedCallResult]
         run.log_artifact(artifact)
         # Cleanup after epoch
         del self.val_table
@@ -132,17 +136,13 @@ class TrainValAttnMapLoggingMixin:
 
     def is_attn_map_logging_active(self):
         try:
-            self._get_attn_map_logging_params()
+            _ = self._get_attn_map_logging_params()
         except KeyError:
             params_fine = False
         else:
             params_fine = True
 
-        return (
-            params_fine
-            and isinstance(logger := self.logger, WandbLogger)
-            and isinstance(logger.experiment, Run)
-        )
+        return params_fine and isinstance(self.logger.experiment, Run)
 
     def _should_attn_map_log_now(self, batch_idx):
         params: Dict[str, Any] = self._get_attn_map_logging_params()
@@ -161,7 +161,8 @@ class TrainValAttnMapLoggingMixin:
         elif self.trainer.state.stage == RunningStage.VALIDATING:
             params = params["validation"]["attention_maps"]
         else:
-            raise KeyError("wrong stage")
+            msg = "wrong stage"
+            raise KeyError(msg)
         return params
 
     def get_attention_maps(self, x, mask=None):
@@ -170,7 +171,11 @@ class TrainValAttnMapLoggingMixin:
             for layer in self.gpt.layers:  # type: ignore
                 x_in = layer.norm1(x) if layer.norm_first else x
                 _, attn_map = layer.self_attn(
-                    x_in, x_in, x_in, attn_mask=mask, need_weights=True
+                    x_in,
+                    x_in,
+                    x_in,
+                    attn_mask=mask,
+                    need_weights=True,
                 )
                 attention_maps.append(attn_map)
                 x = layer(x)
@@ -255,8 +260,8 @@ class TrainValAttnMapLoggingMixin:
                 f"{stage}/attn_map/frames": [
                     wandb.Image(img, caption=f"{frame_idxs[idx]} [{drive_id}]")
                     for idx, img in enumerate(frames)
-                ]
-            }
+                ],
+            },
         )
         # Don't pass step, don't commit - let it be committed with logs
         self.logger.experiment.log(data=data, commit=False)
@@ -301,7 +306,8 @@ class TrainValAttnMapLoggingMixin:
         elif norm == "max":
             last_meta_actions /= last_meta_actions.max(dim=1)[0][..., None]
         else:
-            raise NotImplementedError(f"unknown norm for attention maps: {norm}")
+            msg = f"unknown norm for attention maps: {norm}"
+            raise NotImplementedError(msg)
 
         # Split attention map into multiple images
         images = []

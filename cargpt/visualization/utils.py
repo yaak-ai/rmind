@@ -25,7 +25,9 @@ class Unnormalize(Normalize):
 
 
 def get_images(
-    batch, transform: Callable, clip_idx: Optional[int] = None
+    batch,
+    transform: Callable,
+    clip_idx: Optional[int] = None,
 ) -> Float[Tensor, "..."]:
     frames = mit.one(batch["frames"].values())
     if clip_idx is not None:

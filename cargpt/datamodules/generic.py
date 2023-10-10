@@ -11,7 +11,7 @@ class GenericDataModule(pl.LightningDataModule):
         val: Optional[DataLoader] = None,
         test: Optional[DataLoader] = None,
         predict: Optional[DataLoader] = None,
-    ):
+    ) -> None:
         super().__init__()
 
         self._train = train

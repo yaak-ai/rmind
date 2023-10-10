@@ -1,10 +1,10 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 
 class DetokenizedL1(nn.Module):
-    def __init__(self, image_tokens_start):
+    def __init__(self, image_tokens_start) -> None:
         super().__init__()
         self.image_tokens_start = image_tokens_start
 
@@ -24,8 +24,12 @@ class DetokenizedL1(nn.Module):
         labels_shift = labels_shift.reshape(b * t)
 
         # Kick out ignore_index labels (-1) or if labels belong to image tokens
-        labels_mask = 0 <= tgt_labels
-        labels_mask = labels_mask if self.image_tokens_start == 0 else torch.bitwise_and(labels_mask, tgt_labels < self.image_tokens_start)  # type: ignore[index]
+        labels_mask = tgt_labels >= 0
+        labels_mask = (
+            labels_mask
+            if self.image_tokens_start == 0
+            else torch.bitwise_and(labels_mask, tgt_labels < self.image_tokens_start)
+        )
 
         #
         # Softmax and sample from distribution
@@ -46,29 +50,35 @@ class DetokenizedL1(nn.Module):
         # we only detokenize metadata and action keys here
 
         pred_observations_labels, _, pred_actions_labels = torch.split(
-            masked_pred_labels.view(*view_reshape), parts, dim=2
+            masked_pred_labels.view(*view_reshape),
+            parts,
+            dim=2,
         )
         tgt_observations_labels, _, tgt_actions_labels = torch.split(
-            masked_tgt_labels.view(*view_reshape), parts, dim=2
+            masked_tgt_labels.view(*view_reshape),
+            parts,
+            dim=2,
         )
 
         # detokenize (tokens to real values)
         pred_observations_values = torch.zeros_like(
-            pred_observations_labels, dtype=torch.float
+            pred_observations_labels,
+            dtype=torch.float,
         )
         pred_actions_values = torch.zeros_like(pred_actions_labels, dtype=torch.float)
         tgt_observations_values = torch.zeros_like(
-            tgt_observations_labels, dtype=torch.float
+            tgt_observations_labels,
+            dtype=torch.float,
         )
         tgt_actions_values = torch.zeros_like(tgt_actions_labels, dtype=torch.float)
 
         for idx, key in enumerate(metadata_keys):
             inv_func = detokenizer[key]
             pred_observations_values[:, :, idx] = inv_func(
-                pred_observations_labels[:, :, idx]
+                pred_observations_labels[:, :, idx],
             )
             tgt_observations_values[:, :, idx] = inv_func(
-                tgt_observations_labels[:, :, idx]
+                tgt_observations_labels[:, :, idx],
             )
 
         for idx, key in enumerate(action_keys):
@@ -80,8 +90,8 @@ class DetokenizedL1(nn.Module):
         obs_diff = torch.abs(tgt_observations_values - pred_observations_values)
         action_diff = torch.abs(tgt_actions_values - pred_actions_values)
 
-        l1_loss = {}  # type: ignore[assignment]
-        values = {}  # type: ignore[assignment]
+        l1_loss = {}
+        values = {}
         for idx, key in enumerate(metadata_keys):
             l1_loss[key] = obs_diff[:, :, idx].mean()
             values[f"{key}_pred"] = pred_observations_values[:, :, idx]
