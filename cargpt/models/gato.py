@@ -4,7 +4,6 @@ from typing import Any, Dict, List
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
-from deephouse.tools.camera import Camera
 from einops import rearrange, repeat
 from hydra.utils import instantiate
 from jaxtyping import Float, Int
@@ -37,9 +36,9 @@ class Gato(
         # for image embeddings
         logger.debug(
             "Instantiating image encoder",
-            target=self.hparams.image_encoder._target_,  # type: ignore[union-attr]
+            target=self.hparams.image_embedding._target_,  # type: ignore[union-attr]
         )
-        self.image_encoder = instantiate(self.hparams.image_encoder)  # type: ignore[union-attr]
+        self.image_embedding = instantiate(self.hparams.image_embedding)  # type: ignore[union-attr]
         logger.debug(
             "Instantiating image tokens",
             target=self.hparams.image_tokens._target_,  # type: ignore[union-attr]
@@ -140,23 +139,16 @@ class Gato(
             )
             self.action_position = instantiate(self.hparams.position_encoding.action)  # type: ignore[union-attr]
 
-    def _image_embeddings_and_tokens(self, frames, camera: Camera | None = None):
-        _image_features = {}
-        for name, encoder in self.image_encoder.items():
-            kwargs = {"camera": camera} if name == "depth" else {}
-            _image_features[name] = encoder(frames, **kwargs)
-
-        image_features = sum(_image_features.values())
-        image_features = rearrange(image_features, "... c h w -> (...) c h w")
-
+    def _image_embeddings_and_tokens(self, frames):
+        B, T, C, H, W = frames.shape
+        frames = frames.view(B * T, C, H, W)
+        image_features = self.image_embedding(frames)
         image_features, image_tokens = self.image_tokens(
             image_features,
             self.hparams.tokens_shift["ImageEncoder"],  # type: ignore
             self.sensor_embedding,
         )
         tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
-
-        B, T, *_ = frames.shape
         _, D, H, W = image_features.shape
         image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
 
@@ -359,21 +351,16 @@ class Gato(
         return episode, tokens, shift, values
 
     def _make_episode(self, batch: Any, is_training: bool = False):
-        camera_name, frames = mit.one(batch["frames"].items())
+        frames = mit.only(batch["frames"].values())
         metadata = [(k, batch["meta"][k]) for k in self.metadata_keys]
         actions = [(k, batch["meta"][k]) for k in self.action_keys]
-        camera = (
-            Camera.from_params(params[camera_name])
-            if (params := batch.get("camera_params")) is not None
-            else None
-        )
         # tokenization + embeddings
         (
             image_embeddings,
             image_tokens,
             image_tokens_shift,
             image_values,
-        ) = self._image_embeddings_and_tokens(frames, camera=camera)
+        ) = self._image_embeddings_and_tokens(frames)
         (
             metadata_embeddings,
             metadata_tokens,
@@ -650,11 +637,6 @@ class Gato(
 
         return features[:, -(key_len + 1) : -1]
 
-    def score_step(self, batch, batch_idx):
-        loss, *_ = self._step(batch, is_training=True)
-
-        return torch.exp(-loss)
-
     def predict_step(
         self,
         batch: Any,
@@ -668,9 +650,6 @@ class Gato(
         )
         B, timesteps, *_ = mit.only(batch["frames"].values()).shape  # pyright: ignore
         ts_len = int(full_episode.shape[1] / timesteps)
-        meta = batch["meta"]
-        camera_name = mit.one(batch["frames"].keys())
-        frame_idxs = meta[f"{camera_name}/ImageMetadata_frame_idx"].tolist()
 
         actions_to_predict = len(self.action_keys)
         if start_timestep < 0:
@@ -729,13 +708,12 @@ class Gato(
                 )
 
                 log_message = ""
-                frame_idx = frame_idxs[0][-1]
                 for b in range(B):
                     pred = prediction[b, 0].item()
                     gt = batch["meta"][key][b, ts].item()
                     predictions[b][ts][key]["pred"] = pred
                     predictions[b][ts][key]["gt"] = gt
-                    log_message += f"[{frame_idx}][{key}] gt:{gt:.3f} pred:{pred:.3f}"
+                    log_message += f"[{batch_idx}][{key}] gt:{gt:.3f} pred:{pred:.3f}"
                 if verbose:
                     logger.info(log_message)
 

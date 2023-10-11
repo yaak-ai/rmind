@@ -62,6 +62,7 @@ datamodule:
               reader:
                 _target_: yaak_datasets.FrameImageVideoReader
                 path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg
+              params: /nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json
             metadata:
               path: ${paths.data_dir}/${..id}/metadata.log
               filter: (ImageMetadata_frame_idx between 24900 and 25310)
