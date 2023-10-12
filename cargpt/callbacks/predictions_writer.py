@@ -108,7 +108,7 @@ class ScoreWriter(BasePredictionWriter):
             )
             # HH:MM:SS * FPS
             start_idx = (
-                (start[3] * 60 + start[4]) * 60 + start[5] # pyright: ignore
+                (start[3] * 60 + start[4]) * 60 + start[5]  # pyright: ignore
             ) * 30
             end_idx = ((end[3] * 60 + end[4]) * 60 + end[5]) * 30  # pyright: ignore
             annotation_idx = (start_idx + end_idx) // 2

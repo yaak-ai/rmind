@@ -144,7 +144,7 @@ class Gato(
         frames = frames.view(B * T, C, H, W)
         image_features = self.image_embedding(frames)
         image_features, image_tokens = self.image_tokens(
-            image_features, # pyright: ignore
+            image_features,  # pyright: ignore
             self.hparams.tokens_shift["ImageEncoder"],  # type: ignore
             self.sensor_embedding,
         )
