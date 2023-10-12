@@ -41,7 +41,7 @@ class Trajectory(pl.LightningModule):
         self.logging = logging
 
         self.in_to_out = {
-            f"{car.canonical_camera}/ImageMetadata_frame_idx": f"ImageMetadata_frame_idx",
+            f"{car.canonical_camera}/ImageMetadata_frame_idx": "ImageMetadata_frame_idx",
             "VehicleMotion_speed": "VehicleMotion_speed",  # km / h
             "VehicleMotion_steering_angle_normalized": "VehicleMotion_steering_angle_normalized",
             "VehicleMotion_gas_pedal_normalized": "VehicleMotion_gas_pedal_normalized",

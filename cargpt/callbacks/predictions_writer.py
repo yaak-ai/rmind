@@ -8,7 +8,6 @@ import numpy as np
 import parse
 import pytorch_lightning as pl
 import torch
-import wandb
 from einops import rearrange
 from jaxtyping import Float
 from pytorch_lightning.callbacks import BasePredictionWriter

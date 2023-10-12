@@ -1,4 +1,4 @@
-from typing import Any, Tuple
+from typing import Any
 
 import pytorch_lightning as pl
 from hydra.utils import instantiate

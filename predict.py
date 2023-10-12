@@ -36,7 +36,7 @@ def _predict(cfg: DictConfig):
 @hydra.main(version_base=None, config_path="config", config_name="predict.yaml")
 def predict(cfg: DictConfig):
     if hasattr(cfg, "wandb"):
-        run = wandb.init(
+        wandb.init(
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # type: ignore
             **cfg.wandb,
         )
