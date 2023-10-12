@@ -108,8 +108,8 @@ class ScoreWriter(BasePredictionWriter):
             )
             # HH:MM:SS * FPS
             start_idx = (
-                (start[3] * 60 + start[4]) * 60 + start[5]
-            ) * 30  # pyright: ignore
+                (start[3] * 60 + start[4]) * 60 + start[5] # pyright: ignore
+            ) * 30
             end_idx = ((end[3] * 60 + end[4]) * 60 + end[5]) * 30  # pyright: ignore
             annotation_idx = (start_idx + end_idx) // 2
             annotations.append([annotation_idx, 0.0])
@@ -229,7 +229,7 @@ class VideoWriter(BasePredictionWriter):
             self._set_video_writer(width, height)
         self.predictions.append(predictions)
         if not pl_module.logging.smooth_predictions:  # type: ignore[union-attr]
-            vis, _ = predictions
+            vis, _, _ = predictions
             self.video_writer.write(vis[0, :, :, ::-1])  # type: ignore[attr-defined]
 
     def on_predict_end(
@@ -238,7 +238,7 @@ class VideoWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
     ) -> None:
         if pl_module.logging.smooth_predictions:  # type: ignore[union-attr]
-            images, metadatas = zip(*self.predictions)
+            images, _, metadata = zip(*self.predictions)
 
             # Numpy interpolate here
             # choese window_size from [1, 3, 5, 7]
@@ -273,12 +273,29 @@ class VideoWriter(BasePredictionWriter):
             self.video_writer.release()
 
         with self.predictions_file.open("w") as pfile:
-            images, metadatas = zip(*self.predictions)
+            images, gt_metadatas, pred_metadatas = zip(*self.predictions)
             metadatas = [
                 {key: value.item() for key, value in m.items()}
-                for idx, m in enumerate(metadatas)
+                for idx, m in enumerate(pred_metadatas)
             ]
             json.dump(metadatas, pfile)
+
+        breakpoint()
+        columns = [
+            "ImageMetadata_frame_idx",
+            "VehicleMotion_gas_pedal_normalized",
+            "VehicleMotion_brake_pedal_normalized",
+            "VehicleMotion_steering_angle_normalized",
+        ]
+        pred = [[d[k] for k in columns] for d in pred_metadatas]
+        gt = [[d[k] for k in columns] for d in gt_metadatas]
+
+        trainer.logger.log_table(  # pyright: ignore
+            key="predict/metadata", columns=columns, data=pred  # type: ignore[union-attr]
+        )
+        trainer.logger.log_table(  # pyright: ignore
+            key="gt/metadata", columns=columns, data=gt  # type: ignore[union-attr]
+        )
 
 
 class CSVWriter(BasePredictionWriter):

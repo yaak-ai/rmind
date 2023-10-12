@@ -6,6 +6,7 @@ defaults:
   - _self_
 
 wandb:
+  project: cargpt
   group: Gato-benchmarks
   dir: ./wandb-runs
 
@@ -25,6 +26,9 @@ trainer:
       overwrite: true
       fourcc: mp4v
       fps: 30
+  logger:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: ${wandb.project}
 
 model:
   _target_: cargpt.visualization.Trajectory
@@ -80,7 +84,7 @@ datamodule:
               params: /nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json
             metadata:
               path: ${paths.data_dir}/${..id}/metadata.log
-              filter: (ImageMetadata_frame_idx between 24900 and 25310)
+              filter: (ImageMetadata_frame_idx between 24900 and 25000)
 
               # filter: (ImageMetadata_frame_idx between 5610 and 5930) or
               #         (ImageMetadata_frame_idx between 11030 and 12020) or

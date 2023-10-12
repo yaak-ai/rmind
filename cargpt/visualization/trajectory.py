@@ -75,7 +75,7 @@ class Trajectory(pl.LightningModule):
 
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
-    ) -> Tuple[np.ndarray, dict[str, Any]]:
+    ) -> Tuple[np.ndarray, dict[str, Any], dict[str, Any]]:
         images = rearrange(
             get_images(batch, self.images_transform), "b f c h w -> b f h w c"
         )
@@ -111,20 +111,21 @@ class Trajectory(pl.LightningModule):
 
         # Model prediction trajactories
         model_actions = self.get_model_trajactories(batch)
-        metadata["VehicleMotion_gas_pedal_normalized"] = model_actions[
+        pred_metadata = metadata.copy()
+        pred_metadata["VehicleMotion_gas_pedal_normalized"] = model_actions[
             "VehicleMotion_gas_pedal_normalized"
         ]
-        metadata["VehicleMotion_brake_pedal_normalized"] = model_actions[
+        pred_metadata["VehicleMotion_brake_pedal_normalized"] = model_actions[
             "VehicleMotion_brake_pedal_normalized"
         ]
-        metadata["VehicleMotion_steering_angle_normalized"] = model_actions[
+        pred_metadata["VehicleMotion_steering_angle_normalized"] = model_actions[
             "VehicleMotion_steering_angle_normalized"
         ]
 
         pred_points_3d: Float[Tensor, "f n 3"] = self.get_trajectory_3d_points(
             steps=self.gt_steps,
             time_interval=self.gt_time_interval,
-            **metadata,
+            **pred_metadata,
         )
 
         pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
@@ -141,9 +142,9 @@ class Trajectory(pl.LightningModule):
                 line_color=(0, 255, 0),
             )
 
-            draw_preds(visualizations, metadata, line_color=(0, 255, 0))
+            draw_preds(visualizations, pred_metadata, line_color=(0, 255, 0))
 
-        return (visualizations, metadata)
+        return (visualizations, metadata, pred_metadata)
 
     def prepare_metadata(self, batch, clip_index):
         meta = batch["meta"]
