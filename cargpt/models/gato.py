@@ -18,6 +18,8 @@ from cargpt.utils._wandb import (
     ValOutputsLoggingTableMixin,
 )
 
+# torch.set_float32_matmul_precision("high")
+
 
 class Gato(
     pl.LightningModule,
@@ -191,6 +193,8 @@ class Gato(
         for k, v in metadata:
             tokenizer = getattr(self.tokenizers, k)
             token: Int[Tensor, "b t"] = tokenizer(v.clone())  # type: ignore[operator]
+            if token.min() < 0 or token.max() >= 1024:
+                breakpoint()
             token += self.hparams.tokens_shift[k]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
@@ -218,6 +222,8 @@ class Gato(
         for k, v in actions:
             tokenizer = getattr(self.tokenizers, k)
             token: Int[Tensor, "b t"] = tokenizer(v.clone())  # type: ignore[operator]
+            if token.min() < 0 or token.max() >= 1024:
+                breakpoint()
             token += self.hparams.tokens_shift[k]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)

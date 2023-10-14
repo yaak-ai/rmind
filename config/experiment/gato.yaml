@@ -25,10 +25,10 @@ action_keys:
   - "VehicleMotion_steering_angle_normalized"
 tokens_shift: # Shifting continous and discrete tokens since embeddings are shared
   VehicleMotion_speed: ${num_special_tokens}
-  VehicleMotion_gas_pedal_normalized: "${eval:'${num_special_tokens} + 1 * ${num_continous_tokens}'}"
-  VehicleMotion_brake_pedal_normalized: "${eval:'${num_special_tokens} + 2 * ${num_continous_tokens}'}"
-  VehicleMotion_steering_angle_normalized: "${eval:'${num_special_tokens} + 3 * ${num_continous_tokens}'}"
-  VehicleState_turn_signal: "${eval:'${num_special_tokens} + 4 * ${num_continous_tokens}'}"
+  VehicleMotion_gas_pedal_normalized: "${eval:'${num_special_tokens} + 0 * ${num_continous_tokens}'}"
+  VehicleMotion_brake_pedal_normalized: "${eval:'${num_special_tokens} + 0 * ${num_continous_tokens}'}"
+  VehicleMotion_steering_angle_normalized: "${eval:'${num_special_tokens} + 0 * ${num_continous_tokens}'}"
+  VehicleState_turn_signal: "${eval:'${num_special_tokens} + 1 * ${num_continous_tokens}'}"
   ImageEncoder: ${image_encoder.tokens_shift}
 
 num_heads: 8
