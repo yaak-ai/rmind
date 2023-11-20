@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -11,13 +11,15 @@ from jaxtyping import Float, Int
 from loguru import logger
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor
-from torch.nn import ModuleDict
 
 from cargpt.utils._wandb import (
     LoadableFromArtifact,
     TrainValAttnMapLoggingMixin,
     ValOutputsLoggingTableMixin,
 )
+
+if TYPE_CHECKING:
+    from torch.nn import ModuleDict
 
 
 class Gato(
@@ -30,7 +32,7 @@ class Gato(
 
     hparams: AttributeDict
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **_kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
 
@@ -39,12 +41,12 @@ class Gato(
             "Instantiating image encoder",
             target=self.hparams.image_encoder._target_,  # type: ignore[union-attr]
         )
-        self.image_encoder = instantiate(self.hparams.image_encoder)  # type: ignore[union-attr]
+        self.image_encoder = instantiate(self.hparams.image_encoder)
         logger.debug(
             "Instantiating image tokens",
             target=self.hparams.image_tokens._target_,  # type: ignore[union-attr]
         )
-        self.image_tokens = instantiate(self.hparams.image_tokens)  # type: ignore[union-attr]
+        self.image_tokens = instantiate(self.hparams.image_tokens)
         self.tokenizers: ModuleDict = instantiate(self.hparams.sensor_tokenizers)
         self.sensor_detokenization = instantiate(self.hparams.sensor_detokenization)
 
@@ -53,13 +55,13 @@ class Gato(
             "Instantiating sensor embeddings",
             target=self.hparams.sensor_embedding._target_,  # type: ignore[union-attr]
         )
-        self.sensor_embedding = instantiate(self.hparams.sensor_embedding)  # type: ignore[union-attr]
+        self.sensor_embedding = instantiate(self.hparams.sensor_embedding)
         # for sensor dropout (only activated in training)
         logger.debug(
             "Instantiating sensor dropout",
             target=self.hparams.sensor_dropout._target_,  # type: ignore[union-attr]
         )
-        self.sensor_dropout = instantiate(self.hparams.sensor_dropout)  # type: ignore[union-attr]
+        self.sensor_dropout = instantiate(self.hparams.sensor_dropout)
 
         # position encoding
         self.init_position_encodings()
@@ -68,19 +70,19 @@ class Gato(
         logger.debug(
             "Instantiating attention masking",
             target=self.hparams.attention_mask._target_,  # type: ignore[union-attr]
-        )  # type: ignore[union-attr]
-        self.attention_mask = instantiate(self.hparams.attention_mask)  # type: ignore[union-attr]
+        )
+        self.attention_mask = instantiate(self.hparams.attention_mask)
         # network
         logger.debug(
             "Instantiating gato model",
             target=self.hparams.gpt._target_,  # type: ignore[union-attr]
-        )  # type: ignore[union-attr]
-        self.gpt = instantiate(self.hparams.gpt)  # type: ignore[union-attr]
+        )
+        self.gpt = instantiate(self.hparams.gpt)
         logger.debug(
             "Instantiating regressor layer",
             target=self.hparams.regressor._target_,  # type: ignore[union-attr]
         )
-        self.regressor = instantiate(self.hparams.regressor)  # type: ignore[union-attr]
+        self.regressor = instantiate(self.hparams.regressor)
         # Losses
         logger.debug(
             "Instantiating l1 loss",
@@ -132,7 +134,9 @@ class Gato(
                 "Instantiating global position encodings",
                 target=self.hparams.position_encoding.global_pos._target_,  # type: ignore[union-attr]
             )
-            self.global_position = instantiate(self.hparams.position_encoding.global_pos)  # type: ignore[union-attr]
+            self.global_position = instantiate(
+                self.hparams.position_encoding.global_pos  # pyright: ignore
+            )
         if self.have_position_encoding.action:  # type: ignore[union-attr]
             logger.debug(
                 "Instantiating action position encodings",
@@ -154,7 +158,9 @@ class Gato(
             self.hparams.tokens_shift["ImageEncoder"],  # type: ignore
             self.sensor_embedding,
         )
-        tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
+        tokens_shift = (
+            torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # pyright: ignore
+        )
 
         B, T, *_ = frames.shape
         _, D, H, W = image_features.shape
@@ -198,7 +204,7 @@ class Gato(
 
         for k, v in metadata:
             tokenizer = getattr(self.tokenizers, k)
-            token: Int[Tensor, "b t"] = tokenizer(v.clone())  # type: ignore[operator]
+            token: Int[Tensor, "b t"] = tokenizer(v.clone())
             token += self.hparams.tokens_shift[k]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
@@ -210,10 +216,10 @@ class Gato(
             values.append(v.unsqueeze(-1))
 
         # cat on tokens
-        embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
-        tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
-        tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
-        values = torch.cat(values, 2)  # type: ignore[assignment]
+        embeddings = torch.cat(embeddings, 2)
+        tokens = torch.cat(tokens, 2)
+        tokens_shift = torch.cat(tokens_shift, 2)
+        values = torch.cat(values, 2)
 
         return embeddings, tokens, tokens_shift, values
 
@@ -225,7 +231,7 @@ class Gato(
 
         for k, v in actions:
             tokenizer = getattr(self.tokenizers, k)
-            token: Int[Tensor, "b t"] = tokenizer(v.clone())  # type: ignore[operator]
+            token: Int[Tensor, "b t"] = tokenizer(v.clone())
             token += self.hparams.tokens_shift[k]  # type: ignore[index]
             token = rearrange(token, "b t -> b t 1")
             embedding: Float[Tensor, "b t 1 e"] = self.sensor_embedding(token)
@@ -237,15 +243,15 @@ class Gato(
             values.append(v.unsqueeze(-1))
 
         # cat on tokens
-        embeddings = torch.cat(embeddings, 2)  # type: ignore[assignment]
-        tokens = torch.cat(tokens, 2)  # type: ignore[assignment]
-        tokens_shift = torch.cat(tokens_shift, 2)  # type: ignore[assignment]
-        values = torch.cat(values, 2)  # type: ignore[assignment]
-        b, t, n, e = embeddings.shape  # type: ignore[attr-defined]
+        embeddings = torch.cat(embeddings, 2)
+        tokens = torch.cat(tokens, 2)
+        tokens_shift = torch.cat(tokens_shift, 2)
+        values = torch.cat(values, 2)
+        b, t, n, e = embeddings.shape
 
         if self.have_position_encoding.action:  # type: ignore[union-attr]
             position_encoded: Float[Tensor, "b t n e"] = (
-                self.action_position(torch.tensor([0], device=embeddings.device))  # type: ignore[attr-defined]
+                self.action_position(torch.tensor([0], device=embeddings.device))
                 .view(1, 1, 1, e)
                 .repeat(b, t, n, 1)
             )
@@ -299,7 +305,7 @@ class Gato(
         tokens = []
         shift = []
         values = []
-        b, t, _, d = observations.shape
+        b, t, _, _ = observations.shape
 
         if self.hparams.have_special_tokens.bos:  # type: ignore[union-attr]
             spl_tokens = (
@@ -405,7 +411,9 @@ class Gato(
 
         if self.have_position_encoding.local:  # type: ignore[union-attr]
             # add local positional (along o) embedding to all observations image + metadata
-            local_positions = torch.arange(0, o, dtype=torch.int, device=observations.device)  # type: ignore[attr-defined]
+            local_positions = torch.arange(
+                0, o, dtype=torch.int, device=observations.device
+            )
             local_positions_encoded = (
                 self.local_position(local_positions).view(1, 1, o, d).repeat(b, t, 1, 1)
             )
@@ -437,7 +445,9 @@ class Gato(
         if self.hparams.have_position_encoding.global_pos:  # type: ignore[union-attr]
             # add global positional (along t) embedding to all tokens
             # if using transformer_encoder we add it to embeddings if using hf_gp2 we pass it as position_ids param
-            global_positions = torch.arange(0, t, dtype=torch.int, device=episode.device)  # type: ignore[attr-defined]
+            global_positions = torch.arange(
+                0, t, dtype=torch.int, device=episode.device
+            )
             global_positions_encoded = (
                 self.global_position(global_positions)
                 .view(1, t, 1, d)
@@ -468,12 +478,10 @@ class Gato(
         seqlen = (
             patch_row * patch_col + len(nun_metadata_keys) + 1 + len(num_action_keys)
         ) * clip_len
-        episode_mask = torch.triu(
+        return torch.triu(
             torch.ones(seqlen, seqlen, device=device) * float("-inf"),
             diagonal=1,
         )
-
-        return episode_mask
 
     @staticmethod
     def block_causal_sensor_attention_mask(
@@ -487,9 +495,9 @@ class Gato(
         seqlen = n_i + num_self_censor
 
         # Self masking
-        for ts_row in range(0, clip_len):
+        for ts_row in range(clip_len):
             row = seqlen * ts_row + n_i - 1
-            for ts_col in range(0, ts_row + 1):
+            for ts_col in range(ts_row + 1):
                 col = seqlen * ts_col + n_i
                 for i in range(num_self_censor):
                     episode_mask[row + i + 1, col + i] = 0
@@ -508,9 +516,9 @@ class Gato(
         seqlen = n_i + num_self_censor
 
         # Self masking
-        for ts_row in range(0, clip_len):
+        for ts_row in range(clip_len):
             row = seqlen * ts_row + n_i - 1
-            for ts_col in range(0, ts_row + 1):
+            for ts_col in range(ts_row + 1):
                 col = seqlen * ts_col + n_i
                 episode_mask[
                     row : row + num_self_censor, col : col + num_self_censor
@@ -532,7 +540,7 @@ class Gato(
         seqlen = n_i + num_self_censor
 
         # Self masking
-        for ts_col in range(0, clip_len):
+        for ts_col in range(clip_len):
             col = seqlen * ts_col + n_i
             episode_mask[:, col : col + num_self_censor] = float("-inf")
             for ts_row in range(ts_col, clip_len):
@@ -569,11 +577,9 @@ class Gato(
         mask = tgt == float("inf")
         loss[mask] = 0
 
-        loss_masked = loss.sum() / (~mask).sum()
+        return loss.sum() / (~mask).sum()
 
-        return loss_masked
-
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch, _batch_idx):
         loss_categorical, pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
             batch, is_training=True
         )
@@ -599,7 +605,7 @@ class Gato(
         )
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, _batch_idx):
         loss_categorical, pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
             batch, is_training=True
         )
@@ -630,12 +636,12 @@ class Gato(
 
         return loss
 
-    def features_step(self, batch, batch_idx):
+    def features_step(self, batch, _batch_idx):
         (
             episode,
-            episode_labels,
-            episode_labels_shift,
-            episode_values,
+            _episode_labels,
+            _episode_labels_shift,
+            _episode_values,
             episode_mask,
         ) = self._make_episode(batch, is_training=True)
 
@@ -654,11 +660,11 @@ class Gato(
         self,
         batch: Any,
         batch_idx: int,
-        dataloader_idx: int = 0,
+        _dataloader_idx: int = 0,
         start_timestep: int = 0,
         verbose: bool = False,
     ) -> Any:
-        full_episode, full_episode_labels, *_, episode_mask = self._make_episode(
+        full_episode, _full_episode_labels, *_, episode_mask = self._make_episode(
             batch, is_training=True
         )
         B, timesteps, *_ = mit.only(batch["frames"].values()).shape  # pyright: ignore
@@ -682,7 +688,6 @@ class Gato(
                 :, observations_start_idx:actions_start_idx, :
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
-            _, to, d = history.shape
             for idx, key in enumerate(self.action_keys):
                 output = self.gpt(
                     inputs_embeds=history,
@@ -759,7 +764,7 @@ class Gato(
 
         if (lr_scheduler_cfg := self.hparams.get("lr_scheduler")) is not None:
             scheduler = instantiate(lr_scheduler_cfg.scheduler, optimizer=optimizer)
-            result["lr_scheduler"] = {**lr_scheduler_cfg, **{"scheduler": scheduler}}
+            result["lr_scheduler"] = lr_scheduler_cfg | {"scheduler": scheduler}
 
         return result
 

@@ -7,14 +7,14 @@ from torchinfo import summary
 
 
 class ModelSummary(_ModelSummary):
-    def __init__(
+    def __init__(  # pyright: ignore[reportMissingSuperCall]
         self,
         col_width: int = 16,
         depth: int = 4,
         col_names: Iterable[str] = ("trainable", "num_params"),
         row_settings: Iterable[str] = ("var_names",),
         **kwargs,
-    ):
+    ) -> None:
         self._kwargs: Dict[str, Any] = {
             "depth": depth,
             "col_width": col_width,

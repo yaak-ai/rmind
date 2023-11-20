@@ -10,19 +10,19 @@ executors:
 jobs:
   build:
     executor: ci-runner
-    steps: 
+    steps:
       - checkout
       - run: poetry self update --no-ansi --no-interaction --no-cache
       - python/install-packages:
           pkg-manager: poetry
           args: --with lint
-          cache-version: v1 # bump to reset 
-      - run: poetry run black . --check
-      - run: poetry run ruff check . --no-fix
+          cache-version: v1 # bump to reset
+      - run: poetry run ruff format --check .
+      - run: poetry run ruff check --no-fix .
       - run: poetry run pyright .
       - run: poetry run deptry .
 
 workflows:
-  main: 
+  main:
     jobs:
       - build

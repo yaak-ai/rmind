@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import more_itertools as mit
@@ -7,7 +7,6 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from einops import rearrange
-from jaxtyping import Float
 from pytorch_lightning.callbacks import BasePredictionWriter
 from torch import Tensor
 
@@ -16,6 +15,9 @@ from cargpt.visualization.trajectory import (
     draw_trajectory,
     smooth_predictions,
 )
+
+if TYPE_CHECKING:
+    from jaxtyping import Float
 
 
 class FeatureWriter(BasePredictionWriter):
@@ -28,20 +30,20 @@ class FeatureWriter(BasePredictionWriter):
 
         self.output_dir = Path(output_dir)
         if self.output_dir.exists() and not overwrite:
-            raise ValueError(
-                f"The output file {str(self.output_dir.resolve())} exists!"
-            )
+            msg = f"The output file {self.output_dir.resolve()!s} exists!"
+            raise ValueError(msg)
+
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def write_on_batch_end(
         self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        _trainer: pl.Trainer,
+        _pl_module: pl.LightningModule,
         predictions: Tensor,
-        batch_indices: Optional[Sequence[int]],
+        _batch_indices: Optional[Sequence[int]],
         batch: Any,
         batch_idx: int,
-        dataloader_idx: int,
+        _dataloader_idx: int,
     ) -> None:
         camera_name = mit.one(batch["frames"].keys())
         meta = batch["meta"]
@@ -51,6 +53,8 @@ class FeatureWriter(BasePredictionWriter):
             match key.split("/"):
                 case [_name, _key] if _name == camera_name:
                     meta.rename_key_(key, _key)
+                case _:
+                    pass
 
         drive_ids = [
             drive_id.type(torch.uint8).cpu().numpy().tobytes().decode("ascii").strip()
@@ -85,9 +89,9 @@ class VideoWriter(BasePredictionWriter):
 
         self.output_file = Path(output_file)
         if self.output_file.exists() and not overwrite:
-            raise ValueError(
-                f"The output file {str(self.output_file.resolve())} exists!"
-            )
+            msg = f"The output file {self.output_file.resolve()!s} exists!"
+            raise ValueError(msg)
+
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
 
         self.fourcc = fourcc
@@ -102,20 +106,20 @@ class VideoWriter(BasePredictionWriter):
     def _set_video_writer(self, width: int, height: int) -> None:
         self.video_writer = cv2.VideoWriter(  # type: ignore
             str(self.output_file),
-            cv2.VideoWriter_fourcc(*self.fourcc),  # type: ignore
+            cv2.VideoWriter_fourcc(*self.fourcc),
             self.fps,
             (width, height),
         )
 
     def write_on_batch_end(
         self,
-        trainer: pl.Trainer,
+        _trainer: pl.Trainer,
         pl_module: pl.LightningModule,
         predictions: np.ndarray | List[np.ndarray],
-        batch_indices: Optional[Sequence[int]],
-        batch: Any,
-        batch_idx: int,
-        dataloader_idx: int,
+        _batch_indices: Optional[Sequence[int]],
+        _batch: Any,
+        _batch_idx: int,
+        _dataloader_idx: int,
     ) -> None:
         if self.video_writer is None:
             height, width, _ = predictions[0][0].shape
@@ -128,7 +132,7 @@ class VideoWriter(BasePredictionWriter):
 
     def on_predict_end(
         self,
-        trainer: pl.Trainer,
+        _trainer: pl.Trainer,
         pl_module: pl.LightningModule,
     ) -> None:
         if pl_module.logging.smooth_predictions:  # type: ignore[union-attr]
@@ -137,12 +141,14 @@ class VideoWriter(BasePredictionWriter):
             # Numpy interpolate here
             # choese window_size from [1, 3, 5, 7]
             metadatas = smooth_predictions(
-                metadatas, window_size=pl_module.logging.smooth_kernel_size  # type: ignore[union-attr]
+                metadatas,
+                window_size=pl_module.logging.smooth_kernel_size,  # type: ignore[union-attr]
             )
 
             for vis, metadata in zip(images, metadatas):
                 pred_points_3d: Float[
-                    Tensor, "f n 3"
+                    Tensor,
+                    "f n 3",
                 ] = pl_module.get_trajectory_3d_points(  # type: ignore[union-attr]
                     steps=pl_module.gt_steps,
                     time_interval=pl_module.gt_time_interval,
@@ -150,7 +156,9 @@ class VideoWriter(BasePredictionWriter):
                 )
 
                 pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
-                    pl_module.camera.project(rearrange(pred_points_3d, "f n d -> (f n) 1 1 d")),  # type: ignore
+                    pl_module.camera.project(  # pyright: ignore
+                        rearrange(pred_points_3d, "f n d -> (f n) 1 1 d"),
+                    ),
                     "(f n) 1 1 d -> f n (1 1 d)",
                     f=1,
                 )
@@ -172,25 +180,25 @@ class CSVWriter(BasePredictionWriter):
         self,
         output_file: Union[str, Path],
         overwrite: bool = False,
-    ):
-        super(CSVWriter, self).__init__(write_interval="batch")
+    ) -> None:
+        super().__init__(write_interval="batch")
 
         self.output_file = Path(output_file)
         if self.output_file.exists() and not overwrite:
-            raise ValueError(
-                f"The output file {str(self.output_file.resolve())} exists!"
-            )
+            msg = f"The output file {self.output_file.resolve()!s} exists!"
+            raise ValueError(msg)
+
         self.has_header = False
 
     def write_on_batch_end(
         self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        _trainer: pl.Trainer,
+        _pl_module: pl.LightningModule,
         predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]],
-        batch_indices: Optional[Sequence[int]],
-        batch: Any,
+        _batch_indices: Optional[Sequence[int]],
+        _batch: Any,
         batch_idx: int,
-        dataloader_idx: int,
+        _dataloader_idx: int,
     ) -> None:
         if not self.has_header:
             self._write_header(predictions)
@@ -204,31 +212,35 @@ class CSVWriter(BasePredictionWriter):
                 rows.append("\t".join(map(str, row)))
 
         with self.output_file.open("a") as f:
-            f.write("\n".join(rows))
-            f.write("\n")
+            f.write("\n".join(rows))  # pyright: ignore[reportUnusedCallResult]
+            f.write("\n")  # pyright: ignore[reportUnusedCallResult]
 
     def _write_header(
-        self, predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]]
+        self,
+        predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]],
     ) -> None:
         keys, labels = self._get_keys_and_labels(predictions)
         column_names = [f"{key}_{label}" for key in keys for label in labels]
-        header = ["batch_idx", "batch_no", "timestamp"] + column_names
+        header = ["batch_idx", "batch_no", "timestamp", *column_names]
         with self.output_file.open("w") as f:
-            f.write("\t".join(header))
-            f.write("\n")
+            f.write("\t".join(header))  # pyright: ignore[reportUnusedCallResult]
+            f.write("\n")  # pyright: ignore[reportUnusedCallResult]
         self.has_header = True
 
     def _get_keys_and_labels(
-        self, predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]]
+        self,
+        predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]],
     ) -> Tuple[List[str], List[str]]:
-        batch = list(predictions)[0]
-        ts = list(predictions[batch])[0]
+        batch = next(iter(predictions))
+        ts = next(iter(predictions[batch]))
         keys = sorted(predictions[batch][ts])
         labels = sorted(predictions[batch][ts][keys[0]])
         return keys, labels
 
     def on_predict_start(
-        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+        self,
+        _trainer: "pl.Trainer",
+        _pl_module: "pl.LightningModule",
     ) -> None:
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
         self.has_header = False

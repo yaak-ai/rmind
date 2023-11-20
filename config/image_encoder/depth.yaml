@@ -11,11 +11,16 @@ encoder:
   _target_: torch.nn.ModuleDict
   modules:
     resnet:
-      _target_: cargpt.models.encoding.ResnetBackbone
-      resnet:
-        _target_: torchvision.models.resnet18
-        weights: IMAGENET1K_V1
-      freeze: True
+      _target_: torch.nn.Sequential
+      _args_:
+        - _target_: cargpt.models.encoding.ResnetBackbone
+          resnet:
+            _target_: torchvision.models.resnet18
+            weights: IMAGENET1K_V1
+          freeze: True
+
+        - _target_: einops.layers.torch.Rearrange
+          pattern: ... c h w -> ... h w c
 
     depth:
       _target_: cargpt.layers.Sequential
@@ -25,25 +30,18 @@ encoder:
             _target_: builtins.getattr
             _args_:
               - _target_: deephouse.models.depth.DepthModule.load_from_wandb_artifact
-                _args_: ['yaak/self-supervised-depth/model-6liyv1oe:v0']
+                name: yaak/self-supervised-depth/model-6liyv1oe:v0
+                map_location: cpu
               - disp_net
           freeze: True
 
-        - _target_: einops.layers.torch.Rearrange
-          pattern: '... h w c -> ... c h w'
-
-        - _target_: cargpt.layers.AvgPool2d
-          kernel_size: 32
-
-        - _target_: einops.layers.torch.Rearrange
-          pattern: '... c h w -> ... h w c'
+        - _target_: einops.layers.torch.Reduce
+          pattern: ... (h 32) (w 32) c -> ... h w c
+          reduction: mean
 
         - _target_: cargpt.models.encoding.PointPositionalEncoder3D
           channels: ${embedding_dim}
           temperature: 1e4
-
-        - _target_: einops.layers.torch.Rearrange
-          pattern: '... h w c -> ... c h w'
 
 tokenizer:
   _target_: cargpt.models.encoding.ResNetTokens

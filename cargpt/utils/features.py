@@ -10,13 +10,14 @@ class Features(pl.LightningModule):
     def __init__(
         self,
         inference_model: DictConfig,
-    ):
+    ) -> None:
         super().__init__()
         self.model = instantiate(inference_model)
 
     def predict_step(
-        self, batch: Any, batch_idx: int, dataloader_idx: int = 0
+        self,
+        batch: Any,
+        _batch_idx: int,
+        _dataloader_idx: int = 0,
     ) -> Tuple[np.ndarray, dict[str, Any]]:
-        features = self.model.features_step(batch, batch_idx=0)
-
-        return features
+        return self.model.features_step(batch, batch_idx=0)

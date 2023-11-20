@@ -8,10 +8,9 @@ import hydra
 import pytorch_lightning as pl
 import wandb
 from hydra.utils import instantiate
-from jaxtyping import install_import_hook
+from lightning_utilities.core.rank_zero import rank_zero_only
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning.utilities import rank_zero_only
 
 from cargpt.utils.logging import setup_logging
 
@@ -19,7 +18,10 @@ OmegaConf.register_new_resolver("eval", eval)
 
 
 def _train(cfg: DictConfig):
-    pl.seed_everything(cfg.seed, workers=True)
+    pl.seed_everything(
+        cfg.seed,
+        workers=True,
+    )  # pyright: ignore[reportUnusedCallResult]
 
     logger.debug("instantiating model", target=cfg.model._target_)
     model: pl.LightningModule = instantiate(cfg.model)
@@ -44,13 +46,17 @@ def train(cfg: DictConfig):
         )
 
     if run is not None:
-        paths = set(
+        paths = {
             Path(path).resolve()
             for path in check_output(
-                ["git", "ls-files"], universal_newlines=True
+                ["git", "ls-files"],  # noqa: S603, S607
+                universal_newlines=True,
             ).splitlines()
+        }
+        run.log_code(  # pyright: ignore[reportUnusedCallResult]
+            root=".",
+            include_fn=lambda path: Path(path).resolve() in paths,
         )
-        run.log_code(root=".", include_fn=lambda path: Path(path).resolve() in paths)
 
     return _train(cfg)
 
@@ -65,5 +71,4 @@ def main():
 
 
 if __name__ == "__main__":
-    with install_import_hook("cargpt", ("beartype", "beartype")):  # type: ignore
-        main()
+    main()

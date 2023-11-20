@@ -9,7 +9,6 @@ defaults:
   - override /datamodule: gato.yaml
   - _self_
 
-
 wandb:
   group: Gato-Image-speed-to-control
   dir: ./wandb-runs
@@ -18,7 +17,7 @@ batch_size: 16
 clip_len: 6
 speed_range: [0.0, 130.0]
 
-num_special_tokens: 3  # for special tokens SOS, SEP, OES
+num_special_tokens: 3 # for special tokens SOS, SEP, OES
 num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
 num_tokens_total: ${image_encoder.total_tokens} # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens} + ${image_encoder.tokens}
@@ -133,10 +132,10 @@ model:
         cols: ${image_encoder.patch_col_tokens}
         imgs_mean: ${image_encoder.mean}
         imgs_std: ${image_encoder.std}
-        norm: max  # softmax or max
+        norm: max # softmax or max
         strength: 1.0
         reverse: false
-        color: [255, 0, 0]  # RGB
+        color: [255, 0, 0] # RGB
         log_freq: 50
     training:
       attention_maps:
@@ -145,10 +144,10 @@ model:
         cols: ${image_encoder.patch_col_tokens}
         imgs_mean: ${image_encoder.mean}
         imgs_std: ${image_encoder.std}
-        norm: max  # softmax or max
+        norm: max # softmax or max
         strength: 1.0
         reverse: false
-        color: [255, 0, 0]  # RGB
+        color: [255, 0, 0] # RGB
         log_freq: 100
 
 trainer:
@@ -172,26 +171,54 @@ trainer:
 datamodule:
   train:
     batch_size: ${batch_size}
+    num_workers: 16
     dataset:
       config:
         data:
           metadata:
-            filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
+            select:
+              - message: ImageMetadata
+                fields:
+                  - name: frame_idx
+                  - name: camera_name
+
+              - message: VehicleMotion
+                fields:
+                  - name: speed
+                  - name: steering_angle_normalized
+                  - name: gas_pedal_normalized
+                  - name: brake_pedal_normalized
+
+              - message: VehicleState
+                fields:
+                  - name: turn_signal
+
+            filter: >
+              VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
+              and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
+              and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
+              and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
+
         samples:
           clips:
             length: ${clip_len}
             stride: 10
             step: 10
 
+          transforms:
+            - _target_: yaak_datasets.transforms.Crop
+              offsets: [2, 2, 0, 0]
+
+            - _target_: yaak_datasets.transforms.Normalize
+              # ImageNet stats
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
   val:
     batch_size: ${batch_size}
+    num_workers: ${datamodule.train.num_workers}
     dataset:
       config:
         data:
-          metadata:
-            filter: VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
-        samples:
-          clips:
-            length: ${clip_len}
-            stride: 10
-            step: 10
+          metadata: ${datamodule.train.dataset.config.data.metadata}
+        samples: ${datamodule.train.dataset.config.samples}
