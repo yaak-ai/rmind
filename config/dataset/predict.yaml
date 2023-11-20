@@ -1,0 +1,37 @@
+_target_: yaak_datasets.Dataset
+_recursive_: false
+config:
+  data:
+    drives:
+      - id: Niro096-HQ/2023-01-11--13-47-36
+        sources:
+          - camera: cam_front_left
+            reader:
+              _target_: yaak_datasets.FrameImageVideoReader
+              path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg
+        metadata:
+          path: ${paths.data_dir}/${..id}/metadata.log
+          # filter: ImageMetadata_frame_idx between 24900 and 25310
+
+    metadata:
+      cameras:
+        - cam_front_left
+
+      select: ???
+      filter: ???
+
+  samples:
+    alignment:
+      ref_camera: cam_front_left
+      tolerance: 10ms
+
+    clips: ???
+    transforms: ???
+
+  processing:
+    max_workers: null
+    metadata:
+      cache:
+        enabled: true
+        path: ${paths.metadata_cache_dir}
+        size_limit: 1 GiB

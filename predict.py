@@ -6,14 +6,12 @@ from typing import TYPE_CHECKING
 import hydra
 from hydra.utils import instantiate
 from loguru import logger
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from cargpt.utils.logging import setup_logging
 
 if TYPE_CHECKING:
     import pytorch_lightning as pl
-
-OmegaConf.register_new_resolver("eval", eval)
 
 
 @hydra.main(version_base=None, config_path="config", config_name="predict.yaml")

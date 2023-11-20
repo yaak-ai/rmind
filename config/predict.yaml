@@ -2,10 +2,4 @@
 
 defaults:
   - inference: null
-  - datamodule: null
   - _self_
-
-trainer:
-  _target_: pytorch_lightning.Trainer
-  accelerator: gpu
-  devices: [0]

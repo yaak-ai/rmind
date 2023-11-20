@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import more_itertools as mit
 import numpy as np
@@ -18,14 +18,11 @@ from wandb.wandb_run import Run
 
 from cargpt.visualization import Unnormalize
 
-if TYPE_CHECKING:
-    from wandb.sdk.artifacts.artifact import Artifact
-
 
 class LoadableFromArtifact:
     @classmethod
     def load_from_wandb_artifact(cls, name: str, **kwargs):
-        get_artifact: Callable[..., Artifact] = (
+        get_artifact = (
             wandb.run.use_artifact
             if wandb.run is not None and not isinstance(wandb.run, RunDisabled)
             else wandb.Api().artifact
