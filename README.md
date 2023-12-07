@@ -57,7 +57,21 @@ just train experiment=gato [++trainer.fast_dev_run=1 ...]
 
 ## Inference
 
-Gato
+### Gato
 ```bash
 just predict inference=gato model_path=<wandb_path> output_file=<csv_file_name>
 ```
+
+### Gato2
+
+1. start rerun:
+```bash
+just rerun
+```
+
+2. in another terminal:
+```bash
+just predict inference=gato2 model.name=<wandb_path>
+```
+
+3. open [http://localhost:9090/?url=ws://localhost:9877](http://localhost:9090/?url=ws://localhost:9877)

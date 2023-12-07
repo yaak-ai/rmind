@@ -15,7 +15,7 @@ jobs:
       - run: poetry self update --no-ansi --no-interaction --no-cache
       - python/install-packages:
           pkg-manager: poetry
-          args: --with lint
+          args: --with lint,predict
           cache-version: v1 # bump to reset
       - run: poetry run ruff format --check .
       - run: poetry run ruff check --no-fix .

@@ -1,17 +1,20 @@
 from dataclasses import dataclass
 from enum import Enum
-from itertools import accumulate, pairwise
+from functools import cached_property
+from itertools import accumulate, pairwise, starmap
 from typing import Iterable, Tuple
 
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
+from cachetools import cached
 from einops import pack, rearrange
+from einops.layers.torch import Rearrange
 from hydra.utils import instantiate
-from jaxtyping import Float, Int
+from jaxtyping import Float
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.parsing import AttributeDict
-from tensordict import TensorDict, dense_stack_tds, tensorclass
+from tensordict import LazyStackedTensorDict, TensorDict, tensorclass
 from tensordict.utils import NestedKey
 from torch import Tensor
 from torch.distributions import Categorical
@@ -43,10 +46,23 @@ class EpisodeConfig:
 
 @tensorclass  # pyright: ignore
 class Episode:
-    embeddings: Float[Tensor, "b s d"]
-    labels: Int[Tensor, "b s"]
+    embeddings: TensorDict
+    labels: TensorDict
     index: TensorDict
     _keys: Tuple[NestedKey, ...]
+
+    @cached_property
+    def packed_embeddings(self):
+        packed, _ = pack([self.embeddings[k] for k in self._keys], "b t * d")
+
+        return packed
+
+
+def _hash_tensordict(index: TensorDict) -> int:
+    keys = sorted(index.keys(True, True))  # pyright: ignore
+    items = tuple((k, tuple(index[k].flatten().tolist())) for k in keys)
+
+    return hash(items)
 
 
 class Gato(
@@ -75,10 +91,7 @@ class Gato(
         metrics = self._step(batch)
 
         self.log_dict(
-            {
-                "/".join(["train", *k]): v
-                for k, v in metrics.items(include_nested=True, leaves_only=True)
-            }
+            {"/".join(["train", *k]): v for k, v in metrics.items(True, True)}
         )
 
         return metrics["loss"]["total"]
@@ -86,54 +99,71 @@ class Gato(
     def validation_step(self, batch: TensorDict, _batch_idx: int):
         metrics = self._step(batch)
 
-        self.log_dict(
-            {
-                "/".join(["val", *k]): v
-                for k, v in metrics.items(include_nested=True, leaves_only=True)
-            }
-        )
+        self.log_dict({"/".join(["val", *k]): v for k, v in metrics.items(True, True)})
 
         return metrics["loss"]["total"]
 
-    def configure_optimizers(self):
-        optimizer = instantiate(self.hparams.optimizer, params=self.parameters())
-        result = {"optimizer": optimizer}
+    def predict_step(self, batch: TensorDict, _batch_idx: int) -> LazyStackedTensorDict:
+        input = self._build_input(batch)
+        episode = self._build_episode(input)
+        attn_mask = self._build_attention_mask(episode.index)
 
-        if (cfg := self.hparams.get("lr_scheduler")) is not None:
-            scheduler = instantiate(cfg.scheduler, optimizer=optimizer)
-            result["lr_scheduler"] = cfg | {"scheduler": scheduler}
+        embeddings = rearrange(episode.packed_embeddings, "b t s d -> b (t s) d")
+        _, seq_len, _ = embeddings.shape
 
-        return result
+        actions = self.episode.actions
+        seq_prefix_len = seq_len - len(actions)
+        if (expected := list(range(seq_prefix_len, seq_len))) != (
+            actual := [episode.index[k][-1].item() for k in actions]
+        ):
+            msg = f"invalid action indices (expected: {expected}, actual: {actual})"
+            raise RuntimeError(msg)
+
+        prediction = TensorDict({}, batch_size=batch.batch_size, device=batch.device)
+
+        for t, n in actions:
+            encoder_output = self.encoder(
+                src=embeddings[:, :seq_prefix_len],
+                mask=attn_mask[:seq_prefix_len, :seq_prefix_len],
+            )
+            encoded = encoder_output[:, -1]
+            logit = self.decoders[t](encoded)
+            pred_token = logit.argmax(dim=-1)
+            prediction[t, n] = self.detokenizers[t](pred_token)
+
+            pred_emb = self.embeddings[t](pred_token)
+
+            if pos_enc := getattr(self.position_encoding, "actions", None):
+                pos = torch.arange(pos_enc.num_embeddings, device=pred_emb.device)
+                pred_emb += pos_enc(pos)
+
+            if pos_enc := getattr(self.position_encoding, "episode", None):
+                pos = torch.arange(pos_enc.num_embeddings, device=pred_emb.device)
+                pred_emb += pos_enc(pos[-1])
+
+            embeddings[:, seq_prefix_len] = pred_emb
+            seq_prefix_len += 1
+
+        return torch.stack([input, prediction], dim=1)  # pyright: ignore
 
     def _step(self, batch: TensorDict) -> TensorDict:
         input = self._build_input(batch)
         episode = self._build_episode(input)
 
-        if not hasattr(self, "attn_mask"):
-            self.attn_mask = self._build_attention_mask(episode.index)
+        attn_mask = self._build_attention_mask(episode.index)
+        if self.trainer.global_step == 0 and isinstance(self.logger, WandbLogger):
+            attn_mask_logged = torch.empty_like(attn_mask)
+            attn_mask_logged[attn_mask == 0] = 1
+            attn_mask_logged[attn_mask == -torch.inf] = 0
+            self.logger.log_image("attention_mask", [Image(attn_mask_logged)], step=0)
 
-            if isinstance((logger := self.trainer.logger), WandbLogger):
-                mask = self.attn_mask.clone()
-                mask[mask == 0] = 1
-                mask[mask == -torch.inf] = 0
-                logger.experiment.log({"attention_mask": Image(mask)})
+        embeddings = rearrange(episode.packed_embeddings, "b t s d -> b (t s) d")
+        encoder_output = self.encoder(src=embeddings, mask=attn_mask)
 
-        encoder_output = self.encoder(src=episode.embeddings, mask=self.attn_mask)
-
-        label_index = episode.index.select(*self.decoders.keys()).apply(
-            lambda x: x[x > 0],
-            batch_size=[],
-        )
-
-        labels = label_index.apply(
-            lambda x: episode.labels.index_select(dim=1, index=x),
-            batch_size=[episode.labels.shape[0]],
-        )
-
-        logit_index = label_index.apply(lambda x: x - 1)
-
+        label_index = episode.index.select(*self.decoders.keys())
+        logit_index = label_index.apply(lambda idx: idx[idx > 0] - 1, batch_size=[])
         encoded = logit_index.apply(
-            lambda x: encoder_output.index_select(dim=1, index=x),
+            lambda idx: encoder_output[:, idx.flatten(), :],
             batch_size=[encoder_output.shape[0]],
         )
 
@@ -143,28 +173,45 @@ class Gato(
             device=encoded.device,
         )
 
+        labels = episode.labels.select(*self.decoders.keys()).apply(
+            lambda lbl, idx: lbl[:, idx > 0],
+            label_index,
+        )
+
         loss = TensorDict.from_dict(
             {
                 k: self.loss(
                     rearrange(logits[k], "b t d -> (b t) d"),
                     rearrange(labels[k], "b t -> (b t)"),
                 )
-                for k in logits.keys(include_nested=True, leaves_only=True)  # pyright: ignore
+                for k in logits.keys(True, True)  # pyright: ignore
             }
         )
 
-        loss["total"] = torch.stack(
-            tuple(loss.values(include_nested=True, leaves_only=True))  # pyright: ignore
-        ).mean()
+        loss["total"] = torch.stack(tuple(loss.values(True, True))).mean()  # pyright: ignore
 
         with torch.no_grad():
-            diff = self._compute_diff(logits=logits, labels=labels)
+            preds = logits.apply(lambda x: Categorical(logits=x).sample())
+            pred_values = TensorDict(
+                {k: v.apply(self.detokenizers[k]) for k, v in preds.items()},
+                batch_size=preds.batch_size,
+            )
+
+            label_values = TensorDict(
+                {k: v.apply(self.detokenizers[k]) for k, v in labels.items()},
+                batch_size=labels.batch_size,
+            )
+            diff = pred_values.apply(
+                lambda pred, lbl: (pred - lbl).abs().float().mean(),
+                label_values,
+                batch_size=[],
+            )
 
         return TensorDict.from_dict({"loss": loss, "diff": diff})
 
     def _build_input(self, batch: TensorDict) -> TensorDict:
         meta = batch["meta"]
-        input = TensorDict(
+        input = TensorDict.from_dict(
             {
                 Token.IMAGE: batch["frames"],
                 Token.CONTINUOUS: {
@@ -181,7 +228,6 @@ class Gato(
             },
             batch_size=batch.batch_size,
             device=batch.device,
-            names=["b"],
         )
 
         for t, transforms in self.transforms.items():
@@ -191,18 +237,14 @@ class Gato(
         return input
 
     def _build_episode(self, input: TensorDict) -> Episode:
-        td_kwargs = {
-            "batch_size": input.batch_size,
-            "names": input.names,
-            "device": input.device,
-        }
         tokens = TensorDict(
             {
                 (k := Token.CONTINUOUS): input[k].apply(self.tokenizers[k]),
                 (k := Token.DISCRETE): input[k].apply(self.tokenizers[k]),
             },
-            **td_kwargs,
-        )
+            batch_size=input.batch_size,
+            device=input.device,
+        ).apply(Rearrange("b t -> b t 1"))
 
         embeddings = TensorDict(
             {
@@ -210,127 +252,82 @@ class Gato(
                 (k := Token.CONTINUOUS): tokens[k].apply(self.embeddings[k]),
                 (k := Token.DISCRETE): tokens[k].apply(self.embeddings[k]),
             },
-            **td_kwargs,
+            batch_size=input.batch_size,
+            device=input.device,
         )
 
-        observation_embeddings, _ = pack(
-            [embeddings[k] for k in self.episode.observations],
-            "b t * d",
+        step_keys = self.episode.observations + self.episode.actions
+        step_index_counts = [embeddings.get_item_shape(k)[2] for k in step_keys]
+        step_index_ranges = pairwise(accumulate(step_index_counts, initial=0))
+        step_index = TensorDict(
+            dict(zip(step_keys, starmap(torch.arange, step_index_ranges))),
+            batch_size=[],
+            device=embeddings.device,
+        )
+        step_len = sum(step_index_counts)
+        step_count = mit.one({embeddings.get_item_shape(k)[1] for k in step_keys})
+        index = step_index.apply(
+            lambda idx: torch.stack([idx + i * step_len for i in range(step_count)]),
+            batch_size=[step_count],
         )
 
         if pos_enc := getattr(self.position_encoding, "observations", None):
-            _b, _t, s, _d = observation_embeddings.shape
-            pos = torch.arange(s, device=observation_embeddings.device)
-            observation_embeddings += pos_enc(pos)
-
-        action_embeddings, _ = pack(
-            [embeddings[k] for k in self.episode.actions],
-            "b t * d",
-        )
+            embeddings.select(*self.episode.observations).apply(
+                lambda emb, pos: emb + pos_enc(pos),  # pyright: ignore
+                step_index,
+                inplace=True,
+            )
 
         if pos_enc := getattr(self.position_encoding, "actions", None):
-            s = 1  # all actions share the same position encoding
-            pos = torch.arange(s, device=action_embeddings.device)
-            action_embeddings += pos_enc(pos)
-
-        episode_embeddings, _ = pack(
-            [observation_embeddings, action_embeddings],
-            "b t * d",
-        )
-
-        _b, t, _s, _d = episode_embeddings.shape
-        if pos_enc := getattr(self.position_encoding, "episode", None):
-            pos = torch.arange(t, device=episode_embeddings.device)
-            episode_embeddings += rearrange(pos_enc(pos), "t d -> t 1 d")
-
-        labels = tokens.apply(lambda x: rearrange(x, "b t -> b t 1")).set(
-            (k := Token.IMAGE),
-            embeddings[k].apply(
-                lambda x: torch.full(
-                    x.shape[:-1],
-                    self.loss.ignore_index,
-                    device=embeddings.device,
-                )
-            ),
-        )
-
-        episode_keys = self.episode.observations + self.episode.actions
-        episode_labels, episode_labels_ps = pack(
-            [labels[k] for k in episode_keys],
-            "b t *",
-        )
-
-        index_keys = episode_keys * t
-        index_counts = tuple(map(mit.one, episode_labels_ps)) * t
-        index_ranges = tuple(
-            zip(
-                index_keys,
-                pairwise(accumulate(index_counts, initial=0)),
+            pos = torch.arange(pos_enc.num_embeddings, device=embeddings.device)
+            pos_encd = pos_enc(pos)
+            embeddings.select(*self.episode.actions).apply(
+                lambda emb: emb + pos_encd,
+                inplace=True,
             )
-        )
-        episode_index = TensorDict(
-            mit.map_reduce(
-                index_ranges,
-                keyfunc=lambda x: x[0],
-                valuefunc=lambda x: torch.arange(*x[1]),
-            ),
-            batch_size=[t],
-            names=["t"],
-        )
+
+        # TODO: rename to timestep?
+        if pos_enc := getattr(self.position_encoding, "episode", None):
+            pos = torch.arange(pos_enc.num_embeddings, device=embeddings.device)
+            pos_encd = rearrange(pos_enc(pos), "t d -> t 1 d")
+            embeddings.apply(
+                lambda emb: emb + pos_encd,
+                inplace=True,
+            )
 
         return Episode(  # pyright: ignore
-            embeddings=rearrange(episode_embeddings, "b t s d -> b (t s) d"),
-            labels=rearrange(episode_labels, "b t s -> b (t s)"),
-            index=episode_index,
-            _keys=episode_keys,
+            embeddings=embeddings,
+            labels=tokens,
+            index=index,
+            _keys=step_keys,
             batch_size=[],
-            device=td_kwargs["device"],
+            device=input.device,
         )
 
-    @classmethod
-    def _build_attention_mask(cls, index: TensorDict) -> Float[Tensor, "s s"]:
+    @staticmethod
+    @cached(cache={}, key=_hash_tensordict)
+    def _build_attention_mask(index: TensorDict) -> Float[Tensor, "s s"]:
         DO_ATTEND = 0
         DO_NOT_ATTEND = -torch.inf
 
-        max_idx = int(
-            torch.tensor(
-                tuple(
-                    index.apply(torch.max, batch_size=[]).values(
-                        include_nested=True, leaves_only=True
-                    )
-                ),
-            )
-            .max()
-            .item()
-        )
+        idx_max = max(index.apply(torch.max, batch_size=[]).values(True, True)).item()
 
         mask = torch.full(
-            (max_idx + 1, max_idx + 1),
+            (idx_max + 1, idx_max + 1),
             DO_NOT_ATTEND,
             device=index.device,
         )
 
         for step in range(mit.one(index.batch_size)):
-            # non-image tokens attend to themselves from current and past steps
-            for idxs in index.exclude("image").values(
-                include_nested=True,
-                leaves_only=True,
-            ):
-                mask[idxs[step:], idxs[step]] = DO_ATTEND
+            # non-image tokens attend to themselves
+            for idxs in index.exclude("image").values(True, True):
+                mask[idxs[step], idxs[step]] = DO_ATTEND
 
             # all tokens attend to all image tokens from current and past steps
-            fut_all = torch.cat(
-                tuple(index[step:].values(include_nested=True, leaves_only=True)),
-                -1,
-            ).flatten()
+            fut_all = torch.cat(tuple(index[step:].values(True, True)), -1).flatten()
 
             cur_img = torch.cat(
-                tuple(
-                    index.select("image")[step].values(
-                        include_nested=True, leaves_only=True
-                    )
-                ),
-                -1,
+                tuple(index.select("image")[step].values(True, True)), -1
             ).flatten()
 
             idxs = torch.meshgrid([fut_all.flatten(), cur_img.flatten()], indexing="ij")
@@ -338,20 +335,12 @@ class Gato(
 
         return mask
 
-    def _compute_diff(
-        self,
-        *,
-        logits: TensorDict,
-        labels: TensorDict,
-    ) -> TensorDict:
-        preds = logits.apply(lambda x: Categorical(logits=x).sample())
-        preds_labels = dense_stack_tds([preds, labels], dim=0)
-        values = TensorDict.from_dict(
-            {k: v.apply(self.detokenizers[k]) for k, v in preds_labels.items()},
-            batch_size=preds_labels.batch_size,
-        )
+    def configure_optimizers(self):
+        optimizer = instantiate(self.hparams.optimizer, params=self.parameters())
+        result = {"optimizer": optimizer}
 
-        return values.apply(
-            lambda x: (x[0] - x[1]).abs().float().mean(),
-            batch_size=[],
-        )
+        if (cfg := self.hparams.get("lr_scheduler")) is not None:
+            scheduler = instantiate(cfg.scheduler, optimizer=optimizer)
+            result["lr_scheduler"] = cfg | {"scheduler": scheduler}
+
+        return result
