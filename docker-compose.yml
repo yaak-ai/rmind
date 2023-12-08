@@ -1,0 +1,20 @@
+version: "3.3"
+
+services:
+
+  cargpt-gpu:
+      build:
+        context: .
+        dockerfile: Dockerfile.gpu
+        ssh:
+          - default
+      ipc: host
+      runtime: nvidia
+      image: yaaktech/cargpt:trainer-gpu-latest
+      volumes:
+        - $HOME/cache:/root/.cache
+        - /nas:/nas
+      ports:
+        - "127.0.0.1:22910:22910"
+      environment:
+        - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
