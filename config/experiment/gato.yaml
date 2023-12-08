@@ -13,23 +13,23 @@ wandb:
   group: Gato-Image-speed-to-control
   dir: ./wandb-runs
 
-num_special_tokens: 3  # for special tokens SOS, SEP, OES
+num_special_tokens: 3  # for special tokens MASK, SEP, OES
 num_continous_tokens: 1024 # real values -> bin
 num_discrete_tokens: 3 # only turn signals (left, right, none)
 num_tokens_total: ${image_encoder.total_tokens} # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens} + ${image_encoder.tokens}
 metadata_keys: ["VehicleMotion_speed", "VehicleState_turn_signal"]
 speed_range: ${image_encoder.speed_range}
 action_keys:
-  - "VehicleMotion_gas_pedal_normalized"
-  - "VehicleMotion_brake_pedal_normalized"
+  - [gas_minus_brake, "VehicleMotion_gas_pedal_normalized", "VehicleMotion_brake_pedal_normalized"]
   - "VehicleMotion_steering_angle_normalized"
 tokens_shift: # Shifting continous and discrete tokens since embeddings are shared
   VehicleMotion_speed: ${num_special_tokens}
-  VehicleMotion_gas_pedal_normalized: "${eval:'${num_special_tokens} + 0 * ${num_continous_tokens}'}"
-  VehicleMotion_brake_pedal_normalized: "${eval:'${num_special_tokens} + 0 * ${num_continous_tokens}'}"
+  gas_minus_brake: "${eval:'${num_special_tokens} + 0 * ${num_continous_tokens}'}"
   VehicleMotion_steering_angle_normalized: "${eval:'${num_special_tokens} + 0 * ${num_continous_tokens}'}"
   VehicleState_turn_signal: "${eval:'${num_special_tokens} + 1 * ${num_continous_tokens}'}"
   ImageEncoder: ${image_encoder.tokens_shift}
+
+objective: pretraining
 
 num_heads: 8
 num_layers: 24
@@ -52,6 +52,7 @@ model:
   sensor_detokenization: ${sensor_encoder.sensor_detokenization}
 
   # https://arxiv.org/pdf/1812.03079.pdf
+  # https://arxiv.org/pdf/1905.11979.pdf
   sensor_dropout:
     _target_: cargpt.models.encoding.SenorDropout
     prob: 1.0
@@ -79,16 +80,75 @@ model:
       embedding_dim: ${embedding_dim}
 
   attention_mask:
-    _target_: cargpt.models.gato.Gato.causal_attention_mask
-    _args_:
-      - ${image_encoder.patch_row_tokens}
-      - ${image_encoder.patch_col_tokens}
-      - ${metadata_keys}
-      - ${action_keys}
-      - ${image_encoder.clip_len}
-    _partial_: True
+    gato:
+      _target_: cargpt.models.gato.Gato.causal_attention_mask
+      _args_:
+        - ${image_encoder.patch_row_tokens}
+        - ${image_encoder.patch_col_tokens}
+        - ${metadata_keys}
+        - ${action_keys}
+        - ${image_encoder.clip_len}
+      _partial_: True
+    forward_dynamics:
+      _target_: cargpt.models.gato.Gato.causal_attention_mask
+      _args_:
+        - ${image_encoder.patch_row_tokens}
+        - ${image_encoder.patch_col_tokens}
+        - ${metadata_keys}
+        - ${action_keys}
+        - ${image_encoder.clip_len}
+      _partial_: True
+    inverse_dynamics:
+      _target_: cargpt.models.gato.Gato.block_all_sensor_and_image_from_sensor_attention_mask
+      _args_:
+        - ${image_encoder.patch_row_tokens}
+        - ${image_encoder.patch_col_tokens}
+        - ${metadata_keys}
+        - ${action_keys}
+        - ${image_encoder.clip_len}
+      _partial_: True
+    hindsight_control:
+      _target_: cargpt.models.gato.Gato.full_attention_mask
+      _args_:
+        - ${image_encoder.patch_row_tokens}
+        - ${image_encoder.patch_col_tokens}
+        - ${metadata_keys}
+        - ${action_keys}
+        - ${image_encoder.clip_len}
+      _partial_: True
 
   gpt: ${llm.model}
+  heads:
+    _target_: torch.nn.ModuleDict
+    modules:
+      gato:
+        _target_: torch.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${image_encoder.total_tokens}
+        bias: False
+      forwad_dynamics:
+        _target_: torch.nn.Linear
+        in_features: "${eval:'2 * ${embedding_dim}'}"
+        out_features: ${embedding_dim}
+        bias: False
+      inverse_dynamics:
+        _target_: torch.nn.Linear
+        in_features: "${eval:'2 * ${embedding_dim}'}"
+        out_features: ${image_encoder.total_tokens}
+        bias: False
+      hindsight_control:
+        _target_: torch.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${image_encoder.total_tokens}
+        bias: False
+  loss:
+    ce:
+      _target_: torch.nn.CrossEntropyLoss
+      ignore_index: -100
+      reduction: mean
+    mse:
+      _target_: torch.nn.MSELoss
+      reduction: mean
 
   regressor:
     _target_: torch.nn.Linear
@@ -109,8 +169,9 @@ model:
 
   metadata_keys: ${metadata_keys}
   action_keys: ${action_keys}
+  clip_len: ${image_encoder.clip_len}
   special_tokens:
-    bos: 0
+    mask: 0
     sep: 1
     eos: 2
   tokens_shift: ${tokens_shift}
@@ -120,32 +181,13 @@ model:
     image: ${image_encoder.tokens_mask}
     metadata: 1
     action: 1
-  log:
-    validation:
-      outputs: true
-      attention_maps:
-        layer: -1
-        rows: ${image_encoder.patch_row_tokens}
-        cols: ${image_encoder.patch_col_tokens}
-        imgs_mean: ${image_encoder.mean}
-        imgs_std: ${image_encoder.std}
-        norm: max  # softmax or max
-        strength: 1.0
-        reverse: false
-        color: [255, 0, 0]  # RGB
-        log_freq: 50
-    training:
-      attention_maps:
-        layer: -1
-        rows: ${image_encoder.patch_row_tokens}
-        cols: ${image_encoder.patch_col_tokens}
-        imgs_mean: ${image_encoder.mean}
-        imgs_std: ${image_encoder.std}
-        norm: max  # softmax or max
-        strength: 1.0
-        reverse: false
-        color: [255, 0, 0]  # RGB
-        log_freq: 100
+  objective: ${objective}
+  pretraining:
+    - forwad_dynamics
+    - inverse_dynamics
+    - hindsight_control
+  finetuning:
+    - gato
 
 trainer:
   _target_: pytorch_lightning.Trainer

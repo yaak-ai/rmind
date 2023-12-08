@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 import more_itertools as mit
 import pytorch_lightning as pl
+import random
 import torch
 from einops import rearrange, repeat
 from hydra.utils import instantiate
@@ -14,8 +15,6 @@ from torch.nn import ModuleDict
 
 from cargpt.utils._wandb import (
     LoadableFromArtifact,
-    TrainValAttnMapLoggingMixin,
-    ValOutputsLoggingTableMixin,
 )
 
 # torch.set_float32_matmul_precision("high")
@@ -23,8 +22,6 @@ from cargpt.utils._wandb import (
 
 class Gato(
     pl.LightningModule,
-    ValOutputsLoggingTableMixin,
-    TrainValAttnMapLoggingMixin,
     LoadableFromArtifact,
 ):
     """A Generalist Agent (Gato) https://arxiv.org/abs/2205.06175"""
@@ -64,19 +61,20 @@ class Gato(
 
         # position encoding
         self.init_position_encodings()
-
-        # masking
-        logger.debug(
-            "Instantiating attention masking",
-            target=self.hparams.attention_mask._target_,  # type: ignore[union-attr]
-        )  # type: ignore[union-attr]
-        self.attention_mask = instantiate(self.hparams.attention_mask)  # type: ignore[union-attr]
         # network
         logger.debug(
             "Instantiating gato model",
             target=self.hparams.gpt._target_,  # type: ignore[union-attr]
         )  # type: ignore[union-attr]
         self.gpt = instantiate(self.hparams.gpt)  # type: ignore[union-attr]
+
+        logger.debug(
+            "Instantiating heads",
+            target=self.hparams.heads._target_,  # type: ignore[union-attr]
+        )  # type: ignore[union-attr]
+        self.heads = instantiate(self.hparams.heads)
+        self.loss_ce = instantiate(self.hparams.loss.ce)
+        self.loss_mse = instantiate(self.hparams.loss.mse)
         logger.debug(
             "Instantiating regressor layer",
             target=self.hparams.regressor._target_,  # type: ignore[union-attr]
@@ -96,12 +94,17 @@ class Gato(
 
         self.action_keys: List[str] = self.hparams.action_keys  # type: ignore[assignment]
         self.metadata_keys: List[str] = self.hparams.metadata_keys  # type: ignore[assignment]
+        self.clip_len: int = self.hparams.clip_len  # type: ignore[assignment]
+        self.task: str = self.hparams.objective  # type: ignore[assignment]
+        self.objectives: List[str] = getattr(self.hparams, self.task)  # type: ignore[assignment]
 
-        self.val_table_main_columns = [
-            f"{key}_{label}"
-            for key in self.metadata_keys + self.action_keys  # type: ignore
-            for label in ("pred", "tgt")
-        ]
+        # masking
+        logger.debug(
+            "Instantiating attention masking",
+            target=self.hparams.attention_mask._target_,  # type: ignore[union-attr]
+        )  # type: ignore[union-attr]
+        self.attention_masks = {objective: instantiate(getattr(self.hparams.attention_mask, objective)) for objective in self.objectives}  # type: ignore[union-attr]
+
         # tie input sensor embeddings to LM Head of GPT2
         self.sensor_embedding.weight = self.gpt.get_output_embeddings().weight
         assert torch.all(
@@ -252,17 +255,17 @@ class Gato(
 
         return embeddings, tokens, tokens_shift, values
 
-    def _step(self, batch: Any, is_training: bool = False):
+    def _step(self, batch: Any, objective: str = 0):
         (
             episode,
             episode_labels,
             episode_labels_shift,
             episode_values,
-            episode_mask,
-        ) = self._make_episode(batch, is_training=is_training)
+            episode_masks,
+        ) = self._make_episode(batch)
 
         episode_loss, episode_logits, episode_pred_values = self.forward(
-            episode=episode, episode_labels=episode_labels, episode_mask=episode_mask
+            episode=episode, episode_labels=episode_labels, episode_masks=episode_masks
         )
 
         # left shift gt
@@ -356,10 +359,15 @@ class Gato(
 
         return episode, tokens, shift, values
 
-    def _make_episode(self, batch: Any, is_training: bool = False):
+    def _make_episode(self, batch: Any):
         frames = mit.only(batch["frames"].values())
         metadata = [(k, batch["meta"][k]) for k in self.metadata_keys]
-        actions = [(k, batch["meta"][k]) for k in self.action_keys]
+        actions = [
+            (k, batch["meta"][k])
+            if isinstance(k, str)
+            else (k[0], batch["meta"][k[1]] - batch["meta"][k[2]])
+            for k in self.action_keys
+        ]
         # tokenization + embeddings
         (
             image_embeddings,
@@ -379,12 +387,6 @@ class Gato(
             action_tokens_shift,
             action_values,
         ) = self._action_embeddings_and_tokens(actions)
-
-        # https://arxiv.org/pdf/1905.11979.pdf
-        # https://arxiv.org/pdf/1812.03079.pdf
-        if is_training:
-            embeddings = self.sensor_dropout([metadata_embeddings, action_embeddings])
-            metadata_embeddings, action_embeddings = embeddings
 
         observations = torch.cat([image_embeddings, metadata_embeddings], 2)
         observation_tokens = torch.cat([image_tokens, metadata_tokens], 2)
@@ -443,14 +445,23 @@ class Gato(
         episode_labels_shift = episode_labels_shift.view(b, t * (o + 1 + a))
         episode_values = episode_values.view(b, t * (o + 1 + a))
 
-        episode_mask = self.attention_mask(episode.device)
+        # This can be done once
+        mask_builders = {
+            objective: self.attention_masks.get(objective)
+            for objective in self.objectives
+        }
+
+        episode_masks = {
+            objective: mask_builder(episode.device)
+            for objective, mask_builder in mask_builders
+        }
 
         return (
             episode,
             episode_labels,
             episode_labels_shift,
             episode_values,
-            episode_mask,
+            episode_masks,
         )
 
     @staticmethod
@@ -465,6 +476,18 @@ class Gato(
             torch.ones(seqlen, seqlen, device=device) * float("-inf"),
             diagonal=1,
         )
+
+        return episode_mask
+
+    @staticmethod
+    def full_attention_mask(
+        patch_row, patch_col, nun_metadata_keys, num_action_keys, clip_len, device
+    ):
+        # causal masking fr fr
+        seqlen = (
+            patch_row * patch_col + len(nun_metadata_keys) + 1 + len(num_action_keys)
+        ) * clip_len
+        episode_mask = torch.zeros((seqlen, seqlen), device=device)
 
         return episode_mask
 
@@ -529,9 +552,9 @@ class Gato(
             col = seqlen * ts_col + n_i
             episode_mask[:, col : col + num_self_censor] = float("-inf")
             for ts_row in range(ts_col, clip_len):
-                row = seqlen * ts_row + n_i - 1
+                row = seqlen * ts_row + n_i
                 for i in range(num_self_censor):
-                    episode_mask[row + i + 1, col + i] = 0
+                    episode_mask[row + i, col + i] = 0
 
         return episode_mask
 
@@ -567,8 +590,9 @@ class Gato(
         return loss_masked
 
     def training_step(self, batch, batch_idx):
+        objetive = random.sample(self.objective, 1)
         loss_categorical, pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
-            batch, is_training=True
+            batch, objetive=objetive
         )
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, _ = self._compute_diff(pred, tgt, tgt_shift)
@@ -593,8 +617,9 @@ class Gato(
         return loss
 
     def validation_step(self, batch, batch_idx):
+        objetive = random.sample(self.objective, 1)
         loss_categorical, pred, pred_values, tgt, tgt_shift, tgt_values = self._step(
-            batch, is_training=True
+            batch, objetive=objetive
         )
         loss_l1 = self._compute_loss_l1(pred_values, tgt_values)
         diff_l1, numeric_values = self._compute_diff(pred, tgt, tgt_shift)
@@ -619,7 +644,6 @@ class Gato(
             rank_zero_only=True,
             batch_size=pred.shape[0],
         )
-        self._log_val_outputs_dict(outputs_dict=numeric_values)
 
         return loss
 
@@ -630,7 +654,7 @@ class Gato(
             episode_labels_shift,
             episode_values,
             episode_mask,
-        ) = self._make_episode(batch, is_training=True)
+        ) = self._make_episode(batch)
 
         output = self.gpt(
             inputs_embeds=episode,
@@ -651,9 +675,7 @@ class Gato(
         start_timestep: int = 0,
         verbose: bool = False,
     ) -> Any:
-        full_episode, full_episode_labels, *_, episode_mask = self._make_episode(
-            batch, is_training=True
-        )
+        full_episode, full_episode_labels, *_, episode_mask = self._make_episode(batch)
         B, timesteps, *_ = mit.only(batch["frames"].values()).shape  # pyright: ignore
         ts_len = int(full_episode.shape[1] / timesteps)
 
@@ -730,21 +752,73 @@ class Gato(
         *,
         episode: Float[Tensor, "b to d"],
         episode_labels: Int[Tensor, "b to"],
-        episode_mask: Float[Tensor, "d d"],
+        episode_masks: Dict[Float[Tensor, "d d"]],
     ):
-        output = self.gpt(
-            inputs_embeds=episode,
-            labels=episode_labels.to(torch.long),
-            episode_mask=episode_mask,
-        )
-        # last layer features
-        features = output["hidden_states"][-1]
-        values = self.regressor(features)
+        output = {}
+        output["loss"] = {}
+        for objective, episode_mask in episode_masks:
+            x = self.gpt(inputs_embeds=episode, episode_mask=episode_mask)
 
-        loss = output["loss"]
-        logits = output["logits"]
+            loss_fn = getattr(self, f"loss_{objective}")
+            output = loss_fn(x, output, episode_labels.to(torch.long), num_obs, num_act)
 
         return loss, logits, values
+
+    def loss_gato(self, input, output, logits, labels, num_obs, num_act):
+        head = self.heads.get("gato")
+        logits = head(input)
+
+        output["logits"] = logits
+        output["hidden_states"] = [x]
+        # right shift logits
+
+        if labels is not None:
+            shifted_logits = logits[:, :-1, :].contiguous()
+            b, t, c = shifted_logits.shape
+            # left shift labels
+            shifted_labels = labels[:, 1:].contiguous()
+            # flatten on batch dimension
+            logits_flattened = shifted_logits.view(b * t, c)
+            labels_flattened = shifted_labels.view(b * t)
+            loss = self.loss(logits_flattened, labels_flattened)
+            output["loss/gato"] = loss
+
+        return output
+
+    def loss_forward_dynamics(self, input, output, logits, labels):
+        head = self.heads.get("forwad_dynamics")
+        B, T, D = input.shape
+        input = input.view(B, self.clip_len, -1, D)
+        image, actions = torch.chunk(input, [I, num_obs + num_act + 1], dim=2)
+        image = torch.mean(image, dim=2, keepdims=True)
+
+        src_obs = image[:, :-1]
+        tgt_obs = image[:, 1:]
+        src_actions = actions[:, :-1]
+
+        src = torch.cat([src_obs, src_actions], dim=3)
+        out = head(src)
+
+        return self.loss_mse(out, tgt_obs)
+
+    def loss_inverse_dynamics(self, input, output, logits, labels):
+        head = self.heads.get("forwad_dynamics")
+        B, T, D = input.shape
+        input = input.view(B, self.clip_len, -1, D)
+        image, actions = torch.chunk(input, [I, num_obs + num_act + 1], dim=2)
+        image = torch.mean(image, dim=2, keepdims=True)
+
+        past_obs = image[:, :-1]
+        preset_obs = image[:, 1:]
+
+        src = torch.cat([past_obs, preset_obs], dim=3)
+        out = head(src)
+
+    def loss_hindsight_control(self, input, output, logits, labels):
+        pass
+
+    def get_output_embeddings(self):
+        return getattr(self.heads, "gato")
 
     def configure_optimizers(self):
         optimizer = instantiate(self.hparams.optimizer, params=self.parameters())
@@ -757,4 +831,4 @@ class Gato(
         return result
 
     def on_validation_epoch_end(self) -> None:
-        self._finish_val_outputs_logging()
+        pass

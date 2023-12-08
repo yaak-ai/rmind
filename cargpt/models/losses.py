@@ -72,6 +72,7 @@ class DetokenizedL1(nn.Module):
             )
 
         for idx, key in enumerate(action_keys):
+            key = key if isinstance(key, str) else key[0]
             inv_func = detokenizer[key]
             pred_actions_values[:, :, idx] = inv_func(pred_actions_labels[:, :, idx])
             tgt_actions_values[:, :, idx] = inv_func(tgt_actions_labels[:, :, idx])
@@ -88,6 +89,7 @@ class DetokenizedL1(nn.Module):
             values[f"{key}_tgt"] = tgt_observations_values[:, :, idx]
 
         for idx, key in enumerate(action_keys):
+            key = key if isinstance(key, str) else key[0]
             l1_loss[key] = action_diff[:, :, idx].mean()
             values[f"{key}_pred"] = pred_actions_values[:, :, idx]
             values[f"{key}_tgt"] = tgt_actions_values[:, :, idx]

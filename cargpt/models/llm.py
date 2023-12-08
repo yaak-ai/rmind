@@ -141,9 +141,6 @@ class xFormerGPT(pl.LightningModule):
         self.save_hyperparameters()
         config = instantiate(self.hparams.llm.config)  # type: ignore[union-attr]
         self.llm = SparseFormer.from_config(config)
-        # decoder head
-        self.classifier = instantiate(self.hparams.classifier)
-        self.loss = instantiate(self.hparams.loss)
         # TODO: Not used as of now attention mask should be an input param independent of model
         self.mask = instantiate(self.hparams.mask.attn_config)  # type: ignore[union-attr]
 
@@ -151,32 +148,10 @@ class xFormerGPT(pl.LightningModule):
         self,
         inputs_embeds: Tensor,
         episode_mask: Tensor | None,
-        labels: Tensor | None = None,
     ) -> Any:
-        output = {}
-        x = self.llm(inputs_embeds=inputs_embeds, labels=labels, att_mask=episode_mask)
-        logits = self.classifier(x)
-
-        output["logits"] = logits
-        output["hidden_states"] = [x]
-        # right shift logits
-
-        if labels is not None:
-            shifted_logits = logits[:, :-1, :].contiguous()
-            b, t, c = shifted_logits.shape
-            # left shift labels
-            shifted_labels = labels[:, 1:].contiguous()
-            # flatten on batch dimension
-            logits_flattened = shifted_logits.view(b * t, c)
-            labels_flattened = shifted_labels.view(b * t)
-            loss = self.loss(logits_flattened, labels_flattened)
-
-            output["loss"] = loss
-
-        return output
-
-    def get_output_embeddings(self):
-        return self.classifier[1]
+        return self.llm(
+            inputs_embeds=inputs_embeds, att_mask=episode_mask
+        )
 
 
 # Wrapper around https://github.com/facebookresearch/xformers/blob/main/xformers/factory/model_factory.py#L106
@@ -200,7 +175,6 @@ class SparseFormer(xFormer):
         self,
         inputs_embeds: Tensor,
         att_mask: Tensor | SparseCS | AttentionMask | AttentionBias | None,
-        labels: Tensor | None = None,
         encoder_input_mask: Tensor | None = None,
         decoder_input_mask: Tensor | None = None,
     ) -> Tensor | None:

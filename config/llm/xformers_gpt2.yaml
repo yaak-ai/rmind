@@ -35,20 +35,6 @@ model:
             dropout: 0.1
             activation: gelu
             hidden_layer_multiplier: 1
-  classifier:
-    _target_: torch.nn.Sequential
-    _args_:
-        - _target_: torch.nn.Identity
-          _args_:
-            - ${embedding_dim}
-        - _target_: torch.nn.Linear
-          in_features: ${embedding_dim}
-          out_features: ${image_encoder.total_tokens}
-          bias: False
-  loss:
-    _target_: torch.nn.CrossEntropyLoss
-    ignore_index: -100
-    reduction: mean
   mask:
     attn_config:
       _target_: xformers.components.attention.attention_mask.AttentionMask.make_causal
