@@ -35,6 +35,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     python3 libpython3.8 libgl1-mesa-glx libglib2.0-0 libmediainfo0v5 \
+    git curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
@@ -43,9 +44,12 @@ COPY --from=build /opt /opt
 COPY cargpt cargpt
 COPY tests tests
 COPY config config
+COPY .git .git
+COPY .gitignore .gitignore
 COPY train.py train.py
 COPY predict.py predict.py
 COPY justfile justfile
+COPY yaak-datasets/metadata yaak-datasets/metadata
 COPY entrypoint.sh /entrypoint.sh
 
 ENV POETRY_HOME="/opt/poetry"
@@ -62,7 +66,7 @@ RUN ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/local/cuda/lib64/libnvc
 
 RUN chmod 655 /entrypoint.sh
 
-# Container can run as standalone service (default), or as a one-off converter.
-# Specify "--stitching [args]" or "--service" when running, defaults to service.
+# Container can run as standalone training (default), or as a one-off inference.
+# Specify "--train [args]" or "--predict" when running, defaults to --train
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--service", "-h"]
+CMD ["--train", "-h"]
