@@ -182,7 +182,7 @@ trainer:
 datamodule:
   train:
     batch_size: ${batch_size}
-    num_workers: 16
+    num_workers: 2
     dataset:
       config:
         data:

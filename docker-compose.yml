@@ -18,5 +18,3 @@ services:
         - "127.0.0.1:22910:22910"
       environment:
         - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
-        - WANDB_MODE=${WANDB_MODE}
-        - WANDB_API_KEY=${WANDB_API_KEY}

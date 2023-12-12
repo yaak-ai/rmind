@@ -1,21 +1,20 @@
-#!/bin/bash -xe
+#!/bin/bash
 
-# Print debug information for GPU environments
-if command -v nvidia-smi &> /dev/null
-then
-  nvidia-smi
-else
-  echo "nvidia-smi not available"
-fi
+train=false
+predict=false
+WANDB_MODE=offline
+WAND_API_KEY=NA
+flags="--help"
+
+help_message="¿Que? Please specify --train to run model training or --predict to one-off inference"
+
+. parse_args.sh
 
 # Actual entrypoint
-if [ "$1" = '--train' ]; then
-  exec python train.py "${@:2}"
-elif [ "$1" = '--predict' ]; then
-  exec python predict.py "${@:2}"
+if [ $train ]; then
+  WANDB_MODE=$WANDB_MODE WAND_API_KEY=$WAND_API_KEY python train.py $flags
+elif [ $predict ]; then
+  WANDB_MODE=$WANDB_MODE WAND_API_KEY=$WAND_API_KEY python predict.py $flags
 else
-  echo "Please specify --train to run model training or "\
-    "--predict to one-off inference"
+  echo "¿Neither train nor predict?"
 fi
-
-exec "$@"

@@ -26,8 +26,6 @@ COPY poetry.lock poetry.lock
 COPY pyproject.toml pyproject.toml
 
 RUN --mount=type=ssh poetry install --with train,dev,lint
-# https://github.com/yaak-ai/carGPT/blob/main/README.md#installation
-RUN pip install triton==2.0.0.dev20221105 --no-deps
 
 FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 
@@ -50,6 +48,7 @@ COPY train.py train.py
 COPY predict.py predict.py
 COPY justfile justfile
 COPY yaak-datasets/metadata yaak-datasets/metadata
+COPY parse_args.sh parse_args.sh
 COPY entrypoint.sh /entrypoint.sh
 
 ENV POETRY_HOME="/opt/poetry"
