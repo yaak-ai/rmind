@@ -16,6 +16,7 @@ speed_range: [0.0, 130.0]
 
 wandb:
   group: gato
+  dir: ${paths.wandb_dir}
 
 model:
   _target_: cargpt.models.gato2.Gato

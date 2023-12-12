@@ -62,6 +62,9 @@ ENV NVIDIA_VISIBLE_DEVICES=all \
     PYTHONOPTIMIZE=1
 
 RUN ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/local/cuda/lib64/libnvcuvid.so
+# https://github.com/pytorch/pytorch/issues/97041
+# https://stackoverflow.com/questions/76216778/userwarning-applied-workaround-for-cudnn-issue-install-nvrtc-so
+RUN ln -s /opt/.venv/lib/python3.10/site-packages/torch/lib/libnvrtc-*.so.11.2 /opt/.venv/lib/python3.10/site-packages/torch/lib/libnvrtc.so
 
 RUN chmod 655 /entrypoint.sh
 

@@ -1,2 +1,3 @@
 data_dir: /nas/drives/yaak/data
 metadata_cache_dir: /tmp/cache/yaak-datasets/metadata
+wandb_dir: .
