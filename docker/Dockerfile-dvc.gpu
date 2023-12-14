@@ -1,0 +1,85 @@
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04 as python-build
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    curl build-essential python3.10 python3.10-dev \
+    python3-setuptools python3-pip python3.10-venv \
+    rustc libmediainfo0v5 openssh-client git \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV POETRY_HOME="/opt/poetry" \
+    POETRY_VIRTUALENVS_IN_PROJECT=true \
+    POETRY_VERSION=1.6.1
+
+ENV PATH="/opt/.venv/bin:$POETRY_HOME/bin:$PATH" \
+    PYTHON_BINARY="/opt/.venv/bin/python"
+
+WORKDIR $POETRY_HOME
+RUN --mount=type=ssh \
+    curl -sSL https://install.python-poetry.org | python3 -
+
+RUN mkdir -p -m 0700 ~/.ssh  \
+    && ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+WORKDIR /opt
+COPY poetry.lock poetry.lock
+COPY pyproject.toml pyproject.toml
+
+RUN --mount=type=ssh poetry install --with dvc
+
+FROM nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04 as ffmpeg-build
+
+RUN apt-get update && apt-get install -y \
+    python3 libpython3.8 libgl1-mesa-glx libglib2.0-0 libmediainfo0v5 \
+    git curl cmake build-essential yasm libtool libc6 libc6-dev \
+    unzip wget libnuma1 libnuma-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+
+RUN git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git
+RUN cd nv-codec-headers && make install && cd .. && git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg/
+
+RUN cd ffmpeg && ./configure \
+    --enable-nonfree --prefix=/opt/ffmpeg-build --enable-cuda-nvcc \
+    --enable-libnpp --extra-cflags=-I/usr/local/cuda/include \
+    --extra-ldflags=-L/usr/local/cuda/lib64 --disable-static \
+    --enable-shared
+
+RUN cd ffmpeg && make -j && make install
+
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    python3 libpython3.8 libgl1-mesa-glx libglib2.0-0 libmediainfo0v5 \
+    git curl cmake build-essential yasm libtool libc6 libc6-dev \
+    unzip wget libnuma1 libnuma-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+
+COPY --from=python-build /opt /opt
+COPY --from=ffmpeg-build /opt/ffmpeg-build /opt/ffmpeg
+COPY .git .git
+COPY dvc.gcp.yaml dvc.yaml
+COPY entrypoint.sh /entrypoint.sh
+
+ENV POETRY_HOME="/opt/poetry"
+
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=video,compute,utility \
+    LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/.venv/lib/python3.8/site-packages:/opt/ffmpeg/lib \
+    PATH=$PATH:/opt/.venv/bin:$POETRY_HOME/bin:/opt/ffmpeg/bin \
+    PYTHONPATH=$PYTHONPATH:/opt:/opt/api/python:/opt/.venv \
+    DECORD_EOF_RETRY_MAX=200000480 \
+    PYTHONOPTIMIZE=1
+
+RUN ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/local/cuda/lib64/libnvcuvid.so
+RUN chmod 655 /entrypoint.sh
+
+# Container can run as standalone training (default), or as a one-off inference.
+# Specify "--train [args]" or "--predict" when running, defaults to --train
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--train", "-h"]

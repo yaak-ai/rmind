@@ -5,15 +5,31 @@ services:
   cargpt-gpu:
       build:
         context: .
-        dockerfile: Dockerfile.gpu
+        dockerfile: docker/Dockerfile.gpu
         ssh:
           - default
       ipc: host
       runtime: nvidia
-      image: yaaktech/cargpt:trainer-gpu-latest
+      image: eu.gcr.io/yaak-ml-cloud/cargpt:gpu-latest
       volumes:
         - $HOME/cache:/root/.cache
         - /nas:/nas
+      ports:
+        - "127.0.0.1:22910:22910"
+      environment:
+        - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+
+  dvc-gpu:
+      build:
+        context: .
+        dockerfile: docker/Dockerfile-dvc.gpu
+        ssh:
+          - default
+      ipc: host
+      runtime: nvidia
+      image: eu.gcr.io/yaak-ml-cloud/dvc:gpu-latest
+      volumes:
+        - $HOME/cache:/root/.cache
       ports:
         - "127.0.0.1:22910:22910"
       environment:

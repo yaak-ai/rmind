@@ -1,0 +1,74 @@
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04 as build
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    curl build-essential python3.10 python3.10-dev \
+    python3-setuptools python3-pip python3.10-venv \
+    rustc libmediainfo0v5 openssh-client git \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV POETRY_HOME="/opt/poetry" \
+    POETRY_VIRTUALENVS_IN_PROJECT=true \
+    POETRY_VERSION=1.6.1
+
+ENV PATH="/opt/.venv/bin:$POETRY_HOME/bin:$PATH" \
+    PYTHON_BINARY="/opt/.venv/bin/python"
+
+WORKDIR $POETRY_HOME
+RUN --mount=type=ssh \
+    curl -sSL https://install.python-poetry.org | python3 -
+
+RUN mkdir -p -m 0700 ~/.ssh  \
+    && ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+WORKDIR /opt
+COPY poetry.lock poetry.lock
+COPY pyproject.toml pyproject.toml
+
+RUN --mount=type=ssh poetry install --with train,dev,lint
+
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    python3 libpython3.8 libgl1-mesa-glx libglib2.0-0 libmediainfo0v5 \
+    git curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+
+COPY --from=build /opt /opt
+COPY cargpt cargpt
+COPY tests tests
+COPY config config
+COPY .git .git
+COPY .gitignore .gitignore
+COPY train.py train.py
+COPY predict.py predict.py
+COPY justfile justfile
+COPY yaak-datasets/metadata yaak-datasets/metadata
+COPY parse_args.sh parse_args.sh
+COPY entrypoint.sh /entrypoint.sh
+
+ENV POETRY_HOME="/opt/poetry"
+
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=video,compute,utility \
+    LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/.venv/lib/python3.8/site-packages \
+    PATH=$PATH:/opt/.venv/bin:$POETRY_HOME/bin \
+    PYTHONPATH=$PYTHONPATH:/opt:/opt/api/python:/opt/.venv \
+    DECORD_EOF_RETRY_MAX=200000480 \
+    PYTHONOPTIMIZE=1
+
+RUN ln -s /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1 /usr/local/cuda/lib64/libnvcuvid.so
+# https://github.com/pytorch/pytorch/issues/97041
+# https://stackoverflow.com/questions/76216778/userwarning-applied-workaround-for-cudnn-issue-install-nvrtc-so
+RUN ln -s /opt/.venv/lib/python3.10/site-packages/torch/lib/libnvrtc-*.so.11.2 /opt/.venv/lib/python3.10/site-packages/torch/lib/libnvrtc.so
+
+RUN chmod 655 /entrypoint.sh
+
+# Container can run as standalone training (default), or as a one-off inference.
+# Specify "--train [args]" or "--predict" when running, defaults to --train
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--train", "-h"]
