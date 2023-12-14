@@ -7,27 +7,27 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.11"
+torch = {version = "^2.0.1", source = "torch-cu118"}
+torchvision = {version = "^0.15.2", source = "torch-cu118"}
+torchaudio = {version = "^2.0.2", source = "torch-cu118"}
+tensordict = "0.2.1"
+xformers = "=0.0.20"
 pytorch-lightning = "^2.1.2"
-einops = "^0.6.1"
+einops = "^0.7.0"
 hydra-core = "^1.3.0"
 loguru = "^0.6.0"
 jaxtyping = "^0.2.23"
 beartype = "*"
-torch = {version = "^2.0.1", source = "torch-cu118"}
-torchvision = {version = "^0.15.2", source = "torch-cu118"}
-xformers = "=0.0.20"
 more-itertools = "^9.0.0"
 torchinfo = "^1.7.2"
-torchaudio = {version = "^2.0.2", source = "torch-cu118"}
-deephouse = {git = "git@github.com:yaak-ai/deephouse.git", rev = "v0.4.0"}
-dall-e = {git = "git@github.com:openai/DALL-E.git", rev = "master"}
 wandb = "*"
 pillow = ">=9.5.0"
 dill = "^0.3.6"
 tqdm = "=4.65.0"
 transformers = "=4.30.2"
-tensordict = "^0.2.1"
-cachetools = "^5.3.2"
+
+# lightning problems
+scipy = "^1.11.4"
 
 [[tool.poetry.source]]
 name = "torch-cu118"
@@ -43,7 +43,7 @@ optional = true
 
 [tool.poetry.group.train.dependencies]
 omegaconf = "^2.3.0"
-yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.16.0"}
+yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.16.1"}
 
 [tool.poetry.group.lint]
 optional = true
@@ -73,12 +73,26 @@ optional = true
 
 [tool.poetry.group.predict.dependencies]
 rerun-sdk = "*"
+opencv-python = "*"
 
 [tool.poetry.group.dvc]
 optional = true
 
 [tool.poetry.group.dvc.dependencies]
 dvc = {version = "*", extras = ["s3"]}
+
+[tool.poetry.group.depth]
+optional = true
+
+[tool.poetry.group.depth.dependencies]
+# deephouse = {git = "git@github.com:yaak-ai/deephouse.git", rev = "v0.4.0"}
+
+[tool.poetry.group.dalle]
+optional = true
+
+[tool.poetry.group.dalle.dependencies]
+dall-e = {git = "git@github.com:openai/DALL-E.git", rev = "master"}
+
 
 [tool.pyright]
 typeCheckingMode = "basic"
@@ -103,14 +117,14 @@ unsafe-fixes = true
 [tool.ruff.lint]
 select = ["ALL"]
 fixable = ["ALL"]
-ignore = ["E501", "F722", "F821", "E203", "D", "CPY", "ANN", "PGH", "FA", "FBT", "PLR", "N", "TD", "FIX", "S101", "SLF", "C901", "COM812", "ISC001", "A001", "A002", "PD"]
+ignore = ["E501", "F722", "F821", "E203", "D", "CPY", "ANN", "PGH", "FA", "PLR", "N", "TD", "FIX", "S101", "SLF", "C901", "COM812", "ISC001", "A001", "A002", "PD", "FBT003", "EXE", "SIM118", "NPY002"]
 
 [tool.ruff.lint.isort]
 known-third-party = ["wandb"]
 
 
 [tool.deptry.per_rule_ignores]
-DEP001 = ["cv2", "fiftyone", "rerun"]
-DEP002 = ["beartype", "torchaudio", "dill", "transformers", "triton"]
-DEP003 = ["numpy", "lightning_utilities"]
-DEP004 = ["omegaconf"]
+DEP001 = ["rerun", "deephouse", "fiftyone"]
+DEP002 = ["dill", "scipy", "torchaudio"]
+DEP003 = ["numpy", "typing_extensions", "numpy", "lightning_utilities"]
+DEP004 = ["cv2", "dall_e", "omegaconf"]

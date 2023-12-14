@@ -45,24 +45,19 @@ pip install triton==2.0.0.dev20221105 --no-deps
 
 ## Training
 
-CIL++
-```bash
-just train experiment=cilpp [++trainer.fast_dev_run=1 ...]
-```
-
-Gato
+### Gato
 ```bash
 just train experiment=gato [++trainer.fast_dev_run=1 ...]
+```
+
+### SMART
+```bash
+just train experiment=smart [++trainer.fast_dev_run=1 ...]
 ```
 
 ## Inference
 
 ### Gato
-```bash
-just predict inference=gato model_path=<wandb_path> output_file=<csv_file_name>
-```
-
-### Gato2
 
 1. start rerun:
 ```bash
@@ -71,7 +66,7 @@ just rerun
 
 2. in another terminal:
 ```bash
-just predict inference=gato2 model.name=<wandb_path>
+just predict inference=gato model.name=<wandb_path>
 ```
 
 3. open [http://localhost:9090/?url=ws://localhost:9877](http://localhost:9090/?url=ws://localhost:9877)

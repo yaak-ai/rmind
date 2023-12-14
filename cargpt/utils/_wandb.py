@@ -16,7 +16,7 @@ from torch import Tensor, softmax
 from wandb.sdk.lib import RunDisabled
 from wandb.wandb_run import Run
 
-from cargpt.visualization import Unnormalize
+from cargpt.visualization.utils import Unnormalize
 
 
 class LoadableFromArtifact:
@@ -30,9 +30,9 @@ class LoadableFromArtifact:
 
         artifact = get_artifact(name, type="model")
         artifact_dir = artifact.download()
-        ckpt_path = mit.one(Path(artifact_dir).glob("*.ckpt"))
+        ckpt_path = mit.one(Path(artifact_dir).glob("*.ckpt")).absolute().as_posix()
 
-        return cls.load_from_checkpoint(ckpt_path.as_posix(), **kwargs)  # type: ignore
+        return cls.load_from_checkpoint(f"file://{ckpt_path}", **kwargs)  # pyright: ignore
 
 
 class ValOutputsLoggingTableMixin:

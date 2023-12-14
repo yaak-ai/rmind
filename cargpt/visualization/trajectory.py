@@ -6,7 +6,7 @@ import more_itertools as mit
 import numpy as np
 import pytorch_lightning as pl
 import torch
-from deephouse.tools.camera import Camera
+from deephouse.tools.camera import Camera  # pyright: ignore
 from einops import rearrange
 from hydra.utils import instantiate
 from jaxtyping import Float

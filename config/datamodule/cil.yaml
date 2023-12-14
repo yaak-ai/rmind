@@ -1,5 +1,0 @@
-defaults:
-  - default
-  - /dataset/train-cil@train.dataset
-  - /dataset/val-cil@val.dataset
-  - _self_

@@ -1,5 +1,4 @@
 #@ drives = [
-#@    'Niro096-HQ/2023-01-11--13-47-36',
 #@    'Niro101-HQ/2022-12-25--09-58-33',
 #@    'Niro101-HQ/2022-12-30--09-23-51',
 #@    'Niro101-HQ/2022-12-31--09-57-24',
@@ -688,7 +687,6 @@
 _target_: yaak_datasets.Dataset
 _recursive_: false
 config:
-  version: 0.16.0
   data:
     drives:
       #@ for drive in drives:
