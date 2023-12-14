@@ -62,8 +62,8 @@ WORKDIR /opt
 
 COPY --from=python-build /opt /opt
 COPY --from=ffmpeg-build /opt/ffmpeg-build /opt/ffmpeg
-COPY .git .git
 COPY dvc.gcp.yaml dvc.yaml
+COPY parse_args.sh parse_args.sh
 COPY entrypoint.sh /entrypoint.sh
 
 ENV POETRY_HOME="/opt/poetry"
