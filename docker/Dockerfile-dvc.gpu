@@ -1,3 +1,4 @@
+# https://github.com/cloudkite-io/ffmpeg-cuda-docker/blob/main/nvidia-ffmpeg-ubuntu22.04/Dockerfile
 FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04 as python-build
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -29,10 +30,18 @@ RUN --mount=type=ssh poetry install --with dvc
 
 FROM nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04 as ffmpeg-build
 
+ENV LD_LIBRARY_PATH /usr/local/cuda/lib64
+ENV PKG_CONFIG_PATH /usr/local/lib/pkgconfig/
+
 RUN apt-get update && apt-get install -y \
     python3 libpython3.8 libgl1-mesa-glx libglib2.0-0 libmediainfo0v5 \
     git curl cmake build-essential yasm libtool libc6 libc6-dev \
     unzip wget libnuma1 libnuma-dev \
+    libass-dev libfdk-aac-dev \
+    librtmp-dev libssl-dev \
+    libvdpau1 libvorbis-dev \
+    libvpx-dev libx264-dev \
+    libx265-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
@@ -42,9 +51,9 @@ RUN cd nv-codec-headers && make install && cd .. && git clone https://git.ffmpeg
 
 RUN cd ffmpeg && ./configure \
     --enable-nonfree --prefix=/opt/ffmpeg-build --enable-cuda-nvcc \
-    --enable-libnpp --extra-cflags=-I/usr/local/cuda/include \
+    --enable-libnpp --extra-cflags=-I/usr/local/cuda/include --extra-cflags=-I/usr/local/include/ffnvcodec \
     --extra-ldflags=-L/usr/local/cuda/lib64 --disable-static \
-    --enable-shared
+    --enable-shared --enable-ffnvcodec --enable-cuvid
 
 RUN cd ffmpeg && make -j && make install
 
@@ -55,13 +64,27 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     python3 libpython3.8 libgl1-mesa-glx libglib2.0-0 libmediainfo0v5 \
     git curl cmake build-essential yasm libtool libc6 libc6-dev \
+    apt-transport-https ca-certificates gnupg \
     unzip wget libnuma1 libnuma-dev \
+    libass-dev libfdk-aac-dev \
+    librtmp-dev libssl-dev \
+    libvdpau1 libvorbis-dev \
+    libvpx-dev libx264-dev \
+    libx265-dev \
     && rm -rf /var/lib/apt/lists/*
+
+RUN curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+RUN apt-get update && apt-get install google-cloud-cli
 
 WORKDIR /opt
 
 COPY --from=python-build /opt /opt
 COPY --from=ffmpeg-build /opt/ffmpeg-build /opt/ffmpeg
+COPY .git .git
+COPY .gitignore .gitignore
+COPY .dvc/.gitignore .dvc/.gitignore
+COPY .dvc/config.gcp .dvc/config
 COPY dvc.gcp.yaml dvc.yaml
 COPY parse_args.sh parse_args.sh
 COPY entrypoint.sh /entrypoint.sh

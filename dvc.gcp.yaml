@@ -1,6 +1,8 @@
 vars:
   - drives:
-      - Niro102-HQ/2022-10-20--13-03-22
+      # fake drive
+      - Niro096-HQ/2023-01-11--13-47-36
+      # - Niro102-HQ/2022-10-20--13-03-22
       # https://metabase.yaak.dev/question/137-drive-information-by-session-id
       # Winter cohort, between 09h00 and 14h00, no rain/snow, few drives in snow
       # - Niro102-HQ/2022-11-23--11-02-49
@@ -714,7 +716,7 @@ vars:
 
   - paths:
       s3: s3://yapi
-      data: /gcs/yaak-ml-cloud/data
+      data: /gcs/yaak-ml-data/data
 
   - frames:
       filename_pattern: '%09d.jpg'
@@ -723,28 +725,6 @@ vars:
         height: 324
 
 stages:
-  sync_video@cam_front_left:
-    foreach: ${drives}
-    do:
-      cmd: aws s3 cp ${paths.s3}/${item}/cam_front_left.defish.mp4 ${paths.data}/${item}/cam_front_left.defish.mp4
-      deps:
-        - ${paths.s3}/${item}/cam_front_left.defish.mp4
-      outs:
-        - ${paths.data}/${item}/cam_front_left.defish.mp4
-
-  sync_metadata:
-    foreach: ${drives}
-    do:
-      # TODO: split cmds
-      cmd: >-
-        aws s3 sync ${paths.s3}/${item} ${paths.data}/${item}  --exclude "*"  --include "*/metadata.log" &&
-        cat ${paths.data}/${item}/*/metadata.log > ${paths.data}/${item}/metadata.log
-
-      deps:
-        - ${paths.s3}/${item}
-
-      outs:
-        - ${paths.data}/${item}/metadata.log
 
   extract_frames@cam_front_left:
     foreach: ${drives}
@@ -752,13 +732,14 @@ stages:
       # TODO: split cmds
       cmd: >-
         mkdir -p ${paths.data}/${item}/frames/cam_front_left.defish.mp4/${frames.scale.width}x${frames.scale.height} &&
+        mkdir -p frames &&
         ffmpeg -y -vsync 0 -threads 0 -hide_banner -loglevel error
         -hwaccel cuda -hwaccel_output_format cuda -c:v hevc_cuvid -hwaccel_device 0 -i ${paths.data}/${item}/cam_front_left.defish.mp4
         -filter_complex "scale_npp=${frames.scale.width}:${frames.scale.height},hwdownload,format=nv12"
-        -f image2 -q:v 16 ${paths.data}/${item}/frames/cam_front_left.defish.mp4/${frames.scale.width}x${frames.scale.height}/${frames.filename_pattern}
-
+        -f image2 -q:v 16 frames/${frames.filename_pattern} &&
+        gsutil -m cp -r frames ${paths.data}/${item}/frames/cam_front_left.defish.mp4/${frames.scale.width}x${frames.scale.height}/${frames.filename_pattern}/ &&
+        rm -rf frames
       deps:
         - ${paths.data}/${item}/cam_front_left.defish.mp4
-
       outs:
         - ${paths.data}/${item}/frames/cam_front_left.defish.mp4/${frames.scale.width}x${frames.scale.height}/
