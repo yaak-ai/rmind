@@ -4,7 +4,7 @@ train=false
 predict=false
 dvc=false
 WANDB_MODE=offline
-WAND_API_KEY=NA
+WANDB_API_KEY=NA
 flags="--help"
 
 help_message="¿Que? Please specify --train to run model training or --predict to one-off inference"
