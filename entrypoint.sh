@@ -15,11 +15,11 @@ echo train=$train predict=$predict dvc=$dvc
 
 # Actual entrypoint
 if [ $train = true ]; then
-  echo WANDB_MODE=$WANDB_MODE WAND_API_KEY=$WAND_API_KEY python train.py $flags
-  WANDB_MODE=$WANDB_MODE WAND_API_KEY=$WAND_API_KEY python train.py $flags
+  echo WANDB_MODE=$WANDB_MODE WANDB_API_KEY=$WANDB_API_KEY python train.py $flags
+  WANDB_MODE=$WANDB_MODE WANDB_API_KEY=$WANDB_API_KEY python train.py $flags
 elif [ $predict = true ]; then
-  echo WANDB_MODE=$WANDB_MODE WAND_API_KEY=$WAND_API_KEY python predict.py $flags
-  WANDB_MODE=$WANDB_MODE WAND_API_KEY=$WAND_API_KEY python predict.py $flags
+  echo WANDB_MODE=$WANDB_MODE WANDB_API_KEY=$WANDB_API_KEY python predict.py $flags
+  WANDB_MODE=$WANDB_MODE WANDB_API_KEY=$WANDB_API_KEY python predict.py $flags
 elif [ $dvc = true ]; then
   echo dvc repro
   dvc repro
