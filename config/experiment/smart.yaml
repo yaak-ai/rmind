@@ -191,13 +191,6 @@ model:
           _target_: torch.nn.CrossEntropyLoss
           reduction: mean
 
-        detokenizers:
-          _target_: torch.nn.ModuleDict
-          modules:
-            continuous:
-              _target_: torchaudio.transforms.MuLawDecoding
-              quantization_channels: ${quantization_channels}
-
       random_masked_hindsight_control:
         _target_: cargpt.models.control_transformer.RandomMaskedHindsightControlObjective
         heads:
@@ -251,7 +244,7 @@ trainer:
 datamodule:
   train:
     batch_size: ${batch_size}
-    num_workers: 16
+    num_workers: 32
     dataset:
       config:
         data:

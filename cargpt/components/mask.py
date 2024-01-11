@@ -161,11 +161,3 @@ class NonCausalAttentionMask(AttentionMask):
             batch_size=[],
             device=device,
         )
-
-
-@tensorclass  # pyright: ignore
-class ForwardDynamicsAttentionMask(TimestepWiseCausalAttentionMask): ...
-
-
-@tensorclass  # pyright: ignore
-class RandomMaskedHindsightControlAttentionMask(NonCausalAttentionMask): ...

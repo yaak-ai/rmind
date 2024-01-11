@@ -1,8 +1,9 @@
+import operator
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
-from itertools import accumulate, pairwise, starmap
-from typing import Annotated, Tuple, no_type_check
+from itertools import accumulate, pairwise
+from typing import Annotated, List, Tuple, no_type_check
 
 import more_itertools as mit
 import torch
@@ -85,7 +86,7 @@ class EpisodeIndex:
         ).flatten()
 
     @property
-    def max(self) -> int:  # noqa: A003
+    def max(self) -> int:
         return max(
             self.apply(torch.max, batch_size=[]).values(  # pyright: ignore
                 include_nested=True,
@@ -142,30 +143,33 @@ class EpisodeBuilder(Module):
         self.embeddings = embeddings
         self.position_encoding = position_encoding
 
-    def build_episode(self, inputs: TensorDict) -> Episode:
-        if self.transforms:
-            inputs = inputs.clone(recurse=True)
-            for t, transforms in self.transforms.items():
-                for n, transform in transforms.items():  # pyright: ignore
-                    inputs.select((t, n)).apply(transform, inplace=True)
+    def build_episode(
+        self,
+        inputs: TensorDict,
+        *,
+        # TODO: make this less jarring
+        masked_action_timestep_idx: List[int] | None = None,
+        masked_observation_timestep_idx: List[int] | None = None,
+    ) -> Episode:
+        transformed = self._transform(inputs)
+        tokens = self._tokenize(transformed)
+        embeddings = self._embed(tokens)
 
-        tokens = TensorDict(
-            {k: v.apply(self.tokenizers[k]) for k, v in inputs.items()},
-            batch_size=inputs.batch_size,
-            device=inputs.device,
-        )
+        # TODO: learnable mask token?
+        if masked_action_timestep_idx is not None:
+            embeddings.select(*self.timestep.actions)[
+                :, masked_action_timestep_idx
+            ] = -1.0
 
-        embeddings = TensorDict(
-            {k: v.apply(self.embeddings[k]) for k, v in tokens.items()},
-            batch_size=tokens.batch_size,
-            device=tokens.device,
-        )
+        if masked_observation_timestep_idx is not None:
+            embeddings.select(*self.timestep.observations)[
+                :, masked_observation_timestep_idx
+            ] = -1.0
 
-        index = self._build_index(embeddings)
-        embeddings = self._apply_position_encoding(
-            embeddings=embeddings,
-            step_index=index[0],  # pyright: ignore
-        )
+        embedding_shapes = embeddings.apply(lambda x: x.shape, batch_size=[])
+        index = self._build_index(embedding_shapes)
+
+        embeddings = self._position_encode(embeddings, index)
 
         return Episode(  # pyright: ignore
             embeddings=embeddings,
@@ -176,59 +180,87 @@ class EpisodeBuilder(Module):
             device=inputs.device,
         )
 
-    def _build_index(self, embeddings: TensorDict) -> EpisodeIndex:
-        step_index_counts = [
-            embeddings.get_item_shape(k)[2] for k in self.timestep.keys
-        ]
-        step_index_ranges = pairwise(accumulate(step_index_counts, initial=0))
-        step_index = TensorDict.from_dict(
-            dict(zip(self.timestep.keys, starmap(torch.arange, step_index_ranges))),
-            batch_size=[],
-            device=embeddings.device,
-        )
-        step_len = sum(step_index_counts)
-        step_count = mit.one({
-            embeddings.get_item_shape(k)[1] for k in self.timestep.keys
-        })
+    def _transform(self, inputs: TensorDict) -> TensorDict:
+        transformed = inputs.clone(recurse=True)  # TODO: avoid cloning if noop?
+        for t, transforms in self.transforms.items():
+            for n, transform in transforms.items():  # pyright: ignore
+                transformed[(t, n)] = transform(inputs[t, n])
 
-        return EpisodeIndex.from_tensordict(  # pyright: ignore
-            step_index.apply(
-                lambda idx: torch.stack([
-                    idx + i * step_len for i in range(step_count)
-                ]),
-                batch_size=[step_count],
+        return transformed
+
+    def _tokenize(self, inputs: TensorDict) -> TensorDict:
+        return TensorDict(
+            {k: v.apply(self.tokenizers[k]) for k, v in inputs.items()},
+            batch_size=inputs.batch_size,
+            device=inputs.device,
+        )
+
+    def _embed(self, tokens: TensorDict) -> TensorDict:
+        return TensorDict(
+            {k: v.apply(self.embeddings[k]) for k, v in tokens.items()},
+            batch_size=tokens.batch_size,
+            device=tokens.device,
+        )
+
+    def _build_index(self, shapes: TensorDict) -> EpisodeIndex:
+        # NOTE: ordered by timestep keys
+        step_shapes = {k: shapes[k].tolist() for k in self.timestep.keys}
+        step_lengths = {k: s for k, (_, _, s, _) in step_shapes.items()}
+        step_ranges = dict(
+            zip(
+                step_lengths.keys(),
+                pairwise(accumulate(step_lengths.values(), initial=0)),
             )
         )
+        step_index = EpisodeIndex.from_dict(  # pyright: ignore
+            {k: torch.arange(*v) for k, v in step_ranges.items()},
+            batch_size=[],
+            device=shapes.device,
+        )
+        step_length = step_index.max + 1
+        step_count = mit.one({t for (_, t, _, _) in step_shapes.values()})
 
-    def _apply_position_encoding(
+        return step_index.apply(
+            lambda x: torch.stack([x + i * step_length for i in range(step_count)]),
+            batch_size=[step_count],
+        )
+
+    def _position_encode(
         self,
-        *,
         embeddings: TensorDict,
-        step_index: EpisodeIndex,
+        index: EpisodeIndex,
     ) -> TensorDict:
+        embeddings = embeddings.clone(recurse=True)  # TODO: avoid cloning if noop?
+
         if module := getattr(
             self.position_encoding, PositionEncoding.OBSERVATIONS, None
         ):
-            observation_embeddings = embeddings.select(*self.timestep.observations)
-            observation_step_index = step_index.select(*self.timestep.observations)  # pyright: ignore
-            embeddings = embeddings.update(
-                observation_embeddings.apply(
-                    lambda emb, pos: emb + module(pos),  # pyright: ignore
-                    observation_step_index._tensordict,
-                )
+            observation_index = index.select(*self.timestep.observations).apply(  # pyright: ignore
+                # shift indices from global (episode) to local (timestep)
+                lambda idx: idx - idx[:, [0]]
+            )
+
+            position_embedding = observation_index.to_tensordict().apply(module)
+            embeddings.select(*self.timestep.observations).apply(
+                operator.add,
+                position_embedding,
+                inplace=True,  # NOTE
             )
 
         if module := getattr(self.position_encoding, PositionEncoding.ACTIONS, None):
-            pos = torch.arange(module.num_embeddings, device=embeddings.device)
-            pos_encd = module(pos)
-            action_embeddings = embeddings.select(*self.timestep.actions)
-            embeddings = embeddings.update(
-                action_embeddings.apply(lambda emb: emb + pos_encd)
+            position = torch.arange(module.num_embeddings, device=embeddings.device)
+            position_embedding = module(position)
+            embeddings.select(*self.timestep.actions).apply(
+                lambda emb: emb + position_embedding,
+                inplace=True,  # NOTE
             )
 
         if module := getattr(self.position_encoding, PositionEncoding.TIMESTEP, None):
-            pos = torch.arange(module.num_embeddings, device=embeddings.device)
-            pos_encd = rearrange(module(pos), "t d -> t 1 d")
-            embeddings = embeddings.update(embeddings.apply(lambda emb: emb + pos_encd))
+            position = torch.arange(module.num_embeddings, device=embeddings.device)
+            position_embedding = rearrange(module(position), "t d -> t 1 d")
+            embeddings.apply(
+                lambda emb: emb + position_embedding,
+                inplace=True,  # NOTE
+            )
 
         return embeddings

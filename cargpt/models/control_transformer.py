@@ -1,25 +1,22 @@
 from enum import Enum
 from functools import lru_cache
-from typing import Annotated, List
+from typing import Annotated
 
 import more_itertools as mit
 import numpy as np
 import pytorch_lightning as pl
 import torch
 from beartype.vale import Is
-from einops import pack, reduce
-from einops.layers.torch import Rearrange, Reduce
+from einops import pack, rearrange, reduce
+from einops.layers.torch import Rearrange
 from hydra.utils import instantiate
-from jaxtyping import Float
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.parsing import AttributeDict
 from tensordict import TensorDict
-from torch import Tensor
-from torch.distributions import Categorical
 from torch.nn import Module, ModuleDict
+from wandb import Image
 
 from cargpt.components.episode import (
-    Episode,
     EpisodeBuilder,
     EpisodeIndex,
     Timestep,
@@ -27,9 +24,11 @@ from cargpt.components.episode import (
     TokenModuleDict,
 )
 from cargpt.components.mask import (
-    ForwardDynamicsAttentionMask,
+    AttentionMask,
     InverseDynamicsAttentionMask,
-    RandomMaskedHindsightControlAttentionMask,
+    NonCausalAttentionMask,
+    TimestepWiseCausalAttentionMask,
+    WandbAttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
 from cargpt.utils._wandb import LoadableFromArtifact
@@ -56,94 +55,28 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.objectives: ObjectiveModuleDict = instantiate(self.hparams.objectives)
 
     def _step(self, batch: TensorDict) -> TensorDict:
-        batch_size, _device = batch.batch_size, batch.device
-
         inputs = self._build_input(batch)
-        episode = self.episode_builder.build_episode(inputs)
-        timestep = self.episode_builder.timestep
 
-        masks = TensorDict({}, batch_size=[])
-        embeddings = TensorDict({}, batch_size=batch_size)
-        metrics = TensorDict({}, batch_size=[])
+        metrics = TensorDict(
+            {
+                name: objective(inputs, self.episode_builder, self.encoder)
+                for name, objective in self.objectives.items()
+            },
+            batch_size=[],
+            device=inputs.device,
+        )
 
-        if objective := getattr(
-            self.objectives, (k := Objective.FORWARD_DYNAMICS), None
-        ):
-            masks[k] = self._build_forward_dynamics_attention_mask(episode.index)
-            embeddings[k] = self.encoder(
-                src=episode.packed_embeddings,
-                mask=masks[k].data,
-            )
-            metrics[k] = objective(episode, embeddings.get(k))
-
-        if objective := getattr(
-            self.objectives, (k := Objective.INVERSE_DYNAMICS), None
-        ):
-            masks[k] = self._build_inverse_dynamics_attention_mask(
-                episode.index,
-                timestep,
-            )
-            embeddings[k] = self.encoder(
-                src=episode.packed_embeddings,
-                mask=masks[k].data,
-            )
-            if (_k := Objective.FORWARD_DYNAMICS) not in masks.keys():
-                masks[_k] = self._build_forward_dynamics_attention_mask(episode.index)
-                embeddings[_k] = self.encoder(
-                    src=episode.packed_embeddings,
-                    mask=masks[_k].data,
+        if self.trainer.global_step == 0 and isinstance(self.logger, WandbLogger):
+            for k, v in metrics.items():
+                img = Image(v["mask"].with_legend(WandbAttentionMaskLegend).data)
+                self.logger.log_image(
+                    f"masks/{k}",
+                    [img],
+                    step=self.trainer.global_step,
                 )
 
-            metrics[k] = objective(
-                episode,
-                embeddings.select(
-                    Objective.FORWARD_DYNAMICS,
-                    Objective.INVERSE_DYNAMICS,
-                ),
-            )
-
-        if objective := getattr(
-            self.objectives, (k := Objective.RANDOM_MASKED_HINDSIGHT_CONTROL), None
-        ):
-            num_timesteps = mit.one(episode.index.batch_size)  # pyright: ignore
-            masked_action_timestep_idx = np.random.choice(
-                num_timesteps, 2, replace=False
-            ).tolist()
-            masked_observation_timestep_idx = np.random.choice(
-                num_timesteps, 1, replace=False
-            ).tolist()
-
-            episode_masked = episode.clone(recurse=True)  # pyright: ignore
-            episode_masked.embeddings.select(*episode.timestep.actions)[
-                :, masked_action_timestep_idx
-            ] = -1.0
-            episode_masked.embeddings.select(*episode.timestep.observations)[
-                :, masked_observation_timestep_idx
-            ] = -1.0
-
-            episode_masked.embeddings = self.episode_builder._apply_position_encoding(
-                embeddings=episode_masked.embeddings,
-                step_index=episode.index[0],  # pyright: ignore
-            )
-
-            masks[k] = self._build_random_masked_hindsight_control_attention_mask(
-                episode.index
-            )
-
-            embeddings[k] = self.encoder(
-                src=episode_masked.packed_embeddings,
-                mask=masks[k].data,
-            )
-
-            metrics[k] = objective(
-                episode, embeddings.get(k), masked_action_timestep_idx
-            )
-
-        for k, mask in masks.items():
-            self.log_mask(k, mask)
-
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore
-        # TODO: loss weights?
+        metrics = metrics.exclude(*((k, "mask") for k in metrics.keys()))  # pyright: ignore
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))
         metrics[("loss", "total")] = torch.stack(
             tuple(losses.values(True, True))
         ).mean()
@@ -191,37 +124,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             device=batch.device,
         )
 
-    @classmethod
-    @lru_cache(maxsize=1, typed=True)
-    def _build_forward_dynamics_attention_mask(
-        cls, index: EpisodeIndex
-    ) -> ForwardDynamicsAttentionMask:
-        return ForwardDynamicsAttentionMask.build(
-            index=index,
-            legend=XFormersAttentionMaskLegend,
-        )
-
-    @classmethod
-    @lru_cache(maxsize=1, typed=True)
-    def _build_inverse_dynamics_attention_mask(
-        cls, index: EpisodeIndex, timestep: Timestep
-    ) -> InverseDynamicsAttentionMask:
-        return InverseDynamicsAttentionMask.build(
-            index=index,
-            timestep=timestep,
-            legend=XFormersAttentionMaskLegend,
-        )
-
-    @classmethod
-    @lru_cache(maxsize=1, typed=True)
-    def _build_random_masked_hindsight_control_attention_mask(
-        cls, index: EpisodeIndex
-    ) -> RandomMaskedHindsightControlAttentionMask:
-        return RandomMaskedHindsightControlAttentionMask.build(
-            index=index,
-            legend=XFormersAttentionMaskLegend,
-        )
-
     def configure_optimizers(self):
         optimizer = instantiate(self.hparams.optimizer, params=self.parameters())
         result = {"optimizer": optimizer}
@@ -232,15 +134,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         return result
 
-    def log_mask(self, name, mask):
-        from wandb import Image  # noqa: PLC0415
-
-        from cargpt.components.mask import WandbAttentionMaskLegend  # noqa: PLC0415
-
-        if self.trainer.global_step == 0 and isinstance(self.logger, WandbLogger):
-            img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
-            self.logger.log_image(name, [img])
-
 
 class ForwardDynamicsPredictionObjective(Module):
     def __init__(self, head: Module, loss: Module) -> None:
@@ -250,9 +143,13 @@ class ForwardDynamicsPredictionObjective(Module):
 
     def forward(
         self,
-        episode: Episode,
-        embedding: Float[Tensor, "b s d"],
+        inputs: TensorDict,
+        episode_builder: EpisodeBuilder,
+        encoder: Module,
     ) -> TensorDict:
+        episode = episode_builder.build_episode(inputs)
+        mask = self._build_attention_mask(episode.index)
+        embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
         embeddings = episode.index.parse(embedding)
         observations, _ = pack(
             [embeddings[k] for k in episode.timestep.observations],
@@ -268,7 +165,15 @@ class ForwardDynamicsPredictionObjective(Module):
         labels = observations[:, 1:]
         loss = self.loss(pred, labels)
 
-        return TensorDict.from_dict({"loss": loss})
+        return TensorDict({"loss": loss, "mask": mask}, batch_size=[])
+
+    @classmethod
+    @lru_cache(maxsize=1, typed=True)
+    def _build_attention_mask(cls, index: EpisodeIndex) -> AttentionMask:
+        return TimestepWiseCausalAttentionMask.build(
+            index=index,
+            legend=XFormersAttentionMaskLegend,
+        )
 
 
 class InverseDynamicsPredictionObjective(Module):
@@ -276,52 +181,40 @@ class InverseDynamicsPredictionObjective(Module):
         self,
         heads: ModuleDict,
         loss: Module,
-        detokenizers: ModuleDict,
     ):
         super().__init__()
         self.heads = heads
         self.loss = loss
-        self.detokenizers = detokenizers
 
-    def forward(self, episode: Episode, embeddings: TensorDict) -> TensorDict:
-        batch_size = embeddings.batch_size
+    def forward(
+        self,
+        inputs: TensorDict,
+        episode_builder: EpisodeBuilder,
+        encoder: Module,
+    ) -> TensorDict:
+        episode = episode_builder.build_episode(inputs)
+        mask = self._build_attention_mask(episode.index, episode.timestep)
+        embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
         observation_index = episode.index.select(*episode.timestep.observations)  # pyright: ignore
-        observation_index = TensorDict(
-            {
-                Objective.FORWARD_DYNAMICS: observation_index[:-1],
-                Objective.INVERSE_DYNAMICS: observation_index[1:],
-            },
-            batch_size=torch.Size([mit.one(observation_index.batch_size) - 1]),
-        )
-
-        observations = embeddings.select(*observation_index.keys()).apply(
-            lambda enc, idx: idx.parse(enc), observation_index
-        )
-
-        observations = TensorDict(
-            {
-                mask: pack([v[k] for k in episode.timestep.observations], "b t * d")[0]
-                for mask, v in observations.items()
-            },
-            batch_size=observations.batch_size,
-        )
-
-        observations = observations.apply(Reduce("b t s d -> b t 1 d", "mean"))
+        observations = observation_index.parse(embedding)
         observations, _ = pack(
-            [
-                observations[Objective.FORWARD_DYNAMICS],
-                observations[Objective.INVERSE_DYNAMICS],
-            ],
-            "b t *",
+            [observations[k] for k in episode.timestep.observations],
+            "b t * d",
         )
+        observations = reduce(observations, "b t s d -> b t 1 d", "mean")
 
+        # (o0, o1, o2, o3, ...) -> ((o0, o1), (o1, o2), (o2, o3), ...)
+        observations = rearrange(
+            [observations[:, :-1], observations[:, 1:]],
+            "i b t 1 d -> b t (i d)",
+        )
         logits = TensorDict(
             {
                 (t, n): self.heads[t][n](observations)  # pyright: ignore
                 for (t, n) in episode.timestep.actions
             },
-            batch_size=batch_size,
+            batch_size=[observations.shape[0]],
         )
         logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
 
@@ -331,24 +224,18 @@ class InverseDynamicsPredictionObjective(Module):
 
         loss = logits.apply(self.loss, labels)
 
-        with torch.no_grad():
-            preds = logits.apply(lambda x: Categorical(logits=x).sample())
-            pred_values = TensorDict(
-                {k: v.apply(self.detokenizers[k]) for k, v in preds.items()},
-                batch_size=preds.batch_size,
-            )
+        return TensorDict({"loss": loss, "mask": mask}, batch_size=[])
 
-            label_values = TensorDict(
-                {k: v.apply(self.detokenizers[k]) for k, v in labels.items()},
-                batch_size=labels.batch_size,
-            )
-            diff = pred_values.apply(
-                lambda pred, lbl: (pred - lbl).abs().float().mean(),
-                label_values,
-                batch_size=[],
-            )
-
-        return TensorDict.from_dict({"loss": loss, "diff": diff})
+    @classmethod
+    @lru_cache(maxsize=1, typed=True)
+    def _build_attention_mask(
+        cls, index: EpisodeIndex, timestep: Timestep
+    ) -> AttentionMask:
+        return InverseDynamicsAttentionMask.build(
+            index=index,
+            timestep=timestep,
+            legend=XFormersAttentionMaskLegend,
+        )
 
 
 class RandomMaskedHindsightControlObjective(Module):
@@ -359,11 +246,26 @@ class RandomMaskedHindsightControlObjective(Module):
 
     def forward(
         self,
-        episode: Episode,
-        embedding: Float[Tensor, "b s d"],
-        masked_action_timestep_idx: List[int],
+        inputs: TensorDict,
+        episode_builder: EpisodeBuilder,
+        encoder: Module,
     ) -> TensorDict:
-        b, *_ = embedding.shape
+        shapes = [
+            inputs.get_item_shape(k)
+            for k in inputs.keys(include_nested=True, leaves_only=True)  # pyright: ignore
+        ]
+        t = mit.one({t for (_, t, *_) in shapes})
+
+        masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
+        masked_observation_timestep_idx = np.random.choice(t, 1, replace=False).tolist()
+        episode = episode_builder.build_episode(
+            inputs,
+            masked_action_timestep_idx=masked_action_timestep_idx,
+            masked_observation_timestep_idx=masked_observation_timestep_idx,
+        )
+        mask = self._build_attention_mask(episode.index)
+        embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
+
         action_index = episode.index.select(*episode.timestep.actions)  # pyright: ignore
         action_embeddings = action_index[masked_action_timestep_idx].parse(embedding)
 
@@ -375,7 +277,7 @@ class RandomMaskedHindsightControlObjective(Module):
                     leaves_only=True,
                 )
             },
-            batch_size=[b],
+            batch_size=action_embeddings.batch_size,
         )
         logits = logits.apply(Rearrange("b t 1 d -> (b t 1) d"), batch_size=[])
 
@@ -386,4 +288,12 @@ class RandomMaskedHindsightControlObjective(Module):
 
         loss = logits.apply(self.loss, labels)
 
-        return TensorDict.from_dict({"loss": loss})
+        return TensorDict({"loss": loss, "mask": mask}, batch_size=[])
+
+    @classmethod
+    @lru_cache(maxsize=1, typed=True)
+    def _build_attention_mask(cls, index: EpisodeIndex) -> AttentionMask:
+        return NonCausalAttentionMask.build(
+            index=index,
+            legend=XFormersAttentionMaskLegend,
+        )
