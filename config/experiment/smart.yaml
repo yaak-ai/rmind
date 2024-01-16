@@ -159,44 +159,44 @@ model:
         loss:
           _target_: torch.nn.MSELoss
 
-      inverse_dynamics:
-        _target_: cargpt.models.control_transformer.InverseDynamicsPredictionObjective
-        heads:
-          _target_: torch.nn.ModuleDict
-          modules:
-            continuous:
-              _target_: torch.nn.ModuleDict
-              modules:
-                pedal:
-                  _target_: torch.nn.Linear
-                  in_features:
-                    _target_: operator.mul
-                    _args_:
-                      - 2
-                      - ${embedding_dim}
-                  out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
-                  bias: False
-
-                steering_angle:
-                  _target_: torch.nn.Linear
-                  in_features:
-                    _target_: operator.mul
-                    _args_:
-                      - 2
-                      - ${embedding_dim}
-                  out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
-                  bias: False
-
-        loss:
-          _target_: torch.nn.CrossEntropyLoss
-          reduction: mean
-
-        detokenizers:
-          _target_: torch.nn.ModuleDict
-          modules:
-            continuous:
-              _target_: torchaudio.transforms.MuLawDecoding
-              quantization_channels: ${quantization_channels}
+      # inverse_dynamics:
+      #   _target_: cargpt.models.control_transformer.InverseDynamicsPredictionObjective
+      #   heads:
+      #     _target_: torch.nn.ModuleDict
+      #     modules:
+      #       continuous:
+      #         _target_: torch.nn.ModuleDict
+      #         modules:
+      #           pedal:
+      #             _target_: torch.nn.Linear
+      #             in_features:
+      #               _target_: operator.mul
+      #               _args_:
+      #                 - 2
+      #                 - ${embedding_dim}
+      #             out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+      #             bias: False
+      #
+      #           steering_angle:
+      #             _target_: torch.nn.Linear
+      #             in_features:
+      #               _target_: operator.mul
+      #               _args_:
+      #                 - 2
+      #                 - ${embedding_dim}
+      #             out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+      #             bias: False
+      #
+      #   loss:
+      #     _target_: torch.nn.CrossEntropyLoss
+      #     reduction: mean
+      #
+      #   detokenizers:
+      #     _target_: torch.nn.ModuleDict
+      #     modules:
+      #       continuous:
+      #         _target_: torchaudio.transforms.MuLawDecoding
+      #         quantization_channels: ${quantization_channels}
 
       random_masked_hindsight_control:
         _target_: cargpt.models.control_transformer.RandomMaskedHindsightControlObjective

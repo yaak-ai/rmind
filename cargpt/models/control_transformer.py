@@ -66,38 +66,39 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         embeddings = TensorDict({}, batch_size=batch_size)
         metrics = TensorDict({}, batch_size=[])
 
+        episode_clone = episode.clone(recurse=True)  # pyright: ignore
+
+        episode_clone.embeddings = self.episode_builder._apply_position_encoding(
+            embeddings=episode_clone.embeddings,
+            step_index=episode_clone.index[0],  # pyright: ignore
+        )
+
         if objective := getattr(
             self.objectives, (k := Objective.FORWARD_DYNAMICS), None
         ):
-            masks[k] = self._build_forward_dynamics_attention_mask(episode.index)
+            masks[k] = self._build_forward_dynamics_attention_mask(episode_clone.index)
             embeddings[k] = self.encoder(
-                src=episode.packed_embeddings,
+                src=episode_clone.packed_embeddings,
                 mask=masks[k].data,
             )
-            metrics[k] = objective(episode, embeddings.get(k))
+            metrics[k] = objective(episode_clone, embeddings.get(k))
 
         if objective := getattr(
             self.objectives, (k := Objective.INVERSE_DYNAMICS), None
         ):
             masks[k] = self._build_inverse_dynamics_attention_mask(
-                episode.index,
+                episode_clone.index,
                 timestep,
             )
             embeddings[k] = self.encoder(
-                src=episode.packed_embeddings,
+                src=episode_clone.packed_embeddings,
                 mask=masks[k].data,
             )
-            if (_k := Objective.FORWARD_DYNAMICS) not in masks.keys():
-                masks[_k] = self._build_forward_dynamics_attention_mask(episode.index)
-                embeddings[_k] = self.encoder(
-                    src=episode.packed_embeddings,
-                    mask=masks[_k].data,
-                )
 
             metrics[k] = objective(
-                episode,
+                episode_clone,
                 embeddings.select(
-                    Objective.FORWARD_DYNAMICS,
+                    Objective.INVERSE_DYNAMICS,
                     Objective.INVERSE_DYNAMICS,
                 ),
             )
@@ -123,11 +124,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
             episode_masked.embeddings = self.episode_builder._apply_position_encoding(
                 embeddings=episode_masked.embeddings,
-                step_index=episode.index[0],  # pyright: ignore
+                step_index=episode_masked.index[0],  # pyright: ignore
             )
 
             masks[k] = self._build_random_masked_hindsight_control_attention_mask(
-                episode.index
+                episode_masked.index
             )
 
             embeddings[k] = self.encoder(
@@ -136,13 +137,15 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             )
 
             metrics[k] = objective(
-                episode, embeddings.get(k), masked_action_timestep_idx
+                episode_masked, embeddings.get(k), masked_action_timestep_idx
             )
 
         for k, mask in masks.items():
             self.log_mask(k, mask)
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore
+        losses = metrics.select(
+            *((k, "loss") for k in metrics.keys())
+        )  # pyright: ignore
         # TODO: loss weights?
         metrics[("loss", "total")] = torch.stack(
             tuple(losses.values(True, True))
@@ -153,20 +156,24 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def training_step(self, batch: TensorDict, _batch_idx: int):
         metrics = self._step(batch)
 
-        self.log_dict({
-            "/".join(["train", *k]): v
-            for k, v in metrics.items(include_nested=True, leaves_only=True)
-        })
+        self.log_dict(
+            {
+                "/".join(["train", *k]): v
+                for k, v in metrics.items(include_nested=True, leaves_only=True)
+            }
+        )
 
         return metrics["loss", "total"]
 
     def validation_step(self, batch: TensorDict, _batch_idx: int):
         metrics = self._step(batch)
 
-        self.log_dict({
-            "/".join(["val", *k]): v
-            for k, v in metrics.items(include_nested=True, leaves_only=True)
-        })
+        self.log_dict(
+            {
+                "/".join(["val", *k]): v
+                for k, v in metrics.items(include_nested=True, leaves_only=True)
+            }
+        )
 
         return metrics["loss", "total"]
 
@@ -286,10 +293,12 @@ class InverseDynamicsPredictionObjective(Module):
     def forward(self, episode: Episode, embeddings: TensorDict) -> TensorDict:
         batch_size = embeddings.batch_size
 
-        observation_index = episode.index.select(*episode.timestep.observations)  # pyright: ignore
+        observation_index = episode.index.select(
+            *episode.timestep.observations
+        )  # pyright: ignore
         observation_index = TensorDict(
             {
-                Objective.FORWARD_DYNAMICS: observation_index[:-1],
+                Objective.INVERSE_DYNAMICS: observation_index[:-1],
                 Objective.INVERSE_DYNAMICS: observation_index[1:],
             },
             batch_size=torch.Size([mit.one(observation_index.batch_size) - 1]),
@@ -310,7 +319,7 @@ class InverseDynamicsPredictionObjective(Module):
         observations = observations.apply(Reduce("b t s d -> b t 1 d", "mean"))
         observations, _ = pack(
             [
-                observations[Objective.FORWARD_DYNAMICS],
+                observations[Objective.INVERSE_DYNAMICS],
                 observations[Objective.INVERSE_DYNAMICS],
             ],
             "b t *",
@@ -364,7 +373,9 @@ class RandomMaskedHindsightControlObjective(Module):
         masked_action_timestep_idx: List[int],
     ) -> TensorDict:
         b, *_ = embedding.shape
-        action_index = episode.index.select(*episode.timestep.actions)  # pyright: ignore
+        action_index = episode.index.select(
+            *episode.timestep.actions
+        )  # pyright: ignore
         action_embeddings = action_index[masked_action_timestep_idx].parse(embedding)
 
         logits = TensorDict(

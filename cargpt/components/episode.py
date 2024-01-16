@@ -162,10 +162,11 @@ class EpisodeBuilder(Module):
         )
 
         index = self._build_index(embeddings)
-        embeddings = self._apply_position_encoding(
-            embeddings=embeddings,
-            step_index=index[0],  # pyright: ignore
-        )
+        # Disable for hindsign control where we apply [-1, -1, -,1 .... -1] as masked token
+        # embeddings = self._apply_position_encoding(
+        #     embeddings=embeddings,
+        #     step_index=index[0],  # pyright: ignore
+        # )
 
         return Episode(  # pyright: ignore
             embeddings=embeddings,
@@ -187,15 +188,15 @@ class EpisodeBuilder(Module):
             device=embeddings.device,
         )
         step_len = sum(step_index_counts)
-        step_count = mit.one({
-            embeddings.get_item_shape(k)[1] for k in self.timestep.keys
-        })
+        step_count = mit.one(
+            {embeddings.get_item_shape(k)[1] for k in self.timestep.keys}
+        )
 
         return EpisodeIndex.from_tensordict(  # pyright: ignore
             step_index.apply(
-                lambda idx: torch.stack([
-                    idx + i * step_len for i in range(step_count)
-                ]),
+                lambda idx: torch.stack(
+                    [idx + i * step_len for i in range(step_count)]
+                ),
                 batch_size=[step_count],
             )
         )
@@ -210,7 +211,9 @@ class EpisodeBuilder(Module):
             self.position_encoding, PositionEncoding.OBSERVATIONS, None
         ):
             observation_embeddings = embeddings.select(*self.timestep.observations)
-            observation_step_index = step_index.select(*self.timestep.observations)  # pyright: ignore
+            observation_step_index = step_index.select(
+                *self.timestep.observations
+            )  # pyright: ignore
             embeddings = embeddings.update(
                 observation_embeddings.apply(
                     lambda emb, pos: emb + module(pos),  # pyright: ignore
