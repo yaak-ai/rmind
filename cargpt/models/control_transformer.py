@@ -18,7 +18,7 @@ from wandb import Image
 
 from cargpt.components.episode import (
     EpisodeBuilder,
-    EpisodeIndex,
+    Index,
     Timestep,
     Token,
     TokenModuleDict,
@@ -57,6 +57,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def _step(self, batch: TensorDict) -> TensorDict:
         inputs = self._build_input(batch)
 
+        # TODO: currently this does full episode construction for each objective -- optimize?
         metrics = TensorDict(
             {
                 name: objective(inputs, self.episode_builder, self.encoder)
@@ -169,7 +170,7 @@ class ForwardDynamicsPredictionObjective(Module):
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
-    def _build_attention_mask(cls, index: EpisodeIndex) -> AttentionMask:
+    def _build_attention_mask(cls, index: Index) -> AttentionMask:
         return TimestepWiseCausalAttentionMask.build(
             index=index,
             legend=XFormersAttentionMaskLegend,
@@ -228,9 +229,7 @@ class InverseDynamicsPredictionObjective(Module):
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
-    def _build_attention_mask(
-        cls, index: EpisodeIndex, timestep: Timestep
-    ) -> AttentionMask:
+    def _build_attention_mask(cls, index: Index, timestep: Timestep) -> AttentionMask:
         return InverseDynamicsAttentionMask.build(
             index=index,
             timestep=timestep,
@@ -292,7 +291,7 @@ class RandomMaskedHindsightControlObjective(Module):
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
-    def _build_attention_mask(cls, index: EpisodeIndex) -> AttentionMask:
+    def _build_attention_mask(cls, index: Index) -> AttentionMask:
         return NonCausalAttentionMask.build(
             index=index,
             legend=XFormersAttentionMaskLegend,

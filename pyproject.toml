@@ -81,12 +81,6 @@ optional = true
 [tool.poetry.group.dvc.dependencies]
 dvc = {version = "*", extras = ["s3"]}
 
-[tool.poetry.group.depth]
-optional = true
-
-[tool.poetry.group.depth.dependencies]
-# deephouse = {git = "git@github.com:yaak-ai/deephouse.git", rev = "v0.4.0"}
-
 [tool.poetry.group.dalle]
 optional = true
 

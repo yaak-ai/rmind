@@ -3,7 +3,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from itertools import accumulate, pairwise
-from typing import Annotated, List, Tuple, no_type_check
+from typing import Annotated, Dict, List, Tuple, no_type_check
 
 import more_itertools as mit
 import torch
@@ -11,6 +11,7 @@ from beartype.vale import Is
 from einops import pack, rearrange
 from jaxtyping import Float, Int, Shaped
 from tensordict import TensorDict, tensorclass
+from tensordict.utils import NestedKey
 from torch import Tensor
 from torch.nn import Module, ModuleDict
 
@@ -58,7 +59,7 @@ class Timestep:
 
 @no_type_check
 @tensorclass  # pyright: ignore
-class EpisodeIndex:
+class Index:
     image: TensorDict
     continuous: TensorDict
     discrete: TensorDict
@@ -113,7 +114,7 @@ class EpisodeIndex:
 class Episode:
     embeddings: TensorDict
     labels: TensorDict
-    index: EpisodeIndex
+    index: Index
     timestep: Timestep
 
     @property  # TODO: cache?
@@ -166,10 +167,20 @@ class EpisodeBuilder(Module):
                 :, masked_observation_timestep_idx
             ] = -1.0
 
-        embedding_shapes = embeddings.apply(lambda x: x.shape, batch_size=[])
-        index = self._build_index(embedding_shapes)
+        lengths = {k: embeddings.get_item_shape(k)[2] for k in self.timestep.keys}
+        timestep_index = self._build_timestep_index(lengths).to(embeddings.device)  # pyright: ignore
+        timestep_length = sum(lengths.values())
+        timestep_count = mit.one({
+            embeddings.get_item_shape(k)[1] for k in self.timestep.keys
+        })
+        index = timestep_index.apply(
+            lambda x: torch.stack([
+                x + i * timestep_length for i in range(timestep_count)
+            ]),
+            batch_size=[timestep_count],
+        )
 
-        embeddings = self._position_encode(embeddings, index)
+        embeddings = self._position_encode(embeddings, timestep_index)
 
         return Episode(  # pyright: ignore
             embeddings=embeddings,
@@ -202,45 +213,30 @@ class EpisodeBuilder(Module):
             device=tokens.device,
         )
 
-    def _build_index(self, shapes: TensorDict) -> EpisodeIndex:
-        # NOTE: ordered by timestep keys
-        step_shapes = {k: shapes[k].tolist() for k in self.timestep.keys}
-        step_lengths = {k: s for k, (_, _, s, _) in step_shapes.items()}
-        step_ranges = dict(
+    def _build_timestep_index(self, lengths: Dict[NestedKey, int]) -> Index:
+        ranges = dict(
             zip(
-                step_lengths.keys(),
-                pairwise(accumulate(step_lengths.values(), initial=0)),
+                lengths.keys(),
+                pairwise(accumulate(lengths.values(), initial=0)),
             )
         )
-        step_index = EpisodeIndex.from_dict(  # pyright: ignore
-            {k: torch.arange(*v) for k, v in step_ranges.items()},
+        return Index.from_dict(  # pyright: ignore
+            {k: torch.arange(*v) for k, v in ranges.items()},
             batch_size=[],
-            device=shapes.device,
-        )
-        step_length = step_index.max + 1
-        step_count = mit.one({t for (_, t, _, _) in step_shapes.values()})
-
-        return step_index.apply(
-            lambda x: torch.stack([x + i * step_length for i in range(step_count)]),
-            batch_size=[step_count],
         )
 
     def _position_encode(
         self,
         embeddings: TensorDict,
-        index: EpisodeIndex,
+        index: Index,
     ) -> TensorDict:
         embeddings = embeddings.clone(recurse=True)  # TODO: avoid cloning if noop?
 
         if module := getattr(
             self.position_encoding, PositionEncoding.OBSERVATIONS, None
         ):
-            observation_index = index.select(*self.timestep.observations).apply(  # pyright: ignore
-                # shift indices from global (episode) to local (timestep)
-                lambda idx: idx - idx[:, [0]]
-            )
-
-            position_embedding = observation_index.to_tensordict().apply(module)
+            position = index.select(*self.timestep.observations).to_tensordict()  # pyright: ignore
+            position_embedding = position.apply(module)
             embeddings.select(*self.timestep.observations).apply(
                 operator.add,
                 position_embedding,

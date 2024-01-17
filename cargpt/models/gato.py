@@ -13,7 +13,7 @@ from tensordict import LazyStackedTensorDict, TensorDict
 from torch import Tensor
 from torch.distributions import Categorical
 
-from cargpt.components.episode import EpisodeBuilder, EpisodeIndex, Token
+from cargpt.components.episode import EpisodeBuilder, Index, Token
 from cargpt.utils._wandb import LoadableFromArtifact
 
 
@@ -191,7 +191,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
     @staticmethod
     @lru_cache(maxsize=None, typed=True)
-    def _build_attention_mask(index: EpisodeIndex) -> Float[Tensor, "s s"]:
+    def _build_attention_mask(index: Index) -> Float[Tensor, "s s"]:
         DO_ATTEND = 0
         DO_NOT_ATTEND = -torch.inf
 

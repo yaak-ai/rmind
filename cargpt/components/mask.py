@@ -7,7 +7,7 @@ from tensordict import tensorclass
 from torch import Tensor
 from typing_extensions import Self
 
-from cargpt.components.episode import EpisodeIndex, Timestep
+from cargpt.components.episode import Index, Timestep
 
 
 class AttentionMaskLegend(EnumMeta):
@@ -44,8 +44,8 @@ class AttentionMask:
     def _set(
         self,
         *,
-        src: EpisodeIndex,
-        dest: EpisodeIndex,
+        src: Index,
+        dest: Index,
         val,
     ) -> Self:
         grid = torch.meshgrid(src.all_values, dest.all_values, indexing="ij")
@@ -53,10 +53,10 @@ class AttentionMask:
 
         return self
 
-    def _do_attend(self, src: EpisodeIndex, dest: EpisodeIndex) -> Self:
+    def _do_attend(self, src: Index, dest: Index) -> Self:
         return self._set(src=src, dest=dest, val=self.legend.DO_ATTEND)
 
-    def _do_not_attend(self, src: EpisodeIndex, dest: EpisodeIndex) -> Self:
+    def _do_not_attend(self, src: Index, dest: Index) -> Self:
         return self._set(src=src, dest=dest, val=self.legend.DO_NOT_ATTEND)
 
     def with_legend(self, legend: AttentionMaskLegend) -> Self:
@@ -80,7 +80,7 @@ class TimestepWiseCausalAttentionMask(AttentionMask):
     def build(
         cls,
         *,
-        index: EpisodeIndex,
+        index: Index,
         legend: AttentionMaskLegend,
     ) -> Self:
         device = index.device  # pyright: ignore
@@ -113,7 +113,7 @@ class InverseDynamicsAttentionMask(TimestepWiseCausalAttentionMask):
     def build(
         cls,
         *,
-        index: EpisodeIndex,
+        index: Index,
         timestep: Timestep,
         legend: AttentionMaskLegend,
     ) -> Self:
@@ -146,7 +146,7 @@ class NonCausalAttentionMask(AttentionMask):
     def build(
         cls,
         *,
-        index: EpisodeIndex,
+        index: Index,
         legend: AttentionMaskLegend,
     ) -> Self:
         device = index.device  # pyright: ignore
