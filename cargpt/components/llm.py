@@ -6,7 +6,6 @@ from hydra.utils import instantiate
 from jaxtyping import Float
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor, nn
-from torch.nn import Linear, ModuleList
 from torch.nn.functional import gelu
 from xformers.components import (
     Activation,
@@ -102,6 +101,7 @@ class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
 
     def __init__(
         self,
+        *,
         d_model: int,
         nhead: int,
         dim_feedforward: int = 2048,
@@ -147,7 +147,7 @@ class MLPGLU(Feedforward):
         dropout: float,
         activation: str,
         hidden_layer_multiplier: int,
-        bias: bool = True,
+        bias: bool = True,  # noqa: FBT001, FBT002
         *_args,
         **_kwargs,
     ) -> None:
@@ -167,7 +167,7 @@ class MLPGLU(Feedforward):
         return self.l2(self.d1(geglu))
 
 
-class xFormerEncoder(torch.nn.Module):
+class xFormerEncoder(nn.Module):
     def __init__(
         self,
         config: xFormerEncoderConfig,
@@ -175,18 +175,16 @@ class xFormerEncoder(torch.nn.Module):
     ):
         super().__init__()
 
-        if any(
-            (
-                not config.reversible,
-                config.residual_norm_style is ResidualNormStyle.DeepNorm,
-                config.position_encoding_config is not None,
-            )
-        ):
+        if any((
+            not config.reversible,
+            config.residual_norm_style is ResidualNormStyle.DeepNorm,
+            config.position_encoding_config is not None,
+        )):
             raise NotImplementedError
 
         self.encoders = ReversibleSequence(
-            ModuleList(
-                ModuleList(xFormerEncoderBlock.get_reversible_layer(config))
+            nn.ModuleList(
+                nn.ModuleList(xFormerEncoderBlock.get_reversible_layer(config))
                 for _ in range(config.num_layers)
             )
         )

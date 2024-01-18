@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 class FeatureWriter(BasePredictionWriter):
     def __init__(
         self,
+        *,
         output_dir: Union[str, Path],
         overwrite: bool = False,
     ) -> None:
@@ -80,6 +81,7 @@ class FeatureWriter(BasePredictionWriter):
 class VideoWriter(BasePredictionWriter):
     def __init__(
         self,
+        *,
         output_file: Union[str, Path],
         fourcc: str = "vp09",
         fps: int = 30,
@@ -178,6 +180,7 @@ class VideoWriter(BasePredictionWriter):
 class CSVWriter(BasePredictionWriter):
     def __init__(
         self,
+        *,
         output_file: Union[str, Path],
         overwrite: bool = False,
     ) -> None:
