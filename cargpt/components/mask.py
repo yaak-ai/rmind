@@ -1,13 +1,12 @@
 from enum import Enum, EnumMeta
 
-import more_itertools as mit
 import torch
 from jaxtyping import Float
 from tensordict import tensorclass
 from torch import Tensor
 from typing_extensions import Self
 
-from cargpt.components.episode import Index, Timestep
+from cargpt.components.episode import Index
 
 
 class AttentionMaskLegend(EnumMeta):
@@ -72,92 +71,3 @@ class AttentionMask:
         mask.data[do_not_attend] = mask.legend.DO_NOT_ATTEND
 
         return mask
-
-
-@tensorclass  # pyright: ignore
-class TimestepWiseCausalAttentionMask(AttentionMask):
-    @classmethod
-    def build(
-        cls,
-        *,
-        index: Index,
-        legend: AttentionMaskLegend,
-    ) -> Self:
-        device = index.device  # pyright: ignore
-        mask = cls(
-            data=torch.full((index.max + 1, index.max + 1), torch.nan),
-            legend=legend,
-            batch_size=[],
-            device=device,
-        )
-
-        step_count = mit.one(index.batch_size)  # pyright: ignore
-        for step in range(step_count):
-            past, current, future = index[:step], index[step], index[step + 1 :]  # pyright: ignore
-            mask = (
-                mask._do_attend(current, current)
-                ._do_attend(future, current)
-                ._do_not_attend(past, current)
-            )
-
-        if mask.data.isnan().any().item():
-            msg = "some values not set"
-            raise RuntimeError(msg)
-
-        return mask
-
-
-@tensorclass  # pyright: ignore
-class InverseDynamicsAttentionMask(TimestepWiseCausalAttentionMask):
-    @classmethod
-    def build(
-        cls,
-        *,
-        index: Index,
-        timestep: Timestep,
-        legend: AttentionMaskLegend,
-    ) -> Self:
-        mask = super().build(index=index, legend=legend)
-
-        observations, actions = timestep.observations, timestep.actions
-
-        step_count = mit.one(index.batch_size)  # pyright: ignore
-        for step in range(step_count):
-            current, future = index[step], index[step + 1 :]  # pyright: ignore
-
-            current_observations = current.select(*observations)
-            current_actions = current.select(*actions)
-            future_observations = future.select(*observations)
-
-            mask = mask._do_not_attend(
-                current_observations,
-                current_actions,
-            )._do_not_attend(
-                future_observations,
-                current_actions,
-            )
-
-        return mask
-
-
-@tensorclass  # pyright: ignore
-class NonCausalAttentionMask(AttentionMask):
-    @classmethod
-    def build(
-        cls,
-        *,
-        index: Index,
-        legend: AttentionMaskLegend,
-    ) -> Self:
-        device = index.device  # pyright: ignore
-        return cls(
-            data=torch.full(
-                (index.max + 1, index.max + 1),
-                fill_value=legend.DO_ATTEND,
-                dtype=torch.float,
-                device=device,
-            ),
-            legend=legend,
-            batch_size=[],
-            device=device,
-        )

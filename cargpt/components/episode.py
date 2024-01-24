@@ -3,9 +3,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from itertools import accumulate, pairwise
-from typing import Annotated, Dict, List, Tuple, no_type_check
+from typing import Annotated, Dict, List, Mapping, Tuple, no_type_check
 
-import more_itertools as mit
 import torch
 from beartype.vale import Is
 from einops import pack, rearrange
@@ -20,6 +19,7 @@ class Token(str, Enum):
     IMAGE = "image"
     CONTINUOUS = "continuous"
     DISCRETE = "discrete"
+    SPECIAL = "special"
 
 
 TokenModuleDict = Annotated[ModuleDict, Is[lambda d: d.keys() <= set(Token)]]
@@ -63,16 +63,17 @@ class Index:
     image: TensorDict
     continuous: TensorDict
     discrete: TensorDict
+    special: TensorDict
 
     def parse(self, src: Shaped[Tensor, "b s ..."]) -> TensorDict:
         b, *_ = src.shape
 
-        return self.apply(  # pyright: ignore
+        return self.to_tensordict().apply(  # pyright: ignore
             lambda idx: src[:, idx],
             batch_size=[b],
             device=src.device,
             inplace=False,
-        ).to_tensordict()
+        )
 
     @property
     def all_values(self) -> Int[Tensor, "d"]:
@@ -132,14 +133,15 @@ class EpisodeBuilder(Module):
         *,
         timestep: Timestep,
         transforms: TokenModuleDict,
+        special_tokens: Mapping[str, int],
         tokenizers: TokenModuleDict,
         embeddings: TokenModuleDict,
         position_encoding: PositionEncodingModuleDict,
     ) -> None:
         super().__init__()
-
         self.timestep = timestep
         self.transforms = transforms
+        self.special_tokens = special_tokens
         self.tokenizers = tokenizers
         self.embeddings = embeddings
         self.position_encoding = position_encoding
@@ -170,14 +172,10 @@ class EpisodeBuilder(Module):
         lengths = {k: embeddings.get_item_shape(k)[2] for k in self.timestep.keys}
         timestep_index = self._build_timestep_index(lengths).to(embeddings.device)  # pyright: ignore
         timestep_length = sum(lengths.values())
-        timestep_count = mit.one({
-            embeddings.get_item_shape(k)[1] for k in self.timestep.keys
-        })
+        _, t = embeddings.batch_size
         index = timestep_index.apply(
-            lambda x: torch.stack([
-                x + i * timestep_length for i in range(timestep_count)
-            ]),
-            batch_size=[timestep_count],
+            lambda x: torch.stack([x + i * timestep_length for i in range(t)]),
+            batch_size=[t],
         )
 
         embeddings = self._position_encode(embeddings, timestep_index)
@@ -200,11 +198,18 @@ class EpisodeBuilder(Module):
         return transformed
 
     def _tokenize(self, inputs: TensorDict) -> TensorDict:
-        return TensorDict(
+        tokens = TensorDict(
             {k: v.apply(self.tokenizers[k]) for k, v in inputs.items()},
             batch_size=inputs.batch_size,
             device=inputs.device,
         )
+
+        tokens[Token.SPECIAL] = {
+            k: torch.tensor(v).expand(*tokens.batch_size, 1)
+            for k, v in self.special_tokens.items()
+        }
+
+        return tokens
 
     def _embed(self, tokens: TensorDict) -> TensorDict:
         return TensorDict(

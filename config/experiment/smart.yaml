@@ -33,9 +33,11 @@ model:
         - [image, cam_front_left]
         - [continuous, speed]
         - [discrete, turn_signal]
+        - [special, observation_summary]
       actions:
         - [continuous, pedal]
         - [continuous, steering_angle]
+        - [special, action_summary]
 
     transforms:
       _target_: torch.nn.ModuleDict
@@ -47,6 +49,10 @@ model:
               _target_: cargpt.components.norm.MinMaxScaler
               in_range: ${speed_range}
               out_range: [-1.0, 1.0]
+
+    special_tokens:
+        observation_summary: 0
+        action_summary: 1
 
     tokenizers:
       _target_: torch.nn.ModuleDict
@@ -100,12 +106,17 @@ model:
           num_embeddings: 3
           embedding_dim: ${embedding_dim}
 
+        special:
+          _target_: torch.nn.Embedding
+          num_embeddings: 2
+          embedding_dim: ${embedding_dim}
+
     position_encoding:
       _target_: torch.nn.ModuleDict
       modules:
         observations:
           _target_: torch.nn.Embedding
-          num_embeddings: 182
+          num_embeddings: 183
           embedding_dim: ${embedding_dim}
 
         actions:
@@ -145,19 +156,38 @@ model:
     modules:
       forward_dynamics:
         _target_: cargpt.models.control_transformer.ForwardDynamicsPredictionObjective
-        head:
-          _target_: torch.nn.Linear
-          in_features:
-            _target_: operator.mul
-            _args_:
-              - 2
-              - ${embedding_dim}
+        heads:
+          _target_: torch.nn.ModuleDict
+          modules:
+            continuous:
+              _target_: torch.nn.ModuleDict
+              modules:
+                speed:
+                  _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+                  bias: False
 
-          out_features: ${embedding_dim}
-          bias: True
+            discrete:
+              _target_: torch.nn.ModuleDict
+              modules:
+                turn_signal:
+                  _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: ${model.episode_builder.embeddings.modules.discrete.num_embeddings}
+                  bias: False
 
         loss:
-          _target_: torch.nn.MSELoss
+          _target_: torch.nn.CrossEntropyLoss
+          reduction: mean
 
       inverse_dynamics:
         _target_: cargpt.models.control_transformer.InverseDynamicsPredictionObjective
