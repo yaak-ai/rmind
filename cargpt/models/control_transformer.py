@@ -76,7 +76,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     step=self.trainer.global_step,
                 )
 
-        metrics = metrics.exclude(*((k, "mask") for k in metrics.keys()))  # pyright: ignore
+        metrics = metrics.exclude(
+            *((k, "mask") for k in metrics.keys())
+        )  # pyright: ignore
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))
         metrics[("loss", "total")] = torch.stack(
             tuple(losses.values(True, True))
@@ -87,20 +89,24 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def training_step(self, batch: TensorDict, _batch_idx: int):
         metrics = self._step(batch)
 
-        self.log_dict({
-            "/".join(["train", *k]): v
-            for k, v in metrics.items(include_nested=True, leaves_only=True)
-        })
+        self.log_dict(
+            {
+                "/".join(["train", *k]): v
+                for k, v in metrics.items(include_nested=True, leaves_only=True)
+            }
+        )
 
         return metrics["loss", "total"]
 
     def validation_step(self, batch: TensorDict, _batch_idx: int):
         metrics = self._step(batch)
 
-        self.log_dict({
-            "/".join(["val", *k]): v
-            for k, v in metrics.items(include_nested=True, leaves_only=True)
-        })
+        self.log_dict(
+            {
+                "/".join(["val", *k]): v
+                for k, v in metrics.items(include_nested=True, leaves_only=True)
+            }
+        )
 
         return metrics["loss", "total"]
 
@@ -197,7 +203,9 @@ class InverseDynamicsPredictionObjective(Module):
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
-        observation_index = episode.index.select(*episode.timestep.observations)  # pyright: ignore
+        observation_index = episode.index.select(
+            *episode.timestep.observations
+        )  # pyright: ignore
         observations = observation_index.parse(embedding)
         observations, _ = pack(
             [observations[k] for k in episode.timestep.observations],
@@ -251,21 +259,25 @@ class RandomMaskedHindsightControlObjective(Module):
     ) -> TensorDict:
         shapes = [
             inputs.get_item_shape(k)
-            for k in inputs.keys(include_nested=True, leaves_only=True)  # pyright: ignore
+            for k in inputs.keys(
+                include_nested=True, leaves_only=True
+            )  # pyright: ignore
         ]
         t = mit.one({t for (_, t, *_) in shapes})
 
-        masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
+        masked_action_timestep_idx = np.random.choice(t, 6, replace=False).tolist()
         masked_observation_timestep_idx = np.random.choice(t, 1, replace=False).tolist()
         episode = episode_builder.build_episode(
             inputs,
             masked_action_timestep_idx=masked_action_timestep_idx,
             masked_observation_timestep_idx=masked_observation_timestep_idx,
         )
-        mask = self._build_attention_mask(episode.index)
+        mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
-        action_index = episode.index.select(*episode.timestep.actions)  # pyright: ignore
+        action_index = episode.index.select(
+            *episode.timestep.actions
+        )  # pyright: ignore
         action_embeddings = action_index[masked_action_timestep_idx].parse(embedding)
 
         logits = TensorDict(
@@ -291,8 +303,9 @@ class RandomMaskedHindsightControlObjective(Module):
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
-    def _build_attention_mask(cls, index: Index) -> AttentionMask:
+    def _build_attention_mask(cls, index: Index, timestep: Timestep) -> AttentionMask:
         return NonCausalAttentionMask.build(
             index=index,
+            timestep=timestep,
             legend=XFormersAttentionMaskLegend,
         )

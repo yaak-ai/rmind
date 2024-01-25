@@ -93,7 +93,11 @@ class TimestepWiseCausalAttentionMask(AttentionMask):
 
         step_count = mit.one(index.batch_size)  # pyright: ignore
         for step in range(step_count):
-            past, current, future = index[:step], index[step], index[step + 1 :]  # pyright: ignore
+            past, current, future = (
+                index[:step],
+                index[step],
+                index[step + 1 :],
+            )  # pyright: ignore
             mask = (
                 mask._do_attend(current, current)
                 ._do_attend(future, current)
@@ -147,10 +151,11 @@ class NonCausalAttentionMask(AttentionMask):
         cls,
         *,
         index: Index,
+        timestep: Timestep,
         legend: AttentionMaskLegend,
     ) -> Self:
-        device = index.device  # pyright: ignore
-        return cls(
+        device = index.device
+        mask = cls(
             data=torch.full(
                 (index.max + 1, index.max + 1),
                 fill_value=legend.DO_ATTEND,
@@ -161,3 +166,37 @@ class NonCausalAttentionMask(AttentionMask):
             batch_size=[],
             device=device,
         )
+
+        observations, actions = timestep.observations, timestep.actions
+
+        step_count = mit.one(index.batch_size)  # pyright: ignore
+        for step in range(step_count):
+            past, current, future = (
+                index[:step],
+                index[step],
+                index[step + 1 :],
+            )  # pyright: ignore
+
+            past_observations = past.select(*observations)
+            past_actions = past.select(*actions)
+            current_observations = current.select(*observations)
+            current_actions = current.select(*actions)
+            future_observations = future.select(*observations)
+            future_actions = future.select(*actions)
+
+            mask = (
+                mask._do_not_attend(
+                    current_observations,
+                    current_actions,
+                )
+                ._do_not_attend(
+                    current_observations,
+                    future_actions,
+                )
+                ._do_not_attend(current_actions, future_actions)
+                ._do_not_attend(current_actions, past_actions)
+                ._do_not_attend(future_observations, current_actions)
+                ._do_not_attend(future_observations, past_actions)
+            )
+
+        return mask

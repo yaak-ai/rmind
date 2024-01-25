@@ -31,8 +31,8 @@ model:
       _target_: cargpt.components.episode.Timestep.build
       observations:
         - [image, cam_front_left]
-        - [continuous, speed]
-        - [discrete, turn_signal]
+        # - [continuous, speed]
+        # - [discrete, turn_signal]
       actions:
         - [continuous, pedal]
         - [continuous, steering_angle]
@@ -143,21 +143,21 @@ model:
   objectives:
     _target_: torch.nn.ModuleDict
     modules:
-      forward_dynamics:
-        _target_: cargpt.models.control_transformer.ForwardDynamicsPredictionObjective
-        head:
-          _target_: torch.nn.Linear
-          in_features:
-            _target_: operator.mul
-            _args_:
-              - 2
-              - ${embedding_dim}
-
-          out_features: ${embedding_dim}
-          bias: True
-
-        loss:
-          _target_: torch.nn.MSELoss
+      # forward_dynamics:
+      #   _target_: cargpt.models.control_transformer.ForwardDynamicsPredictionObjective
+      #   head:
+      #     _target_: torch.nn.Linear
+      #     in_features:
+      #       _target_: operator.mul
+      #       _args_:
+      #         - 2
+      #         - ${embedding_dim}
+      #
+      #     out_features: ${embedding_dim}
+      #     bias: True
+      #
+      #   loss:
+      #     _target_: torch.nn.MSELoss
 
       inverse_dynamics:
         _target_: cargpt.models.control_transformer.InverseDynamicsPredictionObjective
@@ -244,7 +244,7 @@ trainer:
 datamodule:
   train:
     batch_size: ${batch_size}
-    num_workers: 32
+    num_workers: 2
     dataset:
       config:
         data:
