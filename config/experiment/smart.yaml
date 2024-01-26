@@ -245,6 +245,39 @@ model:
           _target_: torch.nn.CrossEntropyLoss
           reduction: mean
 
+      causal_confusion_adversarial:
+        _target_: cargpt.models.control_transformer.CausalConfusionAdversarial
+        heads:
+          _target_: torch.nn.ModuleDict
+          modules:
+            continuous:
+              _target_: torch.nn.ModuleDict
+              modules:
+                pedal:
+                  _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+                  bias: False
+
+                steering_angle:
+                  _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+                  bias: False
+
+        loss:
+          _target_: torch.nn.CrossEntropyLoss
+          reduction: mean
+        weight: -0.5
+
   # TODO: match paper?
   optimizer:
     _target_: torch.optim.Adam
@@ -274,7 +307,7 @@ trainer:
 datamodule:
   train:
     batch_size: ${batch_size}
-    num_workers: 32
+    num_workers: 2
     dataset:
       config:
         data:
