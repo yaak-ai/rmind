@@ -5,7 +5,7 @@ orbs:
 executors:
   ci-runner:
     docker:
-      - image: cimg/python:3.10.12-node
+      - image: cimg/python:3.11.7
 
 jobs:
   build:

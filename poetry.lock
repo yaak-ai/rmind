@@ -5397,7 +5397,7 @@ build = ["grpcio-tools", "protoletariat", "setuptools"]
 type = "git"
 url = "git@github.com:yaak-ai/yaak-datasets.git"
 reference = "v0.17.0"
-resolved_reference = "49b64d2fdbf28b632626f607da868339df903cef"
+resolved_reference = "6c89c30007a5e535819c9bd5307538001144e35c"
 
 [[package]]
 name = "yarl"
