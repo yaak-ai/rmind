@@ -17,9 +17,9 @@ class DinoEncoder(nn.Module):
         *B, _, H1, W1 = frames.shape
 
         frames = frames.view(prod(B), -1, H1, W1)
-        feat = self.dino.forward_features(frames)  # pyright: ignore
+        feat = self.dino.forward_features(frames)
         tokens = feat["x_norm_patchtokens"]
 
-        H2 = H1 // self.dino.patch_size  # pyright: ignore
-        W2 = W1 // self.dino.patch_size  # pyright: ignore
+        H2 = H1 // self.dino.patch_size
+        W2 = W1 // self.dino.patch_size
         return tokens.view(*B, H2, W2, -1)

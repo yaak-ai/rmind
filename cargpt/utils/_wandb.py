@@ -165,7 +165,7 @@ class TrainValAttnMapLoggingMixin:
     def get_attention_maps(self, x, mask=None):
         attention_maps = []
         with torch.no_grad():
-            for layer in self.gpt.layers:  # type: ignore
+            for layer in self.gpt.layers:
                 x_in = layer.norm1(x) if layer.norm_first else x
                 _, attn_map = layer.self_attn(
                     x_in,

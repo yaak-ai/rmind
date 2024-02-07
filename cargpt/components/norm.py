@@ -18,12 +18,12 @@ class MinMaxScaler(torch.nn.Module):
         self.register_buffer("out_range", torch.tensor(out_range))
 
     def forward(self, x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
-        x_min, x_max = self.in_range  # type: ignore
+        x_min, x_max = self.in_range
         if x.min() < x_min or x.max() > x_max:
             msg = "input out of range"
             raise ValueError(msg)
 
-        new_min, new_max = self.out_range  # type: ignore
+        new_min, new_max = self.out_range
 
         x_std = (x - x_min) / (x_max - x_min)
         return x_std * (new_max - new_min) + new_min
@@ -37,4 +37,4 @@ class Clamp(torch.nn.Module):
         self.register_buffer("max_value", torch.tensor(max_value))
 
     def forward(self, x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
-        return torch.clamp(x, min=self.min_value, max=self.max_value)  # type: ignore[arg-type]
+        return torch.clamp(x, min=self.min_value, max=self.max_value)

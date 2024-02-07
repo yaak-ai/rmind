@@ -5,7 +5,7 @@ orbs:
 executors:
   ci-runner:
     docker:
-      - image: cimg/python:3.10.12-node
+      - image: cimg/python:3.11.7
 
 jobs:
   build:
@@ -15,7 +15,7 @@ jobs:
       - run: poetry self update --no-ansi --no-interaction --no-cache
       - python/install-packages:
           pkg-manager: poetry
-          args: --with lint,predict
+          args: --with train,lint,predict
           cache-version: v1 # bump to reset
       - run: poetry run ruff format --check .
       - run: poetry run ruff check --no-fix .
