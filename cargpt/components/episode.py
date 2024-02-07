@@ -1,9 +1,9 @@
 import operator
 from collections.abc import Iterable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum, auto
 from itertools import accumulate, pairwise
-from typing import Annotated, Dict, List, Mapping, Tuple, no_type_check
+from typing import Annotated, Dict, List, Mapping, Tuple
 
 import torch
 from beartype.vale import Is
@@ -15,20 +15,20 @@ from torch import Tensor
 from torch.nn import Module, ModuleDict
 
 
-class Token(str, Enum):
-    IMAGE = "image"
-    CONTINUOUS = "continuous"
-    DISCRETE = "discrete"
-    SPECIAL = "special"
+class TokenType(StrEnum):
+    IMAGE = auto()
+    CONTINUOUS = auto()
+    DISCRETE = auto()
+    SPECIAL = auto()
 
 
-TokenModuleDict = Annotated[ModuleDict, Is[lambda d: d.keys() <= set(Token)]]
+TokenModuleDict = Annotated[ModuleDict, Is[lambda d: d.keys() <= set(TokenType)]]
 
 
-class PositionEncoding(str, Enum):
-    OBSERVATIONS = "observations"
-    ACTIONS = "actions"
-    TIMESTEP = "timestep"
+class PositionEncoding(StrEnum):
+    OBSERVATIONS = auto()
+    ACTIONS = auto()
+    TIMESTEP = auto()
 
 
 PositionEncodingModuleDict = Annotated[
@@ -38,8 +38,8 @@ PositionEncodingModuleDict = Annotated[
 
 @dataclass(frozen=True)
 class Timestep:
-    observations: Tuple[Tuple[Token, str], ...]
-    actions: Tuple[Tuple[Token, str], ...]
+    observations: Tuple[Tuple[TokenType, str], ...]
+    actions: Tuple[Tuple[TokenType, str], ...]
 
     @classmethod
     def build(
@@ -48,8 +48,8 @@ class Timestep:
         actions: Iterable[Tuple[str, str]],
     ):
         return cls(
-            observations=tuple((Token(a), b) for (a, b) in observations),
-            actions=tuple((Token(a), b) for (a, b) in actions),
+            observations=tuple((TokenType(a), b) for (a, b) in observations),
+            actions=tuple((TokenType(a), b) for (a, b) in actions),
         )
 
     @property
@@ -57,7 +57,6 @@ class Timestep:
         return self.observations + self.actions
 
 
-@no_type_check
 @tensorclass  # pyright: ignore
 class Index:
     image: TensorDict
@@ -96,19 +95,33 @@ class Index:
             )
         ).item()
 
-    def __hash__(self) -> int:
-        items = tuple(
-            (k, tuple(v.flatten().tolist()))
-            for k, v in sorted(
-                self.items(  # pyright: ignore
-                    include_nested=True,
-                    leaves_only=True,
-                ),
-                key=lambda x: x[0],
-            )
-        )
 
-        return hash(items)
+# NOTE: need Index.__hash__ and Index.__eq__ for @lru_cache'ing methods with Index arguments
+# defining/assigning these outside of Index since @tensordict overrides most methods
+from tensordict.tensorclass import _eq  # noqa: E402, PLC2701
+
+
+def _index_hash(self) -> int:
+    items = tuple(
+        (k, tuple(v.flatten().tolist()))
+        for k, v in sorted(
+            self.items(
+                include_nested=True,
+                leaves_only=True,
+            ),
+            key=lambda x: x[0],
+        )
+    )
+
+    return hash(items)
+
+
+def _index_eq(self, other: Index) -> bool:
+    return _eq(self, other).all()  # pyright: ignore
+
+
+Index.__hash__ = _index_hash
+Index.__eq__ = _index_eq  # pyright: ignore
 
 
 @tensorclass  # pyright: ignore
@@ -190,21 +203,21 @@ class EpisodeBuilder(Module):
         )
 
     def _transform(self, inputs: TensorDict) -> TensorDict:
+        # TODO: named_apply instead?
         transformed = inputs.clone(recurse=True)  # TODO: avoid cloning if noop?
         for t, transforms in self.transforms.items():
-            for n, transform in transforms.items():  # pyright: ignore
+            for n, transform in transforms.items():
                 transformed[(t, n)] = transform(inputs[t, n])
 
         return transformed
 
     def _tokenize(self, inputs: TensorDict) -> TensorDict:
-        tokens = TensorDict(
-            {k: v.apply(self.tokenizers[k]) for k, v in inputs.items()},
-            batch_size=inputs.batch_size,
-            device=inputs.device,
+        tokens = inputs.named_apply(
+            lambda nested_key, tensor: self.tokenizers[nested_key[0]](tensor),
+            nested_keys=True,
         )
 
-        tokens[Token.SPECIAL] = {
+        tokens[TokenType.SPECIAL] = {
             k: torch.tensor(v).expand(*tokens.batch_size, 1)
             for k, v in self.special_tokens.items()
         }
@@ -212,10 +225,9 @@ class EpisodeBuilder(Module):
         return tokens
 
     def _embed(self, tokens: TensorDict) -> TensorDict:
-        return TensorDict(
-            {k: v.apply(self.embeddings[k]) for k, v in tokens.items()},
-            batch_size=tokens.batch_size,
-            device=tokens.device,
+        return tokens.named_apply(
+            lambda nested_key, tensor: self.embeddings[nested_key[0]](tensor),
+            nested_keys=True,
         )
 
     def _build_timestep_index(self, lengths: Dict[NestedKey, int]) -> Index:

@@ -10,10 +10,10 @@ generate-dataset-config:
 	ytt --ignore-unknown-comments -f config/dataset/templates --output yaml --output-files config/dataset
 
 train *ARGS: generate-dataset-config
-	PYTHONOPTIMIZE=1 HYDRA_FULL_ERROR=1 poetry run ./train.py {{ARGS}}
+	PYTHONOPTIMIZE=1 HYDRA_FULL_ERROR=1 poetry run python train.py {{ARGS}}
 
 train-debug *ARGS: generate-dataset-config
-	PYTHONOPTIMIZE=0 HYDRA_FULL_ERROR=1 WANDB_MODE=disabled poetry run ./train.py {{ARGS}}
+	PYTHONOPTIMIZE=0 HYDRA_FULL_ERROR=1 WANDB_MODE=disabled poetry run python train.py {{ARGS}}
 
 visualize *ARGS:
 	PYTHONOPTIMIZE=1 ./predict.py inference=visualize {{ARGS}}

@@ -15,13 +15,14 @@ from pytorch_lightning.utilities.parsing import AttributeDict
 from tensordict import TensorDict
 from torch.nn import Module, ModuleDict
 from wandb import Image
+from yaak_datasets import Batch
 
 from cargpt.components.episode import (
     EpisodeBuilder,
     Index,
     Timestep,
-    Token,
     TokenModuleDict,
+    TokenType,
 )
 from cargpt.components.mask import (
     AttentionMask,
@@ -52,7 +53,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.encoder: Module = instantiate(self.hparams.encoder)
         self.objectives: ObjectiveModuleDict = instantiate(self.hparams.objectives)
 
-    def _step(self, batch: TensorDict) -> TensorDict:
+    def _step(self, batch: Batch) -> TensorDict:
         inputs = self._build_input(batch)
 
         # TODO: currently this does full episode construction for each objective -- optimize?
@@ -67,7 +68,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         if self.trainer.global_step == 0 and isinstance(self.logger, WandbLogger):
             for k, v in metrics.items():
-                img = Image(v["mask"].with_legend(WandbAttentionMaskLegend).data)
+                img = Image(v["mask"].with_legend(WandbAttentionMaskLegend).data)  # pyright: ignore
                 self.logger.log_image(
                     f"masks/{k}",
                     [img],
@@ -82,7 +83,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         return metrics
 
-    def training_step(self, batch: TensorDict, _batch_idx: int):
+    def training_step(self, batch: Batch, _batch_idx: int):
         metrics = self._step(batch)
 
         self.log_dict({
@@ -92,7 +93,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         return metrics["loss", "total"]
 
-    def validation_step(self, batch: TensorDict, _batch_idx: int):
+    def validation_step(self, batch: Batch, _batch_idx: int):
         metrics = self._step(batch)
 
         self.log_dict({
@@ -102,21 +103,21 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         return metrics["loss", "total"]
 
-    def _build_input(self, batch: TensorDict) -> TensorDict:
-        frames = batch["frames"]
-        meta = batch["meta"]
+    def _build_input(self, batch: Batch) -> TensorDict:
+        frames = batch.frames
+        meta = batch.meta
         shapes = [
             frames.get_item_shape(k)
-            for k in frames.keys(include_nested=True, leaves_only=True)
+            for k in frames.keys(include_nested=True, leaves_only=True)  # pyright: ignore
         ]
 
         # include timestep as batch dim
         batch_size = mit.one({(b, t) for (b, t, *_) in shapes})
 
-        return TensorDict(
+        return TensorDict.from_dict(
             {
-                Token.IMAGE: batch["frames"],
-                Token.CONTINUOUS: {
+                TokenType.IMAGE: frames,
+                TokenType.CONTINUOUS: {
                     "speed": meta["VehicleMotion_speed"],
                     "pedal": (
                         meta["VehicleMotion_gas_pedal_normalized"]
@@ -124,12 +125,12 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     ),
                     "steering_angle": meta["VehicleMotion_steering_angle_normalized"],
                 },
-                Token.DISCRETE: {
+                TokenType.DISCRETE: {
                     "turn_signal": meta["VehicleState_turn_signal"],
                 },
             },
             batch_size=batch_size,
-            device=batch.device,
+            device=frames.device,
         )
 
     def configure_optimizers(self):
@@ -160,12 +161,12 @@ class ForwardDynamicsPredictionObjective(Module):
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
         index = episode.index.select(  # pyright: ignore
-            (Token.SPECIAL, "observation_summary"),
-            (Token.SPECIAL, "action_summary"),
+            (TokenType.SPECIAL, "observation_summary"),
+            (TokenType.SPECIAL, "action_summary"),
         )
         embeddings = index.parse(embedding)
-        observations = embeddings.get((Token.SPECIAL, "observation_summary"))
-        actions = embeddings.get((Token.SPECIAL, "action_summary"))
+        observations = embeddings.get((TokenType.SPECIAL, "observation_summary"))
+        actions = embeddings.get((TokenType.SPECIAL, "action_summary"))
 
         observation_action_pairs, _ = pack(
             [observations[:, :-1], actions[:, :-1]],
@@ -176,18 +177,18 @@ class ForwardDynamicsPredictionObjective(Module):
             {
                 (token, name): self.heads[token][name](observation_action_pairs)  # pyright: ignore
                 for (token, name) in episode.timestep.observations
-                if token in (Token.CONTINUOUS, Token.DISCRETE)
+                if token in (TokenType.CONTINUOUS, TokenType.DISCRETE)
             },
             batch_size=[b, t - 1],
         )
 
-        labels = episode.labels.select(*logits.keys(True, True))[:, 1:]
+        labels = episode.labels.select(*logits.keys(True, True))[:, 1:]  # pyright: ignore
 
         logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
         labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
         loss = logits.apply(self.loss, labels)
 
-        return TensorDict({"loss": loss, "mask": mask}, batch_size=[])
+        return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
@@ -213,7 +214,7 @@ class ForwardDynamicsPredictionObjective(Module):
             future_observations = future.select(*timestep.observations)
             future_actions = future.select(*timestep.actions)
             current_observation_summary = current.select((
-                Token.SPECIAL,
+                TokenType.SPECIAL,
                 "observation_summary",
             ))
 
@@ -263,9 +264,9 @@ class InverseDynamicsPredictionObjective(Module):
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        index = episode.index.select((Token.SPECIAL, "observation_summary"))  # pyright: ignore
+        index = episode.index.select((TokenType.SPECIAL, "observation_summary"))  # pyright: ignore
         embeddings = index.parse(embedding)
-        observations = embeddings.get((Token.SPECIAL, "observation_summary"))
+        observations = embeddings.get((TokenType.SPECIAL, "observation_summary"))
 
         # (o0, o1, o2, o3, ...) -> ((o0, o1), (o1, o2), (o2, o3), ...)
         observation_pairs = rearrange(
@@ -277,17 +278,17 @@ class InverseDynamicsPredictionObjective(Module):
             {
                 (token, name): self.heads[token][name](observation_pairs)  # pyright: ignore
                 for (token, name) in episode.timestep.actions
-                if token in (Token.CONTINUOUS, Token.DISCRETE)
+                if token in (TokenType.CONTINUOUS, TokenType.DISCRETE)
             },
             batch_size=[b, t - 1],
         )
-        labels = episode.labels.select(*logits.keys(True, True))[:, :-1]
+        labels = episode.labels.select(*logits.keys(True, True))[:, :-1]  # pyright: ignore
 
         logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
         labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
         loss = logits.apply(self.loss, labels)
 
-        return TensorDict({"loss": loss, "mask": mask}, batch_size=[])
+        return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
 
     @classmethod
     def _build_attention_mask(cls, index: Index, timestep: Timestep) -> AttentionMask:
@@ -306,7 +307,7 @@ class RandomMaskedHindsightControlObjective(Module):
         episode_builder: EpisodeBuilder,
         encoder: Module,
     ) -> TensorDict:
-        b, t = inputs.batch_size
+        _, t = inputs.batch_size
         masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
         masked_observation_timestep_idx = np.random.choice(t, 1, replace=False).tolist()
         episode = episode_builder.build_episode(
@@ -316,15 +317,13 @@ class RandomMaskedHindsightControlObjective(Module):
         )
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        index = episode.index.select(*episode.timestep.actions).exclude(Token.SPECIAL)  # pyright: ignore
+        index = episode.index.select(*episode.timestep.actions).exclude(  # pyright: ignore
+            TokenType.SPECIAL
+        )
         embeddings = index[masked_action_timestep_idx].parse(embedding)
-
-        logits = TensorDict(
-            {
-                (token, name): self.heads[token][name](emb)  # pyright: ignore
-                for ((token, name), emb) in embeddings.items(True, True)
-            },
-            batch_size=[b, len(masked_action_timestep_idx)],
+        logits = embeddings.named_apply(
+            lambda nested_key, tensor: self.heads[nested_key[0]][nested_key[1]](tensor),  # pyright: ignore
+            nested_keys=True,
         )
 
         labels = episode.labels.select(*logits.keys(True, True))[
@@ -335,7 +334,7 @@ class RandomMaskedHindsightControlObjective(Module):
         labels = labels.apply(Rearrange("b t 1 -> (b t 1)"), batch_size=[])
         loss = logits.apply(self.loss, labels)
 
-        return TensorDict({"loss": loss, "mask": mask}, batch_size=[])
+        return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
@@ -361,11 +360,11 @@ class RandomMaskedHindsightControlObjective(Module):
             future_observations = future.select(*timestep.observations)
             future_actions = future.select(*timestep.actions)
             current_observation_summary = current.select((
-                Token.SPECIAL,
+                TokenType.SPECIAL,
                 "observation_summary",
             ))
             future_observation_summary = future.select((
-                Token.SPECIAL,
+                TokenType.SPECIAL,
                 "observation_summary",
             ))
 

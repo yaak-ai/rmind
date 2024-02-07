@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import multiprocessing as mp
 import sys
 from typing import TYPE_CHECKING

@@ -13,7 +13,7 @@ from tensordict import LazyStackedTensorDict, TensorDict
 from torch import Tensor
 from torch.distributions import Categorical
 
-from cargpt.components.episode import EpisodeBuilder, Index, Token
+from cargpt.components.episode import EpisodeBuilder, Index, TokenType
 from cargpt.utils._wandb import LoadableFromArtifact
 
 
@@ -172,8 +172,8 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         meta = batch["meta"]
         return TensorDict.from_dict(
             {
-                Token.IMAGE: batch["frames"],
-                Token.CONTINUOUS: {
+                TokenType.IMAGE: batch["frames"],
+                TokenType.CONTINUOUS: {
                     "speed": meta["VehicleMotion_speed"],
                     "pedal": (
                         meta["VehicleMotion_gas_pedal_normalized"]
@@ -181,7 +181,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
                     ),
                     "steering_angle": meta["VehicleMotion_steering_angle_normalized"],
                 },
-                Token.DISCRETE: {
+                TokenType.DISCRETE: {
                     "turn_signal": meta["VehicleState_turn_signal"],
                 },
             },
@@ -205,14 +205,14 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
 
         for step in range(mit.one(index_td.batch_size)):
             # non-image tokens attend to themselves
-            for idxs in index_td.exclude(Token.IMAGE).values(True, True):
+            for idxs in index_td.exclude(TokenType.IMAGE).values(True, True):
                 mask[idxs[step], idxs[step]] = DO_ATTEND
 
             # all tokens attend to all image tokens from current and past steps
             fut_all = torch.cat(tuple(index_td[step:].values(True, True)), -1).flatten()
 
             cur_img = torch.cat(
-                tuple(index_td.select(Token.IMAGE)[step].values(True, True)), -1
+                tuple(index_td.select(TokenType.IMAGE)[step].values(True, True)), -1
             ).flatten()
 
             idxs = torch.meshgrid([fut_all.flatten(), cur_img.flatten()], indexing="ij")
