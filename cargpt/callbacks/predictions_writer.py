@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
 
 import cv2
 import more_itertools as mit
@@ -117,7 +117,7 @@ class VideoWriter(BasePredictionWriter):
         self,
         _trainer: pl.Trainer,
         pl_module: pl.LightningModule,
-        predictions: np.ndarray | List[np.ndarray],
+        predictions: np.ndarray | list[np.ndarray],
         _batch_indices: Optional[Sequence[int]],
         _batch: Any,
         _batch_idx: int,
@@ -197,7 +197,7 @@ class CSVWriter(BasePredictionWriter):
         self,
         _trainer: pl.Trainer,
         _pl_module: pl.LightningModule,
-        predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]],
+        predictions: dict[int, dict[int, dict[str, dict[str, int | float]]]],
         _batch_indices: Optional[Sequence[int]],
         _batch: Any,
         batch_idx: int,
@@ -210,7 +210,7 @@ class CSVWriter(BasePredictionWriter):
         rows = []
         for b, batch_preds in predictions.items():
             for ts, ts_preds in batch_preds.items():
-                row: List[Any] = [batch_idx, b, ts]
+                row: list[Any] = [batch_idx, b, ts]
                 row.extend([ts_preds[key][label] for key in keys for label in labels])
                 rows.append("\t".join(map(str, row)))
 
@@ -220,7 +220,7 @@ class CSVWriter(BasePredictionWriter):
 
     def _write_header(
         self,
-        predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]],
+        predictions: dict[int, dict[int, dict[str, dict[str, int | float]]]],
     ) -> None:
         keys, labels = self._get_keys_and_labels(predictions)
         column_names = [f"{key}_{label}" for key in keys for label in labels]
@@ -232,8 +232,8 @@ class CSVWriter(BasePredictionWriter):
 
     def _get_keys_and_labels(
         self,
-        predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]],
-    ) -> Tuple[List[str], List[str]]:
+        predictions: dict[int, dict[int, dict[str, dict[str, int | float]]]],
+    ) -> tuple[list[str], list[str]]:
         batch = next(iter(predictions))
         ts = next(iter(predictions[batch]))
         keys = sorted(predictions[batch][ts])

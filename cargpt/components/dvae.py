@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 from dall_e import load_model, unmap_pixels  # pyright: ignore
 from einops import rearrange
@@ -17,7 +15,7 @@ class DVAETokens(nn.Module):
         probs: Float[Tensor, "b c1 h w"],
         tokens_shift: int,
         embeddings: nn.Module,
-    ) -> Tuple[Float[Tensor, "b c2 h w"], Int[Tensor, "b h w"]]:
+    ) -> tuple[Float[Tensor, "b c2 h w"], Int[Tensor, "b h w"]]:
         tokens = torch.argmax(probs.detach(), dim=1)
         tokens += tokens_shift
         x = embeddings(tokens)

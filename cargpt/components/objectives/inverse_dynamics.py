@@ -1,0 +1,79 @@
+from einops import rearrange
+from einops.layers.torch import Rearrange
+from tensordict import TensorDict
+from torch.nn import Module, ModuleDict
+
+from cargpt.components.episode import (
+    EpisodeBuilder,
+    Index,
+    Modality,
+    SpecialToken,
+    Timestep,
+    TokenType,
+)
+from cargpt.components.mask import (
+    AttentionMask,
+)
+from cargpt.components.objectives.forward_dynamics import (
+    ForwardDynamicsPredictionObjective,
+)
+
+
+class InverseDynamicsPredictionObjective(Module):
+    def __init__(
+        self,
+        heads: ModuleDict,
+        loss: Module,
+    ):
+        # TODO
+        raise NotImplementedError("update for new timestep structure")  # noqa: EM101
+
+        super().__init__()
+        self.heads = heads
+        self.loss = loss
+
+    def forward(
+        self,
+        inputs: TensorDict,
+        episode_builder: EpisodeBuilder,
+        encoder: Module,
+    ) -> TensorDict:
+        b, t = inputs.batch_size
+        episode = episode_builder.build_episode(inputs)
+        mask = self._build_attention_mask(episode.index, episode.timestep)
+        embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
+        index = episode.index.select((  # pyright: ignore
+            Modality.SPECIAL,
+            SpecialToken.OBSERVATION_SUMMARY,
+        ))
+        embeddings = index.parse(embedding)
+        observations = embeddings.get((
+            Modality.SPECIAL,
+            SpecialToken.OBSERVATION_SUMMARY,
+        ))
+
+        # (o0, o1, o2, o3, ...) -> ((o0, o1), (o1, o2), (o2, o3), ...)
+        observation_pairs = rearrange(
+            [observations[:, :-1], observations[:, 1:]],
+            "i b t 1 d -> b t (i d)",
+        )
+
+        logits = TensorDict(
+            {
+                (token, name): self.heads[token][name](observation_pairs)  # pyright: ignore
+                for (token, name) in episode.timestep.keys(TokenType.ACTION)
+                if token in (Modality.CONTINUOUS, Modality.DISCRETE)
+            },
+            batch_size=[b, t - 1],
+        )
+        labels = episode.tokenized.select(*logits.keys(True, True))[:, :-1]  # pyright: ignore
+
+        logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
+        labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
+        loss = logits.apply(self.loss, labels)
+
+        return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
+
+    @classmethod
+    def _build_attention_mask(cls, index: Index, timestep: Timestep) -> AttentionMask:
+        return ForwardDynamicsPredictionObjective._build_attention_mask(index, timestep)

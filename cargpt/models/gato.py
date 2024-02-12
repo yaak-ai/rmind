@@ -30,7 +30,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         self.decoders = instantiate(self.hparams.decoders)
         self.loss = instantiate(self.hparams.loss)
 
-        for k, enabled in self.hparams.weight_tying.items():  # pyright: ignore
+        for k, enabled in self.hparams.weight_tying.items():
             if enabled:
                 self.episode_builder.embeddings[k].weight = self.decoders[k].weight
 
@@ -56,7 +56,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         attn_mask = self._build_attention_mask(episode.index)
 
         embeddings, _ = pack(
-            [episode.embeddings[k] for k in episode.timestep.keys],
+            [episode.embeddings[k] for k in episode.timestep.keys],  # pyright: ignore
             "b t * d",
         )
         embeddings = rearrange(embeddings, "b t s d -> b (t s) d")
