@@ -29,14 +29,14 @@ model:
 
     timestep:
       _target_: cargpt.components.episode.Timestep.build
-      observations:
-        - [image, cam_front_left]
-        - [continuous, speed]
-        - [discrete, turn_signal]
+      _args_:
+        - [observation, image, cam_front_left]
+        - [observation, continuous, speed]
+        - [observation, discrete, turn_signal]
         - [special, observation_summary]
-      actions:
-        - [continuous, pedal]
-        - [continuous, steering_angle]
+        - [special, observation_history]
+        - [action, continuous, pedal]
+        - [action, continuous, steering_angle]
         - [special, action_summary]
 
     transforms:
@@ -52,7 +52,8 @@ model:
 
     special_tokens:
         observation_summary: 0
-        action_summary: 1
+        observation_history: 1
+        action_summary: 2
 
     tokenizers:
       _target_: torch.nn.ModuleDict
@@ -108,7 +109,7 @@ model:
 
         special:
           _target_: torch.nn.Embedding
-          num_embeddings: 2
+          num_embeddings: 3
           embedding_dim: ${embedding_dim}
 
     position_encoding:
@@ -116,10 +117,15 @@ model:
       modules:
         observations:
           _target_: torch.nn.Embedding
-          num_embeddings: 183
+          num_embeddings: 182
           embedding_dim: ${embedding_dim}
 
         actions:
+          _target_: torch.nn.Embedding
+          num_embeddings: 1
+          embedding_dim: ${embedding_dim}
+
+        special:
           _target_: torch.nn.Embedding
           num_embeddings: 1
           embedding_dim: ${embedding_dim}
@@ -154,6 +160,53 @@ model:
   objectives:
     _target_: torch.nn.ModuleDict
     modules:
+      copycat:
+        _target_: cargpt.models.control_transformer.CopycatObjective
+        memory_extraction:
+          _target_: torch.nn.ModuleDict
+          modules:
+            head:
+              _target_ : torchvision.ops.MLP
+              in_channels: ${embedding_dim}
+              hidden_channels: [256, 256, 2] # last value == number of action tokens
+              bias: False
+            loss:
+              _target_: torch.nn.L1Loss
+
+        policy:
+          _target_: torch.nn.ModuleDict
+          modules:
+            heads:
+              _target_: torch.nn.ModuleDict
+              modules:
+                continuous:
+                  _target_: torch.nn.ModuleDict
+                  modules:
+                    pedal:
+                      _target_: torch.nn.Linear
+                      in_features:
+                        _target_: operator.mul
+                        _args_:
+                          - 2
+                          - ${embedding_dim}
+                      out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+                      bias: False
+
+                    steering_angle:
+                      _target_: torch.nn.Linear
+                      in_features:
+                        _target_: operator.mul
+                        _args_:
+                          - 2
+                          - ${embedding_dim}
+                      out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+                      bias: False
+
+            loss:
+              _target_: torch.nn.CrossEntropyLoss
+              reduction: mean
+
+
       forward_dynamics:
         _target_: cargpt.models.control_transformer.ForwardDynamicsPredictionObjective
         heads:

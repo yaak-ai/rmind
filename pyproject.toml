@@ -97,7 +97,7 @@ reportUnusedCallResult = true
 reportUnusedExpression = true
 reportMatchNotExhaustive = true
 
-exclude = ['wandb/']
+exclude = ['wandb/', 'cargpt/models/gato.py']
 
 [tool.ruff]
 preview = true
