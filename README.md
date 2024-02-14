@@ -70,3 +70,15 @@ just predict inference=gato model.name=<wandb_path>
 ```
 
 3. open [http://localhost:9090/?url=ws://localhost:9877](http://localhost:9090/?url=ws://localhost:9877)
+
+# Licenses
+- FiftyOne [Apache 2.0](https://github.com/voxel51/fiftyone/blob/develop/LICENSE)
+- DVC [Apache 2.0](https://github.com/iterative/dvc/blob/main/LICENSE)
+- wandb [MIT](https://github.com/wandb/wandb/blob/main/LICENSE)
+- xformers [BSD 3-clause](https://github.com/facebookresearch/xformers/blob/main/LICENSE)
+- pytorch-lightning [Apache 2.0](https://github.com/Lightning-AI/pytorch-lightning/blob/master/LICENSE)
+- omegaconf [BSD 3-clause](https://github.com/omry/omegaconf/blob/master/LICENSE)
+- rerun-sdk [Apache 2.0](https://github.com/rerun-io/rerun/blob/main/LICENSE-APACHE)
+- einops [MIT](https://github.com/arogozhnikov/einops/blob/master/LICENSE)
+- hydra [MIT](https://github.com/facebookresearch/hydra/blob/main/LICENSE)
+- tensordict [MIT](https://github.com/pytorch/tensordict/blob/main/LICENSE)
