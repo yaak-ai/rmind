@@ -14,6 +14,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.parsing import AttributeDict
 from tensordict import TensorDict
 from torch.nn import Module, ModuleDict
+from torch.nn import functional as F
 from wandb import Image
 from yaak_datasets import Batch
 
@@ -115,17 +116,29 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         # include timestep as batch dim
         batch_size = mit.one({(b, t) for (b, t, *_) in shapes})
+        pedal = meta["VehicleMotion_gas_pedal_normalized"]
+        -meta["VehicleMotion_brake_pedal_normalized"]
+        steering_angle = meta["VehicleMotion_steering_angle_normalized"]
+        # zero pad just to get the batch size right
+        pedal_delta = F.pad(
+            pedal[:, 1:] - pedal[:, :-1], (1, 0), mode="constant", value=0
+        )
+        steering_angle_delta = F.pad(
+            steering_angle[:, 1:] - steering_angle[:, :-1],
+            (1, 0),
+            mode="constant",
+            value=0,
+        )
 
         return TensorDict.from_dict(
             {
                 Modality.IMAGE: frames,
                 Modality.CONTINUOUS: {
                     "speed": meta["VehicleMotion_speed"],
-                    "pedal": (
-                        meta["VehicleMotion_gas_pedal_normalized"]
-                        - meta["VehicleMotion_brake_pedal_normalized"]
-                    ),
-                    "steering_angle": meta["VehicleMotion_steering_angle_normalized"],
+                    "pedal": pedal,
+                    "steering_angle": steering_angle,
+                    "pedal_delta": pedal_delta,
+                    "steering_angle_delta": steering_angle_delta,
                 },
                 Modality.DISCRETE: {
                     "turn_signal": meta["VehicleState_turn_signal"],
@@ -441,20 +454,27 @@ class CopycatObjective(Module):
             SpecialToken.OBSERVATION_HISTORY,
         ))
         action_keys = episode.timestep.keys(TokenType.ACTION)
-
-        pred = self.memory_extraction.head(observation_history)
-        pred = TensorDict.from_dict(
-            dict(zip(action_keys, pred.split(1, dim=-1))),
-            batch_size=[],
-        )
-        pred = pred.apply(Rearrange("b 1 1 -> b"), batch_size=[])
-
-        labels = episode.transformed.select(*action_keys).apply(
-            lambda x: x[:, -1] - x[:, -2],
-            batch_size=[],
+        # yea.jpg
+        action_deltas_keys = (
+            (modality, name + "_delta") for modality, name in action_keys
         )
 
-        return pred.apply(self.memory_extraction.loss, labels, batch_size=[])
+        logits = TensorDict(
+            {
+                (modality, name): self.memory_extraction.heads[modality][name](
+                    observation_history
+                )  # pyright: ignore
+                for (modality, name) in action_deltas_keys
+            },
+            batch_size=[],
+        )
+
+        labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]
+
+        logits = logits.apply(Rearrange("b 1 d -> b d"), batch_size=[])
+        labels = labels.apply(Rearrange("b 1 -> b"), batch_size=[])
+
+        return logits.apply(self.memory_extraction.loss, labels, batch_size=[])
 
     def _policy_forward(self, episode: Episode, embeddings: TensorDict) -> TensorDict:
         observation_history = embeddings.get((
@@ -509,10 +529,7 @@ class CopycatObjective(Module):
 
         loss = TensorDict.from_dict({
             "memory_extraction": self._memory_extraction_forward(episode, embeddings),
-            # NOTE: scale the policy loss so the losses start out around the same order of magnitude
-            "policy": self._policy_forward(episode, embeddings).apply(
-                lambda x: x * 0.1
-            ),
+            "policy": self._policy_forward(episode, embeddings),
         })
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])

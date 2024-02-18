@@ -165,13 +165,25 @@ model:
         memory_extraction:
           _target_: torch.nn.ModuleDict
           modules:
-            head:
-              _target_ : torchvision.ops.MLP
-              in_channels: ${embedding_dim}
-              hidden_channels: [256, 256, 2] # last value == number of action tokens
-              bias: False
+            heads:
+              _target_: torch.nn.ModuleDict
+              modules:
+                continuous:
+                  _target_: torch.nn.ModuleDict
+                  modules:
+                    pedal_delta:
+                      _target_: torch.nn.Linear
+                      in_features: ${embedding_dim}
+                      out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+                      bias: False
+                    steering_angle_delta:
+                      _target_: torch.nn.Linear
+                      in_features: ${embedding_dim}
+                      out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+                      bias: False
             loss:
-              _target_: torch.nn.L1Loss
+              _target_: cargpt.components.loss.FocalLoss
+              gamma: 2
 
         policy:
           _target_: torch.nn.ModuleDict
@@ -327,7 +339,7 @@ trainer:
 datamodule:
   train:
     batch_size: ${batch_size}
-    num_workers: 32
+    num_workers: 2
     dataset:
       config:
         data:
