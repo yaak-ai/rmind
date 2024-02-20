@@ -468,10 +468,24 @@ class CopycatObjective(Module):
             },
             batch_size=[],
         )
+        b = embeddings.shape[0]
 
         labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]
-
-        logits = logits.apply(Rearrange("b 1 d -> b d"), batch_size=[])
+        # add uniform noise to targets
+        # https://arxiv.org/pdf/2301.13338.pdf
+        labels = labels.apply(
+            lambda x: x
+            + torch.randint(-5, 5, (b, 1), device=observation_history.device),
+            batch_size=[],
+        )
+        # prevent underflow and overflow
+        labels = labels.apply(
+            lambda x: torch.clamp(x, 0, 1023),
+            batch_size=[],
+        )
+        logits = logits.apply(
+            Rearrange("b 1 d -> b d"),
+        )
         labels = labels.apply(Rearrange("b 1 -> b"), batch_size=[])
 
         return logits.apply(self.memory_extraction.loss, labels, batch_size=[])
@@ -500,8 +514,21 @@ class CopycatObjective(Module):
             },
             batch_size=[],
         )
+        b = embeddings.shape[0]
 
         labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]  # pyright: ignore
+        # add uniform noise to targets
+        # https://arxiv.org/pdf/2301.13338.pdf
+        labels = labels.apply(
+            lambda x: x
+            + torch.randint(-5, 5, (b, 1), device=observation_history.device),
+            batch_size=[],
+        )
+        # prevent underflow and overflow
+        labels = labels.apply(
+            lambda x: torch.clamp(x, 0, 1023),
+            batch_size=[],
+        )
 
         logits = logits.apply(Rearrange("b 1 d -> b d"), batch_size=[])
         labels = labels.apply(Rearrange("b 1 -> b"), batch_size=[])
