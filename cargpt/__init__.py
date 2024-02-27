@@ -7,6 +7,7 @@ from beartype.claw import beartype_this_package
 # https://beartype.readthedocs.io/en/latest/api_decor/#beartype.BeartypeStrategy.O0
 beartype_this_package(
     conf=BeartypeConf(
-        strategy=BeartypeStrategy.O0 if sys.flags.optimize > 0 else BeartypeStrategy.O1
+        strategy=BeartypeStrategy.O0 if sys.flags.optimize > 0 else BeartypeStrategy.O1,
+        is_color=False,
     )
 )

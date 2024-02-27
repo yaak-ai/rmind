@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, List, NamedTuple, Tuple
+from typing import Any, NamedTuple
 
 import cv2
 import more_itertools as mit
@@ -84,7 +84,7 @@ class Trajectory(pl.LightningModule):
         batch: Any,
         _batch_idx: int,
         _dataloader_idx: int = 0,
-    ) -> Tuple[np.ndarray, dict[str, Any]]:
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         images = rearrange(
             get_images(batch, self.images_transform),
             "b f c h w -> b f h w c",
@@ -183,7 +183,7 @@ class Trajectory(pl.LightningModule):
         VehicleMotion_brake_pedal_normalized,
     ) -> Float[Tensor, "f n 3"]:
         clips, *_ = VehicleMotion_speed.shape
-        points_3d: List[List[Tuple[float, float, float]]] = []
+        points_3d: list[tuple[float, float, float]] = []
 
         for i in range(clips):
             start_point = TrajectoryPoint(
@@ -203,7 +203,7 @@ class Trajectory(pl.LightningModule):
                 brake_norm=VehicleMotion_brake_pedal_normalized[i].item(),
                 steering_wheel_norm=VehicleMotion_steering_angle_normalized[i].item(),
             )
-            points_3d.append([(p.x, p.y, p.z) for p in [start_point, *curr_points]])
+            points_3d.append([(p.x, p.y, p.z) for p in [start_point, *curr_points]])  # pyright: ignore
 
         return torch.tensor(points_3d, device=self.device)
 
@@ -216,11 +216,11 @@ class Trajectory(pl.LightningModule):
         gas_norm: float,
         brake_norm: float,
         steering_wheel_norm: float,
-    ) -> List[TrajectoryPoint]:
+    ) -> list[TrajectoryPoint]:
         # https://thomasfermi.github.io/Algorithms-for-Automated-Driving/Control/BicycleModel.html
         # Fig. 26.
         # Their y-axis is z-axis, their time_interval is 1., their delta is our beta
-        elems: List[TrajectoryPoint] = []
+        elems: list[TrajectoryPoint] = []
         # https://yaakai.slack.com/archives/CQKL412BC/p1685447717475339
         a = math.copysign(acceleration_y, gas_norm - brake_norm)
         beta = steering_wheel_norm * self.max_beta
@@ -246,8 +246,8 @@ class Trajectory(pl.LightningModule):
 
 def draw_preds(
     visualizations: np.ndarray,
-    metadata: Dict,
-    line_color: Tuple[int, int, int] = (255, 255, 255),
+    metadata: dict,
+    line_color: tuple[int, int, int] = (255, 255, 255),
 ):
     image = visualizations[0]
     w = image.shape[1]
@@ -273,9 +273,9 @@ def draw_preds(
 def draw_trajectory(
     visualizations: np.ndarray,
     points_2d: Float[Tensor, "f n 2"],
-    line_color: Tuple[int, int, int] = (255, 255, 255),
+    line_color: tuple[int, int, int] = (255, 255, 255),
     line_thickness: int = 1,
-    point_color: Tuple[int, int, int] = (255, 0, 0),
+    point_color: tuple[int, int, int] = (255, 0, 0),
     point_thickness: int = 2,
     point_radius: int = 1,
 ) -> None:

@@ -1,4 +1,4 @@
-from typing import Any, Dict, Iterable
+from typing import Any, Iterable
 
 import pytorch_lightning as pl
 from loguru import logger
@@ -15,7 +15,7 @@ class ModelSummary(_ModelSummary):
         row_settings: Iterable[str] = ("var_names",),
         **kwargs,
     ) -> None:
-        self._kwargs: Dict[str, Any] = {
+        self._kwargs: dict[str, Any] = {
             "depth": depth,
             "col_width": col_width,
             "col_names": col_names,
