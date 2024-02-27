@@ -1,9 +1,8 @@
 #@ drives = [
-#@    'Niro104-HQ/2022-12-20--13-57-20',
-#@    'Niro115-HQ/2023-05-16--10-47-33',
-#@    'Niro107-HQ/2023-05-12--12-05-15',
-#@    'Niro122-HQ/2023-04-05--12-06-39',
-#@    'Niro102-HQ/2022-12-03--11-30-20',
+#@    'Niro104-HQ/2023-04-18--17-42-03',
+#@    'Niro104-HQ/2023-04-06--06-52-49',
+#@    'Niro104-HQ/2023-04-24--14-43-09',
+#@    'Niro104-HQ/2023-04-27--08-23-53',
 #@ ]
 #@ cameras = ['cam_front_left']
 #@
@@ -22,7 +21,6 @@ config:
             reader:
               _target_: yaak_datasets.FrameImageVideoReader
               path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg
-            params: /nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json
           #@ end
         metadata:
           path: ${paths.data_dir}/${..id}/metadata.log
@@ -42,6 +40,9 @@ config:
           - name: steering_angle_normalized
           - name: gas_pedal_normalized
           - name: brake_pedal_normalized
+          - name: acceleration_x
+          - name: acceleration_y
+          - name: acceleration_z
 
         - message: VehicleState
           fields:

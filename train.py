@@ -27,6 +27,10 @@ def _train(cfg: DictConfig):
     logger.debug("instantiating datamodule", target=cfg.datamodule._target_)
     datamodule: pl.LightningDataModule = instantiate(cfg.datamodule)
 
+    ### debug info
+    train_clips = len(datamodule._train.dataset._clips)
+    logger.info(f"{train_clips} train clips")
+
     logger.debug("instantiating trainer", target=cfg.trainer._target_)
     trainer: pl.Trainer = instantiate(cfg.trainer)
 

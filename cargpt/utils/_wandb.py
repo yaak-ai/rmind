@@ -13,7 +13,7 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.trainer.states import RunningStage
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor, softmax
-from wandb.sdk.interface.artifacts import Artifact
+from wandb.sdk import Artifact
 from wandb.sdk.lib import RunDisabled
 from wandb.wandb_run import Run
 
@@ -43,11 +43,11 @@ class ValOutputsLoggingTableMixin:
 
     @property
     def val_table_main_columns(self):
-        return getattr(self, "_val_table_main_columns")
+        return self._val_table_main_columns
 
     @val_table_main_columns.setter
     def val_table_main_columns(self, columns: List[str]):
-        setattr(self, "_val_table_main_columns", list(columns))
+        self._val_table_main_columns = list(columns)
 
     @property
     def val_table(self):
@@ -55,7 +55,7 @@ class ValOutputsLoggingTableMixin:
 
     @val_table.setter
     def val_table(self, wandb_table: wandb.Table):
-        setattr(self, "_val_table", wandb_table)
+        self._val_table = wandb_table
 
     @val_table.deleter
     def val_table(self):

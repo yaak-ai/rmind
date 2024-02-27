@@ -4,7 +4,6 @@ from typing import Any, Dict, List
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
-from deephouse.tools.camera import Camera
 from einops import rearrange, repeat
 from hydra.utils import instantiate
 from jaxtyping import Float, Int
@@ -140,23 +139,16 @@ class Gato(
             )
             self.action_position = instantiate(self.hparams.position_encoding.action)  # type: ignore[union-attr]
 
-    def _image_embeddings_and_tokens(self, frames, camera: Camera | None = None):
-        _image_features = {}
-        for name, encoder in self.image_encoder.items():
-            kwargs = {"camera": camera} if name == "depth" else {}
-            _image_features[name] = encoder(frames, **kwargs)
-
-        image_features = sum(_image_features.values())
-        image_features = rearrange(image_features, "... c h w -> (...) c h w")
-
+    def _image_embeddings_and_tokens(self, frames):
+        B, T, C, H, W = frames.shape
+        frames = frames.view(B * T, C, H, W)
+        image_features = self.image_embedding(frames)
         image_features, image_tokens = self.image_tokens(
-            image_features,
+            image_features,  # pyright: ignore
             self.hparams.tokens_shift["ImageEncoder"],  # type: ignore
             self.sensor_embedding,
         )
         tokens_shift = torch.ones_like(image_tokens) * self.hparams.tokens_shift["ImageEncoder"]  # type: ignore[index]
-
-        B, T, *_ = frames.shape
         _, D, H, W = image_features.shape
         image_features = rearrange(image_features, "(B T) D H W -> B T H W D", T=T)
 
@@ -359,21 +351,16 @@ class Gato(
         return episode, tokens, shift, values
 
     def _make_episode(self, batch: Any, is_training: bool = False):
-        camera_name, frames = mit.one(batch["frames"].items())
+        frames = mit.only(batch["frames"].values())
         metadata = [(k, batch["meta"][k]) for k in self.metadata_keys]
         actions = [(k, batch["meta"][k]) for k in self.action_keys]
-        camera = (
-            Camera.from_params(params[camera_name])
-            if (params := batch.get("camera_params")) is not None
-            else None
-        )
         # tokenization + embeddings
         (
             image_embeddings,
             image_tokens,
             image_tokens_shift,
             image_values,
-        ) = self._image_embeddings_and_tokens(frames, camera=camera)
+        ) = self._image_embeddings_and_tokens(frames)
         (
             metadata_embeddings,
             metadata_tokens,
@@ -650,11 +637,6 @@ class Gato(
 
         return features[:, -(key_len + 1) : -1]
 
-    def score_step(self, batch, batch_idx):
-        loss, *_ = self._step(batch, is_training=True)
-
-        return torch.exp(-loss)
-
     def predict_step(
         self,
         batch: Any,
@@ -662,15 +644,13 @@ class Gato(
         dataloader_idx: int = 0,
         start_timestep: int = 0,
         verbose: bool = False,
+        beam_width: int = 8,
     ) -> Any:
         full_episode, full_episode_labels, *_, episode_mask = self._make_episode(
             batch, is_training=True
         )
         B, timesteps, *_ = mit.only(batch["frames"].values()).shape  # pyright: ignore
         ts_len = int(full_episode.shape[1] / timesteps)
-        meta = batch["meta"]
-        camera_name = mit.one(batch["frames"].keys())
-        frame_idxs = meta[f"{camera_name}/ImageMetadata_frame_idx"].tolist()
 
         actions_to_predict = len(self.action_keys)
         if start_timestep < 0:
@@ -691,9 +671,14 @@ class Gato(
             ].clone()
             history = torch.cat([history, next_observations_with_sep], dim=1)
             _, to, d = history.shape
+            history_clone = history.clone()
+            # empty beam
+            beam_tokens = [[]]
+            beam_scores = [0.0]
             for idx, key in enumerate(self.action_keys):
+                b, _, _ = history.shape
                 output = self.gpt(
-                    inputs_embeds=history,
+                    inputs_embeds=history_clone,
                     episode_mask=episode_mask[
                         : m - len(self.action_keys) + idx,
                         : n - len(self.action_keys) + idx,
@@ -701,43 +686,68 @@ class Gato(
                 )
                 logits = output["logits"]
                 logits = logits.detach()
-                token: Int[Tensor, "b 1"] = torch.argmax(
-                    torch.softmax(logits[:, -1:, :], dim=-1), dim=-1
+                probs = torch.softmax(logits[:, -1, :], dim=1)
+                tokens: Int[Tensor, "b 1"] = torch.multinomial(
+                    probs, beam_width, replacement=False
+                )
+                scores = probs[range(b), tokens]
+                # more-itertools ?
+                beam_tokens = [
+                    (idx, beam + [token])
+                    for idx, (beam, beam_token) in enumerate(zip(beam_tokens, tokens))
+                    for token in beam_token
+                ]
+                beam_scores = [
+                    beam + score
+                    for (beam, beam_score) in zip(beam_scores, scores)
+                    for score in beam_score
+                ]
+                topk_scores, topk_indices = torch.topk(
+                    torch.tensor(beam_scores), k=beam_width
+                )
+                beam_batches = [
+                    beam_tokens[idx][0] for idx in topk_indices.numpy().tolist()
+                ]
+                beam_tokens = [
+                    beam_tokens[idx][1] for idx in topk_indices.numpy().tolist()
+                ]
+                beam_scores = topk_scores.numpy().tolist()
+                history = torch.cat(
+                    [history[idx].unsqueeze(0) for idx in beam_batches], 0
                 )
 
-                # embed prediction
-                embedded: Float[Tensor, "b 1 e"] = self.sensor_embedding(token)
+                # instead of tokens we need to make topk tokens in beam_tokens and rebuild history
+                tokens = (
+                    torch.tensor(beam_tokens).view(beam_width, -1).to(history.device)
+                )
+                embedded: Float[Tensor, f"b 1 e"] = self.sensor_embedding(tokens)
                 b, t, _ = embedded.shape
                 if self.hparams.have_position_encoding.action:  # type: ignore[union-attr]
                     position: Float[Tensor, "1 e"] = self.action_position(
                         torch.tensor([0], device=embedded.device)
                     )
-                    embedded += repeat(position, "1 e -> b t e", b=b, t=t)
+                    embedded += repeat(position, "1 e -> b t e", b=beam_width, t=t)
                 if self.hparams.have_position_encoding.global_pos:  # type: ignore[union-attr]
                     global_position: Float[Tensor, "1 e"] = self.global_position(
                         torch.tensor([ts]).to(self.device)
                     )
-                    embedded += repeat(global_position, "1 e -> b t e", b=b, t=t)
+                    embedded += repeat(
+                        global_position, "1 e -> b t e", b=beam_width, t=t
+                    )
 
                 # append to episode
-                history = torch.concat([history, embedded], dim=1)
+                history_clone = torch.concat([history, embedded], dim=1)
 
-                # get real value
+            for key, token in zip(self.action_keys, beam_tokens[0]):
                 token -= self.hparams.tokens_shift[key]  # type: ignore[index]
-                prediction: Float[Tensor, "b 1"] = self.sensor_detokenization[key](
+                pred: Float[Tensor, "b 1"] = self.sensor_detokenization[key](
                     token.clone()
                 )
-
-                log_message = ""
-                frame_idx = frame_idxs[0][-1]
-                for b in range(B):
-                    pred = prediction[b, 0].item()
-                    gt = batch["meta"][key][b, ts].item()
-                    predictions[b][ts][key]["pred"] = pred
-                    predictions[b][ts][key]["gt"] = gt
-                    log_message += f"[{frame_idx}][{key}] gt:{gt:.3f} pred:{pred:.3f}"
+                gt = batch["meta"][key][0, ts].item()
+                predictions[0][ts][key]["pred"] = pred
+                predictions[0][ts][key]["gt"] = gt
                 if verbose:
-                    logger.info(log_message)
+                    logger.info(f"[{batch_idx}][{key}] gt:{gt:.3f} pred:{pred:.3f}")
 
         return predictions
 

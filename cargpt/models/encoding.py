@@ -1,28 +1,27 @@
 from abc import ABC, abstractmethod
-from typing import List, Tuple
+from functools import lru_cache
+from math import prod
+from typing import List, Tuple, cast
 
 import torch
 from dall_e import load_model
-from einops import einsum, rearrange, repeat
+from deephouse.tools.camera import Camera
+from einops import einsum, rearrange, reduce, repeat
 from jaxtyping import Float, Int, Shaped
 from torch import Tensor, nn
-from torch.nn.functional import softmax
+from torch.nn import functional as F
 from torchvision.models import ResNet
 
 
-class ResnetBackbone(torch.nn.Module):
+class ResnetBackbone(nn.Module):
     def __init__(self, resnet: ResNet, freeze: bool = True):
         super().__init__()
 
-        self.resnet = resnet
-
-        if freeze:
-            self.requires_grad_(False)
-            self.eval()
+        self.resnet = resnet.requires_grad_(not freeze).train(not freeze)
 
     def forward(self, x: Float[Tensor, "*b c1 h1 w1"]) -> Float[Tensor, "*b c2 h2 w2"]:
-        *b, _, _, _ = x.shape
-        x = rearrange(x, "... c h w -> (...) c h w")
+        *B, C, H, W = x.shape
+        x = x.view(prod(B), C, H, W)
 
         x = self.resnet.conv1(x)
         x = self.resnet.bn1(x)
@@ -33,12 +32,78 @@ class ResnetBackbone(torch.nn.Module):
         x = self.resnet.layer3(x)
         x = self.resnet.layer4(x)
 
-        x = x.view(*b, *x.shape[-3:])
+        *_, C, H, W = x.shape
+        x = x.view(*B, C, H, W)
 
         return x
 
 
-class PointPositionalEncoder3D(torch.nn.Module):
+class DepthFeatureEncoder(nn.Module):
+    def __init__(self, disp_net: nn.Module, freeze: bool = True):
+        super().__init__()
+
+        encoder = cast(nn.Module, disp_net.encoder)
+        self.encoder = encoder.requires_grad_(not freeze).train(not freeze)
+
+    def forward(
+        self, frames: Float[Tensor, "*b c1 h1 w1"]
+    ) -> Float[Tensor, "*b c2 h2 w2"]:
+        *B, C, H, W = frames.shape
+        frames = frames.view(prod(B), C, H, W)
+
+        disp = self.encoder(frames)[2]
+
+        *_, C, H, W = disp.shape
+        disp = disp.view(*B, C, H, W)
+
+        return disp
+
+
+class DepthEncoder(nn.Module):
+    def __init__(self, disp_net: nn.Module, freeze: bool = True):
+        super().__init__()
+
+        self.disp_net = disp_net.requires_grad_(not freeze).train(not freeze)
+
+    def forward(
+        self,
+        frames: Float[Tensor, "*b c1 h1 w1"],
+        *,
+        camera: Camera,
+    ) -> Float[Tensor, "*b h2 w2 3"]:
+        B, *_, H, W = frames.shape
+
+        frames = rearrange(frames, "b t c h w -> (b t) c h w")
+        disp = self.disp_net(frames)[0]
+        depth = 1 / disp
+        depth = rearrange(depth, "(b t) 1 h w -> b t h w 1", b=B)
+
+        # compute 3d points (equivalent to Eq 6 [https://arxiv.org/abs/2211.14710])
+        grid = self._generate_2d_grid(height=H, width=W).to(depth)
+        pts = camera.unproject(grid, depth)  # type: ignore
+
+        # normalize 3d points (Eq 7 [https://arxiv.org/abs/2211.14710])
+        pts_min = reduce(pts, "b t h w c -> b t 1 1 c", "min")
+        pts_max = reduce(pts, "b t h w c -> b t 1 1 c", "max")
+        pts_norm = (pts - pts_min) / (pts_max - pts_min)
+
+        return pts_norm
+
+    @classmethod
+    @lru_cache(maxsize=1)
+    def _generate_2d_grid(cls, *, height: int, width: int) -> Shaped[Tensor, "h w 2"]:
+        x_mesh, y_mesh = torch.meshgrid(
+            torch.arange(width),
+            torch.arange(height),
+            indexing="xy",
+        )
+
+        grid = rearrange([x_mesh, y_mesh], "t h w -> h w t")
+
+        return grid
+
+
+class PointPositionalEncoder3D(nn.Module):
     """3D point positional encoder
 
     https://arxiv.org/abs/2211.14710 (Section 4.3)
@@ -63,23 +128,22 @@ class PointPositionalEncoder3D(torch.nn.Module):
         )
         self.register_buffer("inv_freq", inv_freq)
 
-    def forward(self, pos: Shaped[Tensor, "b h w 3"]) -> Float[Tensor, "b h w c"]:
-        # NOTE: `pos` are the _actual positions_ being encoded
-        x = einsum(pos, self.inv_freq, "b h w xyz, c -> b h w xyz c")
+    def forward(self, points: Shaped[Tensor, "*b h w 3"]) -> Float[Tensor, "*b h w c"]:
+        x = einsum(points, self.inv_freq, "... xyz, c -> ... xyz c")
         pe_sine = rearrange(
             [x.sin(), x.cos()],  # type: ignore
-            "sin_cos b h w xyz c -> b h w (xyz c sin_cos)",
+            "sin_cos ... xyz c -> ... (xyz c sin_cos)",
         )
         pe = self.mlp(pe_sine)
 
         return pe
 
 
-class LearnablePositionalEmbedding1D(torch.nn.Module):
+class LearnablePositionalEmbedding1D(nn.Module):
     def __init__(self, seq_len, embedding_dim):
         super().__init__()
 
-        self._emb = torch.nn.Embedding(
+        self._emb = nn.Embedding(
             num_embeddings=seq_len,
             embedding_dim=embedding_dim,
         )
@@ -102,7 +166,7 @@ class Invertible(ABC):
         pass
 
 
-class MuLawCompressor(Invertible, torch.nn.Module):
+class MuLawCompressor(Invertible, nn.Module):
     """Apply mu-law compression as in Gato paper.
 
     Appendix B, eq. 3. https://arxiv.org/abs/2205.06175
@@ -133,7 +197,7 @@ class MuLawCompressor(Invertible, torch.nn.Module):
         return x
 
 
-class Discretizer(Invertible, torch.nn.Module):
+class Discretizer(Invertible, nn.Module):
     """Discretize floating point values from a defined range into bins
     of uniform width.
 
@@ -180,7 +244,7 @@ class Discretizer(Invertible, torch.nn.Module):
         return x
 
 
-class ResNetTokens(torch.nn.Module):
+class ResNetTokens(nn.Module):
     def __init__(self, tokens_mask=-1):
         super().__init__()
         self.tokens_mask = tokens_mask
@@ -189,7 +253,7 @@ class ResNetTokens(torch.nn.Module):
         self,
         x: Float[Tensor, "b c1 h w"],
         token_shift: int,
-        embeddings: torch.nn.Module,
+        embeddings: nn.Module,
     ) -> Tuple[Float[Tensor, "b c2 h w"], Float[Tensor, "b h w"]]:
         BT, _, fH, fW = x.shape
         tokens = self.tokens_mask * torch.ones(  # type: ignore[union-attr]
@@ -200,7 +264,7 @@ class ResNetTokens(torch.nn.Module):
         return x, tokens
 
 
-class DVAETokens(torch.nn.Module):
+class DVAETokens(nn.Module):
     def __init__(self):
         super().__init__()
 
@@ -208,7 +272,7 @@ class DVAETokens(torch.nn.Module):
         self,
         probs: Float[Tensor, "b c1 h w"],
         tokens_shift: int,
-        embeddings: torch.nn.Module,
+        embeddings: nn.Module,
     ) -> Tuple[Float[Tensor, "b c2 h w"], Int[Tensor, "b h w"]]:
         tokens = torch.argmax(probs.detach(), dim=1)
         tokens += tokens_shift
@@ -219,7 +283,7 @@ class DVAETokens(torch.nn.Module):
 
 
 # https://github.com/openai/DALL-E/tree/master
-class dalleDVAE(torch.nn.Module):
+class dalleDVAE(nn.Module):
     def __init__(self, enc_weights: str, freeze: bool = True):
         super().__init__()
 
@@ -234,12 +298,12 @@ class dalleDVAE(torch.nn.Module):
         x: Float[Tensor, "b c1 h1 w1"],
     ) -> Float[Tensor, "b c2 h2 w2"]:
         logits = self.enc(x)
-        probs = softmax(logits, dim=1)
+        probs = F.softmax(logits, dim=1)
 
         return probs
 
 
-class SenorDropout(torch.nn.Module):
+class SenorDropout(nn.Module):
     def __init__(self, prob: float):
         super().__init__()
         self.prob = prob
