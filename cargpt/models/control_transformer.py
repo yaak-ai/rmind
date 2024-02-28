@@ -122,7 +122,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         result = {"optimizer": optimizer}
 
         if (cfg := self.hparams.get("lr_scheduler")) is not None:
-            scheduler = instantiate(cfg.scheduler, optimizer=optimizer)
-            result["lr_scheduler"] = cfg | {"scheduler": scheduler}
+            scheduler = instantiate(cfg.pop("scheduler"), optimizer=optimizer)
+            result["lr_scheduler"] = {"scheduler": scheduler, **cfg}
 
         return result

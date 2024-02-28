@@ -3,7 +3,9 @@ from functools import lru_cache
 import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
+from jaxtyping import Float
 from tensordict import TensorDict
+from torch import Tensor
 from torch.nn import Module, ModuleDict
 
 from cargpt.components.episode import (
@@ -40,17 +42,8 @@ class CopycatObjective(Module):
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        embeddings = (
-            episode.index[-1]  # pyright: ignore
-            .select(
-                (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
-                (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
-            )
-            .parse(embedding)
-        )
-
         loss = TensorDict.from_dict({
-            name: stream(episode, embeddings) for name, stream in self.streams.items()
+            name: stream(episode, embedding) for name, stream in self.streams.items()
         })
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
@@ -153,24 +146,31 @@ class MemoryExtractionStream(Module):
         self.heads = heads
         self.loss = loss
 
-    def forward(self, episode: Episode, embeddings: TensorDict) -> TensorDict:
-        b, _t = episode.embedded.batch_size
+    def forward(
+        self,
+        episode: Episode,
+        embedding: Float[Tensor, "b s d"],
+    ) -> TensorDict:
+        b, t = episode.embedded.batch_size
 
-        features = embeddings.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_HISTORY,
-        ))
+        features = (
+            episode.index[1:]  # pyright: ignore
+            .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
+            .parse(embedding)
+            .get(k)
+        )
 
         logits = TensorDict(
             {
                 (modality, name): self.heads[modality][name](features)  # pyright: ignore
                 for (modality, name) in episode.timestep.keys(TokenType.ACTION)
             },
-            batch_size=[b, 1],
+            batch_size=[b, t - 1],
         )
 
-        deltas = episode.inputs.select(*logits.keys(True, True))[:, -2:].apply(  # pyright: ignore
-            torch.diff, batch_size=[b, 1]
+        deltas = episode.inputs.select(*logits.keys(True, True)).apply(  # pyright: ignore
+            lambda tensor: torch.diff(tensor, n=1, dim=-1),
+            batch_size=[b, t - 1],
         )
 
         labels = deltas.named_apply(
@@ -178,7 +178,7 @@ class MemoryExtractionStream(Module):
             nested_keys=True,
         )
 
-        logits = logits.flatten(1, 2)
+        logits = logits.flatten(0, 2)
         labels = labels.flatten(0, 1)
 
         return logits.apply(self.loss, labels, batch_size=[])
@@ -191,7 +191,20 @@ class PolicyStream(Module):
         self.heads = heads
         self.loss = loss
 
-    def forward(self, episode: Episode, embeddings: TensorDict) -> TensorDict:
+    def forward(
+        self,
+        episode: Episode,
+        embedding: Float[Tensor, "b s d"],
+    ) -> TensorDict:
+        embeddings = (
+            episode.index[-1]  # pyright: ignore
+            .select(
+                (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
+                (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+            )
+            .parse(embedding)
+        )
+
         observation_history = embeddings.get((
             Modality.SPECIAL,
             SpecialToken.OBSERVATION_HISTORY,
