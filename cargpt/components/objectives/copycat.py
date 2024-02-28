@@ -169,7 +169,8 @@ class MemoryExtractionStream(Module):
         )
 
         deltas = episode.inputs.select(*logits.keys(True, True)).apply(  # pyright: ignore
-            torch.diff, batch_size=[b, t - 1]
+            lambda tensor: torch.diff(tensor, n=1, dim=-1),
+            batch_size=[b, t - 1],
         )
 
         labels = deltas.named_apply(
