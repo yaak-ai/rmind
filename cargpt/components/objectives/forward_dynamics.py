@@ -1,6 +1,5 @@
 from functools import lru_cache
 
-import torch
 from einops import pack
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
@@ -19,13 +18,13 @@ from cargpt.components.mask import (
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
+from cargpt.components.objectives.copycat import (
+    CopycatObjective,
+)
 
 
 class ForwardDynamicsPredictionObjective(Module):
     def __init__(self, heads: ModuleDict, loss: Module) -> None:
-        # TODO
-        raise NotImplementedError("update for new timestep structure")  # noqa: EM101
-
         super().__init__()
         self.heads = heads
         self.loss = loss
@@ -60,7 +59,6 @@ class ForwardDynamicsPredictionObjective(Module):
             {
                 (token, name): self.heads[token][name](observation_action_pairs)  # pyright: ignore
                 for (token, name) in episode.timestep.keys(TokenType.OBSERVATION)
-                if token in (Modality.CONTINUOUS, Modality.DISCRETE)
             },
             batch_size=[b, t - 1],
         )
@@ -81,47 +79,4 @@ class ForwardDynamicsPredictionObjective(Module):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        mask = AttentionMask(  # pyright: ignore
-            data=torch.full((index.max + 1, index.max + 1), legend.DO_NOT_ATTEND),
-            legend=legend,
-            batch_size=[],
-            device=index.device,  # pyright: ignore
-        )
-
-        (t,) = index.batch_size  # pyright: ignore
-        for step in range(t):
-            current, future = index[step], index[step + 1 :]  # pyright: ignore
-
-            current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
-            current_actions = current.select(*timestep.keys(TokenType.ACTION))
-            future_observations = future.select(*timestep.keys(TokenType.OBSERVATION))
-            future_actions = future.select(*timestep.keys(TokenType.ACTION))
-            current_observation_summary = current.select((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
-            ))
-
-            mask = (
-                mask._do_attend(
-                    current_observations,
-                    current_observations,
-                )
-                ._do_attend(
-                    current_actions,
-                    current_actions,
-                )
-                ._do_attend(
-                    current_actions,
-                    current_observation_summary,
-                )
-                ._do_attend(
-                    future_observations,
-                    current_observation_summary,
-                )
-                ._do_attend(
-                    future_actions,
-                    current_observation_summary,
-                )
-            )
-
-        return mask
+        return CopycatObjective._build_attention_mask(index, timestep, legend)

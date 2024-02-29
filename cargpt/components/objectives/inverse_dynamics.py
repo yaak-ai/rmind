@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from einops import rearrange
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
@@ -13,9 +15,11 @@ from cargpt.components.episode import (
 )
 from cargpt.components.mask import (
     AttentionMask,
+    AttentionMaskLegend,
+    XFormersAttentionMaskLegend,
 )
-from cargpt.components.objectives.forward_dynamics import (
-    ForwardDynamicsPredictionObjective,
+from cargpt.components.objectives.copycat import (
+    CopycatObjective,
 )
 
 
@@ -25,9 +29,6 @@ class InverseDynamicsPredictionObjective(Module):
         heads: ModuleDict,
         loss: Module,
     ):
-        # TODO
-        raise NotImplementedError("update for new timestep structure")  # noqa: EM101
-
         super().__init__()
         self.heads = heads
         self.loss = loss
@@ -75,5 +76,11 @@ class InverseDynamicsPredictionObjective(Module):
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
 
     @classmethod
-    def _build_attention_mask(cls, index: Index, timestep: Timestep) -> AttentionMask:
-        return ForwardDynamicsPredictionObjective._build_attention_mask(index, timestep)
+    @lru_cache(maxsize=1, typed=True)
+    def _build_attention_mask(
+        cls,
+        index: Index,
+        timestep: Timestep,
+        legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
+    ) -> AttentionMask:
+        return CopycatObjective._build_attention_mask(index, timestep, legend)
