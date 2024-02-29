@@ -139,12 +139,14 @@ class MemoryExtractionStream(Module):
         delta_tokenizers: ModuleDict,
         heads: ModuleDict,
         loss: Module,
+        scaling: float,
     ):
         super().__init__()
 
         self.delta_tokenizers = delta_tokenizers
         self.heads = heads
         self.loss = loss
+        self.scaling = scaling
 
     def forward(
         self,
@@ -178,10 +180,16 @@ class MemoryExtractionStream(Module):
             nested_keys=True,
         )
 
+        abs_deltas = deltas.apply(
+            lambda tensor: 1 + self.scaling * torch.abs(tensor),
+            batch_size=[b, t - 1],
+        )
+
         logits = logits.flatten(0, 2)
         labels = labels.flatten(0, 1)
+        abs_deltas = abs_deltas.flatten(0, 1)
 
-        return logits.apply(self.loss, labels, batch_size=[])
+        return logits.apply(self.loss, labels, abs_deltas, batch_size=[])
 
 
 class PolicyStream(Module):

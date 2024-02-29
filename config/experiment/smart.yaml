@@ -339,6 +339,8 @@ model:
               out_features: ${model.objectives.copycat.memory_extraction.delta_tokenizers.continuous.steering_angle._args_[1].quantization_channels}
               bias: False
 
+        scaling: 100.0
+
         loss:
           _target_: cargpt.components.loss.FocalLoss
 
