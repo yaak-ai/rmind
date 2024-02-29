@@ -119,7 +119,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         pedal = meta["VehicleMotion_gas_pedal_normalized"]
         -meta["VehicleMotion_brake_pedal_normalized"]
         steering_angle = meta["VehicleMotion_steering_angle_normalized"]
-        # zero pad just to get the batch size right
+        # just to get the batch size right
         pedal_delta = F.pad(
             pedal[:, 1:] - pedal[:, :-1], (1, 0), mode="constant", value=0
         )
@@ -468,25 +468,16 @@ class CopycatObjective(Module):
             },
             batch_size=[],
         )
-        b = embeddings.shape[0]
+        embeddings.shape[0]
 
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]
-        # add uniform noise to targets
-        # https://arxiv.org/pdf/2301.13338.pdf
-        labels = labels.apply(
-            lambda x: x
-            + torch.randint(-5, 5, (b, 1), device=observation_history.device),
-            batch_size=[],
-        )
-        # prevent underflow and overflow
-        labels = labels.apply(
-            lambda x: torch.clamp(x, 0, 1023),
-            batch_size=[],
-        )
-        logits = logits.apply(
-            Rearrange("b 1 d -> b d"),
-        )
-        labels = labels.apply(Rearrange("b 1 -> b"), batch_size=[])
+        labels = episode.tokenized.select(*logits.keys(True, True))
+        # first history token has only 1 timestep to look at
+        # HACK
+        labels["continuous"]["pedal_delta"][:, 0] = -100
+        labels["continuous"]["steering_angle_delta"][:, 0] = -100
+
+        logits = logits.apply(Rearrange("b s 1 d -> (b s 1) d"), batch_size=[])
+        labels = labels.apply(Rearrange("b s 1 -> (b s 1)"), batch_size=[])
 
         return logits.apply(self.memory_extraction.loss, labels, batch_size=[])
 
@@ -494,44 +485,34 @@ class CopycatObjective(Module):
         observation_history = embeddings.get((
             Modality.SPECIAL,
             SpecialToken.OBSERVATION_HISTORY,
-        )).detach()  # NOTE: equivalent to stop gradient layer in paper
-
-        observation_summary = embeddings.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_SUMMARY,
         ))
 
-        features = rearrange(
-            [observation_summary, observation_history],
-            "i b 1 d -> b 1 (i d)",
-        )
+        # observation_summary = embeddings.get(
+        #     (
+        #         Modality.SPECIAL,
+        #         SpecialToken.OBSERVATION_SUMMARY,
+        #     )
+        # )
+        #
+        # features = rearrange(
+        #     [observation_summary, observation_history],
+        #     "i b s 1 d -> b s 1 (i d)",
+        # )
 
         logits = TensorDict(
             {
-                (modality, name): self.policy.heads[modality][name](features)  # pyright: ignore
+                (modality, name): self.policy.heads[modality][name](observation_history)  # pyright: ignore
                 for (modality, name) in episode.timestep.keys(TokenType.ACTION)
                 if modality is not Modality.SPECIAL
             },
             batch_size=[],
         )
-        b = embeddings.shape[0]
+        embeddings.shape[0]
 
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]  # pyright: ignore
-        # add uniform noise to targets
-        # https://arxiv.org/pdf/2301.13338.pdf
-        labels = labels.apply(
-            lambda x: x
-            + torch.randint(-5, 5, (b, 1), device=observation_history.device),
-            batch_size=[],
-        )
-        # prevent underflow and overflow
-        labels = labels.apply(
-            lambda x: torch.clamp(x, 0, 1023),
-            batch_size=[],
-        )
+        labels = episode.tokenized.select(*logits.keys(True, True))
 
-        logits = logits.apply(Rearrange("b 1 d -> b d"), batch_size=[])
-        labels = labels.apply(Rearrange("b 1 -> b"), batch_size=[])
+        logits = logits.apply(Rearrange("b s 1 d -> (b s 1) d"), batch_size=[])
+        labels = labels.apply(Rearrange("b s 1 -> (b s 1)"), batch_size=[])
 
         return logits.apply(self.policy.loss, labels)
 
@@ -546,7 +527,7 @@ class CopycatObjective(Module):
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
         embeddings = (
-            episode.index[-1]  # pyright: ignore
+            episode.index[:]  # pyright: ignore
             .select(
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
@@ -606,6 +587,10 @@ class CopycatObjective(Module):
                     current_observations,
                 )
                 ._do_attend(
+                    current_observations,
+                    current_observation_summary,
+                )
+                ._do_attend(
                     current_observation_summary,
                     current_observation_summary,
                 )
@@ -614,6 +599,10 @@ class CopycatObjective(Module):
                     current_observations,
                 )
                 ._do_attend(
+                    current_observations,
+                    current_observation_history,
+                )
+                ._do_attend(
                     current_observation_history,
                     current_observation_history,
                 )
@@ -638,7 +627,7 @@ class CopycatObjective(Module):
                     current_action_summary,
                 )
                 ._do_attend(
-                    current_observation_history,
+                    current_observations,
                     past_observations,
                 )
             )
