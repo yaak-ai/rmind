@@ -17,7 +17,7 @@ class FocalLoss(nn.Module):
         self,
         inputs: Float[Tensor, "b d"],
         targets: Int[Tensor, "b"],
-        weights: Float[Tensor, "b"] = None,
+        weights: Float[Tensor, "b"] | None = None,
     ) -> Float[Tensor, ""]:
         ce_loss = F.cross_entropy(inputs, targets, reduction="none")
         pt = torch.exp(-ce_loss)
