@@ -1,7 +1,6 @@
 from functools import lru_cache
 
 import numpy as np
-import torch
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
 from torch.nn import Module, ModuleDict
@@ -19,13 +18,13 @@ from cargpt.components.mask import (
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
+from cargpt.components.objectives.copycat import (
+    CopycatObjective,
+)
 
 
 class RandomMaskedHindsightControlObjective(Module):
     def __init__(self, heads: ModuleDict, loss: Module) -> None:
-        # TODO
-        raise NotImplementedError("update for new timestep structure")  # noqa: EM101
-
         super().__init__()
         self.heads = heads
         self.loss = loss
@@ -46,12 +45,12 @@ class RandomMaskedHindsightControlObjective(Module):
         )
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        index = episode.index.select(*episode.timestep.keys(TokenType.ACTION)).exclude(  # pyright: ignore
-            Modality.SPECIAL
+        index = episode.index.select(  # pyright: ignore
+            *episode.timestep.keys(TokenType.ACTION)
         )
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = embeddings.named_apply(
-            lambda nested_key, tensor: self.heads[nested_key[0]][nested_key[1]](tensor),
+            lambda nested_key, tensor: self.heads.get(nested_key)(tensor),
             nested_keys=True,
         )
 
@@ -73,58 +72,47 @@ class RandomMaskedHindsightControlObjective(Module):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        mask = AttentionMask(  # pyright: ignore
-            data=torch.full((index.max + 1, index.max + 1), legend.DO_NOT_ATTEND),
-            legend=legend,
-            batch_size=[],
-            device=index.device,  # pyright: ignore
-        )
+        mask = CopycatObjective._build_attention_mask(index, timestep, legend)
 
         (t,) = index.batch_size  # pyright: ignore
         for step in range(t):
-            current, future = index[step], index[step + 1 :]  # pyright: ignore
+            past, current, future = (
+                index[:step],  # pyright: ignore
+                index[step],  # pyright: ignore
+                index[step + 1 :],  # pyright: ignore
+            )
 
-            current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
             current_actions = current.select(*timestep.keys(TokenType.ACTION))
-            future_observations = future.select(*timestep.keys(TokenType.OBSERVATION))
-            future_actions = future.select(*timestep.keys(TokenType.ACTION))
-            current_observation_summary = current.select((
+            current_action_summary = current.select((
+                Modality.SPECIAL,
+                SpecialToken.ACTION_SUMMARY,
+            ))
+
+            future_observation_summary = future.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
-            future_observation_summary = future.select((
+            past_observation_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
 
             mask = (
                 mask._do_attend(
-                    current_observations,
-                    current_observations,
+                    current_actions,
+                    future_observation_summary,
                 )
                 ._do_attend(
                     current_actions,
-                    current_actions,
+                    past_observation_summary,
                 )
                 ._do_attend(
-                    current_actions,
-                    current_observation_summary,
-                )
-                ._do_attend(
-                    future_observations,
-                    current_observation_summary,
-                )
-                ._do_attend(
-                    future_actions,
-                    current_observation_summary,
-                )
-                ._do_attend(
-                    current_observations,
+                    current_action_summary,
                     future_observation_summary,
                 )
                 ._do_attend(
-                    current_actions,
-                    future_observation_summary,
+                    current_action_summary,
+                    past_observation_summary,
                 )
             )
 
