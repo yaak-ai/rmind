@@ -139,14 +139,16 @@ class MemoryExtractionStream(Module):
         delta_tokenizers: ModuleDict,
         heads: ModuleDict,
         loss: Module,
-        scaling: float,
+        alpha: float,
+        beta: float,
     ):
         super().__init__()
 
         self.delta_tokenizers = delta_tokenizers
         self.heads = heads
         self.loss = loss
-        self.scaling = scaling
+        self.alpha = alpha
+        self.beta = beta
 
     def forward(
         self,
@@ -181,7 +183,7 @@ class MemoryExtractionStream(Module):
         )
 
         abs_deltas = deltas.apply(
-            lambda tensor: 1 + self.scaling * torch.abs(tensor),
+            lambda tensor: self.alpha * torch.abs(tensor) + self.beta,
             batch_size=[b, t - 1],
         )
 
