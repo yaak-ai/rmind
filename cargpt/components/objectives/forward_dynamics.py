@@ -47,7 +47,7 @@ class ForwardDynamicsPredictionObjective(Module):
         observations = embeddings.get((
             Modality.SPECIAL,
             SpecialToken.OBSERVATION_SUMMARY,
-        ))
+        )).detach()  # SG
         actions = embeddings.get((Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
 
         observation_action_pairs, _ = pack(
@@ -59,6 +59,7 @@ class ForwardDynamicsPredictionObjective(Module):
             {
                 (token, name): self.heads[token][name](observation_action_pairs)  # pyright: ignore
                 for (token, name) in episode.timestep.keys(TokenType.OBSERVATION)
+                if token in (Modality.CONTINUOUS, Modality.DISCRETE)
             },
             batch_size=[b, t - 1],
         )
