@@ -348,18 +348,14 @@ model:
   # TODO: match paper?
   optimizer:
     _target_: torch.optim.AdamW
-    weight_decay: 0
+    lr: 1e-4
+    weight_decay: 0.01
 
   lr_scheduler:
-    interval: step
     scheduler:
-      _target_: torch.optim.lr_scheduler.CyclicLR
-      base_lr: 1e-5 # gato min
-      max_lr: 6e-4 # SMART max
-      step_size_up: 2000
-      step_size_down: null
-      cycle_momentum: false # with adam
-      mode: triangular
+      _target_: transformers.get_cosine_schedule_with_warmup
+      num_warmup_steps: 5000
+      num_training_steps: 30000
 
 trainer:
   _target_: pytorch_lightning.Trainer
