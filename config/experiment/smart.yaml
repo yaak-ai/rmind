@@ -353,8 +353,8 @@ model:
     interval: step
     scheduler:
       _target_: transformers.get_cosine_schedule_with_warmup
-      num_warmup_steps: 15000
-      num_training_steps: 300000
+      num_warmup_steps: 25000
+      num_training_steps: 250000
 
 trainer:
   _target_: pytorch_lightning.Trainer
