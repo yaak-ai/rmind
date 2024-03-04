@@ -242,8 +242,23 @@ model:
               out_features: ${model.objectives.copycat.memory_extraction.delta_tokenizers.continuous.steering_angle._args_[1].quantization_channels}
               bias: False
 
-        loss:
-          _target_: cargpt.components.loss.FocalLoss
+        losses:
+          _target_: cargpt.utils.ModuleDict
+          continuous:
+            gas_pedal:
+              _target_: cargpt.components.loss.DeltaFocalLoss
+              alpha: 100.0
+              beta: 0.1
+
+            brake_pedal:
+              _target_: cargpt.components.loss.DeltaFocalLoss
+              alpha: 100.0
+              beta: 0.1
+
+            steering_angle:
+              _target_: cargpt.components.loss.DeltaFocalLoss
+              alpha: 100.0
+              beta: 0.1
 
   # TODO: match paper?
   optimizer:

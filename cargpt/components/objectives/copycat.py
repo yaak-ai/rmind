@@ -17,6 +17,7 @@ from cargpt.components.episode import (
     Timestep,
     TokenType,
 )
+from cargpt.components.loss import DeltaFocalLoss
 from cargpt.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
@@ -38,7 +39,6 @@ class CopycatObjective(Module):
         episode_builder: EpisodeBuilder,
         encoder: Module,
     ) -> TensorDict:
-        _b, _t = inputs.batch_size
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
@@ -138,13 +138,13 @@ class MemoryExtractionStream(Module):
         self,
         delta_tokenizers: ModuleDict,
         heads: ModuleDict,
-        loss: Module,
+        losses: Module,
     ):
         super().__init__()
 
         self.delta_tokenizers = delta_tokenizers
         self.heads = heads
-        self.loss = loss
+        self.losses = losses
 
     def forward(
         self,
@@ -169,19 +169,28 @@ class MemoryExtractionStream(Module):
         )
 
         deltas = episode.inputs.select(*logits.keys(True, True)).apply(  # pyright: ignore
-            lambda tensor: torch.diff(tensor, n=1, dim=-1),
+            lambda x: torch.diff(x, n=1, dim=-1),
             batch_size=[b, t - 1],
         )
 
         labels = deltas.named_apply(
-            lambda nested_key, tensor: self.delta_tokenizers.get(nested_key)(tensor),
+            lambda k, v: self.delta_tokenizers.get(k)(v),
             nested_keys=True,
         )
 
         logits = logits.flatten(0, 2)
         labels = labels.flatten(0, 1)
+        deltas = deltas.flatten(0, 1)
 
-        return logits.apply(self.loss, labels, batch_size=[])
+        return logits.named_apply(
+            lambda k, _logits, _labels, _deltas: loss(_logits, _labels, _deltas)
+            if isinstance(loss := self.losses.get(k), DeltaFocalLoss)
+            else loss(_logits, _labels),
+            labels,
+            deltas,
+            nested_keys=True,
+            batch_size=[],
+        )
 
 
 class PolicyStream(Module):

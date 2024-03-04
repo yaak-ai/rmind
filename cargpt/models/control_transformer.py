@@ -2,6 +2,7 @@ from enum import StrEnum, auto
 
 import more_itertools as mit
 import pytorch_lightning as pl
+import torch
 from hydra.utils import instantiate
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.parsing import AttributeDict
@@ -126,3 +127,90 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             result["lr_scheduler"] = {"scheduler": scheduler, **cfg}
 
         return result
+
+    def _populate_focal_loss_alpha(self):
+        try:
+            module = self.objectives.copycat.streams.memory_extraction
+        except AttributeError:
+            pass
+        else:
+            from polars import col  # noqa: PLC0415
+
+            from cargpt.components.loss import AlphaFocalLoss  # noqa: PLC0415
+
+            if losses := {
+                k: v
+                for k, v in module.losses.continuous.items()
+                if isinstance(v, AlphaFocalLoss) and v.alpha is None
+            }:
+                col_map = {f"VehicleMotion_{k}_normalized": k for k in losses.keys()}
+
+                dataset = self.trainer.datamodule.train_dataloader().dataset  # pyright: ignore
+                ref_camera = dataset._cfg.samples.alignment.ref_camera
+                metadata_df = dataset._metadata.select(
+                    "drive_id",
+                    f"{ref_camera}/ImageMetadata_frame_idx",
+                    *col_map.keys(),
+                ).rename(col_map)
+
+                clip_metadata_df = (
+                    dataset._clips.lazy()
+                    .explode(f"{ref_camera}/ImageMetadata_frame_idx")
+                    .join(
+                        metadata_df.lazy(),
+                        on=("drive_id", f"{ref_camera}/ImageMetadata_frame_idx"),
+                    )
+                    .group_by("clip_id")
+                    .all()
+                )
+
+                delta_df = clip_metadata_df.select(
+                    col(col_map.values()).list.diff(null_behavior="drop").explode()
+                ).collect()
+
+                deltas = TensorDict.from_dict(
+                    {
+                        ("continuous", k): v.to_numpy(allow_copy=False, writable=False)
+                        for k, v in delta_df.to_dict().items()
+                    },
+                    device=self.device,
+                )
+
+                labels = deltas.named_apply(
+                    lambda k, v: module.delta_tokenizers.get(k)(v),
+                    nested_keys=True,
+                )
+
+                bincounts = labels.named_apply(
+                    lambda k, v: torch.bincount(
+                        v,
+                        weights=None,
+                        minlength=module.heads.get(k).out_features,
+                    ),
+                    nested_keys=True,
+                    batch_size=[],
+                )
+
+                alpha = bincounts.apply(lambda x: 1e3 / x)
+
+                for name, loss in losses.items():
+                    loss.alpha = alpha["continuous", name]
+
+                if isinstance(self.logger, WandbLogger):
+                    for k, v in bincounts.cpu().items(True, True):
+                        self.logger.log_table(
+                            key="/".join([
+                                "train",
+                                "copycat",
+                                "loss",
+                                "memory_extraction",
+                                *k,
+                                "labels",
+                            ]),
+                            columns=["bin", "count"],
+                            data=list(enumerate(v.tolist())),  # pyright: ignore
+                            step=0,
+                        )
+
+    def on_fit_start(self) -> None:
+        self._populate_focal_loss_alpha()
