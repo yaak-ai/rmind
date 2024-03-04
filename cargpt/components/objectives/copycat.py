@@ -6,6 +6,7 @@ from einops.layers.torch import Rearrange
 from jaxtyping import Float
 from tensordict import TensorDict
 from torch import Tensor
+from torch.distributions import Categorical
 from torch.nn import Module, ModuleDict
 
 from cargpt.components.episode import (
@@ -38,15 +39,30 @@ class CopycatObjective(Module):
         episode_builder: EpisodeBuilder,
         encoder: Module,
     ) -> TensorDict:
-        _b, _t = inputs.batch_size
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
         loss = TensorDict.from_dict({
-            name: stream(episode, embedding) for name, stream in self.streams.items()
+            name: stream.forward(episode, embedding)
+            for name, stream in self.streams.items()
         })
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
+
+    def predict(
+        self,
+        inputs: TensorDict,
+        episode_builder: EpisodeBuilder,
+        encoder: Module,
+    ) -> TensorDict:
+        episode = episode_builder.build_episode(inputs)
+        mask = self._build_attention_mask(episode.index, episode.timestep)
+        embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
+
+        return TensorDict.from_dict({
+            name: stream.predict(episode, embedding)
+            for name, stream in self.streams.items()
+        })
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
@@ -136,15 +152,18 @@ class CopycatObjective(Module):
 class MemoryExtractionStream(Module):
     def __init__(
         self,
-        delta_tokenizers: ModuleDict,
+        *,
         heads: ModuleDict,
         loss: Module,
+        delta_tokenizers: ModuleDict,
+        delta_detokenizers: ModuleDict | None = None,
     ):
         super().__init__()
 
-        self.delta_tokenizers = delta_tokenizers
         self.heads = heads
         self.loss = loss
+        self.delta_tokenizers = delta_tokenizers
+        self.delta_detokenizers = delta_detokenizers
 
     def forward(
         self,
@@ -182,6 +201,54 @@ class MemoryExtractionStream(Module):
         labels = labels.flatten(0, 1)
 
         return logits.apply(self.loss, labels, batch_size=[])
+
+    def predict(
+        self,
+        episode: Episode,
+        embedding: Float[Tensor, "b s d"],
+    ) -> TensorDict:
+        if self.delta_detokenizers is None:
+            msg = "delta_detokenizers missing"
+            raise RuntimeError(msg)
+
+        b, t = episode.embedded.batch_size
+
+        features = (
+            episode.index[1:]  # pyright: ignore
+            .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
+            .parse(embedding)
+            .get(k)
+        )
+
+        logits = TensorDict(
+            {
+                (modality, name): self.heads[modality][name](features)  # pyright: ignore
+                for (modality, name) in episode.timestep.keys(TokenType.ACTION)
+            },
+            batch_size=[b, t - 1],
+        )
+
+        prediction_tokens = logits.apply(
+            lambda x: Categorical(logits=x, validate_args=True).sample()
+        )
+
+        prediction = prediction_tokens.named_apply(
+            lambda nested_key, tensor: self.delta_detokenizers.get(nested_key)(tensor),  # pyright: ignore
+            nested_keys=True,
+        )
+
+        ground_truth = episode.inputs.select(*logits.keys(True, True)).apply(  # pyright: ignore
+            lambda tensor: torch.diff(tensor, n=1, dim=-1),
+            batch_size=[b, t - 1],
+        )
+
+        return TensorDict.from_dict(
+            {
+                "ground_truth": ground_truth,
+                "prediction": prediction.apply(Rearrange("b t 1 -> b t")),
+            },
+            batch_size=[b, t - 1],
+        )
 
 
 class PolicyStream(Module):
