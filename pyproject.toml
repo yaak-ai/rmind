@@ -39,6 +39,7 @@ optional = true
 [tool.poetry.group.train.dependencies]
 omegaconf = "^2.3.0"
 yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.17.1"}
+polars = "*"
 
 [tool.poetry.group.lint]
 optional = true
@@ -129,4 +130,4 @@ known-third-party = ["wandb"]
 DEP001 = ["rerun", "deephouse", "fiftyone"]
 DEP002 = ["dill", "scipy", "torchaudio"]
 DEP003 = ["numpy", "typing_extensions", "numpy", "lightning_utilities"]
-DEP004 = ["cv2", "dall_e", "omegaconf", "yaak_datasets"]
+DEP004 = ["cv2", "dall_e", "omegaconf", "yaak_datasets", "polars"]
