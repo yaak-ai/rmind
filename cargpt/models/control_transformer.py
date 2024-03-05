@@ -2,6 +2,7 @@ from enum import StrEnum, auto
 
 import more_itertools as mit
 import pytorch_lightning as pl
+import torch
 from hydra.utils import instantiate
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.parsing import AttributeDict
@@ -44,7 +45,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         # TODO: currently this does full episode construction for each objective -- optimize?
         metrics = TensorDict(
             {
-                name: objective(inputs, self.episode_builder, self.encoder)
+                name: objective(
+                    inputs, self.episode_builder, self.encoder, self.logit_bias
+                )
                 for name, objective in self.objectives.items()
             },
             batch_size=[],
@@ -126,3 +129,65 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             result["lr_scheduler"] = {"scheduler": scheduler, **cfg}
 
         return result
+
+    def _populate_logit_bias(self):
+        # https://openaccess.thecvf.com/content/CVPR2023/papers/Xu_Learning_Imbalanced_Data_With_Vision_Transformers_CVPR_2023_paper.pdf
+        # Section 3.2
+        from polars import col  # noqa: PLC0415
+
+        metadata_map = {
+            "VehicleMotion_gas_pedal_normalized": "gas_pedal",
+            "VehicleMotion_brake_pedal_normalized": "brake_pedal",
+            "VehicleMotion_steering_angle_normalized": "steering_angle",
+            "VehicleMotion_speed": "speed",
+            "VehicleState_turn_signal": "turn_signal",
+        }
+
+        modality_type_map = {
+            "gas_pedal": "continuous",
+            "brake_pedal": "continuous",
+            "steering_angle": "continuous",
+            "speed": "continuous",
+            "turn_signal": "discrete",
+        }
+
+        dataset = self.trainer.datamodule.train_dataloader().dataset  # pyright: ignore
+        ref_camera = dataset._cfg.samples.alignment.ref_camera
+        metadata_df = dataset._metadata.select(
+            "drive_id",
+            f"{ref_camera}/ImageMetadata_frame_idx",
+            *metadata_map.keys(),
+        ).rename(metadata_map)
+
+        metadata_values_df = metadata_df.select(col(metadata_map.values()))
+
+        metadata_values = TensorDict.from_dict(
+            {
+                (modality_type_map[k], k): v.to_numpy(allow_copy=False, writable=False)
+                for k, v in metadata_values_df.to_dict().items()
+            },
+            device=self.device,
+        )
+
+        labels = metadata_values.named_apply(
+            lambda k, v: self.episode_builder.tokenizers.get(k)(v.reshape(-1, 1)),
+            nested_keys=True,
+        )
+
+        bincounts = labels.named_apply(
+            lambda k, v: torch.bincount(
+                v.flatten(),
+                weights=None,
+                minlength=self.episode_builder.embeddings.get(k).weight.shape[0],
+            ),
+            nested_keys=True,
+            batch_size=[],
+        )
+
+        # add +1 for empty bins
+        self.logit_bias = bincounts.apply(
+            lambda x: torch.log((x + 1) / x.sum()).reshape(1, -1)
+        )
+
+    def on_fit_start(self) -> None:
+        self._populate_logit_bias()

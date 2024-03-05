@@ -93,8 +93,9 @@ model:
               pattern: b t -> b t 1
 
       discrete:
-        _target_: einops.layers.torch.Rearrange
-        pattern: b t -> b t 1
+        turn_signal:
+          _target_: einops.layers.torch.Rearrange
+          pattern: b t -> b t 1
 
     embeddings:
       _target_: cargpt.utils.ModuleDict
@@ -140,9 +141,10 @@ model:
           embedding_dim: ${embedding_dim}
 
       discrete:
-        _target_: torch.nn.Embedding
-        num_embeddings: 3
-        embedding_dim: ${embedding_dim}
+        turn_signal:
+          _target_: torch.nn.Embedding
+          num_embeddings: 3
+          embedding_dim: ${embedding_dim}
 
       special:
         _target_: torch.nn.Embedding
@@ -258,7 +260,7 @@ model:
                 _args_:
                   - 2
                   - ${embedding_dim}
-              out_features: ${model.episode_builder.embeddings.discrete.num_embeddings}
+              out_features: ${model.episode_builder.embeddings.discrete.turn_signal.num_embeddings}
               bias: False
 
         loss:

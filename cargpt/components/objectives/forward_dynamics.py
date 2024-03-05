@@ -1,3 +1,4 @@
+import operator
 from functools import lru_cache
 
 from einops import pack
@@ -34,6 +35,7 @@ class ForwardDynamicsPredictionObjective(Module):
         inputs: TensorDict,
         episode_builder: EpisodeBuilder,
         encoder: Module,
+        logit_bias: TensorDict,
     ) -> TensorDict:
         b, t = inputs.batch_size
         episode = episode_builder.build_episode(inputs)
@@ -67,6 +69,7 @@ class ForwardDynamicsPredictionObjective(Module):
         labels = episode.tokenized.select(*logits.keys(True, True))[:, 1:]  # pyright: ignore
 
         logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
+        logits = logits.apply(operator.add, logit_bias, batch_size=[])
         labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
         loss = logits.apply(self.loss, labels)
 
