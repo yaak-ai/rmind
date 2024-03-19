@@ -3,14 +3,6 @@ Self-supervised model trained on vehicle context and control signals from expert
 
 ## Data
 
-### Sync
-
-Managed with [dvc](https://dvc.org/), see [dvc.yaml](./dvc.yaml):
-
-```bash
-dvc repro
-```
-
 ### YAML templating
 
 ```
