@@ -1,4 +1,3 @@
-import operator
 from functools import lru_cache
 
 from einops import rearrange
@@ -53,7 +52,7 @@ class InverseDynamicsPredictionObjective(Module):
         observations = embeddings.get((
             Modality.SPECIAL,
             SpecialToken.OBSERVATION_SUMMARY,
-        ))
+        )).detach()
 
         # (o0, o1, o2, o3, ...) -> ((o0, o1), (o1, o2), (o2, o3), ...)
         observation_pairs = rearrange(
@@ -69,11 +68,10 @@ class InverseDynamicsPredictionObjective(Module):
             },
             batch_size=[b, t - 1],
         )
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, :-1]  # pyright: ignore
+        labels = episode.inputs.select(*logits.keys(True, True))[:, :-1]  # pyright: ignore
 
-        logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
-        logits = logits.apply(operator.add, logit_bias, batch_size=[])
-        labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
+        logits = logits.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
+        labels = labels.apply(Rearrange("b t -> (b t)"), batch_size=[])
         loss = logits.apply(self.loss, labels)
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])

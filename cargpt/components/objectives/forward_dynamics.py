@@ -1,8 +1,7 @@
-import operator
 from functools import lru_cache
 
+import torch
 from einops import pack
-from einops.layers.torch import Rearrange
 from tensordict import TensorDict
 from torch.nn import Module, ModuleDict
 
@@ -37,40 +36,51 @@ class ForwardDynamicsPredictionObjective(Module):
         encoder: Module,
         logit_bias: TensorDict,
     ) -> TensorDict:
-        b, t = inputs.batch_size
+        _b, _t = inputs.batch_size
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
         index = episode.index.select(  # pyright: ignore
+            (Modality.IMAGE, "cam_front_left"),
             (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
             (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY),
         )
         embeddings = index.parse(embedding)
-        observations = embeddings.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_SUMMARY,
-        )).detach()  # SG
+        observations = embeddings.get(
+            (
+                Modality.IMAGE,
+                "cam_front_left",
+            )
+        )
+
+        observations_summary = embeddings.get(
+            (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
+        )
+        observations_summary = torch.broadcast_to(
+            observations_summary, observations.shape
+        )
+
         actions = embeddings.get((Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
+        actions = torch.broadcast_to(actions, observations.shape)
 
         observation_action_pairs, _ = pack(
-            [observations[:, :-1], actions[:, :-1]],
-            "b t *",
+            [observations[:, :-1], observations_summary[:, :-1], actions[:, :-1]],
+            "b t p *",
         )
 
         logits = TensorDict(
             {
-                (token, name): self.heads[token][name](observation_action_pairs)  # pyright: ignore
+                (token, name): self.heads[token][name](
+                    observation_action_pairs
+                )  # pyright: ignore
                 for (token, name) in episode.timestep.keys(TokenType.OBSERVATION)
-                if token in (Modality.CONTINUOUS, Modality.DISCRETE)
+                if token in (Modality.IMAGE)
             },
-            batch_size=[b, t - 1],
+            batch_size=[],
         )
 
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, 1:]  # pyright: ignore
-
-        logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
-        logits = logits.apply(operator.add, logit_bias, batch_size=[])
-        labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
+        labels = episode.raw.select(*logits.keys(True, True))[:, 1:]  # pyright: ignore
+        labels = labels.apply(lambda x: x.detach(), batch_size=[])  # SG
         loss = logits.apply(self.loss, labels)
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])

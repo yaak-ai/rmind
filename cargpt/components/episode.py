@@ -158,6 +158,7 @@ Index.__eq__ = _index_eq  # pyright: ignore
 class Episode:
     inputs: TensorDict
     tokenized: TensorDict
+    raw: TensorDict
     embedded: TensorDict
     index: Index
     timestep: Timestep
@@ -240,12 +241,13 @@ class EpisodeBuilder(Module):
             batch_size=[t],
         )
 
-        embedded = self._position_encode(embedded, timestep_index)
+        embedded_with_pe = self._position_encode(embedded, timestep_index)
 
         return Episode(  # pyright: ignore
             inputs=inputs,
             tokenized=tokenized,
-            embedded=embedded,
+            raw=embedded,
+            embedded=embedded_with_pe,
             index=index,
             timestep=self.timestep,
             batch_size=[],

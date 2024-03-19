@@ -7,6 +7,7 @@ from hydra.utils import instantiate
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.parsing import AttributeDict
 from tensordict import TensorDict
+from torch import nn
 from torch.nn import Module, ModuleDict  # noqa: TCH002
 from wandb import Image
 from yaak_datasets import Batch
@@ -38,6 +39,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)
         self.encoder: Module = instantiate(self.hparams.encoder)
         self.objectives: ModuleDict = instantiate(self.hparams.objectives)
+
+        self.apply(self._init_weights)
 
     def _step(self, batch: Batch) -> TensorDict:
         inputs = self._build_input(batch)
@@ -188,6 +191,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.logit_bias = bincounts.apply(
             lambda x: torch.log((x + 1) / x.sum()).reshape(1, -1)
         )
+
+    # https://github.com/karpathy/minGPT/blob/master/mingpt/model.py#L163C5-L172C47
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.zeros_(module.bias)
+            torch.nn.init.ones_(module.weight)
 
     def on_fit_start(self) -> None:
         self._populate_logit_bias()

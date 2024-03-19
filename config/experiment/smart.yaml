@@ -111,10 +111,10 @@ model:
           - _target_: einops.layers.torch.Rearrange
             pattern: ... c h w -> ... h w c
 
-          - _target_: cargpt.components.position_encoding.PatchPositionEncoding
-            num_rows: 10
-            num_cols: 18
-            embedding_dim: ${embedding_dim}
+          # - _target_: cargpt.components.position_encoding.PatchPositionEncoding
+          #   num_rows: 10
+          #   num_cols: 18
+          #   embedding_dim: ${embedding_dim}
 
           - _target_: einops.layers.torch.Rearrange
             pattern: ... h w d -> ... (h w) d
@@ -204,67 +204,62 @@ model:
           _target_: cargpt.utils.ModuleDict
           continuous:
             gas_pedal:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
-              bias: False
+              _target_: torch.nn.Sequential
+              _args_:
+                - _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: 1
+                - _target_: torch.nn.Sigmoid
 
             brake_pedal:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
-              bias: False
+              _target_: torch.nn.Sequential
+              _args_:
+                - _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: 1
+                - _target_: torch.nn.Sigmoid
 
             steering_angle:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
-              bias: False
+              _target_: torch.nn.Sequential
+              _args_:
+                - _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: 1
+                - _target_: torch.nn.Tanh
 
         loss:
-          _target_: torch.nn.CrossEntropyLoss
+          _target_: torch.nn.MSELoss
           reduction: mean
 
     forward_dynamics:
         _target_: cargpt.components.objectives.ForwardDynamicsPredictionObjective
         heads:
           _target_: cargpt.utils.ModuleDict
-          continuous:
-            speed:
+          image:
+            cam_front_left:
               _target_: torch.nn.Linear
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 3
                   - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.speed._args_[0].num_bins}
-              bias: False
-
-          discrete:
-            turn_signal:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
-              out_features: ${model.episode_builder.embeddings.discrete.turn_signal.num_embeddings}
+              out_features: ${embedding_dim}
               bias: False
 
         loss:
-          _target_: torch.nn.CrossEntropyLoss
+          _target_: torch.nn.MSELoss
           reduction: mean
 
     random_masked_hindsight_control:
