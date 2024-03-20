@@ -3,7 +3,7 @@ from functools import lru_cache
 from einops import pack
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
-from torch.nn import Module, ModuleDict
+from torch.nn import Module
 
 from cargpt.components.episode import (
     EpisodeBuilder,
@@ -11,7 +11,6 @@ from cargpt.components.episode import (
     Modality,
     SpecialToken,
     Timestep,
-    TokenType,
 )
 from cargpt.components.mask import (
     AttentionMask,
@@ -21,6 +20,7 @@ from cargpt.components.mask import (
 from cargpt.components.objectives.copycat import (
     CopycatObjective,
 )
+from cargpt.utils import ModuleDict
 
 
 class ForwardDynamicsPredictionObjective(Module):
@@ -55,10 +55,10 @@ class ForwardDynamicsPredictionObjective(Module):
             "b t *",
         )
 
-        logits = TensorDict(
+        logits = TensorDict.from_dict(
             {
-                (token, name): self.heads[token][name](observation_action_pairs)  # pyright: ignore
-                for (token, name) in episode.timestep.keys(TokenType.OBSERVATION)
+                (modality, name): head(observation_action_pairs)
+                for (modality, name), head in self.heads.flatten()
             },
             batch_size=[b, t - 1],
         )
