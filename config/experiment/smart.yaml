@@ -237,7 +237,7 @@ model:
                   out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
 
         loss:
-          _target_: cargpt.components.FocalLoss
+          _target_: cargpt.components.loss.FocalLoss
 
     forward_dynamics:
         _target_: cargpt.components.objectives.ForwardDynamicsPredictionObjective
@@ -282,10 +282,10 @@ model:
               reduction: mean
           continuous:
             speed:
-              _target_: cargpt.components.FocalLoss
+              _target_: cargpt.components.loss.FocalLoss
           discrete:
             turn_signal:
-              _target_: cargpt.components.FocalLoss
+              _target_: cargpt.components.loss.FocalLoss
 
     random_masked_hindsight_control:
         _target_: cargpt.components.objectives.RandomMaskedHindsightControlObjective
