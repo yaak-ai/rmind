@@ -248,7 +248,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  # pyright: ignore
-            if module.bias:
+            if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)  # pyright: ignore
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  # pyright: ignore

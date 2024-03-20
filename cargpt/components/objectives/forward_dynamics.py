@@ -13,6 +13,7 @@ from cargpt.components.episode import (
     Modality,
     SpecialToken,
     Timestep,
+    TokenType,
 )
 from cargpt.components.mask import (
     AttentionMask,
