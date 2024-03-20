@@ -5,7 +5,7 @@ import torch
 from einops import pack
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
-from torch.nn import Module, ModuleDict
+from torch.nn import Module
 
 from cargpt.components.episode import (
     EpisodeBuilder,
@@ -13,7 +13,6 @@ from cargpt.components.episode import (
     Modality,
     SpecialToken,
     Timestep,
-    TokenType,
 )
 from cargpt.components.mask import (
     AttentionMask,
@@ -23,6 +22,7 @@ from cargpt.components.mask import (
 from cargpt.components.objectives.copycat import (
     CopycatObjective,
 )
+from cargpt.utils import ModuleDict
 
 
 class ForwardDynamicsPredictionObjective(Module):
@@ -69,7 +69,7 @@ class ForwardDynamicsPredictionObjective(Module):
             )[0]
         )
 
-        logits = TensorDict(
+        logits = TensorDict.from_dict(
             {
                 (modality, name): head(observations_action_pairs[modality][name])  # pyright: ignore
                 for (modality, name), head in self.heads.flatten()

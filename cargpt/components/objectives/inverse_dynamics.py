@@ -4,7 +4,7 @@ from functools import lru_cache
 from einops import rearrange
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
-from torch.nn import Module, ModuleDict
+from torch.nn import Module
 
 from cargpt.components.episode import (
     EpisodeBuilder,
@@ -21,6 +21,7 @@ from cargpt.components.mask import (
 from cargpt.components.objectives.copycat import (
     CopycatObjective,
 )
+from cargpt.utils import ModuleDict
 
 
 class InverseDynamicsPredictionObjective(Module):
@@ -60,13 +61,14 @@ class InverseDynamicsPredictionObjective(Module):
             "i b t 1 d -> b t (i d)",
         )
 
-        logits = TensorDict(
+        logits = TensorDict.from_dict(
             {
-                (token, name): head(observation_pairs)  # pyright: ignore
-                for (token, name), head in self.heads.flatten()
+                (modality, name): head(observation_pairs)
+                for (modality, name), head in self.heads.flatten()
             },
             batch_size=[b, t - 1],
         )
+
         labels = episode.tokenized.select(*logits.keys(True, True))[:, :-1]  # pyright: ignore
 
         logits = logits.apply(operator.add, logit_bias, batch_size=[])
