@@ -1,7 +1,9 @@
+import operator
 from functools import lru_cache
 
 import torch
 from einops import pack
+from einops.layers.torch import Rearrange
 from tensordict import TensorDict
 from torch.nn import Module, ModuleDict
 
@@ -49,43 +51,61 @@ class ForwardDynamicsPredictionObjective(Module):
             (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY),
         )
         summaries = index.parse(embedding)
-        observations_summary = summaries.get(
-            (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
-        )
+        observations_summary = summaries.get((
+            Modality.SPECIAL,
+            SpecialToken.OBSERVATION_SUMMARY,
+        ))
         actions_summary = summaries.get((Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
 
-        # (obs, obs_summary, action_summary)
+        # (obs, obs_summary, action_summary), all but last timestep
         observations_action_pairs = observations.apply(
             lambda obs: pack(
                 [
-                    obs,
-                    torch.broadcast_to(observations_summary, obs.shape),
-                    torch.broadcast_to(actions_summary, obs.shape),
+                    obs[:, :-1],
+                    torch.broadcast_to(observations_summary, obs.shape)[:, :-1],
+                    torch.broadcast_to(actions_summary, obs.shape)[:, :-1],
                 ],
                 "b t p *",
             )[0]
         )
 
-        # We take all timesteps except last
-        observations.apply(lambda x: x[:, :-1])
-        breakpoint()
-
-        logits = observations.apply()
         logits = TensorDict(
             {
-                (token, name): self.heads[token][name](
-                    observations_action_pairs[token][name]
-                )  # pyright: ignore
-                for (token, name) in episode.timestep.keys(TokenType.OBSERVATION)
+                (modality, name): head(observations_action_pairs[modality][name])  # pyright: ignore
+                for (modality, name), head in self.heads.flatten()
             },
             batch_size=[],
         )
 
-        breakpoint()
+        image_obs = logits.select(Modality.IMAGE)
+        image_labels = episode.raw.select(*image_obs.keys(True, True))[:, 1:]  # pyright: ignore
+        image_labels = image_labels.apply(lambda x: x.detach(), batch_size=[])  # SG ?
 
-        labels = episode.raw.select(*logits.keys(True, True))[:, 1:]  # pyright: ignore
-        labels = labels.apply(lambda x: x.detach(), batch_size=[])  # SG
-        loss = logits.apply(self.loss, labels)
+        non_image_obs = logits.select((Modality.CONTINUOUS), (Modality.DISCRETE))
+        non_image_labels = episode.tokenized.select(*non_image_obs.keys(True, True))[
+            :, 1:
+        ]  # pyright: ignore
+
+        non_image_obs = non_image_obs.apply(operator.add, logit_bias, batch_size=[])
+        non_image_obs = non_image_obs.apply(
+            Rearrange("b t 1 d -> (b t) d"), batch_size=[]
+        )
+        non_image_labels = non_image_labels.apply(
+            Rearrange("b t 1 -> (b t)"), batch_size=[]
+        )
+
+        logits = image_obs.update(non_image_obs)
+        labels = image_labels.update(non_image_labels)
+
+        loss = TensorDict(
+            {
+                (modality, name): criteria(
+                    logits[modality][name], labels[modality][name]
+                )  # pyright: ignore
+                for (modality, name), criteria in self.losses.flatten()
+            },
+            batch_size=[],
+        )
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
 

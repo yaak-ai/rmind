@@ -1,6 +1,8 @@
+from collections.abc import Iterator
 from functools import reduce
 from typing import Any, Mapping
 
+from more_itertools import always_iterable
 from torch.nn import Module
 from torch.nn import ModuleDict as _ModuleDict
 
@@ -32,3 +34,10 @@ class ModuleDict(_ModuleDict):
                 raise
 
             return default
+
+    def flatten(self) -> Iterator[tuple[str | tuple[str, ...], Module]]:
+        for k, v in self._modules.items():
+            if isinstance(v, self.__class__):
+                yield from (((k, *always_iterable(_k)), _v) for _k, _v in v.flatten())
+            else:
+                yield k, v
