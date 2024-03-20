@@ -13,7 +13,6 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.trainer.states import RunningStage
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor, softmax
-from wandb.sdk.lib import RunDisabled
 from wandb.wandb_run import Run
 
 from cargpt.visualization.utils import Unnormalize
@@ -21,18 +20,16 @@ from cargpt.visualization.utils import Unnormalize
 
 class LoadableFromArtifact:
     @classmethod
-    def load_from_wandb_artifact(cls, name: str, **kwargs):
-        get_artifact = (
-            wandb.run.use_artifact
-            if wandb.run is not None and not isinstance(wandb.run, RunDisabled)
-            else wandb.Api().artifact
-        )
+    def load_from_wandb_artifact(
+        cls,
+        artifact: str,
+        filename: str = "model.ckpt",
+        **kwargs,
+    ):
+        artifact_dir = WandbLogger.download_artifact(artifact, artifact_type="model")
+        ckpt_path = Path(artifact_dir) / filename  # pyright: ignore
 
-        artifact = get_artifact(name, type="model")
-        artifact_dir = artifact.download()
-        ckpt_path = mit.one(Path(artifact_dir).glob("*.ckpt")).absolute().as_posix()
-
-        return cls.load_from_checkpoint(f"file://{ckpt_path}", **kwargs)  # pyright: ignore
+        return cls.load_from_checkpoint(ckpt_path, **kwargs)  # pyright: ignore
 
 
 class ValOutputsLoggingTableMixin:

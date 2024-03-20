@@ -79,12 +79,6 @@ optional = true
 rerun-sdk = "*"
 opencv-python = "*"
 
-[tool.poetry.group.dvc]
-optional = true
-
-[tool.poetry.group.dvc.dependencies]
-dvc = {version = "*", extras = ["s3"]}
-
 [tool.poetry.group.dalle]
 optional = true
 

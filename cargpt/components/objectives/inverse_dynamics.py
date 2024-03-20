@@ -1,3 +1,4 @@
+import operator
 from functools import lru_cache
 
 from einops import rearrange
@@ -44,15 +45,19 @@ class InverseDynamicsPredictionObjective(Module):
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        index = episode.index.select((  # pyright: ignore
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_SUMMARY,
-        ))
+        index = episode.index.select(
+            (  # pyright: ignore
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            )
+        )
         embeddings = index.parse(embedding)
-        observations = embeddings.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_SUMMARY,
-        )).detach()
+        observations = embeddings.get(
+            (
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            )
+        ).detach()  # SG
 
         # (o0, o1, o2, o3, ...) -> ((o0, o1), (o1, o2), (o2, o3), ...)
         observation_pairs = rearrange(
@@ -62,16 +67,21 @@ class InverseDynamicsPredictionObjective(Module):
 
         logits = TensorDict(
             {
-                (token, name): self.heads[token][name](observation_pairs)  # pyright: ignore
+                (token, name): self.heads[token][name](
+                    observation_pairs
+                )  # pyright: ignore
                 for (token, name) in episode.timestep.keys(TokenType.ACTION)
                 if token in (Modality.CONTINUOUS, Modality.DISCRETE)
             },
             batch_size=[b, t - 1],
         )
-        labels = episode.inputs.select(*logits.keys(True, True))[:, :-1]  # pyright: ignore
+        labels = episode.tokenized.select(*logits.keys(True, True))[
+            :, :-1
+        ]  # pyright: ignore
 
-        logits = logits.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
-        labels = labels.apply(Rearrange("b t -> (b t)"), batch_size=[])
+        logits = logits.apply(operator.add, logit_bias, batch_size=[])
+        logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
+        labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
         loss = logits.apply(self.loss, labels)
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
