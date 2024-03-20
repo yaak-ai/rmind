@@ -47,7 +47,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.encoder: Module = instantiate(self.hparams.encoder)
         self.objectives: ModuleDict = instantiate(self.hparams.objectives)
 
-        self.apply(self._init_weights)
+        self.apply(self._init_weights)  # pyright: ignore
 
     @_restricted_classmethod
     def load_from_checkpoint(cls, checkpoint_path: str | PathLike, **kwargs) -> Self:
@@ -247,14 +247,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     # https://github.com/karpathy/minGPT/blob/master/mingpt/model.py#L163C5-L172C47
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  # pyright: ignore
+            if module.bias:
+                torch.nn.init.zeros_(module.bias)  # pyright: ignore
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  # pyright: ignore
         elif isinstance(module, nn.LayerNorm):
-            torch.nn.init.zeros_(module.bias)
-            torch.nn.init.ones_(module.weight)
+            torch.nn.init.zeros_(module.bias)  # pyright: ignore
+            torch.nn.init.ones_(module.weight)  # pyright: ignore
 
     def on_fit_start(self) -> None:
         self._populate_logit_bias()

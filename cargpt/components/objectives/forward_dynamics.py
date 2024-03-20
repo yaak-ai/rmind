@@ -43,7 +43,7 @@ class ForwardDynamicsPredictionObjective(Module):
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
-        index = episode.index.select(*episode.timestep.keys(TokenType.OBSERVATION))
+        index = episode.index.select(*episode.timestep.keys(TokenType.OBSERVATION))  # pyright: ignore
         observations = index.parse(embedding)
 
         index = episode.index.select(  # pyright: ignore
@@ -71,20 +71,20 @@ class ForwardDynamicsPredictionObjective(Module):
 
         logits = TensorDict.from_dict(
             {
-                (modality, name): head(observations_action_pairs[modality][name])  # pyright: ignore
+                (modality, name): head(observations_action_pairs[modality][name])
                 for (modality, name), head in self.heads.flatten()
             },
             batch_size=[],
         )
 
         image_obs = logits.select(Modality.IMAGE)
-        image_labels = episode.raw.select(*image_obs.keys(True, True))[:, 1:]  # pyright: ignore
+        image_labels = episode.raw.select(*image_obs.keys(True, True))[:, 1:]
         image_labels = image_labels.apply(lambda x: x.detach(), batch_size=[])  # SG ?
 
         non_image_obs = logits.select((Modality.CONTINUOUS), (Modality.DISCRETE))
         non_image_labels = episode.tokenized.select(*non_image_obs.keys(True, True))[
             :, 1:
-        ]  # pyright: ignore
+        ]
 
         non_image_obs = non_image_obs.apply(operator.add, logit_bias, batch_size=[])
         non_image_obs = non_image_obs.apply(

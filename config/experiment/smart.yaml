@@ -237,8 +237,7 @@ model:
                   out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
 
         loss:
-          _target_: torch.nn.CrossEntropyLoss
-          reduction: mean
+          _target_: cargpt.components.FocalLoss
 
     forward_dynamics:
         _target_: cargpt.components.objectives.ForwardDynamicsPredictionObjective
@@ -283,12 +282,10 @@ model:
               reduction: mean
           continuous:
             speed:
-              _target_: torch.nn.CrossEntropyLoss
-              reduction: mean
+              _target_: cargpt.components.FocalLoss
           discrete:
             turn_signal:
-              _target_: torch.nn.CrossEntropyLoss
-              reduction: mean
+              _target_: cargpt.components.FocalLoss
 
     random_masked_hindsight_control:
         _target_: cargpt.components.objectives.RandomMaskedHindsightControlObjective
