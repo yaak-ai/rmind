@@ -98,18 +98,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             and (step := self.trainer.global_step) == 0
         ):
             for k, v in metrics.items():
-                img = Image(
-                    v["mask"].with_legend(WandbAttentionMaskLegend).data
-                )  # pyright: ignore
+                img = Image(v["mask"].with_legend(WandbAttentionMaskLegend).data)  # pyright: ignore
                 self.logger.log_image(
                     f"masks/{k}",
                     [img],
                     step=step,
                 )
 
-        metrics = metrics.exclude(
-            *((k, "mask") for k in metrics.keys())
-        )  # pyright: ignore
+        metrics = metrics.exclude(*((k, "mask") for k in metrics.keys()))  # pyright: ignore
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))
         metrics[("loss", "total")] = sum(losses.values(True, True))
 
@@ -118,36 +114,30 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def training_step(self, batch: Batch, _batch_idx: int):
         metrics = self._step(batch)
 
-        self.log_dict(
-            {
-                "/".join(["train", *k]): v
-                for k, v in metrics.items(include_nested=True, leaves_only=True)
-            }
-        )
+        self.log_dict({
+            "/".join(["train", *k]): v
+            for k, v in metrics.items(include_nested=True, leaves_only=True)
+        })
 
         return metrics["loss", "total"]
 
     def validation_step(self, batch: Batch, _batch_idx: int):
         metrics = self._step(batch)
 
-        self.log_dict(
-            {
-                "/".join(["val", *k]): v
-                for k, v in metrics.items(include_nested=True, leaves_only=True)
-            }
-        )
+        self.log_dict({
+            "/".join(["val", *k]): v
+            for k, v in metrics.items(include_nested=True, leaves_only=True)
+        })
 
         return metrics["loss", "total"]
 
     def predict_step(self, batch: Batch):
         inputs = self._build_input(batch)
 
-        predictions = TensorDict.from_dict(
-            {
-                name: objective.predict(inputs, self.episode_builder, self.encoder)
-                for name, objective in self.objectives.items()
-            }
-        )
+        predictions = TensorDict.from_dict({
+            name: objective.predict(inputs, self.episode_builder, self.encoder)
+            for name, objective in self.objectives.items()
+        })
 
         return TensorDict.from_dict(
             {
@@ -162,9 +152,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         meta = batch.meta
         shapes = [
             frames.get_item_shape(k)
-            for k in frames.keys(
-                include_nested=True, leaves_only=True
-            )  # pyright: ignore
+            for k in frames.keys(include_nested=True, leaves_only=True)  # pyright: ignore
         ]
 
         # include timestep as batch dim
@@ -260,7 +248,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  # pyright: ignore
-            if module.bias is not None: # pyright: ignore
+            if module.bias is not None:  # pyright: ignore
                 torch.nn.init.zeros_(module.bias)  # pyright: ignore
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  # pyright: ignore
