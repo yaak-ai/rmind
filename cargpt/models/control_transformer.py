@@ -1,3 +1,4 @@
+from collections import defaultdict
 from enum import StrEnum, auto
 from os import PathLike
 from typing import Self
@@ -8,13 +9,13 @@ import torch
 from hydra.utils import instantiate
 from lightning_fabric.plugins.io.torch_io import pl_load
 from lightning_fabric.utilities.data import AttributeDict
+from loguru import logger
 from pytorch_lightning.core.saving import _load_state  # noqa: PLC2701
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.model_helpers import (
     _restricted_classmethod,  # noqa: PLC2701
 )
 from tensordict import TensorDict
-from torch import nn
 from torch.nn import Module, ModuleDict  # noqa: TCH002
 from wandb import Image
 from yaak_datasets import Batch
@@ -23,9 +24,7 @@ from cargpt.components.episode import (
     EpisodeBuilder,
     Modality,
 )
-from cargpt.components.mask import (
-    WandbAttentionMaskLegend,
-)
+from cargpt.components.mask import WandbAttentionMaskLegend
 from cargpt.utils._wandb import LoadableFromArtifact
 
 
@@ -46,8 +45,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)
         self.encoder: Module = instantiate(self.hparams.encoder)
         self.objectives: ModuleDict = instantiate(self.hparams.objectives)
-
-        self.apply(self._init_weights)  # pyright: ignore
 
     @_restricted_classmethod
     def load_from_checkpoint(cls, checkpoint_path: str | PathLike, **kwargs) -> Self:
@@ -84,9 +81,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         # TODO: currently this does full episode construction for each objective -- optimize?
         metrics = TensorDict(
             {
-                name: objective(
-                    inputs, self.episode_builder, self.encoder, self.logit_bias
-                )
+                name: objective(inputs, self.episode_builder, self.encoder)
                 for name, objective in self.objectives.items()
             },
             batch_size=[],
@@ -188,73 +183,77 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def _populate_logit_bias(self):
         # https://openaccess.thecvf.com/content/CVPR2023/papers/Xu_Learning_Imbalanced_Data_With_Vision_Transformers_CVPR_2023_paper.pdf
         # Section 3.2
-        from polars import col  # noqa: PLC0415
 
-        metadata_map = {
-            "VehicleMotion_gas_pedal_normalized": "gas_pedal",
-            "VehicleMotion_brake_pedal_normalized": "brake_pedal",
-            "VehicleMotion_steering_angle_normalized": "steering_angle",
-            "VehicleMotion_speed": "speed",
-            "VehicleState_turn_signal": "turn_signal",
-        }
+        logit_bias_losses: defaultdict[
+            tuple[Modality, str],
+            dict[str, Module],
+        ] = defaultdict(dict)
 
-        modality_type_map = {
-            "gas_pedal": "continuous",
-            "brake_pedal": "continuous",
-            "steering_angle": "continuous",
-            "speed": "continuous",
-            "turn_signal": "discrete",
-        }
+        for objective_key, objective in self.objectives.items():
+            # NOTE: this wouldn't work for e.g. copycat
+            if hasattr(objective, "losses"):
+                for loss_key, loss in objective.losses.flatten():
+                    if hasattr(loss, "logit_bias") and loss.logit_bias is None:
+                        logit_bias_losses[loss_key][objective_key] = loss
 
-        dataset = self.trainer.datamodule.train_dataloader().dataset  # pyright: ignore
-        ref_camera = dataset._cfg.samples.alignment.ref_camera
-        metadata_df = dataset._metadata.select(
-            "drive_id",
-            f"{ref_camera}/ImageMetadata_frame_idx",
-            *metadata_map.keys(),
-        ).rename(metadata_map)
+        if logit_bias_losses:
+            col_names = {
+                k: v
+                for (k, v) in (
+                    ("VehicleMotion_gas_pedal_normalized", "gas_pedal"),
+                    ("VehicleMotion_brake_pedal_normalized", "brake_pedal"),
+                    ("VehicleMotion_steering_angle_normalized", "steering_angle"),
+                    ("VehicleMotion_speed", "speed"),
+                    ("VehicleState_turn_signal", "turn_signal"),
+                )
+                if v in {name for (_, name) in logit_bias_losses.keys()}
+            }
 
-        metadata_values_df = metadata_df.select(col(metadata_map.values()))
+            modalities = {
+                "gas_pedal": Modality.CONTINUOUS,
+                "brake_pedal": Modality.CONTINUOUS,
+                "steering_angle": Modality.CONTINUOUS,
+                "speed": Modality.CONTINUOUS,
+                "turn_signal": Modality.DISCRETE,
+            }
 
-        metadata_values = TensorDict.from_dict(
-            {
-                (modality_type_map[k], k): v.to_numpy(allow_copy=False, writable=False)
-                for k, v in metadata_values_df.to_dict().items()
-            },
-            device=self.device,
-        )
+            dataset = self.trainer.datamodule.train_dataloader().dataset  # pyright: ignore
+            metadata_df = dataset._metadata.select(*col_names.keys()).rename(col_names)
+            values = TensorDict.from_dict(
+                {
+                    (modalities[k], k): v.to_numpy(allow_copy=False, writable=False)
+                    for k, v in metadata_df.to_dict().items()
+                },
+                device=self.device,
+                batch_size=[],
+            )
 
-        labels = metadata_values.named_apply(
-            lambda k, v: self.episode_builder.tokenizers.get(k)(v.reshape(-1, 1)),
-            nested_keys=True,
-        )
+            labels = values.unsqueeze(0).named_apply(
+                lambda k, v: self.episode_builder.tokenizers.get(k)(v),
+                nested_keys=True,
+            )
 
-        bincounts = labels.named_apply(
-            lambda k, v: torch.bincount(
-                v.flatten(),
-                weights=None,
-                minlength=self.episode_builder.embeddings.get(k).weight.shape[0],
-            ),
-            nested_keys=True,
-            batch_size=[],
-        )
+            bincounts = labels.named_apply(
+                lambda k, v: torch.bincount(
+                    v.flatten(),
+                    weights=None,
+                    minlength=self.episode_builder.embeddings.get(k).weight.shape[0],
+                ),
+                nested_keys=True,
+                batch_size=[],
+            )
 
-        # add +1 for empty bins
-        self.logit_bias = bincounts.apply(
-            lambda x: torch.log((x + 1) / x.sum()).reshape(1, -1)
-        )
+            logit_bias = bincounts.apply(lambda x: ((x + 1) / x.sum()).log())
 
-    # https://github.com/karpathy/minGPT/blob/master/mingpt/model.py#L163C5-L172C47
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  # pyright: ignore
-            if module.bias is not None:  # pyright: ignore
-                torch.nn.init.zeros_(module.bias)  # pyright: ignore
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)  # pyright: ignore
-        elif isinstance(module, nn.LayerNorm):
-            torch.nn.init.zeros_(module.bias)  # pyright: ignore
-            torch.nn.init.ones_(module.weight)  # pyright: ignore
+            for loss_key, losses in logit_bias_losses.items():
+                for objective_key, loss in losses.items():
+                    logger.debug(
+                        "setting logit bias",
+                        objective=objective_key,
+                        loss=(*loss_key, loss.__class__),
+                    )
+
+                    loss.logit_bias = logit_bias[loss_key]
 
     def on_fit_start(self) -> None:
         self._populate_logit_bias()

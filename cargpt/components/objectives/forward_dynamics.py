@@ -1,10 +1,12 @@
-import operator
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
-import torch
 from einops import pack
 from einops.layers.torch import Rearrange
-from tensordict import TensorDict
+from jaxtyping import Float
+from more_itertools import partition
+from tensordict import TensorDict, merge_tensordicts
+from torch import Tensor
 from torch.nn import Module
 
 from cargpt.components.episode import (
@@ -25,6 +27,10 @@ from cargpt.components.objectives.copycat import (
 )
 from cargpt.utils import ModuleDict
 
+if TYPE_CHECKING:
+    from jaxtyping import Float
+    from torch import Tensor
+
 
 class ForwardDynamicsPredictionObjective(Module):
     def __init__(self, heads: ModuleDict, losses: Module) -> None:
@@ -37,75 +43,63 @@ class ForwardDynamicsPredictionObjective(Module):
         inputs: TensorDict,
         episode_builder: EpisodeBuilder,
         encoder: Module,
-        logit_bias: TensorDict,
     ) -> TensorDict:
-        _b, _t = inputs.batch_size
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
-        index = episode.index.select(*episode.timestep.keys(TokenType.OBSERVATION))  # pyright: ignore
-        observations = index.parse(embedding)
+        # all but last timestep
+        index = episode.index[:-1]  # pyright: ignore
 
-        index = episode.index.select(  # pyright: ignore
-            (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
-            (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY),
+        observations: TensorDict = index.select(
+            *episode.timestep.keys(TokenType.OBSERVATION)
+        ).parse(embedding)
+
+        observation_summary: Float[Tensor, "b t 1 d"] = (
+            index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
+            .parse(embedding)
+            .get(k)
         )
-        summaries = index.parse(embedding)
-        observations_summary = summaries.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_SUMMARY,
-        ))
-        actions_summary = summaries.get((Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
 
-        # (obs, obs_summary, action_summary), all but last timestep
-        observations_action_pairs = observations.apply(
+        action_summary: Float[Tensor, "b t 1 d"] = (
+            index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+
+        features = observations.apply(
+            # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
             lambda obs: pack(
                 [
-                    obs[:, :-1],
-                    torch.broadcast_to(observations_summary, obs.shape)[:, :-1],
-                    torch.broadcast_to(actions_summary, obs.shape)[:, :-1],
+                    obs,
+                    observation_summary.broadcast_to(obs.shape),
+                    action_summary.broadcast_to(obs.shape),
                 ],
                 "b t p *",
             )[0]
         )
 
-        logits = TensorDict.from_dict(
-            {
-                (modality, name): head(observations_action_pairs[modality][name])
-                for (modality, name), head in self.heads.flatten()
-            },
-            batch_size=[],
+        logits = features.named_apply(
+            lambda k, v: self.heads.get(k)(v),
+            nested_keys=True,
         )
 
-        image_obs = logits.select(Modality.IMAGE)
-        image_labels = episode.raw.select(*image_obs.keys(True, True))[:, 1:]
-        image_labels = image_labels.apply(lambda x: x.detach(), batch_size=[])  # SG ?
-
-        non_image_obs = logits.select((Modality.CONTINUOUS), (Modality.DISCRETE))
-        non_image_labels = episode.tokenized.select(*non_image_obs.keys(True, True))[
-            :, 1:
-        ]
-
-        non_image_obs = non_image_obs.apply(operator.add, logit_bias, batch_size=[])
-        non_image_obs = non_image_obs.apply(
-            Rearrange("b t 1 d -> (b t) d"), batch_size=[]
+        non_image_keys, image_keys = partition(
+            lambda k: k[0] is Modality.IMAGE,
+            logits.keys(include_nested=True, leaves_only=True),
         )
-        non_image_labels = non_image_labels.apply(
-            Rearrange("b t 1 -> (b t)"), batch_size=[]
-        )
+        labels = merge_tensordicts(
+            episode.embedded_nope.select(*image_keys),
+            episode.tokenized.select(*non_image_keys),
+        )[:, 1:]  # all but first timestep
 
-        logits = image_obs.update(non_image_obs)
-        labels = image_labels.update(non_image_labels)
+        logits = logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[])
+        labels = labels.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[])
 
-        loss = TensorDict(
-            {
-                (modality, name): criteria(
-                    logits[modality][name], labels[modality][name]
-                )  # pyright: ignore
-                for (modality, name), criteria in self.losses.flatten()
-            },
-            batch_size=[],
+        loss = logits.named_apply(
+            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),
+            labels,
+            nested_keys=True,
         )
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])

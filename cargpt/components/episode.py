@@ -158,7 +158,7 @@ Index.__eq__ = _index_eq  # pyright: ignore
 class Episode:
     inputs: TensorDict
     tokenized: TensorDict
-    raw: TensorDict
+    embedded_nope: TensorDict
     embedded: TensorDict
     index: Index
     timestep: Timestep
@@ -210,7 +210,7 @@ class EpisodeBuilder(Module):
             for k, v in self.special_tokens.items()
         }
 
-        embedded = tokenized.named_apply(
+        embedded_nope = tokenized.named_apply(
             lambda nested_key, tensor: (
                 self.embeddings.get(nested_key, default=None)
                 or self.embeddings.get(nested_key[0])
@@ -220,34 +220,34 @@ class EpisodeBuilder(Module):
 
         # TODO: learnable mask token?
         if masked_action_timestep_idx is not None:
-            embedded.select(*self.timestep.keys(TokenType.ACTION))[
+            embedded_nope.select(*self.timestep.keys(TokenType.ACTION))[
                 :, masked_action_timestep_idx
             ] = -1.0
 
         if masked_observation_timestep_idx is not None:
-            embedded.select(*self.timestep.keys(TokenType.OBSERVATION))[
+            embedded_nope.select(*self.timestep.keys(TokenType.OBSERVATION))[
                 :, masked_observation_timestep_idx
             ] = -1.0
 
         lengths = {
-            token.key: embedded.get_item_shape(token.key)[2]
+            token.key: embedded_nope.get_item_shape(token.key)[2]
             for token in self.timestep.tokens
         }
-        timestep_index = self._build_timestep_index(lengths).to(embedded.device)  # pyright: ignore
+        timestep_index = self._build_timestep_index(lengths).to(embedded_nope.device)  # pyright: ignore
         timestep_length = sum(lengths.values())
-        _, t = embedded.batch_size
+        _, t = embedded_nope.batch_size
         index = timestep_index.apply(
             lambda x: torch.stack([x + i * timestep_length for i in range(t)]),
             batch_size=[t],
         )
 
-        embedded_with_pe = self._position_encode(embedded, timestep_index)
+        embedded = self._position_encode(embedded_nope, timestep_index)
 
         return Episode(  # pyright: ignore
             inputs=inputs,
             tokenized=tokenized,
-            raw=embedded,
-            embedded=embedded_with_pe,
+            embedded_nope=embedded_nope,
+            embedded=embedded,
             index=index,
             timestep=self.timestep,
             batch_size=[],
