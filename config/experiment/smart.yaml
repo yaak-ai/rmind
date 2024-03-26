@@ -109,15 +109,7 @@ model:
             freeze: True
 
           - _target_: einops.layers.torch.Rearrange
-            pattern: ... c h w -> ... h w c
-
-          # - _target_: cargpt.components.position_encoding.PatchPositionEncoding
-          #   num_rows: 10
-          #   num_cols: 18
-          #   embedding_dim: ${embedding_dim}
-
-          - _target_: einops.layers.torch.Rearrange
-            pattern: ... h w d -> ... (h w) d
+            pattern: ... c h w -> ... (h w) c
 
       continuous:
         speed:
@@ -153,6 +145,17 @@ model:
 
     position_encoding:
       _target_: cargpt.utils.ModuleDict
+      image:
+        patch: 
+          row:
+            _target_: torch.nn.Embedding
+            num_embeddings: 10
+            embedding_dim: ${embedding_dim}
+          col:
+            _target_: torch.nn.Embedding
+            num_embeddings: 18
+            embedding_dim: ${embedding_dim}
+
       observations:
         _target_: torch.nn.Embedding
         num_embeddings: 182
