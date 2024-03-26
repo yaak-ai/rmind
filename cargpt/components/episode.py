@@ -1,12 +1,12 @@
-import operator
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from functools import cache
 from itertools import accumulate, pairwise
-from typing import Mapping, Sequence
+from operator import add
+from typing import Mapping, Sequence, cast
 
 import torch
-from einops import pack, rearrange
+from einops import pack, rearrange, repeat
 from jaxtyping import Float, Int, Shaped
 from tensordict import TensorDict, tensorclass
 from tensordict.utils import NestedKey
@@ -269,44 +269,62 @@ class EpisodeBuilder(Module):
         embeddings: TensorDict,
         index: Index,
     ) -> TensorDict:
-        embeddings = embeddings.clone(recurse=True)  # TODO: avoid cloning if noop?
+        position_embeddings = cast(TensorDict, torch.zeros_like(embeddings[0]))
+        device = position_embeddings.device
 
-        if module := getattr(
-            self.position_encoding, PositionEncoding.OBSERVATIONS, None
+        if module := self.position_encoding.get(
+            (key := Modality.IMAGE, "patch"), default=None
+        ):
+            num_rows = module.row.num_embeddings
+            num_cols = module.col.num_embeddings
+            row_pe = module.row(torch.arange(num_rows, device=device))
+            col_pe = module.col(torch.arange(num_cols, device=device))
+            row_pe = repeat(row_pe, "h d -> (h w) d", w=num_cols)
+            col_pe = repeat(col_pe, "w d -> (h w) d", h=num_rows)
+
+            position_embeddings.select(key).apply(
+                lambda x: x + row_pe + col_pe,
+                inplace=True,  # NOTE
+            )
+
+        if module := self.position_encoding.get(
+            PositionEncoding.OBSERVATIONS, default=None
         ):
             keys = self.timestep.keys(TokenType.OBSERVATION)
             position = index.select(*keys).to_tensordict()  # pyright: ignore
             position_embedding = position.apply(module)
-            embeddings.select(*keys).apply(
-                operator.add,
+            position_embeddings.select(*keys).apply(
+                add,
                 position_embedding,
                 inplace=True,  # NOTE
             )
 
-        if module := getattr(self.position_encoding, PositionEncoding.ACTIONS, None):
+        if module := self.position_encoding.get(PositionEncoding.ACTIONS, default=None):
             keys = self.timestep.keys(TokenType.ACTION)
-            position = torch.arange(module.num_embeddings, device=embeddings.device)
+            position = torch.arange(module.num_embeddings, device=device)
             position_embedding = module(position)
-            embeddings.select(*keys).apply(
+            position_embeddings.select(*keys).apply(
                 lambda emb: emb + position_embedding,
                 inplace=True,  # NOTE
             )
 
-        if module := getattr(self.position_encoding, PositionEncoding.SPECIAL, None):
+        if module := self.position_encoding.get(PositionEncoding.SPECIAL, default=None):
             keys = self.timestep.keys(TokenType.SPECIAL)
-            position = torch.arange(module.num_embeddings, device=embeddings.device)
+            position = torch.arange(module.num_embeddings, device=device)
             position_embedding = module(position)
-            embeddings.select(*keys).apply(
+            position_embeddings.select(*keys).apply(
                 lambda emb: emb + position_embedding,
                 inplace=True,  # NOTE
             )
 
-        if module := getattr(self.position_encoding, PositionEncoding.TIMESTEP, None):
-            position = torch.arange(module.num_embeddings, device=embeddings.device)
+        if module := self.position_encoding.get(
+            PositionEncoding.TIMESTEP, default=None
+        ):
+            position = torch.arange(module.num_embeddings, device=device)
             position_embedding = rearrange(module(position), "t d -> t 1 d")
-            embeddings.apply(
+            position_embeddings.apply(
                 lambda emb: emb + position_embedding,
                 inplace=True,  # NOTE
             )
 
-        return embeddings
+        return embeddings.apply(add, position_embeddings)

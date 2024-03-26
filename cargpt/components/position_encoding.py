@@ -59,26 +59,3 @@ class LearnablePositionalEmbedding1D(nn.Module):
             raise ValueError(msg)
 
         return repeat(self._emb.weight, "s c -> b s c", b=b)
-
-
-class PatchPositionEncoding(nn.Module):
-    def __init__(self, num_rows: int, num_cols: int, embedding_dim: int):
-        super().__init__()
-
-        self.row_emb = nn.Embedding(
-            num_embeddings=num_rows,
-            embedding_dim=embedding_dim,
-        )
-        self.col_emb = nn.Embedding(
-            num_embeddings=num_cols,
-            embedding_dim=embedding_dim,
-        )
-
-    def forward(self, x: Float[Tensor, "*b h w c"]) -> Float[Tensor, "*b h w c"]:
-        *_, h, w, _ = x.shape
-        row_idxs = torch.arange(h, device=x.device)
-        col_idxs = torch.arange(w, device=x.device)
-        x += rearrange(self.row_emb(row_idxs), "h c -> h 1 c")
-        x += rearrange(self.col_emb(col_idxs), "w c -> 1 w c")
-
-        return x
