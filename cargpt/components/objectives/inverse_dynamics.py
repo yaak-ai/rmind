@@ -27,11 +27,11 @@ class InverseDynamicsPredictionObjective(Module):
     def __init__(
         self,
         heads: ModuleDict,
-        loss: Module,
+        losses: ModuleDict,
     ):
         super().__init__()
         self.heads = heads
-        self.loss = loss
+        self.losses = losses
 
     def forward(
         self,
@@ -43,25 +43,24 @@ class InverseDynamicsPredictionObjective(Module):
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        index = episode.index.select((  # pyright: ignore
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_SUMMARY,
-        ))
-        embeddings = index.parse(embedding)
-        observations = embeddings.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_SUMMARY,
-        ))
+        observation_summaries = (
+            episode.index.select(  # pyright: ignore
+                k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
+            )
+            .parse(embedding)
+            .get(k)
+            .detach()
+        )
 
-        # (o0, o1, o2, o3, ...) -> ((o0, o1), (o1, o2), (o2, o3), ...)
-        observation_pairs = rearrange(
-            [observations[:, :-1], observations[:, 1:]],
+        # order: (o0, o1), (o1, o2), (o2, o3), ...
+        features = rearrange(
+            [observation_summaries[:, :-1], observation_summaries[:, 1:]],
             "i b t 1 d -> b t (i d)",
         )
 
         logits = TensorDict.from_dict(
             {
-                (modality, name): head(observation_pairs)
+                (modality, name): head(features)
                 for (modality, name), head in self.heads.flatten()
             },
             batch_size=[b, t - 1],
@@ -71,7 +70,11 @@ class InverseDynamicsPredictionObjective(Module):
 
         logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
         labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
-        loss = logits.apply(self.loss, labels)
+        loss = logits.named_apply(
+            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),
+            labels,
+            nested_keys=True,
+        )
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
 

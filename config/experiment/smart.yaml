@@ -18,7 +18,6 @@ speed_range: [5.0, 130.0]
 
 wandb:
   group: smart
-  sync_tensorboard: true
 
 model:
   _target_: cargpt.models.control_transformer.ControlTransformer
@@ -93,8 +92,9 @@ model:
               pattern: b t -> b t 1
 
       discrete:
-        _target_: einops.layers.torch.Rearrange
-        pattern: b t -> b t 1
+        turn_signal:
+          _target_: einops.layers.torch.Rearrange
+          pattern: b t -> b t 1
 
     embeddings:
       _target_: cargpt.utils.ModuleDict
@@ -132,9 +132,10 @@ model:
           embedding_dim: ${embedding_dim}
 
       discrete:
-        _target_: torch.nn.Embedding
-        num_embeddings: 3
-        embedding_dim: ${embedding_dim}
+        turn_signal:
+          _target_: torch.nn.Embedding
+          num_embeddings: 3
+          embedding_dim: ${embedding_dim}
 
       special:
         _target_: torch.nn.Embedding
@@ -144,7 +145,7 @@ model:
     position_encoding:
       _target_: cargpt.utils.ModuleDict
       image:
-        patch: 
+        patch:
           row:
             _target_: torch.nn.Embedding
             num_embeddings: 10
@@ -200,100 +201,129 @@ model:
     _target_: cargpt.utils.ModuleDict
 
     inverse_dynamics:
-        _target_: cargpt.components.objectives.InverseDynamicsPredictionObjective
-        heads:
-          _target_: cargpt.utils.ModuleDict
-          continuous:
-            gas_pedal:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
-              bias: False
+      _target_: cargpt.components.objectives.InverseDynamicsPredictionObjective
+      heads:
+        _target_: cargpt.utils.ModuleDict
+        continuous:
+          gas_pedal:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: torch.nn.Linear
+                in_features:
+                  _target_: operator.mul
+                  _args_:
+                    - 2
+                    - ${embedding_dim}
+                out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
 
-            brake_pedal:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
-              bias: False
+          brake_pedal:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: torch.nn.Linear
+                in_features:
+                  _target_: operator.mul
+                  _args_:
+                    - 2
+                    - ${embedding_dim}
+                out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
 
-            steering_angle:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
-              bias: False
+          steering_angle:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: torch.nn.Linear
+                in_features:
+                  _target_: operator.mul
+                  _args_:
+                    - 2
+                    - ${embedding_dim}
+                out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
 
-        loss:
-          _target_: torch.nn.CrossEntropyLoss
-          reduction: mean
+      losses:
+        _target_: cargpt.utils.ModuleDict
+        continuous:
+          gas_pedal:
+            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+
+          brake_pedal:
+            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+
+          steering_angle:
+            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
 
     forward_dynamics:
-        _target_: cargpt.components.objectives.ForwardDynamicsPredictionObjective
-        heads:
-          _target_: cargpt.utils.ModuleDict
-          continuous:
-            speed:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.speed._args_[0].num_bins}
-              bias: False
+      _target_: cargpt.components.objectives.ForwardDynamicsPredictionObjective
+      heads:
+        _target_: cargpt.utils.ModuleDict
+        image:
+          cam_front_left:
+            _target_: torch.nn.Linear
+            in_features:
+              _target_: operator.mul
+              _args_:
+                - 3
+                - ${embedding_dim}
+            out_features: ${embedding_dim}
+            bias: False
+        continuous:
+          speed:
+            _target_: torch.nn.Linear
+            in_features:
+              _target_: operator.mul
+              _args_:
+                - 3
+                - ${embedding_dim}
+            out_features: ${model.episode_builder.tokenizers.continuous.speed._args_[0].num_bins}
+            bias: False
+        discrete:
+          turn_signal:
+            _target_: torch.nn.Linear
+            in_features:
+              _target_: operator.mul
+              _args_:
+                - 3
+                - ${embedding_dim}
+            out_features: ${model.episode_builder.embeddings.discrete.turn_signal.num_embeddings}
+            bias: False
 
-          discrete:
-            turn_signal:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
-              out_features: ${model.episode_builder.embeddings.discrete.num_embeddings}
-              bias: False
-
-        loss:
-          _target_: torch.nn.CrossEntropyLoss
-          reduction: mean
+      losses:
+        _target_: cargpt.utils.ModuleDict
+        image:
+          cam_front_left:
+            _target_: torch.nn.MSELoss
+            reduction: mean
+        continuous:
+          speed:
+            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+        discrete:
+          turn_signal:
+            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
 
     random_masked_hindsight_control:
-        _target_: cargpt.components.objectives.RandomMaskedHindsightControlObjective
-        heads:
-          _target_: cargpt.utils.ModuleDict
-          continuous:
-            gas_pedal:
-              _target_: torch.nn.Linear
-              in_features: ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
-              bias: True
+      _target_: cargpt.components.objectives.RandomMaskedHindsightControlObjective
+      heads:
+        _target_: cargpt.utils.ModuleDict
+        continuous:
+          gas_pedal:
+            _target_: torch.nn.Linear
+            in_features: ${embedding_dim}
+            out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
+            bias: True
 
-            brake_pedal:
-              _target_: torch.nn.Linear
-              in_features: ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
-              bias: True
+          brake_pedal:
+            _target_: torch.nn.Linear
+            in_features: ${embedding_dim}
+            out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
+            bias: True
 
-            steering_angle:
-              _target_: torch.nn.Linear
-              in_features: ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
-              bias: True
+          steering_angle:
+            _target_: torch.nn.Linear
+            in_features: ${embedding_dim}
+            out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
+            bias: True
 
-        loss:
-          _target_: torch.nn.CrossEntropyLoss
-          reduction: mean
+      loss:
+        _target_: torch.nn.CrossEntropyLoss
+        reduction: mean
 
     copycat:
       _target_: cargpt.components.objectives.CopycatObjective
@@ -348,18 +378,16 @@ model:
   # TODO: match paper?
   optimizer:
     _target_: torch.optim.AdamW
-    weight_decay: 0
+    lr: 1e-5
+    weight_decay: 0.1
+    betas: [0.9, 0.95]
 
   lr_scheduler:
     interval: step
     scheduler:
-      _target_: torch.optim.lr_scheduler.CyclicLR
-      base_lr: 1e-5 # gato min
-      max_lr: 6e-4 # SMART max
-      step_size_up: 2000
-      step_size_down: null
-      cycle_momentum: false # with adam
-      mode: triangular
+      _target_: transformers.get_cosine_schedule_with_warmup
+      num_warmup_steps: 25000
+      num_training_steps: 250000
 
 trainer:
   _target_: pytorch_lightning.Trainer
@@ -368,6 +396,7 @@ trainer:
   benchmark: true
   max_epochs: -1
   log_every_n_steps: 100
+  gradient_clip_val: 1.0
 
   logger:
     _target_: pytorch_lightning.loggers.WandbLogger
