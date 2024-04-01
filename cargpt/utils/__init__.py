@@ -1,5 +1,3 @@
-from .features import Features
+from .containers import ModuleDict
 
-__all__ = [
-    "Features",
-]
+__all__ = ["ModuleDict"]

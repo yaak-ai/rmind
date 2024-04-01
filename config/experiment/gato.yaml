@@ -1,172 +1,200 @@
 # @package _global_
-# image_encoder: chose between dall_e or resnet [preferred]
-# llm: chose between transformer_encoder or hf_gpt2 [preferred]
+
 defaults:
   - /paths: default
-  - /image_encoder: resnet.yaml
-  - /sensor_encoder: mu_law.yaml
-  - /llm: pytorch_gpt2.yaml
-  - override /datamodule: gato.yaml
+  - /datamodule: gato.yaml
   - _self_
-
-wandb:
-  group: Gato-Image-speed-to-control
-  dir: ./wandb-runs
 
 batch_size: 16
 clip_len: 6
+num_heads: 4
+num_layers: 8
+embedding_dim: 512
+quantization_channels: 1024
+
 speed_range: [0.0, 130.0]
 
-num_special_tokens: 3 # for special tokens SOS, SEP, OES
-num_continous_tokens: 1024 # real values -> bin
-num_discrete_tokens: 3 # only turn signals (left, right, none)
-num_tokens_total: ${image_encoder.total_tokens} # ${num_special_tokens} + 4 x ${num_continous_tokens} + ${num_discrete_tokens} + ${image_encoder.tokens}
-metadata_keys: ["VehicleMotion_speed", "VehicleState_turn_signal"]
-action_keys:
-  - "VehicleMotion_gas_pedal_normalized"
-  - "VehicleMotion_brake_pedal_normalized"
-  - "VehicleMotion_steering_angle_normalized"
-tokens_shift: # Shifting continous and discrete tokens since embeddings are shared
-  VehicleMotion_speed: ${num_special_tokens}
-  VehicleMotion_gas_pedal_normalized: "${eval:'${num_special_tokens} + 1 * ${num_continous_tokens}'}"
-  VehicleMotion_brake_pedal_normalized: "${eval:'${num_special_tokens} + 2 * ${num_continous_tokens}'}"
-  VehicleMotion_steering_angle_normalized: "${eval:'${num_special_tokens} + 3 * ${num_continous_tokens}'}"
-  VehicleState_turn_signal: "${eval:'${num_special_tokens} + 4 * ${num_continous_tokens}'}"
-  ImageEncoder: ${image_encoder.tokens_shift}
-
-num_heads: 8
-num_layers: 24
-embedding_dim: 512
-dalle_encoder_weights: pretrained/dalle/encoder.pkl
+wandb:
+  group: gato
 
 model:
   _target_: cargpt.models.gato.Gato
-  _recursive_: False
+  _recursive_: false
+
+  episode_builder:
+    _target_: cargpt.components.episode.EpisodeBuilder
+    _recursive_: true
+
+    timestep:
+      _target_: cargpt.components.episode.Timestep.build
+      observations:
+        - [image, cam_front_left]
+        - [continuous, speed]
+        - [discrete, turn_signal]
+      actions:
+        - [continuous, pedal]
+        - [continuous, steering_angle]
+
+    transforms:
+      _target_: torch.nn.ModuleDict
+      modules:
+        continuous:
+          _target_: torch.nn.ModuleDict
+          modules:
+            speed:
+              _target_: cargpt.components.norm.MinMaxScaler
+              in_range: ${speed_range}
+              out_range: [-1.0, 1.0]
+
+    tokenizers:
+      _target_: torch.nn.ModuleDict
+      modules:
+        image:
+          _target_: torch.nn.Identity
+
+        continuous:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: torchaudio.transforms.MuLawEncoding
+              quantization_channels: ${quantization_channels}
+
+            - _target_: einops.layers.torch.Rearrange
+              pattern: b t -> b t 1
+
+        discrete:
+          _target_: einops.layers.torch.Rearrange
+          pattern: b t -> b t 1
+
+    embeddings:
+      _target_: torch.nn.ModuleDict
+      modules:
+        image:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: cargpt.components.resnet.ResnetBackbone
+              resnet:
+                _target_: torchvision.models.resnet18
+                weights: IMAGENET1K_V1
+              freeze: True
+
+            - _target_: einops.layers.torch.Rearrange
+              pattern: ... c h w -> ... h w c
+
+            - _target_: cargpt.components.position_encoding.PatchPositionEncoding
+              num_rows: 10
+              num_cols: 18
+              embedding_dim: ${embedding_dim}
+
+            - _target_: einops.layers.torch.Rearrange
+              pattern: ... h w d -> ... (h w) d
+
+        continuous:
+          _target_: torch.nn.Embedding
+          num_embeddings: ${quantization_channels}
+          embedding_dim: ${embedding_dim}
+
+        discrete:
+          _target_: torch.nn.Embedding
+          num_embeddings: 3
+          embedding_dim: ${embedding_dim}
+
+    position_encoding:
+      _target_: torch.nn.ModuleDict
+      modules:
+        observations:
+          _target_: torch.nn.Embedding
+          num_embeddings: 182
+          embedding_dim: ${embedding_dim}
+
+        actions:
+          _target_: torch.nn.Embedding
+          num_embeddings: 1
+          embedding_dim: ${embedding_dim}
+
+        timestep:
+          _target_: torch.nn.Embedding
+          num_embeddings: ${clip_len}
+          embedding_dim: ${embedding_dim}
+
+  encoder:
+    _target_: cargpt.components.llm.xFormerEncoder
+    config:
+      _target_: xformers.factory.xFormerEncoderConfig
+      reversible: True
+      num_layers: ${num_layers}
+      dim_model: ${embedding_dim}
+      residual_norm_style: pre
+      multi_head_config:
+        dim_model: ${embedding_dim}
+        num_heads: ${num_heads}
+        residual_dropout: 0.1
+        attention:
+          name: scaled_dot_product
+          dropout: 0.1
+          causal: False
+      feedforward_config:
+        name: MLPGLU
+        dropout: 0.1
+        activation: gelu
+        hidden_layer_multiplier: 1
+
+  decoders:
+    _target_: torch.nn.ModuleDict
+    modules:
+      continuous:
+        _target_: torch.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${model.episode_builder.embeddings.modules.continuous.num_embeddings}
+        bias: False
+
+      discrete:
+        _target_: torch.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${model.episode_builder.embeddings.modules.discrete.num_embeddings}
+        bias: False
+
+  weight_tying:
+    continuous: True
+    discrete: True
+
+  detokenizers:
+    _target_: torch.nn.ModuleDict
+    modules:
+      continuous:
+        _target_: torchaudio.transforms.MuLawDecoding
+        quantization_channels: ${quantization_channels}
+
+      discrete:
+        _target_: torch.nn.Identity
+
+  loss:
+    _target_: torch.nn.CrossEntropyLoss
+    ignore_index: -100
+    reduction: mean
 
   optimizer:
     _target_: torch.optim.Adam
     lr: 1e-4
     weight_decay: 0
 
-  image_encoder: ${image_encoder.encoder}
-  image_tokens: ${image_encoder.tokenizer}
-  sensor_embedding: ${sensor_encoder.sensor_embedding}
-  sensor_tokenizers: ${sensor_encoder.sensor_tokenizers}
-  sensor_detokenization: ${sensor_encoder.sensor_detokenization}
-
-  # https://arxiv.org/pdf/1812.03079.pdf
-  sensor_dropout:
-    _target_: cargpt.models.encoding.SenorDropout
-    prob: 1.0
-
-  position_encoding:
-    patch_row:
-      _target_: torch.nn.Embedding
-      num_embeddings: ${image_encoder.patch_row_tokens}
-      embedding_dim: ${embedding_dim}
-    patch_col:
-      _target_: torch.nn.Embedding
-      num_embeddings: ${image_encoder.patch_col_tokens}
-      embedding_dim: ${embedding_dim}
-    local:
-      _target_: torch.nn.Embedding
-      num_embeddings: ${image_encoder.local_position_tokens}
-      embedding_dim: ${embedding_dim}
-    global_pos:
-      _target_: torch.nn.Embedding
-      num_embeddings: ${clip_len}
-      embedding_dim: ${embedding_dim}
-    action:
-      _target_: torch.nn.Embedding
-      num_embeddings: 1
-      embedding_dim: ${embedding_dim}
-
-  attention_mask:
-    _target_: cargpt.models.gato.Gato.causal_attention_mask
-    _args_:
-      - ${image_encoder.patch_row_tokens}
-      - ${image_encoder.patch_col_tokens}
-      - ${metadata_keys}
-      - ${action_keys}
-      - ${clip_len}
-    _partial_: True
-
-  gpt: ${llm.model}
-
-  regressor:
-    _target_: torch.nn.Linear
-    in_features: ${embedding_dim}
-    out_features: 1
-
-  diff:
-    _target_: cargpt.models.losses.DetokenizedL1
-    image_tokens_start: ${image_encoder.tokens_shift}
-
-  loss:
-    weights:
-      categorical: 1.0
-      l1: 0
-    l1:
-      _target_: torch.nn.L1Loss
-      reduction: none
-
-  metadata_keys: ${metadata_keys}
-  action_keys: ${action_keys}
-  special_tokens:
-    bos: 0
-    sep: 1
-    eos: 2
-  tokens_shift: ${tokens_shift}
-  have_position_encoding: ${llm.have_position_encoding}
-  have_special_tokens: ${llm.have_special_tokens}
-  masks:
-    image: ${image_encoder.tokens_mask}
-    metadata: 1
-    action: 1
-  log:
-    validation:
-      outputs: true
-      attention_maps:
-        layer: -1
-        rows: ${image_encoder.patch_row_tokens}
-        cols: ${image_encoder.patch_col_tokens}
-        imgs_mean: ${image_encoder.mean}
-        imgs_std: ${image_encoder.std}
-        norm: max # softmax or max
-        strength: 1.0
-        reverse: false
-        color: [255, 0, 0] # RGB
-        log_freq: 50
-    training:
-      attention_maps:
-        layer: -1
-        rows: ${image_encoder.patch_row_tokens}
-        cols: ${image_encoder.patch_col_tokens}
-        imgs_mean: ${image_encoder.mean}
-        imgs_std: ${image_encoder.std}
-        norm: max # softmax or max
-        strength: 1.0
-        reverse: false
-        color: [255, 0, 0] # RGB
-        log_freq: 100
-
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu
   devices: [0]
   benchmark: true
-  max_steps: 100000
-  log_every_n_steps: 1
+  max_epochs: -1
+  log_every_n_steps: 100
 
   logger:
     _target_: pytorch_lightning.loggers.WandbLogger
     log_model: all
 
   callbacks:
+    - _target_: cargpt.callbacks.model_summary.ModelSummary
+
     - _target_: pytorch_lightning.callbacks.ModelCheckpoint
-      save_weights_only: False
+      monitor: train/loss/total
       save_on_train_epoch_end: True
-      monitor: train/loss
 
 datamodule:
   train:

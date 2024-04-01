@@ -1,8 +1,7 @@
-#!/usr/bin/env python
 import multiprocessing as mp
 import sys
 from pathlib import Path
-from subprocess import check_output
+from subprocess import check_output  # noqa: S404
 
 import hydra
 import pytorch_lightning as pl

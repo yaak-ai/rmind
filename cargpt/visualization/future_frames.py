@@ -1,4 +1,4 @@
-from typing import Any, List, cast
+from typing import Any, cast
 
 import more_itertools as mit
 import numpy as np
@@ -25,7 +25,7 @@ class Frames(pl.LightningModule):
         self.decoder = instantiate(self.hparams.image_decoder)
         self.logging = self.hparams.logging
 
-    def get_future_frames(self, batch: Any) -> List[np.ndarray]:
+    def get_future_frames(self, batch: Any) -> list[np.ndarray]:
         with torch.no_grad():
             future_images = []
             frames = mit.one(batch["frames"].values())
@@ -71,7 +71,7 @@ class Frames(pl.LightningModule):
                 metadata_action_tokens = []
 
                 for image_token_index in range(
-                    self.hparams.patch_row * self.hparams.patch_col,  # pyright: ignore
+                    self.hparams.patch_row * self.hparams.patch_col,
                 ):
                     embedding = self.model.sensor_embedding(last_token)
                     last_token -= self.model.hparams.tokens_shift["ImageEncoder"]
@@ -80,7 +80,7 @@ class Frames(pl.LightningModule):
                     if self.model.hparams.have_position_encoding.patch:
                         row = (
                             torch.tensor(
-                                [image_token_index // self.hparams.patch_col],  # type: ignore
+                                [image_token_index // self.hparams.patch_col],
                                 device=embedding.device,
                             )
                             .view(1, 1)
@@ -123,8 +123,8 @@ class Frames(pl.LightningModule):
 
                 image_tokens = torch.cat(image_tokens, 1).view(
                     b,
-                    self.hparams.patch_row,  # pyright: ignore
-                    self.hparams.patch_col,  # pyright: ignore
+                    self.hparams.patch_row,
+                    self.hparams.patch_col,
                 )
                 image_tokens[image_tokens < 0] = 0
                 image = self.decoder.reconstruct(image_tokens)
@@ -147,7 +147,7 @@ class Frames(pl.LightningModule):
                         # add local timestep
                         local_pos = (
                             torch.tensor(
-                                [self.hparams.patch_row * self.hparams.patch_col + idx],  # type: ignore[union-attr]
+                                [self.hparams.patch_row * self.hparams.patch_col + idx],
                                 device=embedding.device,
                             )
                             .view(1, 1)
@@ -204,5 +204,5 @@ class Frames(pl.LightningModule):
         batch: Any,
         _batch_idx: int,
         _dataloader_idx: int = 0,
-    ) -> List[np.ndarray]:
+    ) -> list[np.ndarray]:
         return self.get_future_frames(batch)

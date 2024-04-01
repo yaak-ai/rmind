@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
 
 import cv2
 import more_itertools as mit
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 class FeatureWriter(BasePredictionWriter):
     def __init__(
         self,
+        *,
         output_dir: Union[str, Path],
         overwrite: bool = False,
     ) -> None:
@@ -80,6 +81,7 @@ class FeatureWriter(BasePredictionWriter):
 class VideoWriter(BasePredictionWriter):
     def __init__(
         self,
+        *,
         output_file: Union[str, Path],
         fourcc: str = "vp09",
         fps: int = 30,
@@ -115,7 +117,7 @@ class VideoWriter(BasePredictionWriter):
         self,
         _trainer: pl.Trainer,
         pl_module: pl.LightningModule,
-        predictions: np.ndarray | List[np.ndarray],
+        predictions: np.ndarray | list[np.ndarray],
         _batch_indices: Optional[Sequence[int]],
         _batch: Any,
         _batch_idx: int,
@@ -124,7 +126,7 @@ class VideoWriter(BasePredictionWriter):
         if self.video_writer is None:
             height, width, _ = predictions[0][0].shape
             self._set_video_writer(width, height)
-        if not pl_module.logging.smooth_predictions:  # type: ignore[union-attr]
+        if not pl_module.logging.smooth_predictions:
             vis, _ = predictions
             self.video_writer.write(vis[0, :, :, ::-1])  # type: ignore[attr-defined]
         else:
@@ -135,28 +137,28 @@ class VideoWriter(BasePredictionWriter):
         _trainer: pl.Trainer,
         pl_module: pl.LightningModule,
     ) -> None:
-        if pl_module.logging.smooth_predictions:  # type: ignore[union-attr]
+        if pl_module.logging.smooth_predictions:
             images, metadatas = zip(*self.predictions)
 
             # Numpy interpolate here
             # choese window_size from [1, 3, 5, 7]
             metadatas = smooth_predictions(
                 metadatas,
-                window_size=pl_module.logging.smooth_kernel_size,  # type: ignore[union-attr]
+                window_size=pl_module.logging.smooth_kernel_size,
             )
 
             for vis, metadata in zip(images, metadatas):
                 pred_points_3d: Float[
                     Tensor,
                     "f n 3",
-                ] = pl_module.get_trajectory_3d_points(  # type: ignore[union-attr]
+                ] = pl_module.get_trajectory_3d_points(
                     steps=pl_module.gt_steps,
                     time_interval=pl_module.gt_time_interval,
                     **metadata,
                 )
 
                 pred_points_2d: Float[Tensor, "f n 2"] = rearrange(
-                    pl_module.camera.project(  # pyright: ignore
+                    pl_module.camera.project(
                         rearrange(pred_points_3d, "f n d -> (f n) 1 1 d"),
                     ),
                     "(f n) 1 1 d -> f n (1 1 d)",
@@ -178,6 +180,7 @@ class VideoWriter(BasePredictionWriter):
 class CSVWriter(BasePredictionWriter):
     def __init__(
         self,
+        *,
         output_file: Union[str, Path],
         overwrite: bool = False,
     ) -> None:
@@ -194,7 +197,7 @@ class CSVWriter(BasePredictionWriter):
         self,
         _trainer: pl.Trainer,
         _pl_module: pl.LightningModule,
-        predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]],
+        predictions: dict[int, dict[int, dict[str, dict[str, int | float]]]],
         _batch_indices: Optional[Sequence[int]],
         _batch: Any,
         batch_idx: int,
@@ -207,7 +210,7 @@ class CSVWriter(BasePredictionWriter):
         rows = []
         for b, batch_preds in predictions.items():
             for ts, ts_preds in batch_preds.items():
-                row: List[Any] = [batch_idx, b, ts]
+                row: list[Any] = [batch_idx, b, ts]
                 row.extend([ts_preds[key][label] for key in keys for label in labels])
                 rows.append("\t".join(map(str, row)))
 
@@ -217,7 +220,7 @@ class CSVWriter(BasePredictionWriter):
 
     def _write_header(
         self,
-        predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]],
+        predictions: dict[int, dict[int, dict[str, dict[str, int | float]]]],
     ) -> None:
         keys, labels = self._get_keys_and_labels(predictions)
         column_names = [f"{key}_{label}" for key in keys for label in labels]
@@ -229,8 +232,8 @@ class CSVWriter(BasePredictionWriter):
 
     def _get_keys_and_labels(
         self,
-        predictions: Dict[int, Dict[int, Dict[str, Dict[str, int | float]]]],
-    ) -> Tuple[List[str], List[str]]:
+        predictions: dict[int, dict[int, dict[str, dict[str, int | float]]]],
+    ) -> tuple[list[str], list[str]]:
         batch = next(iter(predictions))
         ts = next(iter(predictions[batch]))
         keys = sorted(predictions[batch][ts])

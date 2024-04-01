@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional
 
 import more_itertools as mit
 import numpy as np
@@ -13,26 +13,23 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.trainer.states import RunningStage
 from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor, softmax
-from wandb.sdk.lib import RunDisabled
 from wandb.wandb_run import Run
 
-from cargpt.visualization import Unnormalize
+from cargpt.visualization.utils import Unnormalize
 
 
 class LoadableFromArtifact:
     @classmethod
-    def load_from_wandb_artifact(cls, name: str, **kwargs):
-        get_artifact = (
-            wandb.run.use_artifact
-            if wandb.run is not None and not isinstance(wandb.run, RunDisabled)
-            else wandb.Api().artifact
-        )
+    def load_from_wandb_artifact(
+        cls,
+        artifact: str,
+        filename: str = "model.ckpt",
+        **kwargs,
+    ):
+        artifact_dir = WandbLogger.download_artifact(artifact, artifact_type="model")
+        ckpt_path = Path(artifact_dir) / filename  # pyright: ignore
 
-        artifact = get_artifact(name, type="model")
-        artifact_dir = artifact.download()
-        ckpt_path = mit.one(Path(artifact_dir).glob("*.ckpt"))
-
-        return cls.load_from_checkpoint(ckpt_path.as_posix(), **kwargs)  # type: ignore
+        return cls.load_from_checkpoint(ckpt_path, **kwargs)  # pyright: ignore
 
 
 class ValOutputsLoggingTableMixin:
@@ -45,7 +42,7 @@ class ValOutputsLoggingTableMixin:
         return self._val_table_main_columns
 
     @val_table_main_columns.setter
-    def val_table_main_columns(self, columns: List[str]):
+    def val_table_main_columns(self, columns: list[str]):
         self._val_table_main_columns = list(columns)
 
     @property
@@ -67,7 +64,7 @@ class ValOutputsLoggingTableMixin:
             and self.trainer.state.stage != "sanity_check"
         )
 
-    def _init_val_outputs_logging(self, outputs_dict: Dict[str, Tensor]):
+    def _init_val_outputs_logging(self, outputs_dict: dict[str, Tensor]):
         if not self.is_outputs_logging_active():
             return
 
@@ -105,7 +102,7 @@ class ValOutputsLoggingTableMixin:
         # Cleanup after epoch
         del self.val_table
 
-    def _log_val_outputs_dict(self, outputs_dict: Dict[str, Float[Tensor, "b col ts"]]):
+    def _log_val_outputs_dict(self, outputs_dict: dict[str, Float[Tensor, "b col ts"]]):
         if not self.is_outputs_logging_active():
             return
 
@@ -127,9 +124,9 @@ class TrainValAttnMapLoggingMixin:
     hparams: AttributeDict
     gpt: torch.nn.Module
     global_step: int
-    action_keys: List[str]
-    metadata_keys: List[str]
-    sensor_detokenization: Dict[str, Callable]
+    action_keys: list[str]
+    metadata_keys: list[str]
+    sensor_detokenization: dict[str, Callable]
 
     def is_attn_map_logging_active(self):
         try:
@@ -142,7 +139,7 @@ class TrainValAttnMapLoggingMixin:
         return params_fine and isinstance(self.logger.experiment, Run)
 
     def _should_attn_map_log_now(self, batch_idx):
-        params: Dict[str, Any] = self._get_attn_map_logging_params()
+        params: dict[str, Any] = self._get_attn_map_logging_params()
         if self.trainer.state.stage == RunningStage.TRAINING:
             curr_step = self.global_step
         else:  # validation
@@ -152,7 +149,7 @@ class TrainValAttnMapLoggingMixin:
         return curr_step % log_freq == 0
 
     def _get_attn_map_logging_params(self):
-        params: Dict[str, Any] = self.hparams["log"]
+        params: dict[str, Any] = self.hparams["log"]
         if self.trainer.state.stage == RunningStage.TRAINING:
             params = params["training"]["attention_maps"]
         elif self.trainer.state.stage == RunningStage.VALIDATING:
@@ -165,7 +162,7 @@ class TrainValAttnMapLoggingMixin:
     def get_attention_maps(self, x, mask=None):
         attention_maps = []
         with torch.no_grad():
-            for layer in self.gpt.layers:  # type: ignore
+            for layer in self.gpt.layers:
                 x_in = layer.norm1(x) if layer.norm_first else x
                 _, attn_map = layer.self_attn(
                     x_in,
@@ -178,13 +175,13 @@ class TrainValAttnMapLoggingMixin:
                 x = layer(x)
         return attention_maps
 
-    def _logits_to_real(self, logits: Float[Tensor, "to e"]) -> List[float]:
+    def _logits_to_real(self, logits: Float[Tensor, "to e"]) -> list[float]:
         action_logits = logits[-len(self.action_keys) :, ...]
         tokens = torch.argmax(torch.softmax(action_logits, dim=-1), dim=-1)
 
         out = []
         for token, action_key in zip(tokens, self.action_keys):
-            t = token - self.hparams.tokens_shift[action_key]  # type: ignore
+            t = token - self.hparams.tokens_shift[action_key]
             prediction = self.sensor_detokenization[action_key](t.clone())
             out.append(prediction.item())
         return out
@@ -208,7 +205,7 @@ class TrainValAttnMapLoggingMixin:
         # Pick only one sample from batch - consistent with deephouse approach
         idx = 0
 
-        attn_maps: List[Float[Tensor, "to to"]] = self.get_attention_maps(
+        attn_maps: list[Float[Tensor, "to to"]] = self.get_attention_maps(
             episode[idx],
             episode_mask,
         )
@@ -247,7 +244,7 @@ class TrainValAttnMapLoggingMixin:
                         f"({frame_idxs[frame_idx]}) [{drive_id}]"
                     ),
                 )
-                for frame_idx, img in enumerate(ts_images)
+                for frame_idx, img in enumerate(ts_images)  # pyright: ignore
             ]
             for prefix, values in (("img", images), ("meta+actions", metas_actions))
             for idx, ts_images in enumerate(values)
@@ -265,10 +262,10 @@ class TrainValAttnMapLoggingMixin:
 
     def _postprocess_attn_maps(
         self,
-        attn_maps: List[Float[Tensor, "to to"]],
+        attn_maps: list[Float[Tensor, "to to"]],
         frames: Float[Tensor, "ts c h w"],
         tokens: int,
-    ) -> Tuple[List[List[Image]], List[List[Image]]]:
+    ) -> tuple[list[Image], list[Image]]:
         # Extract and prepare parameters
         params = self._get_attn_map_logging_params()
         layer = params["layer"]
@@ -310,8 +307,8 @@ class TrainValAttnMapLoggingMixin:
         images = []
         metas_actions = []
         for row in last_meta_actions:
-            row_images: List[Image] = []
-            row_metas_actions: List[Image] = []
+            row_images: list[Image] = []
+            row_metas_actions: list[Image] = []
 
             for ts in range(timesteps):
                 # Get frame attention mixed with real frame

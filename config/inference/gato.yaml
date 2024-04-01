@@ -2,50 +2,83 @@
 
 defaults:
   - /paths: default
-  - /dataset/train-tiny@datamodule.predict.dataset
+  - /dataset/predict@datamodule.predict.dataset
   - _self_
 
-model_path: ???
-output_file: ???
-batch_size: 1
-clip_len: 6  # must match training phase as position_encoding has exactly that number of embeddings
+clip_len: 6
 
-paths:
-  data_dir: /mnt/extr_ssd/yaak_datasets/
-  metadata_cache_dir: /tmp/cache/yaak-datasets/metadata
-
-trainer:
-  benchmark: false
-  callbacks:
-    - _target_: cargpt.callbacks.CSVWriter
-      output_file: ${output_file}
-      overwrite: False
+speed_range: [0.0, 130.0]
 
 model:
-  _recursive_: False
-  _target_: cargpt.models.gato.Gato.load_from_wandb_artifact
-  name: ${model_path}
-#  _target_: cargpt.models.gato.Gato.load_from_checkpoint
-#  checkpoint_path: ${model_path}
-
+  _target_: cargpt.modules.gato.Gato.load_from_wandb_artifact
+  name: ???
 
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
     _target_: torch.utils.data.DataLoader
-    batch_size: ${batch_size}
     shuffle: false
-    num_workers: 10
-    pin_memory: true
+    batch_size: 16
+    num_workers: 16
+    pin_memory: false
     persistent_workers: true
-    multiprocessing_context: fork
+    multiprocessing_context: forkserver
     collate_fn:
       _target_: yaak_datasets.collate
       _partial_: true
     dataset:
       config:
+        data:
+          metadata:
+            select:
+              - message: ImageMetadata
+                fields:
+                  - name: frame_idx
+                  - name: camera_name
+
+              - message: VehicleMotion
+                fields:
+                  - name: speed
+                  - name: steering_angle_normalized
+                  - name: gas_pedal_normalized
+                  - name: brake_pedal_normalized
+
+              - message: VehicleState
+                fields:
+                  - name: turn_signal
+
+            filter: >
+              VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
+              and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
+              and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
+              and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
+            # and (VehicleMotion_gas_pedal_normalized > 0.0 or VehicleMotion_brake_pedal_normalized > 0.0)
+
         samples:
           clips:
             length: ${clip_len}
-            stride: 5
-            step: 5
+            stride: 10
+            step: 1
+
+          transforms:
+            - _target_: yaak_datasets.transforms.Crop
+              offsets: [2, 2, 0, 0]
+
+            - _target_: yaak_datasets.transforms.Normalize
+              # ImageNet stats
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: gpu
+  devices: [0]
+  benchmark: true
+  logger: false
+
+  callbacks:
+    - _target_: cargpt.callbacks.model_summary.ModelSummary
+
+    - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
+      write_interval: batch
+      application_id: ${model.name}

@@ -688,7 +688,6 @@
 _target_: yaak_datasets.Dataset
 _recursive_: false
 config:
-  version: 0.16.1
   data:
     drives:
       #@ for drive in drives:
