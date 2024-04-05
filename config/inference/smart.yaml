@@ -20,28 +20,11 @@ model:
     _recursive_: false
     _args_:
       - objectives:
-          copycat:
-            memory_extraction:
-              delta_detokenizers:
-                _target_: cargpt.utils.ModuleDict
-                continuous:
-                  gas_pedal:
-                    _target_: torchaudio.transforms.MuLawDecoding
-                    quantization_channels: 512
-
-                  brake_pedal:
-                    _target_: torchaudio.transforms.MuLawDecoding
-                    quantization_channels: 512
-
-                  steering_angle:
-                    _target_: torch.nn.Sequential
-                    _args_:
-                      - _target_: torchaudio.transforms.MuLawDecoding
-                        quantization_channels: 512
-
-                      - _target_: cargpt.components.norm.Scaler
-                        in_range: [-1.0, 1.0]
-                        out_range: [-2.0, 2.0]
+          forward_dynamics:
+            losses: null
+      - objectives:
+          inverse_dynamics:
+            losses: null
 
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
@@ -99,7 +82,7 @@ datamodule:
           clips:
             length: ${clip_len}
             stride: 10
-            step: 50
+            step: 60 # NOTE
 
           transforms:
             - _target_: yaak_datasets.transforms.Crop

@@ -1,7 +1,9 @@
-from typing import Literal, Sequence
+from collections.abc import Sequence
+from typing import Literal
 
 import pytorch_lightning as pl
 import rerun as rr
+import torch
 from einops.layers.torch import Rearrange
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorDict
@@ -24,23 +26,24 @@ class RerunPredictionWriter(BasePredictionWriter):
 
     def on_predict_start(
         self,
-        _trainer: pl.Trainer,
-        _pl_module: pl.LightningModule,
+        trainer: pl.Trainer,  # noqa: ARG002
+        pl_module: pl.LightningModule,  # noqa: ARG002
     ) -> None:
+        # TODO: use rerun blueprint API once available
         rr.init(**self.rerun_init_kwargs)
 
     def write_on_batch_end(
         self,
-        _trainer: pl.Trainer,
+        trainer: pl.Trainer,  # noqa: ARG002
         pl_module: pl.LightningModule,
-        result: TensorDict,
-        _batch_indices: Sequence[int] | None,
+        prediction: TensorDict,
+        batch_indices: Sequence[int] | None,  # noqa: ARG002
         batch: TensorDict,
-        _batch_idx: int,
-        _dataloader_idx: int,
+        batch_idx: int,  # noqa: ARG002
+        dataloader_idx: int,  # noqa: ARG002
     ) -> None:
-        result = result.to(pl_module.device)
-        inputs, predictions = result["inputs"], result["predictions"]
+        prediction = prediction.to(pl_module.device)
+        inputs, predictions = prediction["inputs"], prediction["predictions"]
         inputs = inputs.update(
             inputs.select(Modality.IMAGE).apply(
                 Rearrange("... c h w -> ... h w c"),  # CHW -> HWC for logging
@@ -51,26 +54,61 @@ class RerunPredictionWriter(BasePredictionWriter):
         meta.batch_size = inputs.batch_size
 
         data = TensorDict.from_dict({
-            "inputs": inputs[:, 1:],  # t-1 deltas -- TODO: make this more general?
-            "meta": meta[:, 1:],
+            "inputs": inputs,
+            "meta": meta,
             "predictions": predictions,
-        }).flatten(0, 1)  # b t ... -> (b t) ...
+        })
 
-        image_keys = [("inputs", Modality.IMAGE)]
+        for _batch in data.cpu():
+            for timestep, elem in enumerate(_batch):
+                for k, v in elem.items(include_nested=True, leaves_only=True):
+                    match k:
+                        case ("meta", k_meta):
+                            entity_path = list(k)
+                            match k_meta.split("/"):
+                                case (_, "ImageMetadata_frame_idx"):
+                                    rr.set_time_sequence("/".join(k), v.item())
 
-        for elem in data.cpu():
-            for nested_key, tensor in elem.select(*image_keys).items(True, True):
-                *_, camera = nested_key
-                rr.set_time_sequence(
-                    (k := f"{camera}/ImageMetadata_frame_idx"),
-                    elem.pop(("meta", k)).item(),
-                )
-                rr.set_time_nanos(
-                    (k := f"{camera}/ImageMetadata_time_stamp"),
-                    elem.pop(("meta", k)).item() * 1000,  # us -> ns
-                )
+                                case (_, "ImageMetadata_time_stamp"):
+                                    rr.set_time_nanos("/".join(k), v.item() * 1000)
 
-                rr.log(list(nested_key), rr.Image(tensor))
+                                case _:
+                                    rr.log(entity_path, rr.Scalar(v))
 
-            for nested_key, tensor in elem.exclude(*image_keys).items(True, True):
-                rr.log(list(nested_key), rr.Scalar(tensor))
+                        case ("inputs", modality, *_):
+                            entity_path = list(k)
+                            match modality:
+                                case Modality.IMAGE:
+                                    rr.log(entity_path, rr.Image(v))
+
+                                case Modality.CONTINUOUS | Modality.DISCRETE:
+                                    rr.log(entity_path, rr.Scalar(v))
+
+                                case _:
+                                    raise NotImplementedError
+
+                        case (
+                            "predictions",
+                            objective,
+                            "attention",
+                            Modality.SPECIAL,
+                            token_from,
+                            modality_to,
+                            token_to,
+                        ):
+                            # TODO: use blueprint API once available
+                            # https://x.com/rerundotio/status/1768657557134934176
+
+                            entity_path = ["attention", objective, token_from, token_to]
+                            attn = v[timestep]
+                            match modality_to:
+                                case Modality.IMAGE:
+                                    rr.log(entity_path, rr.Tensor(attn.view(10, 18)))
+
+                                case _:
+                                    # HACK: make rerun render it as a tensor
+                                    rr.log(entity_path, rr.Tensor(torch.zeros(2, 2)))
+                                    rr.log(entity_path, rr.Tensor(attn))
+
+                        case _:
+                            pass

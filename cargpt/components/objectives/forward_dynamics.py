@@ -33,7 +33,11 @@ if TYPE_CHECKING:
 
 
 class ForwardDynamicsPredictionObjective(Module):
-    def __init__(self, heads: ModuleDict, losses: ModuleDict | None) -> None:
+    def __init__(
+        self,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+    ) -> None:
         super().__init__()
         self.heads = heads
         self.losses = losses
@@ -97,12 +101,44 @@ class ForwardDynamicsPredictionObjective(Module):
         labels = labels.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[])
 
         loss = logits.named_apply(
-            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore
+            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore[reportOptionalMemberAccess]
             labels,
             nested_keys=True,
         )
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
+
+    def predict(
+        self,
+        inputs: TensorDict,
+        episode_builder: EpisodeBuilder,
+        encoder: Module,
+    ) -> TensorDict:
+        b, t = inputs.batch_size
+        episode = episode_builder.build_episode(inputs)
+        mask = self._build_attention_mask(episode.index, episode.timestep)
+        attention = encoder.compute_attention_rollout(
+            src=episode.packed_embeddings,
+            mask=mask.data,
+            drop_ratio=0.9,
+        )
+
+        attention = (
+            # from relevant tokens
+            episode.index.select(  # pyright: ignore
+                (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY),
+            )
+            .parse(attention, dim=1)
+            # to all tokens
+            .apply(lambda x: episode.index.parse(x, dim=3))
+            .apply(
+                Rearrange("b t_from s_from t_to s_to -> b t_from t_to s_from s_to"),
+                batch_size=[b, t, t],
+            )
+        )
+
+        return TensorDict.from_dict({"attention": attention})
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
