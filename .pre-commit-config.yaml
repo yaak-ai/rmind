@@ -27,6 +27,6 @@ repos:
       - id: poetry-check
 
   - repo: https://github.com/fpgmaas/deptry.git
-    rev: 0.16.0
+    rev: 0.16.1
     hooks:
       - id: deptry

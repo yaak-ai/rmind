@@ -7,6 +7,8 @@ import torch
 from einops.layers.torch import Rearrange
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorDict
+from typing_extensions import override
+from yaak_datasets import Batch
 
 from cargpt.components.episode import Modality
 
@@ -24,23 +26,25 @@ class RerunPredictionWriter(BasePredictionWriter):
 
         super().__init__(write_interval)
 
+    @override
     def on_predict_start(
         self,
-        trainer: pl.Trainer,  # noqa: ARG002
-        pl_module: pl.LightningModule,  # noqa: ARG002
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
     ) -> None:
         # TODO: use rerun blueprint API once available
         rr.init(**self.rerun_init_kwargs)
 
+    @override
     def write_on_batch_end(
         self,
-        trainer: pl.Trainer,  # noqa: ARG002
+        trainer: pl.Trainer,
         pl_module: pl.LightningModule,
         prediction: TensorDict,
-        batch_indices: Sequence[int] | None,  # noqa: ARG002
-        batch: TensorDict,
-        batch_idx: int,  # noqa: ARG002
-        dataloader_idx: int,  # noqa: ARG002
+        batch_indices: Sequence[int] | None,
+        batch: Batch,
+        batch_idx: int,
+        dataloader_idx: int,
     ) -> None:
         prediction = prediction.to(pl_module.device)
         inputs, predictions = prediction["inputs"], prediction["predictions"]
@@ -50,7 +54,7 @@ class RerunPredictionWriter(BasePredictionWriter):
             )
         )
 
-        meta = batch.meta.exclude("drive_id")  # pyright: ignore
+        meta = batch.meta.exclude("drive_id")
         meta.batch_size = inputs.batch_size
 
         data = TensorDict.from_dict({

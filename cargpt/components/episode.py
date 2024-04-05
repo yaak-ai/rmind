@@ -114,9 +114,9 @@ class Index:
             case _:
                 raise NotImplementedError
 
-        batch_size = [*src.shape[:dim], *self.batch_size]  # pyright: ignore
+        batch_size = [*src.shape[:dim], *self.batch_size]
 
-        return self.to_tensordict().apply(  # pyright: ignore
+        return self.to_tensordict().apply(
             fn,
             batch_size=batch_size,
             device=src.device,
@@ -127,7 +127,7 @@ class Index:
     def all_values(self) -> Int[Tensor, "d"]:
         return torch.cat(
             list(
-                self.values(  # pyright: ignore
+                self.values(
                     include_nested=True,
                     leaves_only=True,
                 )
@@ -138,7 +138,7 @@ class Index:
     @property
     def max(self) -> int:
         return max(
-            self.apply(torch.max, batch_size=[]).values(  # pyright: ignore
+            self.apply(torch.max, batch_size=[]).values(
                 include_nested=True,
                 leaves_only=True,
             )
@@ -166,11 +166,11 @@ def _index_hash(self) -> int:
 
 
 def _index_eq(self, other: Index) -> bool:
-    return _eq(self, other).all()  # pyright: ignore
+    return _eq(self, other).all()
 
 
 Index.__hash__ = _index_hash
-Index.__eq__ = _index_eq  # pyright: ignore
+Index.__eq__ = _index_eq
 
 
 @tensorclass  # pyright: ignore
@@ -280,7 +280,7 @@ class EpisodeBuilder(Module):
                 pairwise(accumulate(lengths.values(), initial=0)),
             )
         )
-        return Index.from_dict(  # pyright: ignore
+        return Index.from_dict(
             {k: torch.arange(*v) for k, v in ranges.items()},
             batch_size=[],
         )
@@ -312,7 +312,7 @@ class EpisodeBuilder(Module):
             PositionEncoding.OBSERVATIONS, default=None
         ):
             keys = self.timestep.keys(TokenType.OBSERVATION)
-            position = index.select(*keys).to_tensordict()  # pyright: ignore
+            position = index.select(*keys).to_tensordict()
             position_embedding = position.apply(module)
             position_embeddings.select(*keys).apply(
                 add,

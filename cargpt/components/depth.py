@@ -6,6 +6,7 @@ import torch
 from einops import rearrange, reduce
 from jaxtyping import Float, Shaped
 from torch import Tensor, nn
+from typing_extensions import override
 
 
 class DepthFeatureEncoder(nn.Module):
@@ -15,17 +16,18 @@ class DepthFeatureEncoder(nn.Module):
         encoder = cast(nn.Module, disp_net.encoder)
         self.encoder = encoder.requires_grad_(not freeze).train(not freeze)
 
+    @override
     def forward(
         self,
         frames: Float[Tensor, "*b c1 h1 w1"],
     ) -> Float[Tensor, "*b c2 h2 w2"]:
-        *B, C, H, W = frames.shape
-        frames = frames.view(prod(B), C, H, W)
+        *b, c, h, w = frames.shape
+        frames = frames.view(prod(b), c, h, w)
 
         disp = self.encoder(frames)[2]
 
-        *_, C, H, W = disp.shape
-        return disp.view(*B, C, H, W)
+        *_, c, h, w = disp.shape
+        return disp.view(*b, c, h, w)
 
 
 class DepthEncoder(nn.Module):
@@ -34,6 +36,7 @@ class DepthEncoder(nn.Module):
 
         self.disp_net = disp_net.requires_grad_(not freeze).train(not freeze)
 
+    @override
     def forward(
         self,
         frames: Float[Tensor, "*b c _h _w"],

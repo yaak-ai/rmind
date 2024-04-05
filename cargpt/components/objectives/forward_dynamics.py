@@ -8,6 +8,7 @@ from more_itertools import partition
 from tensordict import TensorDict, merge_tensordicts
 from torch import Tensor
 from torch.nn import Module
+from typing_extensions import override
 
 from cargpt.components.episode import (
     EpisodeBuilder,
@@ -42,6 +43,7 @@ class ForwardDynamicsPredictionObjective(Module):
         self.heads = heads
         self.losses = losses
 
+    @override
     def forward(
         self,
         inputs: TensorDict,

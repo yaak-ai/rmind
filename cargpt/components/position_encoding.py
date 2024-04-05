@@ -1,7 +1,8 @@
 import torch
-from einops import einsum, rearrange, repeat
+from einops import einsum, rearrange
 from jaxtyping import Float, Shaped
 from torch import Tensor, nn
+from typing_extensions import override
 
 
 class PointPositionalEncoder3D(nn.Module):
@@ -30,6 +31,7 @@ class PointPositionalEncoder3D(nn.Module):
         )
         self.register_buffer("inv_freq", inv_freq)
 
+    @override
     def forward(self, points: Shaped[Tensor, "*b h w 3"]) -> Float[Tensor, "*b h w c"]:
         x = einsum(points, self.inv_freq, "... xyz, c -> ... xyz c")
         pe_sine = rearrange(
@@ -37,25 +39,3 @@ class PointPositionalEncoder3D(nn.Module):
             "sin_cos ... xyz c -> ... (xyz c sin_cos)",
         )
         return self.mlp(pe_sine)
-
-
-class LearnablePositionalEmbedding1D(nn.Module):
-    def __init__(self, seq_len, embedding_dim) -> None:
-        super().__init__()
-
-        self._emb = nn.Embedding(
-            num_embeddings=seq_len,
-            embedding_dim=embedding_dim,
-        )
-
-    @property
-    def _seq_len(self):
-        return self._emb.num_embeddings
-
-    def forward(self, shape: torch.Size) -> Float[Tensor, "b s c"]:
-        b, s, *_ = shape
-        if s != self._seq_len:
-            msg = f"expected sequence length {self._seq_len}, got {s}"
-            raise ValueError(msg)
-
-        return repeat(self._emb.weight, "s c -> b s c", b=b)

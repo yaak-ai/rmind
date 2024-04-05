@@ -4,6 +4,7 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
 from torch.nn import Module
+from typing_extensions import override
 
 from cargpt.components.episode import (
     EpisodeBuilder,
@@ -33,6 +34,7 @@ class InverseDynamicsPredictionObjective(Module):
         self.heads = heads
         self.losses = losses
 
+    @override
     def forward(
         self,
         inputs: TensorDict,
@@ -44,7 +46,7 @@ class InverseDynamicsPredictionObjective(Module):
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
         observation_summaries = (
-            episode.index.select(  # pyright: ignore
+            episode.index.select(
                 k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
             )
             .parse(embedding)

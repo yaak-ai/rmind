@@ -1,16 +1,17 @@
-from typing import Optional
+from typing import Any
 
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
+from typing_extensions import override
 
 
 class GenericDataModule(pl.LightningDataModule):
     def __init__(
         self,
-        train: Optional[DataLoader] = None,
-        val: Optional[DataLoader] = None,
-        test: Optional[DataLoader] = None,
-        predict: Optional[DataLoader] = None,
+        train: DataLoader[Any] | None = None,
+        val: DataLoader[Any] | None = None,
+        test: DataLoader[Any] | None = None,
+        predict: DataLoader[Any] | None = None,
     ) -> None:
         super().__init__()
 
@@ -19,14 +20,18 @@ class GenericDataModule(pl.LightningDataModule):
         self._test = test
         self._predict = predict
 
+    @override
     def train_dataloader(self):
         return self._train
 
+    @override
     def val_dataloader(self):
         return self._val
 
+    @override
     def test_dataloader(self):
         return self._test
 
+    @override
     def predict_dataloader(self):
         return self._predict

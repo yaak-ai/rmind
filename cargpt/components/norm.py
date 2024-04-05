@@ -1,9 +1,11 @@
-from typing import Annotated, Sequence
+from collections.abc import Sequence
+from typing import Annotated
 
 import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 from torch.nn import Module
+from typing_extensions import override
 
 
 class Scaler(Module):
@@ -18,6 +20,7 @@ class Scaler(Module):
         self.register_buffer("in_range", torch.tensor(in_range))
         self.register_buffer("out_range", torch.tensor(out_range))
 
+    @override
     def forward(self, x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
         x_min, x_max = self.in_range
         if x.min() < x_min or x.max() > x_max:
@@ -37,6 +40,7 @@ class Clamp(Module):
         self.register_buffer("min_value", torch.tensor(min_value))
         self.register_buffer("max_value", torch.tensor(max_value))
 
+    @override
     def forward(self, x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
         return torch.clamp(x, min=self.min_value, max=self.max_value)
 
@@ -48,6 +52,7 @@ class UniformBinner(Module):
         self.in_range = in_range
         self.num_bins = num_bins
 
+    @override
     def forward(self, x: Float[Tensor, "..."]) -> Int[Tensor, "..."]:
         x_min, x_max = self.in_range
         if x.min() < x_min or x.max() > x_max:
@@ -58,5 +63,6 @@ class UniformBinner(Module):
 
         return (x_norm * self.num_bins).to(torch.long).clamp(max=self.num_bins - 1)
 
+    @override
     def extra_repr(self) -> str:
         return f"{self.in_range} -> {self.num_bins}"

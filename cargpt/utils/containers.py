@@ -1,6 +1,6 @@
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from functools import reduce
-from typing import Any, Mapping
+from typing import Any
 
 from more_itertools import always_iterable
 from torch.nn import Module

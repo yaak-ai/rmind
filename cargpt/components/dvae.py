@@ -4,12 +4,14 @@ from einops import rearrange
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 from torch.nn import functional as F
+from typing_extensions import override
 
 
 class DVAETokens(nn.Module):
     def __init__(self) -> None:
         super().__init__()
 
+    @override
     def forward(
         self,
         probs: Float[Tensor, "b c1 h w"],
@@ -31,6 +33,7 @@ class DalleDVAEEncoder(nn.Module):
 
         self.enc = load_model(enc_weights).requires_grad_(not freeze).train(not freeze)
 
+    @override
     def forward(
         self,
         x: Float[Tensor, "b c1 h1 w1"],
@@ -48,6 +51,7 @@ class DalleDVAEDecoder(torch.nn.Module):
         self.dec = load_model(dec_weights).requires_grad_(not freeze).train(not freeze)
         self.vocab_size = vocab_size
 
+    @override
     def forward(
         self,
         z_logits: Float[Tensor, "b c h1 w1"],

@@ -3,6 +3,10 @@ set shell := ["zsh", "-cu"]
 _default:
 	@just --list
 
+install:
+	poetry install --no-root --sync --with=train,lint,dev,inference,notebook
+	poetry run pre-commit install
+
 pre-commit:
 	poetry run pre-commit run --all-files
 

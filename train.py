@@ -37,14 +37,12 @@ def _train(cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path="config", config_name="train.yaml")
 def train(cfg: DictConfig):
-    run = None
-    if rank_zero_only.rank == 0:
-        run = wandb.init(
+    if (
+        run := rank_zero_only(wandb.init)(
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # type: ignore
             **cfg.wandb,
         )
-
-    if run is not None:
+    ) is not None:
         paths = {
             Path(path).resolve()
             for path in check_output(

@@ -8,6 +8,7 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.distributions import Categorical
 from torch.nn import Module, ModuleDict
+from typing_extensions import override
 
 from cargpt.components.episode import (
     Episode,
@@ -33,6 +34,7 @@ class CopycatObjective(Module):
 
         self.streams = ModuleDict(streams)
 
+    @override
     def forward(
         self,
         inputs: TensorDict,
@@ -76,10 +78,10 @@ class CopycatObjective(Module):
             data=torch.full((index.max + 1, index.max + 1), legend.DO_NOT_ATTEND),
             legend=legend,
             batch_size=[],
-            device=index.device,  # pyright: ignore
+            device=index.device,
         )
 
-        (t,) = index.batch_size  # pyright: ignore
+        (t,) = index.batch_size
         for step in range(t):
             past, current = index[:step], index[step]  # pyright: ignore
             current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
@@ -165,6 +167,7 @@ class MemoryExtractionStream(Module):
         self.delta_tokenizers = delta_tokenizers
         self.delta_detokenizers = delta_detokenizers
 
+    @override
     def forward(
         self,
         episode: Episode,
@@ -258,6 +261,7 @@ class PolicyStream(Module):
         self.heads = heads
         self.loss = loss
 
+    @override
     def forward(
         self,
         episode: Episode,

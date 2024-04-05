@@ -7,7 +7,6 @@ import pytorch_lightning as pl
 import torch
 from hydra.utils import instantiate
 from lightning_fabric.plugins.io.torch_io import pl_load
-from lightning_fabric.utilities.data import AttributeDict
 from loguru import logger
 from pytorch_lightning.core.saving import _load_state  # noqa: PLC2701
 from pytorch_lightning.loggers import WandbLogger
@@ -16,6 +15,7 @@ from pytorch_lightning.utilities.model_helpers import (
 )
 from tensordict import TensorDict
 from torch.nn import Module, ModuleDict  # noqa: TCH002
+from typing_extensions import override
 from wandb import Image
 from yaak_datasets import Batch
 
@@ -29,8 +29,6 @@ from cargpt.utils._wandb import LoadableFromArtifact
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
-    hparams: AttributeDict
-
     def __init__(self, **_kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -44,8 +42,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         if self.objective_scheduler:
             self.objective_scheduler.verify(self.objectives.keys())  # pyright: ignore
 
+    @override
     @_restricted_classmethod
-    def load_from_checkpoint(cls, checkpoint_path: str | PathLike, **kwargs) -> Self:
+    def load_from_checkpoint(  # pyright: ignore[reportIncompatibleMethodOverride]
+        cls,
+        checkpoint_path: str | PathLike[str],
+        **kwargs,
+    ) -> Self:
         match kwargs:
             case {"hparams_update_fn": hparams_update_fn, **rest} if not rest:
                 # relevant parts of super().load_from_checkpoint
@@ -75,14 +78,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     def _step(self, batch: Batch) -> TensorDict:
         inputs = self._build_input(batch)
-        # TODO: currently this does full episode construction for each objective -- optimize?
 
+        selected_objectives = (
+            self.objectives.keys()
+            if self.objective_scheduler is None
+            else self.objective_scheduler.sample()
+        )
+
+        # TODO: currently this does full episode construction for each objective -- optimize?
         metrics = TensorDict(
             {
-                name: self.objectives.get(name)(
-                    inputs, self.episode_builder, self.encoder
-                )
-                for name in self.objective_scheduler.sample()  # pyright: ignore
+                name: self.objectives[name](inputs, self.episode_builder, self.encoder)
+                for name in selected_objectives
             },
             batch_size=[],
             device=inputs.device,
@@ -106,7 +113,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         return metrics
 
-    def training_step(self, batch: Batch, _batch_idx: int):
+    @override
+    def training_step(self, batch: Batch, *args):  # pyright: ignore[reportIncompatibleMethodOverride]
         metrics = self._step(batch)
 
         self.log_dict({
@@ -116,7 +124,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         return metrics["loss", "total"]
 
-    def validation_step(self, batch: Batch, _batch_idx: int):
+    @override
+    def validation_step(self, batch: Batch, *args):  # pyright: ignore[reportIncompatibleMethodOverride]
         metrics = self._step(batch)
 
         self.log_dict({
@@ -126,7 +135,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         return metrics["loss", "total"]
 
-    def predict_step(self, batch: Batch):
+    @override
+    def predict_step(self, batch: Batch):  # pyright: ignore[reportIncompatibleMethodOverride]
         inputs = self._build_input(batch)
 
         predictions = TensorDict.from_dict({
@@ -139,7 +149,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 "inputs": inputs,
                 "predictions": predictions,
             },
-            batch_size=batch.batch_size,  # pyright: ignore
+            batch_size=batch.batch_size,
         )
 
     def _build_input(self, batch: Batch) -> TensorDict:
@@ -170,7 +180,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             device=frames.device,
         )
 
-    def configure_optimizers(self):
+    @override
+    def configure_optimizers(self):  # pyright: ignore[reportIncompatibleMethodOverride]
         optimizer = instantiate(self.hparams.optimizer, params=self.parameters())
         result = {"optimizer": optimizer}
 
@@ -217,11 +228,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 "turn_signal": Modality.DISCRETE,
             }
 
-            dataset = self.trainer.datamodule.train_dataloader().dataset  # pyright: ignore
+            dataset = self.trainer.datamodule.train_dataloader().dataset
             metadata_df = dataset._metadata.select(*col_names.keys()).rename(col_names)
             values = TensorDict.from_dict(
                 {
-                    (modalities[k], k): v.to_numpy(allow_copy=False, writable=False)
+                    (modalities[k], k): v.to_numpy(zero_copy_only=False, writable=False)
                     for k, v in metadata_df.to_dict().items()
                 },
                 device=self.device,
@@ -255,5 +266,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
                     loss.logit_bias = logit_bias[loss_key]
 
+    @override
     def on_fit_start(self) -> None:
         self._populate_logit_bias()
