@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 
 class ForwardDynamicsPredictionObjective(Module):
-    def __init__(self, heads: ModuleDict, losses: Module) -> None:
+    def __init__(self, heads: ModuleDict, losses: ModuleDict | None) -> None:
         super().__init__()
         self.heads = heads
         self.losses = losses
@@ -97,7 +97,7 @@ class ForwardDynamicsPredictionObjective(Module):
         labels = labels.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[])
 
         loss = logits.named_apply(
-            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),
+            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore
             labels,
             nested_keys=True,
         )
@@ -112,4 +112,4 @@ class ForwardDynamicsPredictionObjective(Module):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        return CopycatObjective._build_attention_mask(index, timestep, legend)
+        return CopycatObjective._build_attention_mask(index, timestep, legend).clone()  # pyright: ignore

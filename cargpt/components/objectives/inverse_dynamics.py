@@ -27,7 +27,7 @@ class InverseDynamicsPredictionObjective(Module):
     def __init__(
         self,
         heads: ModuleDict,
-        losses: ModuleDict,
+        losses: ModuleDict | None,
     ):
         super().__init__()
         self.heads = heads
@@ -70,7 +70,7 @@ class InverseDynamicsPredictionObjective(Module):
         logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
         labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
         loss = logits.named_apply(
-            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),
+            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore
             labels,
             nested_keys=True,
         )
@@ -85,4 +85,4 @@ class InverseDynamicsPredictionObjective(Module):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        return CopycatObjective._build_attention_mask(index, timestep, legend)
+        return CopycatObjective._build_attention_mask(index, timestep, legend).clone()  # pyright: ignore
