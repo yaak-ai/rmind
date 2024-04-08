@@ -1,8 +1,14 @@
+from collections.abc import Iterable, Mapping
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
+from numpy.random import PCG64, Generator
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
+
+from cargpt.components.objectives import Objective
 
 
 class FocalLoss(Module):
@@ -70,3 +76,28 @@ class LogitBiasCrossEntropyLoss(CrossEntropyLoss, LogitBiasMixin):
 
     def forward(self, inputs: Float[Tensor, "b d"], targets: Int[Tensor, "b"]):
         return super().forward(inputs + self.logit_bias, targets)
+
+
+class ObjectiveScheduler:
+    def __init__(self, schedule: Mapping[Objective, float], sample_size: int):
+        super().__init__()
+        self.schedule = schedule
+        self.sample_size = sample_size
+        self.generator = Generator(PCG64())
+
+    def verify(self, objectives: Iterable[Objective]):
+        probs = [self.schedule.get(objective) for objective in objectives]
+
+        assert all(probs)
+        assert np.isclose(sum(probs), 1.0)  # pyright: ignore
+        assert self.sample_size <= len(objectives)  # pyright: ignore
+
+        self.objectives = tuple(objectives)
+        self.probs = np.array(probs)
+
+    def sample(self) -> tuple[str, ...]:
+        return tuple(
+            self.generator.choice(
+                self.objectives, p=self.probs, size=self.sample_size, replace=False
+            )
+        )

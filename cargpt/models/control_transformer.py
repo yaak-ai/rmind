@@ -1,5 +1,4 @@
 from collections import defaultdict
-from enum import StrEnum, auto
 from os import PathLike
 from typing import Self
 
@@ -24,15 +23,9 @@ from cargpt.components.episode import (
     EpisodeBuilder,
     Modality,
 )
+from cargpt.components.loss import ObjectiveScheduler
 from cargpt.components.mask import WandbAttentionMaskLegend
 from cargpt.utils._wandb import LoadableFromArtifact
-
-
-class Objective(StrEnum):
-    FORWARD_DYNAMICS = auto()
-    INVERSE_DYNAMICS = auto()
-    RANDOM_MASKED_HINDSIGHT_CONTROL = auto()
-    COPYCAT = auto()
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -45,6 +38,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)
         self.encoder: Module = instantiate(self.hparams.encoder)
         self.objectives: ModuleDict = instantiate(self.hparams.objectives)
+        self.objective_scheduler: ObjectiveScheduler | None = instantiate(
+            self.hparams.get("objective_scheduler")
+        )
+        if self.objective_scheduler:
+            self.objective_scheduler.verify(self.objectives.keys())  # pyright: ignore
 
     @_restricted_classmethod
     def load_from_checkpoint(cls, checkpoint_path: str | PathLike, **kwargs) -> Self:
@@ -77,12 +75,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     def _step(self, batch: Batch) -> TensorDict:
         inputs = self._build_input(batch)
-
         # TODO: currently this does full episode construction for each objective -- optimize?
+
         metrics = TensorDict(
             {
-                name: objective(inputs, self.episode_builder, self.encoder)
-                for name, objective in self.objectives.items()
+                name: self.objectives.get(name)(
+                    inputs, self.episode_builder, self.encoder
+                )
+                for name in self.objective_scheduler.sample()  # pyright: ignore
             },
             batch_size=[],
             device=inputs.device,

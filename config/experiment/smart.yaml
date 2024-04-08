@@ -215,6 +215,7 @@ model:
                     - 2
                     - ${embedding_dim}
                 out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
+                bias: False
 
           brake_pedal:
             _target_: torch.nn.Sequential
@@ -226,6 +227,7 @@ model:
                     - 2
                     - ${embedding_dim}
                 out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
+                bias: False
 
           steering_angle:
             _target_: torch.nn.Sequential
@@ -237,6 +239,7 @@ model:
                     - 2
                     - ${embedding_dim}
                 out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
+                bias: False
 
       losses:
         _target_: cargpt.utils.ModuleDict
@@ -374,6 +377,15 @@ model:
 
         loss:
           _target_: cargpt.components.loss.FocalLoss
+
+  objective_scheduler:
+    _target_: cargpt.components.loss.ObjectiveScheduler
+    schedule:
+      inverse_dynamics: 0.4
+      forward_dynamics: 0.6
+      random_masked_hindsight_control: 0.0
+      copycat: 0.0
+    sample_size: 1
 
   # TODO: match paper?
   optimizer:
