@@ -24,10 +24,10 @@ from cargpt.components.objectives.copycat import (
 
 
 class RandomMaskedHindsightControlObjective(Module):
-    def __init__(self, heads: ModuleDict, loss: Module) -> None:
+    def __init__(self, heads: ModuleDict, losses: ModuleDict | None) -> None:
         super().__init__()
         self.heads = heads
-        self.loss = loss
+        self.losses = losses
 
     def forward(
         self,
@@ -60,7 +60,11 @@ class RandomMaskedHindsightControlObjective(Module):
 
         logits = logits.apply(Rearrange("b t 1 d -> (b t 1) d"), batch_size=[])
         labels = labels.apply(Rearrange("b t 1 -> (b t 1)"), batch_size=[])
-        loss = logits.apply(self.loss, labels)
+        loss = logits.named_apply(
+            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore
+            labels,
+            nested_keys=True,
+        )
 
         return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
 
@@ -72,7 +76,7 @@ class RandomMaskedHindsightControlObjective(Module):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        mask = CopycatObjective._build_attention_mask(index, timestep, legend)
+        mask = CopycatObjective._build_attention_mask(index, timestep, legend).clone()  # pyright: ignore
 
         (t,) = index.batch_size  # pyright: ignore
         for step in range(t):

@@ -324,9 +324,17 @@ model:
             out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
             bias: True
 
-      loss:
-        _target_: torch.nn.CrossEntropyLoss
-        reduction: mean
+      losses:
+        _target_: cargpt.utils.ModuleDict
+        continuous:
+          gas_pedal:
+            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+
+          brake_pedal:
+            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+
+          steering_angle:
+            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
 
     copycat:
       _target_: cargpt.components.objectives.CopycatObjective
@@ -382,8 +390,8 @@ model:
     _target_: cargpt.components.loss.ObjectiveScheduler
     schedule:
       inverse_dynamics: 0.4
-      forward_dynamics: 0.6
-      random_masked_hindsight_control: 0.0
+      forward_dynamics: 0.3
+      random_masked_hindsight_control: 0.3
       copycat: 0.0
     sample_size: 1
 
