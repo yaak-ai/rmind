@@ -49,7 +49,6 @@ class InverseDynamicsPredictionObjective(Module):
             )
             .parse(embedding)
             .get(k)
-            .detach()
         )
 
         # order: (o0, o1), (o1, o2), (o2, o3), ...

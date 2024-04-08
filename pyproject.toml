@@ -38,7 +38,7 @@ optional = true
 
 [tool.poetry.group.train.dependencies]
 omegaconf = "^2.3.0"
-yaak-datasets = {git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.17.1"}
+yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.17.1" }
 polars = "*"
 
 [tool.poetry.group.lint]
@@ -83,7 +83,7 @@ opencv-python = "*"
 optional = true
 
 [tool.poetry.group.dalle.dependencies]
-dall-e = {git = "git@github.com:openai/DALL-E.git", rev = "master"}
+dall-e = { git = "git@github.com:openai/DALL-E.git", rev = "master" }
 
 [tool.poetry.group.log]
 optional = true
@@ -100,7 +100,7 @@ reportMissingSuperCall = true
 reportUnnecessaryIsInstance = true
 reportUnnecessaryCast = true
 reportUnnecessaryTypeIgnoreComment = true
-reportUnnecessaryComparison= true
+reportUnnecessaryComparison = true
 reportUnusedCallResult = true
 reportUnusedExpression = true
 reportMatchNotExhaustive = true
@@ -114,7 +114,35 @@ unsafe-fixes = true
 [tool.ruff.lint]
 select = ["ALL"]
 fixable = ["ALL"]
-ignore = ["E501", "F722", "F821", "E203", "D", "CPY", "ANN", "PGH", "FA", "PLR", "N", "TD", "FIX", "S101", "SLF", "C901", "COM812", "ISC001", "A001", "A002", "PD", "FBT003", "EXE", "SIM118", "NPY002"]
+ignore = [
+    "E501",
+    "F722",
+    "F821",
+    "E203",
+    "D",
+    "CPY",
+    "ANN",
+    "PGH",
+    "FA",
+    "PLR",
+    "N",
+    "TD",
+    "FIX",
+    "S101",
+    "SLF",
+    "C901",
+    "COM812",
+    "ISC001",
+    "A001",
+    "A002",
+    "PD",
+    "FBT003",
+    "EXE",
+    "SIM118",
+    "NPY002",
+    "S311",
+    "TCH001",
+]
 
 [tool.ruff.lint.isort]
 known-third-party = ["wandb"]
