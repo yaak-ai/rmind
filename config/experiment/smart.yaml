@@ -188,7 +188,7 @@ model:
         num_heads: ${num_heads}
         residual_dropout: 0.1
         attention:
-          name: scaled_dot_product
+          name: memory_efficient_scaled_dot_product
           dropout: 0.1
           causal: False
       feedforward_config:
