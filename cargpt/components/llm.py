@@ -25,7 +25,6 @@ from xformers.factory.model_factory import (
     xFormerWeightInit,
 )
 
-from cargpt.utils.attention import MemoryEfficientScaledDotProduct
 if TYPE_CHECKING:
     from transformers import GPT2LMHeadModel
 

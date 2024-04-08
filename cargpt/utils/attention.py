@@ -3,15 +3,13 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 import torch
-from torch import nn
-
+from xformers import ops as xops
 from xformers.components.attention import (
     Attention,
     AttentionConfig,
     AttentionMask,
     register_attention,
 )
-from xformers import ops as xops
 
 logger = logging.getLogger("xformers")
 
@@ -38,15 +36,14 @@ class MemoryEfficientScaledDotProduct(Attention):
     def __init__(
         self,
         dropout: float = 0.0,
-        causal: bool = False,
+        causal: bool = False,  # noqa: FBT001, FBT002
         seq_len: Optional[int] = None,
         to_seq_len: Optional[int] = None,
-        *args,
-        **kwargs,
+        *_args,
+        **_kwargs,
     ):
         super().__init__()
 
-        # self.attn_drop = nn.Dropout(dropout, inplace=False)
         self.dropout = dropout
         self.causal = causal
         self.seq_len = seq_len
@@ -65,9 +62,9 @@ class MemoryEfficientScaledDotProduct(Attention):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        att_mask: Optional[Union[AttentionMask, torch.Tensor]] = None,
-        *args,
-        **kwargs,
+        att_mask: Union[AttentionMask, torch.Tensor],
+        *_args,
+        **_kwargs,
     ) -> torch.Tensor:
         r"""
         att_mask    A 2D or 3D mask which ignores attention at certain positions.
@@ -83,10 +80,11 @@ class MemoryEfficientScaledDotProduct(Attention):
                     - If the mask has the float type, then an additive mask is expected (masked values are -inf)
 
         """
+        # I removed all the handlings of `att_mask = None`
 
         # Convenience, create an attention mask if a tensor was passed
-        att_mask = att_mask.to(q.dtype)
-        if att_mask is not None and isinstance(att_mask, torch.Tensor):
+        att_mask = att_mask.to(q.dtype)  # type: ignore
+        if isinstance(att_mask, torch.Tensor):
             # By default we don't know of the causality, and a check would be expensive
             att_mask = (
                 AttentionMask.from_bool(att_mask)
@@ -96,7 +94,7 @@ class MemoryEfficientScaledDotProduct(Attention):
 
         # Handle a possibly deferred causal mask handling
         mask = self.mask
-        if self.causal and self.mask is None:
+        if self.causal:
             mask = AttentionMask.make_causal(
                 seq_len=q.shape[-2],
                 to_seq_len=q.shape[-2],
@@ -108,32 +106,19 @@ class MemoryEfficientScaledDotProduct(Attention):
         if mask is not None:
             mask = mask.to(dtype=q.dtype, device=q.device)
 
-            att_mask = att_mask + mask if att_mask is not None else mask
+            att_mask = att_mask + mask
 
         # Try to handle a case where the sequence is smaller than the mask
-        if (
-            att_mask is not None
-            and q.shape[-2] == k.shape[-2]
-            and q.shape[-2] < att_mask.shape[1]
-        ):
-            if isinstance(att_mask, AttentionMask):
-                att_mask = att_mask.make_crop(seq_len=q.shape[-2])
-            else:
-                logger.error(
-                    "Mismatching sparse attention mask and sequence length."
-                    + " Please pad the inputs or adjust the attention mask"
-                )
-                raise NotImplementedError
+        if q.shape[-2] == k.shape[-2] and q.shape[-2] < att_mask.shape[1]:
+            att_mask = att_mask.make_crop(seq_len=q.shape[-2])
 
-        if att_mask is not None:
-            att_mask = att_mask.values.expand(q.shape[0], -1, -1)
+        att_mask = att_mask.values.expand(q.shape[0], -1, -1)
 
         # Attend: (B x nh, S, hs) x (B x nh, hs, S) -> (B x nh, S, S)
-        y = xops.memory_efficient_attention(
+        return xops.memory_efficient_attention(
             query=q,
             key=k,
             value=v,
             p=self.dropout,
             attn_bias=att_mask,
         )
-        return y
