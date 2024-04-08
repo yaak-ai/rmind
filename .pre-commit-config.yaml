@@ -5,7 +5,7 @@ repos:
       - id: sync_with_poetry
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.3.2
+    rev: v0.3.4
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
@@ -27,6 +27,6 @@ repos:
       - id: poetry-check
 
   - repo: https://github.com/fpgmaas/deptry.git
-    rev: 0.14.2
+    rev: 0.16.0
     hooks:
       - id: deptry

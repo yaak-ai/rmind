@@ -1,9 +1,10 @@
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from functools import cache
 from itertools import accumulate, pairwise
 from operator import add
-from typing import Mapping, Sequence, cast
+from typing import cast
 
 import torch
 from einops import pack, rearrange, repeat
@@ -94,12 +95,30 @@ class Index:
     discrete: TensorDict
     special: TensorDict
 
-    def parse(self, src: Shaped[Tensor, "b s ..."]) -> TensorDict:
-        b, *_ = src.shape
+    def parse(self, src: Shaped[Tensor, "..."], dim: int = 1) -> TensorDict:
+        # https://github.com/pytorch/pytorch/issues/30574
+
+        match dim:
+            case 0:
+                fn = lambda idx: src[idx]  # noqa: E731
+
+            case 1:
+                fn = lambda idx: src[:, idx]  # noqa: E731
+
+            case 2:
+                fn = lambda idx: src[:, :, idx]  # noqa: E731
+
+            case 3:
+                fn = lambda idx: src[:, :, :, idx]  # noqa: E731
+
+            case _:
+                raise NotImplementedError
+
+        batch_size = [*src.shape[:dim], *self.batch_size]  # pyright: ignore
 
         return self.to_tensordict().apply(  # pyright: ignore
-            lambda idx: src[:, idx],
-            batch_size=[b],
+            fn,
+            batch_size=batch_size,
             device=src.device,
             inplace=False,
         )

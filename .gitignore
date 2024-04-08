@@ -139,8 +139,6 @@ lightning_logs/
 # env
 .cenv
 
-*.ipynb
-
 # generated
 config/dataset/train.yaml
 config/dataset/val.yaml
