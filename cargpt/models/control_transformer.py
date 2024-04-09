@@ -132,10 +132,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def training_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
         metrics = self._step(batch)
 
-        self.log_dict({
-            "/".join(["train", *k]): v
-            for k, v in metrics.items(include_nested=True, leaves_only=True)
-        })
+        self.log_dict(
+            {
+                "/".join(["train", *k]): v
+                for k, v in metrics.items(include_nested=True, leaves_only=True)
+            },
+            sync_dist=True,
+        )
 
         return metrics["loss", "total"]
 
@@ -143,10 +146,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def validation_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
         metrics = self._step(batch)
 
-        self.log_dict({
-            "/".join(["val", *k]): v
-            for k, v in metrics.items(include_nested=True, leaves_only=True)
-        })
+        self.log_dict(
+            {
+                "/".join(["val", *k]): v
+                for k, v in metrics.items(include_nested=True, leaves_only=True)
+            },
+            sync_dist=True,
+        )
 
         return metrics["loss", "total"]
 
