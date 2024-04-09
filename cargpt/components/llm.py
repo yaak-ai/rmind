@@ -5,9 +5,9 @@ import torch
 from einops import rearrange, repeat
 from hydra.utils import instantiate
 from jaxtyping import Float
-from pytorch_lightning.utilities.parsing import AttributeDict
 from torch import Tensor, nn
 from torch.nn.functional import gelu
+from typing_extensions import override
 from xformers.components import (
     Activation,
     ResidualNormStyle,
@@ -30,14 +30,13 @@ if TYPE_CHECKING:
 
 
 class HFGPT2(pl.LightningModule):
-    hparams: AttributeDict
-
     def __init__(self, **_kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
         self.llm: GPT2LMHeadModel = instantiate(self.hparams.llm)
 
-    def forward(
+    @override
+    def forward(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         inputs_embeds: Tensor,
         labels: Tensor | None = None,
@@ -56,8 +55,6 @@ class HFGPT2(pl.LightningModule):
 
 
 class TorchGPT2(pl.LightningModule):
-    hparams: AttributeDict
-
     def __init__(self, **_kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -65,7 +62,8 @@ class TorchGPT2(pl.LightningModule):
         self.classifier = instantiate(self.hparams.classifier)
         self.loss_fn = instantiate(self.hparams.loss)
 
-    def forward(
+    @override
+    def forward(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         inputs_embeds: Tensor,
         episode_mask: Tensor | None,
@@ -132,6 +130,7 @@ class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
         self.linear1 = Linear(d_model, dim_feedforward * 2, **factory_kwargs)  # type: ignore
         self.activation = None
 
+    @override
     def _ff_block(self, x: Tensor) -> Tensor:
         # FFN_GEGLU eq. 6, https://arxiv.org/pdf/2002.05202v1.pdf
         x = self.linear1(x)
@@ -162,6 +161,7 @@ class MLPGLU(Feedforward):
         self.l2 = nn.Linear(in_features=dim_mlp, out_features=dim_model, bias=bias)
         self.d2 = nn.Dropout(dropout)
 
+    @override
     def forward(self, inputs: Tensor) -> Tensor:
         # FFN_GEGLU eq. 6, https://arxiv.org/pdf/2002.05202v1.pdf
         x = self.l1(inputs)
@@ -196,6 +196,7 @@ class xFormerEncoder(nn.Module):
         for name, module in self.encoders.named_children():
             init_fn(module=module, name=name, gain=1.0)
 
+    @override
     def forward(
         self,
         src: Float[Tensor, "b s d"],

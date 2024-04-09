@@ -7,6 +7,7 @@ from jaxtyping import Float, Int
 from numpy.random import PCG64, Generator
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
+from typing_extensions import override
 
 from cargpt.components.objectives import Objective
 
@@ -19,12 +20,13 @@ class FocalLoss(Module):
 
         self.gamma = gamma
 
+    @override
     def forward(
         self,
-        inputs: Float[Tensor, "b d"],
-        targets: Int[Tensor, "b"],
+        input: Float[Tensor, "b d"],
+        target: Int[Tensor, "b"],
     ) -> Float[Tensor, ""]:
-        ce_loss = F.cross_entropy(inputs, targets, reduction="none")
+        ce_loss = F.cross_entropy(input, target, reduction="none")
         pt = torch.exp(-ce_loss)
 
         return ((1 - pt).pow(self.gamma) * ce_loss).mean()
@@ -42,7 +44,7 @@ class LogitBiasMixin:
                 if hasattr(self, "_logit_bias"):
                     del self._logit_bias
 
-                self.register_buffer("_logit_bias", value)  # pyright: ignore
+                self.register_buffer("_logit_bias", value)
 
             case None:
                 self._logit_bias = None
@@ -59,8 +61,9 @@ class LogitBiasFocalLoss(FocalLoss, LogitBiasMixin):
 
         self.logit_bias = logit_bias
 
-    def forward(self, inputs: Float[Tensor, "b d"], targets: Int[Tensor, "b"]):
-        return super().forward(inputs + self.logit_bias, targets)
+    @override
+    def forward(self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]):
+        return super().forward(input + self.logit_bias, target)
 
 
 class LogitBiasCrossEntropyLoss(CrossEntropyLoss, LogitBiasMixin):
@@ -74,8 +77,9 @@ class LogitBiasCrossEntropyLoss(CrossEntropyLoss, LogitBiasMixin):
 
         self.logit_bias = logit_bias
 
-    def forward(self, inputs: Float[Tensor, "b d"], targets: Int[Tensor, "b"]):
-        return super().forward(inputs + self.logit_bias, targets)
+    @override
+    def forward(self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]):
+        return super().forward(input + self.logit_bias, target)
 
 
 class ObjectiveScheduler:

@@ -59,7 +59,7 @@ class AttentionMask:
         return self._set(src=src, dest=dest, val=self.legend.DO_NOT_ATTEND)
 
     def with_legend(self, legend: AttentionMaskLegend) -> Self:
-        mask = self.clone(recurse=True)  # pyright: ignore
+        mask = self.clone(recurse=True)
         if self.legend is legend:
             return mask
 

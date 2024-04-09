@@ -4,6 +4,7 @@ import numpy as np
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
 from torch.nn import Module, ModuleDict
+from typing_extensions import override
 
 from cargpt.components.episode import (
     EpisodeBuilder,
@@ -29,6 +30,7 @@ class RandomMaskedHindsightControlObjective(Module):
         self.heads = heads
         self.losses = losses
 
+    @override
     def forward(
         self,
         inputs: TensorDict,
@@ -45,9 +47,7 @@ class RandomMaskedHindsightControlObjective(Module):
         )
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        index = episode.index.select(  # pyright: ignore
-            *episode.timestep.keys(TokenType.ACTION)
-        )
+        index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = embeddings.named_apply(
             lambda nested_key, tensor: self.heads.get(nested_key)(tensor),
@@ -78,7 +78,7 @@ class RandomMaskedHindsightControlObjective(Module):
     ) -> AttentionMask:
         mask = CopycatObjective._build_attention_mask(index, timestep, legend).clone()  # pyright: ignore
 
-        (t,) = index.batch_size  # pyright: ignore
+        (t,) = index.batch_size
         for step in range(t):
             past, current, future = (
                 index[:step],  # pyright: ignore

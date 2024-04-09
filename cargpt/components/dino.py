@@ -2,6 +2,7 @@ from math import prod
 
 from jaxtyping import Float
 from torch import Tensor, nn
+from typing_extensions import override
 
 
 class DinoEncoder(nn.Module):
@@ -10,6 +11,7 @@ class DinoEncoder(nn.Module):
 
         self.dino = dino.requires_grad_(not freeze).train(not freeze)
 
+    @override
     def forward(
         self,
         frames: Float[Tensor, "*b c1 h1 w1"],
