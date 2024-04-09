@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Union
 
 import torch
 from xformers import ops as xops
@@ -16,9 +16,9 @@ logger = logging.getLogger("xformers")
 
 @dataclass
 class ScaledDotProductConfig(AttentionConfig):
-    causal: Optional[bool]
-    seq_len: Optional[int]
-    to_seq_len: Optional[int]
+    causal: bool | None
+    seq_len: int | None
+    to_seq_len: int | None
 
 
 @register_attention("memory_efficient_scaled_dot_product", ScaledDotProductConfig)
@@ -31,14 +31,14 @@ class MemoryEfficientScaledDotProduct(Attention):
         .. _`Attention is all you need`: https://arxiv.org/abs/1706.03762v5
     """
 
-    mask: Optional[AttentionMask]
+    mask: AttentionMask | None
 
     def __init__(
         self,
         dropout: float = 0.0,
         causal: bool = False,  # noqa: FBT001, FBT002
-        seq_len: Optional[int] = None,
-        to_seq_len: Optional[int] = None,
+        seq_len: int | None = None,
+        to_seq_len: int | None = None,
         *_args,
         **_kwargs,
     ):
