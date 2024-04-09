@@ -1,6 +1,5 @@
 import logging
 from dataclasses import dataclass
-from typing import Union
 
 import torch
 from xformers import ops as xops
@@ -62,7 +61,7 @@ class MemoryEfficientScaledDotProduct(Attention):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        att_mask: Union[AttentionMask, torch.Tensor],
+        att_mask: AttentionMask | torch.Tensor,
         *_args,
         **_kwargs,
     ) -> torch.Tensor:
