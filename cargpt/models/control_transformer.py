@@ -101,7 +101,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         metrics = TensorDict(
             {
                 name: self.objectives[name](inputs, self.episode_builder, self.encoder)
-                for name in selected_objectives
+                for name in self.objectives.keys()
             },
             batch_size=[],
             device=inputs.device,
@@ -123,8 +123,19 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
                 self.logger.log_image(f"masks/{obj}", [img], step=step)
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore
-        metrics[("loss", "total")] = sum(losses.values(True, True))  # pyright: ignore
+        metrics = metrics.exclude(*((k, "mask") for k in metrics.keys()))  # pyright: ignore
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))
+
+        # we need to zero out unnecessary losses and not delete them to keep graph static
+        [
+            losses[loss_name].zero_()
+            for loss_name in losses.keys()
+            if loss_name not in selected_objectives
+        ]
+
+        metrics[("loss", "total")] = sum(
+            losses.values(include_nested=True, leaves_only=True)
+        )
 
         return metrics
 
