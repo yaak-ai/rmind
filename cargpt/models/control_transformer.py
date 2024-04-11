@@ -1,4 +1,3 @@
-from collections import defaultdict
 from os import PathLike
 from typing import Self
 
@@ -8,13 +7,14 @@ import torch
 from hydra.utils import instantiate
 from lightning_fabric.plugins.io.torch_io import pl_load
 from loguru import logger
+from omegaconf import DictConfig
 from pytorch_lightning.core.saving import _load_state  # noqa: PLC2701
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.model_helpers import (
     _restricted_classmethod,  # noqa: PLC2701
 )
 from tensordict import TensorDict
-from torch.nn import Module, ModuleDict  # noqa: TCH002
+from torch.nn import Module  # noqa: TCH002
 from typing_extensions import override
 from wandb import Image
 from yaak_datasets import Batch
@@ -23,9 +23,11 @@ from cargpt.components.episode import (
     EpisodeBuilder,
     Modality,
 )
-from cargpt.components.loss import ObjectiveScheduler
 from cargpt.components.mask import WandbAttentionMaskLegend
+from cargpt.components.objectives import ObjectiveScheduler
+from cargpt.components.objectives.common import ObjectiveName
 from cargpt.utils._wandb import LoadableFromArtifact
+from cargpt.utils.containers import ModuleDict
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -39,8 +41,12 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.objective_scheduler: ObjectiveScheduler | None = instantiate(
             self.hparams.get("objective_scheduler")
         )
-        if self.objective_scheduler:
-            self.objective_scheduler.verify(self.objectives.keys())  # pyright: ignore
+        if self.objective_scheduler is not None and (
+            (specified := set(self.objectives.keys()))
+            != (scheduled := {x.value for x in self.objective_scheduler.objectives})
+        ):
+            msg = f"objective scheduler enabled but {specified} != {scheduled}"
+            raise ValueError(msg)
 
     @override
     @_restricted_classmethod
@@ -50,12 +56,16 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         **kwargs,
     ) -> Self:
         match kwargs:
-            case {"hparams_update_fn": hparams_update_fn, **rest} if not rest:
+            case {"hparams_updaters": hparams_updaters, **rest} if not rest:
                 # relevant parts of super().load_from_checkpoint
                 checkpoint = pl_load(checkpoint_path)  # pyright: ignore
                 hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
-                hparams_updated = hparams_update_fn(hparams)
-                checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = hparams_updated
+
+                hparams = DictConfig(hparams)
+                for fn in hparams_updaters:
+                    fn(hparams)
+
+                checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = hparams
 
                 model = _load_state(cls, checkpoint, strict=False)
                 state_dict = checkpoint["state_dict"]
@@ -66,14 +76,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
                 return model.to(device)  # pyright: ignore
 
-            case _ if "hparams_update_fn" not in kwargs:
+            case _ if "hparams_updaters" not in kwargs:
                 return super().load_from_checkpoint(
                     checkpoint_path=checkpoint_path,  # pyright: ignore
                     **kwargs,
                 )
 
             case _:
-                msg = "`hparams_udpate_fn` cannot be combined with other kwargs"
+                msg = "`hparams_updaters` cannot be combined with other kwargs"
                 raise NotImplementedError(msg)
 
     def _step(self, batch: Batch) -> TensorDict:
@@ -195,56 +205,135 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         # https://openaccess.thecvf.com/content/CVPR2023/papers/Xu_Learning_Imbalanced_Data_With_Vision_Transformers_CVPR_2023_paper.pdf
         # Section 3.2
 
-        logit_bias_losses: defaultdict[
-            tuple[Modality, str],
-            dict[str, Module],
-        ] = defaultdict(dict)
+        from polars import col  # noqa: PLC0415
 
-        for objective_key, objective in self.objectives.items():
-            # NOTE: this wouldn't work for e.g. copycat
-            if hasattr(objective, "losses"):
-                for loss_key, loss in objective.losses.flatten():
-                    if hasattr(loss, "logit_bias") and loss.logit_bias is None:
-                        logit_bias_losses[loss_key][objective_key] = loss
+        dataset = self.trainer.datamodule.train_dataloader().dataset
 
-        if logit_bias_losses:
-            col_names = {
-                k: v
-                for (k, v) in (
-                    ("VehicleMotion_gas_pedal_normalized", "gas_pedal"),
-                    ("VehicleMotion_brake_pedal_normalized", "brake_pedal"),
-                    ("VehicleMotion_steering_angle_normalized", "steering_angle"),
-                    ("VehicleMotion_speed", "speed"),
-                    ("VehicleState_turn_signal", "turn_signal"),
+        metadata_df_cols = {
+            "VehicleMotion_gas_pedal_normalized": "gas_pedal",
+            "VehicleMotion_brake_pedal_normalized": "brake_pedal",
+            "VehicleMotion_steering_angle_normalized": "steering_angle",
+            "VehicleMotion_speed": "speed",
+            "VehicleState_turn_signal": "turn_signal",
+        }
+
+        sample_logit_bias_module_keys = {
+            (
+                ObjectiveName.FORWARD_DYNAMICS,
+                "losses",
+                Modality.CONTINUOUS,
+                "speed",
+            ),
+            (
+                ObjectiveName.FORWARD_DYNAMICS,
+                "losses",
+                Modality.DISCRETE,
+                "turn_signal",
+            ),
+            (
+                ObjectiveName.INVERSE_DYNAMICS,
+                "losses",
+                Modality.CONTINUOUS,
+                "gas_pedal",
+            ),
+            (
+                ObjectiveName.INVERSE_DYNAMICS,
+                "losses",
+                Modality.CONTINUOUS,
+                "brake_pedal",
+            ),
+            (
+                ObjectiveName.INVERSE_DYNAMICS,
+                "losses",
+                Modality.CONTINUOUS,
+                "steering_angle",
+            ),
+            (
+                ObjectiveName.RANDOM_MASKED_HINDSIGHT_CONTROL,
+                "losses",
+                Modality.CONTINUOUS,
+                "gas_pedal",
+            ),
+            (
+                ObjectiveName.RANDOM_MASKED_HINDSIGHT_CONTROL,
+                "losses",
+                Modality.CONTINUOUS,
+                "brake_pedal",
+            ),
+            (
+                ObjectiveName.RANDOM_MASKED_HINDSIGHT_CONTROL,
+                "losses",
+                Modality.CONTINUOUS,
+                "steering_angle",
+            ),
+            (
+                ObjectiveName.COPYCAT,
+                "streams",
+                "policy",
+                "losses",
+                Modality.CONTINUOUS,
+                "gas_pedal",
+            ),
+            (
+                ObjectiveName.COPYCAT,
+                "streams",
+                "policy",
+                "losses",
+                Modality.CONTINUOUS,
+                "brake_pedal",
+            ),
+            (
+                ObjectiveName.COPYCAT,
+                "streams",
+                "policy",
+                "losses",
+                Modality.CONTINUOUS,
+                "steering_angle",
+            ),
+        }
+
+        sample_logit_bias_losses = mit.map_reduce(
+            iterable=(
+                (k, loss)
+                for (k, loss) in (
+                    (k, self.objectives.get(k, default=None))
+                    for k in sample_logit_bias_module_keys
                 )
-                if v in {name for (_, name) in logit_bias_losses.keys()}
+                if loss is not None and loss.logit_bias is None
+            ),
+            # group by (modality, name)
+            keyfunc=lambda x: x[0][-2:],
+        )
+
+        if sample_logit_bias_losses:
+            sample_cols = {
+                k: v
+                for (k, v) in metadata_df_cols.items()
+                if v in {name for (_, name) in sample_logit_bias_losses.keys()}
             }
 
-            modalities = {
-                "gas_pedal": Modality.CONTINUOUS,
-                "brake_pedal": Modality.CONTINUOUS,
-                "steering_angle": Modality.CONTINUOUS,
-                "speed": Modality.CONTINUOUS,
-                "turn_signal": Modality.DISCRETE,
-            }
+            sample_df = dataset._metadata.select(*sample_cols.keys()).rename(
+                sample_cols
+            )
 
-            dataset = self.trainer.datamodule.train_dataloader().dataset
-            metadata_df = dataset._metadata.select(*col_names.keys()).rename(col_names)
-            values = TensorDict.from_dict(
+            samples = TensorDict.from_dict(
                 {
-                    (modalities[k], k): v.to_numpy(zero_copy_only=False, writable=False)
-                    for k, v in metadata_df.to_dict().items()
+                    (modality, k): sample_df[k].to_numpy(
+                        zero_copy_only=False,
+                        writable=False,
+                    )
+                    for (modality, k) in sample_logit_bias_losses.keys()
                 },
                 device=self.device,
                 batch_size=[],
             )
 
-            labels = values.unsqueeze(0).named_apply(
+            sample_labels = samples.unsqueeze(0).named_apply(
                 lambda k, v: self.episode_builder.tokenizers.get(k)(v),
                 nested_keys=True,
             )
 
-            bincounts = labels.named_apply(
+            sample_bincounts = sample_labels.named_apply(
                 lambda k, v: torch.bincount(
                     v.flatten(),
                     weights=None,
@@ -254,17 +343,134 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 batch_size=[],
             )
 
-            logit_bias = bincounts.apply(lambda x: ((x + 1) / x.sum()).log())
+            sample_logit_bias = sample_bincounts.apply(
+                lambda x: ((x + 1) / x.sum()).log()
+            )
 
-            for loss_key, losses in logit_bias_losses.items():
-                for objective_key, loss in losses.items():
+            for loss_key, losses in sample_logit_bias_losses.items():
+                for module_key, loss in losses:
                     logger.debug(
-                        "setting logit bias",
-                        objective=objective_key,
-                        loss=(*loss_key, loss.__class__),
+                        "setting logit bias (sample-based)",
+                        module=module_key,
+                        loss=loss.__class__,
                     )
 
-                    loss.logit_bias = logit_bias[loss_key]
+                    loss.logit_bias = sample_logit_bias[loss_key]
+
+        delta_logit_bias_module_keys = {
+            (
+                ObjectiveName.COPYCAT,
+                "streams",
+                "memory_extraction",
+                "losses",
+                Modality.CONTINUOUS,
+                "gas_pedal",
+            ),
+            (
+                ObjectiveName.COPYCAT,
+                "streams",
+                "memory_extraction",
+                "losses",
+                Modality.CONTINUOUS,
+                "brake_pedal",
+            ),
+            (
+                ObjectiveName.COPYCAT,
+                "streams",
+                "memory_extraction",
+                "losses",
+                Modality.CONTINUOUS,
+                "steering_angle",
+            ),
+        }
+
+        delta_logit_bias_losses = mit.map_reduce(
+            iterable=(
+                (k, loss)
+                for (k, loss) in (
+                    (k, self.objectives.get(k, default=None))
+                    for k in delta_logit_bias_module_keys
+                )
+                if loss is not None and loss.logit_bias is None
+            ),
+            # group by (modality, name)
+            keyfunc=lambda x: x[0][-2:],
+        )
+
+        if delta_logit_bias_losses:
+            delta_cols = {
+                k: v
+                for (k, v) in metadata_df_cols.items()
+                if v in {name for (_, name) in delta_logit_bias_losses.keys()}
+            }
+
+            ref_camera = dataset._cfg.samples.alignment.ref_camera
+            delta_metadata_df = dataset._metadata.select(
+                "drive_id",
+                f"{ref_camera}/ImageMetadata_frame_idx",
+                *delta_cols.keys(),
+            ).rename(delta_cols)
+
+            clip_metadata_df = (
+                dataset._clips.lazy()
+                .explode(f"{ref_camera}/ImageMetadata_frame_idx")
+                .join(
+                    delta_metadata_df.lazy(),
+                    on=("drive_id", f"{ref_camera}/ImageMetadata_frame_idx"),
+                )
+                .group_by("clip_id")
+                .all()
+            )
+
+            delta_df = clip_metadata_df.select(
+                col(delta_cols.values()).list.diff(null_behavior="drop").explode()
+            ).collect()
+
+            deltas = TensorDict.from_dict(
+                {
+                    (modality, k): delta_df[k].to_numpy(
+                        zero_copy_only=False,
+                        writable=False,
+                    )
+                    for (modality, k) in delta_logit_bias_losses.keys()
+                },
+                device=self.device,
+                batch_size=[],
+            )
+
+            # TODO/HACK: technically for each loss requiring delta-based
+            # logit bias we'd need to use the loss' parent objective's delta
+            # detokenizers, but for now we know there's only one such objective
+            # (copycat memory_extraction)
+            memory_extraction = self.objectives.copycat.streams.memory_extraction
+            delta_labels = deltas.named_apply(
+                lambda k, v: memory_extraction.delta_tokenizers.get(k)(v),
+                nested_keys=True,
+            )
+
+            delta_bincounts = delta_labels.named_apply(
+                lambda k, v: torch.bincount(
+                    v,
+                    weights=None,
+                    minlength=memory_extraction.heads.get(k).out_features,
+                ),
+                nested_keys=True,
+                batch_size=[],
+            )
+
+            delta_logit_bias = delta_bincounts.apply(
+                lambda x: ((x + 1) / x.sum()).log()
+            )
+
+            for loss_key, losses in delta_logit_bias_losses.items():
+                for module_key, loss in losses:
+                    logger.debug(
+                        "setting logit bias (delta-based)",
+                        module=module_key,
+                        loss=loss.__class__,
+                    )
+
+                    loss.logit_bias = delta_logit_bias[loss_key]
 
     @override
     def on_fit_start(self) -> None:

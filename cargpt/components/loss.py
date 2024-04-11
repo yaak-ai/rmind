@@ -1,15 +1,9 @@
-from collections.abc import Iterable, Mapping
-
-import numpy as np
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
-from numpy.random import PCG64, Generator
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 from typing_extensions import override
-
-from cargpt.components.objectives import Objective
 
 
 class FocalLoss(Module):
@@ -44,13 +38,13 @@ class LogitBiasMixin:
                 if hasattr(self, "_logit_bias"):
                     del self._logit_bias
 
-                self.register_buffer("_logit_bias", value)
+                self.register_buffer("_logit_bias", value, persistent=True)  # pyright: ignore[reportAttributeAccessIssue]
 
             case None:
                 self._logit_bias = None
 
 
-class LogitBiasFocalLoss(FocalLoss, LogitBiasMixin):
+class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss):
     def __init__(
         self,
         *,
@@ -66,7 +60,7 @@ class LogitBiasFocalLoss(FocalLoss, LogitBiasMixin):
         return super().forward(input + self.logit_bias, target)
 
 
-class LogitBiasCrossEntropyLoss(CrossEntropyLoss, LogitBiasMixin):
+class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
     def __init__(
         self,
         *args,
@@ -80,28 +74,3 @@ class LogitBiasCrossEntropyLoss(CrossEntropyLoss, LogitBiasMixin):
     @override
     def forward(self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]):
         return super().forward(input + self.logit_bias, target)
-
-
-class ObjectiveScheduler:
-    def __init__(self, schedule: Mapping[Objective, float], sample_size: int):
-        super().__init__()
-        self.schedule = schedule
-        self.sample_size = sample_size
-        self.generator = Generator(PCG64())
-
-    def verify(self, objectives: Iterable[Objective]):
-        probs = [self.schedule.get(objective) for objective in objectives]
-
-        assert all(probs)
-        assert np.isclose(sum(probs), 1.0)  # pyright: ignore
-        assert self.sample_size <= len(objectives)  # pyright: ignore
-
-        self.objectives = tuple(objectives)
-        self.probs = np.array(probs)
-
-    def sample(self) -> tuple[str, ...]:
-        return tuple(
-            self.generator.choice(
-                self.objectives, p=self.probs, size=self.sample_size, replace=False
-            )
-        )
