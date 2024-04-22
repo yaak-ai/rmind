@@ -35,4 +35,4 @@ dataviz *ARGS: generate-dataset-config
 	PYTHONOPTIMIZE=1 ./dataviz.py {{ARGS}}
 
 clean:
-	rm -rf dist outputs lightning_logs wandb
+	rm -rf dist outputs lightning_logs wandb artifacts

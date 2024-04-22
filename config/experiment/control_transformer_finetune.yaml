@@ -1,0 +1,206 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - /datamodule: default.yaml
+  - _self_
+
+batch_size: 64
+clip_len: 6
+embedding_dim: 512
+
+speed_range: [5.0, 130.0]
+
+wandb:
+  group: smart
+
+model:
+  _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+  artifact: ???
+  filename: model.ckpt
+  hparams_updaters:
+    # override objectives to only use copycat/policy
+    - _target_: omegaconf.OmegaConf.update
+      _partial_: true
+      _recursive_: false
+      merge: false
+      key: objectives
+      value:
+        _target_: cargpt.utils.ModuleDict
+        copycat:
+          _target_: cargpt.components.objectives.CopycatObjective
+          policy:
+            _target_: cargpt.components.objectives.copycat.PolicyStream
+            heads:
+              _target_: cargpt.utils.ModuleDict
+              continuous:
+                gas_pedal:
+                  _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: 255
+                  bias: False
+
+                brake_pedal:
+                  _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: 165
+                  bias: False
+
+                steering_angle:
+                  _target_: torch.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: 961
+                  bias: False
+
+            losses:
+              _target_: cargpt.utils.ModuleDict
+              continuous:
+                gas_pedal:
+                  _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+
+                brake_pedal:
+                  _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+
+                steering_angle:
+                  _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+
+    # freeze episode builder (embeddings etc)
+    - _target_: omegaconf.OmegaConf.update
+      _partial_: true
+      _recursive_: false
+      merge: true
+      key: episode_builder.freeze
+      value: true
+
+    # freeze encoder
+    - _target_: omegaconf.OmegaConf.update
+      _partial_: true
+      _recursive_: false
+      merge: true
+      key: encoder.freeze
+      value: true
+
+    # remove objective scheduler since we only have a single objective
+    - _target_: omegaconf.OmegaConf.update
+      _partial_: true
+      _recursive_: false
+      merge: false
+      key: objective_scheduler
+      value: null
+
+    # for some reason lr_scheduler.scheduler isn't checkpointed? re-add
+    - _target_: omegaconf.OmegaConf.update
+      _partial_: true
+      _recursive_: false
+      merge: false
+      key: lr_scheduler
+      value:
+        interval: step
+        scheduler:
+          _target_: transformers.get_cosine_schedule_with_warmup
+          num_warmup_steps: 25000
+          num_training_steps: 250000
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: gpu
+  devices: [0]
+  benchmark: true
+  max_epochs: -1
+  log_every_n_steps: 100
+  gradient_clip_val: 1.0
+
+  logger:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    log_model: all
+
+  callbacks:
+    - _target_: cargpt.callbacks.model_summary.ModelSummary
+      depth: 5
+
+    - _target_: pytorch_lightning.callbacks.ModelCheckpoint
+      every_n_epochs: 1
+      monitor: train/loss/total
+      save_on_train_epoch_end: True
+
+    - _target_: pytorch_lightning.callbacks.LearningRateMonitor
+      logging_interval: step
+
+datamodule:
+  train:
+    batch_size: ${batch_size}
+    num_workers: 32
+    dataset:
+      config:
+        data:
+          metadata:
+            select:
+              - message: ImageMetadata
+                fields:
+                  - name: frame_idx
+                  - name: camera_name
+
+              - message: VehicleMotion
+                fields:
+                  - name: speed
+                    merge:
+                      method: interp
+
+                  - name: steering_angle_normalized
+                    merge:
+                      method: interp
+
+                  - name: gas_pedal_normalized
+                    merge:
+                      method: interp
+
+                  - name: brake_pedal_normalized
+                    merge:
+                      method: interp
+
+              - message: VehicleState
+                fields:
+                  - name: turn_signal
+
+            filter: >
+              VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
+              and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
+              and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
+              and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
+              and (VehicleMotion_gas_pedal_normalized > 0.0 or VehicleMotion_brake_pedal_normalized > 0.0)
+
+        samples:
+          clips:
+            length: ${clip_len}
+            stride: 10
+            step: 10
+
+          transforms:
+            - _target_: yaak_datasets.transforms.Crop
+              offsets: [2, 2, 0, 0]
+
+            - _target_: yaak_datasets.transforms.Normalize
+              # ImageNet stats
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
+  val:
+    batch_size: ${batch_size}
+    num_workers: ${datamodule.train.num_workers}
+    dataset:
+      config:
+        data:
+          metadata: ${datamodule.train.dataset.config.data.metadata}
+        samples: ${datamodule.train.dataset.config.samples}

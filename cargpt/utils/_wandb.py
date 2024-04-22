@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from pytorch_lightning.loggers.wandb import WandbLogger
+import wandb
+from wandb.sdk.lib import RunDisabled
 
 
 class LoadableFromArtifact:
@@ -11,7 +12,14 @@ class LoadableFromArtifact:
         filename: str = "model.ckpt",
         **kwargs,
     ):
-        artifact_dir = WandbLogger.download_artifact(artifact, artifact_type="model")
-        ckpt_path = Path(artifact_dir) / filename  # pyright: ignore
+        match wandb.run:
+            case RunDisabled() | None:  # pyright: ignore[reportUnnecessaryComparison]
+                artifact_obj = wandb.Api().artifact(artifact, type="model")
+
+            case _:
+                artifact_obj = wandb.run.use_artifact(artifact)
+
+        artifact_dir = artifact_obj.download()
+        ckpt_path = Path(artifact_dir) / filename
 
         return cls.load_from_checkpoint(ckpt_path, **kwargs)

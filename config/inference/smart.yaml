@@ -14,7 +14,7 @@ model:
   _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
   artifact: ???
   filename: model.ckpt
-  hparams_update_fn:
+  hparams_updaters:
     _target_: omegaconf.OmegaConf.merge
     _partial_: true
     _recursive_: false

@@ -173,8 +173,10 @@ class MLPGLU(Feedforward):
 class xFormerEncoder(nn.Module):
     def __init__(
         self,
+        *,
         config: xFormerEncoderConfig,
         weight_init: xFormerWeightInit = xFormerWeightInit.ViT,
+        freeze: bool = False,
     ):
         super().__init__()
 
@@ -195,6 +197,8 @@ class xFormerEncoder(nn.Module):
         init_fn = get_weight_init_fn(weight_init)
         for name, module in self.encoders.named_children():
             init_fn(module=module, name=name, gain=1.0)
+
+        self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
     def forward(
