@@ -7,19 +7,19 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.12"
-torch = "^2.2.0"
-torchvision = "^0.17.0"
-torchaudio = "^2.2.0"
-tensordict = "^0.3.1"
-xformers = "0.0.25"
-pytorch-lightning = "^2.2.1"
+torch = "^2.2.2"
+torchvision = "^0.17.2"
+torchaudio = "^2.2.2"
+tensordict = "^0.3.2"
+xformers = "0.0.25.post1"
+pytorch-lightning = "^2.2.3"
 einops = "^0.7.0"
 hydra-core = "^1.3.0"
 loguru = "^0.7.2"
 jaxtyping = "*"
 beartype = "*"
 more-itertools = "^9.0.0"
-torchinfo = "^1.7.2"
+torchinfo = "^1.8.0"
 wandb = "*"
 dill = "^0.3.6"
 transformers = "=4.30.2"
@@ -60,6 +60,7 @@ pyright = "*"
 lovely-tensors = "*"
 pre-commit = "*"
 devtools = "*"
+pytest-pudb = "*"
 
 [tool.poetry.group.notebook]
 optional = true
@@ -76,8 +77,8 @@ matplotlib = "*"
 optional = true
 
 [tool.poetry.group.inference.dependencies]
-rerun-sdk = "0.15.0rc3"
-opencv-python = "*"
+rerun-sdk = "0.15.1"
+funcy = "*"
 
 [tool.poetry.group.dalle]
 optional = true
@@ -90,6 +91,12 @@ optional = true
 
 [tool.poetry.group.log.dependencies]
 tensorboard = "^2.16.0"
+
+[tool.poetry.group.test]
+optional = true
+
+[tool.poetry.group.test.dependencies]
+pytest = "*"
 
 [tool.pyright]
 typeCheckingMode = "strict"
@@ -159,9 +166,11 @@ ignore = [
 [tool.ruff.lint.isort]
 known-third-party = ["wandb"]
 
-
 [tool.deptry.per_rule_ignores]
 DEP001 = ["rerun", "deephouse", "fiftyone", "PIL"]
 DEP002 = ["dill", "scipy", "torchaudio", "transformers"]
 DEP003 = ["numpy", "typing_extensions", "numpy", "lightning_utilities"]
-DEP004 = ["cv2", "dall_e", "omegaconf", "yaak_datasets", "polars", "matplotlib"]
+DEP004 = ["dall_e", "omegaconf", "yaak_datasets", "polars", "matplotlib", "funcy"]
+
+[tool.pytest.ini_options]
+addopts = "--jaxtyping-packages=foo,bar.baz,beartype.beartype"

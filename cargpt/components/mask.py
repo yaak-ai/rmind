@@ -35,7 +35,7 @@ class WandbAttentionMaskLegend(float, Enum, metaclass=AttentionMaskLegend):
     DO_NOT_ATTEND = 0.0
 
 
-@tensorclass  # pyright: ignore
+@tensorclass  # pyright: ignore[reportUntypedClassDecorator, reportArgumentType]
 class AttentionMask:
     data: Float[Tensor, "seq seq"]
     legend: AttentionMaskLegend
@@ -59,7 +59,8 @@ class AttentionMask:
         return self._set(src=src, dest=dest, val=self.legend.DO_NOT_ATTEND)
 
     def with_legend(self, legend: AttentionMaskLegend) -> Self:
-        mask = self.clone(recurse=True)
+        mask = self.clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
+
         if self.legend is legend:
             return mask
 

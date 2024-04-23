@@ -25,7 +25,7 @@ from cargpt.components.episode import (
 )
 from cargpt.components.mask import WandbAttentionMaskLegend
 from cargpt.components.objectives import ObjectiveScheduler
-from cargpt.components.objectives.common import ObjectiveName
+from cargpt.components.objectives.common import ObjectiveName, PredictionResultKey
 from cargpt.utils._wandb import LoadableFromArtifact
 from cargpt.utils.containers import ModuleDict
 
@@ -35,9 +35,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         super().__init__()
         self.save_hyperparameters()
 
-        self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)
-        self.encoder: Module = instantiate(self.hparams.encoder)
-        self.objectives: ModuleDict = instantiate(self.hparams.objectives)
+        self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)  # pyright: ignore[reportAttributeAccessIssue]
+        self.encoder: Module = instantiate(self.hparams.encoder)  # pyright: ignore[reportAttributeAccessIssue]
+        self.objectives: ModuleDict = instantiate(self.hparams.objectives)  # pyright: ignore[reportAttributeAccessIssue]
         self.objective_scheduler: ObjectiveScheduler | None = instantiate(
             self.hparams.get("objective_scheduler")
         )
@@ -61,9 +61,16 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 checkpoint = pl_load(checkpoint_path)  # pyright: ignore
                 hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
 
-                hparams = DictConfig(hparams)
                 for fn in hparams_updaters:
-                    fn(hparams)
+                    match result := fn(hparams):
+                        case DictConfig():
+                            hparams = result
+
+                        case None:
+                            pass  # modified inplace
+
+                        case _:
+                            raise NotImplementedError
 
                 checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = hparams
 
@@ -115,7 +122,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 if self.objective_scheduler is None
                 else self.objective_scheduler.objectives
             )
-            for obj in objectives:
+            for obj in map(str, objectives):
                 objective = self.objectives[obj]
                 mask = objective._build_attention_mask(episode.index, episode.timestep)
                 img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
@@ -157,7 +164,16 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         inputs = self._build_input(batch)
 
         predictions = TensorDict.from_dict({
-            name: objective.predict(inputs, self.episode_builder, self.encoder)
+            name: objective.predict(
+                inputs,
+                episode_builder=self.episode_builder,
+                encoder=self.encoder,
+                # TODO: attention
+                result_keys=(
+                    PredictionResultKey.GROUND_TRUTH,
+                    PredictionResultKey.PREDICTION,
+                ),
+            )
             for name, objective in self.objectives.items()
         })
 
@@ -166,7 +182,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 "inputs": inputs,
                 "predictions": predictions,
             },
-            batch_size=batch.batch_size,
+            batch_size=batch.batch_size,  # pyright: ignore[reportAttributeAccessIssue]
         )
 
     def _build_input(self, batch: Batch) -> TensorDict:
@@ -199,7 +215,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def configure_optimizers(self):  # pyright: ignore[reportIncompatibleMethodOverride]
-        optimizer = instantiate(self.hparams.optimizer, params=self.parameters())
+        optimizer = instantiate(self.hparams.optimizer, params=self.parameters())  # pyright: ignore[reportAttributeAccessIssue]
         result = {"optimizer": optimizer}
 
         if (cfg := self.hparams.get("lr_scheduler")) is not None:
@@ -214,7 +230,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         from polars import col  # noqa: PLC0415
 
-        dataset = self.trainer.datamodule.train_dataloader().dataset
+        dataset = self.trainer.datamodule.train_dataloader().dataset  # pyright: ignore[reportAttributeAccessIssue]
 
         metadata_df_cols = {
             "VehicleMotion_gas_pedal_normalized": "gas_pedal",
@@ -455,7 +471,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 nested_keys=True,
             )
 
-            delta_bincounts = delta_labels.named_apply(
+            delta_bincounts = delta_labels.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                 lambda k, v: torch.bincount(
                     v,
                     weights=None,

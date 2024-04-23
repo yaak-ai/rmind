@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from typing import Annotated
 
 import torch
+from beartype.vale import Is
 from jaxtyping import Float, Int
 from torch import Tensor
 from torch.nn import Module
@@ -46,7 +47,12 @@ class Clamp(Module):
 
 
 class UniformBinner(Module):
-    def __init__(self, in_range: Annotated[Sequence[float], 2], num_bins: int):
+    def __init__(
+        self,
+        *,
+        in_range: Annotated[Sequence[float], Is[lambda x: len(x) == 2 and x[0] < x[1]]],
+        num_bins: Annotated[int, Is[lambda x: x > 0]],
+    ):
         super().__init__()
 
         self.in_range = in_range
@@ -66,3 +72,35 @@ class UniformBinner(Module):
     @override
     def extra_repr(self) -> str:
         return f"{self.in_range} -> {self.num_bins}"
+
+
+# TODO: introduce some kind of invertible interface and merge w/UniformBinner? would need to potentially invert torch.nn.Sequential too
+class UniformUnbinner(Module):
+    def __init__(
+        self,
+        *,
+        out_range: Annotated[
+            Sequence[float], Is[lambda x: len(x) == 2 and x[0] < x[1]]
+        ],
+        num_bins: Annotated[int, Is[lambda x: x > 0]],
+    ):
+        super().__init__()
+
+        self.out_range = out_range
+        self.num_bins = num_bins
+
+    @override
+    def forward(self, x: Int[Tensor, "..."]) -> Float[Tensor, "..."]:
+        x_min, x_max = 0, self.num_bins - 1
+        if x.min() < x_min or x.max() > x_max:
+            msg = "input out of range"
+            raise ValueError(msg)
+
+        start, end = self.out_range
+        width = (end - start) / self.num_bins
+
+        return start + (x + 0.5) * width
+
+    @override
+    def extra_repr(self) -> str:
+        return f"{self.num_bins} -> {self.out_range}"

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from enum import StrEnum, auto
 from functools import cache
 from itertools import accumulate, pairwise
-from operator import add
+from operator import add, itemgetter
 from typing import cast
 
 import torch
@@ -89,7 +89,7 @@ class Timestep:
         return tuple(token.key for token in self.tokens if token.type is token_type)
 
 
-@tensorclass  # pyright: ignore
+@tensorclass  # pyright: ignore[reportUntypedClassDecorator, reportArgumentType]
 class Index:
     image: TensorDict
     continuous: TensorDict
@@ -115,9 +115,9 @@ class Index:
             case _:
                 raise NotImplementedError
 
-        batch_size = [*src.shape[:dim], *self.batch_size]
+        batch_size = [*src.shape[:dim], *self.batch_size]  # pyright: ignore[reportAttributeAccessIssue]
 
-        return self.to_tensordict().apply(
+        return self.to_tensordict().apply(  # pyright: ignore[reportAttributeAccessIssue]
             fn,
             batch_size=batch_size,
             device=src.device,
@@ -128,7 +128,7 @@ class Index:
     def all_values(self) -> Int[Tensor, "d"]:
         return torch.cat(
             list(
-                self.values(
+                self.values(  # pyright: ignore[reportAttributeAccessIssue]
                     include_nested=True,
                     leaves_only=True,
                 )
@@ -139,7 +139,7 @@ class Index:
     @property
     def max(self) -> int:
         return max(
-            self.apply(torch.max, batch_size=[]).values(
+            self.apply(torch.max, batch_size=[]).values(  # pyright: ignore[reportAttributeAccessIssue]
                 include_nested=True,
                 leaves_only=True,
             )
@@ -159,7 +159,7 @@ def _index_hash(self) -> int:
                 include_nested=True,
                 leaves_only=True,
             ),
-            key=lambda x: x[0],
+            key=itemgetter(0),
         )
     )
 
@@ -167,14 +167,14 @@ def _index_hash(self) -> int:
 
 
 def _index_eq(self, other: Index) -> bool:
-    return _eq(self, other).all()
+    return _eq(self, other).all()  # pyright: ignore[reportAttributeAccessIssue]
 
 
 Index.__hash__ = _index_hash
-Index.__eq__ = _index_eq
+Index.__eq__ = _index_eq  # pyright: ignore[reportAttributeAccessIssue]
 
 
-@tensorclass  # pyright: ignore
+@tensorclass  # pyright: ignore[reportUntypedClassDecorator, reportArgumentType]
 class Episode:
     inputs: TensorDict
     tokenized: TensorDict
@@ -199,6 +199,7 @@ class EpisodeBuilder(Module):
         timestep: Timestep,
         special_tokens: Mapping[str, int],
         tokenizers: ModuleDict,
+        detokenizers: ModuleDict | None = None,
         embeddings: ModuleDict,
         position_encoding: ModuleDict,
         freeze: bool | None = None,
@@ -207,6 +208,7 @@ class EpisodeBuilder(Module):
         self.timestep = timestep
         self.special_tokens = special_tokens
         self.tokenizers = tokenizers
+        self.detokenizers = detokenizers
         self.embeddings = embeddings
         self.position_encoding = position_encoding
 
@@ -231,23 +233,21 @@ class EpisodeBuilder(Module):
         masked_observation_timestep_idx: list[int] | None = None,
     ) -> Episode:
         tokenized = inputs.named_apply(
-            lambda nested_key, tensor: (
-                self.tokenizers.get(nested_key, default=None)
-                or self.tokenizers.get(nested_key[0])
-            )(tensor),
+            lambda k, v: (
+                self.tokenizers.get(k, default=None) or self.tokenizers.get(k[0])
+            )(v),
             nested_keys=True,
         )
 
-        tokenized[Modality.SPECIAL] = {
-            k: torch.tensor(v).expand(*tokenized.batch_size, 1)
+        tokenized[Modality.SPECIAL] = {  # pyright: ignore[reportOptionalSubscript]
+            k: torch.tensor(v).expand(*tokenized.batch_size, 1)  # pyright: ignore[reportAttributeAccessIssue]
             for k, v in self.special_tokens.items()
         }
 
-        embedded_nope = tokenized.named_apply(
-            lambda nested_key, tensor: (
-                self.embeddings.get(nested_key, default=None)
-                or self.embeddings.get(nested_key[0])
-            )(tensor),
+        embedded_nope = tokenized.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+            lambda k, v: (
+                self.embeddings.get(k, default=None) or self.embeddings.get(k[0])
+            )(v),
             nested_keys=True,
         )
 
@@ -294,7 +294,7 @@ class EpisodeBuilder(Module):
                 pairwise(accumulate(lengths.values(), initial=0)),
             )
         )
-        return Index.from_dict(
+        return Index.from_dict(  # pyright: ignore[reportAttributeAccessIssue]
             {k: torch.arange(*v) for k, v in ranges.items()},
             batch_size=[],
         )
@@ -326,7 +326,7 @@ class EpisodeBuilder(Module):
             PositionEncoding.OBSERVATIONS, default=None
         ):
             keys = self.timestep.keys(TokenType.OBSERVATION)
-            position = index.select(*keys).to_tensordict()
+            position = index.select(*keys).to_tensordict()  # pyright: ignore[reportAttributeAccessIssue]
             position_embedding = position.apply(module)
             position_embeddings.select(*keys).apply(
                 add,
@@ -362,4 +362,4 @@ class EpisodeBuilder(Module):
                 inplace=True,  # NOTE
             )
 
-        return embeddings.apply(add, position_embeddings)
+        return embeddings.apply(add, position_embeddings)  # pyright: ignore[reportReturnType]
