@@ -28,10 +28,13 @@ class DVAETokens(nn.Module):
 
 # https://github.com/openai/DALL-E/tree/master
 class DalleDVAEEncoder(nn.Module):
-    def __init__(self, *, enc_weights: str, freeze: bool = True) -> None:
+    def __init__(self, *, enc_weights: str, freeze: bool | None = None) -> None:
         super().__init__()
 
-        self.enc = load_model(enc_weights).requires_grad_(not freeze).train(not freeze)
+        self.enc = load_model(enc_weights)
+
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
     def forward(
@@ -44,12 +47,15 @@ class DalleDVAEEncoder(nn.Module):
 
 class DalleDVAEDecoder(torch.nn.Module):
     def __init__(
-        self, *, dec_weights: str, vocab_size: int, freeze: bool = True
+        self, *, dec_weights: str, vocab_size: int, freeze: bool | None = None
     ) -> None:
         super().__init__()
 
-        self.dec = load_model(dec_weights).requires_grad_(not freeze).train(not freeze)
+        self.dec = load_model(dec_weights)
         self.vocab_size = vocab_size
+
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
     def forward(
