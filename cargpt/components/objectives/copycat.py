@@ -24,6 +24,9 @@ from cargpt.components.mask import (
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
+from cargpt.components.objectives.forward_dynamics import (
+    ForwardDynamicsPredictionObjective,
+)
 from cargpt.utils.containers import ModuleDict
 
 
@@ -63,7 +66,7 @@ class CopycatObjective(Module):
             for name, stream in self.streams.items()
         })
 
-        return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
+        return TensorDict.from_dict({"loss": loss}, batch_size=[])
 
     def predict(
         self,
@@ -87,13 +90,10 @@ class CopycatObjective(Module):
         index: Index,
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
-    ):
-        mask = AttentionMask(  # pyright: ignore[reportCallIssue]
-            data=torch.full((index.max + 1, index.max + 1), legend.DO_NOT_ATTEND),
-            legend=legend,
-            batch_size=[],
-            device=index.device,
-        )
+    ) -> AttentionMask:
+        mask = ForwardDynamicsPredictionObjective._build_attention_mask(
+            index, timestep, legend
+        ).clone()  # pyright: ignore
 
         (t,) = index.batch_size
         for step in range(t):
@@ -107,58 +107,36 @@ class CopycatObjective(Module):
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
-            current_actions = current.select(*timestep.keys(TokenType.ACTION))
-            current_action_summary = current.select((
+            past_actions = past.select(*timestep.keys(TokenType.ACTION))
+            past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
 
-            past_observations = past.select(*timestep.keys(TokenType.OBSERVATION))
-
             mask = (
-                mask._do_attend(
+                mask._do_not_attend(
                     current_observations,
+                    past_actions,
+                )
+                ._do_not_attend(
                     current_observations,
+                    past_action_summary,
                 )
-                ._do_attend(
+                ._do_not_attend(
                     current_observation_summary,
-                    current_observations,
+                    past_actions,
                 )
-                ._do_attend(
+                ._do_not_attend(
                     current_observation_summary,
-                    current_observation_summary,
+                    past_action_summary,
                 )
-                ._do_attend(
+                ._do_not_attend(
                     current_observation_history,
-                    current_observations,
+                    past_actions,
                 )
-                ._do_attend(
+                ._do_not_attend(
                     current_observation_history,
-                    current_observation_history,
-                )
-                ._do_attend(
-                    current_actions,
-                    current_actions,
-                )
-                ._do_attend(
-                    current_actions,
-                    current_observation_summary,
-                )
-                ._do_attend(
-                    current_action_summary,
-                    current_actions,
-                )
-                ._do_attend(
-                    current_action_summary,
-                    current_observation_summary,
-                )
-                ._do_attend(
-                    current_action_summary,
-                    current_action_summary,
-                )
-                ._do_attend(
-                    current_observation_history,
-                    past_observations,
+                    past_action_summary,
                 )
             )
 

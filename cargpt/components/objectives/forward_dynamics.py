@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+import torch
 from einops import pack
 from einops.layers.torch import Rearrange
 from jaxtyping import Float
@@ -22,9 +23,6 @@ from cargpt.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
-)
-from cargpt.components.objectives.copycat import (
-    CopycatObjective,
 )
 from cargpt.utils import ModuleDict
 
@@ -108,7 +106,7 @@ class ForwardDynamicsPredictionObjective(Module):
             nested_keys=True,
         )
 
-        return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
+        return TensorDict.from_dict({"loss": loss}, batch_size=[])
 
     def predict(
         self,
@@ -150,4 +148,64 @@ class ForwardDynamicsPredictionObjective(Module):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        return CopycatObjective._build_attention_mask(index, timestep, legend).clone()  # pyright: ignore
+        mask = AttentionMask(  # pyright: ignore
+            data=torch.full((index.max + 1, index.max + 1), legend.DO_NOT_ATTEND),
+            legend=legend,
+            batch_size=[],
+            device=index.device,
+        )
+
+        (t,) = index.batch_size
+        for step in range(t):
+            past, current = index[:step], index[step]  # pyright: ignore
+            current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
+            current_observation_summary = current.select((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            ))
+            current_observation_history = current.select((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_HISTORY,
+            ))
+            current_actions = current.select(*timestep.keys(TokenType.ACTION))
+            current_action_summary = current.select((
+                Modality.SPECIAL,
+                SpecialToken.ACTION_SUMMARY,
+            ))
+
+            mask = (
+                mask._do_attend(
+                    current,
+                    current,
+                )
+                ._do_attend(
+                    current,
+                    past,
+                )
+                ._do_not_attend(
+                    current_observations,
+                    current_actions,
+                )
+                ._do_not_attend(
+                    current_observations,
+                    current_action_summary,
+                )
+                ._do_not_attend(
+                    current_observation_summary,
+                    current_actions,
+                )
+                ._do_not_attend(
+                    current_observation_summary,
+                    current_action_summary,
+                )
+                ._do_not_attend(
+                    current_observation_history,
+                    current_actions,
+                )
+                ._do_not_attend(
+                    current_observation_history,
+                    current_action_summary,
+                )
+            )
+
+        return mask

@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 import numpy as np
+import torch
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
 from torch.nn import Module, ModuleDict
@@ -18,9 +19,6 @@ from cargpt.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
-)
-from cargpt.components.objectives.copycat import (
-    CopycatObjective,
 )
 
 
@@ -66,7 +64,7 @@ class RandomMaskedHindsightControlObjective(Module):
             nested_keys=True,
         )
 
-        return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
+        return TensorDict.from_dict({"loss": loss}, batch_size=[])
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
@@ -76,47 +74,64 @@ class RandomMaskedHindsightControlObjective(Module):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        mask = CopycatObjective._build_attention_mask(index, timestep, legend).clone()  # pyright: ignore
+        mask = AttentionMask(  # pyright: ignore
+            data=torch.full((index.max + 1, index.max + 1), legend.DO_ATTEND),
+            legend=legend,
+            batch_size=[],
+            device=index.device,
+        )
 
         (t,) = index.batch_size
         for step in range(t):
-            past, current, future = (
-                index[:step],  # pyright: ignore
-                index[step],  # pyright: ignore
-                index[step + 1 :],  # pyright: ignore
-            )
-
+            past, current, future = index[:step], index[step], index[step + 1 :]  # pyright: ignore
             current_actions = current.select(*timestep.keys(TokenType.ACTION))
             current_action_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
-
-            future_observation_summary = future.select((
+            past_actions = past.select(*timestep.keys(TokenType.ACTION))
+            past_action_summary = past.select((
                 Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                SpecialToken.ACTION_SUMMARY,
             ))
-            past_observation_summary = past.select((
+            future_actions = future.select(*timestep.keys(TokenType.ACTION))
+            future_action_summary = future.select((
                 Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                SpecialToken.ACTION_SUMMARY,
             ))
 
             mask = (
-                mask._do_attend(
+                mask._do_not_attend(
                     current_actions,
-                    future_observation_summary,
+                    past_actions,
                 )
-                ._do_attend(
+                ._do_not_attend(
                     current_actions,
-                    past_observation_summary,
+                    past_action_summary,
                 )
-                ._do_attend(
-                    current_action_summary,
-                    future_observation_summary,
+                ._do_not_attend(
+                    current_actions,
+                    future_actions,
                 )
-                ._do_attend(
+                ._do_not_attend(
+                    current_actions,
+                    future_action_summary,
+                )
+                ._do_not_attend(
                     current_action_summary,
-                    past_observation_summary,
+                    past_actions,
+                )
+                ._do_not_attend(
+                    current_action_summary,
+                    past_action_summary,
+                )
+                ._do_not_attend(
+                    current_action_summary,
+                    future_actions,
+                )
+                ._do_not_attend(
+                    current_action_summary,
+                    future_action_summary,
                 )
             )
 

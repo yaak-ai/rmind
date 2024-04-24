@@ -200,7 +200,6 @@ class EpisodeBuilder(Module):
         tokenizers: ModuleDict,
         embeddings: ModuleDict,
         position_encoding: ModuleDict,
-        freeze: bool = False,
     ) -> None:
         super().__init__()
         self.timestep = timestep
@@ -208,8 +207,6 @@ class EpisodeBuilder(Module):
         self.tokenizers = tokenizers
         self.embeddings = embeddings
         self.position_encoding = position_encoding
-
-        self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     def build_episode(
         self,
