@@ -12,14 +12,15 @@ from cargpt.components.episode import (
     Modality,
     SpecialToken,
     Timestep,
+    TokenType,
 )
 from cargpt.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
-from cargpt.components.objectives.copycat import (
-    CopycatObjective,
+from cargpt.components.objectives.forward_dynamics import (
+    ForwardDynamicsPredictionObjective,
 )
 from cargpt.utils import ModuleDict
 
@@ -78,7 +79,7 @@ class InverseDynamicsPredictionObjective(Module):
             nested_keys=True,
         )
 
-        return TensorDict.from_dict({"loss": loss, "mask": mask}, batch_size=[])
+        return TensorDict.from_dict({"loss": loss}, batch_size=[])
 
     def predict(
         self,
@@ -117,4 +118,53 @@ class InverseDynamicsPredictionObjective(Module):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        return CopycatObjective._build_attention_mask(index, timestep, legend).clone()  # pyright: ignore
+        mask = ForwardDynamicsPredictionObjective._build_attention_mask(
+            index, timestep, legend
+        ).clone()  # pyright: ignore
+
+        (t,) = index.batch_size
+        for step in range(t):
+            past, current = index[:step], index[step]  # pyright: ignore
+            current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
+            current_observation_summary = current.select((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            ))
+            current_observation_history = current.select((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_HISTORY,
+            ))
+            past_actions = past.select(*timestep.keys(TokenType.ACTION))
+            past_action_summary = past.select((
+                Modality.SPECIAL,
+                SpecialToken.ACTION_SUMMARY,
+            ))
+
+            mask = (
+                mask._do_not_attend(
+                    current_observations,
+                    past_actions,
+                )
+                ._do_not_attend(
+                    current_observations,
+                    past_action_summary,
+                )
+                ._do_not_attend(
+                    current_observation_summary,
+                    past_actions,
+                )
+                ._do_not_attend(
+                    current_observation_summary,
+                    past_action_summary,
+                )
+                ._do_not_attend(
+                    current_observation_history,
+                    past_actions,
+                )
+                ._do_not_attend(
+                    current_observation_history,
+                    past_action_summary,
+                )
+            )
+
+        return mask

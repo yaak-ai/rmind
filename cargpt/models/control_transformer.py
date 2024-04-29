@@ -109,17 +109,24 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             isinstance(self.logger, WandbLogger)
             and (step := self.trainer.global_step) == 0
         ):
-            for k, v in metrics.items():
-                img = Image(v["mask"].with_legend(WandbAttentionMaskLegend).data)  # pyright: ignore
+            episode = self.episode_builder.build_episode(inputs)
+            objectives = (
+                self.objectives.keys()
+                if self.objective_scheduler is None
+                else self.objective_scheduler.objectives
+            )
+            for obj in objectives:
+                objective = self.objectives[obj]
+                mask = objective._build_attention_mask(episode.index, episode.timestep)
+                img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
                 self.logger.log_image(
-                    f"masks/{k}",
+                    f"masks/{obj}",
                     [img],
                     step=step,
                 )
 
-        metrics = metrics.exclude(*((k, "mask") for k in metrics.keys()))  # pyright: ignore
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))
-        metrics[("loss", "total")] = sum(losses.values(True, True))
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore
+        metrics[("loss", "total")] = sum(losses.values(True, True))  # pyright: ignore
 
         return metrics
 
