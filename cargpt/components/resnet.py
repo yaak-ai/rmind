@@ -7,10 +7,13 @@ from typing_extensions import override
 
 
 class ResnetBackbone(nn.Module):
-    def __init__(self, resnet: ResNet, *, freeze: bool = True) -> None:
+    def __init__(self, resnet: ResNet, *, freeze: bool | None = None) -> None:
         super().__init__()
 
-        self.resnet = resnet.requires_grad_(not freeze).train(not freeze)
+        self.resnet = resnet
+
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
     def forward(self, x: Float[Tensor, "*b c1 h1 w1"]) -> Float[Tensor, "*b c2 h2 w2"]:

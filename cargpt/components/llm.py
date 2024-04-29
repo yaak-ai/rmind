@@ -176,7 +176,7 @@ class xFormerEncoder(nn.Module):
         *,
         config: xFormerEncoderConfig,
         weight_init: xFormerWeightInit = xFormerWeightInit.ViT,
-        freeze: bool = False,
+        freeze: bool | None = None,
     ):
         super().__init__()
 
@@ -198,7 +198,8 @@ class xFormerEncoder(nn.Module):
         for name, module in self.encoders.named_children():
             init_fn(module=module, name=name, gain=1.0)
 
-        self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
     def forward(

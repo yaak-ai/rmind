@@ -1,6 +1,5 @@
 from functools import lru_cache
 from math import prod
-from typing import cast
 
 import torch
 from einops import rearrange, reduce
@@ -10,11 +9,13 @@ from typing_extensions import override
 
 
 class DepthFeatureEncoder(nn.Module):
-    def __init__(self, *, disp_net: nn.Module, freeze: bool = True) -> None:
+    def __init__(self, *, disp_net: nn.Module, freeze: bool | None = None) -> None:
         super().__init__()
 
-        encoder = cast(nn.Module, disp_net.encoder)
-        self.encoder = encoder.requires_grad_(not freeze).train(not freeze)
+        self.encoder = disp_net
+
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
     def forward(
@@ -31,10 +32,13 @@ class DepthFeatureEncoder(nn.Module):
 
 
 class DepthEncoder(nn.Module):
-    def __init__(self, *, disp_net: nn.Module, freeze: bool = True) -> None:
+    def __init__(self, *, disp_net: nn.Module, freeze: bool | None = None) -> None:
         super().__init__()
 
-        self.disp_net = disp_net.requires_grad_(not freeze).train(not freeze)
+        self.disp_net = disp_net
+
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
     def forward(

@@ -9,6 +9,7 @@ from typing import cast
 import torch
 from einops import pack, rearrange, repeat
 from jaxtyping import Float, Int, Shaped
+from loguru import logger
 from tensordict import TensorDict, tensorclass
 from tensordict.utils import NestedKey
 from torch import Tensor
@@ -200,6 +201,7 @@ class EpisodeBuilder(Module):
         tokenizers: ModuleDict,
         embeddings: ModuleDict,
         position_encoding: ModuleDict,
+        freeze: bool | None = None,
     ) -> None:
         super().__init__()
         self.timestep = timestep
@@ -207,6 +209,18 @@ class EpisodeBuilder(Module):
         self.tokenizers = tokenizers
         self.embeddings = embeddings
         self.position_encoding = position_encoding
+
+        if freeze is not None:
+            if freeze is False and (
+                params_to_unfreeze := tuple(
+                    k
+                    for (k, v) in self.named_parameters(recurse=True)
+                    if not v.requires_grad
+                )
+            ):
+                logger.warning("unfreezing", params=params_to_unfreeze)
+
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     def build_episode(
         self,

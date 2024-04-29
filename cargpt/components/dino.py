@@ -6,10 +6,13 @@ from typing_extensions import override
 
 
 class DinoEncoder(nn.Module):
-    def __init__(self, *, dino: nn.Module, freeze: bool = True) -> None:
+    def __init__(self, *, dino: nn.Module, freeze: bool | None = None) -> None:
         super().__init__()
 
-        self.dino = dino.requires_grad_(not freeze).train(not freeze)
+        self.dino = dino
+
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
     def forward(
