@@ -10,6 +10,8 @@ from loguru import logger
 from omegaconf import DictConfig
 from pytorch_lightning.core.saving import _load_state  # noqa: PLC2701
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies import SingleDeviceStrategy
+from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.utilities.model_helpers import (
     _restricted_classmethod,  # noqa: PLC2701
 )
@@ -91,17 +93,30 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def _step(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         inputs = self._build_input(batch)
 
-        selected_objectives = (
-            self.objectives.keys()
+        objectives_to_loss = (
+            map(ObjectiveName, self.objectives.keys())
             if self.objective_scheduler is None
             else self.objective_scheduler.sample()
         )
+
+        logger.debug(f"Triner strategy {self.trainer.strategy}")
+        match strategy := self.trainer.strategy:
+            case SingleDeviceStrategy():
+                objectives_to_forward = objectives_to_loss
+
+            case DDPStrategy():
+                # we run on all objectives since we need a static graph
+                objectives_to_forward = map(ObjectiveName, self.objectives.keys())
+
+            case _:
+                msg = f"Don't know the correct way to handle {strategy}"
+                raise NotImplementedError(msg)
 
         # TODO: currently this does full episode construction for each objective -- optimize?
         metrics = TensorDict(
             {
                 name: self.objectives[name](inputs, self.episode_builder, self.encoder)
-                for name in self.objectives.keys()
+                for name in objectives_to_forward
             },
             batch_size=[],
             device=inputs.device,
@@ -126,12 +141,10 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         metrics = metrics.exclude(*((k, "mask") for k in metrics.keys()))  # pyright: ignore
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))
 
-        # we need to zero out unnecessary losses and not delete them to keep graph static
-        [
-            losses[loss_name].zero_()
-            for loss_name in losses.keys()
-            if loss_name not in selected_objectives
-        ]
+        for extra_obj in [
+            obj for obj in objectives_to_forward if obj not in objectives_to_loss
+        ]:
+            losses[extra_obj].zero_()
 
         metrics[("loss", "total")] = sum(
             losses.values(include_nested=True, leaves_only=True)
