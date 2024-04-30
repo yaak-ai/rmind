@@ -10,5 +10,6 @@ class ObjectiveName(StrEnum):
 
 class PredictionResultKey(StrEnum):
     PREDICTION = auto()
+    PREDICTION_PROBS = auto()
     GROUND_TRUTH = auto()
     ATTENTION = auto()
