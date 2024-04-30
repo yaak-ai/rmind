@@ -5,7 +5,6 @@ import numpy as np
 import torch
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
-from torch.distributions import Categorical
 from torch.nn import Module, ModuleDict
 from typing_extensions import override
 
@@ -101,10 +100,7 @@ class RandomMaskedHindsightControlObjective(Module):
                 nested_keys=True,
             )
 
-            prediction_tokens = logits.apply(
-                lambda x: Categorical(logits=x, validate_args=True).sample()
-            )
-
+            prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
             prediction = prediction_tokens.named_apply(
                 lambda k, v: episode_builder.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
                 nested_keys=True,

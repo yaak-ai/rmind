@@ -7,7 +7,6 @@ from einops.layers.torch import Rearrange
 from jaxtyping import Float
 from tensordict import TensorDict
 from torch import Tensor
-from torch.distributions import Categorical
 from torch.nn import Module
 from torch.nn import functional as F
 from typing_extensions import override
@@ -241,10 +240,7 @@ class MemoryExtractionStream(Module):
                 batch_size=[b, t - 1],
             )
 
-            prediction_tokens = logits.apply(
-                lambda x: Categorical(logits=x, validate_args=True).sample()
-            )
-
+            prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
             prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                 lambda k, v: self.delta_detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
                 nested_keys=True,
