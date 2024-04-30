@@ -130,34 +130,36 @@ class RerunPredictionWriter(BasePredictionWriter):
                         case (
                             "predictions",
                             *_module,
-                            PredictionResultKey.GROUND_TRUTH,
+                            result_key,
                             (Modality.CONTINUOUS | Modality.DISCRETE),
                             name,
-                        ) if not tensor.isnan():
-                            rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                path,
-                                rr.SeriesLine(name=f"gt/{name}"),
-                                timeless=True,
-                            )
-                            rr.log(path, rr.Scalar(tensor))
+                        ) if not tensor.isnan().all():
+                            match result_key:
+                                case PredictionResultKey.GROUND_TRUTH:
+                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                        path,
+                                        rr.SeriesLine(name=f"gt/{name}"),
+                                        timeless=True,
+                                    )
+                                    rr.log(path, rr.Scalar(tensor))
 
-                        case (
-                            "predictions",
-                            *_module,
-                            PredictionResultKey.PREDICTION,
-                            (Modality.CONTINUOUS | Modality.DISCRETE),
-                            name,
-                        ) if not tensor.isnan():
-                            rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                path,
-                                rr.SeriesPoint(
-                                    name=f"pred/{name}",
-                                    marker="cross",
-                                    marker_size=4,
-                                ),
-                                timeless=True,
-                            )
-                            rr.log(path, rr.Scalar(tensor))
+                                case PredictionResultKey.PREDICTION:
+                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                        path,
+                                        rr.SeriesPoint(
+                                            name=f"pred/{name}",
+                                            marker="cross",
+                                            marker_size=4,
+                                        ),
+                                        timeless=True,
+                                    )
+                                    rr.log(path, rr.Scalar(tensor))
+
+                                case PredictionResultKey.PREDICTION_PROBS:
+                                    rr.log(path, rr.BarChart(tensor))
+
+                                case _:
+                                    pass
 
                         case (
                             "predictions",
@@ -188,19 +190,12 @@ class RerunPredictionWriter(BasePredictionWriter):
                 rrb.Vertical(
                     rrb.Tabs(
                         *(
-                            rrb.Spatial2DView(origin=f"/inputs/image/{k}", name=k)
-                            for k in data[("inputs", "image")].keys()
+                            rrb.Spatial2DView(
+                                origin=f"/inputs/image/{camera}", name=camera
+                            )
+                            for camera in data[("inputs", "image")].keys()
                         ),
                         name="image",
-                    ),
-                ),
-                rrb.Vertical(
-                    rrb.Tabs(
-                        *(
-                            rrb.TimeSeriesView(origin=f"/predictions/{k}", name=k)
-                            for k in data["predictions"].keys()
-                        ),
-                        name="objectives",
                     ),
                     rrb.Tabs(
                         *(
@@ -208,6 +203,27 @@ class RerunPredictionWriter(BasePredictionWriter):
                             for k in ("inputs", "meta")
                         ),
                     ),
+                    name="inputs",
+                ),
+                rrb.Vertical(
+                    rrb.Tabs(
+                        *(
+                            rrb.Vertical(
+                                rrb.TimeSeriesView(
+                                    origin=f"/predictions/{objective}",
+                                    name="predictions",
+                                ),
+                                rrb.BarChartView(
+                                    origin=f"/predictions/{objective}/prediction_probs",
+                                    name="prediction_probs",
+                                ),
+                                name=objective,
+                            )
+                            for objective in data["predictions"].keys()
+                        ),
+                        name="predictions",
+                    ),
+                    name="outputs",
                 ),
             ),
         )

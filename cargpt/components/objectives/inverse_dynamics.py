@@ -101,7 +101,13 @@ class InverseDynamicsPredictionObjective(Module):
 
         episode = episode_builder.build_episode(inputs)
 
-        if (result_key := PredictionResultKey.PREDICTION) in result_keys:
+        if any(
+            result_key in result_keys
+            for result_key in (
+                PredictionResultKey.PREDICTION,
+                PredictionResultKey.PREDICTION_PROBS,
+            )
+        ):
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
@@ -127,17 +133,33 @@ class InverseDynamicsPredictionObjective(Module):
                 batch_size=[b, t - 1],
             )
 
-            prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
-            prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                lambda k, v: episode_builder.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
-                nested_keys=True,
-            )
+            if (result_key := PredictionResultKey.PREDICTION) in result_keys:
+                prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
+                prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+                    lambda k, v: episode_builder.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
+                    nested_keys=True,
+                )
 
-            # insert NaN at index -1 to indicate no prediction for t=-1
-            padder = partial(F.pad, pad=(0, 1), mode="constant", value=torch.nan)
-            prediction = prediction.apply(padder, batch_size=[b, t])
+                # insert NaN at index -1 to indicate no prediction for t=-1
+                padder = partial(F.pad, pad=(0, 1), mode="constant", value=torch.nan)
+                prediction = prediction.apply(padder, batch_size=[b, t])
 
-            result[result_key] = prediction
+                result[result_key] = prediction
+
+            if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
+                # TODO: categorical heads only
+                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1))
+
+                # insert NaNs at index -1 to indicate no prediction for t=-1
+                padder = partial(
+                    F.pad,
+                    pad=(0, 0, 0, 1),
+                    mode="constant",
+                    value=torch.nan,
+                )
+                prediction_probs = prediction_probs.apply(padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
+
+                result[result_key] = prediction_probs
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             ground_truth = episode.inputs.select(*(k for k, _ in self.heads.flatten()))
