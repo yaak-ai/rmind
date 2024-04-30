@@ -90,31 +90,50 @@ class RandomMaskedHindsightControlObjective(Module):
             masked_observation_timestep_idx=masked_observation_timestep_idx,
         )
 
-        if (result_key := PredictionResultKey.PREDICTION) in result_keys:
+        if any(
+            result_key in result_keys
+            for result_key in (
+                PredictionResultKey.PREDICTION,
+                PredictionResultKey.PREDICTION_PROBS,
+            )
+        ):
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
             index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))  # pyright: ignore[reportAttributeAccessIssue]
             embeddings = index[masked_action_timestep_idx].parse(embedding)
+
             logits = embeddings.named_apply(
                 lambda k, v: self.heads.get(k)(v),
                 nested_keys=True,
             )
 
-            prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
-            prediction = prediction_tokens.named_apply(
-                lambda k, v: episode_builder.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
-                nested_keys=True,
-            ).apply(Rearrange("b t 1 -> b t"))
-
-            # insert NaN at all indices except `masked_action_timestep_idx`
             def padder(x):
-                out = torch.full((b, t), fill_value=torch.nan, device=x.device)
+                """insert NaN at all indices except `masked_action_timestep_idx`"""
+                size = (b, t) if len(x.shape) == 2 else (b, t, x.shape[-1])
+                out = torch.full(size=size, fill_value=torch.nan, device=x.device)
                 out[:, masked_action_timestep_idx] = x
                 return out
 
-            prediction = prediction.apply(padder, batch_size=[b, t])
+            if (result_key := PredictionResultKey.PREDICTION) in result_keys:
+                prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
+                prediction = prediction_tokens.named_apply(
+                    lambda k, v: episode_builder.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
+                    nested_keys=True,
+                ).apply(Rearrange("b t 1 -> b t"))
 
-            result[result_key] = prediction
+                prediction = prediction.apply(padder, batch_size=[b, t])
+
+                result[result_key] = prediction
+
+            if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
+                # TODO: categorical heads only
+                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(
+                    Rearrange("b t 1 bin -> b t bin")
+                )
+
+                prediction_probs = prediction_probs.apply(padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
+
+                result[result_key] = prediction_probs
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             ground_truth = episode.inputs.select(*(k for k, _ in self.heads.flatten()))

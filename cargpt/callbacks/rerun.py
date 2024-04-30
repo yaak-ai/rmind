@@ -61,6 +61,11 @@ class RerunPredictionWriter(BasePredictionWriter):
     ) -> None:
         prediction = prediction.to(pl_module.device)
         inputs, predictions = prediction["inputs"], prediction["predictions"]
+
+        # To preserve correct paths structure
+        if "copycat" in predictions.keys():
+            predictions["copycat"] = predictions["copycat"].get("memory_extraction", {})
+
         inputs = inputs.update(
             inputs.select(Modality.IMAGE).apply(
                 Rearrange("... c h w -> ... h w c"),  # CHW -> HWC for logging
@@ -156,7 +161,10 @@ class RerunPredictionWriter(BasePredictionWriter):
                                     rr.log(path, rr.Scalar(tensor))
 
                                 case PredictionResultKey.PREDICTION_PROBS:
-                                    rr.log(path, rr.BarChart(tensor))
+                                    rr.log(
+                                        path,
+                                        rr.BarChart(tensor),
+                                    )
 
                                 case _:
                                     pass

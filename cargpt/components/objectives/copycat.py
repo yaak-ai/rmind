@@ -220,7 +220,13 @@ class MemoryExtractionStream(Module):
         if not result_keys:
             return result
 
-        if (result_key := PredictionResultKey.PREDICTION) in result_keys:
+        if any(
+            result_key in result_keys
+            for result_key in (
+                PredictionResultKey.PREDICTION,
+                PredictionResultKey.PREDICTION_PROBS,
+            )
+        ):
             if self.delta_detokenizers is None:
                 msg = "delta_detokenizers missing"
                 raise RuntimeError(msg)
@@ -240,17 +246,35 @@ class MemoryExtractionStream(Module):
                 batch_size=[b, t - 1],
             )
 
-            prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
-            prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                lambda k, v: self.delta_detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
-                nested_keys=True,
-            ).apply(Rearrange("b t 1 -> b t"))
+            if (result_key := PredictionResultKey.PREDICTION) in result_keys:
+                prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
+                prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+                    lambda k, v: self.delta_detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
+                    nested_keys=True,
+                ).apply(Rearrange("b t 1 -> b t"))
 
-            # insert NaN at index 0 to indicate no prediction for t=0 b/c deltas
-            padder = partial(F.pad, pad=(1, 0), mode="constant", value=torch.nan)
-            prediction = prediction.apply(padder, batch_size=[b, t])
+                # insert NaN at index 0 to indicate no prediction for t=0 b/c deltas
+                padder = partial(F.pad, pad=(1, 0), mode="constant", value=torch.nan)
+                prediction = prediction.apply(padder, batch_size=[b, t])
 
-            result[result_key] = prediction
+                result[result_key] = prediction
+
+            if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
+                # TODO: categorical heads only
+                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(
+                    Rearrange("b t 1 bin -> b t bin")
+                )
+
+                # insert NaNs at index -1 to indicate no prediction for t=-1
+                padder = partial(
+                    F.pad,
+                    pad=(0, 0, 0, 1),
+                    mode="constant",
+                    value=torch.nan,
+                )
+                prediction_probs = prediction_probs.apply(padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
+
+                result[result_key] = prediction_probs
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             inputs = episode.inputs.select(*(k for k, _ in self.heads.flatten()))
