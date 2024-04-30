@@ -89,7 +89,7 @@ class Timestep:
         return tuple(token.key for token in self.tokens if token.type is token_type)
 
 
-@tensorclass  # pyright: ignore[reportUntypedClassDecorator, reportArgumentType]
+@tensorclass  # pyright: ignore[reportArgumentType]
 class Index:
     image: TensorDict
     continuous: TensorDict
@@ -174,7 +174,7 @@ Index.__hash__ = _index_hash
 Index.__eq__ = _index_eq  # pyright: ignore[reportAttributeAccessIssue]
 
 
-@tensorclass  # pyright: ignore[reportUntypedClassDecorator, reportArgumentType]
+@tensorclass  # pyright: ignore[reportArgumentType]
 class Episode:
     inputs: TensorDict
     tokenized: TensorDict
@@ -199,9 +199,9 @@ class EpisodeBuilder(Module):
         timestep: Timestep,
         special_tokens: Mapping[str, int],
         tokenizers: ModuleDict,
-        detokenizers: ModuleDict | None = None,
         embeddings: ModuleDict,
         position_encoding: ModuleDict,
+        detokenizers: ModuleDict | None = None,
         freeze: bool | None = None,
     ) -> None:
         super().__init__()

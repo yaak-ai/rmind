@@ -122,6 +122,7 @@ reportUnknownParameterType = "none"
 reportUnknownVariableType = "none"
 reportUnnecessaryTypeIgnoreComment = "warning"
 reportUnusedCallResult = "error"
+reportUntypedClassDecorator = "none"
 
 exclude = ['wandb/**', 'cargpt/models/gato.py', '**.ipynb']
 ignore = ['wandb/**', 'cargpt/models/gato.py', '**.ipynb']
