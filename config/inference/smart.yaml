@@ -22,14 +22,6 @@ model:
     # 2. delete unnecesary keys
     - _target_: funcy.del_in
       _partial_: true
-      path: ["objectives", "forward_dynamics", "heads", "image"]
-
-    - _target_: funcy.del_in
-      _partial_: true
-      path: ["objectives", "copycat", "memory_extraction", "loss"]
-
-    - _target_: funcy.del_in
-      _partial_: true
       path: ["objective_scheduler"]
 
     # 3. merge config
@@ -45,69 +37,37 @@ model:
         - _target_: omegaconf.DictConfig
           _recursive_: false
           content:
-            episode_builder:
-              detokenizers:
-                _target_: cargpt.utils.ModuleDict
-                continuous:
-                  speed:
-                    _target_: cargpt.components.norm.UniformUnbinner
-                    out_range: ${speed_range}
-                    num_bins: 1024
-
-                  gas_pedal:
-                    _target_: cargpt.components.norm.UniformUnbinner
-                    out_range: [0.0, 1.0]
-                    num_bins: 255
-
-                  brake_pedal:
-                    _target_: cargpt.components.norm.UniformUnbinner
-                    out_range: [0.0, 1.0]
-                    num_bins: 165
-
-                  steering_angle:
-                    _target_: cargpt.components.norm.UniformUnbinner
-                    out_range: [-1.0, 1.0]
-                    num_bins: 961
-
-                discrete:
-                  turn_signal:
-                    _target_: torch.nn.Identity
-
             objectives:
-              forward_dynamics:
-                losses: null
-
-              inverse_dynamics:
-                losses: null
-
-              random_masked_hindsight_control:
-                losses: null
-
               copycat:
-                memory_extraction:
-                  delta_detokenizers:
+                policy:
+                  detokenizers:
                     _target_: cargpt.utils.ModuleDict
                     continuous:
+                      speed:
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: ${speed_range}
+                        num_bins: 1024
+
                       gas_pedal:
-                        _target_: torchaudio.transforms.MuLawDecoding
-                        quantization_channels: 512
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: [0.0, 1.0]
+                        num_bins: 255
 
                       brake_pedal:
-                        _target_: torchaudio.transforms.MuLawDecoding
-                        quantization_channels: 512
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: [0.0, 1.0]
+                        num_bins: 165
 
                       steering_angle:
-                        _target_: torch.nn.Sequential
-                        _args_:
-                          - _target_: torchaudio.transforms.MuLawDecoding
-                            quantization_channels: 512
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: [-1.0, 1.0]
+                        num_bins: 961
 
-                          - _target_: cargpt.components.norm.Scaler
-                            in_range: [-1.0, 1.0]
-                            out_range: [-2.0, 2.0]
+                    discrete:
+                      turn_signal:
+                        _target_: torch.nn.Identity
 
                   losses: null
-
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
@@ -164,7 +124,7 @@ datamodule:
           clips:
             length: ${clip_len}
             stride: 10
-            step: 60 # NOTE
+            step: 10 # NOTE
 
           transforms:
             - _target_: yaak_datasets.transforms.Crop

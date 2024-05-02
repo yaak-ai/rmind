@@ -76,6 +76,8 @@ class RerunPredictionWriter(BasePredictionWriter):
             "predictions": predictions,
         })
 
+        cameras = data.get(("inputs", "image"), default={}).keys()  # pyright: ignore[reportAttributeAccessIssue]
+
         # TODO: more robust?
         if batch_idx == 0:
             blueprint = self._build_blueprint(data)
@@ -83,28 +85,31 @@ class RerunPredictionWriter(BasePredictionWriter):
 
         for _batch in data.cpu():
             for timestep, elem in enumerate(_batch):
-                for nested_key, tensor in elem.items(
-                    include_nested=True,
-                    leaves_only=True,
-                ):
+                # pop and process time keys first
+                for camera in cameras:
+                    if v := elem.pop(
+                        k := ("meta", f"{camera}/ImageMetadata_frame_idx"),
+                        default=None,
+                    ):
+                        rr.set_time_sequence("/".join(k), v.item())
+
+                    if v := elem.pop(
+                        k := ("meta", f"{camera}/ImageMetadata_time_stamp"),
+                        default=None,
+                    ):
+                        rr.set_time_nanos("/".join(k), v.item() * 1000)
+
+                for nested_key, tensor in elem.items(True, True):
                     path = "/".join(nested_key)
 
                     match nested_key:
                         case ("meta", name):
-                            match name.split("/"):
-                                case (_, "ImageMetadata_frame_idx"):
-                                    rr.set_time_sequence(path, tensor.item())
-
-                                case (_, "ImageMetadata_time_stamp"):
-                                    rr.set_time_nanos(path, tensor.item() * 1000)
-
-                                case _:
-                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                        path,
-                                        rr.SeriesLine(name=name),
-                                        timeless=True,
-                                    )
-                                    rr.log(path, rr.Scalar(tensor))
+                            rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                path,
+                                rr.SeriesLine(name=name),
+                                timeless=True,
+                            )
+                            rr.log(path, rr.Scalar(tensor))
 
                         case ("inputs", modality, name):
                             match modality:

@@ -272,11 +272,17 @@ class MemoryExtractionStream(Module):
 
 
 class PolicyStream(Module):
-    def __init__(self, heads: ModuleDict, losses: ModuleDict | None = None):
+    def __init__(
+        self,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+        detokenizers: ModuleDict | None = None,
+    ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.detokenizers = detokenizers
 
     @override
     def forward(
@@ -328,3 +334,75 @@ class PolicyStream(Module):
         )
 
         return TensorDict.from_dict({"loss": loss}, batch_size=[])
+
+    def predict(
+        self,
+        episode: Episode,
+        embedding: Float[Tensor, "b s d"],
+        *,
+        result_keys: Sequence[PredictionResultKey],
+    ) -> TensorDict:
+        b, t = episode.embedded.batch_size
+        result = TensorDict({}, batch_size=[b, t])
+
+        if not result_keys:
+            return result
+
+        if (result_key := PredictionResultKey.PREDICTION) in result_keys:
+            if self.detokenizers is None:
+                msg = "detokenizers missing"
+                raise RuntimeError(msg)
+
+            embeddings = (
+                episode.index[-1]  # pyright: ignore[reportIndexIssue]
+                .select(
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                )
+                .parse(embedding)
+            )
+
+            observation_history = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_HISTORY,
+            )).detach()  # NOTE: equivalent to stop gradient layer in paper
+
+            observation_summary = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            ))
+
+            features = rearrange(
+                [observation_summary, observation_history],
+                "i b 1 d -> b 1 (i d)",
+            )
+
+            logits = TensorDict.from_dict(
+                {
+                    (modality, name): head(features)
+                    for (modality, name), head in self.heads.flatten()
+                },
+                batch_size=[],
+            )
+
+            prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
+            prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+                lambda k, v: self.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
+                nested_keys=True,
+            )
+
+            # pad w/ NaNs to indicate the prediction is for the last timestep only
+            padder = partial(F.pad, pad=(t - 1, 0), mode="constant", value=torch.nan)
+            prediction = prediction.apply(padder, batch_size=[b, t])
+
+            result[result_key] = prediction
+
+        if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
+            ground_truth = episode.inputs.select(*(k for k, _ in self.heads.flatten()))
+
+            result[result_key] = ground_truth
+
+        if (result_key := PredictionResultKey.ATTENTION) in result_keys:
+            raise NotImplementedError
+
+        return result
