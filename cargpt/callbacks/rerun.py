@@ -63,8 +63,13 @@ class RerunPredictionWriter(BasePredictionWriter):
         inputs, predictions = prediction["inputs"], prediction["predictions"]
 
         # To preserve correct paths structure
+        # But might be a legacy already if we move only to FT models inference
         if "copycat" in predictions.keys():
-            predictions["copycat"] = predictions["copycat"].get("memory_extraction", {})
+            keys = list(predictions["copycat"].keys())
+            if len(keys) == 1:
+                predictions["copycat"] = predictions["copycat"][keys[0]]
+            else:
+                raise NotImplementedError
 
         inputs = inputs.update(
             inputs.select(Modality.IMAGE).apply(
@@ -141,16 +146,22 @@ class RerunPredictionWriter(BasePredictionWriter):
                         ) if not tensor.isnan().all():
                             match result_key:
                                 case PredictionResultKey.GROUND_TRUTH:
+                                    path_ = str(path).replace(
+                                        "/ground_truth/", "/compare/ground_truth/"
+                                    )
                                     rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                        path,
+                                        path_,
                                         rr.SeriesLine(name=f"gt/{name}"),
                                         timeless=True,
                                     )
-                                    rr.log(path, rr.Scalar(tensor))
+                                    rr.log(path_, rr.Scalar(tensor))
 
                                 case PredictionResultKey.PREDICTION:
+                                    path_ = str(path).replace(
+                                        "/prediction/", "/compare/prediction/"
+                                    )
                                     rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                        path,
+                                        path_,
                                         rr.SeriesPoint(
                                             name=f"pred/{name}",
                                             marker="cross",
@@ -158,13 +169,37 @@ class RerunPredictionWriter(BasePredictionWriter):
                                         ),
                                         timeless=True,
                                     )
-                                    rr.log(path, rr.Scalar(tensor))
+                                    rr.log(path_, rr.Scalar(tensor))
 
                                 case PredictionResultKey.PREDICTION_PROBS:
                                     rr.log(
                                         path,
                                         rr.BarChart(tensor),
                                     )
+
+                                case PredictionResultKey.SCORE_LOGPROB:
+                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                        path,
+                                        rr.SeriesPoint(
+                                            name=f"logp/{name}",
+                                            marker="diamond",
+                                            marker_size=4,
+                                        ),
+                                        timeless=True,
+                                    )
+                                    rr.log(path, rr.Scalar(tensor))
+
+                                case PredictionResultKey.SCORE_L1:
+                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                        path,
+                                        rr.SeriesPoint(
+                                            name=f"l1/{name}",
+                                            marker="circle",
+                                            marker_size=4,
+                                        ),
+                                        timeless=True,
+                                    )
+                                    rr.log(path, rr.Scalar(tensor))
 
                                 case _:
                                     pass
@@ -218,12 +253,22 @@ class RerunPredictionWriter(BasePredictionWriter):
                         *(
                             rrb.Vertical(
                                 rrb.TimeSeriesView(
-                                    origin=f"/predictions/{objective}",
-                                    name="predictions",
+                                    origin=f"/predictions/{objective}/compare",
+                                    name="Predictions",
                                 ),
-                                rrb.BarChartView(
-                                    origin=f"/predictions/{objective}/prediction_probs",
-                                    name="prediction_probs",
+                                rrb.Tabs(
+                                    rrb.BarChartView(
+                                        origin=f"/predictions/{objective}/prediction_probs",
+                                        name="Prediction Probs",
+                                    ),
+                                    rrb.TimeSeriesView(
+                                        origin=f"/predictions/{objective}/score_l1",
+                                        name="L1 score",
+                                    ),
+                                    rrb.TimeSeriesView(
+                                        origin=f"/predictions/{objective}/score_logprob",
+                                        name="Log(p) score",
+                                    ),
                                 ),
                                 name=objective,
                             )
