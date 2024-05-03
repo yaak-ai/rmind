@@ -6,6 +6,7 @@ import torch
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
 from torch.nn import Module, ModuleDict
+from torch.nn import functional as F
 from typing_extensions import override
 
 from cargpt.components.episode import (
@@ -95,6 +96,8 @@ class RandomMaskedHindsightControlObjective(Module):
             for result_key in (
                 PredictionResultKey.PREDICTION,
                 PredictionResultKey.PREDICTION_PROBS,
+                PredictionResultKey.SCORE_LOGPROB,
+                PredictionResultKey.SCORE_L1,
             )
         ):
             mask = self._build_attention_mask(episode.index, episode.timestep)
@@ -109,7 +112,9 @@ class RandomMaskedHindsightControlObjective(Module):
 
             def padder(x):
                 """insert NaN at all indices except `masked_action_timestep_idx`"""
-                size = (b, t) if len(x.shape) == 2 else (b, t, x.shape[-1])
+                size = (
+                    (b, t) if len(x.shape) == 2 else (b, t, x.shape[-1])
+                )  # probably an antipattern
                 out = torch.full(size=size, fill_value=torch.nan, device=x.device)
                 out[:, masked_action_timestep_idx] = x
                 return out
@@ -126,14 +131,45 @@ class RandomMaskedHindsightControlObjective(Module):
                 result[result_key] = prediction
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                # TODO: categorical heads only
-                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(
-                    Rearrange("b t 1 bin -> b t bin")
+                result[result_key] = (
+                    logits.apply(lambda x: x.softmax(dim=-1))
+                    .apply(Rearrange("b t 1 bin -> b t bin"))
+                    .apply(padder, batch_size=[b, t])
                 )
 
-                prediction_probs = prediction_probs.apply(padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
+            if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
+                prediction_probs = (
+                    logits.apply(lambda x: x.softmax(dim=-1))
+                    .apply(Rearrange("b t 1 bin -> b t bin"))
+                    .apply(padder, batch_size=[b, t])
+                )
+                gt_tokens = episode.tokenized.select(
+                    *(k for k, _ in self.heads.flatten())
+                )
+                probs_of_gt = prediction_probs.named_apply(
+                    lambda k, v: v.gather(index=gt_tokens[k], dim=-1),
+                    nested_keys=True,
+                )
+                result[result_key] = probs_of_gt.apply(lambda x: -torch.log(x))
 
-                result[result_key] = prediction_probs
+            if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
+                prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
+                prediction = prediction_tokens.named_apply(
+                    lambda k, v: episode_builder.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
+                    nested_keys=True,
+                ).apply(Rearrange("b t 1 -> b t"))
+
+                prediction = prediction.float().apply(padder, batch_size=[b, t])
+                ground_truth = episode.inputs.select(
+                    *(k for k, _ in self.heads.flatten())
+                )
+
+                l1 = prediction.named_apply(
+                    lambda k, v: F.l1_loss(v, ground_truth[k], reduction="none"),
+                    nested_keys=True,
+                )
+
+                result[result_key] = l1
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             ground_truth = episode.inputs.select(*(k for k, _ in self.heads.flatten()))

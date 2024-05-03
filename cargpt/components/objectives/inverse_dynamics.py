@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from functools import lru_cache, partial
+from functools import lru_cache
 
 import torch
 from einops import rearrange
@@ -27,6 +27,7 @@ from cargpt.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
 from cargpt.utils import ModuleDict
+from cargpt.utils.padder import nan_padder
 
 
 class InverseDynamicsPredictionObjective(Module):
@@ -106,6 +107,8 @@ class InverseDynamicsPredictionObjective(Module):
             for result_key in (
                 PredictionResultKey.PREDICTION,
                 PredictionResultKey.PREDICTION_PROBS,
+                PredictionResultKey.SCORE_LOGPROB,
+                PredictionResultKey.SCORE_L1,
             )
         ):
             mask = self._build_attention_mask(episode.index, episode.timestep)
@@ -133,6 +136,7 @@ class InverseDynamicsPredictionObjective(Module):
                 batch_size=[b, t - 1],
             )
 
+            # NOTE: insert NaN at index -1 to indicate no prediction for t=-1
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
                 prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
@@ -140,26 +144,50 @@ class InverseDynamicsPredictionObjective(Module):
                     nested_keys=True,
                 )
 
-                # insert NaN at index -1 to indicate no prediction for t=-1
-                padder = partial(F.pad, pad=(0, 1), mode="constant", value=torch.nan)
-                prediction = prediction.apply(padder, batch_size=[b, t])
+                prediction = prediction.apply(nan_padder((0, 1)), batch_size=[b, t])
 
                 result[result_key] = prediction
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
                 # TODO: categorical heads only
-                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1))
-
-                # insert NaNs at index -1 to indicate no prediction for t=-1
-                padder = partial(
-                    F.pad,
-                    pad=(0, 0, 0, 1),
-                    mode="constant",
-                    value=torch.nan,
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(
+                    nan_padder((0, 0, 0, 1)), batch_size=[b, t]
                 )
-                prediction_probs = prediction_probs.apply(padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
 
-                result[result_key] = prediction_probs
+            if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
+                """Finds log prob of the correct token at each timestep."""
+                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                    nan_padder((0, 0, 0, 1)), batch_size=[b, t]
+                )
+                gt_tokens = episode.tokenized.select(
+                    *(k for k, _ in self.heads.flatten())
+                )
+                probs_of_gt = prediction_probs.named_apply(
+                    lambda k, v: v.gather(index=gt_tokens[k], dim=-1),
+                    nested_keys=True,
+                )
+                result[result_key] = probs_of_gt.apply(lambda x: -torch.log(x))
+
+            if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
+                prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
+                prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+                    lambda k, v: episode_builder.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
+                    nested_keys=True,
+                )
+
+                prediction = prediction.float().apply(
+                    nan_padder((0, 1)), batch_size=[b, t]
+                )
+                ground_truth = episode.inputs.select(
+                    *(k for k, _ in self.heads.flatten())
+                )
+
+                l1 = prediction.named_apply(
+                    lambda k, v: F.l1_loss(v, ground_truth[k], reduction="none"),
+                    nested_keys=True,
+                )
+
+                result[result_key] = l1
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             ground_truth = episode.inputs.select(*(k for k, _ in self.heads.flatten()))
