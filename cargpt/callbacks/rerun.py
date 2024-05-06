@@ -61,6 +61,16 @@ class RerunPredictionWriter(BasePredictionWriter):
     ) -> None:
         prediction = prediction.to(pl_module.device)
         inputs, predictions = prediction["inputs"], prediction["predictions"]
+
+        # To preserve correct paths structure
+        # But might be a legacy already if we move only to FT models inference
+        if "copycat" in predictions.keys():
+            keys = list(predictions["copycat"].keys())
+            if len(keys) == 1:
+                predictions["copycat"] = predictions["copycat"][keys[0]]
+            else:
+                raise NotImplementedError
+
         inputs = inputs.update(
             inputs.select(Modality.IMAGE).apply(
                 Rearrange("... c h w -> ... h w c"),  # CHW -> HWC for logging
@@ -130,34 +140,69 @@ class RerunPredictionWriter(BasePredictionWriter):
                         case (
                             "predictions",
                             *_module,
-                            PredictionResultKey.GROUND_TRUTH,
+                            result_key,
                             (Modality.CONTINUOUS | Modality.DISCRETE),
                             name,
-                        ) if not tensor.isnan():
-                            rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                path,
-                                rr.SeriesLine(name=f"gt/{name}"),
-                                timeless=True,
-                            )
-                            rr.log(path, rr.Scalar(tensor))
+                        ) if not tensor.isnan().all():
+                            match result_key:
+                                case PredictionResultKey.GROUND_TRUTH:
+                                    path_ = str(path).replace(
+                                        "/ground_truth/", "/compare/ground_truth/"
+                                    )
+                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                        path_,
+                                        rr.SeriesLine(name=f"gt/{name}"),
+                                        timeless=True,
+                                    )
+                                    rr.log(path_, rr.Scalar(tensor))
 
-                        case (
-                            "predictions",
-                            *_module,
-                            PredictionResultKey.PREDICTION,
-                            (Modality.CONTINUOUS | Modality.DISCRETE),
-                            name,
-                        ) if not tensor.isnan():
-                            rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                path,
-                                rr.SeriesPoint(
-                                    name=f"pred/{name}",
-                                    marker="cross",
-                                    marker_size=4,
-                                ),
-                                timeless=True,
-                            )
-                            rr.log(path, rr.Scalar(tensor))
+                                case PredictionResultKey.PREDICTION:
+                                    path_ = str(path).replace(
+                                        "/prediction/", "/compare/prediction/"
+                                    )
+                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                        path_,
+                                        rr.SeriesPoint(
+                                            name=f"pred/{name}",
+                                            marker="cross",
+                                            marker_size=4,
+                                        ),
+                                        timeless=True,
+                                    )
+                                    rr.log(path_, rr.Scalar(tensor))
+
+                                case PredictionResultKey.PREDICTION_PROBS:
+                                    rr.log(
+                                        path,
+                                        rr.BarChart(tensor),
+                                    )
+
+                                case PredictionResultKey.SCORE_LOGPROB:
+                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                        path,
+                                        rr.SeriesPoint(
+                                            name=f"logp/{name}",
+                                            marker="diamond",
+                                            marker_size=4,
+                                        ),
+                                        timeless=True,
+                                    )
+                                    rr.log(path, rr.Scalar(tensor))
+
+                                case PredictionResultKey.SCORE_L1:
+                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                        path,
+                                        rr.SeriesPoint(
+                                            name=f"l1/{name}",
+                                            marker="circle",
+                                            marker_size=4,
+                                        ),
+                                        timeless=True,
+                                    )
+                                    rr.log(path, rr.Scalar(tensor))
+
+                                case _:
+                                    pass
 
                         case (
                             "predictions",
@@ -188,19 +233,12 @@ class RerunPredictionWriter(BasePredictionWriter):
                 rrb.Vertical(
                     rrb.Tabs(
                         *(
-                            rrb.Spatial2DView(origin=f"/inputs/image/{k}", name=k)
-                            for k in data[("inputs", "image")].keys()
+                            rrb.Spatial2DView(
+                                origin=f"/inputs/image/{camera}", name=camera
+                            )
+                            for camera in data[("inputs", "image")].keys()
                         ),
                         name="image",
-                    ),
-                ),
-                rrb.Vertical(
-                    rrb.Tabs(
-                        *(
-                            rrb.TimeSeriesView(origin=f"/predictions/{k}", name=k)
-                            for k in data["predictions"].keys()
-                        ),
-                        name="objectives",
                     ),
                     rrb.Tabs(
                         *(
@@ -208,6 +246,37 @@ class RerunPredictionWriter(BasePredictionWriter):
                             for k in ("inputs", "meta")
                         ),
                     ),
+                    name="inputs",
+                ),
+                rrb.Vertical(
+                    rrb.Tabs(
+                        *(
+                            rrb.Vertical(
+                                rrb.TimeSeriesView(
+                                    origin=f"/predictions/{objective}/compare",
+                                    name="Predictions",
+                                ),
+                                rrb.Tabs(
+                                    rrb.BarChartView(
+                                        origin=f"/predictions/{objective}/prediction_probs",
+                                        name="Prediction Probs",
+                                    ),
+                                    rrb.TimeSeriesView(
+                                        origin=f"/predictions/{objective}/score_l1",
+                                        name="L1 score",
+                                    ),
+                                    rrb.TimeSeriesView(
+                                        origin=f"/predictions/{objective}/score_logprob",
+                                        name="Log(p) score",
+                                    ),
+                                ),
+                                name=objective,
+                            )
+                            for objective in data["predictions"].keys()
+                        ),
+                        name="predictions",
+                    ),
+                    name="outputs",
                 ),
             ),
         )

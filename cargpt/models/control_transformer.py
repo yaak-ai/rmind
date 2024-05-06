@@ -172,6 +172,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 result_keys=(
                     PredictionResultKey.GROUND_TRUTH,
                     PredictionResultKey.PREDICTION,
+                    PredictionResultKey.PREDICTION_PROBS,
+                    PredictionResultKey.SCORE_LOGPROB,
+                    PredictionResultKey.SCORE_L1,
                 ),
             )
             for name, objective in self.objectives.items()
