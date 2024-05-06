@@ -33,7 +33,7 @@ class HFGPT2(pl.LightningModule):
     def __init__(self, **_kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
-        self.llm: GPT2LMHeadModel = instantiate(self.hparams.llm)
+        self.llm: GPT2LMHeadModel = instantiate(self.hparams.llm)  # pyright: ignore[reportAttributeAccessIssue]
 
     @override
     def forward(  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -58,9 +58,9 @@ class TorchGPT2(pl.LightningModule):
     def __init__(self, **_kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
-        self.llm = instantiate(self.hparams.llm)
-        self.classifier = instantiate(self.hparams.classifier)
-        self.loss_fn = instantiate(self.hparams.loss)
+        self.llm = instantiate(self.hparams.llm)  # pyright: ignore[reportAttributeAccessIssue]
+        self.classifier = instantiate(self.hparams.classifier)  # pyright: ignore[reportAttributeAccessIssue]
+        self.loss_fn = instantiate(self.hparams.loss)  # pyright: ignore[reportAttributeAccessIssue]
 
     @override
     def forward(  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -238,6 +238,7 @@ class xFormerEncoder(nn.Module):
                     k = net.sublayer.in_proj_container.k_proj(x)
                     attn = scaled_query_key_softmax(q, k, att_mask=mask)
 
+                    # TODO: exclude certain indices from getting dropped?
                     if drop_ratio is not None:
                         drop_count = int(attn.nelement() * drop_ratio)
                         attn_flat = rearrange(attn, "b s_from s_to -> b (s_from s_to)")

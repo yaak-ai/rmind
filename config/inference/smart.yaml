@@ -15,17 +15,59 @@ model:
   artifact: ???
   filename: model.ckpt
   hparams_updaters:
-    _target_: omegaconf.OmegaConf.merge
-    _partial_: true
-    _recursive_: false
-    _args_:
-      - objectives:
-          forward_dynamics:
-            losses: null
-      - objectives:
-          inverse_dynamics:
-            losses: null
+    # 1. wrap hparams in DictConfig
+    - _target_: omegaconf.DictConfig
+      _partial_: true
 
+    # 2. delete unnecesary keys
+    - _target_: funcy.del_in
+      _partial_: true
+      path: ["objective_scheduler"]
+
+    # 3. merge config
+    #  NOTE(galaxy brain alert): hydra instantiation with `_partial_: true` uses
+    # `functools.partial`, which binds _leftmost_ positional arguments, which in this
+    # case means the original hparams would be merged last, effectively negating any
+    # updates. Using `funcy.rpartial` as a workaround.
+    - _target_: funcy.rpartial
+      _args_:
+        - _target_: omegaconf.DictConfig.merge_with
+          _partial_: true
+
+        - _target_: omegaconf.DictConfig
+          _recursive_: false
+          content:
+            objectives:
+              copycat:
+                policy:
+                  detokenizers:
+                    _target_: cargpt.utils.ModuleDict
+                    continuous:
+                      speed:
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: ${speed_range}
+                        num_bins: 1024
+
+                      gas_pedal:
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: [0.0, 1.0]
+                        num_bins: 255
+
+                      brake_pedal:
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: [0.0, 1.0]
+                        num_bins: 165
+
+                      steering_angle:
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: [-1.0, 1.0]
+                        num_bins: 961
+
+                    discrete:
+                      turn_signal:
+                        _target_: torch.nn.Identity
+
+                  losses: null
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
@@ -82,7 +124,7 @@ datamodule:
           clips:
             length: ${clip_len}
             stride: 10
-            step: 60 # NOTE
+            step: 10 # NOTE
 
           transforms:
             - _target_: yaak_datasets.transforms.Crop
