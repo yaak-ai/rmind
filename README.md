@@ -1,46 +1,13 @@
 # carGPT
-Self-supervised model trained on vehicle context and control signals from expert drives
 
-## Data
+Self-supervised model trained on vehicle context and control signals from expert drives.
 
-### YAML templating
-
+## Setup
 ```
-ytt --ignore-unknown-comments -f config/dataset/templates/ --output yaml --output-files config/dataset/
-```
-
-### Viz
-
-Launch [FiftyOne](https://docs.voxel51.com/) remotely:
-
-```bash
-export MAPBOX_TOKEN=...
-
-just dataviz
-```
-
-## Get Dalle models
-TODO: Download once and cache
-```
-mkdir -p pretrained/dalle
-wget https://cdn.openai.com/dall-e/encoder.pkl -P pretrained/dalle
-wget https://cdn.openai.com/dall-e/decoder.pkl -P pretrained/dalle
-```
-
-## Installation
-```
-poetry install --with train,dev,lint
-poetry shell
-# https://github.com/facebookresearch/xformers/issues/705
-pip install triton==2.0.0.dev20221105 --no-deps
+just install
 ```
 
 ## Training
-
-### Gato
-```bash
-just train experiment=gato [++trainer.fast_dev_run=1 ...]
-```
 
 ### SMART
 ```bash
@@ -49,16 +16,14 @@ just train experiment=smart [++trainer.fast_dev_run=1 ...]
 
 ## Inference
 
-### Gato
-
-1. start rerun:
+1. start rerun and open [http://localhost:9090/?url=ws://localhost:9877](http://localhost:9090/?url=ws://localhost:9877)
 ```bash
 just rerun
 ```
 
-2. in another terminal:
+3. in another terminal:
 ```bash
-just predict inference=gato model.name=<wandb_path>
+just predict inference=smart model.artifact=<wandb_path>
 ```
 
 3. open [http://localhost:9090/?url=ws://localhost:9877](http://localhost:9090/?url=ws://localhost:9877)
@@ -137,4 +102,3 @@ You need to be in the docker group (to check that run `cat /etc/group | grep doc
 ```
 sudo usermod -aG docker $USER
 ```
-

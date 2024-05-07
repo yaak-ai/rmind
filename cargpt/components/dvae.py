@@ -4,12 +4,14 @@ from einops import rearrange
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 from torch.nn import functional as F
+from typing_extensions import override
 
 
 class DVAETokens(nn.Module):
     def __init__(self) -> None:
         super().__init__()
 
+    @override
     def forward(
         self,
         probs: Float[Tensor, "b c1 h w"],
@@ -26,11 +28,15 @@ class DVAETokens(nn.Module):
 
 # https://github.com/openai/DALL-E/tree/master
 class DalleDVAEEncoder(nn.Module):
-    def __init__(self, *, enc_weights: str, freeze: bool = True) -> None:
+    def __init__(self, *, enc_weights: str, freeze: bool | None = None) -> None:
         super().__init__()
 
-        self.enc = load_model(enc_weights).requires_grad_(not freeze).train(not freeze)
+        self.enc = load_model(enc_weights)
 
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+
+    @override
     def forward(
         self,
         x: Float[Tensor, "b c1 h1 w1"],
@@ -41,13 +47,17 @@ class DalleDVAEEncoder(nn.Module):
 
 class DalleDVAEDecoder(torch.nn.Module):
     def __init__(
-        self, *, dec_weights: str, vocab_size: int, freeze: bool = True
+        self, *, dec_weights: str, vocab_size: int, freeze: bool | None = None
     ) -> None:
         super().__init__()
 
-        self.dec = load_model(dec_weights).requires_grad_(not freeze).train(not freeze)
+        self.dec = load_model(dec_weights)
         self.vocab_size = vocab_size
 
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+
+    @override
     def forward(
         self,
         z_logits: Float[Tensor, "b c h1 w1"],

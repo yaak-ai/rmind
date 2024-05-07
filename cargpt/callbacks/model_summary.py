@@ -1,9 +1,11 @@
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 import pytorch_lightning as pl
 from loguru import logger
 from pytorch_lightning.callbacks import ModelSummary as _ModelSummary
 from torchinfo import summary
+from typing_extensions import override
 
 
 class ModelSummary(_ModelSummary):
@@ -22,6 +24,7 @@ class ModelSummary(_ModelSummary):
             "row_settings": row_settings,
         } | kwargs
 
+    @override
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.is_global_zero:
             _summary_str = str(summary(pl_module, **self._kwargs, verbose=0))

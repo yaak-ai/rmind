@@ -1,12 +1,18 @@
-from typing import Literal, Sequence
+from collections.abc import Sequence
+from typing import Literal
 
 import pytorch_lightning as pl
 import rerun as rr
+import rerun.blueprint as rrb
 from einops.layers.torch import Rearrange
+from funcy import once_per
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorDict
+from typing_extensions import override
+from yaak_datasets import Batch
 
 from cargpt.components.episode import Modality
+from cargpt.components.objectives.common import PredictionResultKey
 
 
 class RerunPredictionWriter(BasePredictionWriter):
@@ -22,55 +28,186 @@ class RerunPredictionWriter(BasePredictionWriter):
 
         super().__init__(write_interval)
 
+    @override
     def on_predict_start(
         self,
-        _trainer: pl.Trainer,
-        _pl_module: pl.LightningModule,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
     ) -> None:
         rr.init(**self.rerun_init_kwargs)
 
+        # HACK: a lil monkeypatching never hurt nobody
+        rr.log_once_per_entity_path = once_per("entity_path")(rr.log)  # pyright: ignore[reportAttributeAccessIssue]
+
+    @override
+    def on_predict_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+    ) -> None:
+        if hasattr(rr, "log_once_per_entity_path"):
+            delattr(rr, "log_once_per_entity_path")
+
+    @override
     def write_on_batch_end(
         self,
-        _trainer: pl.Trainer,
+        trainer: pl.Trainer,
         pl_module: pl.LightningModule,
-        result: TensorDict,
-        _batch_indices: Sequence[int] | None,
-        batch: TensorDict,
-        _batch_idx: int,
-        _dataloader_idx: int,
+        prediction: TensorDict,
+        batch_indices: Sequence[int] | None,
+        batch: Batch,
+        batch_idx: int,
+        dataloader_idx: int,
     ) -> None:
-        result = result.to(pl_module.device)
-        inputs, predictions = result["inputs"], result["predictions"]
+        prediction = prediction.to(pl_module.device)
+        inputs, predictions = prediction["inputs"], prediction["predictions"]
         inputs = inputs.update(
             inputs.select(Modality.IMAGE).apply(
                 Rearrange("... c h w -> ... h w c"),  # CHW -> HWC for logging
             )
         )
 
-        meta = batch.meta.exclude("drive_id")  # pyright: ignore
+        meta = batch.meta.exclude("drive_id")
         meta.batch_size = inputs.batch_size
 
         data = TensorDict.from_dict({
-            "inputs": inputs[:, 1:],  # t-1 deltas -- TODO: make this more general?
-            "meta": meta[:, 1:],
+            "inputs": inputs,
+            "meta": meta,
             "predictions": predictions,
-        }).flatten(0, 1)  # b t ... -> (b t) ...
+        })
 
-        image_keys = [("inputs", Modality.IMAGE)]
+        cameras = data.get(("inputs", "image"), default={}).keys()  # pyright: ignore[reportAttributeAccessIssue]
 
-        for elem in data.cpu():
-            for nested_key, tensor in elem.select(*image_keys).items(True, True):
-                *_, camera = nested_key
-                rr.set_time_sequence(
-                    (k := f"{camera}/ImageMetadata_frame_idx"),
-                    elem.pop(("meta", k)).item(),
-                )
-                rr.set_time_nanos(
-                    (k := f"{camera}/ImageMetadata_time_stamp"),
-                    elem.pop(("meta", k)).item() * 1000,  # us -> ns
-                )
+        # TODO: more robust?
+        if batch_idx == 0:
+            blueprint = self._build_blueprint(data)
+            rr.send_blueprint(blueprint)
 
-                rr.log(list(nested_key), rr.Image(tensor))
+        for _batch in data.cpu():
+            for timestep, elem in enumerate(_batch):
+                # pop and process time keys first
+                for camera in cameras:
+                    if v := elem.pop(
+                        k := ("meta", f"{camera}/ImageMetadata_frame_idx"),
+                        default=None,
+                    ):
+                        rr.set_time_sequence("/".join(k), v.item())
 
-            for nested_key, tensor in elem.exclude(*image_keys).items(True, True):
-                rr.log(list(nested_key), rr.Scalar(tensor))
+                    if v := elem.pop(
+                        k := ("meta", f"{camera}/ImageMetadata_time_stamp"),
+                        default=None,
+                    ):
+                        rr.set_time_nanos("/".join(k), v.item() * 1000)
+
+                for nested_key, tensor in elem.items(True, True):
+                    path = "/".join(nested_key)
+
+                    match nested_key:
+                        case ("meta", name):
+                            rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                path,
+                                rr.SeriesLine(name=name),
+                                timeless=True,
+                            )
+                            rr.log(path, rr.Scalar(tensor))
+
+                        case ("inputs", modality, name):
+                            match modality:
+                                case Modality.IMAGE:
+                                    rr.log(path, rr.Image(tensor))
+
+                                case Modality.CONTINUOUS | Modality.DISCRETE:
+                                    rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                        path,
+                                        rr.SeriesLine(name=name),
+                                        timeless=True,
+                                    )
+                                    rr.log(path, rr.Scalar(tensor))
+
+                                case _:
+                                    raise NotImplementedError
+
+                        case (
+                            "predictions",
+                            *_module,
+                            PredictionResultKey.GROUND_TRUTH,
+                            (Modality.CONTINUOUS | Modality.DISCRETE),
+                            name,
+                        ) if not tensor.isnan():
+                            rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                path,
+                                rr.SeriesLine(name=f"gt/{name}"),
+                                timeless=True,
+                            )
+                            rr.log(path, rr.Scalar(tensor))
+
+                        case (
+                            "predictions",
+                            *_module,
+                            PredictionResultKey.PREDICTION,
+                            (Modality.CONTINUOUS | Modality.DISCRETE),
+                            name,
+                        ) if not tensor.isnan():
+                            rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
+                                path,
+                                rr.SeriesPoint(
+                                    name=f"pred/{name}",
+                                    marker="cross",
+                                    marker_size=4,
+                                ),
+                                timeless=True,
+                            )
+                            rr.log(path, rr.Scalar(tensor))
+
+                        case (
+                            "predictions",
+                            objective,
+                            PredictionResultKey.ATTENTION,
+                            Modality.SPECIAL,
+                            token_from,
+                            modality_to,
+                            token_to,
+                        ):
+                            _path = ["attention", objective, token_from, token_to]
+                            attn = tensor[timestep]
+                            match modality_to:
+                                case Modality.IMAGE:
+                                    rr.log(_path, rr.Tensor(attn.view(10, 18)))
+
+                                case _:
+                                    rr.log(_path, rr.Tensor(attn))
+
+                        case _:
+                            pass
+
+    @classmethod
+    def _build_blueprint(cls, data: TensorDict) -> rrb.Blueprint:
+        # TODO: attention
+        return rrb.Blueprint(
+            rrb.Horizontal(
+                rrb.Vertical(
+                    rrb.Tabs(
+                        *(
+                            rrb.Spatial2DView(origin=f"/inputs/image/{k}", name=k)
+                            for k in data[("inputs", "image")].keys()
+                        ),
+                        name="image",
+                    ),
+                ),
+                rrb.Vertical(
+                    rrb.Tabs(
+                        *(
+                            rrb.TimeSeriesView(origin=f"/predictions/{k}", name=k)
+                            for k in data["predictions"].keys()
+                        ),
+                        name="objectives",
+                    ),
+                    rrb.Tabs(
+                        *(
+                            rrb.TimeSeriesView(origin=k, name=k)
+                            for k in ("inputs", "meta")
+                        ),
+                    ),
+                ),
+            ),
+        )
