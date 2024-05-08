@@ -422,7 +422,6 @@ class PolicyStream(Module):
                     nested_keys=True,
                 )
 
-                # pad w/ NaNs to indicate the prediction is for the last timestep only
                 prediction = prediction.apply(nan_padder((t - 1, 0)), batch_size=[b, t])
 
                 result[result_key] = prediction
@@ -432,16 +431,16 @@ class PolicyStream(Module):
                     nan_padder((0, 0, t - 1, 0)), batch_size=[b, t]
                 )
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
-                prediction_probs = result[result_key] = logits.apply(
-                    lambda x: x.softmax(dim=-1)
-                ).apply(nan_padder((0, 0, t - 1, 0)), batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
+                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(
+                    nan_padder((0, 0, t - 1, 0)), batch_size=[b, t]
+                )  # pyright: ignore[reportAttributeAccessIssue]
 
                 gt_tokens = episode.tokenized.select(
                     *(k for k, _ in self.heads.flatten())
                 )
-                probs_of_gt = prediction_probs.named_apply(
-                    lambda k, v: v.gather(index=gt_tokens[k], dim=-1),
-                    nested_keys=True,
+                probs_of_gt = prediction_probs.apply(
+                    lambda _probs, _tokens: _probs.gather(index=_tokens, dim=-1),
+                    gt_tokens,
                 )
                 result[result_key] = probs_of_gt.apply(lambda x: -torch.log(x))
 

@@ -162,9 +162,9 @@ class InverseDynamicsPredictionObjective(Module):
                 gt_tokens = episode.tokenized.select(
                     *(k for k, _ in self.heads.flatten())
                 )
-                probs_of_gt = prediction_probs.named_apply(
-                    lambda k, v: v.gather(index=gt_tokens[k], dim=-1),
-                    nested_keys=True,
+                probs_of_gt = prediction_probs.apply(
+                    lambda _probs, _tokens: _probs.gather(index=_tokens, dim=-1),
+                    gt_tokens,
                 )
                 result[result_key] = probs_of_gt.apply(lambda x: -torch.log(x))
 
