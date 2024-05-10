@@ -16,8 +16,7 @@ class DinoEncoder(nn.Module):
 
     @override
     def forward(
-        self,
-        frames: Float[Tensor, "*b c1 h1 w1"],
+        self, frames: Float[Tensor, "*b c1 h1 w1"]
     ) -> Float[Tensor, "*b h2 w2 c2"]:
         *B, _, H1, W1 = frames.shape
 

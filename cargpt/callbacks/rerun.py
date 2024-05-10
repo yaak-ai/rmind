@@ -31,9 +31,7 @@ class RerunPredictionWriter(BasePredictionWriter):
 
     @override
     def on_predict_start(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
         rr.init(**self.rerun_init_kwargs)
 
@@ -42,9 +40,7 @@ class RerunPredictionWriter(BasePredictionWriter):
 
     @override
     def on_predict_end(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
         if hasattr(rr, "log_once_per_entity_path"):
             delattr(rr, "log_once_per_entity_path")
@@ -56,7 +52,7 @@ class RerunPredictionWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
         prediction: TensorDict,
         batch_indices: Sequence[int] | None,
-        batch: Batch,
+        batch: Batch,  # pyright: ignore[reportGeneralTypeIssues]
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
@@ -65,7 +61,7 @@ class RerunPredictionWriter(BasePredictionWriter):
 
         inputs = inputs.update(
             inputs.select(Modality.IMAGE).apply(
-                Rearrange("... c h w -> ... h w c"),  # CHW -> HWC for logging
+                Rearrange("... c h w -> ... h w c")  # CHW -> HWC for logging
             )
         )
 
@@ -90,8 +86,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                 # pop and process time keys first
                 for camera in cameras:
                     if v := elem.pop(
-                        k := ("meta", f"{camera}/ImageMetadata_frame_idx"),
-                        default=None,
+                        k := ("meta", f"{camera}/ImageMetadata_frame_idx"), default=None
                     ):
                         rr.set_time_sequence("/".join(k), v.item())
 
@@ -107,9 +102,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                     match nested_key:
                         case ("meta", name):
                             rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                path,
-                                rr.SeriesLine(name=name),
-                                timeless=True,
+                                path, rr.SeriesLine(name=name), timeless=True
                             )
                             rr.log(path, rr.Scalar(tensor))
 
@@ -120,9 +113,7 @@ class RerunPredictionWriter(BasePredictionWriter):
 
                                 case Modality.CONTINUOUS | Modality.DISCRETE:
                                     rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                        path,
-                                        rr.SeriesLine(name=name),
-                                        timeless=True,
+                                        path, rr.SeriesLine(name=name), timeless=True
                                     )
                                     rr.log(path, rr.Scalar(tensor))
 
@@ -227,7 +218,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                         *(
                             rrb.TimeSeriesView(origin=k, name=k)
                             for k in ("inputs", "meta")
-                        ),
+                        )
                     ),
                     name="inputs",
                 ),
@@ -264,17 +255,14 @@ class RerunPredictionWriter(BasePredictionWriter):
                             )
                             for objective in {
                                 "/".join(always_iterable(module))
-                                for (
-                                    *module,
-                                    _result_key,
-                                    _modality,
-                                    _name,
-                                ) in data["predictions"].keys(True, True)
+                                for (*module, _result_key, _modality, _name) in data[
+                                    "predictions"
+                                ].keys(True, True)
                             }
                         ),
                         name="predictions",
                     ),
                     name="outputs",
                 ),
-            ),
+            )
         )

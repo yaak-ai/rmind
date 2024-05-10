@@ -19,8 +19,7 @@ class DepthFeatureEncoder(nn.Module):
 
     @override
     def forward(
-        self,
-        frames: Float[Tensor, "*b c1 h1 w1"],
+        self, frames: Float[Tensor, "*b c1 h1 w1"]
     ) -> Float[Tensor, "*b c2 h2 w2"]:
         *b, c, h, w = frames.shape
         frames = frames.view(prod(b), c, h, w)
@@ -42,10 +41,7 @@ class DepthEncoder(nn.Module):
 
     @override
     def forward(
-        self,
-        frames: Float[Tensor, "*b c _h _w"],
-        *,
-        camera,
+        self, frames: Float[Tensor, "*b c _h _w"], *, camera
     ) -> Float[Tensor, "*b h w 3"]:
         B, *_, H, W = frames.shape
 
@@ -67,9 +63,7 @@ class DepthEncoder(nn.Module):
     @lru_cache(maxsize=1)
     def _generate_2d_grid(cls, *, height: int, width: int) -> Shaped[Tensor, "h w 2"]:
         x_mesh, y_mesh = torch.meshgrid(
-            torch.arange(width),
-            torch.arange(height),
-            indexing="xy",
+            torch.arange(width), torch.arange(height), indexing="xy"
         )
 
         return rearrange([x_mesh, y_mesh], "t h w -> h w t")

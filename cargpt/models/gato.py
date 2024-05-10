@@ -116,8 +116,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
             self.logger.log_image("attention_mask", [Image(attn_mask_logged)], step=0)
 
         embeddings, _ = pack(
-            [episode.embeddings[k] for k in episode.timestep.keys],
-            "b t * d",
+            [episode.embeddings[k] for k in episode.timestep.keys], "b t * d"
         )
         embeddings = rearrange(embeddings, "b t s d -> b (t s) d")
         encoder_output = self.encoder(src=embeddings, mask=attn_mask)
@@ -136,13 +135,11 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
         )
 
         labels = episode.labels.select(*self.decoders.keys()).apply(
-            lambda lbl, idx: lbl[:, idx > 0],
-            label_index,
+            lambda lbl, idx: lbl[:, idx > 0], label_index
         )
 
         loss = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[]).apply(
-            self.loss,
-            labels.apply(Rearrange("b t -> (b t)"), batch_size=[]),
+            self.loss, labels.apply(Rearrange("b t -> (b t)"), batch_size=[])
         )
 
         loss = loss.to_tensordict().set(
@@ -181,9 +178,7 @@ class Gato(pl.LightningModule, LoadableFromArtifact):
                     ),
                     "steering_angle": meta["VehicleMotion_steering_angle_normalized"],
                 },
-                TokenType.DISCRETE: {
-                    "turn_signal": meta["VehicleState_turn_signal"],
-                },
+                TokenType.DISCRETE: {"turn_signal": meta["VehicleState_turn_signal"]},
             },
             batch_size=batch.batch_size,
             device=batch.device,

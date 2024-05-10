@@ -19,10 +19,7 @@ from typing_extensions import override
 from wandb import Image
 from yaak_datasets import Batch
 
-from cargpt.components.episode import (
-    EpisodeBuilder,
-    Modality,
-)
+from cargpt.components.episode import EpisodeBuilder, Modality
 from cargpt.components.mask import WandbAttentionMaskLegend
 from cargpt.components.objectives import ObjectiveScheduler
 from cargpt.components.objectives.common import ObjectiveName, PredictionResultKey
@@ -51,9 +48,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     @_restricted_classmethod
     def load_from_checkpoint(  # pyright: ignore[reportIncompatibleMethodOverride]
-        cls,
-        checkpoint_path: str | PathLike[str],
-        **kwargs,
+        cls, checkpoint_path: str | PathLike[str], **kwargs
     ) -> Self:
         match kwargs:
             case {"hparams_updaters": hparams_updaters, **rest} if not rest:
@@ -93,7 +88,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 msg = "`hparams_updaters` cannot be combined with other kwargs"
                 raise NotImplementedError(msg)
 
-    def _step(self, batch: Batch) -> TensorDict:
+    def _step(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         inputs = self._build_input(batch)
 
         selected_objectives = (
@@ -126,11 +121,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 objective = self.objectives[obj]
                 mask = objective._build_attention_mask(episode.index, episode.timestep)
                 img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
-                self.logger.log_image(
-                    f"masks/{obj}",
-                    [img],
-                    step=step,
-                )
+                self.logger.log_image(f"masks/{obj}", [img], step=step)
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore
         metrics[("loss", "total")] = sum(losses.values(True, True))  # pyright: ignore
@@ -138,7 +129,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics
 
     @override
-    def training_step(self, batch: Batch, *args):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def training_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
         metrics = self._step(batch)
 
         self.log_dict({
@@ -149,7 +140,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics["loss", "total"]
 
     @override
-    def validation_step(self, batch: Batch, *args):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def validation_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
         metrics = self._step(batch)
 
         self.log_dict({
@@ -160,7 +151,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics["loss", "total"]
 
     @override
-    def predict_step(self, batch: Batch):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def predict_step(self, batch: Batch):  # pyright: ignore[reportGeneralTypeIssues]
         inputs = self._build_input(batch)
 
         predictions = TensorDict.from_dict({
@@ -181,19 +172,15 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         })
 
         return TensorDict.from_dict(
-            {
-                "inputs": inputs,
-                "predictions": predictions,
-            },
-            batch_size=batch.batch_size,  # pyright: ignore[reportAttributeAccessIssue]
+            {"inputs": inputs, "predictions": predictions}, batch_size=batch.batch_size
         )
 
-    def _build_input(self, batch: Batch) -> TensorDict:
+    def _build_input(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         frames = batch.frames
         meta = batch.meta
         shapes = [
             frames.get_item_shape(k)
-            for k in frames.keys(include_nested=True, leaves_only=True)  # pyright: ignore
+            for k in frames.keys(include_nested=True, leaves_only=True)
         ]
 
         # include timestep as batch dim
@@ -208,9 +195,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     "brake_pedal": meta["VehicleMotion_brake_pedal_normalized"],
                     "steering_angle": meta["VehicleMotion_steering_angle_normalized"],
                 },
-                Modality.DISCRETE: {
-                    "turn_signal": meta["VehicleState_turn_signal"],
-                },
+                Modality.DISCRETE: {"turn_signal": meta["VehicleState_turn_signal"]},
             },
             batch_size=batch_size,
             device=frames.device,
@@ -244,12 +229,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         }
 
         sample_logit_bias_module_keys = {
-            (
-                ObjectiveName.FORWARD_DYNAMICS,
-                "losses",
-                Modality.CONTINUOUS,
-                "speed",
-            ),
+            (ObjectiveName.FORWARD_DYNAMICS, "losses", Modality.CONTINUOUS, "speed"),
             (
                 ObjectiveName.FORWARD_DYNAMICS,
                 "losses",
@@ -345,8 +325,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             samples = TensorDict.from_dict(
                 {
                     (modality, k): sample_df[k].to_numpy(
-                        zero_copy_only=False,
-                        writable=False,
+                        zero_copy_only=False, writable=False
                     )
                     for (modality, k) in sample_logit_bias_losses.keys()
                 },
@@ -355,8 +334,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             )
 
             sample_labels = samples.unsqueeze(0).named_apply(
-                lambda k, v: self.episode_builder.tokenizers.get(k)(v),
-                nested_keys=True,
+                lambda k, v: self.episode_builder.tokenizers.get(k)(v), nested_keys=True
             )
 
             sample_bincounts = sample_labels.named_apply(
@@ -432,9 +410,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
             ref_camera = dataset._cfg.samples.alignment.ref_camera
             delta_metadata_df = dataset._metadata.select(
-                "drive_id",
-                f"{ref_camera}/ImageMetadata_frame_idx",
-                *delta_cols.keys(),
+                "drive_id", f"{ref_camera}/ImageMetadata_frame_idx", *delta_cols.keys()
             ).rename(delta_cols)
 
             clip_metadata_df = (
@@ -455,8 +431,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             deltas = TensorDict.from_dict(
                 {
                     (modality, k): delta_df[k].to_numpy(
-                        zero_copy_only=False,
-                        writable=False,
+                        zero_copy_only=False, writable=False
                     )
                     for (modality, k) in delta_logit_bias_losses.keys()
                 },

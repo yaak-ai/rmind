@@ -8,11 +8,7 @@ from jaxtyping import Float
 from torch import Tensor, nn
 from torch.nn.functional import gelu
 from typing_extensions import override
-from xformers.components import (
-    Activation,
-    ResidualNormStyle,
-    build_activation,
-)
+from xformers.components import Activation, ResidualNormStyle, build_activation
 from xformers.components.attention import ScaledDotProduct
 from xformers.components.attention.core import scaled_query_key_softmax
 from xformers.components.feedforward import register_feedforward
@@ -36,11 +32,8 @@ class HFGPT2(pl.LightningModule):
         self.llm: GPT2LMHeadModel = instantiate(self.hparams.llm)  # pyright: ignore[reportAttributeAccessIssue]
 
     @override
-    def forward(  # pyright: ignore[reportIncompatibleMethodOverride]
-        self,
-        inputs_embeds: Tensor,
-        labels: Tensor | None = None,
-        **_kwargs,
+    def forward(
+        self, inputs_embeds: Tensor, labels: Tensor | None = None, **_kwargs
     ) -> Any:
         return self.llm(
             inputs_embeds=inputs_embeds,
@@ -63,7 +56,7 @@ class TorchGPT2(pl.LightningModule):
         self.loss_fn = instantiate(self.hparams.loss)  # pyright: ignore[reportAttributeAccessIssue]
 
     @override
-    def forward(  # pyright: ignore[reportIncompatibleMethodOverride]
+    def forward(
         self,
         inputs_embeds: Tensor,
         episode_mask: Tensor | None,
@@ -203,9 +196,7 @@ class xFormerEncoder(nn.Module):
 
     @override
     def forward(
-        self,
-        src: Float[Tensor, "b s d"],
-        mask: Float[Tensor, "s s"],
+        self, src: Float[Tensor, "b s d"], mask: Float[Tensor, "s s"]
     ) -> Float[Tensor, "b s d"]:
         x = torch.cat([src, src], dim=-1)
         x = self.encoders(x, att_mask=mask)

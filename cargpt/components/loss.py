@@ -16,9 +16,7 @@ class FocalLoss(Module):
 
     @override
     def forward(
-        self,
-        input: Float[Tensor, "b d"],
-        target: Int[Tensor, "b"],
+        self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]
     ) -> Float[Tensor, ""]:
         ce_loss = F.cross_entropy(input, target, reduction="none")
         pt = torch.exp(-ce_loss)
@@ -46,10 +44,7 @@ class LogitBiasMixin:
 
 class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss):
     def __init__(
-        self,
-        *,
-        logit_bias: Float[Tensor, "d"] | None = None,
-        gamma: float = 2.0,
+        self, *, logit_bias: Float[Tensor, "d"] | None = None, gamma: float = 2.0
     ):
         super().__init__(gamma=gamma)
 
@@ -61,12 +56,7 @@ class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss):
 
 
 class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
-    def __init__(
-        self,
-        *args,
-        logit_bias: Float[Tensor, "d"] | None = None,
-        **kwargs,
-    ):
+    def __init__(self, *args, logit_bias: Float[Tensor, "d"] | None = None, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.logit_bias = logit_bias

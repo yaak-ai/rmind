@@ -31,28 +31,21 @@ from cargpt.utils.padder import nan_padder
 
 
 class InverseDynamicsPredictionObjective(Module):
-    def __init__(
-        self,
-        heads: ModuleDict,
-        losses: ModuleDict | None = None,
-    ):
+    def __init__(self, heads: ModuleDict, losses: ModuleDict | None = None):
         super().__init__()
         self.heads = heads
         self.losses = losses
 
     @override
     def forward(
-        self,
-        inputs: TensorDict,
-        episode_builder: EpisodeBuilder,
-        encoder: Module,
+        self, inputs: TensorDict, episode_builder: EpisodeBuilder, encoder: Module
     ) -> TensorDict:
         b, t = inputs.batch_size
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
         observation_summaries = (
-            episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
+            episode.index.select(
                 k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
             )
             .parse(embedding)
@@ -73,7 +66,7 @@ class InverseDynamicsPredictionObjective(Module):
             batch_size=[b, t - 1],
         )
 
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, :-1]  # pyright: ignore
+        labels = episode.tokenized.select(*logits.keys(True, True))[:, :-1]
 
         logits = logits.apply(Rearrange("b t d -> (b t) d"), batch_size=[])
         labels = labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[])
@@ -115,7 +108,7 @@ class InverseDynamicsPredictionObjective(Module):
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
             observation_summaries = (
-                episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
+                episode.index.select(
                     k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
                 )
                 .parse(embedding)
@@ -150,7 +143,7 @@ class InverseDynamicsPredictionObjective(Module):
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
                 # TODO: categorical heads only
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     nan_padder((0, 0, 0, 1)), batch_size=[b, t]
                 )
 
@@ -197,14 +190,12 @@ class InverseDynamicsPredictionObjective(Module):
         if (result_key := PredictionResultKey.ATTENTION) in result_keys:
             mask = self._build_attention_mask(episode.index, episode.timestep)
             attention = encoder.compute_attention_rollout(
-                src=episode.packed_embeddings,
-                mask=mask.data,
-                drop_ratio=0.9,
+                src=episode.packed_embeddings, mask=mask.data, drop_ratio=0.9
             )
 
             attention = (
                 # from relevant tokens
-                episode.index.select((  # pyright: ignore[reportAttributeAccessIssue]
+                episode.index.select((
                     Modality.SPECIAL,
                     SpecialToken.OBSERVATION_SUMMARY,
                 ))
@@ -225,17 +216,17 @@ class InverseDynamicsPredictionObjective(Module):
     @lru_cache(maxsize=1, typed=True)
     def _build_attention_mask(
         cls,
-        index: Index,
+        index: Index,  # pyright: ignore[reportGeneralTypeIssues]
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
-    ) -> AttentionMask:
+    ) -> AttentionMask:  # pyright: ignore[reportGeneralTypeIssues]
         mask = ForwardDynamicsPredictionObjective._build_attention_mask(
             index, timestep, legend
-        ).clone()  # pyright: ignore[reportAttributeAccessIssue]
+        ).clone()
 
-        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
+        (t,) = index.batch_size
         for step in range(t):
-            past, current = index[:step], index[step]  # pyright: ignore
+            past, current = index[:step], index[step]
             current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
             current_observation_summary = current.select((
                 Modality.SPECIAL,
@@ -252,30 +243,12 @@ class InverseDynamicsPredictionObjective(Module):
             ))
 
             mask = (
-                mask._do_not_attend(
-                    current_observations,
-                    past_actions,
-                )
-                ._do_not_attend(
-                    current_observations,
-                    past_action_summary,
-                )
-                ._do_not_attend(
-                    current_observation_summary,
-                    past_actions,
-                )
-                ._do_not_attend(
-                    current_observation_summary,
-                    past_action_summary,
-                )
-                ._do_not_attend(
-                    current_observation_history,
-                    past_actions,
-                )
-                ._do_not_attend(
-                    current_observation_history,
-                    past_action_summary,
-                )
+                mask._do_not_attend(current_observations, past_actions)
+                ._do_not_attend(current_observations, past_action_summary)
+                ._do_not_attend(current_observation_summary, past_actions)
+                ._do_not_attend(current_observation_summary, past_action_summary)
+                ._do_not_attend(current_observation_history, past_actions)
+                ._do_not_attend(current_observation_history, past_action_summary)
             )
 
         return mask
