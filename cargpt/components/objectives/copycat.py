@@ -200,7 +200,7 @@ class MemoryExtractionStream(Module):
         logits = logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[])
         labels = labels.apply(Rearrange("b t -> (b t)"), batch_size=[])
 
-        loss = logits.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+        loss = logits.named_apply(
             lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore[reportOptionalMemberAccess]
             labels,
             nested_keys=True,
@@ -251,7 +251,7 @@ class MemoryExtractionStream(Module):
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
-                prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+                prediction = prediction_tokens.named_apply(
                     lambda k, v: self.delta_detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
                     nested_keys=True,
                 ).apply(Rearrange("b t 1 -> b t"))
@@ -263,13 +263,13 @@ class MemoryExtractionStream(Module):
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
                 # TODO: categorical heads only
-                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(
                     Rearrange("b t 1 bin -> b t bin")
                 )
 
                 prediction_probs = prediction_probs.apply(
                     nan_padder((0, 0, 1, 0)), batch_size=[b, t]
-                )  # pyright: ignore[reportAttributeAccessIssue]
+                )
 
                 result[result_key] = prediction_probs
 
@@ -349,7 +349,7 @@ class PolicyStream(Module):
         logits = logits.apply(Rearrange("b 1 d -> b d"), batch_size=[])
         labels = labels.apply(Rearrange("b 1 -> b"), batch_size=[])
 
-        loss = logits.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+        loss = logits.named_apply(
             lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore[reportOptionalMemberAccess]
             labels,
             nested_keys=True,
@@ -417,7 +417,7 @@ class PolicyStream(Module):
             # NOTE: pad w/ NaNs to indicate the prediction is for the last timestep only
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
-                prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+                prediction = prediction_tokens.named_apply(
                     lambda k, v: self.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
                     nested_keys=True,
                 )
@@ -433,7 +433,7 @@ class PolicyStream(Module):
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(
                     nan_padder((0, 0, t - 1, 0)), batch_size=[b, t]
-                )  # pyright: ignore[reportAttributeAccessIssue]
+                )
 
                 gt_tokens = episode.tokenized.select(
                     *(k for k, _ in self.heads.flatten())
@@ -447,7 +447,7 @@ class PolicyStream(Module):
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 # TODO: get rid of code duplication
                 prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
-                prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+                prediction = prediction_tokens.named_apply(
                     lambda k, v: self.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
                     nested_keys=True,
                 )
