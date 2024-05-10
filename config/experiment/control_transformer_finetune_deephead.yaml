@@ -5,7 +5,7 @@ defaults:
   - /datamodule: default.yaml
   - _self_
 
-batch_size: 64
+batch_size: 32
 clip_len: 6
 embedding_dim: 512
 
@@ -13,6 +13,12 @@ speed_range: [5.0, 130.0]
 
 wandb:
   group: smart
+  mode: online
+  project: cargpt
+  notes: "vibrant-yogurt PT | mlp head 2emb>512>256>out | bs32"
+
+paths:
+  metadata_cache_dir: ./yaak-datasets/metadata
 
 model:
   _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
@@ -75,6 +81,16 @@ model:
                               _args_:
                                 - 2
                                 - ${embedding_dim}
+                            out_features: 512
+                            bias: True
+                          - _target_: torch.nn.ReLU
+                          - _target_: torch.nn.Linear
+                            in_features: 512
+                            out_features: 256
+                            bias: True
+                          - _target_: torch.nn.ReLU
+                          - _target_: torch.nn.Linear
+                            in_features: 256
                             out_features: 255
                             bias: False
 
@@ -87,6 +103,16 @@ model:
                               _args_:
                                 - 2
                                 - ${embedding_dim}
+                            out_features: 512
+                            bias: True
+                          - _target_: torch.nn.ReLU
+                          - _target_: torch.nn.Linear
+                            in_features: 512
+                            out_features: 256
+                            bias: True
+                          - _target_: torch.nn.ReLU
+                          - _target_: torch.nn.Linear
+                            in_features: 256
                             out_features: 165
                             bias: False
 
@@ -99,6 +125,16 @@ model:
                               _args_:
                                 - 2
                                 - ${embedding_dim}
+                            out_features: 512
+                            bias: True
+                          - _target_: torch.nn.ReLU
+                          - _target_: torch.nn.Linear
+                            in_features: 512
+                            out_features: 256
+                            bias: True
+                          - _target_: torch.nn.ReLU
+                          - _target_: torch.nn.Linear
+                            in_features: 256
                             out_features: 961
                             bias: False
 
