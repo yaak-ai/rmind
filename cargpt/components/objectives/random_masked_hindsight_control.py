@@ -33,10 +33,7 @@ class RandomMaskedHindsightControlObjective(Module):
 
     @override
     def forward(
-        self,
-        inputs: TensorDict,
-        episode_builder: EpisodeBuilder,
-        encoder: Module,
+        self, inputs: TensorDict, episode_builder: EpisodeBuilder, encoder: Module
     ) -> TensorDict:
         _, t = inputs.batch_size
         masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
@@ -48,11 +45,10 @@ class RandomMaskedHindsightControlObjective(Module):
         )
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))  # pyright: ignore[reportAttributeAccessIssue]
+        index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = embeddings.named_apply(
-            lambda k, v: self.heads.get(k)(v),
-            nested_keys=True,
+            lambda k, v: self.heads.get(k)(v), nested_keys=True
         )
 
         labels = episode.tokenized.select(*logits.keys(True, True))[
@@ -102,12 +98,11 @@ class RandomMaskedHindsightControlObjective(Module):
         ):
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-            index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))  # pyright: ignore[reportAttributeAccessIssue]
+            index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))
             embeddings = index[masked_action_timestep_idx].parse(embedding)
 
             logits = embeddings.named_apply(
-                lambda k, v: self.heads.get(k)(v),
-                nested_keys=True,
+                lambda k, v: self.heads.get(k)(v), nested_keys=True
             )
 
             def padder(x):
@@ -186,20 +181,20 @@ class RandomMaskedHindsightControlObjective(Module):
     @lru_cache(maxsize=1, typed=True)
     def _build_attention_mask(
         cls,
-        index: Index,
+        index: Index,  # pyright: ignore[reportGeneralTypeIssues]
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
-    ) -> AttentionMask:
-        mask = AttentionMask(  # pyright: ignore
-            data=torch.full((index.max + 1, index.max + 1), legend.DO_ATTEND),
-            legend=legend,
-            batch_size=[],
-            device=index.device,  # pyright: ignore[reportAttributeAccessIssue]
+    ) -> AttentionMask:  # pyright: ignore[reportGeneralTypeIssues]
+        mask = AttentionMask(  # pyright: ignore[reportCallIssue]
+            data=torch.full((index.max + 1, index.max + 1), legend.DO_ATTEND),  # pyright: ignore[reportCallIssue]
+            legend=legend,  # pyright: ignore[reportCallIssue]
+            batch_size=[],  # pyright: ignore[reportCallIssue]
+            device=index.device,  # pyright: ignore[reportCallIssue]
         )
 
-        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
+        (t,) = index.batch_size
         for step in range(t):
-            past, current, future = index[:step], index[step], index[step + 1 :]  # pyright: ignore
+            past, current, future = index[:step], index[step], index[step + 1 :]
             current_actions = current.select(*timestep.keys(TokenType.ACTION))
             current_action_summary = current.select((
                 Modality.SPECIAL,
@@ -217,38 +212,14 @@ class RandomMaskedHindsightControlObjective(Module):
             ))
 
             mask = (
-                mask._do_not_attend(
-                    current_actions,
-                    past_actions,
-                )
-                ._do_not_attend(
-                    current_actions,
-                    past_action_summary,
-                )
-                ._do_not_attend(
-                    current_actions,
-                    future_actions,
-                )
-                ._do_not_attend(
-                    current_actions,
-                    future_action_summary,
-                )
-                ._do_not_attend(
-                    current_action_summary,
-                    past_actions,
-                )
-                ._do_not_attend(
-                    current_action_summary,
-                    past_action_summary,
-                )
-                ._do_not_attend(
-                    current_action_summary,
-                    future_actions,
-                )
-                ._do_not_attend(
-                    current_action_summary,
-                    future_action_summary,
-                )
+                mask._do_not_attend(current_actions, past_actions)
+                ._do_not_attend(current_actions, past_action_summary)
+                ._do_not_attend(current_actions, future_actions)
+                ._do_not_attend(current_actions, future_action_summary)
+                ._do_not_attend(current_action_summary, past_actions)
+                ._do_not_attend(current_action_summary, past_action_summary)
+                ._do_not_attend(current_action_summary, future_actions)
+                ._do_not_attend(current_action_summary, future_action_summary)
             )
 
         return mask

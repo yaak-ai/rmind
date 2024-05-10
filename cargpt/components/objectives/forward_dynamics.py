@@ -36,28 +36,21 @@ if TYPE_CHECKING:
 
 
 class ForwardDynamicsPredictionObjective(Module):
-    def __init__(
-        self,
-        heads: ModuleDict,
-        losses: ModuleDict | None = None,
-    ) -> None:
+    def __init__(self, heads: ModuleDict, losses: ModuleDict | None = None) -> None:
         super().__init__()
         self.heads = heads
         self.losses = losses
 
     @override
     def forward(
-        self,
-        inputs: TensorDict,
-        episode_builder: EpisodeBuilder,
-        encoder: Module,
+        self, inputs: TensorDict, episode_builder: EpisodeBuilder, encoder: Module
     ) -> TensorDict:
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
         # all but last timestep
-        index = episode.index[:-1]  # pyright: ignore
+        index = episode.index[:-1]
 
         observations: TensorDict = index.select(
             *episode.timestep.keys(TokenType.OBSERVATION)
@@ -88,8 +81,7 @@ class ForwardDynamicsPredictionObjective(Module):
         )
 
         logits = features.named_apply(  # pyright: ignore[reportOptionalMemberAccess]
-            lambda k, v: self.heads.get(k)(v),
-            nested_keys=True,
+            lambda k, v: self.heads.get(k)(v), nested_keys=True
         )
 
         non_image_keys, image_keys = partition(
@@ -140,7 +132,7 @@ class ForwardDynamicsPredictionObjective(Module):
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
             # all but last timestep
-            index = episode.index[:-1]  # pyright: ignore
+            index = episode.index[:-1]
 
             observations: TensorDict = (
                 index.select(*episode.timestep.keys(TokenType.OBSERVATION))
@@ -173,8 +165,7 @@ class ForwardDynamicsPredictionObjective(Module):
             )
 
             logits = features.named_apply(  # pyright: ignore[reportOptionalMemberAccess]
-                lambda k, v: self.heads.get(k)(v),
-                nested_keys=True,
+                lambda k, v: self.heads.get(k)(v), nested_keys=True
             )
 
             # NOTE: insert NaN at index 0 to indicate no prediction for t=0
@@ -200,7 +191,7 @@ class ForwardDynamicsPredictionObjective(Module):
 
                 prediction_probs = prediction_probs.apply(
                     nan_padder((0, 0, 1, 0)), batch_size=[b, t]
-                )  # pyright: ignore[reportAttributeAccessIssue]
+                )
 
                 result[result_key] = prediction_probs
 
@@ -248,14 +239,12 @@ class ForwardDynamicsPredictionObjective(Module):
         if (result_key := PredictionResultKey.ATTENTION) in result_keys:
             mask = self._build_attention_mask(episode.index, episode.timestep)
             attention = encoder.compute_attention_rollout(
-                src=episode.packed_embeddings,
-                mask=mask.data,
-                drop_ratio=0.9,
+                src=episode.packed_embeddings, mask=mask.data, drop_ratio=0.9
             )
 
             attention = (
                 # from relevant tokens
-                episode.index.select(  # pyright: ignore
+                episode.index.select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
                     (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY),
                 )
@@ -276,20 +265,20 @@ class ForwardDynamicsPredictionObjective(Module):
     @lru_cache(maxsize=1, typed=True)
     def _build_attention_mask(
         cls,
-        index: Index,
+        index: Index,  # pyright: ignore[reportGeneralTypeIssues]
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
-    ) -> AttentionMask:
-        mask = AttentionMask(  # pyright: ignore
-            data=torch.full((index.max + 1, index.max + 1), legend.DO_NOT_ATTEND),
-            legend=legend,
-            batch_size=[],
-            device=index.device,  # pyright: ignore[reportAttributeAccessIssue]
+    ) -> AttentionMask:  # pyright: ignore[reportGeneralTypeIssues]
+        mask = AttentionMask(  # pyright: ignore[reportCallIssue]
+            data=torch.full((index.max + 1, index.max + 1), legend.DO_NOT_ATTEND),  # pyright: ignore[reportCallIssue]
+            legend=legend,  # pyright: ignore[reportCallIssue]
+            batch_size=[],  # pyright: ignore[reportCallIssue]
+            device=index.device,  # pyright: ignore[reportCallIssue]
         )
 
-        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
+        (t,) = index.batch_size
         for step in range(t):
-            past, current = index[:step], index[step]  # pyright: ignore
+            past, current = index[:step], index[step]
             current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
             current_observation_summary = current.select((
                 Modality.SPECIAL,
@@ -306,38 +295,14 @@ class ForwardDynamicsPredictionObjective(Module):
             ))
 
             mask = (
-                mask._do_attend(
-                    current,
-                    current,
-                )
-                ._do_attend(
-                    current,
-                    past,
-                )
-                ._do_not_attend(
-                    current_observations,
-                    current_actions,
-                )
-                ._do_not_attend(
-                    current_observations,
-                    current_action_summary,
-                )
-                ._do_not_attend(
-                    current_observation_summary,
-                    current_actions,
-                )
-                ._do_not_attend(
-                    current_observation_summary,
-                    current_action_summary,
-                )
-                ._do_not_attend(
-                    current_observation_history,
-                    current_actions,
-                )
-                ._do_not_attend(
-                    current_observation_history,
-                    current_action_summary,
-                )
+                mask._do_attend(current, current)
+                ._do_attend(current, past)
+                ._do_not_attend(current_observations, current_actions)
+                ._do_not_attend(current_observations, current_action_summary)
+                ._do_not_attend(current_observation_summary, current_actions)
+                ._do_not_attend(current_observation_summary, current_action_summary)
+                ._do_not_attend(current_observation_history, current_actions)
+                ._do_not_attend(current_observation_history, current_action_summary)
             )
 
         return mask

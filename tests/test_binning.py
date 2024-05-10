@@ -13,11 +13,7 @@ def test_binning():
     unbinner = UniformUnbinner(out_range=value_range, num_bins=num_bins)
 
     values = make_tensor(
-        1024,
-        dtype=torch.float,
-        device="cpu",
-        low=value_range[0],
-        high=value_range[1],
+        1024, dtype=torch.float, device="cpu", low=value_range[0], high=value_range[1]
     )
     binned = binner(values)
     unbinned = unbinner(binned)

@@ -37,10 +37,7 @@ class CopycatObjective(Module):
     """Inspired by: Resolving Copycat Problems in Visual Imitation Learning via Residual Action Prediction (https://arxiv.org/abs/2207.09705)"""
 
     def __init__(
-        self,
-        *,
-        memory_extraction: Module | None = None,
-        policy: Module | None = None,
+        self, *, memory_extraction: Module | None = None, policy: Module | None = None
     ):
         super().__init__()
 
@@ -55,10 +52,7 @@ class CopycatObjective(Module):
 
     @override
     def forward(
-        self,
-        inputs: TensorDict,
-        episode_builder: EpisodeBuilder,
-        encoder: Module,
+        self, inputs: TensorDict, episode_builder: EpisodeBuilder, encoder: Module
     ) -> TensorDict:
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
@@ -92,17 +86,17 @@ class CopycatObjective(Module):
     @lru_cache(maxsize=1, typed=True)
     def _build_attention_mask(
         cls,
-        index: Index,
+        index: Index,  # pyright: ignore[reportGeneralTypeIssues]
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
-    ) -> AttentionMask:
+    ) -> AttentionMask:  # pyright: ignore[reportGeneralTypeIssues]
         mask = ForwardDynamicsPredictionObjective._build_attention_mask(
             index, timestep, legend
-        ).clone()  # pyright: ignore
+        ).clone()
 
-        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
+        (t,) = index.batch_size
         for step in range(t):
-            past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
+            past, current = index[:step], index[step]
             current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
             current_observation_summary = current.select((
                 Modality.SPECIAL,
@@ -119,30 +113,12 @@ class CopycatObjective(Module):
             ))
 
             mask = (
-                mask._do_not_attend(
-                    current_observations,
-                    past_actions,
-                )
-                ._do_not_attend(
-                    current_observations,
-                    past_action_summary,
-                )
-                ._do_not_attend(
-                    current_observation_summary,
-                    past_actions,
-                )
-                ._do_not_attend(
-                    current_observation_summary,
-                    past_action_summary,
-                )
-                ._do_not_attend(
-                    current_observation_history,
-                    past_actions,
-                )
-                ._do_not_attend(
-                    current_observation_history,
-                    past_action_summary,
-                )
+                mask._do_not_attend(current_observations, past_actions)
+                ._do_not_attend(current_observations, past_action_summary)
+                ._do_not_attend(current_observation_summary, past_actions)
+                ._do_not_attend(current_observation_summary, past_action_summary)
+                ._do_not_attend(current_observation_history, past_actions)
+                ._do_not_attend(current_observation_history, past_action_summary)
             )
 
         return mask
@@ -167,13 +143,13 @@ class MemoryExtractionStream(Module):
     @override
     def forward(
         self,
-        episode: Episode,
+        episode: Episode,  # pyright: ignore[reportGeneralTypeIssues]
         embedding: Float[Tensor, "b s d"],
     ) -> TensorDict:
         b, t = episode.embedded.batch_size
 
         features = (
-            episode.index[1:]  # pyright: ignore[reportIndexIssue]
+            episode.index[1:]
             .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
             .parse(embedding)
             .get(k)
@@ -187,20 +163,18 @@ class MemoryExtractionStream(Module):
             batch_size=[b, t - 1],
         )
 
-        deltas = episode.inputs.select(*logits.keys(True, True)).apply(  # pyright: ignore[reportArgumentType]
-            lambda tensor: torch.diff(tensor, n=1, dim=-1),
-            batch_size=[b, t - 1],
+        deltas = episode.inputs.select(*logits.keys(True, True)).apply(
+            lambda tensor: torch.diff(tensor, n=1, dim=-1), batch_size=[b, t - 1]
         )
 
         labels = deltas.named_apply(
-            lambda k, v: self.delta_tokenizers.get(k)(v),
-            nested_keys=True,
+            lambda k, v: self.delta_tokenizers.get(k)(v), nested_keys=True
         )
 
         logits = logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[])
         labels = labels.apply(Rearrange("b t -> (b t)"), batch_size=[])
 
-        loss = logits.named_apply(
+        loss = logits.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
             lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore[reportOptionalMemberAccess]
             labels,
             nested_keys=True,
@@ -210,7 +184,7 @@ class MemoryExtractionStream(Module):
 
     def predict(
         self,
-        episode: Episode,
+        episode: Episode,  # pyright: ignore[reportGeneralTypeIssues]
         embedding: Float[Tensor, "b s d"],
         *,
         result_keys: Sequence[PredictionResultKey],
@@ -235,7 +209,7 @@ class MemoryExtractionStream(Module):
                 raise RuntimeError(msg)
 
             features = (
-                episode.index[1:]  # pyright: ignore[reportIndexIssue]
+                episode.index[1:]
                 .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
                 .parse(embedding)
                 .get(k)
@@ -251,7 +225,7 @@ class MemoryExtractionStream(Module):
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
-                prediction = prediction_tokens.named_apply(
+                prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                     lambda k, v: self.delta_detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
                     nested_keys=True,
                 ).apply(Rearrange("b t 1 -> b t"))
@@ -263,7 +237,7 @@ class MemoryExtractionStream(Module):
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
                 # TODO: categorical heads only
-                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(
+                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     Rearrange("b t 1 bin -> b t bin")
                 )
 
@@ -278,8 +252,7 @@ class MemoryExtractionStream(Module):
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             inputs = episode.inputs.select(*(k for k, _ in self.heads.flatten()))
             ground_truth = inputs.apply(
-                lambda tensor: torch.diff(tensor, n=1, dim=-1),
-                batch_size=[b, t - 1],
+                lambda tensor: torch.diff(tensor, n=1, dim=-1), batch_size=[b, t - 1]
             )
             # insert NaN at index 0 to indicate no ground_truth for t=0 b/c deltas
             ground_truth = ground_truth.apply(nan_padder((1, 0)), batch_size=[b, t])
@@ -309,11 +282,11 @@ class PolicyStream(Module):
     @override
     def forward(
         self,
-        episode: Episode,
+        episode: Episode,  # pyright: ignore[reportGeneralTypeIssues]
         embedding: Float[Tensor, "b s d"],
     ) -> TensorDict:
         embeddings = (
-            episode.index[-1]  # pyright: ignore[reportIndexIssue]
+            episode.index[-1]
             .select(
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
@@ -332,8 +305,7 @@ class PolicyStream(Module):
         ))
 
         features = rearrange(
-            [observation_summary, observation_history],
-            "i b 1 d -> b 1 (i d)",
+            [observation_summary, observation_history], "i b 1 d -> b 1 (i d)"
         )
 
         logits = TensorDict.from_dict(
@@ -344,12 +316,12 @@ class PolicyStream(Module):
             batch_size=[],
         )
 
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]  # pyright: ignore[reportArgumentType]
+        labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]
 
         logits = logits.apply(Rearrange("b 1 d -> b d"), batch_size=[])
         labels = labels.apply(Rearrange("b 1 -> b"), batch_size=[])
 
-        loss = logits.named_apply(
+        loss = logits.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
             lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore[reportOptionalMemberAccess]
             labels,
             nested_keys=True,
@@ -359,7 +331,7 @@ class PolicyStream(Module):
 
     def predict(
         self,
-        episode: Episode,
+        episode: Episode,  # pyright: ignore[reportGeneralTypeIssues]
         embedding: Float[Tensor, "b s d"],
         *,
         result_keys: Sequence[PredictionResultKey],
@@ -383,7 +355,7 @@ class PolicyStream(Module):
                 raise RuntimeError(msg)
 
             embeddings = (
-                episode.index[-1]  # pyright: ignore[reportIndexIssue]
+                episode.index[-1]
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
@@ -402,8 +374,7 @@ class PolicyStream(Module):
             ))
 
             features = rearrange(
-                [observation_summary, observation_history],
-                "i b 1 d -> b 1 (i d)",
+                [observation_summary, observation_history], "i b 1 d -> b 1 (i d)"
             )
 
             logits = TensorDict.from_dict(
@@ -417,7 +388,7 @@ class PolicyStream(Module):
             # NOTE: pad w/ NaNs to indicate the prediction is for the last timestep only
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
-                prediction = prediction_tokens.named_apply(
+                prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                     lambda k, v: self.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
                     nested_keys=True,
                 )
@@ -427,11 +398,11 @@ class PolicyStream(Module):
                 result[result_key] = prediction
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     nan_padder((0, 0, t - 1, 0)), batch_size=[b, t]
                 )
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
-                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(
+                prediction_probs = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     nan_padder((0, 0, t - 1, 0)), batch_size=[b, t]
                 )
 
@@ -447,7 +418,7 @@ class PolicyStream(Module):
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 # TODO: get rid of code duplication
                 prediction_tokens = logits.apply(lambda x: x.argmax(dim=-1))
-                prediction = prediction_tokens.named_apply(
+                prediction = prediction_tokens.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                     lambda k, v: self.detokenizers.get(k)(v),  # pyright: ignore[reportOptionalMemberAccess]
                     nested_keys=True,
                 )

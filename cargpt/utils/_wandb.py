@@ -7,10 +7,7 @@ from wandb.sdk.lib import RunDisabled
 class LoadableFromArtifact:
     @classmethod
     def load_from_wandb_artifact(
-        cls,
-        artifact: str,
-        filename: str = "model.ckpt",
-        **kwargs,
+        cls, artifact: str, filename: str = "model.ckpt", **kwargs
     ):
         match wandb.run:
             case RunDisabled() | None:  # pyright: ignore[reportUnnecessaryComparison]
