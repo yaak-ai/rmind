@@ -6,6 +6,7 @@ import rerun as rr
 import rerun.blueprint as rrb
 from einops.layers.torch import Rearrange
 from funcy import once_per
+from more_itertools import always_iterable
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorDict
 from typing_extensions import override
@@ -61,15 +62,6 @@ class RerunPredictionWriter(BasePredictionWriter):
     ) -> None:
         prediction = prediction.to(pl_module.device)
         inputs, predictions = prediction["inputs"], prediction["predictions"]
-
-        # To preserve correct paths structure
-        # But might be a legacy already if we move only to FT models inference
-        if "copycat" in predictions.keys():
-            keys = list(predictions["copycat"].keys())
-            if len(keys) == 1:
-                predictions["copycat"] = predictions["copycat"][keys[0]]
-            else:
-                raise NotImplementedError
 
         inputs = inputs.update(
             inputs.select(Modality.IMAGE).apply(
@@ -146,22 +138,16 @@ class RerunPredictionWriter(BasePredictionWriter):
                         ) if not tensor.isnan().all():
                             match result_key:
                                 case PredictionResultKey.GROUND_TRUTH:
-                                    path_ = str(path).replace(
-                                        "/ground_truth/", "/compare/ground_truth/"
-                                    )
                                     rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                        path_,
+                                        path,
                                         rr.SeriesLine(name=f"gt/{name}"),
                                         timeless=True,
                                     )
-                                    rr.log(path_, rr.Scalar(tensor))
+                                    rr.log(path, rr.Scalar(tensor))
 
                                 case PredictionResultKey.PREDICTION:
-                                    path_ = str(path).replace(
-                                        "/prediction/", "/compare/prediction/"
-                                    )
                                     rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                        path_,
+                                        path,
                                         rr.SeriesPoint(
                                             name=f"pred/{name}",
                                             marker="cross",
@@ -169,13 +155,10 @@ class RerunPredictionWriter(BasePredictionWriter):
                                         ),
                                         timeless=True,
                                     )
-                                    rr.log(path_, rr.Scalar(tensor))
+                                    rr.log(path, rr.Scalar(tensor))
 
                                 case PredictionResultKey.PREDICTION_PROBS:
-                                    rr.log(
-                                        path,
-                                        rr.BarChart(tensor),
-                                    )
+                                    rr.log(path, rr.BarChart(tensor))
 
                                 case PredictionResultKey.SCORE_LOGPROB:
                                     rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
@@ -253,7 +236,14 @@ class RerunPredictionWriter(BasePredictionWriter):
                         *(
                             rrb.Vertical(
                                 rrb.TimeSeriesView(
-                                    origin=f"/predictions/{objective}/compare",
+                                    origin=f"/predictions/{objective}",
+                                    contents=[
+                                        f"$origin/{result_key}/**"
+                                        for result_key in (
+                                            PredictionResultKey.PREDICTION,
+                                            PredictionResultKey.GROUND_TRUTH,
+                                        )
+                                    ],
                                     name="Predictions",
                                 ),
                                 rrb.Tabs(
@@ -272,7 +262,15 @@ class RerunPredictionWriter(BasePredictionWriter):
                                 ),
                                 name=objective,
                             )
-                            for objective in data["predictions"].keys()
+                            for objective in {
+                                "/".join(always_iterable(module))
+                                for (
+                                    *module,
+                                    _result_key,
+                                    _modality,
+                                    _name,
+                                ) in data["predictions"].keys(True, True)
+                            }
                         ),
                         name="predictions",
                     ),
