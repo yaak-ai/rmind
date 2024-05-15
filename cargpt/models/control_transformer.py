@@ -175,6 +175,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             {"inputs": inputs, "predictions": predictions}, batch_size=batch.batch_size
         )
 
+    @override
+    def embeddings_step(self, batch: Batch):  # pyright: ignore[reportGeneralTypeIssues]
+        inputs = self._build_input(batch)
+
+
     def _build_input(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         frames = batch.frames
         meta = batch.meta
