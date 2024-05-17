@@ -38,3 +38,13 @@ repos:
     rev: 0.16.1
     hooks:
       - id: deptry
+
+  - repo: local
+    hooks:
+      - id: just-format
+        name: just-format
+        language: system
+        stages: [commit]
+        entry: just --fmt --unstable
+        pass_filenames: false
+        always_run: true

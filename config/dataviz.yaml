@@ -1,0 +1,79 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - /dataset/train@dataloader.dataset
+  - _self_
+
+speed_range: [5.0, 130.0]
+
+dataloader:
+  _target_: torch.utils.data.DataLoader
+  shuffle: false
+  num_workers: 1
+  pin_memory: false
+  batch_size: 16
+  drop_last: false
+  persistent_workers: true
+  multiprocessing_context: forkserver
+  collate_fn:
+    _target_: yaak_datasets.collate
+    _partial_: true
+
+  dataset:
+    config:
+      data:
+        metadata:
+          select:
+            - message: ImageMetadata
+              fields:
+                - name: frame_idx
+                - name: camera_name
+
+            - message: VehicleMotion
+              fields:
+                - name: speed
+                  merge:
+                    method: interp
+
+                - name: steering_angle_normalized
+                  merge:
+                    method: interp
+
+                - name: gas_pedal_normalized
+                  merge:
+                    method: interp
+
+                - name: brake_pedal_normalized
+                  merge:
+                    method: interp
+
+                - name: instructor_pedals_used
+                  merge:
+                    method: asof
+
+            - message: VehicleState
+              fields:
+                - name: turn_signal
+
+          filter: >
+            VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
+            and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
+            and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
+            and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
+
+      samples:
+        clips:
+          length: 6
+          stride: 10
+          step: 60
+          frame_mask: [0, 0, 0, 0, 0, 1]
+          filter: >
+            not (
+                  array_upper(VehicleMotion_gas_pedal_normalized) <= (1.0/255 + 0.001)
+              and array_upper(VehicleMotion_brake_pedal_normalized) <= (1.0/164 + 0.001)
+              and array_upper(VehicleMotion_speed) >= 25.0
+              and array_get(VehicleMotion_speed, -1) - array_get(VehicleMotion_speed, 0) >= -0.05 * array_mean(VehicleMotion_speed)
+            )
+
+        transforms: []

@@ -102,7 +102,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                     match nested_key:
                         case ("meta", name):
                             rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                path, rr.SeriesLine(name=name), timeless=True
+                                path, rr.SeriesLine(name=name), static=True
                             )
                             rr.log(path, rr.Scalar(tensor))
 
@@ -113,7 +113,7 @@ class RerunPredictionWriter(BasePredictionWriter):
 
                                 case Modality.CONTINUOUS | Modality.DISCRETE:
                                     rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
-                                        path, rr.SeriesLine(name=name), timeless=True
+                                        path, rr.SeriesLine(name=name), static=True
                                     )
                                     rr.log(path, rr.Scalar(tensor))
 
@@ -132,7 +132,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                     rr.log_once_per_entity_path(  # pyright: ignore[reportAttributeAccessIssue]
                                         path,
                                         rr.SeriesLine(name=f"gt/{name}"),
-                                        timeless=True,
+                                        static=True,
                                     )
                                     rr.log(path, rr.Scalar(tensor))
 
@@ -144,7 +144,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                             marker="cross",
                                             marker_size=4,
                                         ),
-                                        timeless=True,
+                                        static=True,
                                     )
                                     rr.log(path, rr.Scalar(tensor))
 
@@ -159,7 +159,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                             marker="diamond",
                                             marker_size=4,
                                         ),
-                                        timeless=True,
+                                        static=True,
                                     )
                                     rr.log(path, rr.Scalar(tensor))
 
@@ -171,7 +171,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                             marker="circle",
                                             marker_size=4,
                                         ),
-                                        timeless=True,
+                                        static=True,
                                     )
                                     rr.log(path, rr.Scalar(tensor))
 
