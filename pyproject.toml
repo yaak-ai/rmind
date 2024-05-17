@@ -1,8 +1,7 @@
 [tool.poetry]
-name = "cargpt"
-version = "0.2.0"
+package-mode = false
 description = ""
-authors = ["Evgenii Gorchakov <evgenii@yaak.ai>"]
+authors = ["yaak <ml@yaak.ai>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
@@ -34,7 +33,7 @@ optional = true
 
 [tool.poetry.group.train.dependencies]
 omegaconf = "^2.3.0"
-yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.17.3" }
+yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.18.0" }
 polars = "*"
 
 [tool.poetry.group.lint]
@@ -77,8 +76,15 @@ matplotlib = "*"
 optional = true
 
 [tool.poetry.group.inference.dependencies]
-rerun-sdk = "0.15.1"
+rerun-sdk = "^0.16.0"
 funcy = "*"
+
+[tool.poetry.group.dataviz]
+optional = true
+
+[tool.poetry.group.dataviz.dependencies]
+rerun-sdk = "^0.16.0"
+tqdm = "*"
 
 [tool.poetry.group.dalle]
 optional = true
@@ -112,6 +118,7 @@ reportMissingParameterType = "none"
 reportMissingSuperCall = "warning"
 reportMissingTypeStubs = "none"
 reportPrivateUsage = "none"
+reportPrivateImportUsage = "none"
 reportPropertyTypeMismatch = "error"
 reportShadowedImports = "error"
 reportUninitializedInstanceVariable = "none"
@@ -175,7 +182,7 @@ split-on-trailing-comma = false
 DEP001 = ["rerun", "deephouse", "fiftyone", "PIL"]
 DEP002 = ["dill", "scipy", "torchaudio", "transformers"]
 DEP003 = ["numpy", "typing_extensions", "numpy", "lightning_utilities"]
-DEP004 = ["dall_e", "omegaconf", "yaak_datasets", "polars", "matplotlib", "funcy"]
+DEP004 = ["dall_e", "omegaconf", "yaak_datasets", "polars", "matplotlib", "funcy", "tqdm"]
 
 [tool.pytest.ini_options]
 addopts = "--jaxtyping-packages=foo,bar.baz,beartype.beartype"
