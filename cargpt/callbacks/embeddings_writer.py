@@ -1,28 +1,24 @@
 from pathlib import Path
 from typing import Union
-import more_itertools as mit
 
+import more_itertools as mit
 import pytorch_lightning as pl
 import torch
-from einops import rearrange
-from jaxtyping import Float
 from pytorch_lightning.callbacks import BasePredictionWriter
 from torch import Tensor
 
 
 class FeatureWriter(BasePredictionWriter):
     def __init__(
-        self,
-        application_id: str,
-        output_dir: Union[str, Path],
-        overwrite: bool = False,
+        self, application_id: str, output_dir: Union[str, Path], overwrite: bool = False
     ) -> None:
         super().__init__(write_interval="batch")
 
         self.output_dir = Path(output_dir)
         if self.output_dir.exists() and not overwrite:
+            msg = f"The output file {self.output_dir.resolve()!s} exists!"
             raise ValueError(
-                f"The output file {str(self.output_dir.resolve())} exists!"
+                msg
             )
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -58,8 +54,6 @@ class FeatureWriter(BasePredictionWriter):
         torch.save(obj, f"{self.output_dir}/{batch_idx:06}.pt")
 
     def on_predict_end(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
         pass

@@ -7,10 +7,7 @@ from omegaconf import DictConfig
 
 
 class Embeddings(pl.LightningModule):
-    def __init__(
-        self,
-        model: DictConfig,
-    ):
+    def __init__(self, model: DictConfig):
         super().__init__()
         self.model = instantiate(model)
 
