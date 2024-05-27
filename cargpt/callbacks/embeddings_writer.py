@@ -17,9 +17,7 @@ class FeatureWriter(BasePredictionWriter):
         self.output_dir = Path(output_dir)
         if self.output_dir.exists() and not overwrite:
             msg = f"The output file {self.output_dir.resolve()!s} exists!"
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def write_on_batch_end(
