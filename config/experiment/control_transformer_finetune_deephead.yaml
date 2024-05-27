@@ -15,7 +15,7 @@ wandb:
   group: smart
   mode: online
   project: cargpt
-  notes: "vibrant-yogurt PT | mlp head 2emb>512>256>out | bs32"
+  notes: "vibrant-yogurt PT | mlp head 2emb>512>256>out + freeze encoder | bs32"
 
 paths:
   metadata_cache_dir: ./yaak-datasets/metadata

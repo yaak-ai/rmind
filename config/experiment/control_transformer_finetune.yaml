@@ -5,7 +5,7 @@ defaults:
   - /datamodule: default.yaml
   - _self_
 
-batch_size: 64
+batch_size: 32
 clip_len: 6
 embedding_dim: 512
 
@@ -13,6 +13,10 @@ speed_range: [5.0, 130.0]
 
 wandb:
   group: smart
+  mode: online
+  project: cargpt
+  notes: "vibrant-yogurt PT | unfreeze embeddings | bs32"
+
 
 model:
   _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
@@ -120,6 +124,18 @@ model:
                 _target_: transformers.get_cosine_schedule_with_warmup
                 num_warmup_steps: 25000
                 num_training_steps: 250000
+
+            episode_builder:
+              _target_: cargpt.components.episode.EpisodeBuilder
+              freeze: True
+
+            encoder:
+              _target_: cargpt.components.llm.xFormerEncoder
+              freeze: False
+
+
+
+
 
 trainer:
   _target_: pytorch_lightning.Trainer
