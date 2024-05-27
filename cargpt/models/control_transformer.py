@@ -181,7 +181,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         episode = self.episode_builder.build_episode(inputs)
 
         def summary_embeddings(objective, episode):
-
             mask = objective._build_attention_mask(episode.index, episode.timestep)
             embedding = self.encoder(src=episode.packed_embeddings, mask=mask.data)
 
@@ -201,15 +200,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
             return TensorDict(
                 {
-                "observation_summary": observation_summary,
-                "action_summart": action_summary
+                    "observation_summary": observation_summary,
+                    "action_summart": action_summary,
                 },
                 batch_size=[],
-                device=inputs.device
+                device=inputs.device,
             )
 
-
-        embeddings = TensorDict(
+        return TensorDict(
             {
                 name: summary_embeddings(objective, episode)
                 for name, objective in self.objectives.items()
@@ -217,8 +215,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             batch_size=[],
             device=inputs.device,
         )
-
-        return embeddings
 
     def _build_input(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         frames = batch.frames
