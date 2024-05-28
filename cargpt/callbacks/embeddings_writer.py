@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -5,7 +6,7 @@ import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import BasePredictionWriter
-from tensordict.tensordict import TensorDict
+from tensordict import TensorDict
 from typing_extensions import override
 
 
@@ -16,7 +17,14 @@ class EmbeddingWriter(BasePredictionWriter):
 
     @override
     def write_on_batch_end(
-        self, predictions: TensorDict, batch: Any, batch_idx: int
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        prediction: TensorDict,
+        batch_indices: Sequence[int] | None = None,
+        batch: Any = None,
+        batch_idx: int = 0,
+        dataloader_idx: int = 0,
     ) -> None:
         camera_name = mit.one(batch.frames.keys())
         meta = batch.meta
@@ -28,7 +36,7 @@ class EmbeddingWriter(BasePredictionWriter):
         frame_idxs = meta[f"{camera_name}/ImageMetadata_frame_idx"].tolist()
 
         obj = {
-            "features": predictions.detach().cpu(),
+            "features": prediction.detach().cpu(),
             "frame_idx": frame_idxs,
             "drive_id": drive_ids,
         }

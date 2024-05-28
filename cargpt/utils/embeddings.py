@@ -1,17 +1,15 @@
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytorch_lightning as pl
 from hydra.utils import instantiate
+from jaxtyping import Float  # noqa: TCH002
 from omegaconf import DictConfig
 from tensordict import TensorDict
+from torch import Tensor  # noqa: TCH002
 from typing_extensions import override
 from yaak_datasets import Batch
 
 from cargpt.components.episode import Modality, SpecialToken
-
-if TYPE_CHECKING:
-    from jaxtyping import Float
-    from torch import Tensor
 
 
 class Embeddings(pl.LightningModule):
@@ -42,7 +40,7 @@ class Embeddings(pl.LightningModule):
         mask = objective._build_attention_mask(episode.index, episode.timestep)
         embedding = self.base.encoder(src=episode.packed_embeddings, mask=mask.data)
 
-        index = episode.index[:-1]
+        index = episode.index[[-1]]
 
         observation_summary: Float[Tensor, "b t 1 d"] = (
             index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
