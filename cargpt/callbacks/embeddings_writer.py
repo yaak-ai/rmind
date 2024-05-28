@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -10,7 +10,7 @@ from typing_extensions import override
 
 
 class EmbeddingWriter(BasePredictionWriter):
-    def __init__(self, output_dir: Union[str, Path]) -> None:
+    def __init__(self, output_dir: str | Path) -> None:
         super().__init__(write_interval="batch")
         self.output_dir = Path(output_dir)
 

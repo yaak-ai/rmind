@@ -29,14 +29,14 @@ class Embeddings(pl.LightningModule):
         inputs = self.base._build_input(batch)
         episode = self.base.episode_builder.build_episode(inputs)
 
-        return TensorDict(
-            {
-                name: self.summary_embeddings(objective, episode)
-                for name, objective in self.base.objectives.items()
-            },
-            batch_size=[],
-            device=inputs.device,
-        )
+        embeddigs = TensorDict({}, batch_size=[], device=inputs.device)
+
+        for name, objective in self.base.objectives.items():
+            summaries = self.summary_embeddings(objective, episode)
+            for token_name, embedding in summaries.items():
+                embeddigs[f"{name}/{token_name}"] = embedding
+
+        return embeddigs
 
     def summary_embeddings(self, objective, episode) -> TensorDict:
         mask = objective._build_attention_mask(episode.index, episode.timestep)
@@ -58,8 +58,8 @@ class Embeddings(pl.LightningModule):
 
         return TensorDict(
             {
-                "observation_summary": observation_summary,
-                "action_summary": action_summary,
+                SpecialToken.OBSERVATION_SUMMARY: observation_summary,
+                SpecialToken.ACTION_SUMMARY: action_summary,
             },
             batch_size=[],
             device=embedding.device,
