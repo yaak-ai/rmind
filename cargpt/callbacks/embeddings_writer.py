@@ -1,37 +1,30 @@
 from pathlib import Path
-from typing import Union
+from typing import Any
 
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import BasePredictionWriter
-from torch import Tensor
+from tensordict import TensorDict
+from typing_extensions import override
 
 
-class FeatureWriter(BasePredictionWriter):
-    def __init__(
-        self, application_id: str, output_dir: Union[str, Path], overwrite: bool = False
-    ) -> None:
+class EmbeddingWriter(BasePredictionWriter):
+    def __init__(self, output_dir: str | Path, overwrite: bool = False) -> None:
         super().__init__(write_interval="batch")
 
         self.output_dir = Path(output_dir)
         if self.output_dir.exists() and not overwrite:
-            msg = f"The output file {self.output_dir.resolve()!s} exists!"
+            msg = f"No such directory: {self.output_dir.resolve()}"
             raise ValueError(msg)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    @override
     def write_on_batch_end(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        predictions: np.ndarray | List[np.ndarray] | Tensor,
-        batch_indices: Optional[Sequence[int]],
-        batch: Any,
-        batch_idx: int,
-        dataloader_idx: int,
+        self, predictions: TensorDict, batch: Any, batch_idx: int
     ) -> None:
-        camera_name = mit.one(batch["frames"].keys())
-        meta = batch["meta"]
+        camera_name = mit.one(batch.frames.keys())
+        meta = batch.meta
         drive_ids = meta.pop("drive_id").detach()
 
         for key in list(meta.keys()):

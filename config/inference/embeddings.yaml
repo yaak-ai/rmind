@@ -12,14 +12,18 @@ overwrite: false
 
 speed_range: [5.0, 130.0]
 
-embeddings:
+model:
   _target_: cargpt.utils.Embeddings
   _recursive_: False
 
-  model:
+  base:
     _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
     artifact: ???
     filename: model.ckpt
+    hparams_updaters:
+      # 1. wrap hparams in DictConfig
+      - _target_: omegaconf.DictConfig
+        _partial_: true
 
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
@@ -99,7 +103,6 @@ trainer:
     - _target_: cargpt.callbacks.model_summary.ModelSummary
       depth: 5
 
-    - _target_: cargpt.callbacks.embeddings_writer.EmbeddingsWriter
-      application_id: ${model.artifact}
+    - _target_: cargpt.callbacks.embeddings_writer.EmbeddingWriter
       output_dir: ${output_dir}
       overwrite: ${overwrite}

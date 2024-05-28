@@ -175,47 +175,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             {"inputs": inputs, "predictions": predictions}, batch_size=batch.batch_size
         )
 
-    @override
-    def embeddings_step(self, batch: Batch):  # pyright: ignore[reportGeneralTypeIssues]
-        inputs = self._build_input(batch)
-        episode = self.episode_builder.build_episode(inputs)
-
-        def summary_embeddings(objective, episode):
-            mask = objective._build_attention_mask(episode.index, episode.timestep)
-            embedding = self.encoder(src=episode.packed_embeddings, mask=mask.data)
-
-            index = episode.index[:-1]
-
-            observation_summary: Float[Tensor, "b t 1 d"] = (
-                index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
-                .parse(embedding)
-                .get(k)
-            )
-
-            action_summary: Float[Tensor, "b t 1 d"] = (
-                index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
-                .parse(embedding)
-                .get(k)
-            )
-
-            return TensorDict(
-                {
-                    "observation_summary": observation_summary,
-                    "action_summart": action_summary,
-                },
-                batch_size=[],
-                device=inputs.device,
-            )
-
-        return TensorDict(
-            {
-                name: summary_embeddings(objective, episode)
-                for name, objective in self.objectives.items()
-            },
-            batch_size=[],
-            device=inputs.device,
-        )
-
     def _build_input(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         frames = batch.frames
         meta = batch.meta
