@@ -1,41 +1,36 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import BasePredictionWriter
-from tensordict import TensorDict
+from tensordict.tensordict import TensorDict
 from typing_extensions import override
 
 
 class EmbeddingWriter(BasePredictionWriter):
-    def __init__(self, output_dir: str | Path, overwrite: bool = False) -> None:
+    def __init__(
+        self, output_dir: Union[str, Path]
+    ) -> None:
         super().__init__(write_interval="batch")
-
         self.output_dir = Path(output_dir)
-        if self.output_dir.exists() and not overwrite:
-            msg = f"No such directory: {self.output_dir.resolve()}"
-            raise ValueError(msg)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     @override
     def write_on_batch_end(
-        self, predictions: TensorDict, batch: Any, batch_idx: int
+        self,
+        predictions: TensorDict,
+        batch: Any,
+        batch_idx: int,
     ) -> None:
         camera_name = mit.one(batch.frames.keys())
         meta = batch.meta
         drive_ids = meta.pop("drive_id").detach()
-
-        for key in list(meta.keys()):
-            match key.split("/"):
-                case [camera_name, _key]:
-                    meta.rename_key_(key, _key)
         drive_ids = [
             drive_id.type(torch.uint8).cpu().numpy().tobytes().decode("ascii").strip()
             for drive_id in drive_ids
         ]
-        frame_idxs = meta["ImageMetadata_frame_idx"].tolist()
+        frame_idxs = meta[f"{camera_name}/ImageMetadata_frame_idx"].tolist()
 
         obj = {
             "features": predictions.detach().cpu(),

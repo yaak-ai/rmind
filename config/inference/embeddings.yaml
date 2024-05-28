@@ -105,4 +105,3 @@ trainer:
 
     - _target_: cargpt.callbacks.embeddings_writer.EmbeddingWriter
       output_dir: ${output_dir}
-      overwrite: ${overwrite}
