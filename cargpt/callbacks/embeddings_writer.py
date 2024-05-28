@@ -10,18 +10,13 @@ from typing_extensions import override
 
 
 class EmbeddingWriter(BasePredictionWriter):
-    def __init__(
-        self, output_dir: Union[str, Path]
-    ) -> None:
+    def __init__(self, output_dir: Union[str, Path]) -> None:
         super().__init__(write_interval="batch")
         self.output_dir = Path(output_dir)
 
     @override
     def write_on_batch_end(
-        self,
-        predictions: TensorDict,
-        batch: Any,
-        batch_idx: int,
+        self, predictions: TensorDict, batch: Any, batch_idx: int
     ) -> None:
         camera_name = mit.one(batch.frames.keys())
         meta = batch.meta
