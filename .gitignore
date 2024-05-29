@@ -135,6 +135,7 @@ wandb/
 outputs/
 lightning_logs/
 .hydra
+inference_results/
 
 # env
 .cenv
@@ -144,6 +145,9 @@ config/dataset/train.yaml
 config/dataset/val.yaml
 config/dataset/train-cil.yaml
 config/dataset/val-cil.yaml
+config/datamodule/default-tiny.yaml
+config/dataset/train-tiny.yaml
+config/dataset/val-tiny.yaml
 
 # editor
 .helix/
