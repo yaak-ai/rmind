@@ -13,10 +13,7 @@ class DVAETokens(nn.Module):
 
     @override
     def forward(
-        self,
-        probs: Float[Tensor, "b c1 h w"],
-        tokens_shift: int,
-        embeddings: nn.Module,
+        self, probs: Float[Tensor, "b c1 h w"], tokens_shift: int, embeddings: nn.Module
     ) -> tuple[Float[Tensor, "b c2 h w"], Int[Tensor, "b h w"]]:
         tokens = torch.argmax(probs.detach(), dim=1)
         tokens += tokens_shift
@@ -37,10 +34,7 @@ class DalleDVAEEncoder(nn.Module):
             self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
-    def forward(
-        self,
-        x: Float[Tensor, "b c1 h1 w1"],
-    ) -> Float[Tensor, "b c2 h2 w2"]:
+    def forward(self, x: Float[Tensor, "b c1 h1 w1"]) -> Float[Tensor, "b c2 h2 w2"]:
         logits = self.enc(x)
         return F.softmax(logits, dim=1)
 
@@ -59,8 +53,7 @@ class DalleDVAEDecoder(torch.nn.Module):
 
     @override
     def forward(
-        self,
-        z_logits: Float[Tensor, "b c h1 w1"],
+        self, z_logits: Float[Tensor, "b c h1 w1"]
     ) -> Float[Tensor, "b c2 h2 w2"]:
         z = torch.argmax(z_logits, dim=1)
         z_one_hot = (

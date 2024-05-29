@@ -14,8 +14,6 @@ embedding_dim: 512
 
 quantization_channels: 1024
 
-speed_range: [5.0, 130.0]
-
 wandb:
   group: smart
 
@@ -55,7 +53,7 @@ model:
           _target_: torch.nn.Sequential
           _args_:
             - _target_: cargpt.components.norm.UniformBinner
-              in_range: ${speed_range}
+              in_range: [0.0, 130.0]
               num_bins: 1024
 
             - _target_: einops.layers.torch.Rearrange
@@ -479,17 +477,23 @@ datamodule:
                   - name: turn_signal
 
             filter: >
-              VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
+              VehicleMotion_speed between 5.0 and 130.0
               and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
-              and (VehicleMotion_gas_pedal_normalized > 0.0 or VehicleMotion_brake_pedal_normalized > 0.0)
 
         samples:
           clips:
             length: ${clip_len}
             stride: 10
             step: 10
+            filter: >
+              not (
+                    array_upper(VehicleMotion_gas_pedal_normalized) <= (1.0/255 + 0.001)
+                and array_upper(VehicleMotion_brake_pedal_normalized) <= (1.0/164 + 0.001)
+                and array_upper(VehicleMotion_speed) >= 25.0
+                and array_get(VehicleMotion_speed, -1) - array_get(VehicleMotion_speed, 0) >= -0.05 * array_mean(VehicleMotion_speed)
+              )
 
           transforms:
             - _target_: yaak_datasets.transforms.Crop

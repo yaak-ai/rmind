@@ -1,19 +1,18 @@
 [tool.poetry]
-name = "cargpt"
-version = "0.2.0"
+package-mode = false
 description = ""
-authors = ["Evgenii Gorchakov <evgenii@yaak.ai>"]
+authors = ["yaak <ml@yaak.ai>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.12"
-torch = "^2.2.2"
-torchvision = "^0.17.2"
-torchaudio = "^2.2.2"
-tensordict = "^0.3.2"
-xformers = "0.0.25.post1"
-pytorch-lightning = "^2.2.3"
-einops = "^0.7.0"
+torch = "^2.3.0"
+torchvision = "^0.18.0"
+torchaudio = "^2.3.0"
+tensordict = "^0.4.0"
+xformers = "0.0.26.post1"
+pytorch-lightning = "^2.2.4"
+einops = "^0.8.0"
 hydra-core = "^1.3.0"
 loguru = "^0.7.2"
 jaxtyping = "*"
@@ -34,8 +33,8 @@ optional = true
 
 [tool.poetry.group.train.dependencies]
 omegaconf = "^2.3.0"
-yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.17.1" }
-polars = "0.20.7"
+yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.18.0" }
+polars = "*"
 
 [tool.poetry.group.lint]
 optional = true
@@ -77,8 +76,15 @@ matplotlib = "*"
 optional = true
 
 [tool.poetry.group.inference.dependencies]
-rerun-sdk = "0.15.1"
+rerun-sdk = "^0.16.0"
 funcy = "*"
+
+[tool.poetry.group.dataviz]
+optional = true
+
+[tool.poetry.group.dataviz.dependencies]
+rerun-sdk = "^0.16.0"
+tqdm = "*"
 
 [tool.poetry.group.dalle]
 optional = true
@@ -112,6 +118,7 @@ reportMissingParameterType = "none"
 reportMissingSuperCall = "warning"
 reportMissingTypeStubs = "none"
 reportPrivateUsage = "none"
+reportPrivateImportUsage = "none"
 reportPropertyTypeMismatch = "error"
 reportShadowedImports = "error"
 reportUninitializedInstanceVariable = "none"
@@ -164,14 +171,18 @@ ignore = [
     "TD",
 ]
 
+[tool.ruff.format]
+skip-magic-trailing-comma = true
+
 [tool.ruff.lint.isort]
 known-third-party = ["wandb"]
+split-on-trailing-comma = false
 
 [tool.deptry.per_rule_ignores]
 DEP001 = ["rerun", "deephouse", "fiftyone", "PIL"]
 DEP002 = ["dill", "scipy", "torchaudio", "transformers"]
 DEP003 = ["numpy", "typing_extensions", "numpy", "lightning_utilities"]
-DEP004 = ["dall_e", "omegaconf", "yaak_datasets", "polars", "matplotlib", "funcy"]
+DEP004 = ["dall_e", "omegaconf", "yaak_datasets", "polars", "matplotlib", "funcy", "tqdm"]
 
 [tool.pytest.ini_options]
 addopts = "--jaxtyping-packages=foo,bar.baz,beartype.beartype"

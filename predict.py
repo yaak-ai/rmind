@@ -25,11 +25,7 @@ def predict(cfg: DictConfig):
     trainer: pl.Trainer = instantiate(cfg.trainer)
 
     logger.debug("starting prediction")
-    return trainer.predict(
-        model=model,
-        datamodule=datamodule,
-        return_predictions=False,
-    )
+    return trainer.predict(model=model, datamodule=datamodule, return_predictions=False)
 
 
 @logger.catch(onerror=lambda _: sys.exit(1))

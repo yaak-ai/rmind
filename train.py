@@ -48,8 +48,7 @@ def train(cfg: DictConfig):
             ).splitlines()
         }
         run.log_code(  # pyright: ignore[reportUnusedCallResult]
-            root=".",
-            include_fn=lambda path: Path(path).resolve() in paths,
+            root=".", include_fn=lambda path: Path(path).resolve() in paths
         )
 
     return _train(cfg)
