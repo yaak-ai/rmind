@@ -424,7 +424,6 @@ trainer:
   max_epochs: -1
   log_every_n_steps: 100
   gradient_clip_val: 1.0
-  sync_batchnorm: True
 
   logger:
     _target_: pytorch_lightning.loggers.WandbLogger
@@ -440,10 +439,6 @@ trainer:
 
     - _target_: pytorch_lightning.callbacks.LearningRateMonitor
       logging_interval: step
-
-  strategy:
-    _target_: pytorch_lightning.strategies.DDPStrategy
-    static_graph: True
 
 datamodule:
   train:
