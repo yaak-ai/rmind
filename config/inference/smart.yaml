@@ -137,7 +137,8 @@ trainer:
     #   write_interval: batch
     #   application_id: ${model.artifact}
 
-    # - _target_: cart.callbacks.scores.ScoresPredictionWriter
+    # - _target_: cargpt.callbacks.scores.ScoresPredictionWriter
     #   model_artifact: ${model.artifact}
     #   write_interval: batch
     #   write_frequency: 10
+

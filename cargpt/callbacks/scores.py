@@ -13,6 +13,7 @@ from typing_extensions import override
 from yaak_datasets import Batch
 
 from cargpt.components.episode import Modality
+from cargpt.components.objectives.common import PredictionResultKey
 from cargpt.utils.metabase import metabase
 
 
@@ -72,6 +73,10 @@ class ScoresPredictionWriter(BasePredictionWriter):
                     "meta",
                     f"{camera}/ImageMetadata_time_stamp",
                 )).item()
+                frame_idx = elem.get((
+                    "meta",
+                    f"{camera}/ImageMetadata_frame_idx",
+                )).item()
                 rows_ts = {}  # each row is a timestamp + some predicted value
                 for nested_key, tensor in elem.items(True, True):
                     match nested_key:
@@ -82,12 +87,13 @@ class ScoresPredictionWriter(BasePredictionWriter):
                             (Modality.CONTINUOUS | Modality.DISCRETE),
                             name,
                         ) if not tensor.isnan().all():
-                            if name == "prediction_probs":
+                            if result_key is PredictionResultKey.PREDICTION_PROBS:
                                 continue
                             if name not in rows_ts:
                                 rows_ts[name] = {
-                                    "drive_id": drive_id,
+                                    "frame_idx": frame_idx,
                                     "timestamp": timestamp,
+                                    "drive_id": drive_id,
                                     "name": name,
                                 }
                             rows_ts[name][result_key.value] = tensor.item()
