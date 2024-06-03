@@ -115,8 +115,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         # TODO: currently this does full episode construction for each objective -- optimize?
         metrics = TensorDict(
             {
-                name: self.objectives[name](inputs, self.episode_builder, self.encoder)
-                for name in objectives_to_forward
+                name: self.objectives[name](inputs, self.episode_builder, self.encoder)  # pyright: ignore[reportArgumentType]
+                for name in objectives_to_forward  # pyright: ignore[reportArgumentType]
             },
             batch_size=[],
             device=inputs.device,
@@ -142,7 +142,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))
 
         for extra_obj in [
-            obj for obj in objectives_to_forward if obj not in objectives_to_loss
+            obj
+            for obj in objectives_to_forward
+            if obj not in objectives_to_loss  # pyright: ignore[reportOperatorIssue]
         ]:
             losses[extra_obj].zero_()
 
