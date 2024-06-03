@@ -4,12 +4,6 @@ defaults:
   - smart
   - _self_
 
-batch_size: 32
-  
-wandb:
-  mode: offline
-  notes: "multigpu"
-
 trainer:
   devices: [0,1]
   sync_batchnorm: True
