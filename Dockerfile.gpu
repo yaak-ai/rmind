@@ -19,7 +19,7 @@ ENV PYTHON_VER=$PYTHON_MAJOR.$PYTHON_MINOR \
     POETRY_HOME="/opt/poetry" \
     POETRY_VIRTUALENVS_IN_PROJECT=true \
     POETRY_VERSION=$POETRY_VER
-    
+
 # Add pyenv and poetry to PATH
 ENV PATH="${PYENV_ROOT}/shims:${PYENV_ROOT}/bin:$POETRY_HOME/bin:${PATH}"
 RUN pyenv install $PYTHON_VER \
@@ -46,7 +46,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     python3 libpython3.8 libgl1-mesa-glx libglib2.0-0 libmediainfo0v5 \
     git curl locate \
-    && rm -rf /var/lib/apt/lists/* 
+    && rm -rf /var/lib/apt/lists/*
 
 # instal ytt
 RUN curl https://carvel.dev/install.sh | bash
@@ -59,7 +59,7 @@ COPY --from=build /opt /opt
 # # https://stackoverflow.com/questions/76216778/userwarning-applied-workaround-for-cudnn-issue-install-nvrtc-so
 # RUN ln -s /opt/.venv/lib/python$PYTHON_MAJOR/site-packages/torch/lib/libnvrtc-*.so.11.2 /opt/.venv/lib/python$PYTHON_MAJOR/site-packages/torch/lib/libnvrtc.so
 
-# Create a non-root user 
+# Create a non-root user
 ARG USER_ID=1000
 RUN useradd -m --no-log-init --system  --uid "${USER_ID}" yaak -g sudo
 RUN echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
@@ -73,6 +73,7 @@ COPY .gitignore .gitignore
 COPY train.py train.py
 COPY predict.py predict.py
 COPY justfile justfile
+COPY yaak-datasets/metadata yaak-datasets/metadata
 COPY parse_args.sh parse_args.sh
 COPY entrypoint.sh /entrypoint.sh
 
@@ -95,3 +96,4 @@ ENV NVIDIA_VISIBLE_DEVICES=all \
 # Specify "--train [args]" or "--predict" when running, defaults to --train
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["--train", "-h"]
+EXPOSE 80

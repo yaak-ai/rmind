@@ -17,6 +17,7 @@ OmegaConf.register_new_resolver("eval", eval)
 
 
 def _train(cfg: DictConfig):
+
     pl.seed_everything(cfg.seed, workers=True)  # pyright: ignore[reportUnusedCallResult]
 
     logger.debug("instantiating model", target=cfg.model._target_)
