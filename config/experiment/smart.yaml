@@ -6,14 +6,24 @@ defaults:
   - /trainer: default
   - _self_
 
-# TODO: match paper?
-batch_size: 64
-clip_len: 6
-num_heads: 4
-num_layers: 8
-embedding_dim: 512
+vars:
+  data:
+    train:
+      batch_size: 64
+      clip_length: 6
 
-quantization_channels: 1024
+    val:
+      batch_size: 32
+      clip_length: 12
+
+    test:
+      clip_length: 24
+
+  encoder:
+    num_heads: 4
+    num_layers: 8
+
+  embedding_dim: 512
 
 wandb:
   group: smart
@@ -113,33 +123,33 @@ model:
         speed:
           _target_: torch.nn.Embedding
           num_embeddings: ${model.episode_builder.tokenizers.continuous.speed._args_[0].num_bins}
-          embedding_dim: ${embedding_dim}
+          embedding_dim: ${vars.embedding_dim}
 
         gas_pedal:
           _target_: torch.nn.Embedding
           num_embeddings: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
-          embedding_dim: ${embedding_dim}
+          embedding_dim: ${vars.embedding_dim}
 
         brake_pedal:
           _target_: torch.nn.Embedding
           num_embeddings: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
-          embedding_dim: ${embedding_dim}
+          embedding_dim: ${vars.embedding_dim}
 
         steering_angle:
           _target_: torch.nn.Embedding
           num_embeddings: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
-          embedding_dim: ${embedding_dim}
+          embedding_dim: ${vars.embedding_dim}
 
       discrete:
         turn_signal:
           _target_: torch.nn.Embedding
           num_embeddings: 3
-          embedding_dim: ${embedding_dim}
+          embedding_dim: ${vars.embedding_dim}
 
       special:
         _target_: torch.nn.Embedding
         num_embeddings: 3
-        embedding_dim: ${embedding_dim}
+        embedding_dim: ${vars.embedding_dim}
 
     position_encoding:
       _target_: cargpt.utils.ModuleDict
@@ -148,43 +158,43 @@ model:
           row:
             _target_: torch.nn.Embedding
             num_embeddings: 10
-            embedding_dim: ${embedding_dim}
+            embedding_dim: ${vars.embedding_dim}
           col:
             _target_: torch.nn.Embedding
             num_embeddings: 18
-            embedding_dim: ${embedding_dim}
+            embedding_dim: ${vars.embedding_dim}
 
       observations:
         _target_: torch.nn.Embedding
         num_embeddings: 182
-        embedding_dim: ${embedding_dim}
+        embedding_dim: ${vars.embedding_dim}
 
       actions:
         _target_: torch.nn.Embedding
         num_embeddings: 1
-        embedding_dim: ${embedding_dim}
+        embedding_dim: ${vars.embedding_dim}
 
       special:
         _target_: torch.nn.Embedding
         num_embeddings: 1
-        embedding_dim: ${embedding_dim}
+        embedding_dim: ${vars.embedding_dim}
 
       timestep:
         _target_: torch.nn.Embedding
-        num_embeddings: ${clip_len}
-        embedding_dim: ${embedding_dim}
+        num_embeddings: ${vars.data.test.clip_length}
+        embedding_dim: ${vars.embedding_dim}
 
   encoder:
     _target_: cargpt.components.llm.xFormerEncoder
     config:
       _target_: xformers.factory.xFormerEncoderConfig
       reversible: True
-      num_layers: ${num_layers}
-      dim_model: ${embedding_dim}
+      num_layers: ${vars.encoder.num_layers}
+      dim_model: ${vars.embedding_dim}
       residual_norm_style: pre
       multi_head_config:
-        dim_model: ${embedding_dim}
-        num_heads: ${num_heads}
+        dim_model: ${vars.embedding_dim}
+        num_heads: ${vars.encoder.num_heads}
         residual_dropout: 0.1
         attention:
           name: scaled_dot_product
@@ -212,7 +222,7 @@ model:
                   _target_: operator.mul
                   _args_:
                     - 2
-                    - ${embedding_dim}
+                    - ${vars.embedding_dim}
                 out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
                 bias: False
 
@@ -224,7 +234,7 @@ model:
                   _target_: operator.mul
                   _args_:
                     - 2
-                    - ${embedding_dim}
+                    - ${vars.embedding_dim}
                 out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
                 bias: False
 
@@ -236,7 +246,7 @@ model:
                   _target_: operator.mul
                   _args_:
                     - 2
-                    - ${embedding_dim}
+                    - ${vars.embedding_dim}
                 out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
                 bias: False
 
@@ -263,8 +273,8 @@ model:
               _target_: operator.mul
               _args_:
                 - 3
-                - ${embedding_dim}
-            out_features: ${embedding_dim}
+                - ${vars.embedding_dim}
+            out_features: ${vars.embedding_dim}
             bias: False
         continuous:
           speed:
@@ -273,7 +283,7 @@ model:
               _target_: operator.mul
               _args_:
                 - 3
-                - ${embedding_dim}
+                - ${vars.embedding_dim}
             out_features: ${model.episode_builder.tokenizers.continuous.speed._args_[0].num_bins}
             bias: False
         discrete:
@@ -283,7 +293,7 @@ model:
               _target_: operator.mul
               _args_:
                 - 3
-                - ${embedding_dim}
+                - ${vars.embedding_dim}
             out_features: ${model.episode_builder.embeddings.discrete.turn_signal.num_embeddings}
             bias: False
 
@@ -307,19 +317,19 @@ model:
         continuous:
           gas_pedal:
             _target_: torch.nn.Linear
-            in_features: ${embedding_dim}
+            in_features: ${vars.embedding_dim}
             out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
             bias: False
 
           brake_pedal:
             _target_: torch.nn.Linear
-            in_features: ${embedding_dim}
+            in_features: ${vars.embedding_dim}
             out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
             bias: False
 
           steering_angle:
             _target_: torch.nn.Linear
-            in_features: ${embedding_dim}
+            in_features: ${vars.embedding_dim}
             out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
             bias: False
 
@@ -344,12 +354,14 @@ model:
           _target_: cargpt.utils.ModuleDict
           continuous:
             gas_pedal:
+              # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
               _target_: torchaudio.transforms.MuLawEncoding
-              quantization_channels: 512
+              quantization_channels: ${vars.embedding_dim}
 
             brake_pedal:
+              # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
               _target_: torchaudio.transforms.MuLawEncoding
-              quantization_channels: 512
+              quantization_channels: ${vars.embedding_dim}
 
             steering_angle:
               _target_: torch.nn.Sequential
@@ -359,26 +371,26 @@ model:
                   out_range: [-1.0, 1.0]
 
                 - _target_: torchaudio.transforms.MuLawEncoding
-                  quantization_channels: 512
+                  quantization_channels: ${vars.embedding_dim}
 
         heads:
           _target_: cargpt.utils.ModuleDict
           continuous:
             gas_pedal:
               _target_: torch.nn.Linear
-              in_features: ${embedding_dim}
+              in_features: ${vars.embedding_dim}
               out_features: ${model.objectives.copycat.memory_extraction.delta_tokenizers.continuous.gas_pedal.quantization_channels}
               bias: False
 
             brake_pedal:
               _target_: torch.nn.Linear
-              in_features: ${embedding_dim}
+              in_features: ${vars.embedding_dim}
               out_features: ${model.objectives.copycat.memory_extraction.delta_tokenizers.continuous.brake_pedal.quantization_channels}
               bias: False
 
             steering_angle:
               _target_: torch.nn.Linear
-              in_features: ${embedding_dim}
+              in_features: ${vars.embedding_dim}
               out_features: ${model.objectives.copycat.memory_extraction.delta_tokenizers.continuous.steering_angle._args_[1].quantization_channels}
               bias: False
 
@@ -419,7 +431,7 @@ model:
 
 datamodule:
   train:
-    batch_size: ${batch_size}
+    batch_size: ${vars.data.train.batch_size}
     num_workers: 32
     dataset:
       config:
@@ -461,7 +473,7 @@ datamodule:
 
         samples:
           clips:
-            length: ${clip_len}
+            length: ${vars.data.train.clip_length}
             stride: 10
             step: 10
             filter: >
@@ -482,10 +494,17 @@ datamodule:
               std: [0.229, 0.224, 0.225]
 
   val:
-    batch_size: ${batch_size}
+    batch_size: ${vars.data.val.batch_size}
     num_workers: ${datamodule.train.num_workers}
     dataset:
       config:
         data:
           metadata: ${datamodule.train.dataset.config.data.metadata}
-        samples: ${datamodule.train.dataset.config.samples}
+        samples:
+          clips:
+            length: ${vars.data.val.clip_length}
+            stride: ${datamodule.train.dataset.config.samples.clips.stride}
+            step: ${datamodule.train.dataset.config.samples.clips.step}
+            filter: ${datamodule.train.dataset.config.samples.clips.filter}
+
+          transforms: ${datamodule.train.dataset.config.samples.transforms}

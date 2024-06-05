@@ -90,7 +90,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 msg = "`hparams_updaters` cannot be combined with other kwargs"
                 raise NotImplementedError(msg)
 
-    def _step(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
+    @override
+    def training_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
         inputs = self._build_input(batch)
 
         all_objectives = tuple(self.objectives.keys())
@@ -144,11 +145,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
                 self.logger.log_image(f"masks/{obj}", [img], step=step)
 
-        return metrics
-
-    @override
-    def training_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
-        metrics = self._step(batch)
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore
+        metrics[("loss", "total")] = sum(losses.values(True, True))  # pyright: ignore
 
         self.log_dict(
             {
@@ -162,15 +160,28 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def validation_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
-        metrics = self._step(batch)
+        inputs = self._build_input(batch)
 
-        self.log_dict(
+        metrics = TensorDict(
             {
-                "/".join(["val", *k]): v
-                for k, v in metrics.items(include_nested=True, leaves_only=True)
+                name: objective(inputs, self.episode_builder, self.encoder)
+                for name, objective in self.objectives.items()
             },
-            sync_dist=True,
+            batch_size=[],
+            device=inputs.device,
         )
+
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
+        metrics[("loss", "total")] = sum(losses.values(True, True))  # pyright: ignore[reportArgumentType]
+
+        if not self.trainer.sanity_checking:
+            self.log_dict(
+                {
+                    "/".join(["val", *k]): v
+                    for k, v in metrics.items(include_nested=True, leaves_only=True)
+                },
+                sync_dist=True,
+            )
 
         return metrics["loss", "total"]
 
@@ -379,8 +390,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 for module_key, loss in losses:
                     logger.debug(
                         "setting logit bias (sample-based)",
-                        module=module_key,
-                        loss=loss.__class__,
+                        module=".".join(module_key),
+                        loss=loss.__class__.__name__,
                     )
 
                     loss.logit_bias = sample_logit_bias[loss_key]
@@ -491,8 +502,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 for module_key, loss in losses:
                     logger.debug(
                         "setting logit bias (delta-based)",
-                        module=module_key,
-                        loss=loss.__class__,
+                        module=".".join(module_key),
+                        loss=loss.__class__.__name__,
                     )
 
                     loss.logit_bias = delta_logit_bias[loss_key]

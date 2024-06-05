@@ -13,7 +13,7 @@ from loguru import logger
 from tensordict import TensorDict, tensorclass
 from tensordict.utils import NestedKey
 from torch import Tensor
-from torch.nn import Module, ModuleDict
+from torch.nn import Embedding, Module, ModuleDict
 
 
 class TokenType(StrEnum):
@@ -260,7 +260,7 @@ class EpisodeBuilder(Module):
             batch_size=[t],
         )
 
-        embedded = self._position_encode(embedded_nope, timestep_index)
+        embedded = self._apply_position_encoding(embedded_nope, timestep_index)
 
         return Episode(  # pyright: ignore[reportCallIssue]
             inputs=inputs,  # pyright: ignore[reportCallIssue]
@@ -281,63 +281,118 @@ class EpisodeBuilder(Module):
             {k: torch.arange(*v) for k, v in ranges.items()}, batch_size=[]
         )
 
-    def _position_encode(self, embeddings: TensorDict, index: Index) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
+    def _apply_position_encoding(
+        self,
+        embeddings: TensorDict,
+        index: Index,  # pyright: ignore[reportGeneralTypeIssues]
+    ) -> TensorDict:
+        (_, t), device = embeddings.batch_size, embeddings.device
+
         position_embeddings = cast(TensorDict, torch.zeros_like(embeddings[0]))
-        device = position_embeddings.device
 
-        if module := self.position_encoding.get(
-            (key := Modality.IMAGE, "patch"), default=None
+        match pe_mod := self.position_encoding.get(
+            (pe_k := Modality.IMAGE, "patch"), default=None
         ):
-            num_rows = module.row.num_embeddings
-            num_cols = module.col.num_embeddings
-            row_pe = module.row(torch.arange(num_rows, device=device))
-            col_pe = module.col(torch.arange(num_cols, device=device))
-            row_pe = repeat(row_pe, "h d -> (h w) d", w=num_cols)
-            col_pe = repeat(col_pe, "w d -> (h w) d", h=num_rows)
+            case ModuleDict():
+                num_rows = pe_mod.row.num_embeddings
+                num_cols = pe_mod.col.num_embeddings
+                row_pe = pe_mod.row(torch.arange(num_rows, device=device))
+                col_pe = pe_mod.col(torch.arange(num_cols, device=device))
+                row_pe = repeat(row_pe, "h d -> (h w) d", w=num_cols)
+                col_pe = repeat(col_pe, "w d -> (h w) d", h=num_rows)
 
-            position_embeddings.select(key).apply(
-                lambda x: x + row_pe + col_pe,
-                inplace=True,  # NOTE
-            )
+                position_embeddings.select(pe_k).apply(
+                    lambda x: x + row_pe + col_pe,
+                    inplace=True,  # NOTE
+                )
 
-        if module := self.position_encoding.get(
-            PositionEncoding.OBSERVATIONS, default=None
+            case None:
+                pass
+
+            case _:
+                msg = f"position encoding for `{pe_k}`: {pe_mod}"
+                raise NotImplementedError(msg)
+
+        match pe_mod := self.position_encoding.get(
+            pe_k := PositionEncoding.OBSERVATIONS, default=None
         ):
-            keys = self.timestep.keys(TokenType.OBSERVATION)
-            position = index.select(*keys).to_tensordict()
-            position_embedding = position.apply(module)
-            position_embeddings.select(*keys).apply(
-                add,
-                position_embedding,
-                inplace=True,  # NOTE
-            )
+            case Embedding():
+                keys = self.timestep.keys(TokenType.OBSERVATION)
+                position = index.select(*keys).to_tensordict()
+                position_embedding = position.apply(pe_mod)
+                position_embeddings.select(*keys).apply(
+                    add,
+                    position_embedding,
+                    inplace=True,  # NOTE
+                )
 
-        if module := self.position_encoding.get(PositionEncoding.ACTIONS, default=None):
-            keys = self.timestep.keys(TokenType.ACTION)
-            position = torch.arange(module.num_embeddings, device=device)
-            position_embedding = module(position)
-            position_embeddings.select(*keys).apply(
-                lambda emb: emb + position_embedding,
-                inplace=True,  # NOTE
-            )
+            case None:
+                pass
 
-        if module := self.position_encoding.get(PositionEncoding.SPECIAL, default=None):
-            keys = self.timestep.keys(TokenType.SPECIAL)
-            position = torch.arange(module.num_embeddings, device=device)
-            position_embedding = module(position)
-            position_embeddings.select(*keys).apply(
-                lambda emb: emb + position_embedding,
-                inplace=True,  # NOTE
-            )
+            case _:
+                raise NotImplementedError
 
-        if module := self.position_encoding.get(
-            PositionEncoding.TIMESTEP, default=None
+        match pe_mod := self.position_encoding.get(
+            pe_k := PositionEncoding.ACTIONS, default=None
         ):
-            position = torch.arange(module.num_embeddings, device=device)
-            position_embedding = rearrange(module(position), "t d -> t 1 d")
-            position_embeddings.apply(
-                lambda emb: emb + position_embedding,
-                inplace=True,  # NOTE
-            )
+            case Embedding():
+                keys = self.timestep.keys(TokenType.ACTION)
+                position = torch.arange(pe_mod.num_embeddings, device=device)
+                position_embedding = pe_mod(position)
+                position_embeddings.select(*keys).apply(
+                    lambda emb: emb + position_embedding,
+                    inplace=True,  # NOTE
+                )
+
+            case None:
+                pass
+
+            case _:
+                msg = f"position encoding for `{pe_k}`: {pe_mod}"
+                raise NotImplementedError(msg)
+
+        match pe_mod := self.position_encoding.get(
+            pe_k := PositionEncoding.SPECIAL, default=None
+        ):
+            case Embedding():
+                keys = self.timestep.keys(TokenType.SPECIAL)
+                position = torch.arange(pe_mod.num_embeddings, device=device)
+                position_embedding = pe_mod(position)
+                position_embeddings.select(*keys).apply(
+                    lambda emb: emb + position_embedding,
+                    inplace=True,  # NOTE
+                )
+
+            case None:
+                pass
+
+            case _:
+                msg = f"position encoding for `{pe_k}`: {pe_mod}"
+                raise NotImplementedError(msg)
+
+        match pe_mod := self.position_encoding.get(
+            pe_k := PositionEncoding.TIMESTEP, default=None
+        ):
+            case Embedding():
+                # build a sequence starting from a random index (simplified [0])
+                # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
+                # ---
+                # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
+
+                low, high = 0, pe_mod.num_embeddings - t + 1
+                start = torch.randint(low, high, (1,)).item()
+                position = torch.arange(start=start, end=start + t, device=device)
+                position_embedding = rearrange(pe_mod(position), "t d -> t 1 d")
+                position_embeddings.apply(
+                    lambda emb: emb + position_embedding,
+                    inplace=True,  # NOTE
+                )
+
+            case None:
+                pass
+
+            case _:
+                msg = f"position encoding for `{pe_k}`: {pe_mod}"
+                raise NotImplementedError(msg)
 
         return embeddings.apply(add, position_embeddings)  # pyright: ignore[reportReturnType]
