@@ -10,6 +10,8 @@ from loguru import logger
 from omegaconf import DictConfig
 from pytorch_lightning.core.saving import _load_state  # noqa: PLC2701
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies import SingleDeviceStrategy
+from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.utilities.model_helpers import (
     _restricted_classmethod,  # noqa: PLC2701
 )
@@ -91,20 +93,39 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def _step(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         inputs = self._build_input(batch)
 
-        selected_objectives = (
-            self.objectives.keys()
+        all_objectives = tuple(self.objectives.keys())
+        scheduled_objectives = (
+            all_objectives
             if self.objective_scheduler is None
-            else self.objective_scheduler.sample()
+            else tuple(self.objective_scheduler.sample())
         )
 
-        # TODO: currently this does full episode construction for each objective -- optimize?
+        match strategy := self.trainer.strategy:
+            case SingleDeviceStrategy():
+                objectives_to_compute = scheduled_objectives
+
+            case DDPStrategy():
+                # compute all objectives since we need a static graph
+                objectives_to_compute = all_objectives
+
+            case _:
+                msg = f"Don't know the correct way to handle {strategy}"
+                raise NotImplementedError(msg)
+
         metrics = TensorDict(
             {
                 name: self.objectives[name](inputs, self.episode_builder, self.encoder)
-                for name in selected_objectives
+                for name in objectives_to_compute
             },
             batch_size=[],
             device=inputs.device,
+        )
+
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
+        losses.select(*(set(objectives_to_compute) - set(scheduled_objectives))).zero_()
+
+        metrics[("loss", "total")] = sum(  # pyright: ignore[reportArgumentType]
+            losses.values(include_nested=True, leaves_only=True)
         )
 
         if (
@@ -113,7 +134,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             episode = self.episode_builder.build_episode(inputs)
             objectives = (
-                self.objectives.keys()
+                all_objectives
                 if self.objective_scheduler is None
                 else self.objective_scheduler.objectives
             )
@@ -123,19 +144,19 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
                 self.logger.log_image(f"masks/{obj}", [img], step=step)
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore
-        metrics[("loss", "total")] = sum(losses.values(True, True))  # pyright: ignore
-
         return metrics
 
     @override
     def training_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
         metrics = self._step(batch)
 
-        self.log_dict({
-            "/".join(["train", *k]): v
-            for k, v in metrics.items(include_nested=True, leaves_only=True)
-        })
+        self.log_dict(
+            {
+                "/".join(["train", *k]): v
+                for k, v in metrics.items(include_nested=True, leaves_only=True)
+            },
+            sync_dist=True,
+        )
 
         return metrics["loss", "total"]
 
@@ -143,10 +164,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def validation_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
         metrics = self._step(batch)
 
-        self.log_dict({
-            "/".join(["val", *k]): v
-            for k, v in metrics.items(include_nested=True, leaves_only=True)
-        })
+        self.log_dict(
+            {
+                "/".join(["val", *k]): v
+                for k, v in metrics.items(include_nested=True, leaves_only=True)
+            },
+            sync_dist=True,
+        )
 
         return metrics["loss", "total"]
 
