@@ -2,7 +2,7 @@ defaults:
   - default
   - _self_
 
-devices: [0,1]
+devices: auto
 sync_batchnorm: True
 strategy:
   _target_: pytorch_lightning.strategies.DDPStrategy

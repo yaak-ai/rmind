@@ -122,9 +122,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         )
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
-        losses.select(
-            *(obj for obj in objectives_to_compute if obj not in scheduled_objectives)
-        ).zero_()
+        losses.select(*(set(objectives_to_compute) - set(scheduled_objectives))).zero_()
 
         metrics[("loss", "total")] = sum(  # pyright: ignore[reportArgumentType]
             losses.values(include_nested=True, leaves_only=True)
