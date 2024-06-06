@@ -93,33 +93,41 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def _step(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         inputs = self._build_input(batch)
 
-        objectives_to_loss = (
-            map(ObjectiveName, self.objectives.keys())
+        all_objectives = tuple(self.objectives.keys())
+        scheduled_objectives = (
+            all_objectives
             if self.objective_scheduler is None
-            else self.objective_scheduler.sample()
+            else tuple(self.objective_scheduler.sample())
         )
 
-        logger.debug(f"Triner strategy {self.trainer.strategy}")
         match strategy := self.trainer.strategy:
             case SingleDeviceStrategy():
-                objectives_to_forward = objectives_to_loss
+                objectives_to_compute = scheduled_objectives
 
             case DDPStrategy():
-                # we run on all objectives since we need a static graph
-                objectives_to_forward = map(ObjectiveName, self.objectives.keys())
+                # compute all objectives since we need a static graph
+                objectives_to_compute = all_objectives
 
             case _:
                 msg = f"Don't know the correct way to handle {strategy}"
                 raise NotImplementedError(msg)
 
-        # TODO: currently this does full episode construction for each objective -- optimize?
         metrics = TensorDict(
             {
-                name: self.objectives[name](inputs, self.episode_builder, self.encoder)  # pyright: ignore[reportArgumentType]
-                for name in objectives_to_forward  # pyright: ignore[reportArgumentType]
+                name: self.objectives[name](inputs, self.episode_builder, self.encoder)
+                for name in objectives_to_compute
             },
             batch_size=[],
             device=inputs.device,
+        )
+
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
+        losses.select(
+            *(obj for obj in objectives_to_compute if obj not in scheduled_objectives)
+        ).zero_()
+
+        metrics[("loss", "total")] = sum(  # pyright: ignore[reportArgumentType]
+            losses.values(include_nested=True, leaves_only=True)
         )
 
         if (
@@ -128,7 +136,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             episode = self.episode_builder.build_episode(inputs)
             objectives = (
-                self.objectives.keys()
+                all_objectives
                 if self.objective_scheduler is None
                 else self.objective_scheduler.objectives
             )
@@ -137,20 +145,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 mask = objective._build_attention_mask(episode.index, episode.timestep)
                 img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
                 self.logger.log_image(f"masks/{obj}", [img], step=step)
-
-        metrics = metrics.exclude(*((k, "mask") for k in metrics.keys()))  # pyright: ignore
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))
-
-        for extra_obj in [
-            obj
-            for obj in objectives_to_forward
-            if obj not in objectives_to_loss  # pyright: ignore[reportOperatorIssue]
-        ]:
-            losses[extra_obj].zero_()
-
-        metrics[("loss", "total")] = sum(
-            losses.values(include_nested=True, leaves_only=True)
-        )
 
         return metrics
 
