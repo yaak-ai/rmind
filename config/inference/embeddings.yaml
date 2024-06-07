@@ -2,13 +2,12 @@
 
 defaults:
   - /paths: default
-  - /dataset/predict@datamodule.predict.dataset
+  - /dataset/val@datamodule.predict.dataset
   - _self_
 
 batch_size: 64
 clip_len: 6
 output_dir: ???
-overwrite: false
 
 speed_range: [5.0, 130.0]
 
@@ -29,7 +28,7 @@ datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
     _target_: torch.utils.data.DataLoader
-    shuffle: false
+    shuffle: true
     batch_size: ${batch_size}
     num_workers: 32
     pin_memory: false
@@ -71,11 +70,10 @@ datamodule:
                   - name: turn_signal
 
             filter: >
-              VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
+              VehicleMotion_speed between 5.0 and 130.0
               and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
-              and (VehicleMotion_gas_pedal_normalized > 0.0 or VehicleMotion_brake_pedal_normalized > 0.0)
 
         samples:
           clips:
@@ -103,5 +101,5 @@ trainer:
     - _target_: cargpt.callbacks.model_summary.ModelSummary
       depth: 5
 
-    - _target_: cargpt.callbacks.embeddings_writer.EmbeddingWriter
+    - _target_: cargpt.callbacks.embedding_writer.EmbeddingWriter
       output_dir: ${output_dir}

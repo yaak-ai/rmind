@@ -48,6 +48,12 @@ class Embeddings(pl.LightningModule):
             .get(k)
         )
 
+        observation_history: Float[Tensor, "b t 1 d"] = (
+            index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
+            .parse(embedding)
+            .get(k)
+        )
+
         action_summary: Float[Tensor, "b t 1 d"] = (
             index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
             .parse(embedding)
@@ -58,6 +64,7 @@ class Embeddings(pl.LightningModule):
             {
                 SpecialToken.OBSERVATION_SUMMARY: observation_summary,
                 SpecialToken.ACTION_SUMMARY: action_summary,
+                SpecialToken.OBSERVATION_HISTORY: observation_history,
             },
             batch_size=[],
             device=embedding.device,
