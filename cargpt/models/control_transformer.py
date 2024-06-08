@@ -125,7 +125,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
         losses.select(*(set(objectives_to_compute) - set(scheduled_objectives))).zero_()
 
-        metrics[("loss", "total")] = sum(  # pyright: ignore[reportArgumentType]
+        metrics["loss", "total"] = sum(  # pyright: ignore[reportArgumentType]
             losses.values(include_nested=True, leaves_only=True)
         )
 
@@ -144,9 +144,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 mask = objective._build_attention_mask(episode.index, episode.timestep)
                 img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
                 self.logger.log_image(f"masks/{obj}", [img], step=step)
-
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore
-        metrics[("loss", "total")] = sum(losses.values(True, True))  # pyright: ignore
 
         self.log_dict(
             {
@@ -172,7 +169,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         )
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
-        metrics[("loss", "total")] = sum(losses.values(True, True))  # pyright: ignore[reportArgumentType]
+        metrics["loss", "total"] = sum(  # pyright: ignore[reportArgumentType]
+            losses.values(include_nested=True, leaves_only=True)
+        )
 
         if not self.trainer.sanity_checking:
             self.log_dict(
