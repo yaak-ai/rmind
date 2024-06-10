@@ -1,6 +1,5 @@
 import multiprocessing as mp
 import sys
-from typing import TYPE_CHECKING
 
 import hydra
 from hydra.utils import instantiate
@@ -9,20 +8,17 @@ from omegaconf import DictConfig
 
 from cargpt.utils.logging import setup_logging
 
-if TYPE_CHECKING:
-    import pytorch_lightning as pl
 
-
-@hydra.main(version_base=None, config_path="config", config_name="predict.yaml")
+@hydra.main(version_base=None)
 def predict(cfg: DictConfig):
     logger.debug("instantiating model", target=cfg.model._target_)
-    model: pl.LightningModule = instantiate(cfg.model)
+    model = instantiate(cfg.model)
 
     logger.debug("instantiating datamodule", target=cfg.datamodule._target_)
-    datamodule: pl.LightningDataModule = instantiate(cfg.datamodule)
+    datamodule = instantiate(cfg.datamodule)
 
     logger.debug("instantiating trainer", target=cfg.trainer._target_)
-    trainer: pl.Trainer = instantiate(cfg.trainer)
+    trainer = instantiate(cfg.trainer)
 
     logger.debug("starting prediction")
     return trainer.predict(model=model, datamodule=datamodule, return_predictions=False)

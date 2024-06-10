@@ -18,8 +18,6 @@ from pytorch_lightning.utilities.model_helpers import (
 from tensordict import TensorDict
 from torch.nn import Module  # noqa: TCH002
 from typing_extensions import override
-from wandb import Image
-from yaak_datasets import Batch
 
 from cargpt.components.episode import EpisodeBuilder, Modality
 from cargpt.components.mask import WandbAttentionMaskLegend
@@ -27,6 +25,13 @@ from cargpt.components.objectives import ObjectiveScheduler
 from cargpt.components.objectives.common import ObjectiveName, PredictionResultKey
 from cargpt.utils._wandb import LoadableFromArtifact
 from cargpt.utils.containers import ModuleDict
+
+try:
+    from yaak_datasets import Batch
+except ImportError:
+    from typing import Any
+
+    Batch = Any
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -91,7 +96,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 raise NotImplementedError(msg)
 
     @override
-    def training_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
+    def training_step(self, batch: Batch, *args):  # pyright: ignore[reportInvalidTypeForm]
         inputs = self._build_input(batch)
 
         all_objectives = tuple(self.objectives.keys())
@@ -133,6 +138,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             isinstance(self.logger, WandbLogger)
             and (step := self.trainer.global_step) == 0
         ):
+            from wandb import Image  # noqa: PLC0415
+
             episode = self.episode_builder.build_episode(inputs)
             objectives = (
                 all_objectives
@@ -156,7 +163,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics["loss", "total"]
 
     @override
-    def validation_step(self, batch: Batch, *args):  # pyright: ignore[reportGeneralTypeIssues]
+    def validation_step(self, batch: Batch, *args):  # pyright: ignore[reportInvalidTypeForm]
         inputs = self._build_input(batch)
 
         metrics = TensorDict(
@@ -185,7 +192,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics["loss", "total"]
 
     @override
-    def predict_step(self, batch: Batch):  # pyright: ignore[reportGeneralTypeIssues]
+    def predict_step(self, batch: Batch):  # pyright: ignore[reportInvalidTypeForm]
         inputs = self._build_input(batch)
 
         predictions = TensorDict.from_dict({
@@ -209,7 +216,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             {"inputs": inputs, "predictions": predictions}, batch_size=batch.batch_size
         )
 
-    def _build_input(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
+    def _build_input(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportInvalidTypeForm]
         frames = batch.frames
         meta = batch.meta
         shapes = [

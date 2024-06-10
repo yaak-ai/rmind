@@ -7,32 +7,30 @@ import hydra
 import pytorch_lightning as pl
 import wandb
 from hydra.utils import instantiate
-from lightning_utilities.core.rank_zero import rank_zero_only
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning.utilities import rank_zero_only
 
 from cargpt.utils.logging import setup_logging
-
-OmegaConf.register_new_resolver("eval", eval)
 
 
 def _train(cfg: DictConfig):
     pl.seed_everything(cfg.seed, workers=True)  # pyright: ignore[reportUnusedCallResult]
 
     logger.debug("instantiating model", target=cfg.model._target_)
-    model: pl.LightningModule = instantiate(cfg.model)
+    model = instantiate(cfg.model)
 
     logger.debug("instantiating datamodule", target=cfg.datamodule._target_)
-    datamodule: pl.LightningDataModule = instantiate(cfg.datamodule)
+    datamodule = instantiate(cfg.datamodule)
 
     logger.debug("instantiating trainer", target=cfg.trainer._target_)
-    trainer: pl.Trainer = instantiate(cfg.trainer)
+    trainer = instantiate(cfg.trainer)
 
     logger.debug("starting training")
-    trainer.fit(model=model, datamodule=datamodule)
+    return trainer.fit(model=model, datamodule=datamodule)
 
 
-@hydra.main(version_base=None, config_path="config", config_name="train.yaml")
+@hydra.main(version_base=None)
 def train(cfg: DictConfig):
     if (
         run := rank_zero_only(wandb.init)(

@@ -697,7 +697,7 @@ config:
           - camera: #@ camera
             reader:
               _target_: yaak_datasets.FrameImageVideoReader
-              path: ${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg
+              path: "${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg"
             #! params: /nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json
           #@ end
         metadata:
@@ -718,9 +718,9 @@ config:
     transforms: ???
 
   processing:
-    max_workers: null
+    max_workers: !!null
     metadata:
       cache:
         enabled: true
         path: ${paths.metadata_cache_dir}
-        size_limit: 1 GiB
+        size_limit: "1 GiB"

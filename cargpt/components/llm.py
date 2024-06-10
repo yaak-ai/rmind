@@ -1,12 +1,7 @@
-from typing import TYPE_CHECKING, Any
-
-import pytorch_lightning as pl
 import torch
 from einops import rearrange, repeat
-from hydra.utils import instantiate
 from jaxtyping import Float
 from torch import Tensor, nn
-from torch.nn.functional import gelu
 from typing_extensions import override
 from xformers.components import Activation, ResidualNormStyle, build_activation
 from xformers.components.attention import ScaledDotProduct
@@ -21,119 +16,7 @@ from xformers.factory.model_factory import (
     xFormerWeightInit,
 )
 
-if TYPE_CHECKING:
-    from transformers import GPT2LMHeadModel
 
-
-class HFGPT2(pl.LightningModule):
-    def __init__(self, **_kwargs) -> None:
-        super().__init__()
-        self.save_hyperparameters()
-        self.llm: GPT2LMHeadModel = instantiate(self.hparams.llm)  # pyright: ignore[reportAttributeAccessIssue]
-
-    @override
-    def forward(
-        self, inputs_embeds: Tensor, labels: Tensor | None = None, **_kwargs
-    ) -> Any:
-        return self.llm(
-            inputs_embeds=inputs_embeds,
-            labels=labels,
-            return_dict=True,
-            output_hidden_states=True,
-            use_cache=True,
-        )
-
-    def get_output_embeddings(self):
-        return self.llm.get_output_embeddings()
-
-
-class TorchGPT2(pl.LightningModule):
-    def __init__(self, **_kwargs) -> None:
-        super().__init__()
-        self.save_hyperparameters()
-        self.llm = instantiate(self.hparams.llm)  # pyright: ignore[reportAttributeAccessIssue]
-        self.classifier = instantiate(self.hparams.classifier)  # pyright: ignore[reportAttributeAccessIssue]
-        self.loss_fn = instantiate(self.hparams.loss)  # pyright: ignore[reportAttributeAccessIssue]
-
-    @override
-    def forward(
-        self,
-        inputs_embeds: Tensor,
-        episode_mask: Tensor | None,
-        labels: Tensor | None = None,
-    ) -> Any:
-        output = {}
-        x = self.llm(src=inputs_embeds, mask=episode_mask)
-        logits = self.classifier(x)
-        output["logits"] = logits
-        output["hidden_states"] = [x]
-        # right shift logits
-
-        if labels is not None:
-            shifted_logits = logits[:, :-1, :].contiguous()
-            b, t, c = shifted_logits.shape
-            # left shift labels
-            shifted_labels = labels[:, 1:].contiguous()
-            # flatten on batch dimension
-            logits_flattened = shifted_logits.view(b * t, c)
-            labels_flattened = shifted_labels.view(b * t)
-            loss = self.loss_fn(logits_flattened, labels_flattened)
-
-            output["loss"] = loss
-
-        return output
-
-    def get_output_embeddings(self):
-        return self.classifier
-
-
-class TransformerEncoderLayerGEGLU(torch.nn.TransformerEncoderLayer):
-    """Replace the original linear transformation + ReLu with GEGLU.
-
-    The paper: https://arxiv.org/pdf/2002.05202v1.pdf
-    """
-
-    def __init__(
-        self,
-        *,
-        d_model: int,
-        nhead: int,
-        dim_feedforward: int = 2048,
-        dropout: float = 0.1,
-        layer_norm_eps: float = 1e-5,
-        batch_first: bool = False,
-        norm_first: bool = False,
-        device=None,
-        dtype=None,
-    ) -> None:
-        super().__init__(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=lambda x: x,
-            layer_norm_eps=layer_norm_eps,
-            batch_first=batch_first,
-            norm_first=norm_first,
-            device=device,
-            dtype=dtype,
-        )
-        factory_kwargs = {"device": device, "dtype": dtype}
-        # Set activation to None, as GEGLU replaces both linear1 + activation
-        self.linear1 = Linear(d_model, dim_feedforward * 2, **factory_kwargs)  # type: ignore
-        self.activation = None
-
-    @override
-    def _ff_block(self, x: Tensor) -> Tensor:
-        # FFN_GEGLU eq. 6, https://arxiv.org/pdf/2002.05202v1.pdf
-        x = self.linear1(x)
-        xW, xV = x.chunk(2, dim=-1)
-        geglu = gelu(xW) * xV
-        # The original implementation with replacement
-        return self.linear2(self.dropout(geglu))
-
-
-# replicating https://github.com/yaak-ai/carGPT/blob/feat/xformers/cargpt/models/llm.py#L124
 @register_feedforward("MLPGLU", MlpConfig)
 class MLPGLU(Feedforward):
     def __init__(

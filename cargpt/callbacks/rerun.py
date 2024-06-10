@@ -10,10 +10,16 @@ from more_itertools import always_iterable
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorDict
 from typing_extensions import override
-from yaak_datasets import Batch
 
 from cargpt.components.episode import Modality
 from cargpt.components.objectives.common import PredictionResultKey
+
+try:
+    from yaak_datasets import Batch
+except ImportError:
+    from typing import Any
+
+    Batch = Any
 
 
 class RerunPredictionWriter(BasePredictionWriter):
@@ -52,7 +58,7 @@ class RerunPredictionWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
         prediction: TensorDict,
         batch_indices: Sequence[int] | None,
-        batch: Batch,  # pyright: ignore[reportGeneralTypeIssues]
+        batch: Batch,  # pyright: ignore[reportInvalidTypeForm]
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
