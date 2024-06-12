@@ -13,7 +13,7 @@ from tqdm import tqdm
 from cargpt.utils.logging import setup_logging
 
 
-@hydra.main(version_base=None, config_path="config", config_name="dataviz.yaml")
+@hydra.main(version_base=None)
 def run(cfg: DictConfig):
     dataloader = instantiate(cfg.dataloader)
 

@@ -1,16 +1,15 @@
 from pathlib import Path
 
-import wandb
-from wandb.sdk.lib import RunDisabled
-
 
 class LoadableFromArtifact:
     @classmethod
     def load_from_wandb_artifact(
         cls, artifact: str, filename: str = "model.ckpt", **kwargs
     ):
+        import wandb  # noqa: PLC0415
+
         match wandb.run:
-            case RunDisabled() | None:  # pyright: ignore[reportUnnecessaryComparison]
+            case wandb.sdk.lib.RunDisabled() | None:  # pyright: ignore[reportAttributeAccessIssue]
                 artifact_obj = wandb.Api().artifact(artifact, type="model")
 
             case _:

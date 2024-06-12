@@ -5,10 +5,10 @@ defaults:
   - /dataset/predict@datamodule.predict.dataset
   - _self_
 
-batch_size: 64
-clip_len: 6
-
-speed_range: [5.0, 130.0]
+vars:
+  batch_size: 64
+  clip_len: 6
+  speed_range: [0.0, 130.0]
 
 model:
   _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
@@ -24,56 +24,44 @@ model:
       _partial_: true
       path: ["objective_scheduler"]
 
+    - _target_: funcy.del_in
+      _partial_: true
+      path: ["objectives", "forward_dynamics"]
+
+    - _target_: funcy.del_in
+      _partial_: true
+      path: ["objectives", "inverse_dynamics"]
+
+    - _target_: funcy.del_in
+      _partial_: true
+      path: ["objectives", "random_masked_hindsight_control"]
+
+    - _target_: funcy.del_in
+      _partial_: true
+      path: ["objectives", "copycat"]
+
     # 3. merge config
     #  NOTE(galaxy brain alert): hydra instantiation with `_partial_: true` uses
     # `functools.partial`, which binds _leftmost_ positional arguments, which in this
     # case means the original hparams would be merged last, effectively negating any
     # updates. Using `funcy.rpartial` as a workaround.
-    - _target_: funcy.rpartial
-      _args_:
-        - _target_: omegaconf.DictConfig.merge_with
-          _partial_: true
+    # - _target_: funcy.rpartial
+    #   _args_:
+    #     - _target_: omegaconf.DictConfig.merge_with
+    #       _partial_: true
 
-        - _target_: omegaconf.DictConfig
-          _recursive_: false
-          content:
-            objectives:
-              copycat:
-                policy:
-                  detokenizers:
-                    _target_: cargpt.utils.ModuleDict
-                    continuous:
-                      speed:
-                        _target_: cargpt.components.norm.UniformUnbinner
-                        out_range: ${speed_range}
-                        num_bins: 1024
+    #     - _target_: omegaconf.DictConfig
+    #       _recursive_: false
+    #       content:
+    #         objectives:
+    #           _target_: cargpt.utils.ModuleDict
 
-                      gas_pedal:
-                        _target_: cargpt.components.norm.UniformUnbinner
-                        out_range: [0.0, 1.0]
-                        num_bins: 255
-
-                      brake_pedal:
-                        _target_: cargpt.components.norm.UniformUnbinner
-                        out_range: [0.0, 1.0]
-                        num_bins: 165
-
-                      steering_angle:
-                        _target_: cargpt.components.norm.UniformUnbinner
-                        out_range: [-1.0, 1.0]
-                        num_bins: 961
-
-                    discrete:
-                      turn_signal:
-                        _target_: torch.nn.Identity
-
-                  losses: null
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
     _target_: torch.utils.data.DataLoader
     shuffle: false
-    batch_size: ${batch_size}
+    batch_size: ${vars.batch_size}
     num_workers: 32
     pin_memory: false
     persistent_workers: true
@@ -114,15 +102,14 @@ datamodule:
                   - name: turn_signal
 
             filter: >
-              VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
+              VehicleMotion_speed between ${vars.speed_range[0]} and ${vars.speed_range[1]}
               and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
-              and (VehicleMotion_gas_pedal_normalized > 0.0 or VehicleMotion_brake_pedal_normalized > 0.0)
 
         samples:
           clips:
-            length: ${clip_len}
+            length: ${vars.clip_len}
             stride: 10
             step: 10 # NOTE
 
@@ -138,7 +125,7 @@ datamodule:
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu
-  devices: [1]
+  devices: 1
   benchmark: true
   logger: false
 
@@ -146,6 +133,6 @@ trainer:
     - _target_: cargpt.callbacks.model_summary.ModelSummary
       depth: 5
 
-    - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
-      write_interval: batch
-      application_id: ${model.artifact}
+    # - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
+    #   write_interval: batch
+    #   application_id: ${model.artifact}

@@ -1,27 +1,43 @@
+[![CircleCI](https://dl.circleci.com/status-badge/img/gh/yaak-ai/carGPT/tree/main.svg?style=svg&circle-token=CCIPRJ_Bt9RtTi6AXM3i6UMagfC14_e353d6e7992027b2b724489ebbf258ee91a0532f)](https://dl.circleci.com/status-badge/redirect/gh/yaak-ai/carGPT/tree/main)
+
 # carGPT
 
 Self-supervised model trained on vehicle context and control signals from expert drives.
 
+## Package
+
+To run inference from another poetry venv:
+
+```shell
+poetry add "git+ssh://git@github.com/yaak-ai/cargpt.git#main[predict]"
+
+poetry run cargpt-predict --config-path /path/to/config/dir --config-name config.yaml
+```
+
 ## Setup
-```
-just install
-```
-
-## Training
-
-### SMART
-```bash
-just train experiment=smart [++trainer.fast_dev_run=1 ...]
+```shell
+just setup
 ```
 
-## Inference
+List all available recipes:
+```shell
+just
+```
+
+## Train
+
+```shell
+just train experiment=smart [...]
+```
+
+## Predict
 
 1. start rerun and open [http://localhost:9090/?url=ws://localhost:9877](http://localhost:9090/?url=ws://localhost:9877)
-```bash
+```shell
 just rerun
 ```
 
 3. in another terminal:
-```bash
-just predict inference=smart model.artifact=<wandb_path>
+```shell
+just predict inference=smart [...]
 ```

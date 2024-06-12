@@ -1,5 +1,6 @@
 [tool.poetry]
-package-mode = false
+name = "cargpt"
+version = "0.1.0"
 description = ""
 authors = ["yaak <ml@yaak.ai>"]
 readme = "README.md"
@@ -7,11 +8,11 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = ">=3.11,<3.12"
 torch = "^2.3.0"
+pytorch-lightning = "^2.2.5"
 torchvision = "^0.18.0"
 torchaudio = "^2.3.0"
 tensordict = "^0.4.0"
 xformers = "0.0.26.post1"
-pytorch-lightning = "^2.2.5"
 einops = "^0.8.0"
 hydra-core = "^1.3.2"
 loguru = "^0.7.2"
@@ -19,22 +20,39 @@ jaxtyping = "*"
 beartype = "*"
 more-itertools = "^9.0.0"
 torchinfo = "^1.8.0"
-wandb = "*"
-dill = "^0.3.6"
-transformers = "=4.30.2"
 numpy = "*"
+typing-extensions = "*"
+omegaconf = "^2.3.0"
+funcy = { version = "*", optional = true }
+wandb = { version = "*", optional = true }
 
 [build-system]
 requires = ["poetry-core>=1.9.0"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.poetry.scripts]
+cargpt-predict = 'cargpt.scripts.predict:main'
+
+[tool.poetry.extras]
+predict = ["funcy", "wandb"]
+
 [tool.poetry.group.train]
 optional = true
 
 [tool.poetry.group.train.dependencies]
-omegaconf = "^2.3.0"
 yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.19.0" }
+transformers = "*"
 polars = "*"
+wandb = "*"
+
+[tool.poetry.group.predict]
+optional = true
+
+[tool.poetry.group.predict.dependencies]
+yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.19.0" }
+rerun-sdk = "^0.16.1"
+funcy = "*"
+wandb = "*"
 
 [tool.poetry.group.lint]
 optional = true
@@ -43,7 +61,6 @@ optional = true
 pyright = "*"
 ruff = "*"
 deptry = "*"
-opencv-stubs = "*"
 
 [tool.poetry.group.dev]
 optional = true
@@ -54,7 +71,6 @@ ipython = "*"
 pudb = "*"
 ipython-autoimport = "*"
 pyfzf = "*"
-ruff-lsp = "*"
 pyright = "*"
 lovely-tensors = "*"
 pre-commit = "*"
@@ -72,31 +88,12 @@ euporie = "*"
 torchshow = "*"
 matplotlib = "*"
 
-[tool.poetry.group.inference]
-optional = true
-
-[tool.poetry.group.inference.dependencies]
-rerun-sdk = "^0.16.0"
-funcy = "*"
-
 [tool.poetry.group.dataviz]
 optional = true
 
 [tool.poetry.group.dataviz.dependencies]
-rerun-sdk = "^0.16.0"
+rerun-sdk = "^0.16.1"
 tqdm = "*"
-
-[tool.poetry.group.dalle]
-optional = true
-
-[tool.poetry.group.dalle.dependencies]
-dall-e = { git = "git@github.com:openai/DALL-E.git", rev = "master" }
-
-[tool.poetry.group.log]
-optional = true
-
-[tool.poetry.group.log.dependencies]
-tensorboard = "^2.16.0"
 
 [tool.poetry.group.test]
 optional = true
@@ -179,18 +176,9 @@ known-third-party = ["wandb"]
 split-on-trailing-comma = false
 
 [tool.deptry.per_rule_ignores]
-DEP001 = ["rerun", "deephouse", "fiftyone", "PIL"]
-DEP002 = ["dill", "scipy", "torchaudio", "transformers"]
-DEP003 = ["numpy", "typing_extensions", "numpy", "lightning_utilities"]
-DEP004 = [
-  "dall_e",
-  "omegaconf",
-  "yaak_datasets",
-  "polars",
-  "matplotlib",
-  "funcy",
-  "tqdm",
-]
+DEP001 = ["rerun"]
+DEP002 = ["torchaudio"]
+DEP004 = ["funcy", "polars", "tqdm", "yaak_datasets"]
 
 [tool.pytest.ini_options]
 addopts = "--jaxtyping-packages=foo,bar.baz,beartype.beartype"
