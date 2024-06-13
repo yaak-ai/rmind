@@ -1,10 +1,10 @@
 from os import PathLike
-from typing import Self
+from typing import Any, Self
 
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
-from hydra.utils import instantiate
+from hydra.utils import get_class, instantiate
 from lightning_fabric.plugins.io.torch_io import pl_load
 from loguru import logger
 from omegaconf import DictConfig
@@ -244,12 +244,22 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def configure_optimizers(self):  # pyright: ignore[reportIncompatibleMethodOverride]
-        optimizer = instantiate(self.hparams.optimizer, params=self.parameters())  # pyright: ignore[reportAttributeAccessIssue]
-        result = {"optimizer": optimizer}
+        result = {}
+
+        if (cfg := self.hparams.get("optimizer")) is not None:
+            from cargpt.components.optimizers import SelectiveAdamW  # noqa: PLC0415
+
+            result["optimizer"] = (
+                instantiate(cfg, module=self)
+                if get_class(cfg._target_) is SelectiveAdamW
+                else instantiate(cfg, params=self.parameters())
+            )
 
         if (cfg := self.hparams.get("lr_scheduler")) is not None:
-            scheduler = instantiate(cfg.pop("scheduler"), optimizer=optimizer)
+            scheduler = instantiate(cfg.pop("scheduler"), optimizer=result["optimizer"])
             result["lr_scheduler"] = {"scheduler": scheduler, **cfg}
+
+        logger.debug("configure_optimizers", result=result)
 
         return result
 

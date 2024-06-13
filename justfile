@@ -9,10 +9,12 @@ _default:
 setup:
     poetry lock --no-update
     poetry install --sync --with=dev,test,lint,train,predict,notebook,dataviz
-    poetry run pre-commit install
+    poetry run pre-commit install --install-hooks
 
 # run pre-commit on all files
 pre-commit:
+    poetry run pre-commit validate-config
+    poetry run pre-commit install --install-hooks
     poetry run pre-commit run --all-files
 
 # generate config files from templates with ytt
