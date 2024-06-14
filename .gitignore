@@ -151,3 +151,10 @@ config/dataset/val-tiny.yaml
 
 # editor
 .helix/
+
+# yaak-dataset
+yaak-datasets
+config/inference/smart_pt.yaml
+tmp/clip.gif
+drives.csv
+image_sequence_viz.py
