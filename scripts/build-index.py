@@ -1,19 +1,17 @@
-import faiss
-import tqdm
-import torch
 import argparse
-import random
-
 from pathlib import Path
+
+import faiss
+import torch
+import tqdm
 
 
 def build_index(features, centroids=1024, sub_quantizers=16, bits=8):
-    n, d = features.shape
+    _n, d = features.shape
 
     index_name = f"IVF{centroids},PQ{sub_quantizers}x{bits}"
-    #https://github.com/facebookresearch/faiss/wiki/The-index-factory
+    # https://github.com/facebookresearch/faiss/wiki/The-index-factory
     index = faiss.index_factory(d, index_name)
-    print(f"Built indexer {type(index)}, centroids={centroids}, sub_quantizers={sub_quantizers}, bits={bits}")
     index.train(features)
 
     return index
@@ -41,9 +39,18 @@ def get_features(filelist, objective, token, silent=False):
     return features.numpy(), clips
 
 
-def construct_index(feature_list, limit, frac_split,
-                    index_file, metadata_file,
-                    objective, token, centroids, sub_quantizers, bits):
+def construct_index(
+    feature_list,
+    limit,
+    frac_split,
+    index_file,
+    metadata_file,
+    objective,
+    token,
+    centroids,
+    sub_quantizers,
+    bits,
+):
     with feature_list.open("r") as pfile:
         feature_files = pfile.readlines()
 
@@ -53,9 +60,11 @@ def construct_index(feature_list, limit, frac_split,
     add_files = pt_files[split:]
     features, _ = get_features(train_files, objective, token)
 
-    index = build_index(features, centroids=centroids, sub_quantizers=sub_quantizers, bits=bits)
+    index = build_index(
+        features, centroids=centroids, sub_quantizers=sub_quantizers, bits=bits
+    )
 
-    add_files_chunks = [add_files[i:i+100] for i in range(0, len(add_files), 100)]
+    add_files_chunks = [add_files[i : i + 100] for i in range(0, len(add_files), 100)]
     pbar = tqdm.tqdm(add_files_chunks, ascii=True)
 
     clips = []
@@ -66,7 +75,6 @@ def construct_index(feature_list, limit, frac_split,
         pbar.set_description(f"Adding {len(filepaths) * 100} features to the index")
 
     faiss.write_index(index, f"{index_file}")
-    print(f"Wrote index {index_file}")
 
     assert index.ntotal == len(
         clips
@@ -146,12 +154,7 @@ if __name__ == "__main__":
         help="Sub quantizers in faiss",
     )
     parser.add_argument(
-        "-b",
-        "--bits",
-        type=int,
-        default=8,
-        dest="bits",
-        help="bits for IVF",
+        "-b", "--bits", type=int, default=8, dest="bits", help="bits for IVF"
     )
 
     args = parser.parse_args()
@@ -166,5 +169,5 @@ if __name__ == "__main__":
         args.token,
         args.centroids,
         args.sub_quantizers,
-        args.bits
+        args.bits,
     )

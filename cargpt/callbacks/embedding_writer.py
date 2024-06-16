@@ -9,13 +9,11 @@ from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorDict
 from typing_extensions import override
 
-from cargpt.callbacks.index_writer import IndexWriter
 
 class EmbeddingWriter(BasePredictionWriter):
-    def __init__(self, output_dir: str | Path, index_writer: IndexWriter) -> None:
+    def __init__(self, output_dir: str | Path) -> None:
         super().__init__(write_interval="batch")
         self.output_dir = Path(output_dir)
-        self.index_writer = index_writer
 
     @override
     def write_on_batch_end(
