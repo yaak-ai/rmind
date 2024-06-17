@@ -26,11 +26,11 @@ train *ARGS: template-config
 train-debug *ARGS: template-config
     PYTHONOPTIMIZE=0 WANDB_MODE=disabled poetry run python cargpt/scripts/train.py --config-path ../../config --config-name train.yaml {{ ARGS }}
 
-predict +ARGS: generate-dataset-config
-    PYTHONOPTIMIZE=1 poetry run python predict.py {{ ARGS }}
+predict +ARGS:
+    PYTHONOPTIMIZE=1 poetry run python cargpt/scripts/predict.py --config-path ../../config --config-name predict.yaml {{ ARGS }}
 
 # predict with runtime type checking
-predict-debug +ARGS:
+predict-debug *ARGS:
     PYTHONOPTIMIZE=0 poetry run python cargpt/scripts/predict.py --config-path ../../config --config-name predict.yaml {{ ARGS }}
 
 test *ARGS:
