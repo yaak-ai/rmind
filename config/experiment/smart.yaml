@@ -303,12 +303,12 @@ model:
           cam_front_left:
             _target_: torch.nn.MSELoss
             reduction: mean
-        continuous:
-          speed:
-            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
-        discrete:
-          turn_signal:
-            _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+        # continuous:
+        #   speed:
+        #     _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
+        # discrete:
+        #   turn_signal:
+        #     _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
 
     random_masked_hindsight_control:
       _target_: cargpt.components.objectives.RandomMaskedHindsightControlObjective

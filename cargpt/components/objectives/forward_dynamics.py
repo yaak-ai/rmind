@@ -96,6 +96,10 @@ class ForwardDynamicsPredictionObjective(Module):
         logits = logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[])
         labels = labels.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[])
 
+        # Harsi: hack to remove non image observations
+        labels = labels.exclude("continuous", "discrete")
+        logits = logits.exclude("continuous", "discrete")
+
         loss = logits.named_apply(
             lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore[reportOptionalMemberAccess]
             labels,
