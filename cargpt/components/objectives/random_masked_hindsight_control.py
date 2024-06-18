@@ -26,7 +26,7 @@ from cargpt.components.objectives.common import PredictionResultKey
 
 
 class RandomMaskedHindsightControlObjective(Module):
-    def __init__(self, heads: ModuleDict, losses: ModuleDict | None) -> None:
+    def __init__(self, heads: ModuleDict, losses: ModuleDict | None = None) -> None:
         super().__init__()
         self.heads = heads
         self.losses = losses
