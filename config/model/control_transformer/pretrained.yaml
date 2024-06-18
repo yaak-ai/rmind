@@ -1,0 +1,93 @@
+_target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+filename: model.ckpt
+hparams_updaters:
+  # 1. wrap hparams in DictConfig
+  - _target_: omegaconf.DictConfig
+    _partial_: true
+
+  # 2. delete unnecesary keys
+  - _target_: funcy.del_in
+    _partial_: true
+    path: ["objective_scheduler"]
+
+  - _target_: funcy.del_in
+    _partial_: true
+    path: ["objectives", "inverse_dynamics", "losses"]
+
+  - _target_: funcy.del_in
+    _partial_: true
+    path: ["objectives", "forward_dynamics", "losses"]
+
+  - _target_: funcy.del_in
+    _partial_: true
+    path: ["objectives", "random_masked_hindsight_control", "losses"]
+
+  - _target_: funcy.del_in
+    _partial_: true
+    path: ["objectives", "copycat", "streams", "memory_extraction", "losses"]
+
+  # 3. merge config
+  #  NOTE(galaxy brain alert): hydra instantiation with `_partial_: true` uses
+  # `functools.partial`, which binds _leftmost_ positional arguments, which in this
+  # case means the original hparams would be merged last, effectively negating any
+  # updates. Using `funcy.rpartial` as a workaround.
+  - _target_: funcy.rpartial
+    _args_:
+      - _target_: omegaconf.DictConfig.merge_with
+        _partial_: true
+
+      - _target_: omegaconf.DictConfig
+        _recursive_: false
+        content:
+          episode_builder:
+            detokenizers:
+              _target_: cargpt.utils.ModuleDict
+              continuous:
+                speed:
+                  _target_: cargpt.components.norm.UniformUnbinner
+                  out_range: [0.0, 130.0]
+                  num_bins: 1024
+
+                gas_pedal:
+                  _target_: cargpt.components.norm.UniformUnbinner
+                  out_range: [0.0, 1.0]
+                  num_bins: 255
+
+                brake_pedal:
+                  _target_: cargpt.components.norm.UniformUnbinner
+                  out_range: [0.0, 1.0]
+                  num_bins: 165
+
+                steering_angle:
+                  _target_: cargpt.components.norm.UniformUnbinner
+                  out_range: [1.0, 1.0]
+                  num_bins: 961
+
+              discrete:
+                turn_signal:
+                  _target_: torch.nn.Identity
+
+          objectives:
+            copycat:
+              memory_extraction:
+                delta_detokenizers:
+                  _target_: cargpt.utils.ModuleDict
+                  continuous:
+                    gas_pedal:
+                      _target_: torchaudio.transforms.MuLawDecoding
+                      quantization_channels: ${vars.embedding_dim}
+
+                    brake_pedal:
+                      _target_: torchaudio.transforms.MuLawDecoding
+                      quantization_channels: ${vars.embedding_dim}
+
+                    steering_angle:
+                      _target_: torch.nn.Sequential
+                      _args_:
+                        - _target_: torchaudio.transforms.MuLawDecoding
+                          quantization_channels: ${vars.embedding_dim}
+
+                        - _target_: cargpt.components.norm.Scaler
+                          in_range: [-1.0, 1.0]
+                          out_range: [-2.0, 2.0]

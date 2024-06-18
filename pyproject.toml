@@ -20,7 +20,7 @@ jaxtyping = "*"
 beartype = "*"
 more-itertools = "^9.0.0"
 torchinfo = "^1.8.0"
-numpy = "*"
+numpy = "<2.0.0"
 typing-extensions = "*"
 omegaconf = "^2.3.0"
 funcy = { version = "*", optional = true }

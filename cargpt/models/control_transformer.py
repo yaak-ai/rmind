@@ -1,4 +1,4 @@
-from os import PathLike
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Self
 
 import more_itertools as mit
@@ -6,6 +6,7 @@ import pytorch_lightning as pl
 import torch
 from hydra.utils import get_class, instantiate
 from lightning_fabric.plugins.io.torch_io import pl_load
+from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from loguru import logger
 from omegaconf import DictConfig
 from pytorch_lightning.core.saving import _load_state  # noqa: PLC2701
@@ -55,14 +56,46 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     @_restricted_classmethod
     def load_from_checkpoint(  # pyright: ignore[reportIncompatibleMethodOverride]
-        cls, checkpoint_path: str | PathLike[str], **kwargs
+        cls,
+        checkpoint_path: _PATH,
+        *,
+        map_location: _MAP_LOCATION_TYPE = None,
+        hparams_file: _PATH | None = None,
+        strict: bool | None = None,
+        hparams_updaters: Sequence[
+            Callable[[Mapping[Any, Any]], Mapping[Any, Any]]
+            | Callable[[Mapping[Any, Any]], None]
+        ]
+        | None = None,
+        **kwargs: Any,
     ) -> Self:
-        match kwargs:
-            case {"hparams_updaters": hparams_updaters, **rest} if not rest:
-                # relevant parts of super().load_from_checkpoint
-                checkpoint = pl_load(checkpoint_path)  # pyright: ignore
-                hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
+        match hparams_updaters:
+            case [] | None:
+                return super().load_from_checkpoint(
+                    checkpoint_path=checkpoint_path,
+                    map_location=map_location,
+                    hparams_file=hparams_file,
+                    strict=strict,
+                    **kwargs,
+                )
 
+            case _:
+                from pytorch_lightning.utilities.migration import pl_legacy_patch  # noqa: I001, PLC0415
+                from pytorch_lightning.utilities.migration.utils import (  # noqa: PLC0415
+                    _pl_migrate_checkpoint,  # noqa: PLC2701
+                )
+                from pytorch_lightning.utilities.rank_zero import rank_zero_warn  # noqa: PLC0415
+
+                with pl_legacy_patch():
+                    checkpoint = pl_load(checkpoint_path, map_location=map_location)
+
+                # convert legacy checkpoints to the new format
+                checkpoint = _pl_migrate_checkpoint(
+                    checkpoint, checkpoint_path=checkpoint_path
+                )
+
+                # update hparams
+                hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
                 for fn in hparams_updaters:
                     match result := fn(hparams):
                         case DictConfig():
@@ -76,24 +109,20 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
                 checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = hparams
 
-                model = _load_state(cls, checkpoint, strict=False)
+                model = _load_state(cls, checkpoint, strict=strict, **kwargs)
                 state_dict = checkpoint["state_dict"]
+                if not state_dict:
+                    rank_zero_warn(
+                        f"The state dict in {checkpoint_path!r} contains no parameters."
+                    )
+                    return model  # pyright: ignore[reportReturnType]
+
                 device = next(
                     (t for t in state_dict.values() if isinstance(t, torch.Tensor)),
                     torch.tensor(0),
                 ).device
 
-                return model.to(device)  # pyright: ignore
-
-            case _ if "hparams_updaters" not in kwargs:
-                return super().load_from_checkpoint(
-                    checkpoint_path=checkpoint_path,  # pyright: ignore
-                    **kwargs,
-                )
-
-            case _:
-                msg = "`hparams_updaters` cannot be combined with other kwargs"
-                raise NotImplementedError(msg)
+                return model.to(device)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
 
     @override
     def training_step(self, batch: Batch, *args):  # pyright: ignore[reportInvalidTypeForm]
