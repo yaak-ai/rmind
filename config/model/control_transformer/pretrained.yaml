@@ -61,7 +61,7 @@ hparams_updaters:
 
                 steering_angle:
                   _target_: cargpt.components.norm.UniformUnbinner
-                  out_range: [1.0, 1.0]
+                  out_range: [-1.0, 1.0]
                   num_bins: 961
 
               discrete:
