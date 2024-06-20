@@ -2,13 +2,13 @@
 
 defaults:
   - /paths: default
-  - /dataset/predict@datamodule.predict.dataset
+  - /dataset/predict_carla@datamodule.predict.dataset
   - _self_
 
 vars:
   batch_size: 64
   clip_len: 6
-  speed_range: [0.0, 130.0]
+  speed_range: [5.0, 130.0]
 
 model:
   _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
@@ -36,25 +36,50 @@ model:
       _partial_: true
       path: ["objectives", "random_masked_hindsight_control"]
 
-    - _target_: funcy.del_in
-      _partial_: true
-      path: ["objectives", "copycat"]
+    # - _target_: funcy.del_in
+    #   _partial_: true
+    #   path: ["objectives", "copycat"]
 
     # 3. merge config
     #  NOTE(galaxy brain alert): hydra instantiation with `_partial_: true` uses
     # `functools.partial`, which binds _leftmost_ positional arguments, which in this
     # case means the original hparams would be merged last, effectively negating any
     # updates. Using `funcy.rpartial` as a workaround.
-    # - _target_: funcy.rpartial
-    #   _args_:
-    #     - _target_: omegaconf.DictConfig.merge_with
-    #       _partial_: true
+    - _target_: funcy.rpartial
+      _args_:
+        - _target_: omegaconf.DictConfig.merge_with
+          _partial_: true
 
-    #     - _target_: omegaconf.DictConfig
-    #       _recursive_: false
-    #       content:
-    #         objectives:
-    #           _target_: cargpt.utils.ModuleDict
+        - _target_: omegaconf.DictConfig
+          _recursive_: false
+          content:
+            objectives:
+              copycat:
+                policy:
+                  detokenizers:
+                    _target_: cargpt.utils.ModuleDict
+                    continuous:
+                      speed:
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: vars.speed_range
+                        num_bins: 1024
+
+                      gas_pedal:
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: [0.0, 1.0]
+                        num_bins: 255
+
+                      brake_pedal:
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: [0.0, 1.0]
+                        num_bins: 165
+
+                      steering_angle:
+                        _target_: cargpt.components.norm.UniformUnbinner
+                        out_range: [-1.0, 1.0]
+                        num_bins: 961
+
+                   
 
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
@@ -82,20 +107,9 @@ datamodule:
               - message: VehicleMotion
                 fields:
                   - name: speed
-                    merge:
-                      method: interp
-
                   - name: steering_angle_normalized
-                    merge:
-                      method: interp
-
                   - name: gas_pedal_normalized
-                    merge:
-                      method: interp
-
                   - name: brake_pedal_normalized
-                    merge:
-                      method: interp
 
               - message: VehicleState
                 fields:
@@ -112,6 +126,7 @@ datamodule:
             length: ${vars.clip_len}
             stride: 10
             step: 10 # NOTE
+            frame_mask: null
 
           transforms:
             - _target_: yaak_datasets.transforms.Crop
@@ -133,9 +148,9 @@ trainer:
     - _target_: cargpt.callbacks.model_summary.ModelSummary
       depth: 5
 
-    # - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
-    #   write_interval: batch
-    #   application_id: ${model.artifact}
+    - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
+      write_interval: batch
+      application_id: ${model.artifact}
 
     # - _target_: cargpt.callbacks.scores.ScoresPredictionWriter
     #   model_artifact: ${model.artifact}
