@@ -175,6 +175,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 if self.objective_scheduler is None
                 else self.objective_scheduler.objectives
             )
+            # TODO: batch log mask images
             for obj in map(str, objectives):
                 objective = self.objectives[obj]
                 mask = objective._build_attention_mask(episode.index, episode.timestep)
@@ -244,6 +245,40 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return TensorDict.from_dict(
             {"inputs": inputs, "predictions": predictions}, batch_size=batch.batch_size
         )
+
+    @override
+    def on_validation_epoch_start(self) -> None:
+        if not self.trainer.sanity_checking and isinstance(self.logger, WandbLogger):
+            from torchmetrics.functional import (  # noqa: PLC0415
+                pairwise_cosine_similarity as similarity_fn,
+            )
+            from wandb import Image  # noqa: PLC0415
+
+            embeddings = TensorDict.from_dict(
+                {
+                    attr: {
+                        k: v.weight
+                        for k, v in getattr(self.episode_builder, attr).flatten()
+                        if isinstance(v, torch.nn.Embedding) and v.num_embeddings > 1
+                    }
+                    for attr in ("embeddings", "position_encoding")
+                },
+                batch_size=[],
+            )
+
+            # TODO: need access to episode index to build full episode position embedding
+            similarities = embeddings.apply(similarity_fn)
+
+            self.logger.log_image(
+                key=f"embeddings/{similarity_fn.__name__}",
+                images=[
+                    Image(v, caption=".".join(mit.always_iterable(k)))
+                    for k, v in similarities.items(  # pyright: ignore[reportAttributeAccessIssue]
+                        include_nested=True, leaves_only=True
+                    )
+                ],
+                step=self.trainer.global_step,
+            )
 
     def _build_input(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportInvalidTypeForm]
         frames = batch.frames

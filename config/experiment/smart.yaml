@@ -65,7 +65,7 @@ model:
           _args_:
             - _target_: cargpt.components.norm.UniformBinner
               in_range: [0.0, 130.0]
-              num_bins: 1024
+              num_bins: 512
 
             - _target_: einops.layers.torch.Rearrange
               pattern: b t -> b t 1
@@ -75,7 +75,7 @@ model:
           _args_:
             - _target_: cargpt.components.norm.UniformBinner
               in_range: [0.0, 1.0]
-              num_bins: 255
+              num_bins: 512
 
             - _target_: einops.layers.torch.Rearrange
               pattern: b t -> b t 1
@@ -85,7 +85,7 @@ model:
           _args_:
             - _target_: cargpt.components.norm.UniformBinner
               in_range: [0.0, 1.0]
-              num_bins: 165
+              num_bins: 512
 
             - _target_: einops.layers.torch.Rearrange
               pattern: b t -> b t 1
@@ -95,7 +95,7 @@ model:
           _args_:
             - _target_: cargpt.components.norm.UniformBinner
               in_range: [-1.0, 1.0]
-              num_bins: 961
+              num_bins: 512
 
             - _target_: einops.layers.torch.Rearrange
               pattern: b t -> b t 1
@@ -121,33 +121,33 @@ model:
 
       continuous:
         speed:
-          _target_: torch.nn.Embedding
+          _target_: cargpt.components.nn.Embedding
           num_embeddings: ${model.episode_builder.tokenizers.continuous.speed._args_[0].num_bins}
           embedding_dim: ${vars.embedding_dim}
 
         gas_pedal:
-          _target_: torch.nn.Embedding
+          _target_: cargpt.components.nn.Embedding
           num_embeddings: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
           embedding_dim: ${vars.embedding_dim}
 
         brake_pedal:
-          _target_: torch.nn.Embedding
+          _target_: cargpt.components.nn.Embedding
           num_embeddings: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
           embedding_dim: ${vars.embedding_dim}
 
         steering_angle:
-          _target_: torch.nn.Embedding
+          _target_: cargpt.components.nn.Embedding
           num_embeddings: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
           embedding_dim: ${vars.embedding_dim}
 
       discrete:
         turn_signal:
-          _target_: torch.nn.Embedding
+          _target_: cargpt.components.nn.Embedding
           num_embeddings: 3
           embedding_dim: ${vars.embedding_dim}
 
       special:
-        _target_: torch.nn.Embedding
+        _target_: cargpt.components.nn.Embedding
         num_embeddings: 3
         embedding_dim: ${vars.embedding_dim}
 
@@ -156,31 +156,31 @@ model:
       image:
         patch:
           row:
-            _target_: torch.nn.Embedding
+            _target_: cargpt.components.nn.Embedding
             num_embeddings: 10
             embedding_dim: ${vars.embedding_dim}
           col:
-            _target_: torch.nn.Embedding
+            _target_: cargpt.components.nn.Embedding
             num_embeddings: 18
             embedding_dim: ${vars.embedding_dim}
 
       observations:
-        _target_: torch.nn.Embedding
+        _target_: cargpt.components.nn.Embedding
         num_embeddings: 182
         embedding_dim: ${vars.embedding_dim}
 
       actions:
-        _target_: torch.nn.Embedding
+        _target_: cargpt.components.nn.Embedding
         num_embeddings: 1
         embedding_dim: ${vars.embedding_dim}
 
       special:
-        _target_: torch.nn.Embedding
+        _target_: cargpt.components.nn.Embedding
         num_embeddings: 1
         embedding_dim: ${vars.embedding_dim}
 
       timestep:
-        _target_: torch.nn.Embedding
+        _target_: cargpt.components.nn.Embedding
         num_embeddings: ${vars.data.test.clip_length}
         embedding_dim: ${vars.embedding_dim}
 
@@ -472,12 +472,15 @@ datamodule:
                     merge:
                       method: interp
 
+                  - name: gear
+
               - message: VehicleState
                 fields:
                   - name: turn_signal
 
             filter: >
-              VehicleMotion_speed between 5.0 and 130.0
+              VehicleMotion_gear == '3'
+              and VehicleMotion_speed between 0.0 and 130.0
               and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
