@@ -2,7 +2,7 @@
 
 defaults:
   - /paths: default
-  - /dataset/val@datamodule.predict.dataset
+  - /dataset/train@datamodule.predict.dataset
   - _self_
 
 batch_size: 64

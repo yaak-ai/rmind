@@ -335,7 +335,6 @@ class EpisodeBuilder(Module):
         ):
             position = torch.arange(module.num_embeddings, device=device)
             position_embedding = rearrange(module(position), "t d -> t 1 d")
-            breakpoint()
             position_embeddings.apply(
                 lambda emb: emb + position_embedding,
                 inplace=True,  # NOTE
