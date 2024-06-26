@@ -41,6 +41,7 @@ optional = true
 
 [tool.poetry.group.train.dependencies]
 yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.19.1" }
+torchmetrics = "*"
 transformers = "*"
 polars = "*"
 wandb = "*"
@@ -178,7 +179,7 @@ split-on-trailing-comma = false
 [tool.deptry.per_rule_ignores]
 DEP001 = ["rerun"]
 DEP002 = ["torchaudio"]
-DEP004 = ["funcy", "polars", "tqdm", "yaak_datasets"]
+DEP004 = ["funcy", "polars", "tqdm", "yaak_datasets", "torchmetrics"]
 
 [tool.pytest.ini_options]
 addopts = "--jaxtyping-packages=foo,bar.baz,beartype.beartype"
