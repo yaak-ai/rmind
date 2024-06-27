@@ -300,7 +300,10 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     "brake_pedal": meta["VehicleMotion_brake_pedal_normalized"],
                     "steering_angle": meta["VehicleMotion_steering_angle_normalized"],
                 },
-                Modality.DISCRETE: {"turn_signal": meta["VehicleState_turn_signal"]},
+                Modality.DISCRETE: {
+                    "turn_signal": meta["VehicleState_turn_signal"],
+                    "incident": meta["incident_type"],
+                },
             },
             batch_size=batch_size,
             device=frames.device,
@@ -341,6 +344,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             "VehicleMotion_steering_angle_normalized": "steering_angle",
             "VehicleMotion_speed": "speed",
             "VehicleState_turn_signal": "turn_signal",
+            "incident_type": "incident",
         }
 
         sample_logit_bias_module_keys = {
@@ -410,6 +414,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 "losses",
                 Modality.CONTINUOUS,
                 "steering_angle",
+            ),
+            (
+                ObjectiveName.COPYCAT,
+                "streams",
+                "policy",
+                "losses",
+                Modality.DISCRETE,
+                "incident",
             ),
         }
 
