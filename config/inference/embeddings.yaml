@@ -1,0 +1,106 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - /dataset/train@datamodule.predict.dataset
+  - _self_
+
+batch_size: 64
+clip_len: 6
+output_dir: ???
+
+speed_range: [5.0, 130.0]
+
+model:
+  _target_: cargpt.utils.Embeddings
+  _recursive_: False
+
+  base:
+    _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+    artifact: ???
+    filename: model.ckpt
+    strict: False
+    hparams_updaters:
+      # 1. wrap hparams in DictConfig
+      - _target_: omegaconf.DictConfig
+        _partial_: true
+
+datamodule:
+  _target_: cargpt.datamodules.GenericDataModule
+  predict:
+    _target_: torch.utils.data.DataLoader
+    shuffle: true
+    batch_size: ${batch_size}
+    num_workers: 32
+    pin_memory: false
+    persistent_workers: true
+    multiprocessing_context: forkserver
+    collate_fn:
+      _target_: yaak_datasets.collate
+      _partial_: true
+    dataset:
+      config:
+        data:
+          metadata:
+            select:
+              - message: ImageMetadata
+                fields:
+                  - name: frame_idx
+                  - name: camera_name
+
+              - message: VehicleMotion
+                fields:
+                  - name: speed
+                    merge:
+                      method: interp
+
+                  - name: steering_angle_normalized
+                    merge:
+                      method: interp
+
+                  - name: gas_pedal_normalized
+                    merge:
+                      method: interp
+
+                  - name: brake_pedal_normalized
+                    merge:
+                      method: interp
+
+              - message: VehicleState
+                fields:
+                  - name: turn_signal
+
+            filter: >
+              VehicleMotion_speed between 5.0 and 130.0
+              and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
+              and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
+              and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
+
+        samples:
+          clips:
+            length: ${clip_len}
+            stride: 10
+            step: 10 # NOTE
+
+          transforms:
+            - _target_: yaak_datasets.transforms.Crop
+              offsets: [2, 2, 0, 0]
+
+            - _target_: yaak_datasets.transforms.Normalize
+              # ImageNet stats
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: gpu
+  devices: [1]
+  benchmark: true
+  logger: false
+
+  callbacks:
+    - _target_: cargpt.callbacks.model_summary.ModelSummary
+      depth: 5
+
+    - _target_: cargpt.callbacks.embedding_writer.EmbeddingWriter
+      output_dir: ${output_dir}

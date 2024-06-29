@@ -26,6 +26,7 @@ omegaconf = "^2.3.0"
 funcy = { version = "*", optional = true }
 wandb = { version = "*", optional = true }
 
+faiss-cpu = "^1.8.0.post1"
 [build-system]
 requires = ["poetry-core>=1.9.0"]
 build-backend = "poetry.core.masonry.api"
