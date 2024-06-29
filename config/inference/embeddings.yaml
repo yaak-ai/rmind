@@ -2,14 +2,16 @@
 
 defaults:
   - /paths: default
-  - /dataset/train@datamodule.predict.dataset
+  - /dataset/val@datamodule.predict.dataset
   - _self_
 
-batch_size: 64
-clip_len: 6
-output_dir: ???
+vars:
+  data:
+    predict:
+      batch_size: 32
+      clip_length: 24
 
-speed_range: [5.0, 130.0]
+output_dir: ???
 
 model:
   _target_: cargpt.utils.Embeddings
@@ -30,7 +32,7 @@ datamodule:
   predict:
     _target_: torch.utils.data.DataLoader
     shuffle: true
-    batch_size: ${batch_size}
+    batch_size: ${vars.data.predict.batch_size}
     num_workers: 32
     pin_memory: false
     persistent_workers: true
@@ -66,21 +68,31 @@ datamodule:
                     merge:
                       method: interp
 
+                  - name: gear
+
               - message: VehicleState
                 fields:
                   - name: turn_signal
 
             filter: >
-              VehicleMotion_speed between 5.0 and 130.0
+              VehicleMotion_gear == '3'
+              and VehicleMotion_speed between 0.0 and 130.0
               and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
               and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
 
         samples:
           clips:
-            length: ${clip_len}
+            length: ${vars.data.predict.clip_length}
             stride: 10
-            step: 10 # NOTE
+            step: 10
+            filter: >
+              not (
+                    array_upper(VehicleMotion_gas_pedal_normalized) <= (1.0/255 + 0.001)
+                and array_upper(VehicleMotion_brake_pedal_normalized) <= (1.0/164 + 0.001)
+                and array_upper(VehicleMotion_speed) >= 25.0
+                and array_get(VehicleMotion_speed, -1) - array_get(VehicleMotion_speed, 0) >= -0.05 * array_mean(VehicleMotion_speed)
+              )
 
           transforms:
             - _target_: yaak_datasets.transforms.Crop
