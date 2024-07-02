@@ -115,7 +115,7 @@ class xFormerEncoder(nn.Module):
                     # TODO: exclude certain indices from getting dropped?
                     if drop_ratio is not None:
                         attn_flat = rearrange(attn, "b s_from s_to -> b (s_from s_to)")
-                        drop_count = int(attn_flat.size[-1] * drop_ratio)
+                        drop_count = int(attn_flat.shape[-1] * drop_ratio)
                         drop_indices = attn_flat.topk(
                             k=drop_count, dim=-1, largest=False
                         ).indices
