@@ -52,9 +52,13 @@ class ForwardDynamicsPredictionObjective(Module):
         # all but last timestep
         index = episode.index[:-1]
 
-        observations: TensorDict = index.select(
-            *episode.timestep.keys(TokenType.OBSERVATION)
-        ).parse(embedding)
+        # all but register tokens
+        keys = [
+            k
+            for k in episode.timestep.keys(TokenType.OBSERVATION)
+            if k[0] != Modality.MEMORY
+        ]
+        observations: TensorDict = index.select(*keys).parse(embedding)
 
         observation_summary: Float[Tensor, "b t 1 d"] = (
             index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))

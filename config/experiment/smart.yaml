@@ -23,6 +23,7 @@ vars:
     num_heads: 4
     num_layers: 8
 
+  registers_num: 8
   embedding_dim: 512
 
 wandb:
@@ -42,6 +43,7 @@ model:
         - [observation, image, cam_front_left]
         - [observation, continuous, speed]
         - [observation, discrete, turn_signal]
+        - [observation, memory, register]
         - [special, observation_summary]
         - [special, observation_history]
         - [action, continuous, gas_pedal]
@@ -146,6 +148,12 @@ model:
           num_embeddings: 3
           embedding_dim: ${vars.embedding_dim}
 
+      memory:
+        register:
+          _target_: cargpt.components.nn.Embedding
+          num_embeddings: ${vars.registers_num}
+          embedding_dim: ${vars.embedding_dim}
+
       special:
         _target_: cargpt.components.nn.Embedding
         num_embeddings: 3
@@ -166,7 +174,7 @@ model:
 
       observations:
         _target_: cargpt.components.nn.Embedding
-        num_embeddings: 182
+        num_embeddings: 190
         embedding_dim: ${vars.embedding_dim}
 
       actions:
