@@ -104,3 +104,12 @@ class UniformUnbinner(Module):
     @override
     def extra_repr(self) -> str:
         return f"{self.num_bins} -> {self.out_range}"
+
+
+class ToFloat(Module):
+    def __init__(self):
+        super().__init__()
+
+    @override
+    def forward(self, x: Int[Tensor, "..."]) -> Float[Tensor, "..."]:
+        return x.to(torch.float32)
