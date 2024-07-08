@@ -227,13 +227,18 @@ class EpisodeBuilder(Module):
             nested_keys=True,
         )
 
-        if registers := self.embeddings[Modality.MEMORY].get("register"):
-            (b, t) = tokenized.shape  # pyright: ignore
-            register_tokens = torch.tensor(range(registers.num_embeddings)).to(
-                tokenized.device  # pyright: ignore
+        if (
+            register_embedding := self.embeddings.get(
+                (Modality.MEMORY, (k := "register")), default=None
+            )
+        ) is not None:
+            (b, t) = tokenized.shape  # pyright: ignore[reportAttributeAccessIssue]
+            register_tokens = torch.arange(
+                register_embedding.num_embeddings,
+                device=tokenized.device,  # pyright: ignore[reportAttributeAccessIssue]
             )
             register_tokens = repeat(register_tokens, "n -> b t n", b=b, t=t)
-            tokenized[Modality.MEMORY] = TensorDict({"register": register_tokens})  # pyright: ignore
+            tokenized[Modality.MEMORY] = TensorDict({k: register_tokens})  # pyright: ignore[reportOptionalSubscript]
 
         tokenized[Modality.SPECIAL] = {  # pyright: ignore[reportOptionalSubscript]
             k: torch.tensor(v).expand(*tokenized.batch_size, 1)  # pyright: ignore[reportAttributeAccessIssue]
