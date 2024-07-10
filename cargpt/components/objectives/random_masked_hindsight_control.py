@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
-from torch.nn import Module, ModuleDict
+from torch.nn import Module
 from torch.nn import functional as F
 from typing_extensions import override
 
@@ -23,6 +23,7 @@ from cargpt.components.mask import (
     XFormersAttentionMaskLegend,
 )
 from cargpt.components.objectives.common import PredictionResultKey
+from cargpt.utils.containers import ModuleDict
 
 
 class RandomMaskedHindsightControlObjective(Module):

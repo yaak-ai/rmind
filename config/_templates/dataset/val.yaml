@@ -11,39 +11,112 @@
 _target_: yaak_datasets.Dataset
 _recursive_: false
 config:
-  data:
-    drives:
-      #@ for drive in drives:
-      - id: #@ drive
-        sources:
+  inputs:
+    #@ for drive in drives:
+    - id: #@ drive
+      sources:
+        frame:
           #@ for camera in cameras:
-          - camera: #@ camera
+          - id: #@ camera
+            index_column: "image_metadata.${.id}.frame_idx"
             reader:
-              _target_: yaak_datasets.FrameImageVideoReader
-              path: "${paths.data_dir}/${....id}/frames/${..camera}.defish.mp4/576x324/{:09d}.jpg"
-            #! params: /nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json
+              _target_: yaak_datasets.JpegFrameReader
+              path: "${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg"
           #@ end
-        metadata:
-          path: ${paths.data_dir}/${..id}/metadata.log
-      #@ end
 
-    metadata:
-      cameras: #@ cameras
-      select: ???
-      filter: ???
+        table:
+          path: ${paths.data_dir}/${...id}/metadata.log
+          builder:
+            _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+            _recursive_: false
+            config:
+              cameras: #@ cameras
+              select:
+                - message:
+                    type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                    alias: image_metadata
+                  fields:
+                    - name: time_stamp
 
+                    - name: frame_idx
+                      merge:
+                        method: asof
+                        tolerance: 10ms
+
+                    - name: camera_name
+                      partition: true
+
+                - message:
+                    type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                    alias: vehicle_state
+                  fields:
+                    - name: time_stamp
+
+                    - name: turn_signal
+                      merge:
+                        method: asof
+                        tolerance: 100ms
+
+                - message:
+                    type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                    alias: vehicle_motion
+                  fields:
+                    - name: time_stamp
+
+                    - name: speed
+                      merge:
+                        method: interp
+
+                    - name: gas_pedal_normalized
+                      merge:
+                        method: interp
+
+                    - name: brake_pedal_normalized
+                      merge:
+                        method: interp
+
+                    - name: steering_angle_normalized
+                      merge:
+                        method: interp
+
+                    - name: gear
+                      merge:
+                        method: asof
+                        tolerance: 100ms
+
+              merge:
+                reference:
+                  key:
+                    [
+                      yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata,
+                      cam_front_left,
+                    ]
+                  column: time_stamp
+
+              filter: >
+                `vehicle_motion.gear` == 3
+                and `vehicle_motion.speed` between 0.0 and 130.0
+                and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0
+                and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0
+                and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
+
+              cache:
+                _target_: yaak_datasets.utils.DataframeDiskCache
+                directory: ${paths.metadata_cache_dir}
+                size_limit: "10 GiB"
+    #@ end
   samples:
-    alignment:
-      ref_camera: #@ cameras[0]
-      tolerance: 10ms
-
-    clips: ???
-    transforms: ???
-
-  processing:
-    max_workers: !!null
-    metadata:
-      cache:
-        enabled: true
-        path: ${paths.metadata_cache_dir}
-        size_limit: "1 GiB"
+    builder:
+      _target_: yaak_datasets.dataset.sample.GreedySampleTableBuilder
+      config:
+        index_column: image_metadata.cam_front_left.frame_idx
+        length: ${vars.data.train.clip_length}
+        stride: 10
+        min_step: 10
+        filter: >
+          not (
+                array_upper(`vehicle_motion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
+            and array_upper(`vehicle_motion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
+            and array_upper(`vehicle_motion.speed`) >= 25.0
+            and array_get(`vehicle_motion.speed`, -1) - array_get(`vehicle_motion.speed`, 0) >= -0.05 * array_mean(`vehicle_motion.speed`)
+          )

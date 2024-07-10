@@ -40,8 +40,8 @@ def train(cfg: DictConfig):
     ) is not None:
         paths = {
             Path(path).resolve()
-            for path in check_output(
-                ["git", "ls-files"],  # noqa: S603, S607
+            for path in check_output(  # noqa: S603
+                ["git", "ls-files"],  # noqa: S607
                 universal_newlines=True,
             ).splitlines()
         }
@@ -55,7 +55,7 @@ def train(cfg: DictConfig):
 @logger.catch(onerror=lambda _: sys.exit(1))
 def main():
     mp.set_start_method("spawn", force=True)
-    mp.set_forkserver_preload(["torch"])
+    mp.set_forkserver_preload(["yaak_datasets"])
     setup_logging()
 
     train()

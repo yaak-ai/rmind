@@ -23,60 +23,8 @@ datamodule:
     persistent_workers: true
     multiprocessing_context: forkserver
     collate_fn:
-      _target_: yaak_datasets.collate
+      _target_: yaak_datasets.utils.dataloader.collate_identity
       _partial_: true
-    dataset:
-      config:
-        data:
-          metadata:
-            select:
-              - message: ImageMetadata
-                fields:
-                  - name: frame_idx
-                  - name: camera_name
-
-              - message: VehicleMotion
-                fields:
-                  - name: speed
-                    merge:
-                      method: interp
-
-                  - name: steering_angle_normalized
-                    merge:
-                      method: interp
-
-                  - name: gas_pedal_normalized
-                    merge:
-                      method: interp
-
-                  - name: brake_pedal_normalized
-                    merge:
-                      method: interp
-
-              - message: VehicleState
-                fields:
-                  - name: turn_signal
-
-            filter: >
-              VehicleMotion_speed between ${vars.speed_range[0]} and ${vars.speed_range[1]}
-              and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
-              and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
-              and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
-
-        samples:
-          clips:
-            length: ${vars.clip_len}
-            stride: 10
-            step: 10 # NOTE
-
-          transforms:
-            - _target_: yaak_datasets.transforms.Crop
-              offsets: [2, 2, 0, 0]
-
-            - _target_: yaak_datasets.transforms.Normalize
-              # ImageNet stats
-              mean: [0.485, 0.456, 0.406]
-              std: [0.229, 0.224, 0.225]
 
 trainer:
   _target_: pytorch_lightning.Trainer

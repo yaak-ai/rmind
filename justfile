@@ -8,7 +8,7 @@ _default:
 # poetry venv setup
 setup:
     poetry lock --no-update
-    poetry install --sync --with=dev,test,lint,train,predict,notebook,dataviz
+    poetry install --sync --with=dev,test,lint,train,predict,notebook
     poetry run pre-commit install --install-hooks
 
 # run pre-commit on all files
