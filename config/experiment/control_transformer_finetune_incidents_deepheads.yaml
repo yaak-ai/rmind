@@ -2,7 +2,7 @@
 
 defaults:
   - /paths: default
-  - /datamodule: customized
+  - /datamodule: default
   - /trainer: default
   - _self_
 
@@ -52,16 +52,16 @@ model:
                           - 2
                           - ${embedding_dim}
                       out_features: 512
-                    #   bias: True
-                    # - _target_: torch.nn.ReLU
-                    # - _target_: torch.nn.Linear
-                    #   in_features: 512
-                    #   out_features: 256
-                    #   bias: True
-                    # - _target_: torch.nn.ReLU
-                    # - _target_: torch.nn.Linear
-                    #   in_features: 256
-                    #   out_features: 512
+                      bias: True
+                    - _target_: torch.nn.ReLU
+                    - _target_: torch.nn.Linear
+                      in_features: 512
+                      out_features: 256
+                      bias: True
+                    - _target_: torch.nn.ReLU
+                    - _target_: torch.nn.Linear
+                      in_features: 256
+                      out_features: 512
                       bias: False
 
                 brake_pedal:
@@ -74,16 +74,16 @@ model:
                           - 2
                           - ${embedding_dim}
                       out_features: 512
-                    #   bias: True
-                    # - _target_: torch.nn.ReLU
-                    # - _target_: torch.nn.Linear
-                    #   in_features: 512
-                    #   out_features: 256
-                    #   bias: True
-                    # - _target_: torch.nn.ReLU
-                    # - _target_: torch.nn.Linear
-                    #   in_features: 256
-                    #   out_features: 512
+                      bias: True
+                    - _target_: torch.nn.ReLU
+                    - _target_: torch.nn.Linear
+                      in_features: 512
+                      out_features: 256
+                      bias: True
+                    - _target_: torch.nn.ReLU
+                    - _target_: torch.nn.Linear
+                      in_features: 256
+                      out_features: 512
                       bias: False
 
                 steering_angle:
@@ -96,16 +96,16 @@ model:
                           - 2
                           - ${embedding_dim}
                       out_features: 512
-                    #   bias: True
-                    # - _target_: torch.nn.ReLU
-                    # - _target_: torch.nn.Linear
-                    #   in_features: 512
-                    #   out_features: 256
-                    #   bias: True
-                    # - _target_: torch.nn.ReLU
-                    # - _target_: torch.nn.Linear
-                    #   in_features: 256
-                    #   out_features: 512
+                      bias: True
+                    - _target_: torch.nn.ReLU
+                    - _target_: torch.nn.Linear
+                      in_features: 512
+                      out_features: 256
+                      bias: True
+                    - _target_: torch.nn.ReLU
+                    - _target_: torch.nn.Linear
+                      in_features: 256
+                      out_features: 512
                       bias: False
 
               discrete:
@@ -118,17 +118,17 @@ model:
                         _args_:
                           - 2
                           - ${embedding_dim}
-                      out_features: 5
-                    #   bias: True
-                    # - _target_: torch.nn.ReLU
-                    # - _target_: torch.nn.Linear
-                    #   in_features: 512
-                    #   out_features: 256
-                    #   bias: True
-                    # - _target_: torch.nn.ReLU
-                    # - _target_: torch.nn.Linear
-                    #   in_features: 256
-                    #   out_features: 10
+                      out_features: 512
+                      bias: True
+                    - _target_: torch.nn.ReLU
+                    - _target_: torch.nn.Linear
+                      in_features: 512
+                      out_features: 256
+                      bias: True
+                    - _target_: torch.nn.ReLU
+                    - _target_: torch.nn.Linear
+                      in_features: 256
+                      out_features: 10
                       bias: False
 
             losses:
@@ -167,9 +167,10 @@ model:
       value:
         incident:
           _target_: cargpt.components.nn.Embedding
-          num_embeddings: 5 # num types of incident, fixed
+          num_embeddings: 10 # num types of incident, fixed
           embedding_dim: ${embedding_dim}
 
+    # Q: do I need it?
     - _target_: omegaconf.OmegaConf.update
       _partial_: true
       _recursive_: false
@@ -231,9 +232,8 @@ model:
 
 datamodule:
   train:
-    dataloader:
-      batch_size: ${batch_size}
-      num_workers: 32
+    batch_size: ${batch_size}
+    num_workers: 32
     dataset:
       config:
         data:
@@ -298,9 +298,8 @@ datamodule:
               std: [0.229, 0.224, 0.225]
 
   val:
-    dataloader:
-      batch_size: ${batch_size}
-      num_workers: ${datamodule.train.dataloader.num_workers}
+    batch_size: ${batch_size}
+    num_workers: ${datamodule.train.num_workers}
     dataset:
       config:
         data:

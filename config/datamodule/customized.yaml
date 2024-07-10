@@ -1,0 +1,40 @@
+defaults:
+  - /dataset/val_incidents@train.dataset
+  - /dataset/val_incidents@val.dataset
+  - _self_
+
+_target_: cargpt.datamodules.CustomizedDataModule
+_recursive_: false
+train:
+  dataloader:
+    _target_: torch.utils.data.DataLoader
+    shuffle: null
+
+    num_workers: 32
+    pin_memory: false
+    persistent_workers: true
+    multiprocessing_context: forkserver
+    collate_fn:
+      _target_: yaak_datasets.collate
+      _partial_: true
+  sampler:
+    _target_: yaak_datasets.sampler.ImbalancedDatasetSampler
+    _partial_: true
+    get_label:
+      _target_: yaak_datasets.sampler.imbalanced_sampler.get_label
+      _partial_: true
+      target_val: incident
+    
+
+val:
+  dataloader:
+    _target_: torch.utils.data.DataLoader
+    shuffle: false
+    num_workers: 32
+    pin_memory: false
+    persistent_workers: true
+    multiprocessing_context: forkserver
+    collate_fn:
+      _target_: yaak_datasets.collate
+      _partial_: true
+  

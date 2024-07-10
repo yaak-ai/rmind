@@ -1,5 +1,7 @@
-_target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
-artifact: ???
+_target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
+checkpoint_path: ???
+# _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+# artifact: ???
 filename: model.ckpt
 hparams_updaters:
   # 1. wrap hparams in DictConfig
@@ -33,14 +35,17 @@ hparams_updaters:
                     gas_pedal:
                       _target_: cargpt.components.norm.UniformUnbinner
                       out_range: [0.0, 1.0]
-                      num_bins: 255
+                      num_bins: 512
 
                     brake_pedal:
                       _target_: cargpt.components.norm.UniformUnbinner
                       out_range: [0.0, 1.0]
-                      num_bins: 165
+                      num_bins: 512
 
                     steering_angle:
                       _target_: cargpt.components.norm.UniformUnbinner
                       out_range: [-1.0, 1.0]
-                      num_bins: 961
+                      num_bins: 512
+                  discrete:
+                    incident:
+                      _target_: cargpt.components.norm.ToFloat

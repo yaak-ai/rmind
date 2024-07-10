@@ -1,3 +1,3 @@
-from .generic import GenericDataModule
+from .generic import CustomizedDataModule, GenericDataModule
 
-__all__ = ["GenericDataModule"]
+__all__ = ["CustomizedDataModule", "GenericDataModule"]
