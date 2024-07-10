@@ -26,6 +26,7 @@ omegaconf = "^2.3.0"
 funcy = { version = "*", optional = true }
 wandb = { version = "*", optional = true }
 yaak-datasets = {git = "ssh://git@github.com/yaak-ai/yaak-datasets.git", rev = "feat/incidents_sampling"}
+python-dotenv = "^1.0.1"
 
 [build-system]
 requires = ["poetry-core>=1.9.0"]
