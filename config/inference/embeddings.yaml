@@ -2,14 +2,14 @@
 
 defaults:
   - /paths: default
-  - /dataset/val@datamodule.predict.dataset
+  - /dataset/train@datamodule.predict.dataset
   - _self_
 
 vars:
   data:
     predict:
-      batch_size: 32
-      clip_length: 24
+      batch_size: 64
+      clip_length: 6
 
 output_dir: ???
 
