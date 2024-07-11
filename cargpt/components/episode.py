@@ -139,7 +139,7 @@ class Index:
 
 # NOTE: need Index.__hash__ and Index.__eq__ for @lru_cache'ing methods with Index arguments
 # defining/assigning these outside of Index since @tensordict overrides most methods
-from tensordict.tensorclass import _eq  # noqa: E402, PLC2701
+from tensordict.tensorclass import _eq  # noqa: E402
 
 
 def _index_hash(self) -> int:

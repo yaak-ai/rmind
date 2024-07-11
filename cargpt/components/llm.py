@@ -1,3 +1,5 @@
+from typing import Literal
+
 import torch
 from einops import rearrange, repeat
 from jaxtyping import Float
@@ -8,6 +10,7 @@ from xformers.components.attention import ScaledDotProduct
 from xformers.components.attention.core import scaled_query_key_softmax
 from xformers.components.feedforward import register_feedforward
 from xformers.components.feedforward.mlp import Feedforward, MlpConfig
+from xformers.components.multi_head_dispatch import _fold_heads, _split_heads
 from xformers.components.reversible import ReversibleSequence
 from xformers.factory.model_factory import (
     get_weight_init_fn,
@@ -92,6 +95,7 @@ class xFormerEncoder(nn.Module):
         src: Float[Tensor, "b s d"],
         mask: Float[Tensor, "s s"],
         *,
+        head_fusion: Literal["max", "min", "mean"] = "max",
         drop_ratio: float | None = None,
     ) -> Float[Tensor, "b s s"]:
         """
@@ -110,11 +114,40 @@ class xFormerEncoder(nn.Module):
                     x = net.norm(x)
                     q = net.sublayer.in_proj_container.q_proj(x)
                     k = net.sublayer.in_proj_container.k_proj(x)
+
+                    # https://github.com/facebookresearch/xformers/blob/184b2808a5eed5f03ce381b8e7bd73f6188d8453/xformers/components/multi_head_dispatch.py#L236
+                    reshape_fn = (
+                        _split_heads
+                        if net.sublayer.attention.requires_head_dimension
+                        else _fold_heads
+                    )
+
+                    q = reshape_fn(
+                        q, b, s, net.sublayer.num_heads, net.sublayer.dim_key_head
+                    )
+                    k = reshape_fn(
+                        k, b, s, net.sublayer.num_heads, net.sublayer.dim_key_head
+                    )
+
                     attn = scaled_query_key_softmax(q, k, att_mask=mask)
+
+                    # unfold attention
+                    attn = attn.view(b, net.sublayer.num_heads, s, s)
+
+                    match head_fusion:
+                        case "mean":
+                            attn = attn.mean(axis=1)  # pyright: ignore[reportCallIssue]
+                        case "max":
+                            attn = attn.max(axis=1)[0]  # pyright: ignore[reportCallIssue]
+                        case "min":
+                            attn = attn.min(axis=1)[0]  # pyright: ignore[reportCallIssue]
+                        case _:  # pyright: ignore[reportUnnecessaryComparison]
+                            msg = f"Attention head fusion type {head_fusion} not supported"
+                            raise NotImplementedError(msg)
 
                     # TODO: exclude certain indices from getting dropped?
                     if drop_ratio is not None:
-                        attn_flat = rearrange(attn, "b s_from s_to -> b (s_from s_to)")
+                        attn_flat = rearrange(attn, "b s_from s_to -> (b s_from) s_to)")
                         drop_count = int(attn_flat.shape[-1] * drop_ratio)
                         drop_indices = attn_flat.topk(
                             k=drop_count, dim=-1, largest=False
@@ -124,7 +157,7 @@ class xFormerEncoder(nn.Module):
 
                         attn = rearrange(
                             attn_flat,
-                            "b (s_from s_to) -> b s_from s_to",
+                            "(b s_from) s_to -> b s_from s_to",
                             s_from=s,
                             s_to=s,
                         )
@@ -132,7 +165,7 @@ class xFormerEncoder(nn.Module):
                     attn = (attn + identity) * 0.5
                     # [2] > We also have to normalize the rows, to keep the total attention flow 1.
                     attn /= attn.sum(dim=-1, keepdim=True)
-                    attn_rollout @= attn
+                    attn_rollout = torch.matmul(attn, attn_rollout)
 
                 case _:
                     raise NotImplementedError

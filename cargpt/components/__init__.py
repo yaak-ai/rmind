@@ -1,6 +1,6 @@
 from typing import Self
 
-from tensordict.tensorclass import _eq, _getitem  # noqa: PLC2701
+from tensordict.tensorclass import _eq, _getitem
 from tensordict.utils import IndexType
 
 # monkey patch incorrect annotations
