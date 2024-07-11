@@ -9,13 +9,11 @@ from lightning_fabric.plugins.io.torch_io import pl_load
 from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from loguru import logger
 from omegaconf import DictConfig
-from pytorch_lightning.core.saving import _load_state  # noqa: PLC2701
+from pytorch_lightning.core.saving import _load_state
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import SingleDeviceStrategy
 from pytorch_lightning.strategies.ddp import DDPStrategy
-from pytorch_lightning.utilities.model_helpers import (
-    _restricted_classmethod,  # noqa: PLC2701
-)
+from pytorch_lightning.utilities.model_helpers import _restricted_classmethod
 from tensordict import TensorDict
 from torch.nn import Module  # noqa: TCH002
 from typing_extensions import override
@@ -82,7 +80,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             case _:
                 from pytorch_lightning.utilities.migration import pl_legacy_patch  # noqa: I001, PLC0415
                 from pytorch_lightning.utilities.migration.utils import (  # noqa: PLC0415
-                    _pl_migrate_checkpoint,  # noqa: PLC2701
+                    _pl_migrate_checkpoint,
                 )
                 from pytorch_lightning.utilities.rank_zero import rank_zero_warn  # noqa: PLC0415
 
