@@ -45,5 +45,13 @@ class ModuleDict(_ModuleDict):
 
             return default
 
+    def get_deepest(self, key: str | tuple[str, ...], *, default: Any = __unspecified):
+        res = self
+        for k in key if isinstance(key, tuple) else (key,):
+            res = res.get(k, default=default)
+            if not isinstance(res, ModuleDict):
+                return res
+        return self
+
     def flatten(self) -> Iterator[tuple[str | tuple[str, ...], Module]]:
         return flatten(self)

@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
@@ -6,7 +8,17 @@ from torch.nn import CrossEntropyLoss, Module
 from typing_extensions import override
 
 
-class FocalLoss(Module):
+class GenericRegressionLoss:
+    def get_loss_type(self):
+        return "GenericRegression"
+
+
+class GenericClassificationLoss:
+    def get_loss_type(self):
+        return "GenericClassification"
+
+
+class FocalLoss(Module, GenericClassificationLoss):
     """https://arxiv.org/pdf/1708.02002.pdf"""
 
     def __init__(self, *, gamma: float = 2.0):
@@ -42,7 +54,7 @@ class LogitBiasMixin:
                 self._logit_bias = None
 
 
-class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss):
+class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss, GenericClassificationLoss):
     def __init__(
         self, *, logit_bias: Float[Tensor, "d"] | None = None, gamma: float = 2.0
     ):
@@ -55,12 +67,41 @@ class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss):
         return super().forward(input + self.logit_bias, target)
 
 
-class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
+class LogitBiasCrossEntropyLoss(
+    LogitBiasMixin, CrossEntropyLoss, GenericClassificationLoss
+):
     def __init__(self, *args, logit_bias: Float[Tensor, "d"] | None = None, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.logit_bias = logit_bias
 
     @override
-    def forward(self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]):
-        return super().forward(input + self.logit_bias, target)
+    def forward(self, input: Float[Tensor, "b d"], target_labels: Int[Tensor, "b"]):
+        return super().forward(input + self.logit_bias, target_labels)
+
+
+class GaussianNLLLoss(torch.nn.GaussianNLLLoss, GenericRegressionLoss):
+    """
+    Class that makes vanilla torch.nn.GaussianNLLLoss compatible with carGPT pipeline
+    """
+
+    def __init__(
+        self,
+        *args,
+        logit_bias: Float[Tensor, "d"] | None = None,
+        var_pos_function: Callable[[Tensor], Tensor] = torch.exp,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.logit_bias = None
+        self.var_pos_function = var_pos_function
+
+    @override
+    def forward(
+        self,
+        mean: Float[Tensor, "b d"],
+        log_var: Float[Tensor, "b d"],
+        target: Float[Tensor, "b"],
+    ):
+        var = self.var_pos_function(log_var)
+        return super().forward(input=mean, target=target, var=var)
