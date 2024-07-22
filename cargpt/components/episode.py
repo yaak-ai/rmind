@@ -27,6 +27,7 @@ class Modality(StrEnum):
     CONTINUOUS = auto()
     DISCRETE = auto()
     SPECIAL = auto()
+    MEMORY = auto()
 
 
 class SpecialToken(StrEnum):
@@ -91,6 +92,7 @@ class Index:
     continuous: TensorDict
     discrete: TensorDict
     special: TensorDict
+    memory: TensorDict
 
     def parse(self, src: Shaped[Tensor, "..."], dim: int = 1) -> TensorDict:
         # https://github.com/pytorch/pytorch/issues/30574
@@ -224,6 +226,19 @@ class EpisodeBuilder(Module):
             )(v),
             nested_keys=True,
         )
+
+        if (
+            register_embedding := self.embeddings.get(
+                (Modality.MEMORY, (k := "register")), default=None
+            )
+        ) is not None:
+            (b, t) = tokenized.shape  # pyright: ignore[reportAttributeAccessIssue]
+            register_tokens = torch.arange(
+                register_embedding.num_embeddings,
+                device=tokenized.device,  # pyright: ignore[reportAttributeAccessIssue]
+            )
+            register_tokens = repeat(register_tokens, "n -> b t n", b=b, t=t)
+            tokenized[Modality.MEMORY] = TensorDict({k: register_tokens})  # pyright: ignore[reportOptionalSubscript]
 
         tokenized[Modality.SPECIAL] = {  # pyright: ignore[reportOptionalSubscript]
             k: torch.tensor(v).expand(*tokenized.batch_size, 1)  # pyright: ignore[reportAttributeAccessIssue]
