@@ -32,6 +32,30 @@ model:
   _target_: cargpt.models.control_transformer.ControlTransformer
   _recursive_: false
 
+  batch_transforms:
+    - select: [image]
+      apply:
+        # NOTE/PERF: https://pytorch.org/vision/main/transforms.html#performance-considerations
+        _target_: torch.compile
+        model:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: einops.layers.torch.Rearrange
+              pattern: "... h w c -> ... c h w"
+
+            - _target_: torchvision.transforms.v2.CenterCrop
+              size: [320, 576]
+
+            - _target_: torchvision.transforms.v2.ToDtype
+              scale: true
+              dtype:
+                _target_: hydra.utils.get_object
+                path: torch.float32
+
+            - _target_: torchvision.transforms.v2.Normalize
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
   episode_builder:
     _target_: cargpt.components.episode.EpisodeBuilder
     _recursive_: true
@@ -215,40 +239,34 @@ model:
         _target_: cargpt.utils.ModuleDict
         continuous:
           gas_pedal:
-            _target_: torch.nn.Sequential
-            _args_:
-              - _target_: torch.nn.Linear
-                in_features:
-                  _target_: operator.mul
-                  _args_:
-                    - 2
-                    - ${vars.embedding_dim}
-                out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
-                bias: False
+            _target_: torch.nn.Linear
+            in_features:
+              _target_: operator.mul
+              _args_:
+                - 2
+                - ${vars.embedding_dim}
+            out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal._args_[0].num_bins}
+            bias: False
 
           brake_pedal:
-            _target_: torch.nn.Sequential
-            _args_:
-              - _target_: torch.nn.Linear
-                in_features:
-                  _target_: operator.mul
-                  _args_:
-                    - 2
-                    - ${vars.embedding_dim}
-                out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
-                bias: False
+            _target_: torch.nn.Linear
+            in_features:
+              _target_: operator.mul
+              _args_:
+                - 2
+                - ${vars.embedding_dim}
+            out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal._args_[0].num_bins}
+            bias: False
 
           steering_angle:
-            _target_: torch.nn.Sequential
-            _args_:
-              - _target_: torch.nn.Linear
-                in_features:
-                  _target_: operator.mul
-                  _args_:
-                    - 2
-                    - ${vars.embedding_dim}
-                out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
-                bias: False
+            _target_: torch.nn.Linear
+            in_features:
+              _target_: operator.mul
+              _args_:
+                - 2
+                - ${vars.embedding_dim}
+            out_features: ${model.episode_builder.tokenizers.continuous.steering_angle._args_[0].num_bins}
+            bias: False
 
       losses:
         _target_: cargpt.utils.ModuleDict
@@ -443,82 +461,6 @@ model:
 datamodule:
   train:
     batch_size: ${vars.data.train.batch_size}
-    num_workers: 32
-    dataset:
-      config:
-        data:
-          metadata:
-            select:
-              - message: ImageMetadata
-                fields:
-                  - name: frame_idx
-                  - name: camera_name
-
-              - message: VehicleMotion
-                fields:
-                  - name: speed
-                    merge:
-                      method: interp
-
-                  - name: steering_angle_normalized
-                    merge:
-                      method: interp
-
-                  - name: gas_pedal_normalized
-                    merge:
-                      method: interp
-
-                  - name: brake_pedal_normalized
-                    merge:
-                      method: interp
-
-                  - name: gear
-
-              - message: VehicleState
-                fields:
-                  - name: turn_signal
-
-            filter: >
-              VehicleMotion_gear == '3'
-              and VehicleMotion_speed between 0.0 and 130.0
-              and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
-              and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
-              and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
-
-        samples:
-          clips:
-            length: ${vars.data.train.clip_length}
-            stride: 10
-            step: 10
-            filter: >
-              not (
-                    array_upper(VehicleMotion_gas_pedal_normalized) <= (1.0/255 + 0.001)
-                and array_upper(VehicleMotion_brake_pedal_normalized) <= (1.0/164 + 0.001)
-                and array_upper(VehicleMotion_speed) >= 25.0
-                and array_get(VehicleMotion_speed, -1) - array_get(VehicleMotion_speed, 0) >= -0.05 * array_mean(VehicleMotion_speed)
-              )
-
-          transforms:
-            - _target_: yaak_datasets.transforms.Crop
-              offsets: [2, 2, 0, 0]
-
-            - _target_: yaak_datasets.transforms.Normalize
-              # ImageNet stats
-              mean: [0.485, 0.456, 0.406]
-              std: [0.229, 0.224, 0.225]
 
   val:
     batch_size: ${vars.data.val.batch_size}
-    num_workers: ${datamodule.train.num_workers}
-    dataset:
-      config:
-        data:
-          metadata: ${datamodule.train.dataset.config.data.metadata}
-        samples:
-          clips:
-            length: ${vars.data.val.clip_length}
-            stride: ${datamodule.train.dataset.config.samples.clips.stride}
-            step: ${datamodule.train.dataset.config.samples.clips.step}
-            filter: ${datamodule.train.dataset.config.samples.clips.filter}
-
-          transforms: ${datamodule.train.dataset.config.samples.transforms}

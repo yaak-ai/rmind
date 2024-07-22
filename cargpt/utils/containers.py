@@ -7,6 +7,16 @@ from torch.nn import Module
 from torch.nn import ModuleDict as _ModuleDict
 
 
+def flatten(obj: Module) -> Iterator[tuple[str | tuple[str, ...], Module]]:
+    for k, v in obj._modules.items():
+        if v is not None:
+            if getattr(v, "_modules", None):
+                yield from (((k, *always_iterable(_k)), _v) for _k, _v in flatten(v))
+
+            else:
+                yield k, v
+
+
 class ModuleDict(_ModuleDict):
     """A convenience wrapper around torch.nn.ModuleDict"""
 
@@ -36,8 +46,4 @@ class ModuleDict(_ModuleDict):
             return default
 
     def flatten(self) -> Iterator[tuple[str | tuple[str, ...], Module]]:
-        for k, v in self._modules.items():
-            if isinstance(v, self.__class__):
-                yield from (((k, *always_iterable(_k)), _v) for _k, _v in v.flatten())
-            else:
-                yield k, v
+        return flatten(self)

@@ -1,5 +1,6 @@
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -17,6 +18,7 @@ from pytorch_lightning.utilities.model_helpers import _restricted_classmethod
 from tensordict import TensorDict
 from torch.nn import Module  # noqa: TCH002
 from typing_extensions import override
+from yaak_datasets import Batch
 
 from cargpt.components.episode import EpisodeBuilder, Modality
 from cargpt.components.mask import WandbAttentionMaskLegend
@@ -25,18 +27,13 @@ from cargpt.components.objectives.common import ObjectiveName, PredictionResultK
 from cargpt.utils._wandb import LoadableFromArtifact
 from cargpt.utils.containers import ModuleDict
 
-try:
-    from yaak_datasets import Batch
-except ImportError:
-    from typing import Any
-
-    Batch = Any
-
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def __init__(self, **_kwargs) -> None:
         super().__init__()
         self.save_hyperparameters()
+
+        self.batch_transforms = instantiate(self.hparams.get("batch_transforms", None))
 
         self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)  # pyright: ignore[reportAttributeAccessIssue]
         self.encoder: Module = instantiate(self.hparams.encoder)  # pyright: ignore[reportAttributeAccessIssue]
@@ -123,9 +120,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 return model.to(device)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
 
     @override
-    def training_step(self, batch: Batch, *args):  # pyright: ignore[reportInvalidTypeForm]
-        inputs = self._build_input(batch)
-
+    def training_step(self, batch: TensorDict, *args):
         all_objectives = tuple(self.objectives.keys())
         scheduled_objectives = (
             all_objectives
@@ -147,11 +142,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         metrics = TensorDict(
             {
-                name: self.objectives[name](inputs, self.episode_builder, self.encoder)
+                name: self.objectives[name](batch, self.episode_builder, self.encoder)
                 for name in objectives_to_compute
             },
             batch_size=[],
-            device=inputs.device,
+            device=batch.device,
         )
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
@@ -167,7 +162,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             from wandb import Image  # noqa: PLC0415
 
-            episode = self.episode_builder.build_episode(inputs)
+            episode = self.episode_builder.build_episode(batch)
             objectives = (
                 all_objectives
                 if self.objective_scheduler is None
@@ -191,16 +186,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics["loss", "total"]
 
     @override
-    def validation_step(self, batch: Batch, *args):  # pyright: ignore[reportInvalidTypeForm]
-        inputs = self._build_input(batch)
-
+    def validation_step(self, batch: TensorDict, *args):
         metrics = TensorDict(
             {
-                name: objective(inputs, self.episode_builder, self.encoder)
+                name: objective(batch, self.episode_builder, self.encoder)
                 for name, objective in self.objectives.items()
             },
             batch_size=[],
-            device=inputs.device,
+            device=batch.device,
         )
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
@@ -220,12 +213,10 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics["loss", "total"]
 
     @override
-    def predict_step(self, batch: Batch):  # pyright: ignore[reportInvalidTypeForm]
-        inputs = self._build_input(batch)
-
+    def predict_step(self, batch: TensorDict):
         predictions = TensorDict.from_dict({
             name: objective.predict(
-                inputs,
+                batch,
                 episode_builder=self.episode_builder,
                 encoder=self.encoder,
                 # TODO: attention
@@ -241,7 +232,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         })
 
         return TensorDict.from_dict(
-            {"inputs": inputs, "predictions": predictions}, batch_size=batch.batch_size
+            {"inputs": batch, "predictions": predictions}, batch_size=batch.batch_size
         )
 
     @override
@@ -256,7 +247,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 {
                     attr: {
                         k: v.weight
-                        for k, v in getattr(self.episode_builder, attr).flatten()
+                        for k, v in cast(
+                            ModuleDict, getattr(self.episode_builder, attr)
+                        ).flatten()
                         if isinstance(v, torch.nn.Embedding) and v.num_embeddings > 1
                     }
                     for attr in ("embeddings", "position_encoding")
@@ -277,32 +270,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 ],
                 step=self.trainer.global_step,
             )
-
-    def _build_input(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportInvalidTypeForm]
-        frames = batch.frames
-        meta = batch.meta
-        shapes = [
-            frames.get_item_shape(k)
-            for k in frames.keys(include_nested=True, leaves_only=True)
-        ]
-
-        # include timestep as batch dim
-        batch_size = mit.one({(b, t) for (b, t, *_) in shapes})
-
-        return TensorDict.from_dict(
-            {
-                Modality.IMAGE: frames,
-                Modality.CONTINUOUS: {
-                    "speed": meta["VehicleMotion_speed"],
-                    "gas_pedal": meta["VehicleMotion_gas_pedal_normalized"],
-                    "brake_pedal": meta["VehicleMotion_brake_pedal_normalized"],
-                    "steering_angle": meta["VehicleMotion_steering_angle_normalized"],
-                },
-                Modality.DISCRETE: {"turn_signal": meta["VehicleState_turn_signal"]},
-            },
-            batch_size=batch_size,
-            device=frames.device,
-        )
 
     @override
     def configure_optimizers(self):  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -329,263 +296,129 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         # https://openaccess.thecvf.com/content/CVPR2023/papers/Xu_Learning_Imbalanced_Data_With_Vision_Transformers_CVPR_2023_paper.pdf
         # Section 3.2
 
-        from polars import col  # noqa: PLC0415
+        import polars as pl  # noqa: PLC0415
 
-        dataset = self.trainer.datamodule.train_dataloader().dataset  # pyright: ignore[reportAttributeAccessIssue]
+        samples = self.trainer.datamodule.train_dataloader().dataset.samples  # pyright: ignore[reportAttributeAccessIssue]
 
-        metadata_df_cols = {
-            "VehicleMotion_gas_pedal_normalized": "gas_pedal",
-            "VehicleMotion_brake_pedal_normalized": "brake_pedal",
-            "VehicleMotion_steering_angle_normalized": "steering_angle",
-            "VehicleMotion_speed": "speed",
-            "VehicleState_turn_signal": "turn_signal",
+        sample_logit_bias_losses = defaultdict(list)
+        delta_logit_bias_losses = defaultdict(list)
+
+        for k, mod in self.objectives.flatten():
+            if hasattr(mod, "logit_bias") and mod.logit_bias is None:
+                match k:
+                    case (
+                        ObjectiveName.COPYCAT,
+                        "streams",
+                        "memory_extraction",
+                        "losses",
+                        modality,
+                        name,
+                    ):
+                        delta_logit_bias_losses[(modality, name)].append((k, mod))
+
+                    case (*_, modality, name):
+                        sample_logit_bias_losses[(modality, name)].append((k, mod))
+
+                    case _:
+                        raise NotImplementedError
+
+        cols = {
+            (Modality.CONTINUOUS, "gas_pedal"): "vehicle_motion.gas_pedal_normalized",
+            (
+                Modality.CONTINUOUS,
+                "brake_pedal",
+            ): "vehicle_motion.brake_pedal_normalized",
+            (
+                Modality.CONTINUOUS,
+                "steering_angle",
+            ): "vehicle_motion.steering_angle_normalized",
+            (Modality.CONTINUOUS, "speed"): "vehicle_motion.speed",
+            (Modality.DISCRETE, "turn_signal"): "vehicle_state.turn_signal",
         }
 
-        sample_logit_bias_module_keys = {
-            (ObjectiveName.FORWARD_DYNAMICS, "losses", Modality.CONTINUOUS, "speed"),
-            (
-                ObjectiveName.FORWARD_DYNAMICS,
-                "losses",
-                Modality.DISCRETE,
-                "turn_signal",
-            ),
-            (
-                ObjectiveName.INVERSE_DYNAMICS,
-                "losses",
-                Modality.CONTINUOUS,
-                "gas_pedal",
-            ),
-            (
-                ObjectiveName.INVERSE_DYNAMICS,
-                "losses",
-                Modality.CONTINUOUS,
-                "brake_pedal",
-            ),
-            (
-                ObjectiveName.INVERSE_DYNAMICS,
-                "losses",
-                Modality.CONTINUOUS,
-                "steering_angle",
-            ),
-            (
-                ObjectiveName.RANDOM_MASKED_HINDSIGHT_CONTROL,
-                "losses",
-                Modality.CONTINUOUS,
-                "gas_pedal",
-            ),
-            (
-                ObjectiveName.RANDOM_MASKED_HINDSIGHT_CONTROL,
-                "losses",
-                Modality.CONTINUOUS,
-                "brake_pedal",
-            ),
-            (
-                ObjectiveName.RANDOM_MASKED_HINDSIGHT_CONTROL,
-                "losses",
-                Modality.CONTINUOUS,
-                "steering_angle",
-            ),
-            (
-                ObjectiveName.COPYCAT,
-                "streams",
-                "policy",
-                "losses",
-                Modality.CONTINUOUS,
-                "gas_pedal",
-            ),
-            (
-                ObjectiveName.COPYCAT,
-                "streams",
-                "policy",
-                "losses",
-                Modality.CONTINUOUS,
-                "brake_pedal",
-            ),
-            (
-                ObjectiveName.COPYCAT,
-                "streams",
-                "policy",
-                "losses",
-                Modality.CONTINUOUS,
-                "steering_angle",
-            ),
-        }
+        for k_loss, losses in sample_logit_bias_losses.items():
+            values = (
+                samples.select(pl.col(cols[k_loss]).explode())
+                .to_torch()
+                .to(self.device)
+            )
+            tokenizer = self.episode_builder.tokenizers.get(k_loss)
+            labels = tokenizer(values)
+            freq = torch.bincount(
+                labels.flatten(),
+                weights=None,
+                minlength=self.episode_builder.embeddings.get(k_loss).weight.shape[0],
+            )
 
-        sample_logit_bias_losses = mit.map_reduce(
-            iterable=(
-                (k, loss)
-                for (k, loss) in (
-                    (k, self.objectives.get(k, default=None))
-                    for k in sample_logit_bias_module_keys
+            logit_bias = ((freq + 1) / freq.sum()).log()
+
+            for k_module, loss in losses:
+                logger.debug(
+                    "setting logit bias (sample-based)",
+                    module=".".join(k_module),
+                    loss=loss.__class__.__name__,
                 )
-                if loss is not None and loss.logit_bias is None
-            ),
-            # group by (modality, name)
-            keyfunc=lambda x: x[0][-2:],
-        )
 
-        if sample_logit_bias_losses:
-            sample_cols = {
-                k: v
-                for (k, v) in metadata_df_cols.items()
-                if v in {name for (_, name) in sample_logit_bias_losses.keys()}
-            }
+                loss.logit_bias = logit_bias
 
-            sample_df = dataset._metadata.select(*sample_cols.keys()).rename(
-                sample_cols
-            )
-
-            samples = TensorDict.from_dict(
-                {
-                    (modality, k): sample_df[k].to_numpy(
-                        zero_copy_only=False, writable=False
-                    )
-                    for (modality, k) in sample_logit_bias_losses.keys()
-                },
-                device=self.device,
-                batch_size=[],
-            )
-
-            sample_labels = samples.unsqueeze(0).named_apply(
-                lambda k, v: self.episode_builder.tokenizers.get(k)(v), nested_keys=True
-            )
-
-            sample_bincounts = sample_labels.named_apply(
-                lambda k, v: torch.bincount(
-                    v.flatten(),
-                    weights=None,
-                    minlength=self.episode_builder.embeddings.get(k).weight.shape[0],
-                ),
-                nested_keys=True,
-                batch_size=[],
-            )
-
-            sample_logit_bias = sample_bincounts.apply(
-                lambda x: ((x + 1) / x.sum()).log()
-            )
-
-            for loss_key, losses in sample_logit_bias_losses.items():
-                for module_key, loss in losses:
-                    logger.debug(
-                        "setting logit bias (sample-based)",
-                        module=".".join(module_key),
-                        loss=loss.__class__.__name__,
-                    )
-
-                    loss.logit_bias = sample_logit_bias[loss_key]
-
-        delta_logit_bias_module_keys = {
-            (
-                ObjectiveName.COPYCAT,
-                "streams",
-                "memory_extraction",
-                "losses",
-                Modality.CONTINUOUS,
-                "gas_pedal",
-            ),
-            (
-                ObjectiveName.COPYCAT,
-                "streams",
-                "memory_extraction",
-                "losses",
-                Modality.CONTINUOUS,
-                "brake_pedal",
-            ),
-            (
-                ObjectiveName.COPYCAT,
-                "streams",
-                "memory_extraction",
-                "losses",
-                Modality.CONTINUOUS,
-                "steering_angle",
-            ),
-        }
-
-        delta_logit_bias_losses = mit.map_reduce(
-            iterable=(
-                (k, loss)
-                for (k, loss) in (
-                    (k, self.objectives.get(k, default=None))
-                    for k in delta_logit_bias_module_keys
+        for k_loss, losses in delta_logit_bias_losses.items():
+            values = (
+                samples.select(
+                    pl.col(cols[k_loss])
+                    .arr.to_list()
+                    .list.diff(null_behavior="drop")
+                    .explode()
                 )
-                if loss is not None and loss.logit_bias is None
-            ),
-            # group by (modality, name)
-            keyfunc=lambda x: x[0][-2:],
-        )
+                .to_torch()
+                .to(self.device)
+            )
 
-        if delta_logit_bias_losses:
-            delta_cols = {
-                k: v
-                for (k, v) in metadata_df_cols.items()
-                if v in {name for (_, name) in delta_logit_bias_losses.keys()}
-            }
-
-            ref_camera = dataset._cfg.samples.alignment.ref_camera
-            delta_metadata_df = dataset._metadata.select(
-                "drive_id", f"{ref_camera}/ImageMetadata_frame_idx", *delta_cols.keys()
-            ).rename(delta_cols)
-
-            clip_metadata_df = (
-                dataset._clips.lazy()
-                .explode(f"{ref_camera}/ImageMetadata_frame_idx")
-                .join(
-                    delta_metadata_df.lazy(),
-                    on=("drive_id", f"{ref_camera}/ImageMetadata_frame_idx"),
+            for k_module, loss in losses:
+                logger.debug(
+                    "setting logit bias (delta-based)",
+                    module=".".join(k_module),
+                    loss=loss.__class__.__name__,
                 )
-                .group_by("clip_id")
-                .all()
-            )
 
-            delta_df = clip_metadata_df.select(
-                col(delta_cols.values()).list.diff(null_behavior="drop").explode()
-            ).collect()
+                match k_module:
+                    case (*k_objective, "losses", _modality, _name):
+                        objective = self.objectives.get(tuple(k_objective))
+                        tokenizer = objective.delta_tokenizers.get(k_loss)
+                        labels = tokenizer(values)
+                        freq = torch.bincount(
+                            labels.flatten(),
+                            weights=None,
+                            minlength=objective.heads.get(k_loss).out_features,
+                        )
+                        logit_bias = ((freq + 1) / freq.sum()).log()
 
-            deltas = TensorDict.from_dict(
-                {
-                    (modality, k): delta_df[k].to_numpy(
-                        zero_copy_only=False, writable=False
-                    )
-                    for (modality, k) in delta_logit_bias_losses.keys()
-                },
-                device=self.device,
-                batch_size=[],
-            )
+                        loss.logit_bias = logit_bias
 
-            # TODO/HACK: technically for each loss requiring delta-based
-            # logit bias we'd need to use the loss' parent objective's delta
-            # detokenizers, but for now we know there's only one such objective
-            # (copycat memory_extraction)
-            memory_extraction = self.objectives.copycat.streams.memory_extraction
-            delta_labels = deltas.named_apply(
-                lambda k, v: memory_extraction.delta_tokenizers.get(k)(v),
-                nested_keys=True,
-            )
-
-            delta_bincounts = delta_labels.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                lambda k, v: torch.bincount(
-                    v,
-                    weights=None,
-                    minlength=memory_extraction.heads.get(k).out_features,
-                ),
-                nested_keys=True,
-                batch_size=[],
-            )
-
-            delta_logit_bias = delta_bincounts.apply(
-                lambda x: ((x + 1) / x.sum()).log()
-            )
-
-            for loss_key, losses in delta_logit_bias_losses.items():
-                for module_key, loss in losses:
-                    logger.debug(
-                        "setting logit bias (delta-based)",
-                        module=".".join(module_key),
-                        loss=loss.__class__.__name__,
-                    )
-
-                    loss.logit_bias = delta_logit_bias[loss_key]
+                    case _:
+                        raise NotImplementedError
 
     @override
     def on_fit_start(self) -> None:
         self._populate_logit_bias()
+
+    @override
+    def on_before_batch_transfer(self, batch: Batch, dataloader_idx: int) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
+        table = batch.table
+
+        return TensorDict.from_dict({
+            Modality.IMAGE: batch.frame,
+            Modality.CONTINUOUS: {
+                "speed": table["vehicle_motion.speed"],
+                "gas_pedal": table["vehicle_motion.gas_pedal_normalized"],
+                "brake_pedal": table["vehicle_motion.brake_pedal_normalized"],
+                "steering_angle": table["vehicle_motion.steering_angle_normalized"],
+            },
+            Modality.DISCRETE: {"turn_signal": table["vehicle_state.turn_signal"]},
+        }).auto_batch_size_(batch_dims=2)
+
+    @override
+    def on_after_batch_transfer(self, batch: Any, dataloader_idx: int) -> Any:
+        for transform in self.batch_transforms or ():
+            batch = batch.update(batch.select(*transform.select).apply(transform.apply))
+
+        return batch
