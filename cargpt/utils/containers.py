@@ -17,6 +17,20 @@ def flatten(obj: Module) -> Iterator[tuple[str | tuple[str, ...], Module]]:
                 yield k, v
 
 
+# TODO: somehow unite it
+
+
+def flatten_md(obj: Module) -> Iterator[tuple[str | tuple[str, ...], Module]]:
+    """as flatten but only until it reaches non ModuleDict obj"""
+    for k, v in obj._modules.items():
+        if v is not None:
+            if isinstance(v, ModuleDict):
+                yield from (((k, *always_iterable(_k)), _v) for _k, _v in flatten_md(v))
+
+            else:
+                yield k, v
+
+
 class ModuleDict(_ModuleDict):
     """A convenience wrapper around torch.nn.ModuleDict"""
 
@@ -51,7 +65,10 @@ class ModuleDict(_ModuleDict):
             res = res.get(k, default=default)
             if not isinstance(res, ModuleDict):
                 return res
-        return self
+        return res
 
     def flatten(self) -> Iterator[tuple[str | tuple[str, ...], Module]]:
         return flatten(self)
+
+    def flatten_md(self) -> Iterator[tuple[str | tuple[str, ...], Module]]:
+        return flatten_md(self)

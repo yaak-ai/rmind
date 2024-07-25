@@ -1,21 +1,26 @@
 from collections.abc import Callable
+from enum import StrEnum, auto
 
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
+from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 from typing_extensions import override
 
 
+class LossType(StrEnum):
+    REGRESSION = auto()
+    CLASSIFICATION = auto()
+
+
 class GenericRegressionLoss:
-    def get_loss_type(self):
-        return "GenericRegression"
+    loss_type = LossType.REGRESSION
 
 
 class GenericClassificationLoss:
-    def get_loss_type(self):
-        return "GenericClassification"
+    loss_type = LossType.CLASSIFICATION
 
 
 class FocalLoss(Module, GenericClassificationLoss):
@@ -63,8 +68,9 @@ class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss, GenericClassificationLoss):
         self.logit_bias = logit_bias
 
     @override
-    def forward(self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]):
-        return super().forward(input + self.logit_bias, target)
+    def forward(self, input: TensorDict, target_labels: Int[Tensor, "b"]):
+        input = input["val"]
+        return super().forward(input + self.logit_bias, target_labels)
 
 
 class LogitBiasCrossEntropyLoss(
@@ -76,7 +82,8 @@ class LogitBiasCrossEntropyLoss(
         self.logit_bias = logit_bias
 
     @override
-    def forward(self, input: Float[Tensor, "b d"], target_labels: Int[Tensor, "b"]):
+    def forward(self, input: TensorDict, target_labels: Int[Tensor, "b"]):
+        input = input["val"]  # don't like it
         return super().forward(input + self.logit_bias, target_labels)
 
 
@@ -97,11 +104,8 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss, GenericRegressionLoss):
         self.var_pos_function = var_pos_function
 
     @override
-    def forward(
-        self,
-        mean: Float[Tensor, "b d"],
-        log_var: Float[Tensor, "b d"],
-        target: Float[Tensor, "b"],
-    ):
+    def forward(self, input: TensorDict, target_values: Float[Tensor, "b"]):
+        mean = input["mean"]
+        log_var = input["log_var"]
         var = self.var_pos_function(log_var)
-        return super().forward(input=mean, target=target, var=var)
+        return super().forward(input=mean, target=target_values, var=var)

@@ -4,7 +4,9 @@ from functools import lru_cache
 import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
+from flatten_dict import flatten
 from jaxtyping import Float
+from more_itertools import always_iterable
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
@@ -20,6 +22,7 @@ from cargpt.components.episode import (
     Timestep,
     TokenType,
 )
+from cargpt.components.loss import LossType
 from cargpt.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
@@ -267,16 +270,10 @@ class MemoryExtractionStream(Module):
 
 
 class PolicyStream(Module):
-    def __init__(
-        self,
-        heads: ModuleDict,
-        losses: ModuleDict | None = None,
-        detokenizers: ModuleDict | None = None,
-    ):
+    def __init__(self, branches: ModuleDict, detokenizers: ModuleDict | None = None):
         super().__init__()
 
-        self.heads = heads
-        self.losses = losses
+        self.branches = branches
         self.detokenizers = detokenizers
 
     @override
@@ -308,23 +305,17 @@ class PolicyStream(Module):
             [observation_summary, observation_history], "i b 1 d -> b 1 (i d)"
         )
 
-        logits = TensorDict.from_dict(
+        loss = TensorDict.from_dict(
             {
-                (modality, name): head(features)
-                for (modality, name), head in self.heads.flatten()
+                (modality, name): torch.stack([
+                    branch.calculate_loss(
+                        features=features, episode=episode, values_key=(modality, name)
+                    )
+                    for branch in branch_list
+                ]).mean()
+                for (modality, name), branch_list in self.branches.flatten_md()
             },
             batch_size=[],
-        )
-
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]
-
-        logits = logits.apply(Rearrange("b 1 d -> b d"), batch_size=[])
-        labels = labels.apply(Rearrange("b 1 -> b"), batch_size=[])
-
-        loss = logits.named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-            lambda k, _logits, _labels: self.losses.get(k)(_logits, _labels),  # pyright: ignore[reportOptionalMemberAccess]
-            labels,
-            nested_keys=True,
         )
 
         return TensorDict.from_dict({"loss": loss}, batch_size=[])

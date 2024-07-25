@@ -310,13 +310,15 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                         ObjectiveName.COPYCAT,
                         "streams",
                         "memory_extraction",
-                        "losses",
+                        "branches",
                         modality,
                         name,
+                        "losses",
+                        _,
                     ):
                         delta_logit_bias_losses[(modality, name)].append((k, mod))
 
-                    case (*_, modality, name):
+                    case (*_, modality, name, _, "losses", _):
                         sample_logit_bias_losses[(modality, name)].append((k, mod))
 
                     case _:
@@ -380,6 +382,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     loss=loss.__class__.__name__,
                 )
 
+                # TODO: I bet it doesnt match new keys
                 match k_module:
                     case (*k_objective, "losses", _modality, _name):
                         objective = self.objectives.get(tuple(k_objective))
