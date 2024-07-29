@@ -1,6 +1,5 @@
-from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Self, cast
+from typing import Any, Self
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -18,12 +17,11 @@ from pytorch_lightning.utilities.model_helpers import _restricted_classmethod
 from tensordict import TensorDict
 from torch.nn import Module  # noqa: TCH002
 from typing_extensions import override
-from yaak_datasets import Batch
 
-from cargpt.components.episode import EpisodeBuilder, Modality
+from cargpt.components.episode import EpisodeBuilder, Modality, PositionEncoding
 from cargpt.components.mask import WandbAttentionMaskLegend
 from cargpt.components.objectives import ObjectiveScheduler
-from cargpt.components.objectives.common import ObjectiveName, PredictionResultKey
+from cargpt.components.objectives.base import ObjectiveName, PredictionResultKey
 from cargpt.utils._wandb import LoadableFromArtifact
 from cargpt.utils.containers import ModuleDict
 
@@ -33,7 +31,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         super().__init__()
         self.save_hyperparameters()
 
-        self.batch_transforms = instantiate(self.hparams.get("batch_transforms", None))
+        self.input_transforms = instantiate(self.hparams.get("input_transforms", None))
 
         self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)  # pyright: ignore[reportAttributeAccessIssue]
         self.encoder: Module = instantiate(self.hparams.encoder)  # pyright: ignore[reportAttributeAccessIssue]
@@ -121,6 +119,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def training_step(self, batch: TensorDict, *args):
+        input = self._build_input(batch)
+
         all_objectives = tuple(self.objectives.keys())
         scheduled_objectives = (
             all_objectives
@@ -142,14 +142,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         metrics = TensorDict(
             {
-                name: self.objectives[name](batch, self.episode_builder, self.encoder)
+                name: self.objectives[name](input, self.episode_builder, self.encoder)
                 for name in objectives_to_compute
             },
             batch_size=[],
-            device=batch.device,
+            device=input.device,
         )
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues, reportArgumentType]
         losses.select(*(set(objectives_to_compute) - set(scheduled_objectives))).zero_()
 
         metrics["loss", "total"] = sum(  # pyright: ignore[reportArgumentType]
@@ -162,7 +162,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             from wandb import Image  # noqa: PLC0415
 
-            episode = self.episode_builder.build_episode(batch)
+            episode = self.episode_builder.build_episode(input)
             objectives = (
                 all_objectives
                 if self.objective_scheduler is None
@@ -187,16 +187,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def validation_step(self, batch: TensorDict, *args):
+        input = self._build_input(batch)
+
         metrics = TensorDict(
             {
-                name: objective(batch, self.episode_builder, self.encoder)
+                name: objective(input, self.episode_builder, self.encoder)
                 for name, objective in self.objectives.items()
             },
             batch_size=[],
-            device=batch.device,
+            device=input.device,
         )
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues, reportArgumentType]
         metrics["loss", "total"] = sum(  # pyright: ignore[reportArgumentType]
             losses.values(include_nested=True, leaves_only=True)
         )
@@ -214,25 +216,30 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def predict_step(self, batch: TensorDict):
-        predictions = TensorDict.from_dict({
-            name: objective.predict(
-                batch,
-                episode_builder=self.episode_builder,
-                encoder=self.encoder,
-                # TODO: attention
-                result_keys=(
-                    PredictionResultKey.GROUND_TRUTH,
-                    PredictionResultKey.PREDICTION,
-                    PredictionResultKey.PREDICTION_PROBS,
-                    PredictionResultKey.SCORE_LOGPROB,
-                    PredictionResultKey.SCORE_L1,
-                ),
-            )
-            for name, objective in self.objectives.items()
-        })
+        input = self._build_input(batch)
+
+        predictions = TensorDict.from_dict(
+            {
+                name: objective.predict(
+                    input,
+                    episode_builder=self.episode_builder,
+                    encoder=self.encoder,
+                    # TODO: attention
+                    result_keys=frozenset((
+                        PredictionResultKey.GROUND_TRUTH,
+                        PredictionResultKey.PREDICTION,
+                        PredictionResultKey.PREDICTION_PROBS,
+                        PredictionResultKey.SCORE_LOGPROB,
+                        PredictionResultKey.SCORE_L1,
+                    )),
+                )
+                for name, objective in self.objectives.items()
+            },
+            batch_size=input.batch_size,
+        )
 
         return TensorDict.from_dict(
-            {"inputs": batch, "predictions": predictions}, batch_size=batch.batch_size
+            {"inputs": input, "predictions": predictions}, batch_size=input.batch_size
         )
 
     @override
@@ -243,30 +250,27 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             )
             from wandb import Image  # noqa: PLC0415
 
-            embeddings = TensorDict.from_dict(
-                {
-                    attr: {
-                        k: v.weight
-                        for k, v in cast(
-                            ModuleDict, getattr(self.episode_builder, attr)
-                        ).flatten()
-                        if isinstance(v, torch.nn.Embedding) and v.num_embeddings > 1
-                    }
-                    for attr in ("embeddings", "position_encoding")
-                },
-                batch_size=[],
+            # TODO: need access to episode index to build full episode position embedding
+            similarity_keys = (
+                ("embeddings", Modality.CONTINUOUS),
+                ("embeddings", Modality.DISCRETE),
+                ("position_encoding", PositionEncoding.IMAGE),
+                ("position_encoding", PositionEncoding.OBSERVATIONS),
+                ("position_encoding", PositionEncoding.TIMESTEP),
             )
 
-            # TODO: need access to episode index to build full episode position embedding
-            similarities = embeddings.apply(similarity_fn)
+            similarities = (
+                TensorDict.from_module(self.episode_builder)
+                .select(*similarity_keys)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue]
+                .apply(similarity_fn, inplace=False)
+                .cpu()
+            )
 
             self.logger.log_image(
                 key=f"embeddings/{similarity_fn.__name__}",
                 images=[
-                    Image(v, caption=".".join(mit.always_iterable(k)))
-                    for k, v in similarities.items(  # pyright: ignore[reportAttributeAccessIssue]
-                        include_nested=True, leaves_only=True
-                    )
+                    Image(v, caption=".".join(k[:-1]))
+                    for k, v in similarities.items(True, True)
                 ],
                 step=self.trainer.global_step,
             )
@@ -300,24 +304,29 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         samples = self.trainer.datamodule.train_dataloader().dataset.samples  # pyright: ignore[reportAttributeAccessIssue]
 
-        sample_logit_bias_losses = defaultdict(list)
-        delta_logit_bias_losses = defaultdict(list)
+        sample_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
+        delta_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
 
-        for k, mod in self.objectives.flatten():
+        for k, mod in self.objectives.tree_flatten_with_path():
             if hasattr(mod, "logit_bias") and mod.logit_bias is None:
                 match k:
-                    case (
-                        ObjectiveName.COPYCAT,
-                        "streams",
-                        "memory_extraction",
-                        "losses",
-                        modality,
-                        name,
-                    ):
-                        delta_logit_bias_losses[(modality, name)].append((k, mod))
+                    case (objective, "losses", *_):
+                        match objective:
+                            case (
+                                ObjectiveName.FORWARD_DYNAMICS
+                                | ObjectiveName.INVERSE_DYNAMICS
+                                | ObjectiveName.RANDOM_MASKED_HINDSIGHT_CONTROL
+                                | ObjectiveName.POLICY
+                            ):
+                                dest = sample_logit_bias_losses
 
-                    case (*_, modality, name):
-                        sample_logit_bias_losses[(modality, name)].append((k, mod))
+                            case ObjectiveName.MEMORY_EXTRACTION:
+                                dest = delta_logit_bias_losses
+
+                            case _:
+                                raise NotImplementedError
+
+                        dest.append((k, mod))
 
                     case _:
                         raise NotImplementedError
@@ -336,7 +345,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             (Modality.DISCRETE, "turn_signal"): "vehicle_state.turn_signal",
         }
 
-        for k_loss, losses in sample_logit_bias_losses.items():
+        by_key_modality_name = lambda x: x[0][-2:]  # noqa: E731
+
+        for k_loss, losses in mit.map_reduce(
+            sample_logit_bias_losses, keyfunc=by_key_modality_name
+        ).items():
             values = (
                 samples.select(pl.col(cols[k_loss]).explode())
                 .to_torch()
@@ -361,7 +374,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
                 loss.logit_bias = logit_bias
 
-        for k_loss, losses in delta_logit_bias_losses.items():
+        for k_loss, losses in mit.map_reduce(
+            delta_logit_bias_losses, keyfunc=by_key_modality_name
+        ).items():
             values = (
                 samples.select(
                     pl.col(cols[k_loss])
@@ -401,24 +416,33 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def on_fit_start(self) -> None:
         self._populate_logit_bias()
 
-    @override
-    def on_before_batch_transfer(self, batch: Batch, dataloader_idx: int) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
-        table = batch.table
+    def _build_input(self, batch: Any) -> TensorDict:
+        batch = batch.clone(recurse=True)
+        table = batch.table.apply(torch.atleast_3d)
 
-        return TensorDict.from_dict({
-            Modality.IMAGE: batch.frame,
-            Modality.CONTINUOUS: {
-                "speed": table["vehicle_motion.speed"],
-                "gas_pedal": table["vehicle_motion.gas_pedal_normalized"],
-                "brake_pedal": table["vehicle_motion.brake_pedal_normalized"],
-                "steering_angle": table["vehicle_motion.steering_angle_normalized"],
-            },
-            Modality.DISCRETE: {"turn_signal": table["vehicle_state.turn_signal"]},
-        }).auto_batch_size_(batch_dims=2)
+        input = (
+            TensorDict.from_dict(
+                {
+                    Modality.IMAGE: batch.frame,
+                    Modality.CONTINUOUS: {
+                        "speed": table["vehicle_motion.speed"],
+                        "gas_pedal": table["vehicle_motion.gas_pedal_normalized"],
+                        "brake_pedal": table["vehicle_motion.brake_pedal_normalized"],
+                        "steering_angle": table[
+                            "vehicle_motion.steering_angle_normalized"
+                        ],
+                    },
+                    Modality.DISCRETE: {
+                        "turn_signal": table["vehicle_state.turn_signal"]
+                    },
+                },
+                device=self.device,
+            )
+            .auto_batch_size_(batch_dims=2)
+            .refine_names("b", "t")
+        )
 
-    @override
-    def on_after_batch_transfer(self, batch: Any, dataloader_idx: int) -> Any:
-        for transform in self.batch_transforms or ():
-            batch = batch.update(batch.select(*transform.select).apply(transform.apply))
+        for transform in self.input_transforms or ():
+            input = input.update(input.select(*transform.select).apply(transform.apply))
 
-        return batch
+        return input

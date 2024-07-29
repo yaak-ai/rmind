@@ -1,0 +1,20 @@
+data:
+  train:
+    batch_size: 64
+    clip_length: 6
+
+  val:
+    batch_size: 32
+    clip_length: 12
+
+  test:
+    clip_length: 24
+
+  predict:
+    batch_size: 1
+
+encoder:
+  num_heads: 4
+  num_layers: 8
+
+embedding_dim: 512

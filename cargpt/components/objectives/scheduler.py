@@ -2,7 +2,7 @@ from collections.abc import Iterable, Mapping
 
 import numpy as np
 
-from cargpt.components.objectives.common import ObjectiveName
+from cargpt.components.objectives.base import ObjectiveName
 
 
 class ObjectiveScheduler:
@@ -33,4 +33,4 @@ class ObjectiveScheduler:
             replace=False,
         )
 
-        return map(ObjectiveName, objectives)  # pyright: ignore[reportArgumentType]
+        return map(ObjectiveName, objectives)  # pyright: ignore[reportReturnType]
