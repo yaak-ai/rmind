@@ -36,6 +36,7 @@ class SpecialToken(StrEnum):
 
 
 class PositionEncoding(StrEnum):
+    IMAGE = auto()
     OBSERVATIONS = auto()
     ACTIONS = auto()
     SPECIAL = auto()
@@ -113,8 +114,10 @@ class Index:
 
         batch_size = [*src.shape[:dim], *self.batch_size]  # pyright: ignore[reportAttributeAccessIssue]
 
-        return self.to_tensordict().apply(  # pyright: ignore[reportAttributeAccessIssue]
-            fn, batch_size=batch_size, device=src.device, inplace=False
+        return (
+            self.to_tensordict()  # pyright: ignore[reportAttributeAccessIssue]
+            .filter_non_tensor_data()  # https://github.com/pytorch/tensordict/issues/935
+            .apply(fn, batch_size=batch_size, device=src.device, inplace=False)
         )
 
     @property
@@ -187,14 +190,12 @@ class EpisodeBuilder(Module):
         tokenizers: ModuleDict,
         embeddings: ModuleDict,
         position_encoding: ModuleDict,
-        detokenizers: ModuleDict | None = None,
         freeze: bool | None = None,
     ) -> None:
         super().__init__()
         self.timestep = timestep
         self.special_tokens = special_tokens
         self.tokenizers = tokenizers
-        self.detokenizers = detokenizers
         self.embeddings = embeddings
         self.position_encoding = position_encoding
 
@@ -291,7 +292,7 @@ class EpisodeBuilder(Module):
         position_embeddings = cast(TensorDict, torch.zeros_like(embeddings[0]))
 
         match pe_mod := self.position_encoding.get(
-            (pe_k := Modality.IMAGE, "patch"), default=None
+            (pe_k := PositionEncoding.IMAGE, "patch"), default=None
         ):
             case ModuleDict():
                 num_rows = pe_mod.row.num_embeddings
@@ -301,7 +302,7 @@ class EpisodeBuilder(Module):
                 row_pe = repeat(row_pe, "h d -> (h w) d", w=num_cols)
                 col_pe = repeat(col_pe, "w d -> (h w) d", h=num_rows)
 
-                position_embeddings.select(pe_k).apply(
+                position_embeddings.select(pe_k).apply(  # pyright: ignore[reportArgumentType]
                     lambda x: x + row_pe + col_pe,
                     inplace=True,  # NOTE
                 )
@@ -320,7 +321,7 @@ class EpisodeBuilder(Module):
                 keys = self.timestep.keys(TokenType.OBSERVATION)
                 position = index.select(*keys).to_tensordict()
                 position_embedding = position.apply(pe_mod)
-                position_embeddings.select(*keys).apply(
+                position_embeddings.select(*keys).apply(  # pyright: ignore[reportArgumentType]
                     add,
                     position_embedding,
                     inplace=True,  # NOTE
@@ -339,7 +340,7 @@ class EpisodeBuilder(Module):
                 keys = self.timestep.keys(TokenType.ACTION)
                 position = torch.arange(pe_mod.num_embeddings, device=device)
                 position_embedding = pe_mod(position)
-                position_embeddings.select(*keys).apply(
+                position_embeddings.select(*keys).apply(  # pyright: ignore[reportArgumentType]
                     lambda emb: emb + position_embedding,
                     inplace=True,  # NOTE
                 )
@@ -358,7 +359,7 @@ class EpisodeBuilder(Module):
                 keys = self.timestep.keys(TokenType.SPECIAL)
                 position = torch.arange(pe_mod.num_embeddings, device=device)
                 position_embedding = pe_mod(position)
-                position_embeddings.select(*keys).apply(
+                position_embeddings.select(*keys).apply(  # pyright: ignore[reportArgumentType]
                     lambda emb: emb + position_embedding,
                     inplace=True,  # NOTE
                 )

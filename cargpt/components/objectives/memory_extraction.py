@@ -1,12 +1,9 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
 
-import torch
-from einops import rearrange
 from einops.layers.torch import Rearrange
 from tensordict import TensorDict
 from torch.nn import Module
-from torch.nn import functional as F
 from typing_extensions import override
 
 from cargpt.components.episode import (
@@ -30,12 +27,21 @@ from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
 
 
-class InverseDynamicsPredictionObjective(Objective):
-    def __init__(self, *, heads: ModuleDict, losses: ModuleDict | None = None):
+class MemoryExtractionObjective(Objective):
+    """Inspired by: Resolving Copycat Problems in Visual Imitation Learning via Residual Action Prediction (https://arxiv.org/abs/2207.09705)"""
+
+    def __init__(
+        self,
+        *,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+        delta_tokenizers: ModuleDict,
+    ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.delta_tokenizers = delta_tokenizers
 
     @override
     def forward(
@@ -44,26 +50,25 @@ class InverseDynamicsPredictionObjective(Objective):
         if self.losses is None:
             raise RuntimeError
 
-        b, t = inputs.batch_size
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        observation_summaries = (
-            episode.index.select(
-                k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
-            )
+
+        b, t = episode.embedded.batch_size
+
+        features = (
+            episode.index[1:]
+            .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
             .parse(embedding)
             .get(k)
         )
 
-        # order: (o0, o1), (o1, o2), (o2, o3), ...
-        features = rearrange(
-            [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-            "i ... d -> ... (i d)",
+        logits = self.heads.forward(features, batch_size=[b, t - 1])
+        deltas = episode.inputs.select(*logits.keys(True, True)).apply(
+            lambda x: x.diff(dim=1), batch_size=[b, t - 1]
         )
 
-        logits = self.heads.forward(features, batch_size=[b, t - 1])
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, :-1]
+        labels = self.delta_tokenizers(deltas)
         loss = self.losses(
             logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),
             labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
@@ -88,62 +93,38 @@ class InverseDynamicsPredictionObjective(Objective):
 
         episode = episode_builder.build_episode(inputs)
 
+        timestep_padder = nan_padder(pad=(1, 0), dim=1)
+
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
-            result[result_key] = episode.inputs.select(*self.heads.tree_paths())
-
-        if (result_key := PredictionResultKey.ATTENTION) in result_keys:
-            mask = self._build_attention_mask(episode.index, episode.timestep)
-            attention = encoder.compute_attention_rollout(
-                src=episode.packed_embeddings, mask=mask.data, drop_ratio=0.9
-            )
-
             result[result_key] = (
-                # from relevant tokens
-                episode.index.select((
-                    Modality.SPECIAL,
-                    SpecialToken.OBSERVATION_SUMMARY,
-                ))
-                .parse(attention, dim=1)
-                # to all tokens
-                .apply(lambda x: episode.index.parse(x, dim=3))
-                .apply(
-                    Rearrange("b t_from s_from t_to s_to -> b t_from t_to s_from s_to"),
-                    batch_size=[b, t, t],
-                )
+                episode.inputs.select(*self.heads.tree_paths())
+                .apply(lambda x: x.diff(dim=1), batch_size=[b, t - 1])
+                .apply(timestep_padder, batch_size=[b, t])
             )
 
         if result_keys & {
             PredictionResultKey.PREDICTION,
             PredictionResultKey.PREDICTION_PROBS,
-            PredictionResultKey.SCORE_LOGPROB,
-            PredictionResultKey.SCORE_L1,
         }:
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
-            observation_summaries = (
-                episode.index.select(
-                    k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
-                )
+            features = (
+                episode.index[1:]
+                .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
                 .parse(embedding)
                 .get(k)
             )
 
-            # order: (o0, o1), (o1, o2), (o2, o3), ...
-            features = rearrange(
-                [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-                "i b t 1 d -> b t 1 (i d)",
-            )
-
             logits = self.heads.forward(features, batch_size=[b, t - 1])
 
-            timestep_padder = nan_padder(pad=(0, 1), dim=1)
+            timestep_padder = nan_padder(pad=(1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: episode_builder.tokenizers.get(k).invert(v),
+                        lambda k, v: self.delta_tokenizers.get(k).invert(v),
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
@@ -152,33 +133,6 @@ class InverseDynamicsPredictionObjective(Objective):
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
                 result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
-                )
-
-            if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
-                result[result_key] = (
-                    logits.apply(lambda x: x.softmax(dim=-1))
-                    .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportAttributeAccessIssue]
-                    .apply(timestep_padder, batch_size=[b, t])
-                    .apply(
-                        lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                        episode.tokenized,
-                    )
-                    .apply(lambda x: -torch.log(x))
-                )
-
-            if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
-                result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: episode_builder.tokenizers.get(k).invert(v),
-                        nested_keys=True,
-                    )
-                    .apply(timestep_padder, batch_size=[b, t])
-                    .apply(
-                        lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                        episode.inputs,
-                        nested_keys=True,
-                    )
                 )
 
         return result

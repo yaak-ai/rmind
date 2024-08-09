@@ -100,7 +100,7 @@ config:
         index_column: image_metadata.cam_front_left.frame_idx
         length: 6
         stride: 10
-        min_step: 10
+        min_step: 60
         filter: >
           not (
                 array_upper(`vehicle_motion.gas_pedal_normalized`) <= (1.0/255 + 0.001)

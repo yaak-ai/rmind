@@ -177,7 +177,6 @@ datamodule:
                 and array_get(VehicleMotion_speed, -1) - array_get(VehicleMotion_speed, 0) >= -0.05 * array_mean(VehicleMotion_speed)
               )
 
-
           transforms:
             - _target_: yaak_datasets.transforms.Crop
               offsets: [2, 2, 0, 0]

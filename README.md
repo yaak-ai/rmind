@@ -27,7 +27,7 @@ just
 ## Train
 
 ```shell
-just train experiment=smart [...]
+just train experiment=control_transformer/pretrain [...]
 ```
 
 ## Predict
@@ -39,5 +39,5 @@ just rerun
 
 3. in another terminal:
 ```shell
-just predict inference=smart model=control_transformer/pretrained model.artifact=yaak/cargpt/model-{run_id}:v{version} [+model.map_location=cuda:0] [+model.strict=false]
+just predict inference=control_transformer/default model=control_transformer/pretrained model.artifact=yaak/cargpt/model-{run_id}:v{version} [+model.map_location=cuda:0] [+model.strict=false]
 ```

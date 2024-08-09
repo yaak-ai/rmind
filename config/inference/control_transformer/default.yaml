@@ -2,22 +2,17 @@
 
 defaults:
   - /paths: default
+  - /vars: control_transformer/default
   - /model: control_transformer/finetuned
   - /dataset/predict@datamodule.predict.dataset
   - _self_
-
-vars:
-  batch_size: 64
-  clip_len: 6
-  speed_range: [0.0, 130.0]
-  embedding_dim: 512
 
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
     _target_: torch.utils.data.DataLoader
     shuffle: false
-    batch_size: ${vars.batch_size}
+    batch_size: ${vars.data.predict.batch_size}
     num_workers: 32
     pin_memory: false
     persistent_workers: true
@@ -34,9 +29,8 @@ trainer:
   logger: false
 
   callbacks:
-    - _target_: cargpt.callbacks.model_summary.ModelSummary
-      depth: 5
-
     - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
       write_interval: batch
-      application_id: ${model.artifact}
+
+    - _target_: cargpt.callbacks.model_summary.ModelSummary
+      depth: 5

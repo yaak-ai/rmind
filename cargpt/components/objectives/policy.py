@@ -30,7 +30,7 @@ from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
 
 
-class InverseDynamicsPredictionObjective(Objective):
+class PolicyObjective(Objective):
     def __init__(self, *, heads: ModuleDict, losses: ModuleDict | None = None):
         super().__init__()
 
@@ -44,29 +44,38 @@ class InverseDynamicsPredictionObjective(Objective):
         if self.losses is None:
             raise RuntimeError
 
-        b, t = inputs.batch_size
         episode = episode_builder.build_episode(inputs)
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        observation_summaries = (
-            episode.index.select(
-                k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
+
+        embeddings = (
+            episode.index[-1]
+            .select(
+                (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
+                (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
             )
             .parse(embedding)
-            .get(k)
         )
 
-        # order: (o0, o1), (o1, o2), (o2, o3), ...
+        observation_history = embeddings.get((
+            Modality.SPECIAL,
+            SpecialToken.OBSERVATION_HISTORY,
+        )).detach()  # NOTE: equivalent to stop gradient layer in paper
+
+        observation_summary = embeddings.get((
+            Modality.SPECIAL,
+            SpecialToken.OBSERVATION_SUMMARY,
+        ))
+
         features = rearrange(
-            [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-            "i ... d -> ... (i d)",
+            [observation_summary, observation_history], "i b 1 d -> b 1 (i d)"
         )
 
-        logits = self.heads.forward(features, batch_size=[b, t - 1])
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, :-1]
+        logits = self.heads.forward(features)
+        labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]
         loss = self.losses(
-            logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),
-            labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
+            logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),
+            labels.apply(Rearrange("b 1 -> b"), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})
@@ -91,27 +100,6 @@ class InverseDynamicsPredictionObjective(Objective):
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             result[result_key] = episode.inputs.select(*self.heads.tree_paths())
 
-        if (result_key := PredictionResultKey.ATTENTION) in result_keys:
-            mask = self._build_attention_mask(episode.index, episode.timestep)
-            attention = encoder.compute_attention_rollout(
-                src=episode.packed_embeddings, mask=mask.data, drop_ratio=0.9
-            )
-
-            result[result_key] = (
-                # from relevant tokens
-                episode.index.select((
-                    Modality.SPECIAL,
-                    SpecialToken.OBSERVATION_SUMMARY,
-                ))
-                .parse(attention, dim=1)
-                # to all tokens
-                .apply(lambda x: episode.index.parse(x, dim=3))
-                .apply(
-                    Rearrange("b t_from s_from t_to s_to -> b t_from t_to s_from s_to"),
-                    batch_size=[b, t, t],
-                )
-            )
-
         if result_keys & {
             PredictionResultKey.PREDICTION,
             PredictionResultKey.PREDICTION_PROBS,
@@ -121,23 +109,32 @@ class InverseDynamicsPredictionObjective(Objective):
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
-            observation_summaries = (
-                episode.index.select(
-                    k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
+            embeddings = (
+                episode.index[[-1]]
+                .select(
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
                 )
                 .parse(embedding)
-                .get(k)
             )
 
-            # order: (o0, o1), (o1, o2), (o2, o3), ...
+            observation_history = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_HISTORY,
+            )).detach()  # NOTE: equivalent to stop gradient layer in paper
+
+            observation_summary = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            ))
+
             features = rearrange(
-                [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-                "i b t 1 d -> b t 1 (i d)",
+                [observation_summary, observation_history], "i b t 1 d -> b t 1 (i d)"
             )
 
-            logits = self.heads.forward(features, batch_size=[b, t - 1])
+            logits = self.heads.forward(features, batch_size=[b, 1])
 
-            timestep_padder = nan_padder(pad=(0, 1), dim=1)
+            timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 result[result_key] = (
@@ -153,7 +150,6 @@ class InverseDynamicsPredictionObjective(Objective):
                 result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
-
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.softmax(dim=-1))
