@@ -63,10 +63,14 @@ class InverseDynamicsPredictionObjective(Objective):
         )
 
         logits = self.heads.forward(features, batch_size=[b, t - 1])
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, :-1]
+        breakpoint()
+        targets = TensorDict({
+            loss_key: loss.get_target(episode)[loss_key][:, :-1]
+            for loss_key, loss in self.losses.tree_flatten_with_path()
+        })
         loss = self.losses(
             logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),
-            labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
+            targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})

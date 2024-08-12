@@ -53,13 +53,14 @@ class RandomMaskedHindsightControlObjective(Objective):
         index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = self.heads.forward(embeddings)
-        labels = episode.tokenized.select(*logits.keys(True, True))[
-            :, masked_action_timestep_idx
-        ]
+        targets = TensorDict({
+            loss_key: loss.get_target(episode)[loss_key][:, masked_action_timestep_idx]
+            for loss_key, loss in self.losses.tree_flatten_with_path()
+        })
 
         loss = self.losses(
             logits.apply(Rearrange("b t 1 d -> (b t 1) d"), batch_size=[]),
-            labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
+            targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})

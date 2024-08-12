@@ -17,7 +17,6 @@ from cargpt.components.episode import (
     Timestep,
     TokenType,
 )
-from cargpt.components.loss import LossType
 from cargpt.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
@@ -73,15 +72,10 @@ class PolicyObjective(Objective):
         )
 
         logits = self.heads.forward(features)
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]
-        values = episode.inputs.select(*logits.keys(True, True))[:, -1]
-
         targets = TensorDict({
-            loss_key: labels[loss_key]
-            if loss.loss_type == LossType.CLASSIFICATION
-            else values[loss_key]
+            loss_key: loss.get_target(episode)[:, -1]
             for loss_key, loss in self.losses.tree_flatten_with_path()
-        })  # pyright: ignore[reportArgumentType]
+        })
         loss = self.losses(
             logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),
             targets.apply(Rearrange("b 1 -> b"), batch_size=[]),

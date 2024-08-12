@@ -6,8 +6,7 @@ import torch
 from einops import pack
 from einops.layers.torch import Rearrange
 from jaxtyping import Float
-from more_itertools import partition
-from tensordict import TensorDict, merge_tensordicts
+from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
@@ -85,18 +84,16 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         logits = self.heads.forward(features)
-        non_image_keys, image_keys = partition(
-            lambda k: k[0] is Modality.IMAGE,  # pyright: ignore[reportIndexIssue]
-            logits.keys(include_nested=True, leaves_only=True),  # pyright: ignore[reportArgumentType]
-        )
-        labels = merge_tensordicts(
-            episode.embedded_nope.select(*image_keys),
-            episode.tokenized.select(*non_image_keys),
-        )[:, 1:]  # all but first timestep
+        targets = TensorDict({
+            loss_key: loss.get_target(episode)[loss_key][
+                :, 1:
+            ]  # all but first timestep
+            for loss_key, loss in self.losses.tree_flatten_with_path()
+        })
 
         loss = self.losses(
             logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
-            labels.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
+            targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})
