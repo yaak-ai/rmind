@@ -1,12 +1,12 @@
+from collections.abc import Callable
+from enum import StrEnum, auto
+
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 from typing_extensions import override
-from collections.abc import Callable
-
-from enum import StrEnum, auto
 
 
 class LossType(StrEnum):

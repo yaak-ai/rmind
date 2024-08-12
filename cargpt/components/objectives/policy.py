@@ -17,6 +17,7 @@ from cargpt.components.episode import (
     Timestep,
     TokenType,
 )
+from cargpt.components.loss import LossType
 from cargpt.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
@@ -28,7 +29,6 @@ from cargpt.components.objectives.forward_dynamics import (
 )
 from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
-from cargpt.components.loss import LossType
 
 
 class PolicyObjective(Objective):
