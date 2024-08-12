@@ -28,6 +28,7 @@ from cargpt.components.objectives.forward_dynamics import (
 )
 from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
+from cargpt.components.loss import LossType
 
 
 class PolicyObjective(Objective):
@@ -73,9 +74,17 @@ class PolicyObjective(Objective):
 
         logits = self.heads.forward(features)
         labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]
+        values = episode.inputs.select(*logits.keys(True, True))[:, -1]
+
+        targets = TensorDict({
+            loss_key: labels[loss_key]
+            if loss.loss_type == LossType.CLASSIFICATION
+            else values[loss_key]
+            for loss_key, loss in self.losses.tree_flatten_with_path()
+        })  # pyright: ignore[reportArgumentType]
         loss = self.losses(
             logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),
-            labels.apply(Rearrange("b 1 -> b"), batch_size=[]),
+            targets.apply(Rearrange("b 1 -> b"), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})
