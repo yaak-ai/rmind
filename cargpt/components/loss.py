@@ -92,9 +92,9 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss, GenericRegressionLoss):
     def __init__(
         self,
         *args,
-        logit_bias: Float[Tensor, "d"] | None = None,
-        var_pos_function: Callable[[Tensor], Tensor] = torch.exp,
-        # NOTE: use torch.ones_like to get vanilla MSE
+        var_pos_function: Callable[
+            [Tensor], Tensor
+        ] = torch.exp,  # NOTE: use torch.ones_like to get vanilla MSE
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
