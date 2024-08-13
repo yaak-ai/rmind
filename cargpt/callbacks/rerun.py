@@ -138,43 +138,43 @@ class RerunPredictionWriter(BasePredictionWriter):
                                 (Modality.CONTINUOUS | Modality.DISCRETE),
                                 name,
                             ):
+                                if v.isnan():
+                                    continue
+                                entity = rr.Scalar(v)
+
                                 match result_key:
+                                    case PredictionResultKey.GROUND_TRUTH:
+                                        style = rr.SeriesLine(name=f"gt/{name}")
+
+                                    case PredictionResultKey.PREDICTION:
+                                        style = rr.SeriesPoint(
+                                            name=f"pred/{name}",
+                                            marker="cross",
+                                            marker_size=4,
+                                        )
                                     case PredictionResultKey.PREDICTION_PROBS:
-                                        entity = rr.BarChart(v)
+                                        style = rr.SeriesPoint(
+                                            name=f"prediction_probs/{name}",
+                                            marker="plus",
+                                            marker_size=4,
+                                        )
+
+                                    case PredictionResultKey.SCORE_LOGPROB:
+                                        style = rr.SeriesPoint(
+                                            name=f"logp/{name}",
+                                            marker="diamond",
+                                            marker_size=4,
+                                        )
+
+                                    case PredictionResultKey.SCORE_L1:
+                                        style = rr.SeriesPoint(
+                                            name=f"l1/{name}",
+                                            marker="circle",
+                                            marker_size=4,
+                                        )
 
                                     case _:
-                                        if v.isnan():
-                                            continue
-
-                                        entity = rr.Scalar(v)
-
-                                        match result_key:
-                                            case PredictionResultKey.GROUND_TRUTH:
-                                                style = rr.SeriesLine(name=f"gt/{name}")
-
-                                            case PredictionResultKey.PREDICTION:
-                                                style = rr.SeriesPoint(
-                                                    name=f"pred/{name}",
-                                                    marker="cross",
-                                                    marker_size=4,
-                                                )
-
-                                            case PredictionResultKey.SCORE_LOGPROB:
-                                                style = rr.SeriesPoint(
-                                                    name=f"logp/{name}",
-                                                    marker="diamond",
-                                                    marker_size=4,
-                                                )
-
-                                            case PredictionResultKey.SCORE_L1:
-                                                style = rr.SeriesPoint(
-                                                    name=f"l1/{name}",
-                                                    marker="circle",
-                                                    marker_size=4,
-                                                )
-
-                                            case _:
-                                                raise NotImplementedError(k)
+                                        raise NotImplementedError(k)
 
                             case (
                                 "predictions",
@@ -276,7 +276,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                             rrb.Tabs(
                                                 name="scores",
                                                 contents=[
-                                                    rrb.BarChartView(
+                                                    rrb.TimeSeriesView(
                                                         origin=f"/predictions/{objective}/prediction_probs",
                                                         name="prediction_probs",
                                                     ),
