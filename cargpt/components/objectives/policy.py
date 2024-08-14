@@ -1,3 +1,4 @@
+import operator
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
 
@@ -27,7 +28,7 @@ from cargpt.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
 from cargpt.utils.containers import ModuleDict
-from cargpt.utils.functional import nan_padder, gauss_prob
+from cargpt.utils.functional import gauss_prob, nan_padder
 
 
 class PolicyObjective(Objective):
@@ -75,7 +76,7 @@ class PolicyObjective(Objective):
         targets = TensorDict({
             loss_key: loss.get_target(episode)[:, -1]
             for loss_key, loss in self.losses.tree_flatten_with_path()
-        })
+        })  # pyright: ignore[reportArgumentType]
         loss = self.losses(
             logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),
             targets.apply(Rearrange("b 1 -> b"), batch_size=[]),
@@ -140,7 +141,7 @@ class PolicyObjective(Objective):
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
-                result[result_key] = logits.apply(lambda x: x[..., 0]).apply(
+                result[result_key] = logits.apply(operator.itemgetter((..., 0))).apply(
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -167,11 +168,7 @@ class PolicyObjective(Objective):
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x[..., 0])
-                    # .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                    #     lambda k, v: episode_builder.tokenizers.get(k).invert(v),
-                    #     nested_keys=True,
-                    # )
+                    logits.apply(operator.itemgetter((..., 0)))
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
                         lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
@@ -179,7 +176,6 @@ class PolicyObjective(Objective):
                         nested_keys=True,
                     )
                 )
-        # breakpoint()
 
         return result
 

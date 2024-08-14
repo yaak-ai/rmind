@@ -1,25 +1,28 @@
+from collections.abc import Callable
+
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
+from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 from typing_extensions import override
-from collections.abc import Callable
+
 from cargpt.components.episode import Episode
 
 
 class LabelTargetLoss:
-    def get_target(self, episode: Episode):
+    def get_target(self, episode: Episode) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         return episode.tokenized
 
 
 class ValueTargetLoss:
-    def get_target(self, episode: Episode):
+    def get_target(self, episode: Episode) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         return episode.inputs
 
 
 class EmbeddingTargetLoss:
-    def get_target(self, episode: Episode):
+    def get_target(self, episode: Episode) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
         return episode.embedded_nope
 
 

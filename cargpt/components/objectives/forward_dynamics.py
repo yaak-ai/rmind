@@ -89,7 +89,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 :, 1:
             ]  # all but first timestep
             for loss_key, loss in self.losses.tree_flatten_with_path()
-        })
+        })  # pyright: ignore[reportArgumentType]
 
         loss = self.losses(
             logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),

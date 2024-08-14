@@ -56,7 +56,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         targets = TensorDict({
             loss_key: loss.get_target(episode)[loss_key][:, masked_action_timestep_idx]
             for loss_key, loss in self.losses.tree_flatten_with_path()
-        })
+        })  # pyright: ignore[reportArgumentType]
 
         loss = self.losses(
             logits.apply(Rearrange("b t 1 d -> (b t 1) d"), batch_size=[]),
