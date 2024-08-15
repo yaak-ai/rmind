@@ -3,30 +3,12 @@ from collections.abc import Callable
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
-from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 from typing_extensions import override
 
-from cargpt.components.episode import Episode
 
-
-class LabelTargetLoss:
-    def get_target(self, episode: Episode) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
-        return episode.tokenized
-
-
-class ValueTargetLoss:
-    def get_target(self, episode: Episode) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
-        return episode.inputs
-
-
-class EmbeddingTargetLoss:
-    def get_target(self, episode: Episode) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
-        return episode.embedded_nope
-
-
-class FocalLoss(Module, LabelTargetLoss):
+class FocalLoss(Module):
     """https://arxiv.org/pdf/1708.02002.pdf"""
 
     def __init__(self, *, gamma: float = 2.0):
@@ -62,7 +44,7 @@ class LogitBiasMixin:
                 self._logit_bias = None
 
 
-class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss, LabelTargetLoss):
+class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss):
     def __init__(
         self, *, logit_bias: Float[Tensor, "d"] | None = None, gamma: float = 2.0
     ):
@@ -75,7 +57,7 @@ class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss, LabelTargetLoss):
         return super().forward(input + self.logit_bias, target)
 
 
-class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss, LabelTargetLoss):
+class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
     def __init__(self, *args, logit_bias: Float[Tensor, "d"] | None = None, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -86,7 +68,7 @@ class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss, LabelTargetLos
         return super().forward(input + self.logit_bias, target)
 
 
-class GaussianNLLLoss(torch.nn.GaussianNLLLoss, ValueTargetLoss):
+class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
     """
     Class that makes vanilla torch.nn.GaussianNLLLoss compatible with carGPT pipeline
     """
@@ -108,8 +90,3 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss, ValueTargetLoss):
         return super().forward(
             input=mean, target=target_values, var=self.var_pos_function(log_var)
         )
-
-
-class MSEEmbeddingLoss(torch.nn.MSELoss, EmbeddingTargetLoss):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)

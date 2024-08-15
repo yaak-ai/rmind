@@ -7,6 +7,7 @@ from einops.layers.torch import Rearrange
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map
 from typing_extensions import override
 
 from cargpt.components.episode import (
@@ -63,10 +64,7 @@ class InverseDynamicsPredictionObjective(Objective):
         )
 
         logits = self.heads.forward(features, batch_size=[b, t - 1])
-        targets = TensorDict({
-            loss_key: loss.get_target(episode)[loss_key][:, :-1]
-            for loss_key, loss in self.losses.tree_flatten_with_path()
-        })  # pyright: ignore[reportArgumentType]
+        targets = TensorDict(tree_map(lambda f: f(episode)[:, :-1], self.targets))
         loss = self.losses(
             logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),
             targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),

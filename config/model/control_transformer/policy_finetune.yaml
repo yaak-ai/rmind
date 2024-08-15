@@ -1,7 +1,5 @@
-# _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
-# artifact: ???
-_target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
-checkpoint_path: ???
+_target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
 filename: model.ckpt
 strict: false
 hparams_updaters:
