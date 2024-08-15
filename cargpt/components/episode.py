@@ -4,13 +4,14 @@ from enum import StrEnum, auto
 from functools import cache
 from itertools import accumulate, pairwise
 from operator import add, itemgetter
-from typing import cast
+from typing import Any, cast
 
 import torch
 from einops import pack, rearrange, repeat
 from jaxtyping import Float, Int, Shaped
 from loguru import logger
 from tensordict import TensorDict, tensorclass
+from tensordict.tensorclass import _get as tensorclass_get
 from tensordict.utils import NestedKey
 from torch import Tensor
 from torch.nn import Embedding, Module, ModuleDict
@@ -172,6 +173,9 @@ class Episode:
     embedded: TensorDict
     index: Index  # pyright: ignore[reportGeneralTypeIssues]
     timestep: Timestep
+
+    def get(self, key: NestedKey | list[str], *args, **kwargs) -> Any:
+        return tensorclass_get(self, tuple(key), *args, **kwargs)  # pyright: ignore[reportArgumentType]
 
     @property  # TODO: cache?
     def packed_embeddings(self) -> Float[Tensor, "b s d"]:

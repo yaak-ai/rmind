@@ -6,10 +6,12 @@ import torch
 from einops import pack
 from einops.layers.torch import Rearrange
 from jaxtyping import Float
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map
 from typing_extensions import override
 
 from cargpt.components.episode import (
@@ -35,11 +37,18 @@ if TYPE_CHECKING:
 
 
 class ForwardDynamicsPredictionObjective(Objective):
-    def __init__(self, *, heads: ModuleDict, losses: ModuleDict | None = None):
+    def __init__(
+        self,
+        *,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+        targets: DictConfig | None = None,
+    ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.targets = OmegaConf.to_container(targets)
 
     @override
     def forward(
@@ -84,13 +93,12 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         logits = self.heads.forward(features)
-        targets = TensorDict({
-            loss_key: loss.get_target(episode)[loss_key][
-                :, 1:
-            ]  # all but first timestep
-            for loss_key, loss in self.losses.tree_flatten_with_path()
-        })  # pyright: ignore[reportArgumentType]
-
+        targets = TensorDict(
+            tree_map(
+                lambda f: f(episode)[:, 1:],  # all but first timestep
+                self.targets,
+            )
+        )
         loss = self.losses(
             logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
             targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
