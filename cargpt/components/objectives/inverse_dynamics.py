@@ -4,6 +4,7 @@ from functools import lru_cache
 import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
@@ -32,11 +33,18 @@ from cargpt.utils.functional import nan_padder
 
 
 class InverseDynamicsPredictionObjective(Objective):
-    def __init__(self, *, heads: ModuleDict, losses: ModuleDict | None = None):
+    def __init__(
+        self,
+        *,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+        targets: DictConfig | None = None,
+    ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.targets = OmegaConf.to_container(targets)
 
     @override
     def forward(

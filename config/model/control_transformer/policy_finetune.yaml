@@ -50,6 +50,23 @@ hparams_updaters:
               out_features: 2
               bias: False
 
+        targets:
+          continuous:
+            gas_pedal:
+              _target_: cargpt.components.episode.Episode.get
+              _partial_: true
+              key: ["inputs", "continuous", "gas_pedal"]
+
+            brake_pedal:
+              _target_: cargpt.components.episode.Episode.get
+              _partial_: true
+              key: ["inputs", "continuous", "brake_pedal"]
+
+            steering_angle:
+              _target_: cargpt.components.episode.Episode.get
+              _partial_: true
+              key: ["inputs", "continuous", "steering_angle"]
+
         losses:
           _target_: cargpt.utils.ModuleDict
           continuous:

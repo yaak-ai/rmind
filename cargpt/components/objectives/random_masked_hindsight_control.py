@@ -4,6 +4,7 @@ from functools import lru_cache
 import numpy as np
 import torch
 from einops.layers.torch import Rearrange
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
@@ -28,11 +29,18 @@ from cargpt.utils.containers import ModuleDict
 
 
 class RandomMaskedHindsightControlObjective(Objective):
-    def __init__(self, *, heads: ModuleDict, losses: ModuleDict | None = None):
+    def __init__(
+        self,
+        *,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+        targets: DictConfig | None = None,
+    ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.targets = OmegaConf.to_container(targets)
 
     @override
     def forward(
@@ -54,10 +62,6 @@ class RandomMaskedHindsightControlObjective(Objective):
         index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = self.heads.forward(embeddings)
-        targets = TensorDict({
-            loss_key: loss.get_target(episode)[loss_key][:, masked_action_timestep_idx]
-            for loss_key, loss in self.losses.tree_flatten_with_path()
-        })  # pyright: ignore[reportArgumentType]
         targets = TensorDict(
             tree_map(lambda f: f(episode)[:, masked_action_timestep_idx], self.targets)
         )
