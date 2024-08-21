@@ -4,9 +4,11 @@ from functools import lru_cache
 import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map
 from typing_extensions import override
 
 from cargpt.components.episode import (
@@ -31,11 +33,18 @@ from cargpt.utils.functional import nan_padder
 
 
 class InverseDynamicsPredictionObjective(Objective):
-    def __init__(self, *, heads: ModuleDict, losses: ModuleDict | None = None):
+    def __init__(
+        self,
+        *,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+        targets: DictConfig | None = None,
+    ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.targets = OmegaConf.to_container(targets)
 
     @override
     def forward(
@@ -63,10 +72,10 @@ class InverseDynamicsPredictionObjective(Objective):
         )
 
         logits = self.heads.forward(features, batch_size=[b, t - 1])
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, :-1]
+        targets = TensorDict(tree_map(lambda f: f(episode)[:, :-1], self.targets))
         loss = self.losses(
             logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),
-            labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
+            targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})

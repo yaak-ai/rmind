@@ -2,8 +2,10 @@ from collections.abc import Set as AbstractSet
 from functools import lru_cache
 
 from einops.layers.torch import Rearrange
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch.nn import Module
+from torch.utils._pytree import tree_map
 from typing_extensions import override
 
 from cargpt.components.episode import (
@@ -35,12 +37,14 @@ class MemoryExtractionObjective(Objective):
         *,
         heads: ModuleDict,
         losses: ModuleDict | None = None,
+        targets: DictConfig | None = None,
         delta_tokenizers: ModuleDict,
     ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.targets = OmegaConf.to_container(targets)
         self.delta_tokenizers = delta_tokenizers
 
     @override
@@ -64,14 +68,13 @@ class MemoryExtractionObjective(Objective):
         )
 
         logits = self.heads.forward(features, batch_size=[b, t - 1])
-        deltas = episode.inputs.select(*logits.keys(True, True)).apply(
+        deltas = TensorDict(tree_map(lambda f: f(episode), self.targets)).apply(
             lambda x: x.diff(dim=1), batch_size=[b, t - 1]
         )
-
-        labels = self.delta_tokenizers(deltas)
+        targets = self.delta_tokenizers(deltas)
         loss = self.losses(
             logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),
-            labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
+            targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})

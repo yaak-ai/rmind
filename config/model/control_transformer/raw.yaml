@@ -180,7 +180,6 @@ encoder:
 
 objectives:
   _target_: cargpt.utils.ModuleDict
-
   inverse_dynamics:
     _target_: cargpt.components.objectives.InverseDynamicsPredictionObjective
     heads:
@@ -215,6 +214,23 @@ objectives:
               - ${vars.embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
           bias: False
+
+    targets:
+      continuous:
+        gas_pedal:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["tokenized", "continuous", "gas_pedal"]
+
+        brake_pedal:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["tokenized", "continuous", "brake_pedal"]
+
+        steering_angle:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["tokenized", "continuous", "steering_angle"]
 
     losses:
       _target_: cargpt.utils.ModuleDict
@@ -263,6 +279,25 @@ objectives:
           out_features: ${model.episode_builder.embeddings.discrete.turn_signal.num_embeddings}
           bias: False
 
+    targets:
+      image:
+        cam_front_left:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["embedded_nope", "image", "cam_front_left"]
+
+      continuous:
+        speed:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["tokenized", "continuous", "speed"]
+
+      discrete:
+        turn_signal:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["tokenized", "discrete", "turn_signal"]
+
     losses:
       _target_: cargpt.utils.ModuleDict
       image:
@@ -299,6 +334,23 @@ objectives:
           out_features: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
           bias: False
 
+    targets:
+      continuous:
+        gas_pedal:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["tokenized", "continuous", "gas_pedal"]
+
+        brake_pedal:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["tokenized", "continuous", "brake_pedal"]
+
+        steering_angle:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["tokenized", "continuous", "steering_angle"]
+
     losses:
       _target_: cargpt.utils.ModuleDict
       continuous:
@@ -334,6 +386,24 @@ objectives:
           in_features: ${vars.embedding_dim}
           out_features: ${model.objectives.memory_extraction.delta_tokenizers.continuous.steering_angle._args_[1].quantization_channels}
           bias: False
+
+    targets:
+      continuous:
+        gas_pedal:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["inputs", "continuous", "gas_pedal"]
+
+        brake_pedal:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["inputs", "continuous", "brake_pedal"]
+
+        steering_angle:
+          _target_: cargpt.components.episode.Episode.get
+          _partial_: true
+          key: ["inputs", "continuous", "steering_angle"]
+
 
     losses:
       _target_: cargpt.utils.ModuleDict

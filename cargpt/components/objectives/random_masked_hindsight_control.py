@@ -4,9 +4,11 @@ from functools import lru_cache
 import numpy as np
 import torch
 from einops.layers.torch import Rearrange
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map
 from typing_extensions import override
 
 from cargpt.components.episode import (
@@ -27,11 +29,18 @@ from cargpt.utils.containers import ModuleDict
 
 
 class RandomMaskedHindsightControlObjective(Objective):
-    def __init__(self, *, heads: ModuleDict, losses: ModuleDict | None = None):
+    def __init__(
+        self,
+        *,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+        targets: DictConfig | None = None,
+    ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.targets = OmegaConf.to_container(targets)
 
     @override
     def forward(
@@ -53,13 +62,13 @@ class RandomMaskedHindsightControlObjective(Objective):
         index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = self.heads.forward(embeddings)
-        labels = episode.tokenized.select(*logits.keys(True, True))[
-            :, masked_action_timestep_idx
-        ]
+        targets = TensorDict(
+            tree_map(lambda f: f(episode)[:, masked_action_timestep_idx], self.targets)
+        )
 
         loss = self.losses(
             logits.apply(Rearrange("b t 1 d -> (b t 1) d"), batch_size=[]),
-            labels.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
+            targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})

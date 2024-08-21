@@ -6,11 +6,12 @@ import torch
 from einops import pack
 from einops.layers.torch import Rearrange
 from jaxtyping import Float
-from more_itertools import partition
-from tensordict import TensorDict, merge_tensordicts
+from omegaconf import DictConfig, OmegaConf
+from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map
 from typing_extensions import override
 
 from cargpt.components.episode import (
@@ -36,11 +37,18 @@ if TYPE_CHECKING:
 
 
 class ForwardDynamicsPredictionObjective(Objective):
-    def __init__(self, *, heads: ModuleDict, losses: ModuleDict | None = None):
+    def __init__(
+        self,
+        *,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+        targets: DictConfig | None = None,
+    ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.targets = OmegaConf.to_container(targets)
 
     @override
     def forward(
@@ -85,18 +93,15 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         logits = self.heads.forward(features)
-        non_image_keys, image_keys = partition(
-            lambda k: k[0] is Modality.IMAGE,  # pyright: ignore[reportIndexIssue]
-            logits.keys(include_nested=True, leaves_only=True),  # pyright: ignore[reportArgumentType]
+        targets = TensorDict(
+            tree_map(
+                lambda f: f(episode)[:, 1:],  # all but first timestep
+                self.targets,
+            )
         )
-        labels = merge_tensordicts(
-            episode.embedded_nope.select(*image_keys),
-            episode.tokenized.select(*non_image_keys),
-        )[:, 1:]  # all but first timestep
-
         loss = self.losses(
             logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
-            labels.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
+            targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})

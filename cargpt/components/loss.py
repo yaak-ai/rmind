@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
@@ -64,3 +66,27 @@ class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
     @override
     def forward(self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]):
         return super().forward(input + self.logit_bias, target)
+
+
+class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
+    """
+    Class that makes vanilla torch.nn.GaussianNLLLoss compatible with carGPT pipeline
+    """
+
+    def __init__(
+        self,
+        *args,
+        var_pos_function: Callable[
+            [Tensor], Tensor
+        ] = torch.exp,  # NOTE: use torch.ones_like to get vanilla MSE
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.var_pos_function = var_pos_function
+
+    @override
+    def forward(self, input: Tensor, target_values: Float[Tensor, "b"]):
+        mean, log_var = input[..., 0], input[..., 1]
+        return super().forward(
+            input=mean, target=target_values, var=self.var_pos_function(log_var)
+        )

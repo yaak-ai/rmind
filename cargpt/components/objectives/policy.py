@@ -1,12 +1,15 @@
+import operator
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
 
 import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map
 from typing_extensions import override
 
 from cargpt.components.episode import (
@@ -27,15 +30,22 @@ from cargpt.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
 from cargpt.utils.containers import ModuleDict
-from cargpt.utils.functional import nan_padder
+from cargpt.utils.functional import gauss_prob, nan_padder
 
 
 class PolicyObjective(Objective):
-    def __init__(self, *, heads: ModuleDict, losses: ModuleDict | None = None):
+    def __init__(
+        self,
+        *,
+        heads: ModuleDict,
+        losses: ModuleDict | None = None,
+        targets: DictConfig | None = None,
+    ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
+        self.targets = OmegaConf.to_container(targets)
 
     @override
     def forward(
@@ -72,10 +82,10 @@ class PolicyObjective(Objective):
         )
 
         logits = self.heads.forward(features)
-        labels = episode.tokenized.select(*logits.keys(True, True))[:, -1]
+        targets = TensorDict(tree_map(lambda f: f(episode)[:, -1], self.targets))
         loss = self.losses(
             logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),
-            labels.apply(Rearrange("b 1 -> b"), batch_size=[]),
+            targets.apply(Rearrange("b 1 -> b"), batch_size=[]),
         )
 
         return TensorDict({"loss": loss})
@@ -137,38 +147,34 @@ class PolicyObjective(Objective):
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
-                result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: episode_builder.tokenizers.get(k).invert(v),
-                        nested_keys=True,
-                    )
-                    .apply(timestep_padder, batch_size=[b, t])
+                result[result_key] = logits.apply(operator.itemgetter((..., 0))).apply(
+                    timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.apply(
+                    lambda x: gauss_prob(
+                        x[..., 0], mean=x[..., 0], std=torch.sqrt(torch.exp(x[..., 1]))
+                    )
+                ).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.softmax(dim=-1))
-                    .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportAttributeAccessIssue]
-                    .apply(timestep_padder, batch_size=[b, t])
-                    .apply(
-                        lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                        episode.tokenized,
+                    logits.apply(
+                        lambda x: gauss_prob(
+                            episode.inputs,
+                            mean=x[..., 0],
+                            std=torch.sqrt(torch.exp(x[..., 1])),
+                        )
                     )
+                    .apply(timestep_padder, batch_size=[b, t])
                     .apply(lambda x: -torch.log(x))
                 )
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: episode_builder.tokenizers.get(k).invert(v),
-                        nested_keys=True,
-                    )
+                    logits.apply(operator.itemgetter((..., 0)))
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
                         lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
