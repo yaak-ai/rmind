@@ -1,4 +1,4 @@
-_target_: yaak_datasets.Dataset
+_target_: rbyte.Dataset
 _recursive_: false
 config:
   inputs:
@@ -8,19 +8,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -31,7 +31,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -40,7 +40,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -63,13 +63,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro101-HQ/2022-12-25--09-58-33
@@ -78,19 +78,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -101,7 +101,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -110,7 +110,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -133,13 +133,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro101-HQ/2022-12-30--09-23-51
@@ -148,19 +148,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -171,7 +171,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -180,7 +180,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -203,13 +203,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro101-HQ/2022-12-31--09-57-24
@@ -218,19 +218,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -241,7 +241,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -250,7 +250,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -273,13 +273,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro101-HQ/2023-01-01--09-31-43
@@ -288,19 +288,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -311,7 +311,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -320,7 +320,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -343,13 +343,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro115-HQ/2023-05-16--10-47-33
@@ -358,19 +358,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -381,7 +381,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -390,7 +390,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -413,13 +413,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro104-HQ/2022-12-20--13-57-20
@@ -428,19 +428,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -451,7 +451,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -460,7 +460,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -483,13 +483,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro107-HQ/2023-05-12--12-05-15
@@ -498,19 +498,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -521,7 +521,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -530,7 +530,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -553,13 +553,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro122-HQ/2023-04-05--12-06-39
@@ -568,19 +568,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -591,7 +591,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -600,7 +600,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -623,13 +623,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro102-HQ/2022-12-03--11-30-20
@@ -638,19 +638,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -661,7 +661,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -670,7 +670,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -693,13 +693,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: G1-00428/2024-04-23--07-00-31
@@ -708,19 +708,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -731,7 +731,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -740,7 +740,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -763,13 +763,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: Niro104-HQ/2023-04-27--08-23-53
@@ -778,19 +778,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -801,7 +801,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -810,7 +810,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -833,13 +833,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: G1-00429/2024-04-22--13-35-09
@@ -848,19 +848,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -871,7 +871,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -880,7 +880,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -903,13 +903,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: G1-00436/2024-04-22--07-48-38
@@ -918,19 +918,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -941,7 +941,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -950,7 +950,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -973,13 +973,13 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   - id: G1-00436/2024-04-22--15-59-18
@@ -988,19 +988,19 @@ config:
       - id: cam_front_left
         index_column: image_metadata.${.id}.frame_idx
         reader:
-          _target_: yaak_datasets.JpegFrameReader
+          _target_: rbyte.io.frame.jpeg.JpegFrameReader
           path: ${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg
       table:
         path: ${paths.data_dir}/${...id}/metadata.log
         builder:
-          _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+          _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
           _recursive_: false
           config:
             cameras:
             - cam_front_left
             select:
             - message:
-                type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 alias: image_metadata
               fields:
               - name: time_stamp
@@ -1011,7 +1011,7 @@ config:
               - name: camera_name
                 partition: true
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                 alias: vehicle_state
               fields:
               - name: time_stamp
@@ -1020,7 +1020,7 @@ config:
                   method: asof
                   tolerance: 100ms
             - message:
-                type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                 alias: vehicle_motion
               fields:
               - name: time_stamp
@@ -1043,18 +1043,18 @@ config:
             merge:
               reference:
                 key:
-                - yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                - rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
                 - cam_front_left
                 column: time_stamp
             filter: |
               `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
             cache:
-              _target_: yaak_datasets.utils.DataframeDiskCache
+              _target_: rbyte.utils.DataframeDiskCache
               directory: ${paths.metadata_cache_dir}
               size_limit: 10 GiB
   samples:
     builder:
-      _target_: yaak_datasets.dataset.sample.GreedySampleTableBuilder
+      _target_: rbyte.sample.builder.GreedySampleTableBuilder
       config:
         index_column: image_metadata.cam_front_left.frame_idx
         length: ${vars.data.train.clip_length}

@@ -12,7 +12,7 @@ train:
   persistent_workers: true
   multiprocessing_context: forkserver
   collate_fn:
-    _target_: yaak_datasets.utils.dataloader.collate_identity
+    _target_: rbyte.utils.dataloader.collate_identity
     _partial_: true
 
 val:
@@ -23,5 +23,5 @@ val:
   persistent_workers: true
   multiprocessing_context: forkserver
   collate_fn:
-    _target_: yaak_datasets.utils.dataloader.collate_identity
+    _target_: rbyte.utils.dataloader.collate_identity
     _partial_: true

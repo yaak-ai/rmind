@@ -1,12 +1,10 @@
 version: 2.1
 orbs:
   python: circleci/python@2.1.1
-
 executors:
   ci-runner:
     docker:
       - image: cimg/python:3.12.4
-
 jobs:
   build:
     executor: ci-runner
@@ -22,7 +20,6 @@ jobs:
       - run: poetry run pyright
       - run: poetry run pytest
       - run: poetry run deptry .
-
 workflows:
   main:
     jobs:
