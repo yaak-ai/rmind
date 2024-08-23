@@ -161,12 +161,13 @@ class PolicyObjective(Objective):
                 )
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
-                    logits.apply(
-                        lambda x: gauss_prob(
-                            episode.inputs,
+                    logits.named_apply(
+                        lambda k, x: gauss_prob(
+                            episode.inputs[:, -1][k],
                             mean=x[..., 0],
                             std=torch.sqrt(torch.exp(x[..., 1])),
-                        )
+                        ),
+                        nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(lambda x: -torch.log(x))

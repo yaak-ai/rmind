@@ -39,7 +39,7 @@ predict = ["funcy", "wandb"]
 optional = true
 
 [tool.poetry.group.train.dependencies]
-yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.20.1" }
+yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "d70209d" }
 torchmetrics = "*"
 transformers = "*"
 polars = "*"
@@ -49,7 +49,7 @@ wandb = "*"
 optional = true
 
 [tool.poetry.group.predict.dependencies]
-yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "v0.20.1" }
+yaak-datasets = { git = "git@github.com:yaak-ai/yaak-datasets.git", rev = "d70209d" }
 rerun-sdk = "^0.16.1"
 funcy = "*"
 wandb = "*"

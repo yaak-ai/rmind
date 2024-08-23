@@ -1,0 +1,132 @@
+#@ drives = [
+#@ 'Niro096-HQ/2023-01-11--13-47-36',
+#@ 'Niro101-HQ/2022-12-25--09-58-33',
+#@ 'Niro101-HQ/2022-12-30--09-23-51',
+#@ 'Niro101-HQ/2022-12-31--09-57-24',
+#@ 'Niro101-HQ/2023-01-01--09-31-43',
+#@ 'Niro115-HQ/2023-05-16--10-47-33',
+#@ 'Niro104-HQ/2022-12-20--13-57-20',
+#@ 'Niro107-HQ/2023-05-12--12-05-15',
+#@ 'Niro122-HQ/2023-04-05--12-06-39',
+#@ 'Niro102-HQ/2022-12-03--11-30-20', 
+#@ 'G1-00428/2024-04-23--07-00-31',
+#@ 'Niro104-HQ/2023-04-27--08-23-53', 
+#@ 'G1-00429/2024-04-22--13-35-09',
+#@ 'G1-00436/2024-04-22--07-48-38', 
+#@ 'G1-00436/2024-04-22--15-59-18'
+#@ ]
+#@ cameras = ['cam_front_left']
+#@
+
+_target_: yaak_datasets.Dataset
+_recursive_: false
+config:
+  inputs:
+    #@ for drive in drives:
+    - id: #@ drive
+      sources:
+        frame:
+          #@ for camera in cameras:
+          - id: #@ camera
+            index_column: "image_metadata.${.id}.frame_idx"
+            reader:
+              _target_: yaak_datasets.JpegFrameReader
+              path: "${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg"
+          #@ end
+
+        table:
+          path: ${paths.data_dir}/${...id}/metadata.log
+          builder:
+            _target_: yaak_datasets.io.table.yaak.YaakMetadataTableBuilder
+            _recursive_: false
+            config:
+              cameras: #@ cameras
+              select:
+                - message:
+                    type: yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                    alias: image_metadata
+                  fields:
+                    - name: time_stamp
+
+                    - name: frame_idx
+                      merge:
+                        method: asof
+                        tolerance: 10ms
+
+                    - name: camera_name
+                      partition: true
+
+                - message:
+                    type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleState
+                    alias: vehicle_state
+                  fields:
+                    - name: time_stamp
+
+                    - name: turn_signal
+                      merge:
+                        method: asof
+                        tolerance: 100ms
+
+                - message:
+                    type: yaak_datasets.io.table.yaak.proto.can_pb2.VehicleMotion
+                    alias: vehicle_motion
+                  fields:
+                    - name: time_stamp
+
+                    - name: speed
+                      merge:
+                        method: interp
+
+                    - name: gas_pedal_normalized
+                      merge:
+                        method: interp
+
+                    - name: brake_pedal_normalized
+                      merge:
+                        method: interp
+
+                    - name: steering_angle_normalized
+                      merge:
+                        method: interp
+
+                    - name: gear
+                      merge:
+                        method: asof
+                        tolerance: 100ms
+
+              merge:
+                reference:
+                  key:
+                    [
+                      yaak_datasets.io.table.yaak.proto.sensor_pb2.ImageMetadata,
+                      cam_front_left,
+                    ]
+                  column: time_stamp
+
+              filter: >
+                `vehicle_motion.gear` == 3
+                and `vehicle_motion.speed` between 0.0 and 130.0
+                and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0
+                and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0
+                and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
+
+              cache:
+                _target_: yaak_datasets.utils.DataframeDiskCache
+                directory: ${paths.metadata_cache_dir}
+                size_limit: "10 GiB"
+    #@ end
+  samples:
+    builder:
+      _target_: yaak_datasets.dataset.sample.GreedySampleTableBuilder
+      config:
+        index_column: image_metadata.cam_front_left.frame_idx
+        length: ${vars.data.train.clip_length}
+        stride: 10
+        min_step: 10
+        filter: >
+          not (
+                array_upper(`vehicle_motion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
+            and array_upper(`vehicle_motion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
+            and array_upper(`vehicle_motion.speed`) >= 25.0
+            and array_get(`vehicle_motion.speed`, -1) - array_get(`vehicle_motion.speed`, 0) >= -0.05 * array_mean(`vehicle_motion.speed`)
+          )
