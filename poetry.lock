@@ -5672,4 +5672,4 @@ predict = ["funcy", "wandb"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">3.12.0,<3.13"
-content-hash = "e3f0b4842ffebb182f1a1319de1e597990ac5941d0da72503963bcdfa42a7a2c"
+content-hash = "459a9e852246a703e851b6afcbb9e5d61d86feb45167375369a60a0749d09348"
