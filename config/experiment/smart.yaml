@@ -23,7 +23,7 @@ vars:
     num_heads: 4
     num_layers: 8
 
-  registers_num: 8
+  registers_num: 64
   embedding_dim: 512
 
 wandb:
@@ -174,7 +174,7 @@ model:
 
       observations:
         _target_: cargpt.components.nn.Embedding
-        num_embeddings: 190
+        num_embeddings: 246
         embedding_dim: ${vars.embedding_dim}
 
       actions:
