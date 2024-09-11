@@ -164,8 +164,8 @@ class PolicyObjective(Objective):
                     logits.named_apply(
                         lambda k, x: gauss_prob(
                             episode.inputs[:, -1][k],
-                            mean=x[..., 0],
-                            std=torch.sqrt(torch.exp(x[..., 1])),
+                            mean=x[..., 0].squeeze(-1),
+                            std=torch.sqrt(torch.exp(x[..., 1].squeeze(-1))),
                         ),
                         nested_keys=True,
                     )
