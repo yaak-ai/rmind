@@ -12,7 +12,7 @@ jobs:
       - checkout
       - run: pip install --upgrade uv --no-cache-dir
       - run: uv sync --all-extras --locked
-      - run: uvx run ruff format --check
+      - run: uvx ruff format --check
       - run: uvx ruff check --no-fix
       - run: uvx basedpyright
       - run: uvx deptry . --ignore "DEP002"
