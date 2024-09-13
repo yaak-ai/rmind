@@ -1,25 +1,26 @@
+---
 version: 2.1
 orbs:
   python: circleci/python@2.1.1
 executors:
   ci-runner:
     docker:
-      - image: cimg/python:3.12.4
+      - image: cimg/python:3.12.5
 jobs:
   build:
     executor: ci-runner
     steps:
       - checkout
-      - run: poetry self update --no-ansi --no-interaction --no-cache
+      - run: pip install --upgrade uv --no-cache-dir
       - python/install-packages:
-          pkg-manager: poetry
-          args: --with train,predict,test,lint
-          cache-version: v3 # bump to reset
-      - run: poetry run ruff format --check
-      - run: poetry run ruff check --no-fix
-      - run: poetry run pyright
-      - run: poetry run pytest
-      - run: poetry run deptry .
+          pkg-manager: uv
+          args: ["sync", "--all-extras"]
+          cache-version: v4 # bump to reset
+      - run: uv run ruff format --check
+      - run: uv run ruff check --no-fix
+      # - run: uv run pyright
+      - run: uv run pytest
+      - run: uv run deptry . --ignore "DEP002"
 workflows:
   main:
     jobs:

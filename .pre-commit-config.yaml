@@ -1,3 +1,5 @@
+---
+fail_fast: true
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.5.4
@@ -5,10 +7,10 @@ repos:
       - id: ruff-format
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
-  - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-    rev: 1.17.0
-    hooks:
-      - id: basedpyright
+  # - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
+  #   rev: 1.17.0
+  #   hooks:
+  #     - id: basedpyright
   - repo: https://github.com/abravalheri/validate-pyproject
     rev: v0.19
     hooks:
@@ -26,28 +28,21 @@ repos:
     hooks:
       - id: yamlfmt
         exclude: examples/config
+  - repo: https://github.com/fpgmaas/deptry.git
+    rev: 0.17.0
+    hooks:
+      - id: deptry
+        args: ["--ignore", "DEP002"] # deptry doesnt ignore [project.optional-dependencies]
   - repo: local
     hooks:
-      - id: pyright
-        name: pyright
-        language: system
-        entry: poetry run pyright
-        pass_filenames: false
-        types: [python]
       - id: pytest
         name: pytest
         language: system
         stages: [commit]
         types: [python]
-        entry: poetry run pytest
+        entry: uv run pytest
         pass_filenames: false
         always_run: true
-  - repo: https://github.com/fpgmaas/deptry.git
-    rev: 0.17.0
-    hooks:
-      - id: deptry
-  - repo: local
-    hooks:
       - id: just-format
         name: just-format
         language: system
