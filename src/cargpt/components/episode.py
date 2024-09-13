@@ -257,7 +257,7 @@ class EpisodeBuilder(Module):
             token.key: embedded_nope.get_item_shape(token.key)[2]
             for token in self.timestep.tokens
         }
-        timestep_index = self._build_timestep_index(lengths).to(embedded_nope.device)  # pyright: ignore
+        timestep_index = self._build_timestep_index(lengths).to(embedded_nope.device)
         timestep_length = sum(lengths.values())
         _, t = embedded_nope.batch_size
         index = timestep_index.apply(
@@ -278,9 +278,13 @@ class EpisodeBuilder(Module):
             device=inputs.device,  # pyright: ignore[reportCallIssue]
         )
 
-    def _build_timestep_index(self, lengths: dict[NestedKey, int]) -> Index:  # pyright: ignore[reportGeneralTypeIssues]
+    def _build_timestep_index(self, lengths: dict[tuple[Modality, str], Any]) -> Index:  # pyright: ignore[reportGeneralTypeIssues]
         ranges = dict(
-            zip(lengths.keys(), pairwise(accumulate(lengths.values(), initial=0)))
+            zip(
+                lengths.keys(),
+                pairwise(accumulate(lengths.values(), initial=0)),
+                strict=False,
+            )
         )
         return Index.from_dict(  # pyright: ignore[reportAttributeAccessIssue]
             {k: torch.arange(*v) for k, v in ranges.items()}, batch_size=[]

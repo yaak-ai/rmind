@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from functools import cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import pytorch_lightning as pl
 import rerun as rr
@@ -9,7 +9,6 @@ from einops import rearrange
 from funcy import once_per
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorDict
-from typing_extensions import override
 
 from cargpt.components.episode import Modality
 from cargpt.components.objectives.base import PredictionResultKey
@@ -18,7 +17,7 @@ if TYPE_CHECKING:
     from rerun.blueprint.api import BlueprintLike
 
 try:
-    from yaak_datasets import Batch
+    from rbyte.batch import Batch
 except ImportError:
     from typing import Any
 

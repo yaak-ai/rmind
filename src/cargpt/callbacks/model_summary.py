@@ -1,11 +1,10 @@
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, override
 
 import pytorch_lightning as pl
 from loguru import logger
 from pytorch_lightning.callbacks import ModelSummary as _ModelSummary
 from torchinfo import summary
-from typing_extensions import override
 
 
 class ModelSummary(_ModelSummary):
@@ -15,7 +14,7 @@ class ModelSummary(_ModelSummary):
         depth: int = 4,
         col_names: Iterable[str] = ("trainable", "num_params"),
         row_settings: Iterable[str] = ("var_names",),
-        **kwargs,
+        **kwargs: dict[str, Any],
     ) -> None:
         self._kwargs: dict[str, Any] = {
             "depth": depth,

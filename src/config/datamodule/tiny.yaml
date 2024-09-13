@@ -1,3 +1,4 @@
+---
 defaults:
   - default
   - /dataset/tiny@train.dataset

@@ -1,6 +1,6 @@
 from collections.abc import Iterable, Mapping, Sequence
 from functools import reduce, singledispatchmethod
-from typing import Any, TypedDict, Unpack
+from typing import Any, TypedDict, Unpack, override
 
 import torch
 from more_itertools import always_iterable
@@ -17,7 +17,6 @@ from torch.utils._pytree import (
     register_pytree_node,
     tree_flatten_with_path,
 )
-from typing_extensions import override
 
 
 class TensorDictKwargs(TypedDict):
@@ -43,7 +42,7 @@ class ModuleDict(ModuleDictBase):
     def get(self, key: str | tuple[str, ...], *, default: Any = __unspecified):
         """recursive access mimicking TensorDict.get"""
         try:
-            return reduce(ModuleDict.__getitem__, always_iterable(key), self)  # pyright: ignore
+            return reduce(ModuleDict.__getitem__, always_iterable(key), self)  # pyright: ignore[reportArgumentType]
         except KeyError:
             if default is self.__unspecified:
                 raise
@@ -79,7 +78,7 @@ class ModuleDict(ModuleDictBase):
         )
 
     def tree_paths(self) -> Iterable[tuple[str, ...]]:
-        paths, _ = zip(*_generate_key_paths((), self))
+        paths, _ = zip(*_generate_key_paths((), self), strict=False)
         return (tuple(mk.key for mk in path) for path in paths)
 
     def tree_flatten_with_path(self) -> Iterable[tuple[tuple[str, ...], Module]]:

@@ -1,8 +1,8 @@
+---
 defaults:
   - /dataset/train@train.dataset
   - /dataset/val@val.dataset
   - _self_
-
 _target_: cargpt.datamodules.GenericDataModule
 train:
   _target_: torch.utils.data.DataLoader
@@ -14,7 +14,6 @@ train:
   collate_fn:
     _target_: rbyte.utils.dataloader.collate_identity
     _partial_: true
-
 val:
   _target_: torch.utils.data.DataLoader
   shuffle: false

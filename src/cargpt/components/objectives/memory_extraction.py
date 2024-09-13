@@ -1,12 +1,12 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
+from typing import override
 
 from einops.layers.torch import Rearrange
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.utils._pytree import tree_map
-from typing_extensions import override
 
 from cargpt.components.episode import (
     EpisodeBuilder,

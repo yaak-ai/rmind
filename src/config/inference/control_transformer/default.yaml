@@ -1,3 +1,4 @@
+---
 # @package _global_
 
 defaults:
@@ -6,7 +7,6 @@ defaults:
   - /model: control_transformer/finetuned
   - /dataset/predict@datamodule.predict.dataset
   - _self_
-
 datamodule:
   _target_: cargpt.datamodules.GenericDataModule
   predict:
@@ -20,17 +20,14 @@ datamodule:
     collate_fn:
       _target_: rbyte.utils.dataloader.collate_identity
       _partial_: true
-
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu
   devices: 1
   benchmark: true
   logger: false
-
   callbacks:
     - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
       write_interval: batch
-
     - _target_: cargpt.callbacks.model_summary.ModelSummary
       depth: 5

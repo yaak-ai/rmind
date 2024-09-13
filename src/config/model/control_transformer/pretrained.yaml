@@ -1,3 +1,4 @@
+---
 _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
 filename: model.ckpt
@@ -5,24 +6,19 @@ hparams_updaters:
   # 1. wrap hparams in DictConfig
   - _target_: omegaconf.DictConfig
     _partial_: true
-
-  # 2. delete unnecesary keys
+  # 2. delete unnecessary keys
   - _target_: funcy.del_in
     _partial_: true
     path: ["objective_scheduler"]
-
   - _target_: funcy.del_in
     _partial_: true
     path: ["objectives", "inverse_dynamics", "losses"]
-
   - _target_: funcy.del_in
     _partial_: true
     path: ["objectives", "forward_dynamics", "losses"]
-
   - _target_: funcy.del_in
     _partial_: true
     path: ["objectives", "random_masked_hindsight_control", "losses"]
-
   - _target_: funcy.del_in
     _partial_: true
     path: ["objectives", "memory_extraction", "losses"]

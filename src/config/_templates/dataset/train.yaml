@@ -1,3 +1,4 @@
+---
 #@ drives = [
 #@    'Niro096-HQ/2023-01-11--13-47-36',
 #@    'Niro101-HQ/2022-12-25--09-58-33',
@@ -699,7 +700,7 @@ config:
             reader:
               _target_: rbyte.io.frame.jpeg.JpegFrameReader
               path: "${paths.data_dir}/${.....id}/frames/${..id}.defish.mp4/576x324/{:09d}.jpg"
-          #@ end
+        #@ end
 
         table:
           path: ${paths.data_dir}/${...id}/metadata.log
@@ -714,75 +715,54 @@ config:
                     alias: image_metadata
                   fields:
                     - name: time_stamp
-
                     - name: frame_idx
                       merge:
                         method: asof
                         tolerance: 10ms
-
                     - name: camera_name
                       partition: true
-
                 - message:
                     type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
                     alias: vehicle_state
                   fields:
                     - name: time_stamp
-
                     - name: turn_signal
                       merge:
                         method: asof
                         tolerance: 100ms
-
                 - message:
                     type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
                     alias: vehicle_motion
                   fields:
                     - name: time_stamp
-
                     - name: speed
                       merge:
                         method: interp
-
                     - name: gas_pedal_normalized
                       merge:
                         method: interp
-
                     - name: brake_pedal_normalized
                       merge:
                         method: interp
-
                     - name: steering_angle_normalized
                       merge:
                         method: interp
-
                     - name: gear
                       merge:
                         method: asof
                         tolerance: 100ms
-
               merge:
                 reference:
-                  key:
-                    [
-                      rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata,
-                      cam_front_left,
-                    ]
-
+                  key: [rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata, cam_front_left]
                   column: time_stamp
-
               filter: >
-                `vehicle_motion.gear` == 3
-                and `vehicle_motion.speed` between 0.0 and 130.0
-                and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0
-                and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0
-                and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
+                `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
 
               cache:
                 _target_: rbyte.utils.DataframeDiskCache
                 directory: ${paths.metadata_cache_dir}
                 size_limit: "10 GiB"
-    #@ end
+                #@ end
   samples:
     builder:
       _target_: rbyte.sample.builder.GreedySampleTableBuilder
@@ -791,10 +771,12 @@ config:
         length: ${vars.data.train.clip_length}
         stride: 10
         min_step: 10
-        filter: >
+        filter: >-
           not (
+
                 array_upper(`vehicle_motion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
             and array_upper(`vehicle_motion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
             and array_upper(`vehicle_motion.speed`) >= 25.0
             and array_get(`vehicle_motion.speed`, -1) - array_get(`vehicle_motion.speed`, 0) >= -0.05 * array_mean(`vehicle_motion.speed`)
           )
+

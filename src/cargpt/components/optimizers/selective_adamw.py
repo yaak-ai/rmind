@@ -3,7 +3,7 @@ from typing import Any
 
 from loguru import logger
 from torch.nn import Module
-from torch.optim import AdamW
+from torch.optim.adamw import AdamW
 
 
 class SelectiveAdamW(AdamW):

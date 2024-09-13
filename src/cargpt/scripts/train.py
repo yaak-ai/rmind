@@ -34,7 +34,7 @@ def _train(cfg: DictConfig):
 def train(cfg: DictConfig):
     if (
         run := rank_zero_only(wandb.init)(
-            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # type: ignore
+            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # pyright: ignore[reportArgumentType]
             **cfg.wandb,
         )
     ) is not None:

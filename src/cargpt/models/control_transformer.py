@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Self
+from typing import Any, Self, override
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -16,7 +16,6 @@ from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.utilities.model_helpers import _restricted_classmethod
 from tensordict import TensorDict
 from torch.nn import Module  # noqa: TCH002
-from typing_extensions import override
 
 from cargpt.components.episode import EpisodeBuilder, Modality, PositionEncoding
 from cargpt.components.mask import WandbAttentionMaskLegend
@@ -73,11 +72,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 )
 
             case _:
-                from pytorch_lightning.utilities.migration import pl_legacy_patch  # noqa: I001, PLC0415
+                from pytorch_lightning.utilities.migration.utils import pl_legacy_patch  # noqa: I001, PLC0415
                 from pytorch_lightning.utilities.migration.utils import (  # noqa: PLC0415
                     _pl_migrate_checkpoint,
                 )
-                from pytorch_lightning.utilities.rank_zero import rank_zero_warn  # noqa: PLC0415
+                from lightning_utilities.core.rank_zero import rank_zero_warn  # noqa: PLC0415
 
                 with pl_legacy_patch():
                     checkpoint = pl_load(checkpoint_path, map_location=map_location)

@@ -1,8 +1,7 @@
-from typing import Any
+from typing import Any, override
 
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
-from typing_extensions import override
 
 
 class GenericDataModule(pl.LightningDataModule):

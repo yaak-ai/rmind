@@ -1,11 +1,10 @@
 from collections.abc import Set as AbstractSet
 from enum import StrEnum, auto
-from typing import Any
+from typing import Any, override
 
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.utils._pytree import Context, KeyEntry, MappingKey, register_pytree_node
-from typing_extensions import override
 
 from cargpt.components.episode import EpisodeBuilder
 
@@ -32,7 +31,7 @@ def _not_implemented(*_args, **_kwargs):
 
 
 def objective_flatten(objective: Module) -> tuple[list[Module], tuple[str, ...]]:
-    keys, values = zip(*sorted(objective.named_children()))
+    keys, values = zip(*sorted(objective.named_children()), strict=False)
     return values, keys
 
 
@@ -40,7 +39,7 @@ def objective_flatten_with_keys(
     objective: Module,
 ) -> tuple[list[tuple[KeyEntry, Any]], Context]:
     values, context = objective_flatten(objective)
-    return [(MappingKey(k), v) for k, v in zip(context, values)], context  # pyright: ignore[reportReturnType]
+    return [(MappingKey(k), v) for k, v in zip(context, values, strict=False)], context  # pyright: ignore[reportReturnType]
 
 
 class Objective(Module):

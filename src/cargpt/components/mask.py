@@ -1,10 +1,10 @@
 from enum import Enum, EnumMeta
+from typing import Self
 
 import torch
 from jaxtyping import Float
 from tensordict import tensorclass
 from torch import Tensor
-from typing_extensions import Self
 
 from cargpt.components.episode import Index
 

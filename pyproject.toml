@@ -15,13 +15,12 @@ dependencies = [
   "einops >= 0.8.0",
   "hydra-core >= 1.3.2",
   "loguru >= 0.7.2",
-  "jaxtyping",
-  "more-itertools",
-  "torchinfo",
   "numpy < 2.0.0",
-  "typing-extensions",
   "omegaconf >= 2.3.0",
-  "rbyte",
+  "typing-extensions>=4.12.2",
+  "more-itertools>=10.4.0",
+  "jaxtyping>=0.2.33",
+  "torchinfo>=1.8.0",
 ]
 
 [build-system]
@@ -33,82 +32,59 @@ allow-direct-references = true
 
 [project.optional-dependencies]
 train = [
+  "polars>=1.5.0",
   "rbyte",
-  "torchmetrics",
-  "transformers",
-  "polars",
-  "wandb",
+  "torchmetrics>=1.4.1",
+  "transformers>=4.44.2",
+  "wandb>=0.17.7",
 ]
-
 predict = [
+  "funcy>=2.0",
   "rbyte",
   "rerun-sdk >= 0.16.1",
-  "funcy",
-  "wandb",
+  "wandb>=0.17.7",
 ]
-
 lint = [
-  "pyright",
-  "ruff",
-  "deptry",
+    "deptry>=0.19.1",
+    "pyright>=1.1.377",
+    "ruff>=0.6.2",
 ]
-
 dev = [
-  "ipdb", 
-  "ipython", 
-  "pudb", 
-  "ipython-autoimport", 
-  "pyfzf", 
-  "pyright", 
-  "lovely-tensors", 
-  "pre-commit", 
-  "devtools", 
-  "pytest-pudb", 
+    "devtools>=0.12.2",
+    "ipdb>=0.13.13",
+    "ipython>=8.26.0",
+    "ipython-autoimport>=0.5",
+    "lovely-tensors>=0.1.16",
+    "pre-commit>=3.8.0",
+    "pudb>=2024.1.2",
+    "pyfzf>=0.3.1",
+    "pyright>=1.1.377",
+    "pytest-pudb>=0.7.0",
 ]
-
 notebook = [
-  "jupyterlab",
-  "jupyterlab-vim",
-  "hvplot",
-  "euporie",
-  "torchshow",
-  "matplotlib",
+    "euporie>=2.8.2",
+    "hvplot>=0.10.0",
+    "jupyterlab>=4.2.4",
+    "jupyterlab-vim>=4.1.3",
+    "matplotlib>=3.9.2",
+    "torchshow>=0.5.1",
 ]
-
 test = [
-  "pytest",
   "beartype == 0.19.0rc0",
+  "pytest>=8.3.2",
 ]
 
-[tool.pyright]
-typeCheckingMode = "strict"
-deprecateTypingAliases = true
-enableExperimentalFeatures = true
 
-reportAttributeAccessIssue = "warning"
-reportCallInDefaultInitializer = "error"
-reportImplicitOverride = "warning"
-reportImportCycles = "error"
-reportIncompatibleMethodOverride = "warning"
-reportMissingParameterType = "none"
-reportMissingSuperCall = "warning"
+[tool.basedpyright]
+typeCheckingMode = "standard"
+enableTypeIgnoreComments = true
 reportMissingTypeStubs = "none"
-reportPrivateUsage = "none"
-reportPrivateImportUsage = "none"
-reportPropertyTypeMismatch = "error"
-reportShadowedImports = "error"
-reportUninitializedInstanceVariable = "none"
-reportUnknownArgumentType = "none"
-reportUnknownLambdaType = "none"
-reportUnknownMemberType = "none"
-reportUnknownParameterType = "none"
-reportUnknownVariableType = "none"
-reportUnnecessaryTypeIgnoreComment = "warning"
-reportUnusedCallResult = "error"
-reportUntypedClassDecorator = "none"
+reportAny = "none"
+reportIgnoreCommentWithoutRule = "error"
 
-exclude = ['wandb/**', 'cargpt/models/gato.py', '**.ipynb']
-ignore = ['wandb/**', 'cargpt/models/gato.py', '**.ipynb']
+venvPath = "."
+venv = ".venv"
+include = ["src/"]
 
 [tool.ruff]
 preview = true
@@ -155,13 +131,26 @@ skip-magic-trailing-comma = true
 known-third-party = ["wandb"]
 split-on-trailing-comma = false
 
-[tool.deptry.per_rule_ignores]
-DEP001 = ["rerun"]
-DEP002 = ["torchaudio"]
-DEP004 = ["funcy", "polars", "tqdm", "yaak_datasets", "torchmetrics"]
+# [tool.pytest.ini_options]
+# addopts = "--jaxtyping-packages=foo,bar.baz,beartype.beartype"
 
-[tool.pytest.ini_options]
-addopts = "--jaxtyping-packages=foo,bar.baz,beartype.beartype"
+[tool.uv]
+dev-dependencies = [
+    "uv>=0.4.9",
+]
+
+[tool.deptry.per_rule_ignores]
+DEP001 = ["cargpt", "rerun"]
+DEP003 = ["cargpt"]
+
+[tool.deptry.package_module_name_map]
+hydra-core= "hydra"
+pytorch-lightning = [
+  "pytorch_lightning",
+  "lightning_fabric",
+  "lightning_utilities"
+]
+
 
 [tool.uv.sources]
 rbyte = { url = "https://github.com/yaak-ai/rbyte/releases/latest/download/rbyte-0.1.0-py3-none-any.whl" }

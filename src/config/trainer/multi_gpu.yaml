@@ -1,7 +1,7 @@
+---
 defaults:
   - default
   - _self_
-
 devices: auto
 sync_batchnorm: True
 strategy:

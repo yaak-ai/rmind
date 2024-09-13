@@ -147,3 +147,10 @@ config/dataset/val-cil.yaml
 
 # editor
 .helix/
+
+# lockfile
+uv.lock
+
+# artifacts
+tmp/
+inference_results/

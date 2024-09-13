@@ -1,11 +1,11 @@
 from collections.abc import Callable
+from typing import override
 
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
-from typing_extensions import override
 
 
 class FocalLoss(Module):
@@ -85,8 +85,8 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         self.var_pos_function = var_pos_function
 
     @override
-    def forward(self, input: Tensor, target_values: Float[Tensor, "b"]):
+    def forward(self, input: Tensor, target: Float[Tensor, "b"], var=None):
         mean, log_var = input[..., 0], input[..., 1]
         return super().forward(
-            input=mean, target=target_values, var=self.var_pos_function(log_var)
+            input=mean, target=target, var=self.var_pos_function(log_var)
         )

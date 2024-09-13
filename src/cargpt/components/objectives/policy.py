@@ -1,6 +1,7 @@
 import operator
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
+from typing import override
 
 import torch
 from einops import rearrange
@@ -10,7 +11,6 @@ from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map
-from typing_extensions import override
 
 from cargpt.components.episode import (
     EpisodeBuilder,
@@ -147,7 +147,7 @@ class PolicyObjective(Objective):
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
-                result[result_key] = logits.apply(operator.itemgetter((..., 0))).apply(
+                result[result_key] = logits.apply(operator.itemgetter((..., 0))).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -169,14 +169,14 @@ class PolicyObjective(Objective):
                         ),
                         nested_keys=True,
                     )
-                    .apply(timestep_padder, batch_size=[b, t])
+                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(lambda x: -torch.log(x))
                 )
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
                     logits.apply(operator.itemgetter((..., 0)))
-                    .apply(timestep_padder, batch_size=[b, t])
+                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(
                         lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
                         episode.inputs,

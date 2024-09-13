@@ -1,13 +1,12 @@
+---
 # @package _global_
 
 defaults:
   - experiment: null
   - _self_
-
 wandb:
   entity: yaak
   project: cargpt
   settings:
     start_method: thread
-
 seed: 1337
