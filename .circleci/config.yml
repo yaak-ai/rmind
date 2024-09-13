@@ -12,10 +12,7 @@ jobs:
     steps:
       - checkout
       - run: pip install --upgrade uv --no-cache-dir
-      - python/install-packages:
-          pkg-manager: uv
-          args: ["sync", "--all-extras"]
-          cache-version: v4 # bump to reset
+      - run: uv sync --all-extras --locked
       - run: uv run ruff format --check
       - run: uv run ruff check --no-fix
       # - run: uv run pyright

@@ -123,7 +123,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
                 out = torch.full(size=size, fill_value=torch.nan, device=x.device)
                 out[:, masked_action_timestep_idx] = x
-                return out
+                return out  # noqa: DOC201
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 result[result_key] = (

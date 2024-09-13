@@ -1,9 +1,10 @@
 from itertools import pairwise
 
 import torch
+from torch.testing import assert_close, make_tensor
+
 from cargpt.components.nn import Sequential
 from cargpt.components.norm import Scaler, UniformBinner
-from torch.testing import assert_close, make_tensor
 
 
 def test_scaler():

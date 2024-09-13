@@ -42,10 +42,10 @@ class ModuleDict(ModuleDictBase):
     def get(self, key: str | tuple[str, ...], *, default: Any = __unspecified):
         """recursive access mimicking TensorDict.get"""
         try:
-            return reduce(ModuleDict.__getitem__, always_iterable(key), self)  # pyright: ignore[reportArgumentType]
+            return reduce(ModuleDict.__getitem__, always_iterable(key), self)  # noqa: DOC201 # pyright: ignore[reportArgumentType]
         except KeyError:
             if default is self.__unspecified:
-                raise
+                raise  # noqa: DOC501
 
             return default
 
