@@ -35,7 +35,7 @@ class WandbAttentionMaskLegend(float, Enum, metaclass=AttentionMaskLegend):
     DO_NOT_ATTEND = 0.0
 
 
-@tensorclass  # pyright: ignore[reportArgumentType]
+@tensorclass  # pyright: ignore[reportArgumentType, reportCallIssue]
 class AttentionMask:
     data: Float[Tensor, "seq seq"]
     legend: AttentionMaskLegend

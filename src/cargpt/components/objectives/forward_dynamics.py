@@ -61,7 +61,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
         # all but last timestep
-        index = episode.index[:-1]
+        index = episode.index[:-1]  # pyright: ignore[reportIndexIssue]
 
         observations: TensorDict = index.select(
             *episode.timestep.keys(TokenType.OBSERVATION)
@@ -135,7 +135,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             result[result_key] = (
                 # from relevant tokens
-                episode.index.select(
+                episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
                     (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY),
                 )
@@ -157,7 +157,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
             # all but last timestep
-            index = episode.index[:-1]
+            index = episode.index[:-1]  # pyright: ignore[reportIndexIssue]
 
             observations: TensorDict = (
                 index.select(*episode.timestep.keys(TokenType.OBSERVATION))
@@ -250,12 +250,12 @@ class ForwardDynamicsPredictionObjective(Objective):
             data=torch.full((index.max + 1, index.max + 1), legend.DO_NOT_ATTEND),  # pyright: ignore[reportCallIssue]
             legend=legend,  # pyright: ignore[reportCallIssue]
             batch_size=[],  # pyright: ignore[reportCallIssue]
-            device=index.device,  # pyright: ignore[reportCallIssue]
+            device=index.device,  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue]
         )
 
-        (t,) = index.batch_size
+        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
         for step in range(t):
-            past, current = index[:step], index[step]
+            past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
             current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
             current_observation_summary = current.select((
                 Modality.SPECIAL,

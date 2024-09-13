@@ -28,24 +28,24 @@ template-config:
 
 train *ARGS: template-config
     uv run python src/cargpt/scripts/train.py \
-        --config-path ../../config \
+        --config-path {{ justfile_directory() }}/src/config \
         --config-name train.yaml {{ ARGS }}
 
 # train with runtime type checking and no wandb
 train-debug *ARGS: template-config
     WANDB_MODE=disabled uv run python src/cargpt/scripts/train.py \
-        --config-path ../../config \
+        --config-path {{ justfile_directory() }}/src/config \
         --config-name train.yaml {{ ARGS }}
 
 predict +ARGS:
     uv run python src/cargpt/scripts/predict.py \
-        --config-path ../../config \
+        --config-path {{ justfile_directory() }}/src/config \
         --config-name predict.yaml {{ ARGS }}
 
 # predict with runtime type checking
 predict-debug +ARGS:
     uv run python src/cargpt/scripts/predict.py \
-        --config-path ../../config \
+        --config-path {{ justfile_directory() }}/src/config \
         --config-name predict.yaml {{ ARGS }}
 
 test *ARGS:
@@ -53,7 +53,7 @@ test *ARGS:
 
 dataviz *ARGS: template-config
     uv run python src/cargpt/scripts/dataviz.py \
-        --config-path ../../config \
+        --config-path {{ justfile_directory() }}/src/config \
         --config-name dataviz.yaml {{ ARGS }}
 
 # start rerun server and viewer

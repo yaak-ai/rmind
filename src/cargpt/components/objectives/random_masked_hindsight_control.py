@@ -59,7 +59,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         )
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))
+        index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))  # pyright: ignore[reportAttributeAccessIssue]
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = self.heads.forward(embeddings)
         targets = TensorDict(
@@ -107,7 +107,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         }:
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-            index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))
+            index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))  # pyright: ignore[reportAttributeAccessIssue]
             embeddings = index[masked_action_timestep_idx].parse(embedding)
 
             logits = self.heads.forward(embeddings)
@@ -181,12 +181,12 @@ class RandomMaskedHindsightControlObjective(Objective):
             data=torch.full((index.max + 1, index.max + 1), legend.DO_ATTEND),  # pyright: ignore[reportCallIssue]
             legend=legend,  # pyright: ignore[reportCallIssue]
             batch_size=[],  # pyright: ignore[reportCallIssue]
-            device=index.device,  # pyright: ignore[reportCallIssue]
+            device=index.device,  # pyright: ignore[reportAttributeAccessIssue, reportCallIssue]
         )
 
-        (t,) = index.batch_size
+        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
         for step in range(t):
-            past, current, future = index[:step], index[step], index[step + 1 :]
+            past, current, future = index[:step], index[step], index[step + 1 :]  # pyright: ignore[reportIndexIssue]
             current_actions = current.select(*timestep.keys(TokenType.ACTION))
             current_action_summary = current.select((
                 Modality.SPECIAL,

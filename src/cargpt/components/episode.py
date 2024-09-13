@@ -87,7 +87,7 @@ class Timestep:
         return tuple(token.key for token in self.tokens if token.type is token_type)
 
 
-@tensorclass  # pyright: ignore[reportArgumentType]
+@tensorclass  # pyright: ignore[reportCallIssue, reportArgumentType]
 class Index:
     image: TensorDict
     continuous: TensorDict
@@ -165,7 +165,7 @@ Index.__hash__ = _index_hash  # pyright: ignore[reportAttributeAccessIssue]
 Index.__eq__ = _index_eq  # pyright: ignore[reportAttributeAccessIssue]
 
 
-@tensorclass  # pyright: ignore[reportArgumentType]
+@tensorclass  # pyright: ignore[reportArgumentType, reportCallIssue]
 class Episode:
     inputs: TensorDict
     tokenized: TensorDict
@@ -174,7 +174,7 @@ class Episode:
     index: Index  # pyright: ignore[reportGeneralTypeIssues]
     timestep: Timestep
 
-    def get(self, key: NestedKey | list[str], *args, **kwargs) -> Any:
+    def get(self, key: NestedKey | list[str], *args, **kwargs) -> Any:  # pyright: ignore[reportInvalidTypeForm]
         return tensorclass_get(self, tuple(key), *args, **kwargs)  # pyright: ignore[reportArgumentType]
 
     @property  # TODO: cache?
@@ -257,7 +257,7 @@ class EpisodeBuilder(Module):
             token.key: embedded_nope.get_item_shape(token.key)[2]
             for token in self.timestep.tokens
         }
-        timestep_index = self._build_timestep_index(lengths).to(embedded_nope.device)
+        timestep_index = self._build_timestep_index(lengths).to(embedded_nope.device)  # pyright: ignore[reportAttributeAccessIssue]
         timestep_length = sum(lengths.values())
         _, t = embedded_nope.batch_size
         index = timestep_index.apply(
@@ -327,7 +327,7 @@ class EpisodeBuilder(Module):
         ):
             case Embedding():
                 keys = self.timestep.keys(TokenType.OBSERVATION)
-                position = index.select(*keys).to_tensordict()
+                position = index.select(*keys).to_tensordict()  # pyright: ignore[reportAttributeAccessIssue]
                 position_embedding = position.apply(pe_mod)
                 position_embeddings.select(*keys).apply(  # pyright: ignore[reportArgumentType]
                     add,

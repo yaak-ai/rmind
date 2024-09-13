@@ -58,7 +58,7 @@ class InverseDynamicsPredictionObjective(Objective):
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
         observation_summaries = (
-            episode.index.select(
+            episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
                 k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
             )
             .parse(embedding)
@@ -108,7 +108,7 @@ class InverseDynamicsPredictionObjective(Objective):
 
             result[result_key] = (
                 # from relevant tokens
-                episode.index.select((
+                episode.index.select((  # pyright: ignore[reportAttributeAccessIssue]
                     Modality.SPECIAL,
                     SpecialToken.OBSERVATION_SUMMARY,
                 ))
@@ -131,7 +131,7 @@ class InverseDynamicsPredictionObjective(Objective):
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
             observation_summaries = (
-                episode.index.select(
+                episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
                     k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
                 )
                 .parse(embedding)
@@ -202,11 +202,11 @@ class InverseDynamicsPredictionObjective(Objective):
     ) -> AttentionMask:  # pyright: ignore[reportGeneralTypeIssues]
         mask = ForwardDynamicsPredictionObjective._build_attention_mask(
             index, timestep, legend
-        ).clone()
+        ).clone()  # pyright: ignore[reportAttributeAccessIssue]
 
-        (t,) = index.batch_size
+        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
         for step in range(t):
-            past, current = index[:step], index[step]
+            past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
             current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
             current_observation_summary = current.select((
                 Modality.SPECIAL,

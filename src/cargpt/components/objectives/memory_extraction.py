@@ -61,7 +61,7 @@ class MemoryExtractionObjective(Objective):
         b, t = episode.embedded.batch_size
 
         features = (
-            episode.index[1:]
+            episode.index[1:]  # pyright: ignore[reportIndexIssue]
             .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
             .parse(embedding)
             .get(k)
@@ -113,7 +113,7 @@ class MemoryExtractionObjective(Objective):
             embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
             features = (
-                episode.index[1:]
+                episode.index[1:]  # pyright: ignore[reportIndexIssue]
                 .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
                 .parse(embedding)
                 .get(k)
@@ -150,11 +150,11 @@ class MemoryExtractionObjective(Objective):
     ) -> AttentionMask:  # pyright: ignore[reportGeneralTypeIssues]
         mask = ForwardDynamicsPredictionObjective._build_attention_mask(
             index, timestep, legend
-        ).clone()
+        ).clone()  # pyright: ignore[reportAttributeAccessIssue]
 
-        (t,) = index.batch_size
+        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
         for step in range(t):
-            past, current = index[:step], index[step]
+            past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
             current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
             current_observation_summary = current.select((
                 Modality.SPECIAL,

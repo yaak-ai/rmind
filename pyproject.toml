@@ -85,6 +85,7 @@ reportIgnoreCommentWithoutRule = "error"
 venvPath = "."
 venv = ".venv"
 include = ["src/"]
+exclude = ["wandb/"]
 
 [tool.ruff]
 preview = true

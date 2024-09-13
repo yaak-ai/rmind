@@ -1,4 +1,3 @@
----
 _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
 filename: model.ckpt

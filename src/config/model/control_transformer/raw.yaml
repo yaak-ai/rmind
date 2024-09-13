@@ -1,4 +1,3 @@
----
 _target_: cargpt.models.control_transformer.ControlTransformer
 _recursive_: false
 input_transforms:
