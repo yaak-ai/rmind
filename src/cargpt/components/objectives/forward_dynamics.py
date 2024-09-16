@@ -13,6 +13,7 @@ from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map
 
+from cargpt.components.disparity import DepthDecoder
 from cargpt.components.episode import (
     EpisodeBuilder,
     Index,
@@ -27,6 +28,7 @@ from cargpt.components.mask import (
     XFormersAttentionMaskLegend,
 )
 from cargpt.components.objectives.base import Objective, PredictionResultKey
+from cargpt.components.pose import PoseDecoder
 from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
 
@@ -78,6 +80,21 @@ class ForwardDynamicsPredictionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
+
+        depth_summary: Float[Tensor, "b t 1 d"] = (
+            index.select(k := (Modality.SPECIAL, SpecialToken.DEPTH_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+
+        pose_summary: Float[Tensor, "b t 1 d"] = (
+            index.select(k := (Modality.SPECIAL, SpecialToken.POSE_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+        # --- DepthPose Stream ---
+
+        # --- End of DepthPose Stream ---
 
         features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType]
             # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...

@@ -34,6 +34,8 @@ class SpecialToken(StrEnum):
     OBSERVATION_SUMMARY = auto()
     OBSERVATION_HISTORY = auto()
     ACTION_SUMMARY = auto()
+    DEPTH_SUMMARY = auto()
+    POSE_SUMMARY = auto()
 
 
 class PositionEncoding(StrEnum):
