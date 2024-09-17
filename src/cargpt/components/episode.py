@@ -283,7 +283,7 @@ class EpisodeBuilder(Module):
             zip(
                 lengths.keys(),
                 pairwise(accumulate(lengths.values(), initial=0)),
-                strict=False,
+                strict=True,
             )
         )
         return Index.from_dict(  # pyright: ignore[reportAttributeAccessIssue]

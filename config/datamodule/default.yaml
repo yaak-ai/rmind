@@ -1,5 +1,5 @@
 defaults:
-  - /dataset/val@train.dataset
+  - /dataset/train@train.dataset
   - /dataset/val@val.dataset
   - _self_
 _target_: cargpt.datamodules.GenericDataModule

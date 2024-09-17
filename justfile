@@ -20,32 +20,32 @@ pre-commit:
 
 # generate config files from templates with ytt
 template-config:
-    ytt --file src/config/_templates \
-        --output-files src/config/ \
+    ytt --file {{ justfile_directory() }}/config/_templates \
+        --output-files {{ justfile_directory() }}/config/ \
         --output yaml \
         --ignore-unknown-comments \
         --strict
 
 train *ARGS: template-config
     uv run python src/cargpt/scripts/train.py \
-        --config-path {{ justfile_directory() }}/src/config \
+        --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml {{ ARGS }}
 
 # train with runtime type checking and no wandb
 train-debug *ARGS: template-config
     WANDB_MODE=disabled uv run python src/cargpt/scripts/train.py \
-        --config-path {{ justfile_directory() }}/src/config \
+        --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml {{ ARGS }}
 
 predict +ARGS:
     uv run python src/cargpt/scripts/predict.py \
-        --config-path {{ justfile_directory() }}/src/config \
+        --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 
 # predict with runtime type checking
 predict-debug +ARGS:
     uv run python src/cargpt/scripts/predict.py \
-        --config-path {{ justfile_directory() }}/src/config \
+        --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 
 test *ARGS:
@@ -53,7 +53,7 @@ test *ARGS:
 
 dataviz *ARGS: template-config
     uv run python src/cargpt/scripts/dataviz.py \
-        --config-path {{ justfile_directory() }}/src/config \
+        --config-path {{ justfile_directory() }}/config \
         --config-name dataviz.yaml {{ ARGS }}
 
 # start rerun server and viewer

@@ -9,7 +9,7 @@ class ObjectiveScheduler:
     def __init__(self, *, schedule: Mapping[str, float], sample_size: int):
         super().__init__()
 
-        objectives, probabilities = zip(*schedule.items(), strict=False)
+        objectives, probabilities = zip(*schedule.items(), strict=True)
         objectives = tuple(map(ObjectiveName, objectives))
 
         if sample_size not in (sample_size_range := range(1, len(objectives))):

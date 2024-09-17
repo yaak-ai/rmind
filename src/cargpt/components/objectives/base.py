@@ -31,7 +31,7 @@ def _not_implemented(*_args, **_kwargs):
 
 
 def objective_flatten(objective: Module) -> tuple[list[Module], tuple[str, ...]]:
-    keys, values = zip(*sorted(objective.named_children()), strict=False)
+    keys, values = zip(*sorted(objective.named_children()), strict=True)
     return values, keys
 
 
@@ -39,7 +39,7 @@ def objective_flatten_with_keys(
     objective: Module,
 ) -> tuple[list[tuple[KeyEntry, Any]], Context]:
     values, context = objective_flatten(objective)
-    return [(MappingKey(k), v) for k, v in zip(context, values, strict=False)], context  # pyright: ignore[reportReturnType]
+    return [(MappingKey(k), v) for k, v in zip(context, values, strict=True)], context  # pyright: ignore[reportReturnType]
 
 
 class Objective(Module):

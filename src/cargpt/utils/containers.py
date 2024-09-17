@@ -78,7 +78,7 @@ class ModuleDict(ModuleDictBase):
         )
 
     def tree_paths(self) -> Iterable[tuple[str, ...]]:
-        paths, _ = zip(*_generate_key_paths((), self), strict=False)
+        paths, _ = zip(*_generate_key_paths((), self), strict=True)
         return (tuple(mk.key for mk in path) for path in paths)
 
     def tree_flatten_with_path(self) -> Iterable[tuple[tuple[str, ...], Module]]:
