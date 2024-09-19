@@ -1,9 +1,13 @@
 from collections import OrderedDict
+from math import prod
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn
+from jaxtyping import Float
+from tensordict import TensorDict
+from einops.layers.torch import Rearrange
+from torch import Tensor, nn
 from typing_extensions import override
 
 
@@ -69,6 +73,8 @@ class DepthDecoder(nn.Module):
         self.use_skips = use_skips
         self.upsample_mode = "nearest"
         self.scales = scales
+        if self.scales != [0]:
+            raise NotImplementedError("Only scales=[0] is implemented now")
 
         self.num_ch_enc = num_ch_enc
         self.num_ch_dec = np.array([16, 32, 64, 128, 256])
@@ -79,17 +85,17 @@ class DepthDecoder(nn.Module):
             # upconv_0
             num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i + 1]
             num_ch_out = self.num_ch_dec[i]
-            self.convs[("upconv", i, 0)] = ConvBlock(num_ch_in, num_ch_out)
+            self.convs["upconv", i, 0] = ConvBlock(num_ch_in, num_ch_out)
 
             # upconv_1
             num_ch_in = self.num_ch_dec[i]
             if self.use_skips and i > 0:
                 num_ch_in += self.num_ch_enc[i - 1]
             num_ch_out = self.num_ch_dec[i]
-            self.convs[("upconv", i, 1)] = ConvBlock(num_ch_in, num_ch_out)
+            self.convs["upconv", i, 1] = ConvBlock(num_ch_in, num_ch_out)
 
         for s in self.scales:
-            self.convs[("dispconv", s)] = Conv3x3(
+            self.convs["dispconv", s] = Conv3x3(
                 self.num_ch_dec[s], self.num_output_channels
             )
 
@@ -104,26 +110,25 @@ class DepthDecoder(nn.Module):
                 _ = nn.init.constant_(m.weight, 1)
                 _ = nn.init.constant_(m.bias, 0)
 
-    def forward(self, input_features):
-        outputs = []
+    def forward(self, input_features: TensorDict):
+        bs = input_features.batch_size
 
-        # decoder
-        x = input_features[-1]
+        input_features = input_features.apply(
+            Rearrange("b t ... -> (b t) ..."), batch_size=[prod(bs)]
+        )
+
+        x = input_features["4"]
 
         for i in range(4, -1, -1):
-            x = self.convs[("upconv", i, 0)](x)
+            x = self.convs["upconv", i, 0](x)
             x = [upsample(x)]
 
             if self.use_skips and i > 0:
-                x += [input_features[i - 1]]
+                x += [input_features[str(i - 1)]]
 
             x = torch.cat(x, 1)
-            x = self.convs[("upconv", i, 1)](x)
+            x = self.convs["upconv", i, 1](x)
 
-            if i in self.scales:
-                outputs.append(
-                    self.alpha * self.sigmoid(self.convs[("dispconv", i)](x))
-                    + self.beta
-                )
-
-        return list(reversed(outputs))
+        # NOTE: hardfix scales = 0 and return only last one
+        res = self.alpha * self.sigmoid(self.convs["dispconv", i](x)) + self.beta
+        return Rearrange("(b t) ... -> b t ...", b=bs[0])(res)

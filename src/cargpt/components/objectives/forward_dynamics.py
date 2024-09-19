@@ -41,12 +41,16 @@ class ForwardDynamicsPredictionObjective(Objective):
     def __init__(
         self,
         *,
+        depth_decoder: DepthDecoder,
+        pose_decoder: PoseDecoder,
         heads: ModuleDict,
         losses: ModuleDict | None = None,
         targets: DictConfig | None = None,
     ):
         super().__init__()
 
+        self.depth_decoder = depth_decoder
+        self.pose_decoder = pose_decoder
         self.heads = heads
         self.losses = losses
         self.targets = OmegaConf.to_container(targets)
@@ -92,7 +96,23 @@ class ForwardDynamicsPredictionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
+
         # --- DepthPose Stream ---
+
+        obs_for_depth = observations[Modality.IMAGE].apply(
+            Rearrange("... (h w) c -> ... c w h", h=10)
+        )
+        auxilary_features = episode.auxilary_features[Modality.IMAGE][:, :-1]
+
+        for k in obs_for_depth.keys():
+            last_layer_key = str(len(auxilary_features[k].keys()))
+            auxilary_features[(k, last_layer_key)] = obs_for_depth[k]
+
+        out_disparity = auxilary_features.apply(
+            self.depth_decoder, call_on_nested=True
+        )  # 576x320
+
+        breakpoint()
 
         # --- End of DepthPose Stream ---
 

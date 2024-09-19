@@ -21,23 +21,24 @@ class ResnetBackbone(nn.Module):
         self,
         x: Float[Tensor, "*b c1 h1 w1"],
         # ) -> list[Float[Tensor, "*b c2 h2 w2"]]
-    ) -> list[TensorDict]:
+    ) -> TensorDict:
         *b, c, h, w = x.shape
         x = x.view(prod(b), c, h, w)
-        features: TensorDict = TensorDict({})
+
+        out_t = TensorDict({})
 
         x = self.resnet.conv1(x)
         x = self.resnet.bn1(x)
         x = self.resnet.relu(x)
-        features["layer0"] = x
+        out_t["0"] = x
         x = self.resnet.maxpool(x)
         x = self.resnet.layer1(x)
-        features["layer1"] = x
+        out_t["1"] = x
         x = self.resnet.layer2(x)
-        features["layer2"] = x
+        out_t["2"] = x
         x = self.resnet.layer3(x)
-        features["layer3"] = x
+        out_t["3"] = x
         x = self.resnet.layer4(x)
-        features["layer4"] = x
+        out_t["4"] = x
 
-        return [feature.view(*b, *feature.shape[-3:]) for feature in features]
+        return out_t.apply(lambda x: x.view(*b, *x.shape[-3:]), batch_size=b)
