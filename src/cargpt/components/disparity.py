@@ -74,7 +74,7 @@ class DepthDecoder(nn.Module):
         self.upsample_mode = "nearest"
         self.scales = scales
         if self.scales != [0]:
-            raise NotImplementedError("Only scales=[0] is implemented now")
+            raise NotImplementedError("Only `scales=[0]` is implemented now")
 
         self.num_ch_enc = num_ch_enc
         self.num_ch_dec = np.array([16, 32, 64, 128, 256])
@@ -110,7 +110,7 @@ class DepthDecoder(nn.Module):
                 _ = nn.init.constant_(m.weight, 1)
                 _ = nn.init.constant_(m.bias, 0)
 
-    def forward(self, input_features: TensorDict):
+    def forward(self, input_features: TensorDict) -> Tensor:
         bs = input_features.batch_size
 
         input_features = input_features.apply(
@@ -130,5 +130,5 @@ class DepthDecoder(nn.Module):
             x = self.convs["upconv", i, 1](x)
 
         # NOTE: hardfix scales = 0 and return only last one
-        res = self.alpha * self.sigmoid(self.convs["dispconv", i](x)) + self.beta
-        return Rearrange("(b t) ... -> b t ...", b=bs[0])(res)
+        res = self.alpha * self.sigmoid(self.convs["dispconv", 0](x)) + self.beta
+        return Rearrange("(b t) 1 ... -> b t ...", b=bs[0])(res)

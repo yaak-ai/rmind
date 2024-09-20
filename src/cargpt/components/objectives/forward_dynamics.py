@@ -28,7 +28,7 @@ from cargpt.components.mask import (
     XFormersAttentionMaskLegend,
 )
 from cargpt.components.objectives.base import Objective, PredictionResultKey
-from cargpt.components.pose import PoseDecoder
+from cargpt.components.pose import PoseDecoder, Pose
 from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
 
@@ -80,7 +80,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         action_summary: Float[Tensor, "b t 1 d"] = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
+            episode.index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
             .parse(embedding)
             .get(k)
         )
@@ -92,27 +92,49 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         pose_summary: Float[Tensor, "b t 1 d"] = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.POSE_SUMMARY))
+            episode.index.select(k := (Modality.SPECIAL, SpecialToken.POSE_SUMMARY))
             .parse(embedding)
             .get(k)
+        )
+        image_features = (
+            episode.index.select(k := Modality.IMAGE).parse(embedding).get(k)
         )
 
         # --- DepthPose Stream ---
 
-        obs_for_depth = observations[Modality.IMAGE].apply(
-            Rearrange("... (h w) c -> ... c w h", h=10)
+        obs_for_depth = (
+            image_features[:, :-1]
+            .apply(lambda obs: obs + depth_summary.broadcast_to(obs.shape))
+            .apply(Rearrange("... (h w) c -> ... c w h", h=10))
         )
-        auxilary_features = episode.auxilary_features[Modality.IMAGE][:, :-1]
 
-        for k in obs_for_depth.keys():
-            last_layer_key = str(len(auxilary_features[k].keys()))
-            auxilary_features[(k, last_layer_key)] = obs_for_depth[k]
+        last_layer_n = "4"  # TODO: extract
 
-        out_disparity = auxilary_features.apply(
+        features_depth = episode.auxilary_features[Modality.IMAGE][:, :-1].update(
+            {(k, last_layer_n): obs_for_depth[k] for k in obs_for_depth.keys()},
+            inplace=False,
+        )
+
+        out_disparity: Float[Tensor, "b t w h"] = features_depth.apply(
             self.depth_decoder, call_on_nested=True
         )  # 576x320
 
-        breakpoint()
+        bs = [32, 6]
+
+        obs_for_pose = (
+            image_features.apply(
+                lambda obs: obs
+                + pose_summary.broadcast_to(obs.shape)
+                + action_summary.broadcast_to(obs.shape)
+            )
+            .apply(
+                lambda x: torch.cat([x[:, :-1], x[:, 1:]], dim=-1),
+                batch_size=[bs[0], bs[1] - 1],
+            )
+            .apply(Rearrange("... (h w) c -> ... c w h", h=10))
+        )
+
+        out_pose: Pose = obs_for_pose.apply(self.pose_decoder)
 
         # --- End of DepthPose Stream ---
 

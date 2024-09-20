@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from math import prod
 
 import torch
 from jaxtyping import Float
@@ -18,9 +19,9 @@ class PoseDecoder(nn.Module):
         out_channels = self._out_mask.count_nonzero().item()
 
         self.net = nn.Sequential(
-            nn.Conv2d(in_channels, 256, 1),
+            nn.Conv2d(in_channels, 512, 1),
             nn.ReLU(),
-            nn.Conv2d(256, 256, 3, 1, 1),
+            nn.Conv2d(512, 256, 3, 1, 1),
             nn.ReLU(),
             nn.Conv2d(256, 256, 3, 1, 1),
             nn.ReLU(),
@@ -31,11 +32,13 @@ class PoseDecoder(nn.Module):
             _ = self.requires_grad_(False)
 
     @override
-    def forward(self, x) -> Pose:
+    def forward(self, x: Tensor) -> Pose:
+        *b, c, w, h = x.shape
+        x = x.view(prod(b), c, w, h)
         x = self.net.forward(x)
         x = x.mean(3).mean(2)
 
         out = torch.full((x.shape[0], 6), torch.nan).to(x.device)
         out[:, self._out_mask] = x
 
-        return out
+        return out.view(*b, 6)

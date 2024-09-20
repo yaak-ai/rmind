@@ -239,7 +239,11 @@ objectives:
 
     pose_decoder:
       _target_: cargpt.components.pose.PoseDecoder
-      in_channels: 512
+      in_channels:
+        _target_: operator.mul
+        _args_:
+          - 2
+          - ${vars.embedding_dim}
       out_mask: [1, 1, 1, 1, 1, 1]
       freeze: False
 
