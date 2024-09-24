@@ -21,6 +21,7 @@ dependencies = [
   "more-itertools>=10.4.0",
   "jaxtyping>=0.2.33",
   "torchinfo>=1.8.0",
+  "kornia==0.6.7",
 ]
 
 [build-system]

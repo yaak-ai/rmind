@@ -9,12 +9,13 @@ from jaxtyping import Float
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Module
+from torch.nn import Embedding, Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map
 
 from cargpt.components.disparity import DepthDecoder
 from cargpt.components.episode import (
+    Episode,
     EpisodeBuilder,
     Index,
     Modality,
@@ -85,59 +86,6 @@ class ForwardDynamicsPredictionObjective(Objective):
             .get(k)
         )
 
-        depth_summary: Float[Tensor, "b t 1 d"] = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.DEPTH_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
-
-        pose_summary: Float[Tensor, "b t 1 d"] = (
-            episode.index.select(k := (Modality.SPECIAL, SpecialToken.POSE_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
-        image_features = (
-            episode.index.select(k := Modality.IMAGE).parse(embedding).get(k)
-        )
-
-        # --- DepthPose Stream ---
-
-        obs_for_depth = (
-            image_features[:, :-1]
-            .apply(lambda obs: obs + depth_summary.broadcast_to(obs.shape))
-            .apply(Rearrange("... (h w) c -> ... c w h", h=10))
-        )
-
-        last_layer_n = "4"  # TODO: extract
-
-        features_depth = episode.auxilary_features[Modality.IMAGE][:, :-1].update(
-            {(k, last_layer_n): obs_for_depth[k] for k in obs_for_depth.keys()},
-            inplace=False,
-        )
-
-        out_disparity: Float[Tensor, "b t w h"] = features_depth.apply(
-            self.depth_decoder, call_on_nested=True
-        )  # 576x320
-
-        bs = [32, 6]
-
-        obs_for_pose = (
-            image_features.apply(
-                lambda obs: obs
-                + pose_summary.broadcast_to(obs.shape)
-                + action_summary.broadcast_to(obs.shape)
-            )
-            .apply(
-                lambda x: torch.cat([x[:, :-1], x[:, 1:]], dim=-1),
-                batch_size=[bs[0], bs[1] - 1],
-            )
-            .apply(Rearrange("... (h w) c -> ... c w h", h=10))
-        )
-
-        out_pose: Pose = obs_for_pose.apply(self.pose_decoder)
-
-        # --- End of DepthPose Stream ---
-
         features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType]
             # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
             lambda obs: pack(
@@ -162,7 +110,83 @@ class ForwardDynamicsPredictionObjective(Objective):
             targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
         )
 
+        loss["depth"] = self.depth_step(episode, embedding, index, action_summary)
         return TensorDict({"loss": loss})
+
+    def depth_step(self, episode: Episode, embedding: Tensor, index, action_summary):
+        # constants
+        # TODO: extract it
+        last_layer_n = "4"
+        bs = [32, 6]
+
+        depth_summary: Float[Tensor, "b t 1 d"] = (
+            index.select(k := (Modality.SPECIAL, SpecialToken.DEPTH_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+
+        pose_summary: Float[Tensor, "b t 1 d"] = (
+            episode.index.select(k := (Modality.SPECIAL, SpecialToken.POSE_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+        image_features = (
+            episode.index.select(k := Modality.IMAGE).parse(embedding).get(k)
+        )
+        losses = TensorDict({})
+
+        # disparity
+        obs_for_disp = image_features.apply(
+            lambda obs: obs + depth_summary.broadcast_to(obs.shape)
+        ).apply(Rearrange("... (h w) c -> ... c w h", h=10))
+
+        features_disp = episode.auxilary_features[Modality.IMAGE][:, :-1].update(
+            {(k, last_layer_n): obs_for_disp[k] for k in obs_for_disp.keys()},
+            inplace=False,
+        )
+
+        out_disparity: Float[Tensor, "b t w h"] = features_disp.apply(
+            self.disp_decoder, call_on_nested=True
+        )  # [b, t, 576, 320]
+
+        # pose
+        obs_for_pose = (
+            image_features.apply(
+                lambda obs: obs
+                + pose_summary.broadcast_to(obs.shape)
+                + action_summary.broadcast_to(obs.shape)
+            )
+            .apply(
+                lambda x: torch.cat([x[:, :-1], x[:, 1:]], dim=-1),
+                batch_size=[bs[0], bs[1] - 1],
+            )
+            .apply(Rearrange("... (h w) c -> ... c w h", h=10))
+        )
+
+        out_pose: Pose = obs_for_pose.apply(self.pose_decoder)
+        breakpoint()
+        return None
+
+        # (
+        #     losses["photometric"],
+        #     losses["geometric"],
+        #     tgt_warped,
+        #     projected_disparity,
+        #     computed_disparity,
+        #     valid_mask,
+        #     self_mask,
+        #     _,
+        # ) = self.losses["depth"]["photometric"](
+        #     tgt_img=episode.inputs['image'][1],
+        #     ref_imgs=ref_imgs,
+        #     tgt_disparity=tgt_disparity,
+        #     ref_disparities=ref_disparities,
+        #     poses=poses,
+        # )
+
+        # return  sum(
+        #     self.hparams.loss.weights.get(k, 0) * v for k, v in losses.items()
+        # )
 
     @override
     def predict(
