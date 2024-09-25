@@ -238,7 +238,7 @@ class CameraParameters(ABC):
 
             if model_name == "CameraModelOpenCVFisheye":
                 params = TensorDict(intrinsics, batch_size=[])
-                return CameraParametersOpenCVFisheye.(params)
+                return CameraParametersOpenCVFisheye.from_tensordict(params)
 
             if model_name == "CameraModelEnhancedUnified":
                 params = TensorDict(

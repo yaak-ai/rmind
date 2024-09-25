@@ -154,4 +154,4 @@ pytorch-lightning = [
 ]
 
 [tool.uv.sources]
-rbyte = { url = "https://github.com/yaak-ai/rbyte/releases/latest/download/rbyte-0.1.0-py3-none-any.whl" }
+rbyte = { url = "https://github.com/yaak-ai/rbyte/releases/download/v0.1.0/rbyte-0.1.0-py3-none-any.whl" }

@@ -307,23 +307,12 @@ objectives:
       discrete:
         turn_signal:
           _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
-
       depth:
-        photometric:
+        cam_front_left:
           _target_: cargpt.components.loss.PhotoGeometryLoss
-          camera_calibration_path: /nas/drives/yaak/yaak_dataset/camera_calibration/beta/cam-110-deg/calib-eucm.json
           with_ssim: true
           with_mask: true
           with_auto_mask: true
-
-        # pose:
-        # _target_: deephouse.losses.pose.TranslationNormPoseLoss
-
-        weights:
-          photometric: 1.0
-          geometric: 0.5
-          # smoothness: 0.05
-          # pose: 0.05
 
       # random_masked_hindsight_control:
       #   _target_: cargpt.components.objectives.RandomMaskedHindsightControlObjective

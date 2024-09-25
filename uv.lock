@@ -363,8 +363,8 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3.2" },
     { name = "pytest-pudb", marker = "extra == 'dev'", specifier = ">=0.7.0" },
     { name = "pytorch-lightning", specifier = ">=2.3.3" },
-    { name = "rbyte", marker = "extra == 'predict'", url = "https://github.com/yaak-ai/rbyte/releases/latest/download/rbyte-0.1.0-py3-none-any.whl" },
-    { name = "rbyte", marker = "extra == 'train'", url = "https://github.com/yaak-ai/rbyte/releases/latest/download/rbyte-0.1.0-py3-none-any.whl" },
+    { name = "rbyte", marker = "extra == 'predict'", url = "https://github.com/yaak-ai/rbyte/releases/download/v0.1.0/rbyte-0.1.0-py3-none-any.whl" },
+    { name = "rbyte", marker = "extra == 'train'", url = "https://github.com/yaak-ai/rbyte/releases/download/v0.1.0/rbyte-0.1.0-py3-none-any.whl" },
     { name = "rerun-sdk", marker = "extra == 'predict'", specifier = ">=0.16.1" },
     { name = "ruff", marker = "extra == 'lint'", specifier = ">=0.6.2" },
     { name = "tensordict", git = "https://github.com/pytorch/tensordict.git" },
@@ -2466,7 +2466,7 @@ wheels = [
 [[package]]
 name = "rbyte"
 version = "0.1.0"
-source = { url = "https://github.com/yaak-ai/rbyte/releases/latest/download/rbyte-0.1.0-py3-none-any.whl" }
+source = { url = "https://github.com/yaak-ai/rbyte/releases/download/v0.1.0/rbyte-0.1.0-py3-none-any.whl" }
 dependencies = [
     { name = "diskcache" },
     { name = "hydra-core" },
@@ -2482,7 +2482,7 @@ dependencies = [
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://github.com/yaak-ai/rbyte/releases/latest/download/rbyte-0.1.0-py3-none-any.whl", hash = "sha256:ae21efad948d8b9e1be1f5f8da0fc89acd16acc7a29d503e2524fb62cb3dab37" },
+    { url = "https://github.com/yaak-ai/rbyte/releases/download/v0.1.0/rbyte-0.1.0-py3-none-any.whl", hash = "sha256:ae21efad948d8b9e1be1f5f8da0fc89acd16acc7a29d503e2524fb62cb3dab37" },
 ]
 
 [package.metadata]

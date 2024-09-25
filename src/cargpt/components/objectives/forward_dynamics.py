@@ -1,5 +1,6 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
+from math import prod
 from typing import TYPE_CHECKING, override
 
 import torch
@@ -29,7 +30,8 @@ from cargpt.components.mask import (
     XFormersAttentionMaskLegend,
 )
 from cargpt.components.objectives.base import Objective, PredictionResultKey
-from cargpt.components.pose import PoseDecoder, Pose
+from cargpt.components.pose import Pose, PoseDecoder
+from cargpt.utils.camera import Camera, CameraParameters
 from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
 
@@ -85,6 +87,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
+        loss = {}  # TODO: remove and move depth down
 
         features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType]
             # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
@@ -92,7 +95,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 [
                     obs,
                     observation_summary.broadcast_to(obs.shape),
-                    action_summary.broadcast_to(obs.shape),
+                    action_summary[:, :-1].broadcast_to(obs.shape),
                 ],
                 "b t p *",
             )[0]
@@ -109,18 +112,20 @@ class ForwardDynamicsPredictionObjective(Objective):
             logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
             targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
         )
+        loss["depth"] = self.depth_step(episode, embedding, action_summary)
 
-        loss["depth"] = self.depth_step(episode, embedding, index, action_summary)
         return TensorDict({"loss": loss})
 
-    def depth_step(self, episode: Episode, embedding: Tensor, index, action_summary):
+    def depth_step(self, episode: Episode, embedding: Tensor, action_summary):
         # constants
         # TODO: extract it
         last_layer_n = "4"
-        bs = [32, 6]
+        bs = episode.inputs.batch_size
+        w, h = 18, 10
+        camera_calibration_path = "/nas/drives/yaak/yaak_dataset/camera_calibration/beta/cam-110-deg/calib-eucm.json"
 
         depth_summary: Float[Tensor, "b t 1 d"] = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.DEPTH_SUMMARY))
+            episode.index.select(k := (Modality.SPECIAL, SpecialToken.DEPTH_SUMMARY))
             .parse(embedding)
             .get(k)
         )
@@ -138,16 +143,16 @@ class ForwardDynamicsPredictionObjective(Objective):
         # disparity
         obs_for_disp = image_features.apply(
             lambda obs: obs + depth_summary.broadcast_to(obs.shape)
-        ).apply(Rearrange("... (h w) c -> ... c w h", h=10))
+        ).apply(Rearrange("... (h w) c -> ... c w h", h=h))
 
-        features_disp = episode.auxilary_features[Modality.IMAGE][:, :-1].update(
+        features_disparity = episode.auxilary_features[Modality.IMAGE].update(
             {(k, last_layer_n): obs_for_disp[k] for k in obs_for_disp.keys()},
             inplace=False,
         )
 
-        out_disparity: Float[Tensor, "b t w h"] = features_disp.apply(
-            self.disp_decoder, call_on_nested=True
-        )  # [b, t, 576, 320]
+        out_disparity = features_disparity.apply(
+            self.depth_decoder, call_on_nested=True
+        ).apply(Rearrange(" ... w h -> ... h w"))
 
         # pose
         obs_for_pose = (
@@ -164,29 +169,30 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         out_pose: Pose = obs_for_pose.apply(self.pose_decoder)
-        breakpoint()
-        return None
+        camera_params = CameraParameters.from_file(camera_calibration_path).expand(
+            bs[0] * (bs[1] - 1)
+        )
+        camera_model = Camera.from_params(camera_params)
+        camera_model = TensorDict({"cam_front_left": camera_model}, batch_size=[])
 
-        # (
-        #     losses["photometric"],
-        #     losses["geometric"],
-        #     tgt_warped,
-        #     projected_disparity,
-        #     computed_disparity,
-        #     valid_mask,
-        #     self_mask,
-        #     _,
-        # ) = self.losses["depth"]["photometric"](
-        #     tgt_img=episode.inputs['image'][1],
-        #     ref_imgs=ref_imgs,
-        #     tgt_disparity=tgt_disparity,
-        #     ref_disparities=ref_disparities,
-        #     poses=poses,
-        # )
+        # ref == t
+        # tgt == t + 1
 
-        # return  sum(
-        #     self.hparams.loss.weights.get(k, 0) * v for k, v in losses.items()
-        # )
+        rearrange = Rearrange("b t ... -> (b t)...")
+        return self.losses[
+            "depth"
+        ](
+            episode.inputs["image"][:, 1:].apply(
+                rearrange, batch_size=[]
+            ),  # t+1, to calculate loss with
+            episode.inputs["image"][:, :-1].apply(
+                rearrange, batch_size=[]
+            ),  # t, to warp from
+            out_disparity[:, 1:].apply(rearrange, batch_size=[]),
+            out_disparity[:, :-1].apply(rearrange, batch_size=[]),
+            out_pose.apply(rearrange, batch_size=[]),
+            camera_model,
+        )
 
     @override
     def predict(

@@ -1,4 +1,3 @@
-import os
 from collections.abc import Callable
 from typing import override
 
@@ -9,7 +8,6 @@ from jaxtyping import Float, Int
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
-from cargpt.utils.camera import Camera
 from cargpt.utils.inverse_warp import inverse_warp
 
 
@@ -103,24 +101,19 @@ class PhotoGeometryLoss(Module):
         with_ssim: bool,
         with_mask: bool,
         with_auto_mask: bool,
-        camera_calibration_path: str,
+        weight_photometric: float = 1.0,
+        weight_geometric: float = 0.5,
     ):
-        self.ssim_loss = SSIM().cuda() if with_ssim else None
+        super().__init__()
+        self.ssim_loss = SSIM() if with_ssim else None
         self.with_auto_mask = with_auto_mask
         self.with_mask = with_mask
-        self.camera_model = Camera.from_params(camera_calibration_path)
+        self.weight_photometric = weight_photometric
+        self.weight_geometric = weight_photometric
 
     def forward(
-        self, tgt_img, ref_imgs, tgt_disparity, ref_disparities, camera_model, poses
+        self, tgt_img, ref_img, tgt_disparity, ref_disparity, pose, camera_model
     ):
-        ref_imgs = torch.cat([ref_img.unsqueeze(1) for ref_img in ref_imgs], axis=1)
-        poses = torch.cat([pose.unsqueeze(1) for pose in poses], axis=1)
-        ref_disparities = torch.cat(
-            [ref_disparity.unsqueeze(1) for ref_disparity in ref_disparities], axis=1
-        )
-
-        _B, V, _C, _H, _W = ref_disparities.shape
-
         tgt_warped_list = []
         diff_identity_list = []
         diff_img_list = []
@@ -130,34 +123,24 @@ class PhotoGeometryLoss(Module):
         computed_disp_list = []
         self_mask_list = []
 
-        # currently only one view is possible, but I will leave it
-        for view in range(V):
-            (tgt_warped_from_ref, projected_disp, computed_disp) = inverse_warp(
-                ref_imgs[:, view],
-                tgt_disparity,
-                ref_disparities[:, view],
-                poses[:, view],
-                camera_model,
-            )
+        (tgt_warped_from_ref, projected_disp, computed_disp) = inverse_warp(
+            ref_img, tgt_disparity, ref_disparity, pose, camera_model.data
+        )
 
-            (diff_img, diff_identity, diff_disp, valid_mask, self_mask) = (
-                self.projection_and_disparity_diff(
-                    tgt_img,
-                    ref_imgs[:, view],
-                    tgt_warped_from_ref,
-                    projected_disp,
-                    computed_disp,
-                )
+        (diff_img, diff_identity, diff_disp, valid_mask, self_mask) = (
+            self.projection_and_disparity_diff(
+                tgt_img, ref_img, tgt_warped_from_ref, projected_disp, computed_disp
             )
+        )
 
-            tgt_warped_list.append(tgt_warped_from_ref)
-            diff_img_list.append(diff_img)
-            diff_identity_list.append(diff_identity)
-            valid_mask_list.append(valid_mask)
-            diff_disp_list.append(diff_disp)
-            self_mask_list.append(self_mask)
-            projected_disp_list.append(projected_disp)
-            computed_disp_list.append(computed_disp)
+        tgt_warped_list.append(tgt_warped_from_ref)
+        diff_img_list.append(diff_img)
+        diff_identity_list.append(diff_identity)
+        valid_mask_list.append(valid_mask)
+        diff_disp_list.append(diff_disp)
+        self_mask_list.append(self_mask)
+        projected_disp_list.append(projected_disp)
+        computed_disp_list.append(computed_disp)
 
         inputs = [
             tgt_warped_list,
@@ -214,30 +197,33 @@ class PhotoGeometryLoss(Module):
             diff_img = diff_img * self_mask
 
         # Photo loss goes of pixels which have minimum reprojection loss
-        photometric_loss = self.mean_on_mask_d(diff_img, valid_mask_min, device=device)
+        photometric_loss = self.mean_on_mask_d(diff_img, valid_mask_min)
         # geometric loss only over pixels which
-        geometric_loss = self.mean_on_mask_d(diff_disp, valid_mask_min, device=device)
-
+        geometric_loss = self.mean_on_mask_d(diff_disp, valid_mask_min)
         return (
-            photometric_loss,
-            geometric_loss,
-            tgt_warped,
-            projected_disp,
-            computed_disp,
-            valid_mask,
-            self_mask,
-            valid_mask_min,
+            photometric_loss * self.weight_photometric
+            + geometric_loss * self.weight_geometric
         )
 
+        # return (
+        #     loss,
+        #     tgt_warped,
+        #     projected_disp,
+        #     computed_disp,
+        #     valid_mask,
+        #     self_mask,
+        #     valid_mask_min,
+        # )
+
     @staticmethod
-    def mean_on_mask_d(diff, valid_mask, device=torch.device("cpu"), min_sum=100):
+    def mean_on_mask_d(diff, valid_mask, min_sum=100):
         """Compute mean value given a binary mask."""
 
         mask = valid_mask.expand_as(diff)
         if mask.sum() > min_sum:
             mean_value = (diff * mask).sum() / mask.sum()
         else:
-            mean_value = torch.tensor(0).float().to(device)
+            mean_value = torch.tensor(0).float()
         return mean_value
 
     def projection_and_disparity_diff(

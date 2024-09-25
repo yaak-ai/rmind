@@ -131,4 +131,4 @@ class DepthDecoder(nn.Module):
 
         # NOTE: hardfix scales = 0 and return only last one
         res = self.alpha * self.sigmoid(self.convs["dispconv", 0](x)) + self.beta
-        return Rearrange("(b t) 1 ... -> b t ...", b=bs[0])(res)
+        return Rearrange("(b t) ... -> b t ...", b=bs[0])(res)
