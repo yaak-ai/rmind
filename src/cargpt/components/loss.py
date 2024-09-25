@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from typing import override
 
+from tensordict import TensorDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -200,20 +201,25 @@ class PhotoGeometryLoss(Module):
         photometric_loss = self.mean_on_mask_d(diff_img, valid_mask_min)
         # geometric loss only over pixels which
         geometric_loss = self.mean_on_mask_d(diff_disp, valid_mask_min)
-        return (
+        total_loss = (
             photometric_loss * self.weight_photometric
             + geometric_loss * self.weight_geometric
         )
 
-        # return (
-        #     loss,
-        #     tgt_warped,
-        #     projected_disp,
-        #     computed_disp,
-        #     valid_mask,
-        #     self_mask,
-        #     valid_mask_min,
-        # )
+        return TensorDict(
+            {
+                "total_loss": total_loss,
+                "tgt_warped": tgt_warped,
+                "projected_disp": projected_disp,
+                "computed_disp": computed_disp,
+                "valid_mask": valid_mask,
+                "self_mask": self_mask,
+                "valid_mask_min": valid_mask_min,
+                "ref_disp": ref_disparity,
+                "tgt_disp": tgt_disparity,
+            },
+            batch_size=[],
+        )
 
     @staticmethod
     def mean_on_mask_d(diff, valid_mask, min_sum=100):

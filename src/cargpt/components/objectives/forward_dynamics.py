@@ -112,17 +112,30 @@ class ForwardDynamicsPredictionObjective(Objective):
             logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
             targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
         )
-        loss["depth"] = self.depth_step(episode, embedding, action_summary)
 
-        return TensorDict({"loss": loss})
+        # depth
+        depth_metrics = self.depth_step(episode, embedding, action_summary)
+        loss["depth"] = TensorDict({
+            k: v.pop("total_loss") for k, v in depth_metrics.items()
+        })
 
-    def depth_step(self, episode: Episode, embedding: Tensor, action_summary):
+        return TensorDict({
+            "loss": loss,
+            "depth_metrics": depth_metrics.apply(
+                Rearrange("(b t) ... -> b t ...", b=logits.shape[0]),
+                batch_size=logits.shape,
+            ),
+        })
+
+    def depth_step(
+        self, episode: Episode, embedding: Tensor, action_summary
+    ) -> TensorDict:
         # constants
         # TODO: extract it
         last_layer_n = "4"
         bs = episode.inputs.batch_size
         w, h = 18, 10
-        camera_calibration_path = "/nas/drives/yaak/yaak_dataset/camera_calibration/beta/cam-110-deg/calib-eucm.json"
+        camera_calibration_path = "/nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json"
 
         depth_summary: Float[Tensor, "b t 1 d"] = (
             episode.index.select(k := (Modality.SPECIAL, SpecialToken.DEPTH_SUMMARY))
@@ -138,7 +151,6 @@ class ForwardDynamicsPredictionObjective(Objective):
         image_features = (
             episode.index.select(k := Modality.IMAGE).parse(embedding).get(k)
         )
-        losses = TensorDict({})
 
         # disparity
         obs_for_disp = image_features.apply(
@@ -173,24 +185,27 @@ class ForwardDynamicsPredictionObjective(Objective):
             bs[0] * (bs[1] - 1)
         )
         camera_model = Camera.from_params(camera_params)
-        camera_model = TensorDict({"cam_front_left": camera_model}, batch_size=[])
+        camera_model = TensorDict(
+            {"cam_front_left": camera_model}, batch_size=[]
+        )  # TODO: fix
 
         # ref == t
         # tgt == t + 1
 
-        rearrange = Rearrange("b t ... -> (b t)...")
+        squeeze_bs = Rearrange("b t ... -> (b t)...")
+
         return self.losses[
             "depth"
         ](
             episode.inputs["image"][:, 1:].apply(
-                rearrange, batch_size=[]
-            ),  # t+1, to calculate loss with
+                squeeze_bs, batch_size=[]
+            ),  # tgt (t+1), to calculate loss with
             episode.inputs["image"][:, :-1].apply(
-                rearrange, batch_size=[]
-            ),  # t, to warp from
-            out_disparity[:, 1:].apply(rearrange, batch_size=[]),
-            out_disparity[:, :-1].apply(rearrange, batch_size=[]),
-            out_pose.apply(rearrange, batch_size=[]),
+                squeeze_bs, batch_size=[]
+            ),  # ret (t), to warp from
+            out_disparity[:, 1:].apply(squeeze_bs, batch_size=[]),
+            out_disparity[:, :-1].apply(squeeze_bs, batch_size=[]),
+            out_pose.apply(squeeze_bs, batch_size=[]),
             camera_model,
         )
 
