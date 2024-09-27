@@ -4,23 +4,17 @@ defaults:
   - /paths: default
   - /datamodule: default.yaml
   - _self_
-
 # TODO: match paper?
 batch_size: 16
 clip_len: 6
 num_heads: 4
 num_layers: 8
 embedding_dim: 512
-
 quantization_channels: 1024
-
 speed_range: [5.0, 130.0]
-
 wandb:
   group: smart
-
 models:
-
   obs_focal_logit_bias:
     _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
     _args_: ['yaak/cargpt/model-wk48ocbt:v2']
@@ -51,7 +45,6 @@ models:
     _args_: ['yaak/cargpt/model-zyzj72ks:v3']
     strict: False
     map_location: cpu
-
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu
@@ -59,19 +52,15 @@ trainer:
   benchmark: true
   max_epochs: -1
   log_every_n_steps: 100
-
   logger:
     _target_: pytorch_lightning.loggers.WandbLogger
     log_model: all
-
   callbacks:
     - _target_: cargpt.callbacks.model_summary.ModelSummary
       depth: 5
-
     - _target_: pytorch_lightning.callbacks.ModelCheckpoint
       monitor: train/loss/total
       save_on_train_epoch_end: True
-
 datamodule:
   train:
     batch_size: ${batch_size}
@@ -85,40 +74,30 @@ datamodule:
                 fields:
                   - name: frame_idx
                   - name: camera_name
-
               - message: VehicleMotion
                 fields:
                   - name: speed
                   - name: steering_angle_normalized
                   - name: gas_pedal_normalized
                   - name: brake_pedal_normalized
-
               - message: VehicleState
                 fields:
                   - name: turn_signal
-
             filter: >
-              VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]}
-              and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0
-              and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0
-              and VehicleMotion_steering_angle_normalized between -1.0 and 1.0
-              and (VehicleMotion_gas_pedal_normalized > 0.0 or VehicleMotion_brake_pedal_normalized > 0.0)
+              VehicleMotion_speed between ${speed_range[0]} and ${speed_range[1]} and VehicleMotion_gas_pedal_normalized between 0.0 and 1.0 and VehicleMotion_brake_pedal_normalized between 0.0 and 1.0 and VehicleMotion_steering_angle_normalized between -1.0 and 1.0 and (VehicleMotion_gas_pedal_normalized > 0.0 or VehicleMotion_brake_pedal_normalized > 0.0)
 
         samples:
           clips:
             length: ${clip_len}
             stride: 10
             step: 10
-
           transforms:
             - _target_: yaak_datasets.transforms.Crop
               offsets: [2, 2, 0, 0]
-
             - _target_: yaak_datasets.transforms.Normalize
               # ImageNet stats
               mean: [0.485, 0.456, 0.406]
               std: [0.229, 0.224, 0.225]
-
   val:
     batch_size: ${batch_size}
     num_workers: ${datamodule.train.num_workers}

@@ -1,2 +1,2 @@
 data_dir: /nas/drives/yaak/data
-metadata_cache_dir: /tmp/yaak-datasets-metadata-cache
+metadata_cache_dir: tmp/rbyte-metadata-cache

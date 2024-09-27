@@ -1,12 +1,13 @@
 _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
+# _target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
+# checkpoint_path: ???
 filename: model.ckpt
 strict: false
 hparams_updaters:
   # wrap hparams in DictConfig
   - _target_: omegaconf.DictConfig
     _partial_: true
-
   # override objectives to only use copycat/policy
   - _target_: omegaconf.OmegaConf.update
     _partial_: true
@@ -29,7 +30,6 @@ hparams_updaters:
                   - ${vars.embedding_dim}
               out_features: 2
               bias: False
-
             brake_pedal:
               _target_: torch.nn.Linear
               in_features:
@@ -39,7 +39,6 @@ hparams_updaters:
                   - ${vars.embedding_dim}
               out_features: 2
               bias: False
-
             steering_angle:
               _target_: torch.nn.Linear
               in_features:
@@ -49,36 +48,29 @@ hparams_updaters:
                   - ${vars.embedding_dim}
               out_features: 2
               bias: False
-
         targets:
           continuous:
             gas_pedal:
               _target_: cargpt.components.episode.Episode.get
               _partial_: true
               key: ["inputs", "continuous", "gas_pedal"]
-
             brake_pedal:
               _target_: cargpt.components.episode.Episode.get
               _partial_: true
               key: ["inputs", "continuous", "brake_pedal"]
-
             steering_angle:
               _target_: cargpt.components.episode.Episode.get
               _partial_: true
               key: ["inputs", "continuous", "steering_angle"]
-
         losses:
           _target_: cargpt.utils.ModuleDict
           continuous:
             gas_pedal:
               _target_: cargpt.components.loss.GaussianNLLLoss
-
             brake_pedal:
               _target_: cargpt.components.loss.GaussianNLLLoss
-
             steering_angle:
               _target_: cargpt.components.loss.GaussianNLLLoss
-
   # freeze episode builder (embeddings etc)
   - _target_: omegaconf.OmegaConf.update
     _partial_: true
@@ -86,7 +78,6 @@ hparams_updaters:
     merge: true
     key: episode_builder.freeze
     value: true
-
   # freeze encoder
   - _target_: omegaconf.OmegaConf.update
     _partial_: true
@@ -94,7 +85,6 @@ hparams_updaters:
     merge: true
     key: encoder.freeze
     value: true
-
   # remove objective scheduler since we only have a single objective
   - _target_: omegaconf.OmegaConf.update
     _partial_: true
@@ -102,7 +92,6 @@ hparams_updaters:
     merge: false
     key: objective_scheduler
     value: null
-
   # for some reason lr_scheduler.scheduler isn't checkpointed? re-add
   - _target_: omegaconf.OmegaConf.update
     _partial_: true

@@ -147,3 +147,7 @@ config/dataset/val-cil.yaml
 
 # editor
 .helix/
+
+# artifacts
+tmp/
+inference_results/

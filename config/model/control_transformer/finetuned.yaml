@@ -5,8 +5,7 @@ hparams_updaters:
   # 1. wrap hparams in DictConfig
   - _target_: omegaconf.DictConfig
     _partial_: true
-
-  # 2. delete unnecesary keys
+  # 2. delete unnecessary keys
   - _target_: funcy.del_in
     _partial_: true
     path: ["objectives", "policy", "losses"]
