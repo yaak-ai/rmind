@@ -105,9 +105,10 @@ class RerunPredictionWriter(BasePredictionWriter):
                         style = None
 
                         match k:
-                            case (
-                                ("batch", "frame", *_)
-                                | ("inputs", Modality.IMAGE, *_)
+                            case ("batch", "frame", *_) | (
+                                "inputs",
+                                Modality.IMAGE,
+                                *_,
                             ):
                                 match v.shape:
                                     case (3, _h, _w):
@@ -118,14 +119,10 @@ class RerunPredictionWriter(BasePredictionWriter):
 
                                 entity = rr.Image(v)
 
-                            case (
-                                ("batch", "table", name)
-                                | (
-                                    "inputs",
-                                    Modality.CONTINUOUS
-                                    | Modality.DISCRETE,
-                                    name,
-                                )
+                            case ("batch", "table", name) | (
+                                "inputs",
+                                Modality.CONTINUOUS | Modality.DISCRETE,
+                                name,
                             ):
                                 style = rr.SeriesLine(name=name)
                                 entity = rr.Scalar(v)
