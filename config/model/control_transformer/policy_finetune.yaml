@@ -1,7 +1,7 @@
-_target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
-artifact: ???
-# _target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
-# checkpoint_path: ???
+# _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+# artifact: ???
+_target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
+checkpoint_path: ???
 filename: model.ckpt
 strict: false
 hparams_updaters:
@@ -26,7 +26,7 @@ hparams_updaters:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 3
                   - ${vars.embedding_dim}
               out_features: 2
               bias: False
@@ -35,7 +35,7 @@ hparams_updaters:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 3
                   - ${vars.embedding_dim}
               out_features: 2
               bias: False
@@ -44,7 +44,7 @@ hparams_updaters:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 3
                   - ${vars.embedding_dim}
               out_features: 2
               bias: False

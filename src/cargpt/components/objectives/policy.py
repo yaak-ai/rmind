@@ -63,6 +63,7 @@ class PolicyObjective(Objective):
             .select(
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                (Modality.DISCRETE, "turn_signal"),
             )
             .parse(embedding)
         )
@@ -77,8 +78,11 @@ class PolicyObjective(Objective):
             SpecialToken.OBSERVATION_SUMMARY,
         ))
 
+        turn_signal = embeddings.get((Modality.DISCRETE, "turn_signal"))
+
         features = rearrange(
-            [observation_summary, observation_history], "i b 1 d -> b 1 (i d)"
+            [observation_summary, observation_history, turn_signal],
+            "i b 1 d -> b 1 (i d)",
         )
 
         logits = self.heads.forward(features)
