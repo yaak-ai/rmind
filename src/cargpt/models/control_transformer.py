@@ -204,15 +204,19 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
                         disparity = torch.stack([ref_disparity, tgt_disparity], dim=0)
 
+                        frames = episode.inputs["image"][k][idx_clip][
+                            [idx_frame, idx_frame + 1], ...
+                        ]
+
+                        tgt_warped = metrics_depth[k, "tgt_warped"][
+                            idx_clip, [idx_frame], ...
+                        ]
+
                         self._log_images(
                             prefix="train",
                             captions=captions,
-                            input=episode.inputs["image"][k][idx_clip][
-                                [idx_frame, idx_frame + 1]
-                            ],
-                            warped=metrics_depth[k, "tgt_warped"][
-                                idx_clip, [idx_frame], 0, ...
-                            ],
+                            input=frames,
+                            warped=torch.cat([frames[[-1]], tgt_warped], dim=0),
                             auto_mask=metrics_depth[k, "valid_mask"][
                                 idx_clip, [idx_frame], 0, ...
                             ],
@@ -489,6 +493,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     Modality.DISCRETE: {
                         "turn_signal": table["vehicle_state.turn_signal"]
                     },
+                    Modality.META: {
+                        "timestamp": table["image_metadata.cam_front_left.time_stamp"]
+                    },  # NOTE: hardcoded ref camera
                 },
                 device=self.device,
             )
@@ -508,7 +515,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         prefix: str = "",
         captions: Annotated[list[str], 2],
         input: Shaped[Tensor, "2 3 h w"],
-        warped: Shaped[Tensor, "1 3 h w"],
+        warped: Shaped[Tensor, "2 3 h w"],
         auto_mask: Shaped[Tensor, "1 h w"],
         self_mask: Shaped[Tensor, "1 h w"],
         disparity: Shaped[Tensor, "2 h w"],
@@ -530,6 +537,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         computed_disparity_cm = colorize(computed_disparity / disparity[1].max())
 
         ref_captions = [captions[0]]
+        warped_captions = [f"{captions[1]} [gt]", f"{captions[1]} [warped]"]
         data = {}
 
         data = {
@@ -539,7 +547,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             ],
             "warped": [
                 wandb.Image(img, caption=caption)
-                for (img, caption) in zip(warped, ref_captions, strict=True)
+                for (img, caption) in zip(warped, warped_captions, strict=True)
             ],
             "auto_mask": [
                 wandb.Image(img, caption=caption)

@@ -29,8 +29,8 @@ from cargpt.components.mask import (
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
+from cargpt.components.pose import Pose, PoseLoss, PoseDecoder, PoseLabeler
 from cargpt.components.objectives.base import Objective, PredictionResultKey
-from cargpt.components.pose import Pose, PoseDecoder
 from cargpt.utils.camera import Camera, CameraParameters
 from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
@@ -46,6 +46,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         *,
         depth_decoder: DepthDecoder,
         pose_decoder: PoseDecoder,
+        pose_labeler: PoseLabeler,
         heads: ModuleDict,
         losses: ModuleDict | None = None,
         targets: DictConfig | None = None,
@@ -54,6 +55,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         self.depth_decoder = depth_decoder
         self.pose_decoder = pose_decoder
+        self.pose_labeler = pose_labeler
         self.heads = heads
         self.losses = losses
         self.targets = OmegaConf.to_container(targets)
@@ -181,6 +183,22 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         out_pose: Pose = obs_for_pose.apply(self.pose_decoder)
+
+        squeeze_bs = Rearrange("b t ... -> (b t)...")
+        # pose
+        for k in episode.inputs["image"].keys():
+            if "front" not in k:
+                msg = "Speed Pose Labeler is implemented only for front cameras"
+                raise NotImplementedError()
+        pose_labels = out_pose.named_apply(lambda k, v: -1 * self.pose_labeler(episode))
+
+        pose_loss = self.losses["depth"]["pose"](
+            out_pose.apply(squeeze_bs, batch_size=[]),
+            pose_labels.apply(squeeze_bs, batch_size=[]),
+        )
+
+        # camera params
+        # NOTE: will be in rbyte soon
         camera_params = CameraParameters.from_file(camera_calibration_path).expand(
             bs[0] * (bs[1] - 1)
         )
@@ -189,25 +207,26 @@ class ForwardDynamicsPredictionObjective(Objective):
             {"cam_front_left": camera_model}, batch_size=[]
         )  # TODO: fix
 
-        # ref == t
-        # tgt == t + 1
+        tgt_img = episode.inputs["image"][:, 1:].apply(
+            squeeze_bs, batch_size=[]
+        )  # (t+1), to calculate loss with
+        ref_img = episode.inputs["image"][:, :-1].apply(
+            squeeze_bs, batch_size=[]
+        )  # t,  to warp from
+        tgt_disparity = out_disparity[:, 1:].apply(squeeze_bs, batch_size=[])
+        ref_disparity = out_disparity[:, :-1].apply(squeeze_bs, batch_size=[])
+        pose = out_pose.apply(squeeze_bs, batch_size=[])
 
         squeeze_bs = Rearrange("b t ... -> (b t)...")
-
-        return self.losses[
-            "depth"
-        ](
-            episode.inputs["image"][:, 1:].apply(
-                squeeze_bs, batch_size=[]
-            ),  # tgt (t+1), to calculate loss with
-            episode.inputs["image"][:, :-1].apply(
-                squeeze_bs, batch_size=[]
-            ),  # ret (t), to warp from
-            out_disparity[:, 1:].apply(squeeze_bs, batch_size=[]),
-            out_disparity[:, :-1].apply(squeeze_bs, batch_size=[]),
-            out_pose.apply(squeeze_bs, batch_size=[]),
-            camera_model,
+        loss_depth = self.losses["depth"]["photogeometry"](
+            tgt_img, ref_img, tgt_disparity, ref_disparity, pose, camera_model
         )
+        loss_depth["cam_front_left"]["total_loss"]
+        for k in loss_depth.keys():
+            loss_depth[k]["total_loss"] = (
+                loss_depth[k]["total_loss"] + 0.15 * pose_loss[k]
+            )
+        return loss_depth
 
     @override
     def predict(

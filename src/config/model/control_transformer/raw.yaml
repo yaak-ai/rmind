@@ -247,6 +247,9 @@ objectives:
       out_mask: [1, 1, 1, 1, 1, 1]
       freeze: False
 
+    pose_labeler:
+      _target_: cargpt.components.pose.SpeedPoseLabeler
+
     heads:
       _target_: cargpt.utils.ModuleDict
       image:
@@ -308,11 +311,15 @@ objectives:
         turn_signal:
           _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
       depth:
-        cam_front_left:
-          _target_: cargpt.components.loss.PhotoGeometryLoss
-          with_ssim: true
-          with_mask: true
-          with_auto_mask: true
+        photogeometry:
+          cam_front_left:
+            _target_: cargpt.components.loss.PhotoGeometryLoss
+            with_ssim: true
+            with_mask: true
+            with_auto_mask: true
+        pose:
+          cam_front_left:
+            _target_: cargpt.components.pose.TranslationNormPoseLoss
 
       # random_masked_hindsight_control:
       #   _target_: cargpt.components.objectives.RandomMaskedHindsightControlObjective

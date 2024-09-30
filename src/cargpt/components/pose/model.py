@@ -2,12 +2,10 @@ from collections.abc import Sequence
 from math import prod
 
 import torch
-from jaxtyping import Float
 from torch import Tensor, nn
 from typing_extensions import override
 
-# 6D: x (right), y (down), z (fwd), theta_x, theta_y, theta_z
-Pose = Float[Tensor, "... 6"]
+from .types import Pose
 
 
 class PoseDecoder(nn.Module):

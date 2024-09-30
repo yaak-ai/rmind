@@ -1,11 +1,11 @@
 from collections.abc import Callable
 from typing import override
 
-from tensordict import TensorDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from jaxtyping import Float, Int
+from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
