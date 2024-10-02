@@ -10,12 +10,24 @@ import torch.nn.functional as F
 from jaxtyping import Float
 from tensordict import TensorDict, tensorclass
 from torch import Tensor
-import os
 
 type Grid = Float[Tensor, "h w 2"]
 type GridBatch = Float[Tensor, "*b h w 2"]
 type Depth = Float[Tensor, "*b h w 1"]
 type Points = Float[Tensor, "*b h w 3"]
+
+
+def get_camera_config(camera_name: str, batch_size: list[int]) -> "Camera":
+    target_size = batch_size[0] * (batch_size[1] - 1)
+    match camera_name:
+        case "cam_front_left":
+            camera_calibration_path = "/nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json"
+        case _:
+            raise NotImplementedError
+    camera_params = CameraParameters.from_file(camera_calibration_path).expand(
+        target_size
+    )
+    return Camera.from_params(camera_params)
 
 
 class Camera(ABC, torch.nn.Module):

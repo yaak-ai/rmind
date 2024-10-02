@@ -29,9 +29,9 @@ from cargpt.components.mask import (
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
-from cargpt.components.pose import Pose, PoseLoss, PoseDecoder, PoseLabeler
 from cargpt.components.objectives.base import Objective, PredictionResultKey
-from cargpt.utils.camera import Camera, CameraParameters
+from cargpt.components.pose import Pose, PoseDecoder, PoseLabeler, PoseLoss
+from cargpt.utils.camera import get_camera_config
 from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
 
@@ -68,6 +68,8 @@ class ForwardDynamicsPredictionObjective(Objective):
             raise RuntimeError
 
         episode = episode_builder.build_episode(inputs)
+        # img_emb_w = episode_builder.position_encoding.image.patch.col.num_embeddings
+        # img_emb_h = episode_builder.position_encoding.image.patch.row.num_embeddings
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
@@ -89,7 +91,6 @@ class ForwardDynamicsPredictionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
-        loss = {}  # TODO: remove and move depth down
 
         features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType]
             # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
@@ -104,19 +105,22 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         logits = self.heads.forward(features)
-        targets = TensorDict(
-            tree_map(
-                lambda f: f(episode)[:, 1:],  # all but first timestep
-                self.targets,
-            )
-        )
-        loss = self.losses(
-            logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
-            targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
-        )
+        # targets = TensorDict(
+        #     tree_map(
+        #         lambda f: f(episode)[:, 1:],  # all but first timestep
+        #         self.targets,
+        #     )
+        # )
+        # loss = self.losses(
+        #     logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
+        #     targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
+        # )
+        loss = {}
 
         # depth
-        depth_metrics = self.depth_step(episode, embedding, action_summary)
+        depth_metrics, loss["pose"] = self.depth_step(
+            episode, embedding, action_summary
+        )
         loss["depth"] = TensorDict({
             k: v.pop("total_loss") for k, v in depth_metrics.items()
         })
@@ -131,13 +135,13 @@ class ForwardDynamicsPredictionObjective(Objective):
 
     def depth_step(
         self, episode: Episode, embedding: Tensor, action_summary
-    ) -> TensorDict:
+    ) -> tuple[TensorDict]:
         # constants
         # TODO: extract it
-        last_layer_n = "4"
+        last_layer_n = 4
         bs = episode.inputs.batch_size
-        w, h = 18, 10
-        camera_calibration_path = "/nas/drives/yaak/yaak_dataset/camera_calibration/gamma/cam-90-deg/calib-pinhole-576x324.json"
+        img_emb_w, img_emb_h = 18, 10
+        squeeze_bs = Rearrange("b t ... -> (b t)...")
 
         depth_summary: Float[Tensor, "b t 1 d"] = (
             episode.index.select(k := (Modality.SPECIAL, SpecialToken.DEPTH_SUMMARY))
@@ -154,22 +158,8 @@ class ForwardDynamicsPredictionObjective(Objective):
             episode.index.select(k := Modality.IMAGE).parse(embedding).get(k)
         )
 
-        # disparity
-        obs_for_disp = image_features.apply(
-            lambda obs: obs + depth_summary.broadcast_to(obs.shape)
-        ).apply(Rearrange("... (h w) c -> ... c w h", h=h))
-
-        features_disparity = episode.auxilary_features[Modality.IMAGE].update(
-            {(k, last_layer_n): obs_for_disp[k] for k in obs_for_disp.keys()},
-            inplace=False,
-        )
-
-        out_disparity = features_disparity.apply(
-            self.depth_decoder, call_on_nested=True
-        ).apply(Rearrange(" ... w h -> ... h w"))
-
         # pose
-        obs_for_pose = (
+        pose: TensorDict = (
             image_features.apply(
                 lambda obs: obs
                 + pose_summary.broadcast_to(obs.shape)
@@ -180,32 +170,45 @@ class ForwardDynamicsPredictionObjective(Objective):
                 batch_size=[bs[0], bs[1] - 1],
             )
             .apply(Rearrange("... (h w) c -> ... c w h", h=10))
+            .apply(self.pose_decoder)
         )
 
-        out_pose: Pose = obs_for_pose.apply(self.pose_decoder)
-
-        squeeze_bs = Rearrange("b t ... -> (b t)...")
-        # pose
         for k in episode.inputs["image"].keys():
             if "front" not in k:
                 msg = "Speed Pose Labeler is implemented only for front cameras"
-                raise NotImplementedError()
-        pose_labels = out_pose.named_apply(lambda k, v: -1 * self.pose_labeler(episode))
+                raise NotImplementedError(msg)
+        pose_labels = pose.named_apply(lambda k, v: -1 * self.pose_labeler(episode))
 
-        pose_loss = self.losses["depth"]["pose"](
-            out_pose.apply(squeeze_bs, batch_size=[]),
-            pose_labels.apply(squeeze_bs, batch_size=[]),
+        loss_pose = (
+            self.losses["depth"]["pose"](
+                pose.apply(squeeze_bs, batch_size=[]),
+                pose_labels.apply(squeeze_bs, batch_size=[]),
+            )
+            * 0.15
         )
 
-        # camera params
-        # NOTE: will be in rbyte soon
-        camera_params = CameraParameters.from_file(camera_calibration_path).expand(
-            bs[0] * (bs[1] - 1)
+        # disparity
+        disparity_input_features = image_features.apply(
+            lambda obs: obs + depth_summary.broadcast_to(obs.shape)
+        ).apply(Rearrange("... (h w) c -> ... c w h", h=img_emb_h))
+
+        disparity = (
+            episode.auxilary_features[Modality.IMAGE]
+            .update(
+                {
+                    (k, str(last_layer_n)): disparity_input_features[k]
+                    for k in disparity_input_features.keys()
+                },
+                inplace=False,
+            )
+            .apply(self.depth_decoder, call_on_nested=True)
+            .apply(Rearrange(" ... w h -> ... h w"))
         )
-        camera_model = Camera.from_params(camera_params)
-        camera_model = TensorDict(
-            {"cam_front_left": camera_model}, batch_size=[]
-        )  # TODO: fix
+
+        # TODO: get it from dataset when implemented in rbyte
+        camera_model = TensorDict({
+            k: get_camera_config(camera_name=k, batch_size=bs) for k in pose.keys()
+        })
 
         tgt_img = episode.inputs["image"][:, 1:].apply(
             squeeze_bs, batch_size=[]
@@ -213,20 +216,15 @@ class ForwardDynamicsPredictionObjective(Objective):
         ref_img = episode.inputs["image"][:, :-1].apply(
             squeeze_bs, batch_size=[]
         )  # t,  to warp from
-        tgt_disparity = out_disparity[:, 1:].apply(squeeze_bs, batch_size=[])
-        ref_disparity = out_disparity[:, :-1].apply(squeeze_bs, batch_size=[])
-        pose = out_pose.apply(squeeze_bs, batch_size=[])
+        tgt_disparity = disparity[:, 1:].apply(squeeze_bs, batch_size=[])
+        ref_disparity = disparity[:, :-1].apply(squeeze_bs, batch_size=[])
+        ref_tgt_pose = pose.apply(squeeze_bs, batch_size=[])
 
         squeeze_bs = Rearrange("b t ... -> (b t)...")
         loss_depth = self.losses["depth"]["photogeometry"](
-            tgt_img, ref_img, tgt_disparity, ref_disparity, pose, camera_model
+            tgt_img, ref_img, tgt_disparity, ref_disparity, ref_tgt_pose, camera_model
         )
-        loss_depth["cam_front_left"]["total_loss"]
-        for k in loss_depth.keys():
-            loss_depth[k]["total_loss"] = (
-                loss_depth[k]["total_loss"] + 0.15 * pose_loss[k]
-            )
-        return loss_depth
+        return loss_depth, loss_pose
 
     @override
     def predict(

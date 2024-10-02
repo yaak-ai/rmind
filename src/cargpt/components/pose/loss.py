@@ -1,11 +1,9 @@
-from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from typing import Any
-from torch.nn import Module
 
 import torch
 from jaxtyping import Float
 from torch import Tensor
+from torch.nn import Module
 
 from .types import Pose
 

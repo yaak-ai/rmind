@@ -317,6 +317,8 @@ objectives:
             with_ssim: true
             with_mask: true
             with_auto_mask: true
+            weight_photometric: 1.0
+            weight_geometric: 0.5
         pose:
           cam_front_left:
             _target_: cargpt.components.pose.TranslationNormPoseLoss
