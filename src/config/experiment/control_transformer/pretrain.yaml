@@ -12,5 +12,7 @@ wandb:
 datamodule:
   train:
     batch_size: ${vars.data.train.batch_size}
+    num_workers: 2
   val:
     batch_size: ${vars.data.val.batch_size}
+    num_workers: 2

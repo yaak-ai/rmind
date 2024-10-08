@@ -1,14 +1,13 @@
 from collections import OrderedDict
 from math import prod
+from typing import override
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from jaxtyping import Float
-from tensordict import TensorDict
 from einops.layers.torch import Rearrange
+from tensordict import TensorDict
 from torch import Tensor, nn
-from typing_extensions import override
 
 
 class ConvBlock(nn.Module):
@@ -23,8 +22,7 @@ class ConvBlock(nn.Module):
     @override
     def forward(self, x):
         out = self.conv(x)
-        out = self.nonlin(out)
-        return out
+        return self.nonlin(out)
 
 
 class Conv3x3(nn.Module):
@@ -41,8 +39,7 @@ class Conv3x3(nn.Module):
 
     def forward(self, x):
         out = self.pad(x)
-        out = self.conv(out)
-        return out
+        return self.conv(out)
 
 
 def upsample(x):
@@ -74,7 +71,8 @@ class DepthDecoder(nn.Module):
         self.upsample_mode = "nearest"
         self.scales = scales
         if self.scales != [0]:
-            raise NotImplementedError("Only `scales=[0]` is implemented now")
+            msg = "Only `scales=[0]` is implemented now"
+            raise NotImplementedError(msg)
 
         self.num_ch_enc = num_ch_enc
         self.num_ch_dec = np.array([16, 32, 64, 128, 256])
@@ -101,6 +99,8 @@ class DepthDecoder(nn.Module):
 
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
+
+        self.init_weights()
 
     def init_weights(self):
         for m in self.decoder.modules():

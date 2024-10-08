@@ -1,6 +1,5 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from math import prod
 from typing import TYPE_CHECKING, override
 
 import torch
@@ -10,9 +9,8 @@ from jaxtyping import Float
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Embedding, Module
+from torch.nn import Module
 from torch.nn import functional as F
-from torch.utils._pytree import tree_map
 
 from cargpt.components.disparity import DepthDecoder
 from cargpt.components.episode import (
@@ -30,14 +28,13 @@ from cargpt.components.mask import (
     XFormersAttentionMaskLegend,
 )
 from cargpt.components.objectives.base import Objective, PredictionResultKey
-from cargpt.components.pose import Pose, PoseDecoder, PoseLabeler, PoseLoss
+from cargpt.components.pose import PoseDecoder, PoseLabeler
 from cargpt.utils.camera import get_camera_config
 from cargpt.utils.containers import ModuleDict
 from cargpt.utils.functional import nan_padder
 
 if TYPE_CHECKING:
     from jaxtyping import Float
-    from torch import Tensor
 
 
 class ForwardDynamicsPredictionObjective(Objective):
@@ -140,7 +137,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         # TODO: extract it
         last_layer_n = 4
         bs = episode.inputs.batch_size
-        img_emb_w, img_emb_h = 18, 10
+        _img_emb_w, img_emb_h = 18, 10
         squeeze_bs = Rearrange("b t ... -> (b t)...")
 
         depth_summary: Float[Tensor, "b t 1 d"] = (
@@ -158,18 +155,14 @@ class ForwardDynamicsPredictionObjective(Objective):
             episode.index.select(k := Modality.IMAGE).parse(embedding).get(k)
         )
 
-        # pose
+        # pose ref -> tgt (temporal order input)
         pose: TensorDict = (
-            image_features.apply(
-                lambda obs: obs
-                + pose_summary.broadcast_to(obs.shape)
-                + action_summary.broadcast_to(obs.shape)
-            )
+            image_features.apply(lambda obs: obs + pose_summary.broadcast_to(obs.shape))
             .apply(
                 lambda x: torch.cat([x[:, :-1], x[:, 1:]], dim=-1),
                 batch_size=[bs[0], bs[1] - 1],
             )
-            .apply(Rearrange("... (h w) c -> ... c w h", h=10))
+            .apply(Rearrange("... (h w) c -> ... c h w", h=10))
             .apply(self.pose_decoder)
         )
 
@@ -177,7 +170,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             if "front" not in k:
                 msg = "Speed Pose Labeler is implemented only for front cameras"
                 raise NotImplementedError(msg)
-        pose_labels = pose.named_apply(lambda k, v: -1 * self.pose_labeler(episode))
+        pose_labels = pose.named_apply(lambda k, v: self.pose_labeler(episode))
 
         loss_pose = (
             self.losses["depth"]["pose"](
@@ -190,7 +183,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         # disparity
         disparity_input_features = image_features.apply(
             lambda obs: obs + depth_summary.broadcast_to(obs.shape)
-        ).apply(Rearrange("... (h w) c -> ... c w h", h=img_emb_h))
+        ).apply(Rearrange("... (h w) c -> ... c h w", h=img_emb_h))
 
         disparity = (
             episode.auxilary_features[Modality.IMAGE]
@@ -202,7 +195,6 @@ class ForwardDynamicsPredictionObjective(Objective):
                 inplace=False,
             )
             .apply(self.depth_decoder, call_on_nested=True)
-            .apply(Rearrange(" ... w h -> ... h w"))
         )
 
         # TODO: get it from dataset when implemented in rbyte

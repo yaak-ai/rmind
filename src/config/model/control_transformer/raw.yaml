@@ -76,26 +76,27 @@ episode_builder:
       _args_:
         - _target_: cargpt.components.resnet.ResnetBackbone
           resnet:
-            _target_: torchvision.models.resnet18
+            _target_: torchvision.models.resnet50
             weights: IMAGENET1K_V1
-          freeze: True
+          freeze: False
 
         - _target_: cargpt.utils.ModuleDict
           "0":
             _target_: einops.layers.torch.Rearrange
-            pattern: '... h w -> ... w h'
+            pattern: "... h w -> ... h w"
           "1":
             _target_: einops.layers.torch.Rearrange
-            pattern: '... h w -> ... w h'
+            pattern: "... h w -> ... h w"
           "2":
             _target_: einops.layers.torch.Rearrange
-            pattern: '... h w -> ... w h'
+            pattern: "... h w -> ... h w"
           "3":
             _target_: einops.layers.torch.Rearrange
-            pattern: '... h w -> ... w h'
+            pattern: "... h w -> ... h w"
           "4":
             _target_: einops.layers.torch.Rearrange
-            pattern: '... c h w -> ... (h w) c'
+            pattern: "... c h w -> ... (h w) c"
+
     continuous:
       speed:
         _target_: cargpt.components.nn.Embedding
@@ -232,7 +233,7 @@ objectives:
     _target_: cargpt.components.objectives.ForwardDynamicsPredictionObjective
     depth_decoder:
       _target_: cargpt.components.disparity.DepthDecoder
-      num_ch_enc: [64, 64, 128, 256, 512] # * 4 in case of resnet > 34
+      num_ch_enc: [64, 256, 512, 1024, 2048] # resnet > 34
       scales: [0]
       num_output_channels: 1
       use_skips: true
