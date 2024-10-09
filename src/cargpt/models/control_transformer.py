@@ -1,13 +1,10 @@
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Self, override
 
-import matplotlib as mpl
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
-import wandb
 from hydra.utils import get_class, instantiate
-from jaxtyping import Float, Shaped
 from lightning_fabric.plugins.io.torch_io import pl_load
 from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from loguru import logger
@@ -17,11 +14,8 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import SingleDeviceStrategy
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.utilities.model_helpers import _restricted_classmethod
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from tensordict import TensorDict
-from torch import Tensor
 from torch.nn import Module  # noqa: TCH002
-from typing_extensions import Annotated, Self
 
 from cargpt.components.episode import EpisodeBuilder, Modality, PositionEncoding
 from cargpt.components.mask import WandbAttentionMaskLegend
@@ -29,6 +23,7 @@ from cargpt.components.objectives import ObjectiveScheduler
 from cargpt.components.objectives.base import ObjectiveName, PredictionResultKey
 from cargpt.utils._wandb import LoadableFromArtifact
 from cargpt.utils.containers import ModuleDict
+from cargpt.utils.logging import log_depth_images
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -184,9 +179,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             # log depth
             elif self.global_step % self.trainer.log_every_n_steps == 0:
                 with torch.no_grad():
-                    for k in metrics_depth.keys():
-                        idx_clip = 0  # which sample within batch to log
-                        idx_frame = 0
+                    for k, _metrics in metrics_depth.items():
+                        idx_clip, idx_frame = 0, 0  # which sample within batch to log
                         drive_id = batch.meta.input_id[idx_clip]
                         frame_idxs = batch.table[f"image_metadata.{k}.frame_idx"][
                             idx_clip
@@ -195,10 +189,10 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                             f"{frame_idx} [{drive_id}]" for frame_idx in frame_idxs
                         ]
 
-                        ref_disparity = metrics_depth[k, "ref_disp"][
+                        ref_disparity = _metrics["ref_disp"][
                             idx_clip, idx_frame, 0, ...
                         ]
-                        tgt_disparity = metrics_depth[k, "tgt_disp"][
+                        tgt_disparity = _metrics["tgt_disp"][
                             idx_clip, idx_frame, 0, ...
                         ]
 
@@ -208,26 +202,26 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                             [idx_frame, idx_frame + 1], ...
                         ]
 
-                        tgt_warped = metrics_depth[k, "tgt_warped"][
-                            idx_clip, [idx_frame], ...
-                        ]
+                        tgt_warped = _metrics["tgt_warped"][idx_clip, [idx_frame], ...]
 
-                        self._log_images(
+                        log_depth_images(
+                            logger=self.logger,
+                            global_step=self.global_step,
                             prefix="train",
                             captions=captions,
                             input=frames,
                             warped=torch.cat([frames[[-1]], tgt_warped], dim=0),
-                            auto_mask=metrics_depth[k, "valid_mask"][
+                            auto_mask=_metrics["valid_mask"][
                                 idx_clip, [idx_frame], 0, ...
                             ],
-                            self_mask=metrics_depth[k, "self_mask"][
+                            self_mask=_metrics["self_mask"][
                                 idx_clip, [idx_frame], 0, ...
                             ],
                             disparity=disparity,
-                            projected_disparity=metrics_depth[k, "projected_disp"][
+                            projected_disparity=_metrics["projected_disp"][
                                 idx_clip, [idx_frame], 0, ...
                             ],
-                            computed_disparity=metrics_depth[k, "computed_disp"][
+                            computed_disparity=_metrics["computed_disp"][
                                 idx_clip, [idx_frame], 0, ...
                             ],
                         )
@@ -507,74 +501,3 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             input = input.update(input.select(*transform.select).apply(transform.apply))
 
         return input
-
-    @rank_zero_only
-    def _log_images(
-        self,
-        *,
-        prefix: str = "",
-        captions: Annotated[list[str], 2],
-        input: Shaped[Tensor, "2 3 h w"],
-        warped: Shaped[Tensor, "2 3 h w"],
-        auto_mask: Shaped[Tensor, "1 h w"],
-        self_mask: Shaped[Tensor, "1 h w"],
-        disparity: Shaped[Tensor, "2 h w"],
-        projected_disparity: Shaped[Tensor, "1 h w"],
-        computed_disparity: Shaped[Tensor, "1 h w"],
-    ):
-        assert isinstance(self.logger, WandbLogger)
-
-        disparity_colormap = mpl.cm.get_cmap(name="pink", lut=10000)
-
-        def colorize(tensor):
-            return disparity_colormap(tensor.cpu().numpy())
-
-        disparity_cm = colorize(disparity / disparity.amax((1, 2), keepdim=True))
-        projected_disparity_cm = colorize(
-            projected_disparity / projected_disparity.amax((1, 2), keepdim=True)
-        )
-        computed_disparity_cm = colorize(computed_disparity / disparity[1].max())
-        computed_disparity_cm = colorize(computed_disparity / disparity[1].max())
-
-        ref_captions = [captions[0]]
-        warped_captions = [f"{captions[1]} [gt]", f"{captions[1]} [warped]"]
-        data = {}
-
-        data = {
-            "input": [
-                wandb.Image(img, caption=caption)
-                for (img, caption) in zip(input, captions, strict=True)
-            ],
-            "warped": [
-                wandb.Image(img, caption=caption)
-                for (img, caption) in zip(warped, warped_captions, strict=True)
-            ],
-            "auto_mask": [
-                wandb.Image(img, caption=caption)
-                for (img, caption) in zip(auto_mask, ref_captions, strict=True)
-            ],
-            "self_mask": [
-                wandb.Image(img, caption=caption)
-                for (img, caption) in zip(self_mask, ref_captions, strict=True)
-            ],
-            "disparity": [
-                wandb.Image(img, caption=caption)
-                for (img, caption) in zip(disparity_cm, captions, strict=True)
-            ],
-            "projected_disparity": [
-                wandb.Image(img, caption=caption)
-                for (img, caption) in zip(
-                    projected_disparity_cm, ref_captions, strict=True
-                )
-            ],
-            "computed_disparity": [
-                wandb.Image(img, caption=caption)
-                for (img, caption) in zip(
-                    computed_disparity_cm, ref_captions, strict=True
-                )
-            ],
-        }
-
-        self.logger.experiment.log(
-            data={f"{prefix}/{k}": v for k, v in data.items()}, step=self.global_step
-        )

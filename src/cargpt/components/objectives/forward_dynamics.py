@@ -1,6 +1,5 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from math import prod
 from typing import TYPE_CHECKING, override
 
 import torch
@@ -10,9 +9,8 @@ from jaxtyping import Float
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Embedding, Module
+from torch.nn import Module
 from torch.nn import functional as F
-from torch.utils._pytree import tree_map
 
 from cargpt.components.disparity import DepthDecoder
 from cargpt.components.episode import (
@@ -30,14 +28,13 @@ from cargpt.components.mask import (
     XFormersAttentionMaskLegend,
 )
 from cargpt.components.objectives.base import Objective, PredictionResultKey
-from cargpt.components.pose import Pose, PoseDecoder, PoseLabeler, PoseLoss
+from cargpt.components.pose import PoseLabeler
 from cargpt.utils.camera import get_camera_config
 from cargpt.utils.containers import ModuleDict
-from cargpt.utils.functional import nan_padder
+from cargpt.utils.functional import flatten_batch_time, nan_padder
 
 if TYPE_CHECKING:
     from jaxtyping import Float
-    from torch import Tensor
 
 
 class ForwardDynamicsPredictionObjective(Objective):
@@ -45,7 +42,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         self,
         *,
         depth_decoder: DepthDecoder,
-        pose_decoder: PoseDecoder,
+        pose_decoder: Module,
         pose_labeler: PoseLabeler,
         heads: ModuleDict,
         losses: ModuleDict | None = None,
@@ -68,8 +65,6 @@ class ForwardDynamicsPredictionObjective(Objective):
             raise RuntimeError
 
         episode = episode_builder.build_episode(inputs)
-        # img_emb_w = episode_builder.position_encoding.image.patch.col.num_embeddings
-        # img_emb_h = episode_builder.position_encoding.image.patch.row.num_embeddings
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
 
@@ -119,7 +114,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         # depth
         depth_metrics, loss["pose"], loss["smoothness"] = self.depth_step(
-            episode, embedding, action_summary
+            episode, embedding, action_summary, episode_builder
         )
         loss["depth"] = TensorDict({
             k: v.pop("total_loss") for k, v in depth_metrics.items()
@@ -134,14 +129,20 @@ class ForwardDynamicsPredictionObjective(Objective):
         })
 
     def depth_step(
-        self, episode: Episode, embedding: Tensor, action_summary
+        self,
+        episode: Episode,
+        embedding: Tensor,
+        action_summary: Tensor,
+        episode_builder: EpisodeBuilder,
     ) -> tuple[TensorDict]:
         # constants
+        _img_emb_h = episode_builder.position_encoding.image.patch.row.num_embeddings
         # TODO: extract it
         last_layer_n = 4
         bs = episode.inputs.batch_size
-        img_emb_w, img_emb_h = 18, 10
-        squeeze_bs = Rearrange("b t ... -> (b t)...")
+
+        _pose_loss_weight = 0.05
+        _smoothness_loss_weight = 0.05
 
         depth_summary: Float[Tensor, "b t 1 d"] = (
             episode.index.select(k := (Modality.SPECIAL, SpecialToken.DEPTH_SUMMARY))
@@ -158,7 +159,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             episode.index.select(k := Modality.IMAGE).parse(embedding).get(k)
         )
 
-        # pose
+        # pose ref -> tgt (temporal order input)
         pose: TensorDict = (
             image_features.apply(lambda x: pose_summary)  # to make it tensordict
             .apply(
@@ -176,26 +177,24 @@ class ForwardDynamicsPredictionObjective(Objective):
             if "front" not in k:
                 msg = "Speed Pose Labeler is implemented only for front cameras"
                 raise NotImplementedError(msg)
-        pose_labels = pose.named_apply(
-            lambda k, v: self.pose_labeler(episode)
-        )  # get z label, -1 since we have right coordinate system
+        pose_labels = pose.named_apply(lambda k, v: self.pose_labeler(episode))
 
         loss_pose = (
             self.losses["depth"]["pose"](
-                pose.apply(squeeze_bs, batch_size=[]),
-                pose_labels.apply(squeeze_bs, batch_size=[]),
+                pose.apply(flatten_batch_time, batch_size=[]),
+                pose_labels.apply(flatten_batch_time, batch_size=[]),
             )
-            * 0.05
+            * _pose_loss_weight
         )
 
         # disparity
         # disparity_input_features = image_features.apply(
         #     lambda obs: obs + depth_summary.broadcast_to(obs.shape)
-        # ).apply(Rearrange("... (h w) c -> ... c h w", h=img_emb_h))
+        # ).apply(Rearrange("... (h w) c -> ... c h w", h=_img_emb_h))
         disparity = (
             episode.auxilary_features[Modality.IMAGE]
             .named_apply(
-                lambda k, v: Rearrange(" ...  (h w) c  -> ... c h w", h=img_emb_h)(v)
+                lambda k, v: Rearrange(" ...  (h w) c  -> ... c h w", h=_img_emb_h)(v)
                 if k == str(last_layer_n)
                 else v
             )  # without transformer
@@ -215,22 +214,22 @@ class ForwardDynamicsPredictionObjective(Objective):
         })
 
         tgt_img = episode.inputs["image"][:, 1:].apply(
-            squeeze_bs, batch_size=[]
+            flatten_batch_time, batch_size=[]
         )  # (t+1), to calculate loss with
         ref_img = episode.inputs["image"][:, :-1].apply(
-            squeeze_bs, batch_size=[]
+            flatten_batch_time, batch_size=[]
         )  # t,  to warp from
-        tgt_disparity = disparity[:, 1:].apply(squeeze_bs, batch_size=[])
-        ref_disparity = disparity[:, :-1].apply(squeeze_bs, batch_size=[])
-        ref_tgt_pose = pose.apply(squeeze_bs, batch_size=[])
+        tgt_disparity = disparity[:, 1:].apply(flatten_batch_time, batch_size=[])
+        ref_disparity = disparity[:, :-1].apply(flatten_batch_time, batch_size=[])
+        ref_tgt_pose = pose.apply(flatten_batch_time, batch_size=[])
 
-        squeeze_bs = Rearrange("b t ... -> (b t)...")
         loss_depth = self.losses["depth"]["photogeometry"](
             tgt_img, ref_img, tgt_disparity, ref_disparity, ref_tgt_pose, camera_model
         )
 
         loss_smoothness = (
-            self.losses["depth"]["smoothness"](tgt_disparity, tgt_img) * 0.05
+            self.losses["depth"]["smoothness"](tgt_disparity, tgt_img)
+            * _smoothness_loss_weight
         )
         return loss_depth, loss_pose, loss_smoothness
 
