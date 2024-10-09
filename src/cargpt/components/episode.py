@@ -255,7 +255,7 @@ class EpisodeBuilder(Module):
         n_layers = len(embedded_nope[image_tokens_keys[0]].keys())
         auxilary_features = TensorDict(
             {
-                k: embedded_nope[k].select(*[str(i) for i in range(n_layers - 1)])
+                k: embedded_nope[k].select(*[str(i) for i in range(n_layers)])
                 for k in image_tokens_keys
             },
             batch_size=embedded_nope.batch_size,

@@ -118,7 +118,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         loss = {}
 
         # depth
-        depth_metrics, loss["pose"] = self.depth_step(
+        depth_metrics, loss["pose"], loss["smoothness"] = self.depth_step(
             episode, embedding, action_summary
         )
         loss["depth"] = TensorDict({
@@ -160,49 +160,53 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         # pose
         pose: TensorDict = (
-            image_features.apply(
-                lambda obs: obs
-                + pose_summary.broadcast_to(obs.shape)
-                + action_summary.broadcast_to(obs.shape)
-            )
+            image_features.apply(lambda x: pose_summary)  # to make it tensordict
             .apply(
-                lambda x: torch.cat([x[:, :-1], x[:, 1:]], dim=-1),
+                lambda x: torch.cat(
+                    [x[:, :-1] + action_summary[:, :-1], x[:, 1:]], dim=-1
+                ),
                 batch_size=[bs[0], bs[1] - 1],
             )
-            .apply(Rearrange("... (h w) c -> ... c w h", h=10))
             .apply(self.pose_decoder)
+            .apply(Rearrange(" ... 1 c -> ... c"))
+            .apply(lambda x: x * 0.01)  # from og paper
         )
 
         for k in episode.inputs["image"].keys():
             if "front" not in k:
                 msg = "Speed Pose Labeler is implemented only for front cameras"
                 raise NotImplementedError(msg)
-        pose_labels = pose.named_apply(lambda k, v: -1 * self.pose_labeler(episode))
+        pose_labels = pose.named_apply(
+            lambda k, v: self.pose_labeler(episode)
+        )  # get z label, -1 since we have right coordinate system
 
         loss_pose = (
             self.losses["depth"]["pose"](
                 pose.apply(squeeze_bs, batch_size=[]),
                 pose_labels.apply(squeeze_bs, batch_size=[]),
             )
-            * 0.15
+            * 0.05
         )
 
         # disparity
-        disparity_input_features = image_features.apply(
-            lambda obs: obs + depth_summary.broadcast_to(obs.shape)
-        ).apply(Rearrange("... (h w) c -> ... c w h", h=img_emb_h))
-
+        # disparity_input_features = image_features.apply(
+        #     lambda obs: obs + depth_summary.broadcast_to(obs.shape)
+        # ).apply(Rearrange("... (h w) c -> ... c h w", h=img_emb_h))
         disparity = (
             episode.auxilary_features[Modality.IMAGE]
-            .update(
-                {
-                    (k, str(last_layer_n)): disparity_input_features[k]
-                    for k in disparity_input_features.keys()
-                },
-                inplace=False,
-            )
+            .named_apply(
+                lambda k, v: Rearrange(" ...  (h w) c  -> ... c h w", h=img_emb_h)(v)
+                if k == str(last_layer_n)
+                else v
+            )  # without transformer
+            # .update(
+            #     {
+            #         (k, str(last_layer_n)): disparity_input_features[k]
+            #         for k in disparity_input_features.keys()
+            #     },
+            #     inplace=False,
+            # )
             .apply(self.depth_decoder, call_on_nested=True)
-            .apply(Rearrange(" ... w h -> ... h w"))
         )
 
         # TODO: get it from dataset when implemented in rbyte
@@ -224,7 +228,11 @@ class ForwardDynamicsPredictionObjective(Objective):
         loss_depth = self.losses["depth"]["photogeometry"](
             tgt_img, ref_img, tgt_disparity, ref_disparity, ref_tgt_pose, camera_model
         )
-        return loss_depth, loss_pose
+
+        loss_smoothness = (
+            self.losses["depth"]["smoothness"](tgt_disparity, tgt_img) * 0.05
+        )
+        return loss_depth, loss_pose, loss_smoothness
 
     @override
     def predict(

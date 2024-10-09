@@ -529,9 +529,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         def colorize(tensor):
             return disparity_colormap(tensor.cpu().numpy())
 
-        disparity_cm = colorize(disparity / disparity.amax((1, 2), True))
+        disparity_cm = colorize(disparity / disparity.amax((1, 2), keepdim=True))
         projected_disparity_cm = colorize(
-            projected_disparity / projected_disparity.amax((1, 2), True)
+            projected_disparity / projected_disparity.amax((1, 2), keepdim=True)
         )
         computed_disparity_cm = colorize(computed_disparity / disparity[1].max())
         computed_disparity_cm = colorize(computed_disparity / disparity[1].max())

@@ -307,3 +307,36 @@ class SSIM(Module):
         SSIM_d = (mu_x**2 + mu_y**2 + self.C1) * (sigma_x + sigma_y + self.C2)
 
         return torch.clamp((1 - SSIM_n / SSIM_d) / 2, 0, 1)
+
+
+class SmoothnessLoss(Module):
+    def __init__(self):
+        super().__init__()
+
+    @override
+    def forward(self, disp, img):
+        """
+        Computes the smoothness loss for a disparity image
+        The color image is used for edge-aware smoothness
+        return: loss
+        """
+
+        # normalize
+        mean_disp = disp.mean(2, True).mean(3, True)
+        norm_disp = disp / (mean_disp + 1e-7)
+        disp = norm_disp
+
+        grad_disp_x = torch.abs(disp[:, :, :, :-1] - disp[:, :, :, 1:])
+        grad_disp_y = torch.abs(disp[:, :, :-1, :] - disp[:, :, 1:, :])
+
+        grad_img_x = torch.mean(
+            torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]), 1, keepdim=True
+        )
+        grad_img_y = torch.mean(
+            torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]), 1, keepdim=True
+        )
+
+        grad_disp_x *= torch.exp(-grad_img_x)
+        grad_disp_y *= torch.exp(-grad_img_y)
+
+        return grad_disp_x.mean() + grad_disp_y.mean()  # noqa: DOC201

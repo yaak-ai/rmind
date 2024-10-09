@@ -4,9 +4,9 @@ from math import prod
 import numpy as np
 import torch
 import torch.nn.functional as F
+from einops.layers.torch import Rearrange
 from jaxtyping import Float
 from tensordict import TensorDict
-from einops.layers.torch import Rearrange
 from torch import Tensor, nn
 from typing_extensions import override
 
@@ -101,6 +101,8 @@ class DepthDecoder(nn.Module):
 
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
+
+        self.init_weights()
 
     def init_weights(self):
         for m in self.decoder.modules():
