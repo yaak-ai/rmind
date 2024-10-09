@@ -17,13 +17,11 @@ class PoseDecoder(nn.Module):
         out_channels = self._out_mask.count_nonzero().item()
 
         self.net = nn.Sequential(
-            nn.Conv2d(in_channels, 512, 1),
+            nn.Linear(in_channels, 512),
             nn.ReLU(),
-            nn.Conv2d(512, 256, 3, 1, 1),
+            nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Conv2d(256, 256, 3, 1, 1),
-            nn.ReLU(),
-            nn.Conv2d(256, int(out_channels), 1),
+            nn.Linear(256, int(out_channels), 1)
         )
 
         if freeze:
@@ -31,12 +29,10 @@ class PoseDecoder(nn.Module):
 
     @override
     def forward(self, x: Tensor) -> Pose:
-        *b, c, w, h = x.shape
-        x = x.view(prod(b), c, w, h)
+        *b, c = x.shape
         x = self.net.forward(x)
-        x = x.mean(3).mean(2)
 
-        out = torch.full((x.shape[0], 6), torch.nan).to(x.device)
-        out[:, self._out_mask] = x
+        out = torch.full_like(x, torch.nan).to(x.device)
+        out[..., self._out_mask] = x
 
         return out.view(*b, 6)

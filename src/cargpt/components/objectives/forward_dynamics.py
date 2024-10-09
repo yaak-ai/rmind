@@ -157,12 +157,12 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         # pose ref -> tgt (temporal order input)
         pose: TensorDict = (
-            image_features.apply(lambda obs: obs + pose_summary.broadcast_to(obs.shape))
+            image_features.named_apply(lambda k, v: pose_summary)
+            .apply(Rearrange("... 1 c -> ... c"))
             .apply(
                 lambda x: torch.cat([x[:, :-1], x[:, 1:]], dim=-1),
                 batch_size=[bs[0], bs[1] - 1],
             )
-            .apply(Rearrange("... (h w) c -> ... c h w", h=10))
             .apply(self.pose_decoder)
         )
 
