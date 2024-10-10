@@ -9,7 +9,7 @@ from jaxtyping import Float
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Module
+from torch.nn import Module, LayerNorm
 from torch.nn import functional as F
 
 from cargpt.components.disparity import DepthDecoder
@@ -41,6 +41,7 @@ class ForwardDynamicsPredictionObjective(Objective):
     def __init__(
         self,
         *,
+        layer_norm: LayerNorm,
         depth_decoder: DepthDecoder,
         pose_decoder: PoseDecoder,
         pose_labeler: PoseLabeler,
@@ -50,6 +51,7 @@ class ForwardDynamicsPredictionObjective(Objective):
     ):
         super().__init__()
 
+        self.layer_norm = layer_norm
         self.depth_decoder = depth_decoder
         self.pose_decoder = pose_decoder
         self.pose_labeler = pose_labeler
@@ -69,6 +71,8 @@ class ForwardDynamicsPredictionObjective(Objective):
         # img_emb_h = episode_builder.position_encoding.image.patch.row.num_embeddings
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
+        # https://github.com/karpathy/minGPT/blob/master/mingpt/model.py#L149
+        embedding = self.layer_norm(embedding)
 
         # all but last timestep
         index = episode.index[:-1]  # pyright: ignore[reportIndexIssue]

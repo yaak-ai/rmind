@@ -231,6 +231,11 @@ objectives:
   #         _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
   forward_dynamics:
     _target_: cargpt.components.objectives.ForwardDynamicsPredictionObjective
+
+    layer_norm:
+      _target_: torch.nn.LayerNorm
+      normalized_shape: ${vars.embedding_dim}
+
     depth_decoder:
       _target_: cargpt.components.disparity.DepthDecoder
       num_ch_enc: [64, 256, 512, 1024, 2048] # resnet > 34
