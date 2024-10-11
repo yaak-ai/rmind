@@ -10,6 +10,8 @@ input_transforms:
         _args_:
           - _target_: einops.layers.torch.Rearrange
             pattern: "... h w c -> ... c h w"
+          - _target_: cargpt.utils.transforms.ApplyMask
+            mask_path: /nas/drives/yaak/data/Niro115-HQ/mask_576x320.json
           - _target_: torchvision.transforms.v2.CenterCrop
             size: [320, 576]
           - _target_: torchvision.transforms.v2.ToDtype
@@ -229,6 +231,7 @@ objectives:
     depth_decoder:
       _target_: cargpt.components.disparity.DepthDecoder
       # num_ch_enc: [64, 64, 128, 256, 512] # resnet < 34
+      # num_ch_enc: [64, 256, 512, 1024, 2048] # resnet > 34
       num_ch_enc: [64, 256, 512, 1024, 2048] # resnet > 34
       scales: [0]
       num_output_channels: 1

@@ -9,6 +9,7 @@ from jaxtyping import Float
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch import Tensor
+import torch.nn as nn
 from torch.nn import Module
 from torch.nn import functional as F
 
@@ -187,24 +188,25 @@ class ForwardDynamicsPredictionObjective(Objective):
             * _pose_loss_weight
         )
 
-        # disparity
         # disparity_input_features = image_features.apply(
         #     lambda obs: obs + depth_summary.broadcast_to(obs.shape)
         # ).apply(Rearrange("... (h w) c -> ... c h w", h=_img_emb_h))
+        # disparity_input_features = image_features.apply(
+        #     lambda obs: pack([obs, depth_summary.broadcast_to(obs.shape)], "b t p {")[0]
+        # ).apply(Rearrange("... (h w) c -> ... c h w", h=_img_emb_h))
+        disparity_input_features = image_features.apply(
+            Rearrange("... (h w) c -> ... c h w ", h=_img_emb_h)
+        )  # w/o depth_summary
+
         disparity = (
             episode.auxilary_features[Modality.IMAGE]
-            .named_apply(
-                lambda k, v: Rearrange(" ...  (h w) c  -> ... c h w", h=_img_emb_h)(v)
-                if k == str(last_layer_n)
-                else v
-            )  # without transformer
-            # .update(
-            #     {
-            #         (k, str(last_layer_n)): disparity_input_features[k]
-            #         for k in disparity_input_features.keys()
-            #     },
-            #     inplace=False,
-            # )
+            .update(
+                {
+                    (k, str(last_layer_n)): disparity_input_features[k]
+                    for k in disparity_input_features.keys()
+                },
+                inplace=False,
+            )
             .apply(self.depth_decoder, call_on_nested=True)
         )
 
