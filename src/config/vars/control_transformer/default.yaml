@@ -10,6 +10,6 @@ data:
   predict:
     batch_size: 1
 encoder:
-  num_heads: 4
-  num_layers: 8
+  num_heads: 2
+  num_layers: 4
 embedding_dim: 2048
