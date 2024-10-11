@@ -504,7 +504,9 @@ optimizer:
 lr_scheduler:
   interval: step
   scheduler:
-    # TODO: this is like 5 lines -- reimplement and drop transformers dep?
-    _target_: transformers.get_cosine_schedule_with_warmup
-    num_warmup_steps: 25000
-    num_training_steps: 250000
+    _target_: torch.optim.lr_scheduler.CyclicLR
+    base_lr: 1e-6
+    max_lr: 1e-4
+    step_size_up: 10000
+    mode: triangular
+    cycle_momentum: false # https://github.com/pytorch/pytorch/issues/90414
