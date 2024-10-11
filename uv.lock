@@ -7,6 +7,9 @@ resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'linux'",
 ]
 
+[manifest]
+overrides = [{ name = "tensordict", git = "https://github.com/pytorch/tensordict.git?rev=37feb13" }]
+
 [[package]]
 name = "aenum"
 version = "3.1.12"
@@ -365,7 +368,7 @@ requires-dist = [
     { name = "rbyte", marker = "extra == 'train'", url = "https://github.com/yaak-ai/rbyte/releases/download/v0.1.0/rbyte-0.1.0-py3-none-any.whl" },
     { name = "rerun-sdk", marker = "extra == 'predict'", specifier = ">=0.16.1" },
     { name = "ruff", marker = "extra == 'lint'", specifier = ">=0.6.2" },
-    { name = "tensordict", git = "https://github.com/pytorch/tensordict.git" },
+    { name = "tensordict" },
     { name = "torch", specifier = ">=2.4.0" },
     { name = "torchaudio", specifier = ">=2.4.0" },
     { name = "torchinfo", specifier = ">=1.8.0" },
@@ -2860,8 +2863,8 @@ wheels = [
 
 [[package]]
 name = "tensordict"
-version = "0.5.0+3054866"
-source = { git = "https://github.com/pytorch/tensordict.git#3054866f61aa6958902f735568c45172be1a4610" }
+version = "0.5.0+37feb13"
+source = { git = "https://github.com/pytorch/tensordict.git?rev=37feb13#37feb1369b1438393ab1af2f63c022e3e728c4d1" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "numpy" },
@@ -3095,7 +3098,7 @@ name = "triton"
 version = "3.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "filelock" },
+    { name = "filelock", marker = "python_full_version < '3.13'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/7b/7757205dee3628f75e7991021d15cd1bd0c9b044ca9affe99b50879fc0e1/triton-3.0.0-1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:34e509deb77f1c067d8640725ef00c5cbfcb2052a1a3cb6a6d343841f92624eb", size = 209464695 },
