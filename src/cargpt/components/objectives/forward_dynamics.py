@@ -31,7 +31,7 @@ from cargpt.components.objectives.base import Objective, PredictionResultKey
 from cargpt.components.pose import PoseDecoder, PoseLabeler
 from cargpt.utils.camera import get_camera_config
 from cargpt.utils.containers import ModuleDict
-from cargpt.utils.functional import nan_padder
+from cargpt.utils.functional import nan_padder, flatten_batch_time
 
 if TYPE_CHECKING:
     from jaxtyping import Float
@@ -119,8 +119,8 @@ class ForwardDynamicsPredictionObjective(Objective):
         loss = {}
 
         # depth
-        depth_metrics, loss["pose"] = self.depth_step(
-            episode, embedding, action_summary
+        depth_metrics, loss["pose"], loss["smoothness"] = self.depth_step(
+            episode, embedding, action_summary, episode_builder
         )
         loss["depth"] = TensorDict({
             k: v.pop("total_loss") for k, v in depth_metrics.items()
@@ -135,13 +135,18 @@ class ForwardDynamicsPredictionObjective(Objective):
         })
 
     def depth_step(
-        self, episode: Episode, embedding: Tensor, action_summary
+        self, episode: Episode, embedding: Tensor, action_summary,
+        episode_builder: EpisodeBuilder,
     ) -> tuple[TensorDict]:
         # constants
         # TODO: extract it
         last_layer_n = 4
         bs = episode.inputs.batch_size
-        _img_emb_w, img_emb_h = 18, 10
+
+        _pose_loss_weight = 0.05
+        _smoothness_loss_weight = 0.05
+
+        _img_emb_h = episode_builder.position_encoding.image.patch.row.num_embeddings
         squeeze_bs = Rearrange("b t ... -> (b t)...")
 
         depth_summary: Float[Tensor, "b t 1 d"] = (
@@ -161,13 +166,14 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         # pose ref -> tgt (temporal order input)
         pose: TensorDict = (
-            image_features.named_apply(lambda k, v: pose_summary)
+            image_features.apply(lambda x: pose_summary)
             .apply(Rearrange("... 1 c -> ... c"))
             .apply(
                 lambda x: torch.cat([x[:, :-1], x[:, 1:]], dim=-1),
                 batch_size=[bs[0], bs[1] - 1],
             )
             .apply(self.pose_decoder)
+            .apply(lambda x: x * 0.01)  # from og paper
         )
 
         for k in episode.inputs["image"].keys():
@@ -181,13 +187,13 @@ class ForwardDynamicsPredictionObjective(Objective):
                 pose.apply(squeeze_bs, batch_size=[]),
                 pose_labels.apply(squeeze_bs, batch_size=[]),
             )
-            * 0.15
+            * _pose_loss_weight
         )
 
         # disparity
         disparity_input_features = image_features.apply(
             lambda obs: obs + depth_summary.broadcast_to(obs.shape)
-        ).apply(Rearrange("... (h w) c -> ... c h w", h=img_emb_h))
+        ).apply(Rearrange("... (h w) c -> ... c h w", h=_img_emb_h))
 
         disparity = (
             episode.auxilary_features[Modality.IMAGE]
@@ -201,26 +207,29 @@ class ForwardDynamicsPredictionObjective(Objective):
             .apply(self.depth_decoder, call_on_nested=True)
         )
 
-        # TODO: get it from dataset when implemented in rbyte
         camera_model = TensorDict({
             k: get_camera_config(camera_name=k, batch_size=bs) for k in pose.keys()
         })
 
         tgt_img = episode.inputs["image"][:, 1:].apply(
-            squeeze_bs, batch_size=[]
+            flatten_batch_time, batch_size=[]
         )  # (t+1), to calculate loss with
         ref_img = episode.inputs["image"][:, :-1].apply(
-            squeeze_bs, batch_size=[]
+            flatten_batch_time, batch_size=[]
         )  # t,  to warp from
-        tgt_disparity = disparity[:, 1:].apply(squeeze_bs, batch_size=[])
-        ref_disparity = disparity[:, :-1].apply(squeeze_bs, batch_size=[])
-        ref_tgt_pose = pose.apply(squeeze_bs, batch_size=[])
+        tgt_disparity = disparity[:, 1:].apply(flatten_batch_time, batch_size=[])
+        ref_disparity = disparity[:, :-1].apply(flatten_batch_time, batch_size=[])
+        ref_tgt_pose = pose.apply(flatten_batch_time, batch_size=[])
 
-        squeeze_bs = Rearrange("b t ... -> (b t)...")
         loss_depth = self.losses["depth"]["photogeometry"](
             tgt_img, ref_img, tgt_disparity, ref_disparity, ref_tgt_pose, camera_model
         )
-        return loss_depth, loss_pose
+
+        loss_smoothness = (
+            self.losses["depth"]["smoothness"](tgt_disparity, tgt_img)
+            * _smoothness_loss_weight
+        )
+        return loss_depth, loss_pose, loss_smoothness
 
     @override
     def predict(

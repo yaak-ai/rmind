@@ -2,6 +2,7 @@ from functools import partial
 
 import more_itertools as mit
 import torch
+from einops import rearrange
 from jaxtyping import Float, Shaped
 from torch import Tensor
 from torch.distributions import Normal
@@ -28,3 +29,7 @@ def nan_padder(*, pad: tuple[int, int], dim: int):
 def gauss_prob(x: Tensor, mean: Tensor, std: Tensor, x_eps: float | Tensor = 0.1):
     dist = Normal(loc=mean, scale=std)
     return dist.cdf(x + x_eps / 2) - dist.cdf(x - x_eps / 2)
+
+def flatten_batch_time(input: torch.Tensor) -> torch.Tensor:
+    """Flattens the batch and time dimensions of the input tensor."""
+    return rearrange(input, "b t ... -> (b t) ...")

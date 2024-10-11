@@ -328,6 +328,9 @@ objectives:
         pose:
           cam_front_left:
             _target_: cargpt.components.pose.TranslationNormPoseLoss
+        smoothness:
+          cam_front_left:
+            _target_: cargpt.components.loss.SmoothnessLoss
 
       # random_masked_hindsight_control:
       #   _target_: cargpt.components.objectives.RandomMaskedHindsightControlObjective
