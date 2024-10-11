@@ -4,6 +4,7 @@ from math import prod
 import numpy as np
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 from einops.layers.torch import Rearrange
 from jaxtyping import Float
 from tensordict import TensorDict
@@ -22,9 +23,7 @@ class ConvBlock(nn.Module):
 
     @override
     def forward(self, x):
-        out = self.conv(x)
-        out = self.nonlin(out)
-        return out
+        return self.nonlin(self.conv(x))
 
 
 class Conv3x3(nn.Module):
@@ -40,14 +39,35 @@ class Conv3x3(nn.Module):
         self.conv = nn.Conv2d(int(in_channels), int(out_channels), 3)
 
     def forward(self, x):
-        out = self.pad(x)
-        out = self.conv(out)
-        return out
+        return self.conv(self.pad(x))
 
 
 def upsample(x):
     """Upsample input tensor by a factor of 2"""
     return F.interpolate(x, scale_factor=2, mode="nearest")
+
+
+class AlignmentLayer(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        return self.conv(x)
+
+
+class AlignmentLayerLinear(nn.Module):
+    def __init__(self, c, h, w):
+        super().__init__()
+        self.conv = nn.AvgPool2d
+        self.linear = nn.Linear(c * h * w, c * h * w)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+
+        x_flat = rearrange(x, "b c h w -> b (c h w)")
+        x_aligned = self.linear(x_flat)  # Now shape will be (b, out_features
+        return rearrange(x_aligned, "b (c h w) -> b c h w", c=c, h=h, w=w)
 
 
 class DepthDecoder(nn.Module):
@@ -101,6 +121,10 @@ class DepthDecoder(nn.Module):
 
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
+        # self.alignment_layer = AlignmentLayer(
+        #     in_channels=num_ch_enc[-1], out_channels=num_ch_enc[-1]
+        # )
+        # self.alignment_layer = AlignmentLayerLinear(c=num_ch_enc[-1], h=10, w=18)
 
         self.init_weights()
 
@@ -120,6 +144,7 @@ class DepthDecoder(nn.Module):
         )
 
         x = input_features["4"]
+        # x = self.alignment_layer(x)
 
         for i in range(4, -1, -1):
             x = self.convs["upconv", i, 0](x)
