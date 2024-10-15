@@ -129,7 +129,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         match strategy := self.trainer.strategy:
             case SingleDeviceStrategy():
-                objectives_to_compute = all_objectives
+                objectives_to_compute = scheduled_objectives
 
             case DDPStrategy():
                 # compute all objectives since we need a static graph
