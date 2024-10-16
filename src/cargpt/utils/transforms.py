@@ -9,11 +9,18 @@ from torch.nn import Module
 
 
 class ApplyMask(Module):
-    def __init__(self, mask_path: str, img_w: int = 576, img_h: int = 324):
+    def __init__(
+        self,
+        mask_path: str,
+        img_w: int = 576,
+        img_h: int = 324,
+        transforms: Module | None = None,
+    ):
         super().__init__()
         with open(mask_path) as f:
             mask_json = json.load(f)
 
+        self.transforms = transforms
         self.mask = self._create_binary_mask(img_w, img_h, mask_json["mask_polygon"])
 
     def forward(self, tensor):
@@ -29,6 +36,7 @@ class ApplyMask(Module):
         # Draw the polygon on the mask
         draw.polygon(polygon, fill=1)  # Fill the polygon with white (255)
 
-        return 1 - torch.Tensor(np.array(mask)).type(
+        mask = 1 - torch.Tensor(np.array(mask)).type(
             torch.uint8
         )  # Convert to numpy array for further processing
+        return self.transforms(mask) if self.transforms else mask

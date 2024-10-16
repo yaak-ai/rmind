@@ -10,8 +10,6 @@ input_transforms:
         _args_:
           - _target_: einops.layers.torch.Rearrange
             pattern: "... h w c -> ... c h w"
-          - _target_: cargpt.utils.transforms.ApplyMask
-            mask_path: /nas/drives/yaak/data/Niro115-HQ/mask_576x320.json
           - _target_: torchvision.transforms.v2.CenterCrop
             size: [320, 576]
           - _target_: torchvision.transforms.v2.ToDtype
@@ -318,6 +316,13 @@ objectives:
             with_auto_mask: true
             weight_photometric: 1.0
             weight_geometric: 0.5
+            self_occlusion_mask:
+              _target_: cargpt.utils.transforms.ApplyMask
+              mask_path: /nas/drives/yaak/data/Niro115-HQ/mask_576x324.json
+              transforms:
+                _target_: torchvision.transforms.v2.CenterCrop
+                size: [320, 576]
+
         pose:
           cam_front_left:
             _target_: cargpt.components.pose.TranslationNormPoseLoss

@@ -104,6 +104,7 @@ class PhotoGeometryLoss(Module):
         with_auto_mask: bool,
         weight_photometric: float = 1.0,
         weight_geometric: float = 0.5,
+        self_occlusion_mask: Module | None = None,
     ):
         super().__init__()
         self.ssim_loss = SSIM() if with_ssim else None
@@ -111,6 +112,7 @@ class PhotoGeometryLoss(Module):
         self.with_mask = with_mask
         self.weight_photometric = weight_photometric
         self.weight_geometric = weight_photometric
+        self.self_occlusion_mask = self_occlusion_mask
 
     def forward(
         self, tgt_img, ref_img, tgt_disparity, ref_disparity, pose, camera_model
@@ -196,6 +198,9 @@ class PhotoGeometryLoss(Module):
         # So we mask them out
         if self.with_mask:
             diff_img = diff_img * self_mask
+
+        if self.self_occlusion_mask:
+            diff_img = self.self_occlusion_mask(diff_img)
 
         # Photo loss goes of pixels which have minimum reprojection loss
         photometric_loss = self.mean_on_mask_d(diff_img, valid_mask_min)
