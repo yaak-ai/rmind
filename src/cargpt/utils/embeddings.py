@@ -7,6 +7,7 @@ from omegaconf import DictConfig
 from tensordict import TensorDict
 from torch import Tensor  # noqa: TCH002
 from typing_extensions import override
+
 from cargpt.components.episode import Modality, SpecialToken
 
 try:
@@ -15,6 +16,7 @@ except ImportError:
     from typing import Any
 
     Batch = Any
+
 
 class Embeddings(pl.LightningModule):
     def __init__(self, base: DictConfig):

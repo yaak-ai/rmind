@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import more_itertools as mit
 import pytorch_lightning as pl
@@ -11,9 +11,14 @@ from typing_extensions import override
 
 
 class EmbeddingWriter(BasePredictionWriter):
-    def __init__(self, output_dir: str | Path) -> None:
-        super().__init__(write_interval="batch")
+    def __init__(
+        self,
+        output_dir: str | Path,
+        write_interval: Literal["batch", "epoch", "batch_end_epoch"],
+    ) -> None:
+        super().__init__(write_interval)
         self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     @override
     def write_on_batch_end(
@@ -26,19 +31,13 @@ class EmbeddingWriter(BasePredictionWriter):
         batch_idx: int = 0,
         dataloader_idx: int = 0,
     ) -> None:
-        camera_name = mit.one(batch.frames.keys())
-        meta = batch.meta
-        drive_ids = meta.pop("drive_id").detach()
-        drive_ids = [
-            drive_id.type(torch.uint8).cpu().numpy().tobytes().decode("ascii").strip()
-            for drive_id in drive_ids
-        ]
-        frame_idxs = meta[f"{camera_name}/ImageMetadata_frame_idx"].tolist()
-
+        camera_name = mit.one(batch.frame.keys())
         obj = {
             "features": prediction.detach().cpu(),
-            "frame_idx": frame_idxs,
-            "drive_id": drive_ids,
+            "frame_idx": batch.table[
+                f"image_metadata.{camera_name}.frame_idx"
+            ].tolist(),
+            "drive_id": batch.meta.input_id,
             "camera_name": camera_name,
         }
         torch.save(obj, f"{self.output_dir}/{batch_idx:06}.pt")
