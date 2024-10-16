@@ -1,0 +1,34 @@
+# @package _global_
+output_dir: ???
+
+defaults:
+  - /paths: default
+  - /vars: control_transformer/default
+  - /model: control_transformer/embeddings
+  - /dataset/val@datamodule.predict.dataset
+  - _self_
+datamodule:
+  _target_: cargpt.datamodules.GenericDataModule
+  predict:
+    _target_: torch.utils.data.DataLoader
+    shuffle: false
+    batch_size: ${vars.data.predict.batch_size}
+    num_workers: 2
+    pin_memory: false
+    persistent_workers: true
+    multiprocessing_context: forkserver
+    collate_fn:
+      _target_: rbyte.utils.dataloader.collate_identity
+      _partial_: true
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  logger: false
+  callbacks:
+    - _target_: cargpt.callbacks.embedding_writer.EmbeddingWriter
+      write_interval: batch
+      output_dir: ${output_dir}
+    - _target_: cargpt.callbacks.model_summary.ModelSummary
+      depth: 5
