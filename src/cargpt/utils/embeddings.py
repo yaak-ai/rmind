@@ -28,7 +28,7 @@ class Embeddings(pl.LightningModule):
     ) -> TensorDict:
         return self.embeddings_step(batch)
 
-    def embeddings_step(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues]
+    def embeddings_step(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues, reportInvalidTypeForm]
         inputs = self.base._build_input(batch)
         episode = self.base.episode_builder.build_episode(inputs)
 

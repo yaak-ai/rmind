@@ -98,7 +98,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
                         case _:
                             raise NotImplementedError
-
                 checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = hparams
 
                 model = _load_state(cls, checkpoint, strict=strict, **kwargs)

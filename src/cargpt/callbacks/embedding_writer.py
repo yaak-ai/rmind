@@ -13,7 +13,7 @@ class EmbeddingWriter(BasePredictionWriter):
     def __init__(
         self,
         output_dir: str | Path,
-        write_interval: Literal["batch", "epoch", "batch_end_epoch"],
+        write_interval: Literal["batch", "epoch", "batch_and_epoch"],
     ) -> None:
         super().__init__(write_interval)
         self.output_dir = Path(output_dir)
