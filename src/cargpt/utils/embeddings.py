@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, override
 
 import pytorch_lightning as pl
 from hydra.utils import instantiate
@@ -6,7 +6,6 @@ from jaxtyping import Float  # noqa: TCH002
 from omegaconf import DictConfig
 from tensordict import TensorDict
 from torch import Tensor  # noqa: TCH002
-from typing_extensions import override
 
 from cargpt.components.episode import Modality, SpecialToken
 

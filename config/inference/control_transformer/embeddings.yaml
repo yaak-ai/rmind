@@ -1,25 +1,14 @@
 # @package _global_
-output_dir: ???
 
 defaults:
   - /paths: default
   - /vars: control_transformer/default
   - /model: control_transformer/embeddings
-  - /dataset/val@datamodule.predict.dataset
+  - /datamodule: predict
   - _self_
-datamodule:
-  _target_: cargpt.datamodules.GenericDataModule
-  predict:
-    _target_: torch.utils.data.DataLoader
-    shuffle: false
-    batch_size: ${vars.data.predict.batch_size}
-    num_workers: 2
-    pin_memory: false
-    persistent_workers: true
-    multiprocessing_context: forkserver
-    collate_fn:
-      _target_: rbyte.utils.dataloader.collate_identity
-      _partial_: true
+
+output_dir: ???
+
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu

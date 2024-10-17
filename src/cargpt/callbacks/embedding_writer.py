@@ -1,13 +1,12 @@
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, override
 
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorDict
-from typing_extensions import override
 
 
 class EmbeddingWriter(BasePredictionWriter):
