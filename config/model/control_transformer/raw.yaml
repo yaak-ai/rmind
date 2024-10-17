@@ -375,14 +375,14 @@ objectives:
             - _target_: cargpt.components.norm.MuLawEncoding
               quantization_channels: ${vars.embedding_dim}
 
-# objective_scheduler:
-#   _target_: cargpt.components.objectives.ObjectiveScheduler
-#   schedule:
-#     inverse_dynamics: 0.25
-#     forward_dynamics: 0.25
-#     random_masked_hindsight_control: 0.25
-#     memory_extraction: 0.25
-#   sample_size: 1
+objective_scheduler:
+  _target_: cargpt.components.objectives.ObjectiveScheduler
+  schedule:
+    inverse_dynamics: 0.25
+    forward_dynamics: 0.25
+    random_masked_hindsight_control: 0.25
+    memory_extraction: 0.25
+  sample_size: 1
 optimizer:
   _target_: cargpt.components.optimizers.SelectiveAdamW
   _recursive_: true
