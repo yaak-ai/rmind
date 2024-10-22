@@ -21,3 +21,7 @@ trainer:
       output_dir: ${output_dir}
     - _target_: cargpt.callbacks.model_summary.ModelSummary
       depth: 5
+datamodule:
+  predict:
+    shuffle: true
+
