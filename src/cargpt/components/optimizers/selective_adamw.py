@@ -34,7 +34,11 @@ class SelectiveAdamW(AdamW):
 
                 match param_type:
                     case "weight":
-                        if isinstance(submodule, weight_decay_module_blacklist):
+                        if (
+                            isinstance(submodule, weight_decay_module_blacklist)
+                            | ("depth_decoder" in param_name)
+                            | ("pose_decoder" in param_name)
+                        ):
                             weight_decay_param_blacklist.add(param_name)
 
                     case "bias":

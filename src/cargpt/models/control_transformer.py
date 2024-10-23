@@ -23,6 +23,7 @@ from cargpt.components.objectives import ObjectiveScheduler
 from cargpt.components.objectives.base import ObjectiveName, PredictionResultKey
 from cargpt.utils._wandb import LoadableFromArtifact
 from cargpt.utils.containers import ModuleDict
+from cargpt.utils.logging import log_depth_images
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -153,25 +154,80 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         metrics["loss", "total"] = sum(  # pyright: ignore[reportArgumentType]
             losses.values(include_nested=True, leaves_only=True)
         )
+        metrics_depth = None
+        if "forward_dynamics" in metrics:
+            metrics_depth = metrics["forward_dynamics"].pop("depth_metrics")
 
-        if (
-            isinstance(self.logger, WandbLogger)
-            and (step := self.trainer.global_step) == 0
-        ):
-            from wandb import Image  # noqa: PLC0415
-
+        if isinstance(self.logger, WandbLogger):
             episode = self.episode_builder.build_episode(input)
-            objectives = (
-                all_objectives
-                if self.objective_scheduler is None
-                else self.objective_scheduler.objectives
-            )
-            # TODO: batch log mask images
-            for obj in map(str, objectives):
-                objective = self.objectives[obj]
-                mask = objective._build_attention_mask(episode.index, episode.timestep)
-                img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
-                self.logger.log_image(f"masks/{obj}", [img], step=step)
+            if (step := self.trainer.global_step) == 0:
+                from wandb import Image  # noqa: PLC0415
+
+                objectives = (
+                    all_objectives
+                    if self.objective_scheduler is None
+                    else self.objective_scheduler.objectives
+                )
+                # TODO: batch log mask images
+                for obj in map(str, objectives):
+                    objective = self.objectives[obj]
+                    mask = objective._build_attention_mask(
+                        episode.index, episode.timestep
+                    )
+                    img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
+                    self.logger.log_image(f"masks/{obj}", [img], step=step)
+
+            # log depth
+            elif (
+                self.global_step % self.trainer.log_every_n_steps == 0
+            ) and metrics_depth is not None:
+                with torch.no_grad():
+                    for k, _metrics in metrics_depth.items():
+                        idx_clip, idx_frame = 0, 0  # which sample within batch to log
+                        drive_id = batch.meta.input_id[idx_clip]
+                        frame_idxs = batch.table[f"ImageMetadata.{k}.frame_idx"][
+                            idx_clip
+                        ][[idx_frame, idx_frame + 1]].tolist()
+                        captions = [
+                            f"{frame_idx} [{drive_id}]" for frame_idx in frame_idxs
+                        ]
+
+                        ref_disparity = _metrics["ref_disp"][
+                            idx_clip, idx_frame, 0, ...
+                        ]
+                        tgt_disparity = _metrics["tgt_disp"][
+                            idx_clip, idx_frame, 0, ...
+                        ]
+
+                        disparity = torch.stack([ref_disparity, tgt_disparity], dim=0)
+
+                        frames = episode.inputs["image"][k][idx_clip][
+                            [idx_frame, idx_frame + 1], ...
+                        ]
+
+                        tgt_warped = _metrics["tgt_warped"][idx_clip, [idx_frame], ...]
+
+                        log_depth_images(
+                            logger=self.logger,
+                            global_step=self.global_step,
+                            prefix="train",
+                            captions=captions,
+                            input=frames,
+                            warped=torch.cat([frames[[-1]], tgt_warped], dim=0),
+                            auto_mask=_metrics["valid_mask"][
+                                idx_clip, [idx_frame], 0, ...
+                            ],
+                            self_mask=_metrics["self_mask"][
+                                idx_clip, [idx_frame], 0, ...
+                            ],
+                            disparity=disparity,
+                            projected_disparity=_metrics["projected_disp"][
+                                idx_clip, [idx_frame], 0, ...
+                            ],
+                            computed_disparity=_metrics["computed_disp"][
+                                idx_clip, [idx_frame], 0, ...
+                            ],
+                        )
 
         self.log_dict(
             {
@@ -200,6 +256,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         metrics["loss", "total"] = sum(  # pyright: ignore[reportArgumentType]
             losses.values(include_nested=True, leaves_only=True)
         )
+        metrics_depth = metrics["forward_dynamics"].pop("depth_metrics")
 
         if not self.trainer.sanity_checking:
             self.log_dict(
@@ -301,6 +358,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         import polars as pl  # noqa: PLC0415
 
         samples = self.trainer.datamodule.train_dataloader().dataset.samples  # pyright: ignore[reportAttributeAccessIssue]
+        samples = samples.with_columns([
+            pl.col(col).list.to_array(samples["VehicleMotion.time_stamp"][0].len())
+            for col in samples.columns
+            if samples[col].dtype == pl.List
+        ])
 
         sample_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
         delta_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
@@ -430,6 +492,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     Modality.DISCRETE: {
                         "turn_signal": table["VehicleState.turn_signal"]
                     },
+                    Modality.META: {
+                        "timestamp": table["ImageMetadata.cam_front_left.time_stamp"]
+                    },  # NOTE: hardcoded ref camera
                 },
                 device=self.device,
             )

@@ -276,6 +276,7 @@ dependencies = [
     { name = "einops" },
     { name = "hydra-core" },
     { name = "jaxtyping" },
+    { name = "kornia" },
     { name = "loguru" },
     { name = "more-itertools" },
     { name = "numpy" },
@@ -356,6 +357,7 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.2.33" },
     { name = "jupyterlab", marker = "extra == 'notebook'", specifier = ">=4.2.4" },
     { name = "jupyterlab-vim", marker = "extra == 'notebook'", specifier = ">=4.1.3" },
+    { name = "kornia", specifier = ">=0.7.3" },
     { name = "loguru", specifier = ">=0.7.2" },
     { name = "lovely-tensors", marker = "extra == 'dev'", specifier = ">=0.1.16" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.9.2" },
@@ -1426,6 +1428,33 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a8/b2/15f7f556df0a6e5b3772a1e076a9d9f6c538ce5f05bd590eca8106508e06/kiwisolver-1.4.7-cp313-cp313-win32.whl", hash = "sha256:f4c9aee212bc89d4e13f58be11a56cc8036cabad119259d12ace14b34476fd07", size = 46364 },
     { url = "https://files.pythonhosted.org/packages/0b/db/32e897e43a330eee8e4770bfd2737a9584b23e33587a0812b8e20aac38f7/kiwisolver-1.4.7-cp313-cp313-win_amd64.whl", hash = "sha256:8a3ec5aa8e38fc4c8af308917ce12c536f1c88452ce554027e55b22cbbfbff76", size = 55887 },
     { url = "https://files.pythonhosted.org/packages/c8/a4/df2bdca5270ca85fd25253049eb6708d4127be2ed0e5c2650217450b59e9/kiwisolver-1.4.7-cp313-cp313-win_arm64.whl", hash = "sha256:76c8094ac20ec259471ac53e774623eb62e6e1f56cd8690c67ce6ce4fcb05650", size = 48530 },
+]
+
+[[package]]
+name = "kornia"
+version = "0.7.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "kornia-rs" },
+    { name = "packaging" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/15/47/5df567a667d4a5cf568a048127b5f53bc1fabd20a4f95f2cf7402c9f6759/kornia-0.7.3.tar.gz", hash = "sha256:0eb861ea5d7e6c3891ae699a8b7103a5783af0a7c41888ca482420dd3d055306", size = 589940 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/26/9e6fad0f5e8c25b19e3c25fd0efa0817b9e1a3d9670df8454162e053f283/kornia-0.7.3-py2.py3-none-any.whl", hash = "sha256:f2175f7244a220443111917f8ccaf0242ac9c20401b9824b5c0dacddb37f3258", size = 833324 },
+]
+
+[[package]]
+name = "kornia-rs"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/c2/69b48f8346e2883e5ea6f71f158f4ac87414a5d8a119fc9e91103c8ad56e/kornia_rs-0.1.5.tar.gz", hash = "sha256:00520988740e9de1682f2f682caecb9b740d2489f3fbbb1ca0b6fc56af70d298", size = 129531 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/47/5ef9745d5d3ffbd2dcaf73df9fd448c55828225f8ab5531e241a799710e7/kornia_rs-0.1.5-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:eec9792555247ca1906ff470e5a3368c1d401cceef1d4257a167165d3bf1f384", size = 1529779 },
+    { url = "https://files.pythonhosted.org/packages/ce/a6/37b85efe460fb596e4d07dea4ed469c7e565ad15116222d586f24c29c804/kornia_rs-0.1.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:d0620ac05f0e6abc573bcaa6ab616e4448ba7131ecc06863591650326050603e", size = 1346275 },
+    { url = "https://files.pythonhosted.org/packages/2c/2c/15fb707cbcf95689cb2f7e5ea176f5d4c27f1b9c5b3b4d963a32181c3757/kornia_rs-0.1.5-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c3206d6e19b2fcf68b9e52a9a05354fd8eeb1ca6572ce69d568d120876f66556", size = 1501496 },
+    { url = "https://files.pythonhosted.org/packages/42/34/e4248c4cacbacf944fa2112cb896c660eb889094c091ffbad2f4c7c73766/kornia_rs-0.1.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:be35764b4bf77eb973ad41e8ae5a7da8f99087eb2cc9119cc1cbd87c333fce88", size = 1644084 },
+    { url = "https://files.pythonhosted.org/packages/c4/43/813d1145df813c4428068e3f7569ba7be0f82c5c201997e215a764c1df34/kornia_rs-0.1.5-cp312-none-win_amd64.whl", hash = "sha256:38b3acda17a9be3be3e888ecf32cab8362fa922d03bca6afd27ad0a8dac36fd2", size = 1270737 },
 ]
 
 [[package]]

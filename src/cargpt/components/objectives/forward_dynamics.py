@@ -11,9 +11,10 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
-from torch.utils._pytree import tree_map
 
+from cargpt.components.disparity import DepthDecoder
 from cargpt.components.episode import (
+    Episode,
     EpisodeBuilder,
     Index,
     Modality,
@@ -27,27 +28,34 @@ from cargpt.components.mask import (
     XFormersAttentionMaskLegend,
 )
 from cargpt.components.objectives.base import Objective, PredictionResultKey
+from cargpt.components.pose import PoseLabeler
+from cargpt.utils.camera import get_camera_config
 from cargpt.utils.containers import ModuleDict
-from cargpt.utils.functional import nan_padder
+from cargpt.utils.functional import flatten_batch_time, nan_padder
 
 if TYPE_CHECKING:
     from jaxtyping import Float
-    from torch import Tensor
 
 
 class ForwardDynamicsPredictionObjective(Objective):
     def __init__(
         self,
         *,
+        depth_decoder: DepthDecoder,
+        pose_decoder: Module,
+        pose_labeler: PoseLabeler,
         heads: ModuleDict,
         losses: ModuleDict | None = None,
         targets: DictConfig | None = None,
     ):
         super().__init__()
 
+        self.depth_decoder = depth_decoder
+        self.pose_decoder = pose_decoder
+        self.pose_labeler = pose_labeler
         self.heads = heads
         self.losses = losses
-        self.targets = OmegaConf.to_container(targets) if targets else None
+        self.targets = OmegaConf.to_container(targets)
 
     @override
     def forward(
@@ -63,47 +71,163 @@ class ForwardDynamicsPredictionObjective(Objective):
         # all but last timestep
         index = episode.index[:-1]  # pyright: ignore[reportIndexIssue]
 
-        observations: TensorDict = index.select(
-            *episode.timestep.keys(TokenType.OBSERVATION)
-        ).parse(embedding)
+        # observations: TensorDict = index.select(
+        #     *episode.timestep.keys(TokenType.OBSERVATION)
+        # ).parse(embedding)
 
-        observation_summary: Float[Tensor, "b t 1 d"] = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
+        # observation_summary: Float[Tensor, "b t 1 d"] = (
+        #     index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
+        #     .parse(embedding)
+        #     .get(k)
+        # )
 
         action_summary: Float[Tensor, "b t 1 d"] = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
+            episode.index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
             .parse(embedding)
             .get(k)
         )
 
-        features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType]
-            # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
-            lambda obs: pack(
-                [
-                    obs,
-                    observation_summary.broadcast_to(obs.shape),
-                    action_summary.broadcast_to(obs.shape),
-                ],
-                "b t p *",
-            )[0]
+        # features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType]
+        #     # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
+        #     lambda obs: pack(
+        #         [
+        #             obs,
+        #             observation_summary.broadcast_to(obs.shape),
+        #             action_summary[:, :-1].broadcast_to(obs.shape),
+        #         ],
+        #         "b t p *",
+        #     )[0]
+        # )
+
+        # logits = self.heads.forward(features)
+        # targets = TensorDict(
+        #     tree_map(
+        #         lambda f: f(episode)[:, 1:],  # all but first timestep
+        #         self.targets,
+        #     )
+        # )
+        # loss = self.losses(
+        #     logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
+        #     targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
+        # )
+        #
+        loss = {}
+        b, t = action_summary.shape[:2]
+
+        # depth
+        depth_metrics, loss["pose"], loss["smoothness"] = self.depth_step(
+            episode, embedding, action_summary, episode_builder
+        )
+        loss["depth"] = TensorDict({
+            k: v.pop("total_loss") for k, v in depth_metrics.items()
+        })
+
+        return TensorDict({
+            "loss": loss,
+            "depth_metrics": depth_metrics.apply(
+                Rearrange("(b t) ... -> b t ...", b=b), batch_size=[b, t - 1]
+            ),
+        })
+
+    def depth_step(
+        self,
+        episode: Episode,
+        embedding: Tensor,
+        action_summary: Tensor,
+        episode_builder: EpisodeBuilder,
+    ) -> tuple[TensorDict]:
+        # constants
+        _img_emb_h = episode_builder.position_encoding.image.patch.row.num_embeddings
+        # TODO: extract it
+        last_layer_n = 4
+        bs = episode.inputs.batch_size
+
+        _pose_loss_weight = 0.05
+        _smoothness_loss_weight = 0.05
+
+        depth_summary: Float[Tensor, "b t 1 d"] = (
+            episode.index.select(k := (Modality.SPECIAL, SpecialToken.DEPTH_SUMMARY))
+            .parse(embedding)
+            .get(k)
         )
 
-        logits = self.heads.forward(features)
-        targets = TensorDict(
-            tree_map(
-                lambda f: f(episode)[:, 1:],  # all but first timestep
-                self.targets,
+        pose_summary: Float[Tensor, "b t 1 d"] = (
+            episode.index.select(k := (Modality.SPECIAL, SpecialToken.POSE_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+        image_features = (
+            episode.index.select(k := Modality.IMAGE).parse(embedding).get(k)
+        )
+
+        # pose ref -> tgt (temporal order input)
+        pose: TensorDict = (
+            image_features.apply(lambda x: pose_summary)  # to make it tensordict
+            .apply(
+                lambda x: torch.cat(
+                    [x[:, :-1] + action_summary[:, :-1], x[:, 1:]], dim=-1
+                ),
+                batch_size=[bs[0], bs[1] - 1],
             )
-        )
-        loss = self.losses(
-            logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
-            targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
+            .apply(self.pose_decoder)
+            .apply(Rearrange(" ... 1 c -> ... c"))
+            .apply(lambda x: x * 0.01)  # from og paper
         )
 
-        return TensorDict({"loss": loss})
+        for k in episode.inputs["image"].keys():
+            if "front" not in k:
+                msg = "Speed Pose Labeler is implemented only for front cameras"
+                raise NotImplementedError(msg)
+        pose_labels = pose.named_apply(lambda k, v: self.pose_labeler(episode))
+
+        loss_pose = (
+            self.losses["depth"]["pose"](
+                pose.apply(flatten_batch_time, batch_size=[]),
+                pose_labels.apply(flatten_batch_time, batch_size=[]),
+            )
+            * _pose_loss_weight
+        )
+
+        disparity_input_features = image_features.apply(
+            lambda obs: pack([obs, depth_summary.broadcast_to(obs.shape)], "b t p *")[0]
+        ).apply(Rearrange("... (h w) c -> ... c h w", h=_img_emb_h))
+
+        disparity = (
+            episode.auxilary_features[Modality.IMAGE]
+            .update(
+                {
+                    (k, str(last_layer_n)): disparity_input_features[k]
+                    for k in disparity_input_features.keys()
+                },
+                inplace=False,
+            )
+            .apply(self.depth_decoder, call_on_nested=True)
+        )
+
+        # TODO: get it from dataset when implemented in rbyte
+        camera_model = TensorDict({
+            k: get_camera_config(camera_name=k, batch_size=bs) for k in pose.keys()
+        })
+
+        tgt_img = episode.inputs["image"][:, 1:].apply(
+            flatten_batch_time, batch_size=[]
+        )  # (t+1), to calculate loss with
+        ref_img = episode.inputs["image"][:, :-1].apply(
+            flatten_batch_time, batch_size=[]
+        )  # t,  to warp from
+        tgt_disparity = disparity[:, 1:].apply(flatten_batch_time, batch_size=[])
+        ref_disparity = disparity[:, :-1].apply(flatten_batch_time, batch_size=[])
+        ref_tgt_pose = pose.apply(flatten_batch_time, batch_size=[])
+
+        loss_depth = self.losses["depth"]["photogeometry"](
+            tgt_img, ref_img, tgt_disparity, ref_disparity, ref_tgt_pose, camera_model
+        )
+
+        loss_smoothness = (
+            self.losses["depth"]["smoothness"](tgt_disparity, tgt_img)
+            * _smoothness_loss_weight
+        )
+        return loss_depth, loss_pose, loss_smoothness
 
     @override
     def predict(

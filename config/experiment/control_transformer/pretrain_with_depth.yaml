@@ -1,0 +1,26 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - /datamodule: default
+  - /trainer: default
+  - /vars: control_transformer/default
+  - /model: control_transformer/raw_with_depth
+  - _self_
+wandb:
+  group: smart
+vars:
+  embedding_dim: 2048
+  data:
+    train:
+      batch_size: 4
+    val:
+      batch_size: 4
+  encoder:
+    num_heads: 2
+    num_layers: 4
+datamodule:
+  train:
+    batch_size: ${vars.data.train.batch_size}
+  val:
+    batch_size: ${vars.data.val.batch_size}

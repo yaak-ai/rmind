@@ -28,12 +28,15 @@ class Modality(StrEnum):
     CONTINUOUS = auto()
     DISCRETE = auto()
     SPECIAL = auto()
+    META = auto()
 
 
 class SpecialToken(StrEnum):
     OBSERVATION_SUMMARY = auto()
     OBSERVATION_HISTORY = auto()
     ACTION_SUMMARY = auto()
+    DEPTH_SUMMARY = auto()
+    POSE_SUMMARY = auto()
 
 
 class PositionEncoding(StrEnum):
@@ -173,6 +176,7 @@ class Episode:
     embedded: TensorDict
     index: Index  # pyright: ignore[reportGeneralTypeIssues]
     timestep: Timestep
+    auxilary_features: TensorDict
 
     def get(self, key: NestedKey | list[str], *args, **kwargs) -> Any:  # pyright: ignore[reportInvalidTypeForm]
         return tensorclass_get(self, tuple(key), *args, **kwargs)  # pyright: ignore[reportArgumentType]
@@ -223,7 +227,7 @@ class EpisodeBuilder(Module):
         masked_action_timestep_idx: list[int] | None = None,
         masked_observation_timestep_idx: list[int] | None = None,
     ) -> Episode:  # pyright: ignore[reportGeneralTypeIssues]
-        tokenized = inputs.named_apply(
+        tokenized = inputs.exclude(Modality.META).named_apply(
             lambda k, v: (
                 self.tokenizers.get(k, default=None) or self.tokenizers.get(k[0])
             )(v),
@@ -241,6 +245,23 @@ class EpisodeBuilder(Module):
             )(v),
             nested_keys=True,
         )
+
+        # TODO: make it more robust. Probarly move auxilary features to embeds_nope with special key
+        image_tokens_keys = [
+            token.key
+            for token in self.timestep.tokens
+            if token.modality == Modality.IMAGE
+        ]
+        n_layers = len(embedded_nope[image_tokens_keys[0]].keys())
+        auxilary_features = TensorDict(
+            {
+                k: embedded_nope[k].select(*[str(i) for i in range(n_layers)])
+                for k in image_tokens_keys
+            },
+            batch_size=embedded_nope.batch_size,
+        )
+        for k in image_tokens_keys:
+            embedded_nope[k] = embedded_nope[k][str(n_layers - 1)]
 
         # TODO: learnable mask token?
         if masked_action_timestep_idx is not None:
@@ -276,6 +297,7 @@ class EpisodeBuilder(Module):
             timestep=self.timestep,  # pyright: ignore[reportCallIssue]
             batch_size=[],  # pyright: ignore[reportCallIssue]
             device=inputs.device,  # pyright: ignore[reportCallIssue]
+            auxilary_features=auxilary_features,
         )
 
     def _build_timestep_index(self, lengths: dict[tuple[Modality, str], Any]) -> Index:  # pyright: ignore[reportGeneralTypeIssues]
@@ -283,7 +305,7 @@ class EpisodeBuilder(Module):
             zip(
                 lengths.keys(),
                 pairwise(accumulate(lengths.values(), initial=0)),
-                strict=True,
+                strict=False,
             )
         )
         return Index.from_dict(  # pyright: ignore[reportAttributeAccessIssue]
