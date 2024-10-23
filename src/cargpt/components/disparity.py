@@ -47,29 +47,6 @@ def upsample(x):
     return F.interpolate(x, scale_factor=2, mode="nearest")
 
 
-class AlignmentLayer(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-
-    def forward(self, x):
-        return self.conv(x)
-
-
-class AlignmentLayerLinear(nn.Module):
-    def __init__(self, c, h, w):
-        super().__init__()
-        self.conv = nn.AvgPool2d
-        self.linear = nn.Linear(c * h * w, c * h * w)
-
-    def forward(self, x):
-        b, c, h, w = x.shape
-
-        x_flat = rearrange(x, "b c h w -> b (c h w)")
-        x_aligned = self.linear(x_flat)  # Now shape will be (b, out_features
-        return rearrange(x_aligned, "b (c h w) -> b c h w", c=c, h=h, w=w)
-
-
 class DepthDecoder(nn.Module):
     def __init__(
         self, num_ch_enc, scales=(0, 1, 2, 3), num_output_channels=1, use_skips=True

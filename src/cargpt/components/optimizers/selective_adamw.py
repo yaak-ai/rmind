@@ -31,6 +31,9 @@ class SelectiveAdamW(AdamW):
             for k, _ in submodule.named_parameters():
                 param_name = f"{submodule_name}.{k}" if submodule_name else k
                 _, param_type = param_name.rsplit(".", maxsplit=1)
+                if ("depth_decoder" in param_name) or ("pose_decoder" in param_name):
+                    weight_decay_param_blacklist.add(param_name)
+                    continue
 
                 match param_type:
                     case "weight":

@@ -188,15 +188,9 @@ class ForwardDynamicsPredictionObjective(Objective):
             * _pose_loss_weight
         )
 
-        # disparity_input_features = image_features.apply(
-        #     lambda obs: obs + depth_summary.broadcast_to(obs.shape)
-        # ).apply(Rearrange("... (h w) c -> ... c h w", h=_img_emb_h))
-        # disparity_input_features = image_features.apply(
-        #     lambda obs: pack([obs, depth_summary.broadcast_to(obs.shape)], "b t p {")[0]
-        # ).apply(Rearrange("... (h w) c -> ... c h w", h=_img_emb_h))
         disparity_input_features = image_features.apply(
-            Rearrange("... (h w) c -> ... c h w ", h=_img_emb_h)
-        )  # w/o depth_summary
+            lambda obs: pack([obs, depth_summary.broadcast_to(obs.shape)], "b t p *")[0]
+        ).apply(Rearrange("... (h w) c -> ... c h w", h=_img_emb_h))
 
         disparity = (
             episode.auxilary_features[Modality.IMAGE]
