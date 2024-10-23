@@ -40,7 +40,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
         self.heads = heads
         self.losses = losses
-        self.targets = OmegaConf.to_container(targets)
+        self.targets = OmegaConf.to_container(targets) if targets else None
 
     @override
     def forward(

@@ -44,7 +44,7 @@ class MemoryExtractionObjective(Objective):
 
         self.heads = heads
         self.losses = losses
-        self.targets = OmegaConf.to_container(targets)
+        self.targets = OmegaConf.to_container(targets) if targets else None
         self.delta_tokenizers = delta_tokenizers
 
     @override

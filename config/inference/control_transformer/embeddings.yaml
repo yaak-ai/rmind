@@ -3,9 +3,11 @@
 defaults:
   - /paths: default
   - /vars: control_transformer/default
-  - /model: control_transformer/finetuned
+  - /model: control_transformer/embeddings
   - /datamodule: predict
   - _self_
+
+output_dir: ???
 
 trainer:
   _target_: pytorch_lightning.Trainer
@@ -14,7 +16,12 @@ trainer:
   benchmark: true
   logger: false
   callbacks:
-    - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
+    - _target_: cargpt.callbacks.embedding_writer.EmbeddingWriter
       write_interval: batch
+      output_dir: ${output_dir}
     - _target_: cargpt.callbacks.model_summary.ModelSummary
       depth: 5
+datamodule:
+  predict:
+    shuffle: true
+
