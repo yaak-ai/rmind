@@ -71,6 +71,7 @@ class xFormerEncoder(nn.Module):
                 for _ in range(config.num_layers)
             )
         )
+        self.layer_norm = nn.LayerNorm(config.dim_model)
 
         init_fn = get_weight_init_fn(weight_init)
         for name, module in self.encoders.named_children():
@@ -86,8 +87,9 @@ class xFormerEncoder(nn.Module):
         x = torch.cat([src, src], dim=-1)
         x = self.encoders(x, att_mask=mask)
         x = torch.stack(x.chunk(2, dim=-1))
+        x = x.mean(dim=0)
 
-        return x.mean(dim=0)
+        return self.layer_norm(x)
 
     def compute_attention_rollout(
         self,

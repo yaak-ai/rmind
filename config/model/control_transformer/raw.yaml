@@ -374,51 +374,7 @@ objectives:
               out_range: [-1.0, 1.0]
             - _target_: cargpt.components.norm.MuLawEncoding
               quantization_channels: ${vars.embedding_dim}
-              # policy:
-              #   _target_: cargpt.components.objectives.PolicyObjective
-              #   heads:
-              #     _target_: cargpt.utils.ModuleDict
-              #     continuous:
-              #       gas_pedal:
-              #         _target_: torch.nn.Linear
-              #         in_features:
-              #           _target_: operator.mul
-              #           _args_:
-              #             - 2
-              #             - ${vars.embedding_dim}
-              #         out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal.bins}
-              #         bias: False
-#       brake_pedal:
-#         _target_: torch.nn.Linear
-#         in_features:
-#           _target_: operator.mul
-#           _args_:
-#             - 2
-#             - ${vars.embedding_dim}
-#         out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal.bins}
-#         bias: False
 
-#       steering_angle:
-#         _target_: torch.nn.Linear
-#         in_features:
-#           _target_: operator.mul
-#           _args_:
-#             - 2
-#             - ${vars.embedding_dim}
-#         out_features: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
-#         bias: False
-
-#   losses:
-#     _target_: cargpt.utils.ModuleDict
-#     continuous:
-#       gas_pedal:
-#         _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
-
-#       brake_pedal:
-#         _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
-
-#       steering_angle:
-#         _target_: cargpt.components.loss.LogitBiasCrossEntropyLoss
 objective_scheduler:
   _target_: cargpt.components.objectives.ObjectiveScheduler
   schedule:
