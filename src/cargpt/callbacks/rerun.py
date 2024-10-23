@@ -94,7 +94,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                 time_keys.append(k)
 
                             case "time_stamp":
-                                rr.set_time_nanos(path, v.item() * 1000)
+                                rr.set_time_nanos(path, v.item())
                                 time_keys.append(k)
 
                             case _:

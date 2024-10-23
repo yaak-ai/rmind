@@ -66,7 +66,7 @@ class ModuleDict(ModuleDictBase):
                 k: v.forward(*args)
                 for k, v in self.tree_flatten_with_path()  # pyright: ignore[reportArgumentType]
             },
-            **kwargs,
+            **kwargs,  # pyright: ignore[reportArgumentType]
         )
 
     @_forward.register
