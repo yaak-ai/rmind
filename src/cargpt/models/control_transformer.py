@@ -330,17 +330,17 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                         raise NotImplementedError
 
         cols = {
-            (Modality.CONTINUOUS, "gas_pedal"): "vehicle_motion.gas_pedal_normalized",
+            (Modality.CONTINUOUS, "gas_pedal"): "VehicleMotion.gas_pedal_normalized",
             (
                 Modality.CONTINUOUS,
                 "brake_pedal",
-            ): "vehicle_motion.brake_pedal_normalized",
+            ): "VehicleMotion.brake_pedal_normalized",
             (
                 Modality.CONTINUOUS,
                 "steering_angle",
-            ): "vehicle_motion.steering_angle_normalized",
-            (Modality.CONTINUOUS, "speed"): "vehicle_motion.speed",
-            (Modality.DISCRETE, "turn_signal"): "vehicle_state.turn_signal",
+            ): "VehicleMotion.steering_angle_normalized",
+            (Modality.CONTINUOUS, "speed"): "VehicleMotion.speed",
+            (Modality.DISCRETE, "turn_signal"): "VehicleState.turn_signal",
         }
 
         by_key_modality_name = lambda x: x[0][-2:]  # noqa: E731
@@ -377,10 +377,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ).items():
             values = (
                 samples.select(
-                    pl.col(cols[k_loss])
-                    .arr.to_list()
-                    .list.diff(null_behavior="drop")
-                    .explode()
+                    pl.col(cols[k_loss]).list.diff(null_behavior="drop").explode()
                 )
                 .to_torch()
                 .to(self.device)
@@ -423,15 +420,15 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 {
                     Modality.IMAGE: batch.frame,
                     Modality.CONTINUOUS: {
-                        "speed": table["vehicle_motion.speed"],
-                        "gas_pedal": table["vehicle_motion.gas_pedal_normalized"],
-                        "brake_pedal": table["vehicle_motion.brake_pedal_normalized"],
+                        "speed": table["VehicleMotion.speed"],
+                        "gas_pedal": table["VehicleMotion.gas_pedal_normalized"],
+                        "brake_pedal": table["VehicleMotion.brake_pedal_normalized"],
                         "steering_angle": table[
-                            "vehicle_motion.steering_angle_normalized"
+                            "VehicleMotion.steering_angle_normalized"
                         ],
                     },
                     Modality.DISCRETE: {
-                        "turn_signal": table["vehicle_state.turn_signal"]
+                        "turn_signal": table["VehicleState.turn_signal"]
                     },
                 },
                 device=self.device,

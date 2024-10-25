@@ -37,13 +37,13 @@ train-debug *ARGS: template-config
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml {{ ARGS }}
 
-predict +ARGS:
+predict +ARGS: template-config
     uv run python src/cargpt/scripts/predict.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 
 # predict with runtime type checking
-predict-debug +ARGS:
+predict-debug +ARGS: template-config
     uv run python src/cargpt/scripts/predict.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
