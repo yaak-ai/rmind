@@ -1,0 +1,112 @@
+#@ drives = [
+#@    'Niro098-HQ/2024-06-06--07-08-26',
+#@    'Niro098-HQ/2024-02-22--10-10-10',
+#@    'Niro098-HQ/2024-01-31--09-58-48',
+#@    'Niro098-HQ/2024-02-08--14-24-31',
+#@    'Niro098-HQ/2024-03-25--14-46-51',
+#@    'Niro098-HQ/2024-05-29--15-47-17',
+#@    'Niro098-HQ/2024-03-18--07-56-49',
+#@    'Niro098-HQ/2024-05-31--09-12-39',
+#@    'Niro098-HQ/2024-03-20--07-32-05',
+#@    'Niro098-HQ/2024-04-04--15-18-53',
+#@ ]
+#@ cameras = ['cam_front_left']
+#@
+
+_target_: rbyte.Dataset
+_recursive_: false
+config:
+    inputs:
+        #@ for drive in drives:
+        - id: #@ drive
+          sources:
+              frame:
+                  #@ for camera in cameras:
+                  - id: #@ camera
+                    index_column: "image_metadata.${.id}.frame_idx"
+                    reader:
+                        _target_: rbyte.io.frame.jpeg.JpegFrameReader
+                        path: "${paths.data_dir}/${.....id}/frames/${..id}.pii.mp4/576x324/{:09d}.jpg"
+              #@ end
+
+              table:
+                  path: ${paths.data_dir}/${...id}/metadata.log
+                  builder:
+                      _target_: rbyte.io.table.yaak.YaakMetadataTableBuilder
+                      _recursive_: false
+                      config:
+                          cameras: #@ cameras
+                          select:
+                              - message:
+                                    type: rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata
+                                    alias: image_metadata
+                                fields:
+                                    - name: time_stamp
+                                    - name: frame_idx
+                                      merge:
+                                          method: asof
+                                          tolerance: 10ms
+                                    - name: camera_name
+                                      partition: true
+                              - message:
+                                    type: rbyte.io.table.yaak.proto.can_pb2.VehicleState
+                                    alias: vehicle_state
+                                fields:
+                                    - name: time_stamp
+                                    - name: turn_signal
+                                      merge:
+                                          method: asof
+                                          tolerance: 100ms
+                              - message:
+                                    type: rbyte.io.table.yaak.proto.can_pb2.VehicleMotion
+                                    alias: vehicle_motion
+                                fields:
+                                    - name: time_stamp
+                                    - name: speed
+                                      merge:
+                                          method: interp
+                                    - name: gas_pedal_normalized
+                                      merge:
+                                          method: interp
+                                    - name: brake_pedal_normalized
+                                      merge:
+                                          method: interp
+                                    - name: steering_angle_normalized
+                                      merge:
+                                          method: interp
+                                    - name: gear
+                                      merge:
+                                          method: asof
+                                          tolerance: 100ms
+                          merge:
+                              reference:
+                                  key:
+                                      [
+                                          rbyte.io.table.yaak.proto.sensor_pb2.ImageMetadata,
+                                          cam_front_left,
+                                      ]
+                                  column: time_stamp
+                          filter: >
+                              `vehicle_motion.gear` == 3 and `vehicle_motion.speed` between 0.0 and 130.0 and `vehicle_motion.gas_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.brake_pedal_normalized` between 0.0 and 1.0 and `vehicle_motion.steering_angle_normalized` between -1.0 and 1.0
+
+                          cache:
+                              _target_: rbyte.utils.DataframeDiskCache
+                              directory: ${paths.metadata_cache_dir}
+                              size_limit: "10 GiB"
+                              #@ end
+    samples:
+        builder:
+            _target_: rbyte.sample.builder.GreedySampleTableBuilder
+            config:
+                index_column: image_metadata.cam_front_left.frame_idx
+                length: ${vars.data.train.clip_length}
+                stride: 10
+                min_step: 10
+                filter: >-
+                    not (
+
+                          array_upper(`vehicle_motion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
+                      and array_upper(`vehicle_motion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
+                      and array_upper(`vehicle_motion.speed`) >= 25.0
+                      and array_get(`vehicle_motion.speed`, -1) - array_get(`vehicle_motion.speed`, 0) >= -0.05 * array_mean(`vehicle_motion.speed`)
+                    )
