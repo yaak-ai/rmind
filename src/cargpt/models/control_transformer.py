@@ -301,11 +301,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         import polars as pl  # noqa: PLC0415
 
         samples = self.trainer.datamodule.train_dataloader().dataset.samples  # pyright: ignore[reportAttributeAccessIssue]
-        samples = samples.with_columns([
-            pl.col(col).list.to_array(samples["VehicleMotion.time_stamp"][0].len())
-            for col in samples.columns
-            if samples[col].dtype == pl.List
-        ])
 
         sample_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
         delta_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
@@ -382,10 +377,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ).items():
             values = (
                 samples.select(
-                    pl.col(cols[k_loss])
-                    .arr.to_list()
-                    .list.diff(null_behavior="drop")
-                    .explode()
+                    pl.col(cols[k_loss]).list.diff(null_behavior="drop").explode()
                 )
                 .to_torch()
                 .to(self.device)
