@@ -1,25 +1,25 @@
 defaults:
-  - /dataset/train@train.dataset
-  - /dataset/val@val.dataset
-  - _self_
+    - /dataset/train@train.dataset
+    - /dataset/val@val.dataset
+    - _self_
 _target_: cargpt.datamodules.GenericDataModule
 train:
-  _target_: torch.utils.data.DataLoader
-  shuffle: true
-  num_workers: 32
-  pin_memory: false
-  persistent_workers: true
-  multiprocessing_context: forkserver
-  collate_fn:
-    _target_: rbyte.utils.dataloader.collate_identity
-    _partial_: true
+    _target_: torch.utils.data.DataLoader
+    shuffle: true
+    num_workers: 2
+    pin_memory: false
+    persistent_workers: true
+    multiprocessing_context: forkserver
+    collate_fn:
+        _target_: rbyte.utils.dataloader.collate_identity
+        _partial_: true
 val:
-  _target_: torch.utils.data.DataLoader
-  shuffle: false
-  num_workers: 32
-  pin_memory: false
-  persistent_workers: true
-  multiprocessing_context: forkserver
-  collate_fn:
-    _target_: rbyte.utils.dataloader.collate_identity
-    _partial_: true
+    _target_: torch.utils.data.DataLoader
+    shuffle: false
+    num_workers: 2
+    pin_memory: false
+    persistent_workers: true
+    multiprocessing_context: forkserver
+    collate_fn:
+        _target_: rbyte.utils.dataloader.collate_identity
+        _partial_: true

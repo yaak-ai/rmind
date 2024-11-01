@@ -107,24 +107,26 @@ class DepthDecoder(nn.Module):
                 _ = nn.init.constant_(m.bias, 0)
 
     def forward(self, input_features: TensorDict) -> Tensor:
-        bs = input_features.batch_size
+        [batch_size, timestep] = input_features.batch_size
 
-        input_features = input_features.apply(
-            Rearrange("b t ... -> (b t) ..."), batch_size=[prod(bs)]
-        )
+        disparity = []
 
-        x = input_features["4"]
+        for t in range(timestep):
 
-        for i in range(4, -1, -1):
-            x = self.convs["upconv", i, 0](x)
-            x = [upsample(x)]
+            x = input_features["4"][:, t]
 
-            if self.use_skips and i > 0:
-                x += [input_features[str(i - 1)]]
+            for i in range(4, -1, -1):
+                x = self.convs["upconv", i, 0](x)
+                x = [upsample(x)]
 
-            x = torch.cat(x, 1)
-            x = self.convs["upconv", i, 1](x)
+                if self.use_skips and i > 0:
+                    x += [input_features[str(i - 1)][:, t]]
 
-        # NOTE: hardfix scales = 0 and return only last one
-        res = self.alpha * self.sigmoid(self.convs["dispconv", 0](x)) + self.beta
-        return Rearrange("(b t) ... -> b t ...", b=bs[0])(res)
+                x = torch.cat(x, 1)
+                x = self.convs["upconv", i, 1](x)
+
+            # NOTE: hardfix scales = 0 and return only last one
+            res = self.alpha * self.sigmoid(self.convs["dispconv", 0](x)) + self.beta
+            disparity.append(res)
+
+        return Rearrange("b t ... -> b t 1 ...")(torch.cat(disparity, 1))
