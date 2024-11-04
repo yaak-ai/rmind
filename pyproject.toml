@@ -48,7 +48,7 @@ predict = [
 lint = [
     "deptry>=0.19.1",
     "pyright>=1.1.377",
-    "ruff>=0.6.2",
+    "ruff>=0.7.2",
 ]
 dev = [
     "devtools>=0.12.2",
