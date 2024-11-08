@@ -55,12 +55,14 @@ class ModuleDict(ModuleDictBase):
 
     @singledispatchmethod
     def _forward(
-        self, *input: TensorDict | Tensor, **kwargs: Unpack[TensorDictKwargs]
+        self,
+        *input: TensorDict | Tensor,
+        **kwargs: Unpack[TensorDictKwargs],  # noqa: UP044
     ) -> TensorDict:
         raise NotImplementedError
 
     @_forward.register
-    def _(self, *args: Tensor, **kwargs: Unpack[TensorDictKwargs]) -> TensorDict:
+    def _(self, *args: Tensor, **kwargs: Unpack[TensorDictKwargs]) -> TensorDict:  # noqa: UP044
         return TensorDict(
             {
                 k: v.forward(*args)
@@ -70,7 +72,7 @@ class ModuleDict(ModuleDictBase):
         )
 
     @_forward.register
-    def _(self, *args: TensorDict, **kwargs: Unpack[TensorDictKwargs]) -> TensorDict:
+    def _(self, *args: TensorDict, **kwargs: Unpack[TensorDictKwargs]) -> TensorDict:  # noqa: UP044
         first, *others = args
 
         return first.named_apply(  # pyright: ignore[reportReturnType]
