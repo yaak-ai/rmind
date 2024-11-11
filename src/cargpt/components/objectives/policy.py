@@ -151,6 +151,15 @@ class PolicyObjective(Objective):
                     timestep_padder, batch_size=[b, t]
                 )
 
+            if (result_key := PredictionResultKey.PREDICTION_STD) in result_keys:
+                result[result_key] = (
+                    logits.apply(operator.itemgetter((..., 1)))
+                    .apply(lambda x: torch.sqrt(torch.exp(x)))  # pyright: ignore[reportAttributeAccessIssue]
+                    .apply(  # pyright: ignore[reportAttributeAccessIssue]
+                        timestep_padder, batch_size=[b, t]
+                    )
+                )
+
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
                 result[result_key] = logits.apply(
                     lambda x: gauss_prob(
