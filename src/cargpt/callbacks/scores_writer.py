@@ -1,34 +1,15 @@
-from collections.abc import Sequence
-from functools import cache
-from typing import TYPE_CHECKING, override, Literal
-
-import pytorch_lightning as pl
-import rerun as rr
-import rerun.blueprint as rrb
-from einops import rearrange
-from funcy import once_per
-from pytorch_lightning.callbacks import BasePredictionWriter
-from tensordict import TensorDict
-import pandas as pd
-
-from cargpt.components.episode import Modality
-from cargpt.components.objectives.base import PredictionResultKey
-
 import os
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, override
 
 import pandas as pd
 import pytorch_lightning as pl
-import torch
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorDict
-from typing_extensions import override
 
 from cargpt.components.episode import Modality
-from cargpt.components.objectives.base import PredictionResultKey
 
 try:
     from rbyte.batch import Batch
@@ -47,9 +28,9 @@ class ScoresPredictionWriter(BasePredictionWriter):
     ) -> None:
         self.write_interval = write_interval
         self.write_frequency = write_frequency
-        curent_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # noqa: DTZ005
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # noqa: DTZ005
         model_version = model_artifact.split("/")[-1]
-        self.dir_to_save = Path(f"inference_results/{model_version}/{curent_time}")
+        self.dir_to_save = Path(f"inference_results/{model_version}/{current_time}")
         super().__init__(write_interval)
 
     @override
@@ -63,7 +44,7 @@ class ScoresPredictionWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
         prediction: TensorDict,
         batch_indices: Sequence[int] | None,
-        batch: Batch,  # pyright: ignore[reportGeneralTypeIssues]
+        batch: Batch,  # pyright: ignore[reportInvalidTypeForm]
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
@@ -82,7 +63,7 @@ class ScoresPredictionWriter(BasePredictionWriter):
             time_stamp = sample[
                 "batch", "table", f"ImageMetadata.{camera_name}.time_stamp"
             ][-1].item()
-            # we take -1 since it is only where predicitons are stores
+            # we take -1 since it is only where predictions are stores
             rows = {}
             for k, v in (
                 sample["predictions"].auto_batch_size_(1)[-1].items(True, True)
@@ -120,20 +101,7 @@ class ScoresPredictionWriter(BasePredictionWriter):
         if len(self.df) > 0:
             write_to_csv(self.df, self.dir_to_save / "scores.csv")
 
-        # --- TODO: Incidents ---
-        # df = pd.read_csv(self.dir_to_save / "scores.csv")
-
-        # rows = []
-        # for drive_id in df["drive_id"].unique():
-        # incidents_list = metabase.request_incidents(drive_id=drive_id)
-        # for dt, inc_type in incidents_list:
-        #     rows.append({
-        #         "drive_id": drive_id,
-        #         "datetime": dt,
-        #         "inc_type": inc_type,
-        #     })
-
-        # pd.DataFrame(rows).to_csv(self.dir_to_save / "incidents.csv", index=False)
+        # TODO: Incidents
 
 
 def write_to_csv(df: pd.DataFrame, path_to_save: str | os.PathLike[str]):
