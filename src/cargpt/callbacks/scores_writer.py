@@ -1,3 +1,20 @@
+"""
+This is a PyTorch Lightning callback for writing model output to a `.csv` file.
+It may be useful for integration with external tools, such as https://github.com/yaak-ai/sexy.
+To use this callback, add it to the appropriate inference configuration file.
+
+Example:
+`config/inference/control_transformer/default.yaml`
+
+```yaml
+trainer:
+  _target_: pytorch_lightning.Trainer
+  callbacks:
+    - _target_: cargpt.callbacks.scores_writer.ScoresPredictionWriter
+      model_artifact: ${model.artifact}
+```
+"""
+
 import os
 from collections.abc import Sequence
 from datetime import datetime

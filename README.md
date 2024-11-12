@@ -9,9 +9,9 @@ Self-supervised model trained on vehicle context and control signals from expert
 To run inference from another poetry venv:
 
 ```shell
-poetry add "git+ssh://git@github.com/yaak-ai/cargpt.git#main[predict]"
+uv add "git+ssh://git@github.com/yaak-ai/cargpt.git#main[predict]"
 
-poetry run cargpt-predict --config-path /path/to/config/dir --config-name config.yaml
+uv run cargpt-predict --config-path /path/to/config/dir --config-name config.yaml
 ```
 
 ## Setup
@@ -41,3 +41,7 @@ just rerun
 ```shell
 just predict inference=control_transformer/default model=control_transformer/pretrained model.artifact=yaak/cargpt/model-{run_id}:v{version} [+model.map_location=cuda:0] [+model.strict=false]
 ```
+
+
+To use another [sexy](https://github.com/yaak-ai/sexy) visualisation tool add `ScoresPredictionWriter`  [callback](src/cargpt/callbacks/scores_writer.py) to corresponding inference config.
+
