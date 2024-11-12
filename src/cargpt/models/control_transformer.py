@@ -226,6 +226,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     result_keys=frozenset((
                         PredictionResultKey.GROUND_TRUTH,
                         PredictionResultKey.PREDICTION,
+                        PredictionResultKey.PREDICTION_STD,
                         PredictionResultKey.PREDICTION_PROBS,
                         PredictionResultKey.SCORE_LOGPROB,
                         PredictionResultKey.SCORE_L1,
