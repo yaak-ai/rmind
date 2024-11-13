@@ -112,6 +112,7 @@ class PolicyObjective(Objective):
 
         if result_keys & {
             PredictionResultKey.PREDICTION,
+            PredictionResultKey.PREDICTION_STD,
             PredictionResultKey.PREDICTION_PROBS,
             PredictionResultKey.SCORE_LOGPROB,
             PredictionResultKey.SCORE_L1,
