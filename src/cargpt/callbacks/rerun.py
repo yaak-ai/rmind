@@ -148,6 +148,12 @@ class RerunPredictionWriter(BasePredictionWriter):
                                             marker="cross",
                                             marker_size=4,
                                         )
+                                    case PredictionResultKey.PREDICTION_STD:
+                                        style = rr.SeriesPoint(
+                                            name=f"prediction_std/{name}",
+                                            marker="asterisk",
+                                            marker_size=4,
+                                        )
                                     case PredictionResultKey.PREDICTION_PROBS:
                                         style = rr.SeriesPoint(
                                             name=f"prediction_probs/{name}",
@@ -275,6 +281,10 @@ class RerunPredictionWriter(BasePredictionWriter):
                                                     rrb.TimeSeriesView(
                                                         origin=f"/predictions/{objective}/prediction_probs",
                                                         name="prediction_probs",
+                                                    ),
+                                                    rrb.TimeSeriesView(
+                                                        origin=f"/predictions/{objective}/prediction_std",
+                                                        name="prediction_std",
                                                     ),
                                                     rrb.TimeSeriesView(
                                                         origin=f"/predictions/{objective}/score_l1",
