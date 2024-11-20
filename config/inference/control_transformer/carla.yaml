@@ -1,0 +1,25 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - /vars: control_transformer/default
+  - /model: control_transformer/finetuned
+  - /datamodule: predict_carla
+  - _self_
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  logger: false
+  callbacks:
+    - _target_: cargpt.callbacks.scores_writer.ScoresPredictionWriter
+      model_artifact: ${model.artifact}
+    # - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
+    #   write_interval: batch
+    - _target_: cargpt.callbacks.model_summary.ModelSummary
+      depth: 5
+paths: 
+  data_dir: /nasa/drives/carla
+

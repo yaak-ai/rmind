@@ -1,0 +1,113 @@
+#@yaml/text-templated-strings
+
+#@ drives = [
+#@     'Accident',
+#@     'Accident_2',
+#@     'AccidentTwoWays',
+#@     'BlockedIntersection',
+#@     'ConstructionObstacle',
+#@     'ConstructionObstacleTwoWays',
+#@     'ControlLoss',
+#@     'DynamicObjectCrossing_right_container',
+#@     'DynamicObjectCrossing_right_haybalelb',
+#@     'EnterActorFlow_fast',
+#@     'EnterActorFlow_slow',
+#@     'HardBreakRoute',
+#@     'HazardAtSideLane',
+#@     'HazardAtSideLaneTwoWays',
+#@     'HighwayCutIn',
+#@     'HighwayExit',
+#@     'InterurbanActorFlow_fast',
+#@     'InterurbanActorFlow_slow',
+#@     'InterurbanAdvancedActorFlow_fast',
+#@     'InterurbanAdvancedActorFlow_slow',
+#@     'InterurbanAdvancedActorFlow_slow_2',
+#@     'InvadingTurn_less_curve',
+#@     'InvadingTurn_much_curve',
+#@     'MergerIntoSlowTraffic',
+#@     'MergerIntoSlowTrafficV2',
+#@     'NonSignalizedJunctionLeftTurn_fast',
+#@     'NonSignalizedJunctionLeftTurn_slow',
+#@     'NonSignalizedJunctionRightTurn_fast',
+#@     'NonSignalizedJunctionRightTurn_slow',
+#@     'OppositeVehicleRunningRedLight',
+#@     'OppositeVehicleTakingPriority',
+#@     'ParkedObstacle',
+#@     'ParkedObstacleTwoWays',
+#@     'ParkingCrossingPedestrian',
+#@     'ParkingCutIn',
+#@     'ParkingExit',
+#@     'PedestrianCrossing',
+#@     'SignalizedJunctionLeftTurn_fast',
+#@     'SignalizedJunctionLeftTurn_slow',
+#@     'SignalizedJunctionRightTurn_fast',
+#@     'SignalizedJunctionRightTurn_slow',
+#@     'StaticCutIn',
+#@     'VehicleOpensDoorTwoWays',
+#@     'VehicleTurningRoutePedestrian',
+#@     'VehicleTurningRoute_right',
+#@     'YieldToEmergencyVehicle',
+#@ ]
+
+#@ cameras = [
+#@     'cam_front_left',
+#@ ]
+---
+_target_: rbyte.Dataset
+_recursive_: false
+_convert_: all
+inputs:
+  #@ for input_id in drives:
+  (@=input_id@):
+    frame:
+      #@ for source_id in cameras:
+      (@=source_id@):
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: "${paths.data_dir}/(@=input_id@)/frames/(@=source_id@).defish.mp4/576x324/{:09d}.jpg"
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+
+      #@ end
+
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+          - path: ${paths.data_dir}/(@=input_id@)/ego_logs.json
+            reader:
+              _target_: rbyte.io.table.JsonTableReader
+              _recursive_: false
+              fields:
+                records:
+                  _idx_:
+                  control.brake:
+                  control.throttle:
+                  control.steer:
+                  state.velocity.value:
+                  state.acceleration.value:
+
+              transforms:
+                - _target_: rbyte.io.table.transforms.FpsResampler
+                  source_fps: 20
+                  target_fps: 30
+
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+
+  #@ end
+
+sample_builder:
+  _target_: rbyte.sample.builder.GreedySampleTableBuilder
+  index_column: _idx_
+  length: ${vars.data.train.clip_length}
+  stride: 10
+  min_step: 10
+  filter: !!null

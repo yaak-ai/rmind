@@ -17,7 +17,7 @@ trainer:
 
 import os
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, override
 
@@ -42,13 +42,38 @@ class ScoresPredictionWriter(BasePredictionWriter):
         model_artifact: str,
         write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "batch",
         write_frequency: int = 100,
+        dataset_source_type: Literal["yaak", "carla"] = "carla",
     ) -> None:
         self.write_interval = write_interval
         self.write_frequency = write_frequency
-        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")  # noqa: DTZ005
+        self.camera_name = "cam_front_left"
+        self.current_time = datetime.now()  # noqa: DTZ005
+        self.fps = 30
         model_version = model_artifact.split("/")[-1]
-        self.dir_to_save = Path(f"inference_results/{model_version}/{current_time}")
+        self.dir_to_save = Path(
+            f"inference_results/{model_version}/{self.current_time.strftime('%Y-%m-%d_%H-%M-%S')}"
+        )
         super().__init__(write_interval)
+
+        match dataset_source_type:
+            case "yaak":
+                self.frame_idx_getter = lambda sample: sample[
+                    "batch", "table", f"ImageMetadata.{self.camera_name}.frame_idx"
+                ][-1].item()
+                self.time_stamp_getter = lambda sample: sample[
+                    "batch", "table", f"ImageMetadata.{self.camera_name}.time_stamp"
+                ][-1].item()
+            case "carla":
+                self.frame_idx_getter = lambda sample: sample[
+                    "batch", "table", "_idx_"
+                ][-1].item()
+                self.time_stamp_getter = (
+                    lambda sample: datetime.timestamp(
+                        self.current_time
+                        + timedelta(seconds=self.frame_idx_getter(sample) / self.fps)
+                    )
+                    * 1000
+                )
 
     @override
     def on_predict_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule):
@@ -66,7 +91,6 @@ class ScoresPredictionWriter(BasePredictionWriter):
         dataloader_idx: int,
     ) -> None:
         data = prediction.auto_batch_size_(1).update({"batch": batch}).cpu()
-        camera_name = "cam_front_left"  # maybe to extract it
 
         rows_batch = []
         for drive_id, sample in zip(
@@ -74,14 +98,9 @@ class ScoresPredictionWriter(BasePredictionWriter):
             data.exclude(k),
             strict=True,
         ):  # over clips in batch
-            frame_idx = sample[
-                "batch", "table", f"ImageMetadata.{camera_name}.frame_idx"
-            ][-1].item()
-            time_stamp = sample[
-                "batch", "table", f"ImageMetadata.{camera_name}.time_stamp"
-            ][-1].item()
-            # we take -1 since it is only where predictions are stores
             rows = {}
+            frame_idx = self.frame_idx_getter(sample)
+            time_stamp = self.time_stamp_getter(sample)
             for k, v in (
                 sample["predictions"].auto_batch_size_(1)[-1].items(True, True)
             ):  # over elements in the las timestep
