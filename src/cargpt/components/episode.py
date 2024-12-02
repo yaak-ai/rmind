@@ -10,6 +10,7 @@ import torch
 from einops import pack, rearrange, repeat
 from jaxtyping import Float, Int, Shaped
 from loguru import logger
+from omegaconf import OmegaConf
 from tensordict import TensorDict, tensorclass
 from tensordict.tensorclass import _get as tensorclass_get
 from tensordict.utils import NestedKey
@@ -198,7 +199,7 @@ class EpisodeBuilder(Module):
     ) -> None:
         super().__init__()
         self.timestep = timestep
-        self.special_tokens = special_tokens
+        self.special_tokens = OmegaConf.to_container(special_tokens)
         self.tokenizers = tokenizers
         self.embeddings = embeddings
         self.position_encoding = position_encoding

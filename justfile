@@ -42,6 +42,11 @@ predict +ARGS: template-config
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 
+export_onnx +ARGS:
+    uv run python src/cargpt/scripts/export_onnx.py \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name export_onnx.yaml {{ ARGS }}
+
 # predict with runtime type checking
 predict-debug +ARGS: template-config
     uv run python src/cargpt/scripts/predict.py \

@@ -65,11 +65,14 @@ class xFormerEncoder(nn.Module):
         )):
             raise NotImplementedError
 
-        self.encoders = ReversibleSequence(
-            nn.ModuleList(
-                nn.ModuleList(xFormerEncoderBlock.get_reversible_layer(config))
-                for _ in range(config.num_layers)
-            )
+        # self.encoders = ReversibleSequence(
+        #     nn.ModuleList(
+        #         nn.ModuleList(xFormerEncoderBlock.get_reversible_layer(config))
+        #         for _ in range(config.num_layers)
+        #     )
+        # )
+        self.encoders = nn.ModuleList(
+            xFormerEncoderBlock.from_config(config) for _ in range(config.num_layers)
         )
         self.layer_norm = nn.LayerNorm(config.dim_model)
 
@@ -84,10 +87,13 @@ class xFormerEncoder(nn.Module):
     def forward(
         self, src: Float[Tensor, "b s d"], mask: Float[Tensor, "s s"]
     ) -> Float[Tensor, "b s d"]:
-        x = torch.cat([src, src], dim=-1)
-        x = self.encoders(x, att_mask=mask)
-        x = torch.stack(x.chunk(2, dim=-1))
-        x = x.mean(dim=0)
+        # x = torch.cat([src, src], dim=-1)
+        # x = self.encoders(x, att_mask=mask)
+        # x = torch.stack(x.chunk(2, dim=-1))
+        # x = x.mean(dim=0)
+        for encoder in self.encoders:
+            src = encoder(src, att_mask=mask)
+        return self.layer_norm(src)
 
         return self.layer_norm(x)
 

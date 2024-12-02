@@ -78,9 +78,11 @@ class UniformBinner(Module, Invertible):
     @override
     def forward(self, x: Float[Tensor, "..."]) -> Int[Tensor, "..."]:
         x_min, x_max = self.range
-        if x.min() < x_min or x.max() > x_max:
-            msg = "input out of range"
-            raise ValueError(msg)
+        assert x.min() < x_min, "input out of range"
+        assert x.max() < x_max, "input out of range"
+        # if x.min() < x_min or x.max() > x_max:
+        #     msg = "input out of range"
+        #     raise ValueError(msg)
 
         x_norm = (x - x_min) / (x_max - x_min)
 

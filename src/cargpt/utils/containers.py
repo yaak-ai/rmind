@@ -44,8 +44,8 @@ class ModuleDict(ModuleDictBase):
         try:
             return reduce(ModuleDict.__getitem__, always_iterable(key), self)  # noqa: DOC201 # pyright: ignore[reportArgumentType]
         except KeyError:
-            if default is self.__unspecified:
-                raise  # noqa: DOC501
+            if default is not None:
+                raise ValueError(f"Key is wrong, {key}")  # noqa: DOC501
 
             return default
 

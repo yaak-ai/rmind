@@ -90,6 +90,19 @@ class PolicyObjective(Objective):
 
         return TensorDict({"loss": loss})
 
+    def predict_simple(
+        self,
+        inputs: TensorDict,
+        episode_builder: EpisodeBuilder,
+        encoder: Module,
+        *,
+        result_keys: AbstractSet[PredictionResultKey] | None = None,
+    ):
+        t = inputs
+        t = TensorDict(t)
+        t = {k: v for k, v in t.items()}
+        return t
+
     @override
     def predict(
         self,
