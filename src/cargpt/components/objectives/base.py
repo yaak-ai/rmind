@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from enum import StrEnum, auto
+from enum import StrEnum, auto, unique
 from typing import Any, override
 
 from tensordict import TensorDict
@@ -9,6 +9,7 @@ from torch.utils._pytree import Context, KeyEntry, MappingKey, register_pytree_n
 from cargpt.components.episode import EpisodeBuilder
 
 
+@unique
 class ObjectiveName(StrEnum):
     FORWARD_DYNAMICS = auto()
     INVERSE_DYNAMICS = auto()
@@ -17,6 +18,7 @@ class ObjectiveName(StrEnum):
     POLICY = auto()
 
 
+@unique
 class PredictionResultKey(StrEnum):
     PREDICTION = auto()
     PREDICTION_STD = auto()
@@ -25,6 +27,7 @@ class PredictionResultKey(StrEnum):
     SCORE_L1 = auto()
     GROUND_TRUTH = auto()
     ATTENTION = auto()
+    SUMMARY_EMBEDDINGS = auto()
 
 
 def _not_implemented(*_args, **_kwargs):

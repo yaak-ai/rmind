@@ -173,4 +173,4 @@ class xFormerEncoder(nn.Module):
 
             seq = block(seq, f_args={"att_mask": mask})
 
-        return attn_rollout  # noqa: DOC201
+        return attn_rollout

@@ -26,5 +26,5 @@ class ModelSummary(_ModelSummary):
     @override
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.is_global_zero:
-            _summary_str = str(summary(pl_module, **self._kwargs, verbose=0))
-            logger.info(f"\n{_summary_str}")
+            summary_str = str(summary(pl_module, **self._kwargs, verbose=0))
+            logger.info(f"\n{summary_str}")

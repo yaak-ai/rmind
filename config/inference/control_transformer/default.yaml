@@ -14,7 +14,8 @@ trainer:
   benchmark: true
   logger: false
   callbacks:
-    - _target_: cargpt.callbacks.rerun.RerunPredictionWriter
+    - _target_: cargpt.callbacks.RerunPredictionWriter
       write_interval: batch
-    - _target_: cargpt.callbacks.model_summary.ModelSummary
+
+    - _target_: cargpt.callbacks.ModelSummary
       depth: 5

@@ -16,12 +16,16 @@ trainer:
   benchmark: true
   logger: false
   callbacks:
-    - _target_: cargpt.callbacks.embedding_writer.EmbeddingWriter
+    - _target_: cargpt.callbacks.TensorDictPredictionWriter
       write_interval: batch
-      output_dir: ${output_dir}
-    - _target_: cargpt.callbacks.model_summary.ModelSummary
+      path: ${hydra:run.dir}/predictions/{batch_idx:06}/
+      writer:
+        _target_: tensordict.memmap
+        _partial_: true
+        copy_existing: true
+
+    - _target_: cargpt.callbacks.ModelSummary
       depth: 5
 datamodule:
   predict:
     shuffle: true
-

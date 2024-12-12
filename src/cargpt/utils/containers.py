@@ -32,20 +32,20 @@ class ModuleDict(ModuleDictBase):
     def __init__(self, **modules: Module | Mapping[str, Module]) -> None:
         """recursive instantiation for the sake of smaller YAMLs"""
 
-        _modules = {
+        modules_ = {
             k: v if isinstance(v, Module) else ModuleDict(**v)
             for k, v in modules.items()
         }
 
-        super().__init__(modules=_modules)
+        super().__init__(modules=modules_)
 
     def get(self, key: str | tuple[str, ...], *, default: Any = __unspecified):
         """recursive access mimicking TensorDict.get"""
         try:
-            return reduce(ModuleDict.__getitem__, always_iterable(key), self)  # noqa: DOC201 # pyright: ignore[reportArgumentType]
+            return reduce(ModuleDict.__getitem__, always_iterable(key), self)  # pyright: ignore[reportArgumentType]
         except KeyError:
             if default is self.__unspecified:
-                raise  # noqa: DOC501
+                raise
 
             return default
 

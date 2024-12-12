@@ -15,7 +15,7 @@ from pytorch_lightning.strategies import SingleDeviceStrategy
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.utilities.model_helpers import _restricted_classmethod
 from tensordict import TensorDict
-from torch.nn import Module  # noqa: TCH002
+from torch.nn import Module  # noqa: TC002
 
 from cargpt.components.episode import EpisodeBuilder, Modality, PositionEncoding
 from cargpt.components.mask import WandbAttentionMaskLegend
@@ -413,23 +413,21 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self._populate_logit_bias()
 
     def _build_input(self, batch: Any) -> TensorDict:
-        batch = batch.clone(recurse=True)
-        table = batch.table.apply(torch.atleast_3d)
-
+        data = batch.data
         input = (
             TensorDict.from_dict(
                 {
-                    Modality.IMAGE: batch.frame,
+                    Modality.IMAGE: {"cam_front_left": data["cam_front_left"]},
                     Modality.CONTINUOUS: {
-                        "speed": table["VehicleMotion.speed"],
-                        "gas_pedal": table["VehicleMotion.gas_pedal_normalized"],
-                        "brake_pedal": table["VehicleMotion.brake_pedal_normalized"],
-                        "steering_angle": table[
+                        "speed": data["VehicleMotion.speed"],
+                        "gas_pedal": data["VehicleMotion.gas_pedal_normalized"],
+                        "brake_pedal": data["VehicleMotion.brake_pedal_normalized"],
+                        "steering_angle": data[
                             "VehicleMotion.steering_angle_normalized"
                         ],
                     },
                     Modality.DISCRETE: {
-                        "turn_signal": table["VehicleState.turn_signal"]
+                        "turn_signal": data["VehicleState.turn_signal"]
                     },
                 },
                 device=self.device,
