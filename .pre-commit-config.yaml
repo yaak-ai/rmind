@@ -1,38 +1,37 @@
 fail_fast: true
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.7.3
+    rev: v0.8.2
     hooks:
       - id: ruff-format
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
   - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-    rev: 1.18.0
+    rev: 1.22.1
     hooks:
       - id: basedpyright
   - repo: https://github.com/abravalheri/validate-pyproject
-    rev: v0.19
+    rev: v0.23
     hooks:
       - id: validate-pyproject
   - repo: https://github.com/crate-ci/typos
-    rev: v1.23.7
+    rev: typos-dict-v0.11.37
     hooks:
       - id: typos
   - repo: https://github.com/asottile/pyupgrade
-    rev: v3.17.0
+    rev: v3.19.0
     hooks:
       - id: pyupgrade
   - repo: https://github.com/fpgmaas/deptry.git
-    rev: 0.17.0
+    rev: 0.21.1
     hooks:
       - id: deptry
-        args: ["--ignore", "DEP002"] # deptry doesnt ignore [project.optional-dependencies]
   - repo: local
     hooks:
       - id: pytest
         name: pytest
         language: system
-        stages: [commit]
+        stages: [pre-commit]
         types: [python]
         entry: uv run pytest
         pass_filenames: false
@@ -40,7 +39,7 @@ repos:
       - id: just-format
         name: just-format
         language: system
-        stages: [commit]
+        stages: [pre-commit]
         entry: just --fmt --unstable
         pass_filenames: false
         always_run: true

@@ -140,14 +140,11 @@ lightning_logs/
 .cenv
 
 # generated
-config/dataset/train.yaml
-config/dataset/val.yaml
-config/dataset/train-cil.yaml
-config/dataset/val-cil.yaml
+config/dataset/*
 
 # editor
 .helix/
 
 # artifacts
-tmp/
 inference_results/
+.rbyte_cache

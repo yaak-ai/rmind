@@ -1,6 +1,6 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum, auto
+from enum import StrEnum, auto, unique
 from functools import cache
 from itertools import accumulate, pairwise
 from operator import add, itemgetter
@@ -17,12 +17,14 @@ from torch import Tensor
 from torch.nn import Embedding, Module, ModuleDict
 
 
+@unique
 class TokenType(StrEnum):
     OBSERVATION = auto()
     ACTION = auto()
     SPECIAL = auto()
 
 
+@unique
 class Modality(StrEnum):
     IMAGE = auto()
     CONTINUOUS = auto()
@@ -30,12 +32,14 @@ class Modality(StrEnum):
     SPECIAL = auto()
 
 
+@unique
 class SpecialToken(StrEnum):
     OBSERVATION_SUMMARY = auto()
     OBSERVATION_HISTORY = auto()
     ACTION_SUMMARY = auto()
 
 
+@unique
 class PositionEncoding(StrEnum):
     IMAGE = auto()
     OBSERVATIONS = auto()
@@ -297,7 +301,7 @@ class EpisodeBuilder(Module):
     ) -> TensorDict:
         (_, t), device = embeddings.batch_size, embeddings.device
 
-        position_embeddings = cast(TensorDict, torch.zeros_like(embeddings[0]))
+        position_embeddings = cast("TensorDict", torch.zeros_like(embeddings[0]))
 
         match pe_mod := self.position_encoding.get(
             (pe_k := PositionEncoding.IMAGE, "patch"), default=None

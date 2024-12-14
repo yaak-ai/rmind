@@ -2,22 +2,17 @@ from typing import Any, override
 
 import pytorch_lightning as pl
 from hydra.utils import instantiate
-from jaxtyping import Float  # noqa: TCH002
+from jaxtyping import Float  # noqa: TC002
 from omegaconf import DictConfig
 from tensordict import TensorDict
-from torch import Tensor  # noqa: TCH002
+from torch import Tensor  # noqa: TC002
 
 from cargpt.components.episode import Modality, SpecialToken
-
-try:
-    from rbyte.batch import Batch
-except ImportError:
-    from typing import Any
-
-    Batch = Any
+from cargpt.components.objectives.base import PredictionResultKey
 
 
 class Embeddings(pl.LightningModule):
+    # TODO: merge into ControlTransformer?
     def __init__(self, base: DictConfig):
         super().__init__()
         self.base = instantiate(base)
@@ -26,22 +21,22 @@ class Embeddings(pl.LightningModule):
     def predict_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
     ) -> TensorDict:
-        return self.embeddings_step(batch)
+        input = self.base._build_input(batch)
+        episode = self.base.episode_builder.build_episode(input)
+        predictions = TensorDict.from_dict({
+            name: {
+                PredictionResultKey.SUMMARY_EMBEDDINGS: {
+                    Modality.SPECIAL: self._compute_summary_embeddings(
+                        objective, episode
+                    )
+                }
+            }
+            for name, objective in self.base.objectives.items()
+        })
 
-    def embeddings_step(self, batch: Batch) -> TensorDict:  # pyright: ignore[reportGeneralTypeIssues, reportInvalidTypeForm]
-        inputs = self.base._build_input(batch)
-        episode = self.base.episode_builder.build_episode(inputs)
+        return TensorDict.from_dict({"inputs": input, "predictions": predictions})
 
-        embeddigs = TensorDict({}, batch_size=[], device=inputs.device)
-
-        for name, objective in self.base.objectives.items():
-            summaries = self.summary_embeddings(objective, episode)
-            for token_name, embedding in summaries.items():
-                embeddigs[f"{name}/{token_name}"] = embedding
-
-        return embeddigs
-
-    def summary_embeddings(self, objective, episode) -> TensorDict:
+    def _compute_summary_embeddings(self, objective, episode) -> TensorDict:
         mask = objective._build_attention_mask(episode.index, episode.timestep)
         embedding = self.base.encoder(src=episode.packed_embeddings, mask=mask.data)
 
