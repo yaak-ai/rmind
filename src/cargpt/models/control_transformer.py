@@ -413,7 +413,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self._populate_logit_bias()
 
     def _build_input(self, batch: Any) -> TensorDict:
-        data = batch.data
+        data = batch.data.apply(torch.atleast_3d)
         input = (
             TensorDict.from_dict(
                 {
