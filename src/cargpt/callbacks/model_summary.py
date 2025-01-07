@@ -8,7 +8,7 @@ from torchinfo import summary
 
 
 class ModelSummary(_ModelSummary):
-    def __init__(  # pyright: ignore[reportMissingSuperCall]
+    def __init__(
         self,
         col_width: int = 16,
         depth: int = 4,

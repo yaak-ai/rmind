@@ -3,13 +3,13 @@ from functools import lru_cache
 from typing import override
 
 from einops.layers.torch import Rearrange
-from omegaconf import DictConfig, OmegaConf
+from optree import tree_map
+from pydantic import ConfigDict, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
-from torch.utils._pytree import tree_map
 
 from cargpt.components.episode import (
-    EpisodeBuilder,
+    Episode,
     Index,
     Modality,
     SpecialToken,
@@ -21,44 +21,37 @@ from cargpt.components.mask import (
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
-from cargpt.components.objectives.base import Objective, PredictionResultKey
+from cargpt.components.objectives.base import Objective, PredictionResultKey, Targets
 from cargpt.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from cargpt.utils.containers import ModuleDict
+from cargpt.utils import ModuleDict
 from cargpt.utils.functional import nan_padder
 
 
 class MemoryExtractionObjective(Objective):
     """Inspired by: Resolving Copycat Problems in Visual Imitation Learning via Residual Action Prediction (https://arxiv.org/abs/2207.09705)"""
 
+    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
     def __init__(
         self,
         *,
         heads: ModuleDict,
         losses: ModuleDict | None = None,
-        targets: DictConfig | None = None,
-        delta_tokenizers: ModuleDict,
+        targets: Targets | None = None,
     ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
-        self.targets = OmegaConf.to_container(targets) if targets else None
-        self.delta_tokenizers = delta_tokenizers
+        self.targets = targets
 
     @override
-    def forward(
-        self, inputs: TensorDict, episode_builder: EpisodeBuilder, encoder: Module
-    ) -> TensorDict:
-        if self.losses is None:
-            raise RuntimeError
-
-        episode = episode_builder.build_episode(inputs)
+    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
         mask = self._build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
+        embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
 
-        b, t = episode.embedded.batch_size
+        b, t = episode.input.batch_size
 
         features = (
             episode.index[1:]  # pyright: ignore[reportIndexIssue]
@@ -68,39 +61,38 @@ class MemoryExtractionObjective(Objective):
         )
 
         logits = self.heads.forward(features, batch_size=[b, t - 1])
-        deltas = TensorDict(tree_map(lambda f: f(episode), self.targets)).apply(
-            lambda x: x.diff(dim=1), batch_size=[b, t - 1]
-        )
-        targets = self.delta_tokenizers(deltas)
-        loss = self.losses(
+        targets = TensorDict.from_dict(
+            tree_map(
+                episode.get,  # pyright: ignore[reportAttributeAccessIssue]
+                self.targets,  # pyright: ignore[reportArgumentType]
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+        )[:, : t - 1]
+
+        loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
             logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),
             targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
-        return TensorDict({"loss": loss})
+        return TensorDict.from_dict({"loss": loss})
 
     @override
     def predict(
         self,
-        inputs: TensorDict,
-        episode_builder: EpisodeBuilder,
-        encoder: Module,
         *,
-        result_keys: AbstractSet[PredictionResultKey] | None = None,
+        episode: Episode,
+        encoder: Module,
+        result_keys: AbstractSet[PredictionResultKey],
+        tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
-        if result_keys is None:
-            result_keys = frozenset(PredictionResultKey)
-
-        b, t = inputs.batch_size
+        b, t = episode.input.batch_size
         result = TensorDict({}, batch_size=[b, t])
-
-        episode = episode_builder.build_episode(inputs)
 
         timestep_padder = nan_padder(pad=(1, 0), dim=1)
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             result[result_key] = (
-                episode.inputs.select(*self.heads.tree_paths())
+                episode.input.select(*self.heads.tree_paths())
                 .apply(lambda x: x.diff(dim=1), batch_size=[b, t - 1])
                 .apply(timestep_padder, batch_size=[b, t])
             )
@@ -110,7 +102,7 @@ class MemoryExtractionObjective(Objective):
             PredictionResultKey.PREDICTION_PROBS,
         }:
             mask = self._build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
+            embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
 
             features = (
                 episode.index[1:]  # pyright: ignore[reportIndexIssue]
@@ -127,7 +119,7 @@ class MemoryExtractionObjective(Objective):
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: self.delta_tokenizers.get(k).invert(v),
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
@@ -144,18 +136,20 @@ class MemoryExtractionObjective(Objective):
     @lru_cache(maxsize=1, typed=True)
     def _build_attention_mask(
         cls,
-        index: Index,  # pyright: ignore[reportGeneralTypeIssues]
+        index: Index,
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
-    ) -> AttentionMask:  # pyright: ignore[reportGeneralTypeIssues]
+    ) -> AttentionMask:
         mask = ForwardDynamicsPredictionObjective._build_attention_mask(
             index, timestep, legend
-        ).clone()  # pyright: ignore[reportAttributeAccessIssue]
+        ).clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
 
         (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
         for step in range(t):
             past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
-            current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
+            current_observations = current.select(
+                *timestep.keys_by_type[TokenType.OBSERVATION]
+            )
             current_observation_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
@@ -164,7 +158,7 @@ class MemoryExtractionObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
-            past_actions = past.select(*timestep.keys(TokenType.ACTION))
+            past_actions = past.select(*timestep.keys_by_type[TokenType.ACTION])
             past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,

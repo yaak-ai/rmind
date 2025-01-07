@@ -1,12 +1,17 @@
+from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from enum import StrEnum, auto, unique
 from typing import Any, override
 
+from optree import register_pytree_node
+from optree.utils import unzip2
 from tensordict import TensorDict
 from torch.nn import Module
-from torch.utils._pytree import Context, KeyEntry, MappingKey, register_pytree_node
 
-from cargpt.components.episode import EpisodeBuilder
+from cargpt.components.episode import Episode, Modality
+from cargpt.utils.containers import OPTREE_NAMESPACE, ModuleDict
+
+type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 
 
 @unique
@@ -34,40 +39,36 @@ def _not_implemented(*_args, **_kwargs):
     raise NotImplementedError
 
 
-def objective_flatten(objective: Module) -> tuple[list[Module], tuple[str, ...]]:
-    keys, values = zip(*sorted(objective.named_children()), strict=True)
-    return values, keys
-
-
-def objective_flatten_with_keys(
+def objective_flatten(
     objective: Module,
-) -> tuple[list[tuple[KeyEntry, Any]], Context]:
-    values, context = objective_flatten(objective)
-    return [(MappingKey(k), v) for k, v in zip(context, values, strict=True)], context  # pyright: ignore[reportReturnType]
+) -> tuple[tuple[Module, ...], list[str], tuple[str, ...]]:
+    keys, values = unzip2(sorted(objective.named_children()))
+    return values, list(keys), keys
 
 
 class Objective(Module):
     def __init_subclass__(cls) -> None:
         register_pytree_node(
-            cls,
-            flatten_fn=objective_flatten,
-            unflatten_fn=_not_implemented,
-            flatten_with_keys_fn=objective_flatten_with_keys,
+            cls,  # pyright: ignore[reportArgumentType]
+            flatten_func=objective_flatten,  # pyright: ignore[reportArgumentType]
+            unflatten_func=_not_implemented,
+            namespace=OPTREE_NAMESPACE,
         )
         return super().__init_subclass__()
 
+    def __getitem__(self, name: str) -> Any:
+        return getattr(self, name)
+
     @override
-    def forward(
-        self, inputs: TensorDict, episode_builder: EpisodeBuilder, encoder: Module
-    ) -> TensorDict:
+    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
         raise NotImplementedError
 
     def predict(
         self,
-        inputs: TensorDict,
-        episode_builder: EpisodeBuilder,
-        encoder: Module,
         *,
-        result_keys: AbstractSet[PredictionResultKey] | None,
+        episode: Episode,
+        encoder: Module,
+        result_keys: AbstractSet[PredictionResultKey],
+        tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
         raise NotImplementedError

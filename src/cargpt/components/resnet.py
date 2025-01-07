@@ -13,7 +13,7 @@ class ResnetBackbone(nn.Module):
         self.resnet = resnet
 
         if freeze is not None:
-            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+            self.requires_grad_(not freeze).train(not freeze)
 
     @override
     def forward(self, x: Float[Tensor, "*b c1 h1 w1"]) -> Float[Tensor, "*b c2 h2 w2"]:

@@ -54,7 +54,7 @@ class TensorDictPredictionWriter(BasePredictionWriter):
         dataloader_idx: int,
     ) -> None:
         data = (
-            prediction.select("inputs", "predictions")
+            prediction.select("input", "predictions")
             .auto_batch_size_(1)
             .update({"batch": batch.to_tensordict().auto_batch_size_(1)})  # pyright: ignore[reportAttributeAccessIssue]
             .named_apply(self._filter, nested_keys=True)
@@ -65,7 +65,7 @@ class TensorDictPredictionWriter(BasePredictionWriter):
         )
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        with self._patched:
+        with self._patch_orjson_dumps():
             self._writer(data, path.resolve().as_posix())
 
     @staticmethod
@@ -87,8 +87,7 @@ class TensorDictPredictionWriter(BasePredictionWriter):
                 return None
 
     @classmethod
-    @property
-    def _patched(cls):
+    def _patch_orjson_dumps(cls):
         """
         WARN: hacky af workaround
 

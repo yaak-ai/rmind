@@ -1,19 +1,19 @@
-import operator
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import override
+from operator import itemgetter
+from typing import Any, override
 
 import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
-from omegaconf import DictConfig, OmegaConf
+from optree import tree_map
+from pydantic import ConfigDict, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
-from torch.utils._pytree import tree_map
 
 from cargpt.components.episode import (
-    EpisodeBuilder,
+    Episode,
     Index,
     Modality,
     SpecialToken,
@@ -25,38 +25,33 @@ from cargpt.components.mask import (
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
-from cargpt.components.objectives.base import Objective, PredictionResultKey
+from cargpt.components.objectives.base import Objective, PredictionResultKey, Targets
 from cargpt.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from cargpt.utils.containers import ModuleDict
+from cargpt.utils import ModuleDict
 from cargpt.utils.functional import gauss_prob, nan_padder
 
 
 class PolicyObjective(Objective):
+    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
     def __init__(
         self,
         *,
         heads: ModuleDict,
         losses: ModuleDict | None = None,
-        targets: DictConfig | None = None,
+        targets: Targets | None = None,
     ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
-        self.targets = OmegaConf.to_container(targets)
+        self.targets = targets
 
     @override
-    def forward(
-        self, inputs: TensorDict, episode_builder: EpisodeBuilder, encoder: Module
-    ) -> TensorDict:
-        if self.losses is None:
-            raise RuntimeError
-
-        episode = episode_builder.build_episode(inputs)
+    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
         mask = self._build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
+        embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
 
         embeddings = (
             episode.index[-1]  # pyright: ignore[reportIndexIssue]
@@ -82,33 +77,35 @@ class PolicyObjective(Objective):
         )
 
         logits = self.heads.forward(features)
-        targets = TensorDict(tree_map(lambda f: f(episode)[:, -1], self.targets))
-        loss = self.losses(
+        targets = TensorDict.from_dict(
+            tree_map(
+                episode.get,  # pyright: ignore[reportAttributeAccessIssue]
+                self.targets,  # pyright: ignore[reportArgumentType]
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+        )[:, -1]
+
+        loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
             logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),
             targets.apply(Rearrange("b 1 -> b"), batch_size=[]),
         )
 
-        return TensorDict({"loss": loss})
+        return TensorDict.from_dict({"loss": loss})
 
     @override
     def predict(
         self,
-        inputs: TensorDict,
-        episode_builder: EpisodeBuilder,
-        encoder: Module,
         *,
-        result_keys: AbstractSet[PredictionResultKey] | None = None,
+        episode: Episode,
+        encoder: Module,
+        result_keys: AbstractSet[PredictionResultKey],
+        **kwargs: Any,
     ) -> TensorDict:
-        if result_keys is None:
-            result_keys = frozenset(PredictionResultKey)
-
-        b, t = inputs.batch_size
+        b, t = episode.input.batch_size
         result = TensorDict({}, batch_size=[b, t])
 
-        episode = episode_builder.build_episode(inputs)
-
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
-            result[result_key] = episode.inputs.select(*self.heads.tree_paths())
+            result[result_key] = episode.input.select(*self.heads.tree_paths())
 
         if result_keys & {
             PredictionResultKey.PREDICTION,
@@ -118,7 +115,7 @@ class PolicyObjective(Objective):
             PredictionResultKey.SCORE_L1,
         }:
             mask = self._build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
+            embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
 
             embeddings = (
                 episode.index[[-1]]  # pyright: ignore[reportIndexIssue]
@@ -148,17 +145,15 @@ class PolicyObjective(Objective):
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
-                result[result_key] = logits.apply(operator.itemgetter((..., 0))).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.apply(itemgetter((..., 0))).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_STD) in result_keys:
                 result[result_key] = (
-                    logits.apply(operator.itemgetter((..., 1)))
+                    logits.apply(itemgetter((..., 1)))
                     .apply(lambda x: torch.sqrt(torch.exp(x)))  # pyright: ignore[reportAttributeAccessIssue]
-                    .apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        timestep_padder, batch_size=[b, t]
-                    )
+                    .apply(timestep_padder, batch_size=[b, t])
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
@@ -173,7 +168,7 @@ class PolicyObjective(Objective):
                 result[result_key] = (
                     logits.named_apply(
                         lambda k, x: gauss_prob(
-                            episode.inputs[:, -1][k],
+                            episode.input[:, -1][k],
                             mean=x[..., 0].squeeze(-1),
                             std=torch.sqrt(torch.exp(x[..., 1].squeeze(-1))),
                         ),
@@ -185,11 +180,11 @@ class PolicyObjective(Objective):
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(operator.itemgetter((..., 0)))
+                    logits.apply(itemgetter((..., 0)))
                     .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(
                         lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                        episode.inputs,
+                        episode.input,
                         nested_keys=True,
                     )
                 )
@@ -200,18 +195,20 @@ class PolicyObjective(Objective):
     @lru_cache(maxsize=1, typed=True)
     def _build_attention_mask(
         cls,
-        index: Index,  # pyright: ignore[reportGeneralTypeIssues]
+        index: Index,
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
-    ) -> AttentionMask:  # pyright: ignore[reportGeneralTypeIssues]
+    ) -> AttentionMask:
         mask = ForwardDynamicsPredictionObjective._build_attention_mask(
             index, timestep, legend
-        ).clone()  # pyright: ignore[reportAttributeAccessIssue]
+        ).clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
 
         (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
         for step in range(t):
             past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
-            current_observations = current.select(*timestep.keys(TokenType.OBSERVATION))
+            current_observations = current.select(
+                *timestep.keys_by_type[TokenType.OBSERVATION]
+            )
             current_observation_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
@@ -220,7 +217,7 @@ class PolicyObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
-            past_actions = past.select(*timestep.keys(TokenType.ACTION))
+            past_actions = past.select(*timestep.keys_by_type[TokenType.ACTION])
             past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,

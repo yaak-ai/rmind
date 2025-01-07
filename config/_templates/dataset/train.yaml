@@ -696,12 +696,12 @@ inputs:
   #@ for input_id in drives:
   (@=input_id@):
     sources:
-      #@ for source_id in cameras:
-      (@=source_id@):
-        index_column: "ImageMetadata.(@=source_id@).frame_idx"
+      #@ for camera in cameras:
+      (@=camera@):
+        index_column: "ImageMetadata.(@=camera@).frame_idx"
         source:
           _target_: rbyte.io.PathTensorSource
-          path: "${paths.data_dir}/(@=input_id@)/frames/(@=source_id@).defish.mp4/576x324/{:09d}.jpg"
+          path: "${paths.data_dir}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324/{:09d}.jpg"
           decoder:
             _target_: simplejpeg.decode_jpeg
             _partial_: true
@@ -785,9 +785,43 @@ inputs:
                 and `VehicleMotion.brake_pedal_normalized` between 0.0 and 1.0 
                 and `VehicleMotion.steering_angle_normalized` between -1.0 and 1.0
 
+          #@ for i, camera in enumerate(cameras):
+          - _target_: pipefunc.PipeFunc
+            func:
+              _target_: rbyte.io.PathDataFrameBuilder
+              fields:
+                frame_idx:
+                  _target_: polars.Int32
+
+            output_name: data_(@=camera@)
+            bound:
+              path: "${paths.data_dir}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324/{frame_idx:09d}.jpg"
+
+          - _target_: pipefunc.PipeFunc
+            func:
+              _target_: hydra.utils.get_method
+              path: polars.DataFrame.join
+            #@ if i == len(cameras) - 1:
+            output_name: data_joined
+            #@ else:
+            output_name: data_joined_(@=camera@)
+            #@ end
+            renames:
+              #@ if i == 0:
+              self: data_filtered
+              #@ else:
+              self: data_joined_(@=cameras[i-1]@)
+              #@ end
+              other: data_(@=camera@)
+            bound:
+              how: semi
+              left_on: ImageMetadata.(@=camera@).frame_idx
+              right_on: frame_idx
+          #@ end
+
           - _target_: pipefunc.PipeFunc
             renames:
-              input: data_filtered
+              input: data_joined
             output_name: samples
             func:
               _target_: rbyte.FixedWindowSampleBuilder

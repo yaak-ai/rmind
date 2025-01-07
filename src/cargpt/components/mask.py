@@ -3,7 +3,7 @@ from typing import Self
 
 import torch
 from jaxtyping import Float
-from tensordict import tensorclass
+from tensordict import tensorclass  # pyright: ignore[reportAttributeAccessIssue]
 from torch import Tensor
 
 from cargpt.components.episode import Index
@@ -35,21 +35,21 @@ class WandbAttentionMaskLegend(float, Enum, metaclass=AttentionMaskLegend):
     DO_NOT_ATTEND = 0.0
 
 
-@tensorclass  # pyright: ignore[reportArgumentType, reportCallIssue]
+@tensorclass
 class AttentionMask:
     data: Float[Tensor, "seq seq"]
     legend: AttentionMaskLegend
 
-    def _set(self, *, src: Index, dest: Index, val) -> Self:  # pyright: ignore[reportGeneralTypeIssues]
+    def _set(self, *, src: Index, dest: Index, val) -> Self:
         grid = torch.meshgrid(src.all_values, dest.all_values, indexing="ij")
         self.data[grid] = val
 
         return self
 
-    def _do_attend(self, src: Index, dest: Index) -> Self:  # pyright: ignore[reportGeneralTypeIssues]
+    def _do_attend(self, src: Index, dest: Index) -> Self:
         return self._set(src=src, dest=dest, val=self.legend.DO_ATTEND)
 
-    def _do_not_attend(self, src: Index, dest: Index) -> Self:  # pyright: ignore[reportGeneralTypeIssues]
+    def _do_not_attend(self, src: Index, dest: Index) -> Self:
         return self._set(src=src, dest=dest, val=self.legend.DO_NOT_ATTEND)
 
     def with_legend(self, legend: AttentionMaskLegend) -> Self:
