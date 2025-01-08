@@ -1,7 +1,7 @@
-_target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
-artifact: ???
-# _target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
-# checkpoint_path: ???
+# _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+# artifact: ???
+_target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
+checkpoint_path: ???
 filename: model.ckpt
 strict: false
 hparams_updaters:
@@ -22,32 +22,38 @@ hparams_updaters:
           _target_: cargpt.utils.ModuleDict
           continuous:
             gas_pedal:
-              _target_: torch.nn.Linear
-              in_features:
+               _target_: torchvision.ops.MLP
+               in_channels:
                 _target_: operator.mul
                 _args_:
                   - 2
                   - ${vars.embedding_dim}
-              out_features: 2
-              bias: False
+               hidden_channels:
+                - 512
+                - 2
+               bias: False
             brake_pedal:
-              _target_: torch.nn.Linear
-              in_features:
+               _target_: torchvision.ops.MLP
+               in_channels:
                 _target_: operator.mul
                 _args_:
                   - 2
                   - ${vars.embedding_dim}
-              out_features: 2
-              bias: False
+               hidden_channels:
+                - 512
+                - 2
+               bias: False
             steering_angle:
-              _target_: torch.nn.Linear
-              in_features:
+               _target_: torchvision.ops.MLP
+               in_channels:
                 _target_: operator.mul
                 _args_:
                   - 2
                   - ${vars.embedding_dim}
-              out_features: 2
-              bias: False
+               hidden_channels:
+                - 512
+                - 2
+               bias: False
         targets:
           continuous:
             gas_pedal:
@@ -104,3 +110,11 @@ hparams_updaters:
         _target_: transformers.get_cosine_schedule_with_warmup
         num_warmup_steps: 25000
         num_training_steps: 250000
+
+  # add dataset_source_type
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: true
+    key: dataset_source_type
+    value: carla

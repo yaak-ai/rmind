@@ -1,0 +1,1713 @@
+_target_: rbyte.Dataset
+_recursive_: false
+_convert_: all
+inputs:
+  Accident:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/Accident/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/Accident/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  Accident_2:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/Accident_2/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/Accident_2/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  AccidentTwoWays:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/AccidentTwoWays/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/AccidentTwoWays/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  BlockedIntersection:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/BlockedIntersection/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/BlockedIntersection/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  ConstructionObstacle:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/ConstructionObstacle/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/ConstructionObstacle/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  ConstructionObstacleTwoWays:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/ConstructionObstacleTwoWays/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/ConstructionObstacleTwoWays/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  ControlLoss:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/ControlLoss/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/ControlLoss/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  DynamicObjectCrossing_right_container:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/DynamicObjectCrossing_right_container/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/DynamicObjectCrossing_right_container/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  DynamicObjectCrossing_right_haybalelb:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/DynamicObjectCrossing_right_haybalelb/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/DynamicObjectCrossing_right_haybalelb/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  EnterActorFlow_fast:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/EnterActorFlow_fast/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/EnterActorFlow_fast/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  EnterActorFlow_slow:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/EnterActorFlow_slow/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/EnterActorFlow_slow/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  HardBreakRoute:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/HardBreakRoute/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/HardBreakRoute/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  HazardAtSideLane:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/HazardAtSideLane/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/HazardAtSideLane/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  HazardAtSideLaneTwoWays:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/HazardAtSideLaneTwoWays/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/HazardAtSideLaneTwoWays/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  HighwayCutIn:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/HighwayCutIn/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/HighwayCutIn/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  HighwayExit:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/HighwayExit/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/HighwayExit/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  InterurbanActorFlow_fast:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/InterurbanActorFlow_fast/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/InterurbanActorFlow_fast/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  InterurbanActorFlow_slow:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/InterurbanActorFlow_slow/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/InterurbanActorFlow_slow/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  InterurbanAdvancedActorFlow_fast:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/InterurbanAdvancedActorFlow_fast/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/InterurbanAdvancedActorFlow_fast/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  InterurbanAdvancedActorFlow_slow:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/InterurbanAdvancedActorFlow_slow/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/InterurbanAdvancedActorFlow_slow/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  InterurbanAdvancedActorFlow_slow_2:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/InterurbanAdvancedActorFlow_slow_2/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/InterurbanAdvancedActorFlow_slow_2/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  InvadingTurn_less_curve:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/InvadingTurn_less_curve/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/InvadingTurn_less_curve/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  InvadingTurn_much_curve:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/InvadingTurn_much_curve/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/InvadingTurn_much_curve/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  MergerIntoSlowTraffic:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/MergerIntoSlowTraffic/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/MergerIntoSlowTraffic/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  MergerIntoSlowTrafficV2:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/MergerIntoSlowTrafficV2/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/MergerIntoSlowTrafficV2/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  NonSignalizedJunctionLeftTurn_fast:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/NonSignalizedJunctionLeftTurn_fast/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/NonSignalizedJunctionLeftTurn_fast/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  NonSignalizedJunctionLeftTurn_slow:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/NonSignalizedJunctionLeftTurn_slow/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/NonSignalizedJunctionLeftTurn_slow/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  NonSignalizedJunctionRightTurn_fast:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/NonSignalizedJunctionRightTurn_fast/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/NonSignalizedJunctionRightTurn_fast/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  NonSignalizedJunctionRightTurn_slow:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/NonSignalizedJunctionRightTurn_slow/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/NonSignalizedJunctionRightTurn_slow/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  OppositeVehicleRunningRedLight:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/OppositeVehicleRunningRedLight/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/OppositeVehicleRunningRedLight/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  OppositeVehicleTakingPriority:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/OppositeVehicleTakingPriority/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/OppositeVehicleTakingPriority/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  ParkedObstacle:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/ParkedObstacle/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/ParkedObstacle/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  ParkedObstacleTwoWays:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/ParkedObstacleTwoWays/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/ParkedObstacleTwoWays/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  ParkingCrossingPedestrian:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/ParkingCrossingPedestrian/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/ParkingCrossingPedestrian/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  ParkingCutIn:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/ParkingCutIn/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/ParkingCutIn/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  ParkingExit:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/ParkingExit/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/ParkingExit/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  PedestrianCrossing:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/PedestrianCrossing/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/PedestrianCrossing/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  SignalizedJunctionLeftTurn_fast:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/SignalizedJunctionLeftTurn_fast/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/SignalizedJunctionLeftTurn_fast/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  SignalizedJunctionLeftTurn_slow:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/SignalizedJunctionLeftTurn_slow/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/SignalizedJunctionLeftTurn_slow/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  SignalizedJunctionRightTurn_fast:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/SignalizedJunctionRightTurn_fast/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/SignalizedJunctionRightTurn_fast/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  SignalizedJunctionRightTurn_slow:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/SignalizedJunctionRightTurn_slow/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/SignalizedJunctionRightTurn_slow/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  StaticCutIn:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/StaticCutIn/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/StaticCutIn/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  VehicleOpensDoorTwoWays:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/VehicleOpensDoorTwoWays/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/VehicleOpensDoorTwoWays/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  VehicleTurningRoutePedestrian:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/VehicleTurningRoutePedestrian/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/VehicleTurningRoutePedestrian/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  VehicleTurningRoute_right:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/VehicleTurningRoute_right/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/VehicleTurningRoute_right/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+  YieldToEmergencyVehicle:
+    frame:
+      cam_front_left:
+        index_column: _idx_
+        reader:
+          _target_: rbyte.io.frame.DirectoryFrameReader
+          path: ${paths.data_dir}/YieldToEmergencyVehicle/frames/cam_front_left.defish.mp4/576x324/{:09d}.jpg
+          frame_decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+    table:
+      builder:
+        _target_: rbyte.io.table.TableBuilder
+        _convert_: all
+        readers:
+        - path: ${paths.data_dir}/YieldToEmergencyVehicle/ego_logs.json
+          reader:
+            _target_: rbyte.io.table.JsonTableReader
+            _recursive_: false
+            fields:
+              records:
+                _idx_: null
+                control.brake: null
+                control.throttle: null
+                control.steer: null
+                state.velocity.value: null
+                state.acceleration.value: null
+            transforms:
+            - _target_: rbyte.io.table.transforms.FpsResampler
+              source_fps: 20
+              target_fps: 30
+        merger:
+          _target_: rbyte.io.table.TableConcater
+          method: vertical
+sample_builder:
+  _target_: rbyte.sample.builder.GreedySampleTableBuilder
+  index_column: _idx_
+  length: ${vars.data.train.clip_length}
+  stride: 10
+  min_step: 10
+  filter: null
