@@ -1,4 +1,5 @@
 from collections.abc import Iterable, Mapping, Sequence
+from enum import Enum
 from functools import cache
 from typing import Any, ClassVar, final, override
 
@@ -19,13 +20,24 @@ from rerun import (
     ComponentBatchLike,
     ComponentColumn,
     Image,
+    Points2D,
     SeriesLine,
     SeriesPoint,
     TimeNanosColumn,
     TimeSequenceColumn,
 )
 from rerun._baseclasses import ComponentBatchMixin
-from rerun.components import ImageBufferBatch, ImageFormat, MarkerShape, ScalarBatch
+from rerun.components import (
+    Color,
+    ColorBatch,
+    ImageBufferBatch,
+    ImageFormat,
+    LatLonBatch,
+    MarkerShape,
+    MarkerSizeBatch,
+    Position2DBatch,
+    ScalarBatch,
+)
 from tensordict import TensorDict
 
 from cargpt.common import CameraName
@@ -49,6 +61,14 @@ class RerunPredictionWriter(BasePredictionWriter):
         PredictionResultKey.PREDICTION_STD: MarkerShape.Asterisk,
         PredictionResultKey.SCORE_LOGPROB: MarkerShape.Diamond,
         PredictionResultKey.SCORE_L1: MarkerShape.Circle,
+    }
+
+    COLORS: ClassVar[Mapping[str, Color]] = {
+        "RED": Color((255, 0, 0)),
+        "GREEN": Color((0, 255, 0)),
+        "BLUE": Color((0, 0, 255)),
+        "YELLOW": Color((255, 255, 0)),
+        "ORANGE": Color((255, 165, 0)),
     }
 
     @override
@@ -181,6 +201,30 @@ class RerunPredictionWriter(BasePredictionWriter):
                         rearrange(array, "... h w c -> (...) (h w c)").view(np.uint8)
                     )
                 ]
+            case ("batch", "data", "Waypoints.delta"):
+                lengths = [array.shape[1] for _ in array]
+                return (
+                    [Points2D.indicator()],
+                    [Position2DBatch(array.reshape(-1, 2)).partition(lengths)],
+                )
+            case ("batch", "data", "Gnss.waypoints_lat_lon"):
+                lengths = [array.shape[1] for _ in array]
+                return (
+                    [
+                        rr.GeoPoints.indicator(),
+                        ColorBatch([cls.ColorEnum.RED.value] * len(array)),
+                    ],
+                    [LatLonBatch(array.reshape(-1, 2)).partition(lengths)],
+                )
+            case ("batch", "data", "Gnss.ego_lat_lon"):
+                return (
+                    [
+                        rr.GeoPoints.indicator(),
+                        ColorBatch([cls.ColorEnum.GREEN.value] * len(array)),
+                        MarkerSizeBatch([10] * len(array)),
+                    ],
+                    [LatLonBatch(array)],
+                )
 
             case ("batch", "data", name) | (
                 "inputs",
@@ -250,7 +294,33 @@ class RerunPredictionWriter(BasePredictionWriter):
                                                     if (name := k[-1]) in CameraName
                                                 ]
                                             ),
-                                            rrb.TimeSeriesView(origin="/batch/data"),
+                                            rrb.Tabs(
+                                                contents=[
+                                                    rrb.TimeSeriesView(
+                                                        origin="/batch/data"
+                                                    ),
+                                                    rrb.Tabs(
+                                                        name="Waypoints",
+                                                        contents=[
+                                                            rrb.MapView(
+                                                                name="Gnss",
+                                                                origin="/batch/data",
+                                                                contents=[
+                                                                    "$origin/Gnss.waypoints_lat_lon",
+                                                                    "$origin/Gnss.ego_lat_lon",
+                                                                ],
+                                                            ),
+                                                            rrb.Spatial2DView(
+                                                                name="Delta",
+                                                                origin="/batch/data",
+                                                                contents=[
+                                                                    "$origin/Waypoints.delta"
+                                                                ],
+                                                            ),
+                                                        ],
+                                                    ),
+                                                ]
+                                            ),
                                         ],
                                     ),
                                     rrb.Vertical(

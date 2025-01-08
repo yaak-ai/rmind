@@ -30,6 +30,7 @@ class Modality(StrEnum):
     CONTINUOUS = auto()
     DISCRETE = auto()
     SPECIAL = auto()
+    INTENTIONS = auto()
 
 
 @unique
@@ -227,7 +228,7 @@ class EpisodeBuilder(Module):
         masked_action_timestep_idx: list[int] | None = None,
         masked_observation_timestep_idx: list[int] | None = None,
     ) -> Episode:  # pyright: ignore[reportGeneralTypeIssues]
-        tokenized = inputs.named_apply(
+        tokenized = inputs.exclude(Modality.INTENTIONS).named_apply(
             lambda k, v: (
                 self.tokenizers.get(k, default=None) or self.tokenizers.get(k[0])
             )(v),

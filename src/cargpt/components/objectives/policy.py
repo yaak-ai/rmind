@@ -40,12 +40,14 @@ class PolicyObjective(Objective):
         heads: ModuleDict,
         losses: ModuleDict | None = None,
         targets: DictConfig | None = None,
+        waypoints_encoder: Module | None = None,
     ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
         self.targets = OmegaConf.to_container(targets)
+        self.waypoints_encoder = waypoints_encoder
 
     @override
     def forward(
@@ -77,8 +79,13 @@ class PolicyObjective(Objective):
             SpecialToken.OBSERVATION_SUMMARY,
         ))
 
+        waypoints = episode.inputs[Modality.INTENTIONS, "waypoints_delta"]
+        waypoints = rearrange(waypoints, "bs ...-> bs (...)").to(torch.float32)
+        waypoints_summary = self.waypoints_encoder(waypoints * 10**4).unsqueeze(1)
+
         features = rearrange(
-            [observation_summary, observation_history], "i b 1 d -> b 1 (i d)"
+            [observation_summary, observation_history, waypoints_summary],
+            "i b 1 d -> b 1 (i d)",
         )
 
         logits = self.heads.forward(features)
@@ -133,7 +140,6 @@ class PolicyObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             )).detach()  # NOTE: equivalent to stop gradient layer in paper
-
             observation_summary = embeddings.get((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,

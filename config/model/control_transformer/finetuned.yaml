@@ -9,3 +9,34 @@ hparams_updaters:
   - _target_: funcy.del_in
     _partial_: true
     path: ["objectives", "policy", "losses"]
+  # for old configs
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: false
+    key: input_transforms
+    value:
+      - select: [image]
+        apply:
+          # NOTE/PERF: https://pytorch.org/vision/main/transforms.html#performance-considerations
+          _target_: torch.compile
+          model:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: einops.layers.torch.Rearrange
+                pattern: "... h w c -> ... c h w"
+              - _target_: torchvision.transforms.v2.CenterCrop
+                size: [320, 576]
+              - _target_: torchvision.transforms.v2.ToDtype
+                scale: true
+                dtype:
+                  _target_: hydra.utils.get_object
+                  path: torch.float32
+              - _target_: torchvision.transforms.v2.Normalize
+                mean: [0.485, 0.456, 0.406]
+                std: [0.229, 0.224, 0.225]
+
+      - select: ["continuous", "discrete"]
+        apply:
+          _target_: torch.atleast_3d
+          _partial_: true
