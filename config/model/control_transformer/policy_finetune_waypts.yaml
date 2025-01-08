@@ -26,7 +26,7 @@ hparams_updaters:
               in_channels:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 3
                   - ${vars.embedding_dim}
               hidden_channels:
                 - 512
@@ -37,7 +37,7 @@ hparams_updaters:
               in_channels:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 3
                   - ${vars.embedding_dim}
               hidden_channels:
                 - 512
@@ -48,7 +48,7 @@ hparams_updaters:
               in_channels:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 3
                   - ${vars.embedding_dim}
               hidden_channels:
                 - 512
@@ -77,6 +77,17 @@ hparams_updaters:
               _target_: cargpt.components.loss.GaussianNLLLoss
             steering_angle:
               _target_: cargpt.components.loss.GaussianNLLLoss
+        waypoints_encoder:
+          _target_: torchvision.ops.MLP
+          in_channels:
+            _target_: operator.mul
+            _args_:
+              - 12
+              - 20
+          hidden_channels:
+            - 256
+            - 512
+            
   # freeze episode builder (embeddings etc)
   - _target_: omegaconf.OmegaConf.update
     _partial_: true

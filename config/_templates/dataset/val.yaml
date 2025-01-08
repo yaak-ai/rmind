@@ -2,10 +2,6 @@
 
 #@ drives = [
 #@    'Niro115-HQ/2023-05-16--10-47-33',
-#@    'Niro104-HQ/2022-12-20--13-57-20',
-#@    'Niro107-HQ/2023-05-12--12-05-15',
-#@    'Niro122-HQ/2023-04-05--12-06-39',
-#@    'Niro102-HQ/2022-12-03--11-30-20',
 #@ ]
 
 #@ cameras = [
@@ -79,6 +75,18 @@ inputs:
                       method: asof
                       tolerance: 100ms
 
+                Gnss:
+                  key: time_stamp
+                  columns:
+                    latitude:
+                      method: interp
+                    longitude:
+                      method: interp
+                    heading:
+                      method: interp
+                    heading_error:
+                      method: interp
+
                 VehicleMotion:
                   key: time_stamp
                   columns:
@@ -98,6 +106,22 @@ inputs:
           - _target_: pipefunc.PipeFunc
             renames:
               input: data_aligned
+            output_name: data_updated
+            func:
+              _target_: rbyte.io.DataFrameGnssWaypointsSampler
+              columns:
+                time_stamp: ImageMetadata.cam_front_left.time_stamp
+                latitude: Gnss.latitude
+                longitude: Gnss.longitude
+                heading_deg: Gnss.heading
+                heading_error: Gnss.heading_error
+              num_waypoints: 10
+              time_window_seconds: 60
+              radius_meters: 200
+
+          - _target_: pipefunc.PipeFunc
+            renames:
+              input: data_updated
             output_name: data_filtered
             func:
               _target_: rbyte.io.DataFrameFilter
@@ -186,4 +210,18 @@ inputs:
             gear:
               _target_: polars.Enum
               categories: ["0", "1", "2", "3"]
+
+          rbyte.io.yaak.proto.sensor_pb2.Gnss:
+            time_stamp:
+              _target_: polars.Datetime
+              time_unit: ns
+            latitude:
+              _target_: polars.Float32
+            longitude:
+              _target_: polars.Float32
+            heading:
+              _target_: polars.Float32
+            heading_error:
+              _target_: polars.Float32
+
   #@ end

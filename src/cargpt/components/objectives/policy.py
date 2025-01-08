@@ -79,14 +79,19 @@ class PolicyObjective(Objective):
             SpecialToken.OBSERVATION_SUMMARY,
         ))
 
-        waypoints = episode.inputs[Modality.INTENTIONS, "waypoints_delta"]
-        waypoints = rearrange(waypoints, "bs ...-> bs (...)").to(torch.float32)
-        waypoints_summary = self.waypoints_encoder(waypoints * 10**4).unsqueeze(1)
+        if self.waypoints_encoder is not None:
+            waypoints = episode.inputs[Modality.INTENTIONS, "waypoints_delta"]
+            waypoints = rearrange(waypoints, "bs ...-> bs (...)").to(torch.float32)
+            waypoints_summary = self.waypoints_encoder(waypoints * 10**4).unsqueeze(1)
 
-        features = rearrange(
-            [observation_summary, observation_history, waypoints_summary],
-            "i b 1 d -> b 1 (i d)",
-        )
+            features = rearrange(
+                [observation_summary, observation_history, waypoints_summary],
+                "i b 1 d -> b 1 (i d)",
+            )
+        else:
+            features = rearrange(
+                [observation_summary, observation_history], "i b 1 d -> b 1 (i d)"
+            )
 
         logits = self.heads.forward(features)
         targets = TensorDict(tree_map(lambda f: f(episode)[:, -1], self.targets))
