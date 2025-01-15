@@ -207,24 +207,48 @@ class RerunPredictionWriter(BasePredictionWriter):
                     [Points2D.indicator()],
                     [Position2DBatch(array.reshape(-1, 2)).partition(lengths)],
                 )
-            case ("batch", "data", "Gnss.waypoints_lat_lon"):
-                lengths = [array.shape[1] for _ in array]
+            case ("batch", "data", "Waypoints.lat_lon"):
+                lengths = [array.shape[1]] * len(array)
                 return (
                     [
                         rr.GeoPoints.indicator(),
-                        ColorBatch([cls.ColorEnum.RED.value] * len(array)),
+                        ColorBatch([cls.COLORS["RED"]] * len(array)),
                     ],
                     [LatLonBatch(array.reshape(-1, 2)).partition(lengths)],
                 )
-            case ("batch", "data", "Gnss.ego_lat_lon"):
+
+            case ("batch", "data", "Waypoints.heading_triangle"):
+                a = array[:, 0:2]
+                b = array[:, 2:4]
+                c = array[:, 4:6]
+                d = array[:, 6:8]
+
+                triangle_batch = np.concatenate(
+                    [
+                        np.linspace(b, a, num=10, axis=1),
+                        np.linspace(a, c, num=10, axis=1),
+                        np.expand_dims(d, 1),
+                    ],
+                    axis=1,
+                )  # (bs, num_points, 2)
+                lengths = [triangle_batch.shape[1]] * len(triangle_batch)
                 return (
                     [
+                        # rr.GeoLineStrings.indicator(),
                         rr.GeoPoints.indicator(),
-                        ColorBatch([cls.ColorEnum.GREEN.value] * len(array)),
-                        MarkerSizeBatch([10] * len(array)),
+                        ColorBatch([cls.COLORS["BLUE"]] * len(array)),
                     ],
-                    [LatLonBatch(array)],
+                    [LatLonBatch(triangle_batch.reshape(-1, 2)).partition(lengths)],
                 )
+
+            # case ("batch", "data", "Gnss.ego_lat_lon"):
+            #     return (
+            #         [
+            #             rr.GeoPoints.indicator(),
+            #             ColorBatch([cls.COLORS["GREEN"]] * len(array)),
+            #         ],
+            #         [LatLonBatch(array)],
+            #     )
 
             case ("batch", "data", name) | (
                 "inputs",
@@ -306,8 +330,9 @@ class RerunPredictionWriter(BasePredictionWriter):
                                                                 name="Gnss",
                                                                 origin="/batch/data",
                                                                 contents=[
-                                                                    "$origin/Gnss.waypoints_lat_lon",
-                                                                    "$origin/Gnss.ego_lat_lon",
+                                                                    "$origin/Waypoints.lat_lon",
+                                                                    # "$origin/Gnss.ego_lat_lon",
+                                                                    "$origin/Waypoints.heading_triangle",
                                                                 ],
                                                             ),
                                                             rrb.Spatial2DView(
