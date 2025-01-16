@@ -80,7 +80,7 @@ class PolicyObjective(Objective):
         ))
 
         if self.waypoints_encoder is not None:
-            waypoints = episode.inputs[Modality.INTENTIONS, "waypoints_delta"]
+            waypoints = episode.inputs[Modality.INTENTIONS, "waypoints"]
             waypoints = rearrange(waypoints, "bs ...-> bs (...)").to(torch.float32)
             waypoints_summary = self.waypoints_encoder(waypoints * 10**4).unsqueeze(1)
 

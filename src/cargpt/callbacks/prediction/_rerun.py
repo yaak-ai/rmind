@@ -69,6 +69,7 @@ class RerunPredictionWriter(BasePredictionWriter):
         "BLUE": Color((0, 0, 255)),
         "YELLOW": Color((255, 255, 0)),
         "ORANGE": Color((255, 165, 0)),
+        "WHITE": Color((255, 255, 255)),
     }
 
     @override
@@ -201,10 +202,14 @@ class RerunPredictionWriter(BasePredictionWriter):
                         rearrange(array, "... h w c -> (...) (h w c)").view(np.uint8)
                     )
                 ]
-            case ("batch", "data", "Waypoints.delta"):
+            case ("batch", "data", "Waypoints.lon_lat_normalized"):
                 lengths = [array.shape[1] for _ in array]
+                array[..., 1] *= -1  # a hack, idk why it's required
                 return (
-                    [Points2D.indicator()],
+                    [
+                        Points2D.indicator(),
+                        ColorBatch([cls.COLORS["WHITE"]] * len(array)),
+                    ],
                     [Position2DBatch(array.reshape(-1, 2)).partition(lengths)],
                 )
             case ("batch", "data", "Waypoints.lat_lon"):
@@ -240,15 +245,6 @@ class RerunPredictionWriter(BasePredictionWriter):
                     ],
                     [LatLonBatch(triangle_batch.reshape(-1, 2)).partition(lengths)],
                 )
-
-            # case ("batch", "data", "Gnss.ego_lat_lon"):
-            #     return (
-            #         [
-            #             rr.GeoPoints.indicator(),
-            #             ColorBatch([cls.COLORS["GREEN"]] * len(array)),
-            #         ],
-            #         [LatLonBatch(array)],
-            #     )
 
             case ("batch", "data", name) | (
                 "inputs",
@@ -327,7 +323,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                                         name="Waypoints",
                                                         contents=[
                                                             rrb.MapView(
-                                                                name="Gnss",
+                                                                name="Map View",
                                                                 origin="/batch/data",
                                                                 contents=[
                                                                     "$origin/Waypoints.lat_lon",
@@ -336,10 +332,10 @@ class RerunPredictionWriter(BasePredictionWriter):
                                                                 ],
                                                             ),
                                                             rrb.Spatial2DView(
-                                                                name="Delta",
+                                                                name="Normalized",
                                                                 origin="/batch/data",
                                                                 contents=[
-                                                                    "$origin/Waypoints.delta"
+                                                                    "$origin/Waypoints.lon_lat_normalized"
                                                                 ],
                                                             ),
                                                         ],

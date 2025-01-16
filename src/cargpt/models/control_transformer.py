@@ -429,7 +429,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     Modality.DISCRETE: {
                         "turn_signal": data["VehicleState.turn_signal"]
                     },
-                    Modality.INTENTIONS: {"waypoints_delta": data["Waypoints.delta"]},
+                    Modality.INTENTIONS: {
+                        "waypoints": data["Waypoints.lon_lat_normalized"]
+                    },
                 },
                 device=self.device,
             )
