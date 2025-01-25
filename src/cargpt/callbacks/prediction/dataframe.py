@@ -53,12 +53,12 @@ class DataFramePredictionWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
         prediction: TensorDict,
         batch_indices: Sequence[int] | None,
-        batch: Batch,  # pyright: ignore[reportInvalidTypeForm]
+        batch: Batch,
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
         data = (
-            prediction.select("inputs", "predictions")
+            prediction.select("input", "predictions")
             .auto_batch_size_(1)
             .update({"batch": batch.to_tensordict().auto_batch_size_(1)})  # pyright: ignore[reportAttributeAccessIssue]
             .named_apply(self._filter, nested_keys=True)
@@ -87,7 +87,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
             ):
                 return tensor
 
-            case ("inputs", Modality.CONTINUOUS | Modality.DISCRETE, _name):
+            case ("input", Modality.CONTINUOUS | Modality.DISCRETE, _name):
                 return tensor
 
             case (

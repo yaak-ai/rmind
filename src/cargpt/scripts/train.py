@@ -15,7 +15,7 @@ from cargpt.utils.logging import setup_logging
 
 
 def _train(cfg: DictConfig):
-    pl.seed_everything(cfg.seed, workers=True)  # pyright: ignore[reportUnusedCallResult]
+    pl.seed_everything(cfg.seed, workers=True)
 
     logger.debug("instantiating model", target=cfg.model._target_)
     model: pl.LightningModule = instantiate(cfg.model)
@@ -46,9 +46,8 @@ def train(cfg: DictConfig):
                 universal_newlines=True,
             ).splitlines()
         }
-        run.log_code(  # pyright: ignore[reportUnusedCallResult]
-            root=".", include_fn=lambda path: Path(path).resolve() in paths
-        )
+
+        run.log_code(root=".", include_fn=lambda path: Path(path).resolve() in paths)
 
     return _train(cfg)
 

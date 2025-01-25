@@ -40,9 +40,9 @@ class MLPGLU(Feedforward):
         self.d2 = nn.Dropout(dropout)
 
     @override
-    def forward(self, inputs: Tensor) -> Tensor:
+    def forward(self, input: Tensor) -> Tensor:
         # FFN_GEGLU eq. 6, https://arxiv.org/pdf/2002.05202v1.pdf
-        x = self.l1(inputs)
+        x = self.l1(input)
         xW, xV = x.chunk(2, dim=-1)
         geglu = self.a1(xW) * xV
         return self.l2(self.d1(geglu))
@@ -78,7 +78,7 @@ class xFormerEncoder(nn.Module):
             init_fn(module=module, name=name, gain=1.0)
 
         if freeze is not None:
-            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+            self.requires_grad_(not freeze).train(not freeze)
 
     @override
     def forward(
@@ -142,7 +142,7 @@ class xFormerEncoder(nn.Module):
                             attn = attn.max(axis=1)[0]  # pyright: ignore[reportCallIssue]
                         case "min":
                             attn = attn.min(axis=1)[0]  # pyright: ignore[reportCallIssue]
-                        case _:  # pyright: ignore[reportUnnecessaryComparison]
+                        case _:
                             msg = f"Attention head fusion type {head_fusion} not supported"
                             raise NotImplementedError(msg)
 

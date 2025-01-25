@@ -5,14 +5,14 @@ from typing import override
 import numpy as np
 import torch
 from einops.layers.torch import Rearrange
-from omegaconf import DictConfig, OmegaConf
+from optree import tree_map
+from pydantic import ConfigDict, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
-from torch.utils._pytree import tree_map
 
 from cargpt.components.episode import (
-    EpisodeBuilder,
+    Episode,
     Index,
     Modality,
     SpecialToken,
@@ -24,80 +24,75 @@ from cargpt.components.mask import (
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
-from cargpt.components.objectives.base import Objective, PredictionResultKey
-from cargpt.utils.containers import ModuleDict
+from cargpt.components.objectives.base import Objective, PredictionResultKey, Targets
+from cargpt.utils import ModuleDict
 
 
 class RandomMaskedHindsightControlObjective(Objective):
+    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
     def __init__(
         self,
         *,
         heads: ModuleDict,
         losses: ModuleDict | None = None,
-        targets: DictConfig | None = None,
+        targets: Targets | None = None,
     ):
         super().__init__()
 
         self.heads = heads
         self.losses = losses
-        self.targets = OmegaConf.to_container(targets) if targets else None
+        self.targets = targets
 
     @override
-    def forward(
-        self, inputs: TensorDict, episode_builder: EpisodeBuilder, encoder: Module
-    ) -> TensorDict:
-        if self.losses is None:
-            raise RuntimeError
+    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
+        _, t = episode.input.batch_size
 
-        _, t = inputs.batch_size
         masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
         masked_observation_timestep_idx = np.random.choice(t, 1, replace=False).tolist()
-        episode = episode_builder.build_episode(
-            inputs,
-            masked_action_timestep_idx=masked_action_timestep_idx,
-            masked_observation_timestep_idx=masked_observation_timestep_idx,
-        )
+
+        episode = episode.clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
+        episode.input_embeddings.select(
+            *episode.timestep.keys_by_type[TokenType.ACTION]
+        )[:, masked_action_timestep_idx] = -1.0
+
+        episode.input_embeddings.select(
+            *episode.timestep.keys_by_type[TokenType.OBSERVATION]
+        )[:, masked_observation_timestep_idx] = -1.0
+
         mask = self._build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-        index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))  # pyright: ignore[reportAttributeAccessIssue]
+        embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+        index = episode.index.select(*episode.timestep.keys_by_type[TokenType.ACTION])  # pyright: ignore[reportAttributeAccessIssue]
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = self.heads.forward(embeddings)
-        targets = TensorDict(
-            tree_map(lambda f: f(episode)[:, masked_action_timestep_idx], self.targets)
-        )
+        targets = TensorDict.from_dict(
+            tree_map(
+                episode.get,  # pyright: ignore[reportAttributeAccessIssue]
+                self.targets,  # pyright: ignore[reportArgumentType]
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+        )[:, masked_action_timestep_idx]
 
-        loss = self.losses(
+        loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
             logits.apply(Rearrange("b t 1 d -> (b t 1) d"), batch_size=[]),
             targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
-        return TensorDict({"loss": loss})
+        return TensorDict.from_dict({"loss": loss})
 
     @override
     def predict(
         self,
-        inputs: TensorDict,
-        episode_builder: EpisodeBuilder,
-        encoder: Module,
         *,
-        result_keys: AbstractSet[PredictionResultKey] | None,
+        episode: Episode,
+        encoder: Module,
+        result_keys: AbstractSet[PredictionResultKey],
+        tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
-        if result_keys is None:
-            result_keys = frozenset(PredictionResultKey)
-
-        b, t = inputs.batch_size
+        b, t = episode.input.batch_size
         result = TensorDict({}, batch_size=[b, t])
 
-        masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
-        masked_observation_timestep_idx = np.random.choice(t, 1, replace=False).tolist()
-        episode = episode_builder.build_episode(
-            inputs,
-            masked_action_timestep_idx=masked_action_timestep_idx,
-            masked_observation_timestep_idx=masked_observation_timestep_idx,
-        )
-
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
-            result[result_key] = episode.inputs.select(*self.heads.tree_paths())
+            result[result_key] = episode.input.select(*self.heads.tree_paths())
 
         if result_keys & {
             PredictionResultKey.PREDICTION,
@@ -105,9 +100,25 @@ class RandomMaskedHindsightControlObjective(Objective):
             PredictionResultKey.SCORE_LOGPROB,
             PredictionResultKey.SCORE_L1,
         }:
+            masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
+            masked_observation_timestep_idx = np.random.choice(
+                t, 1, replace=False
+            ).tolist()
+
+            episode = episode.clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
+            episode.input_embeddings.select(
+                *episode.timestep.keys_by_type[TokenType.ACTION]
+            )[:, masked_action_timestep_idx] = -1.0
+
+            episode.input_embeddings.select(
+                *episode.timestep.keys_by_type[TokenType.OBSERVATION]
+            )[:, masked_observation_timestep_idx] = -1.0
+
             mask = self._build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.packed_embeddings, mask=mask.data)
-            index = episode.index.select(*episode.timestep.keys(TokenType.ACTION))  # pyright: ignore[reportAttributeAccessIssue]
+            embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+            index = episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
+                *episode.timestep.keys_by_type[TokenType.ACTION]
+            )
             embeddings = index[masked_action_timestep_idx].parse(embedding)
 
             logits = self.heads.forward(embeddings)
@@ -129,7 +140,7 @@ class RandomMaskedHindsightControlObjective(Objective):
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: episode_builder.tokenizers.get(k).invert(v),
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
@@ -147,7 +158,7 @@ class RandomMaskedHindsightControlObjective(Objective):
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
                         lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                        episode.tokenized,
+                        episode.input_tokens,
                     )
                     .apply(lambda x: -torch.log(x))
                 )
@@ -156,13 +167,13 @@ class RandomMaskedHindsightControlObjective(Objective):
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: episode_builder.tokenizers.get(k).invert(v),
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
                         lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                        episode.inputs,
+                        episode.input,
                         nested_keys=True,
                     )
                 )
@@ -173,11 +184,11 @@ class RandomMaskedHindsightControlObjective(Objective):
     @lru_cache(maxsize=1, typed=True)
     def _build_attention_mask(
         cls,
-        index: Index,  # pyright: ignore[reportGeneralTypeIssues]
+        index: Index,
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
-    ) -> AttentionMask:  # pyright: ignore[reportGeneralTypeIssues]
-        mask = AttentionMask(  # pyright: ignore[reportCallIssue]
+    ) -> AttentionMask:
+        mask = AttentionMask(
             data=torch.full((index.max + 1, index.max + 1), legend.DO_ATTEND),  # pyright: ignore[reportCallIssue]
             legend=legend,  # pyright: ignore[reportCallIssue]
             batch_size=[],  # pyright: ignore[reportCallIssue]
@@ -187,17 +198,17 @@ class RandomMaskedHindsightControlObjective(Objective):
         (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
         for step in range(t):
             past, current, future = index[:step], index[step], index[step + 1 :]  # pyright: ignore[reportIndexIssue]
-            current_actions = current.select(*timestep.keys(TokenType.ACTION))
+            current_actions = current.select(*timestep.keys_by_type[TokenType.ACTION])
             current_action_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
-            past_actions = past.select(*timestep.keys(TokenType.ACTION))
+            past_actions = past.select(*timestep.keys_by_type[TokenType.ACTION])
             past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
-            future_actions = future.select(*timestep.keys(TokenType.ACTION))
+            future_actions = future.select(*timestep.keys_by_type[TokenType.ACTION])
             future_action_summary = future.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,

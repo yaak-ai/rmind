@@ -34,7 +34,7 @@ class Embeddings(pl.LightningModule):
             for name, objective in self.base.objectives.items()
         })
 
-        return TensorDict.from_dict({"inputs": input, "predictions": predictions})
+        return TensorDict.from_dict({"input": input, "predictions": predictions})
 
     def _compute_summary_embeddings(self, objective, episode) -> TensorDict:
         mask = objective._build_attention_mask(episode.index, episode.timestep)

@@ -17,7 +17,7 @@ hparams_updaters:
     value:
       _target_: cargpt.utils.ModuleDict
       policy:
-        _target_: cargpt.components.objectives.policy.PolicyObjective
+        _target_: cargpt.components.objectives.PolicyObjective
         heads:
           _target_: cargpt.utils.ModuleDict
           continuous:
@@ -54,20 +54,13 @@ hparams_updaters:
                 - 512
                 - 2
               bias: False
+
         targets:
           continuous:
-            gas_pedal:
-              _target_: cargpt.components.episode.Episode.get
-              _partial_: true
-              key: ["inputs", "continuous", "gas_pedal"]
-            brake_pedal:
-              _target_: cargpt.components.episode.Episode.get
-              _partial_: true
-              key: ["inputs", "continuous", "brake_pedal"]
-            steering_angle:
-              _target_: cargpt.components.episode.Episode.get
-              _partial_: true
-              key: ["inputs", "continuous", "steering_angle"]
+            gas_pedal: [input, continuous, gas_pedal]
+            brake_pedal: [input, continuous, brake_pedal]
+            steering_angle: [input, continuous, steering_angle]
+
         losses:
           _target_: cargpt.utils.ModuleDict
           continuous:
@@ -77,6 +70,7 @@ hparams_updaters:
               _target_: cargpt.components.loss.GaussianNLLLoss
             steering_angle:
               _target_: cargpt.components.loss.GaussianNLLLoss
+
   # freeze episode builder (embeddings etc)
   - _target_: omegaconf.OmegaConf.update
     _partial_: true

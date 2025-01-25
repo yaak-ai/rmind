@@ -81,12 +81,12 @@ class RerunPredictionWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
         prediction: TensorDict,
         batch_indices: Sequence[int] | None,
-        batch: Batch,  # pyright: ignore[reportInvalidTypeForm]
+        batch: Batch,
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
         data = (
-            prediction.select("inputs", "predictions")
+            prediction.select("input", "predictions")
             .auto_batch_size_(1)
             .update({"batch": batch.to_tensordict().auto_batch_size_(1)})  # pyright: ignore[reportAttributeAccessIssue]
             .cpu()
@@ -157,7 +157,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                 | CameraName.cam_left_backward
                 | CameraName.cam_right_backward
                 | CameraName.cam_rear,
-            ) | ("inputs", Modality.IMAGE, *_):
+            ) | ("input", Modality.IMAGE, *_):
                 match array.shape:
                     case (*_, height, width, 3):
                         pass
@@ -183,7 +183,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                 ]
 
             case ("batch", "data", name) | (
-                "inputs",
+                "input",
                 Modality.CONTINUOUS | Modality.DISCRETE,
                 name,
             ):
@@ -243,7 +243,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                                     rrb.Spatial2DView(
                                                         origin="/".join(k), name=name
                                                     )
-                                                    for k in data.select((  # pyright: ignore[reportArgumentType]
+                                                    for k in data.select((
                                                         "batch",
                                                         "data",
                                                     )).keys(True, True)
@@ -254,7 +254,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                         ],
                                     ),
                                     rrb.Vertical(
-                                        name="inputs",
+                                        name="input",
                                         contents=[
                                             rrb.Tabs(
                                                 name="image",
@@ -262,15 +262,15 @@ class RerunPredictionWriter(BasePredictionWriter):
                                                     rrb.Spatial2DView(
                                                         origin="/".join(k), name=k[-1]
                                                     )
-                                                    for k in data.select((  # pyright: ignore[reportArgumentType]
-                                                        "inputs",
+                                                    for k in data.select((
+                                                        "input",
                                                         Modality.IMAGE,
                                                     )).keys(True, True)
                                                 ],
                                             ),
                                             rrb.TimeSeriesView(
                                                 name="scalar",
-                                                origin="/inputs",
+                                                origin="/input",
                                                 contents=[
                                                     f"$origin/{Modality.CONTINUOUS}/**",
                                                     f"$origin/{Modality.DISCRETE}/**",
@@ -321,7 +321,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                                             ),
                                         ],
                                     )
-                                    for objective in data["predictions"].keys()  # pyright: ignore[reportAttributeAccessIssue]
+                                    for objective in data["predictions"].keys()
                                 ],
                             )
                         ],

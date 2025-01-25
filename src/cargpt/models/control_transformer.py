@@ -5,10 +5,13 @@ import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from hydra.utils import get_class, instantiate
-from lightning_fabric.plugins.io.torch_io import pl_load
+from lightning_fabric.plugins.io.torch_io import (
+    pl_load,  # pyright: ignore[reportPrivateImportUsage]
+)
 from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from loguru import logger
 from omegaconf import DictConfig
+from optree import tree_flatten_with_path
 from pytorch_lightning.core.saving import _load_state
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import SingleDeviceStrategy
@@ -21,8 +24,9 @@ from cargpt.components.episode import EpisodeBuilder, Modality, PositionEncoding
 from cargpt.components.mask import WandbAttentionMaskLegend
 from cargpt.components.objectives import ObjectiveScheduler
 from cargpt.components.objectives.base import ObjectiveName, PredictionResultKey
+from cargpt.utils import ModuleDict
 from cargpt.utils._wandb import LoadableFromArtifact
-from cargpt.utils.containers import ModuleDict
+from cargpt.utils.containers import OPTREE_NAMESPACE
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -30,8 +34,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         super().__init__()
         self.save_hyperparameters()
 
-        self.input_transforms = instantiate(self.hparams.get("input_transforms", None))
-
+        self.input_builder = instantiate(self.hparams.input_builder)  # pyright: ignore[reportAttributeAccessIssue]
         self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)  # pyright: ignore[reportAttributeAccessIssue]
         self.encoder: Module = instantiate(self.hparams.encoder)  # pyright: ignore[reportAttributeAccessIssue]
         self.objectives: ModuleDict = instantiate(self.hparams.objectives)  # pyright: ignore[reportAttributeAccessIssue]
@@ -117,8 +120,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def training_step(self, batch: TensorDict, *args):
-        input = self._build_input(batch)
-
         all_objectives = tuple(self.objectives.keys())
         scheduled_objectives = (
             all_objectives
@@ -138,21 +139,23 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 msg = f"Don't know the correct way to handle {strategy}"
                 raise NotImplementedError(msg)
 
+        input = self.input_builder.forward(batch)
+        episode = self.episode_builder.forward(input)
+
         metrics = TensorDict(
             {
-                name: self.objectives[name](input, self.episode_builder, self.encoder)
+                name: self.objectives[name].forward(episode, self.encoder)
                 for name in objectives_to_compute
             },
             batch_size=[],
             device=input.device,
         )
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues, reportArgumentType]
+        losses = metrics.select(*((name, "loss") for name in objectives_to_compute))
         losses.select(*(set(objectives_to_compute) - set(scheduled_objectives))).zero_()
+        loss_total = losses.sum(reduce=True)
 
-        metrics["loss", "total"] = sum(  # pyright: ignore[reportArgumentType]
-            losses.values(include_nested=True, leaves_only=True)
-        )
+        metrics["loss", "total"] = loss_total
 
         if (
             isinstance(self.logger, WandbLogger)
@@ -160,44 +163,38 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             from wandb import Image  # noqa: PLC0415
 
-            episode = self.episode_builder.build_episode(input)
-            objectives = (
-                all_objectives
-                if self.objective_scheduler is None
-                else self.objective_scheduler.objectives
-            )
-            # TODO: batch log mask images
-            for obj in map(str, objectives):
-                objective = self.objectives[obj]
-                mask = objective._build_attention_mask(episode.index, episode.timestep)
+            for name, module in self.objectives.items():
+                mask = module._build_attention_mask(episode.index, episode.timestep)
                 img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
-                self.logger.log_image(f"masks/{obj}", [img], step=step)
+                self.logger.log_image(f"masks/{name}", [img], step=step)
 
         self.log_dict(
             {
                 "/".join(["train", *k]): v
-                for k, v in metrics.items(include_nested=True, leaves_only=True)
+                for k, v in metrics.detach().items(
+                    include_nested=True, leaves_only=True
+                )
             },
             sync_dist=True,
         )
 
-        return metrics["loss", "total"]
+        return loss_total
 
     @override
     def validation_step(self, batch: TensorDict, *args):
-        input = self._build_input(batch)
-
+        input = self.input_builder.forward(batch)
+        episode = self.episode_builder.forward(input)
         metrics = TensorDict(
             {
-                name: objective(input, self.episode_builder, self.encoder)
+                name: objective.forward(episode, self.encoder)
                 for name, objective in self.objectives.items()
             },
             batch_size=[],
             device=input.device,
         )
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues, reportArgumentType]
-        metrics["loss", "total"] = sum(  # pyright: ignore[reportArgumentType]
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
+        metrics["loss", "total"] = sum(
             losses.values(include_nested=True, leaves_only=True)
         )
 
@@ -214,15 +211,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def predict_step(self, batch: TensorDict):
-        input = self._build_input(batch)
+        input = self.input_builder.forward(batch)
+        episode = self.episode_builder.forward(input)
 
         predictions = TensorDict.from_dict(
             {
                 name: objective.predict(
-                    input,
-                    episode_builder=self.episode_builder,
+                    episode=episode,
                     encoder=self.encoder,
-                    # TODO: attention
                     result_keys=frozenset((
                         PredictionResultKey.GROUND_TRUTH,
                         PredictionResultKey.PREDICTION,
@@ -231,6 +227,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                         PredictionResultKey.SCORE_LOGPROB,
                         PredictionResultKey.SCORE_L1,
                     )),
+                    tokenizers=self.episode_builder.tokenizers,
                 )
                 for name, objective in self.objectives.items()
             },
@@ -238,7 +235,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         )
 
         return TensorDict.from_dict(
-            {"inputs": input, "predictions": predictions}, batch_size=input.batch_size
+            {"input": input, "predictions": predictions}, batch_size=input.batch_size
         )
 
     @override
@@ -260,7 +257,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
             similarities = (
                 TensorDict.from_module(self.episode_builder)
-                .select(*similarity_keys)  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue]
+                .select(*similarity_keys)  # pyright: ignore[ reportAttributeAccessIssue]
                 .apply(similarity_fn, inplace=False)
                 .cpu()
             )
@@ -304,9 +301,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         samples = self.trainer.datamodule.train_dataloader().dataset.samples  # pyright: ignore[reportAttributeAccessIssue]
 
         sample_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
-        delta_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
+        diff_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
 
-        for k, mod in self.objectives.tree_flatten_with_path():
+        paths, modules, _ = tree_flatten_with_path(
+            self.objectives,  # pyright: ignore[reportArgumentType]
+            namespace=OPTREE_NAMESPACE,
+        )
+        for k, mod in zip(paths, modules, strict=True):
             if hasattr(mod, "logit_bias") and mod.logit_bias is None:
                 match k:
                     case (objective, "losses", *_):
@@ -320,7 +321,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                                 dest = sample_logit_bias_losses
 
                             case ObjectiveName.MEMORY_EXTRACTION:
-                                dest = delta_logit_bias_losses
+                                dest = diff_logit_bias_losses
 
                             case _:
                                 raise NotImplementedError
@@ -334,11 +335,23 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             (Modality.CONTINUOUS, "gas_pedal"): "VehicleMotion.gas_pedal_normalized",
             (
                 Modality.CONTINUOUS,
+                "gas_pedal_diff",
+            ): "VehicleMotion.gas_pedal_normalized",
+            (
+                Modality.CONTINUOUS,
                 "brake_pedal",
             ): "VehicleMotion.brake_pedal_normalized",
             (
                 Modality.CONTINUOUS,
+                "brake_pedal_diff",
+            ): "VehicleMotion.brake_pedal_normalized",
+            (
+                Modality.CONTINUOUS,
                 "steering_angle",
+            ): "VehicleMotion.steering_angle_normalized",
+            (
+                Modality.CONTINUOUS,
+                "steering_angle_diff",
             ): "VehicleMotion.steering_angle_normalized",
             (Modality.CONTINUOUS, "speed"): "VehicleMotion.speed",
             (Modality.DISCRETE, "turn_signal"): "VehicleState.turn_signal",
@@ -354,7 +367,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 .to_torch()
                 .to(self.device)
             )
-            tokenizer = self.episode_builder.tokenizers.get(k_loss)
+            tokenizer = self.episode_builder.tokenizers.get_deepest(k_loss)
             labels = tokenizer(values)
             freq = torch.bincount(
                 labels.flatten(),
@@ -374,7 +387,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 loss.logit_bias = logit_bias
 
         for k_loss, losses in mit.map_reduce(
-            delta_logit_bias_losses, keyfunc=by_key_modality_name
+            diff_logit_bias_losses, keyfunc=by_key_modality_name
         ).items():
             values = (
                 samples.select(
@@ -386,7 +399,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
             for k_module, loss in losses:
                 logger.debug(
-                    "setting logit bias (delta-based)",
+                    "setting logit bias (diff-based)",
                     module=".".join(k_module),
                     loss=loss.__class__.__name__,
                 )
@@ -394,7 +407,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 match k_module:
                     case (*k_objective, "losses", _modality, _name):
                         objective = self.objectives.get(tuple(k_objective))
-                        tokenizer = objective.delta_tokenizers.get(k_loss)
+                        tokenizer = self.episode_builder.tokenizers.get_deepest(k_loss)
                         labels = tokenizer(values)
                         freq = torch.bincount(
                             labels.flatten(),
@@ -411,32 +424,3 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def on_fit_start(self) -> None:
         self._populate_logit_bias()
-
-    def _build_input(self, batch: Any) -> TensorDict:
-        data = batch.data
-        input = (
-            TensorDict.from_dict(
-                {
-                    Modality.IMAGE: {"cam_front_left": data["cam_front_left"]},
-                    Modality.CONTINUOUS: {
-                        "speed": data["VehicleMotion.speed"],
-                        "gas_pedal": data["VehicleMotion.gas_pedal_normalized"],
-                        "brake_pedal": data["VehicleMotion.brake_pedal_normalized"],
-                        "steering_angle": data[
-                            "VehicleMotion.steering_angle_normalized"
-                        ],
-                    },
-                    Modality.DISCRETE: {
-                        "turn_signal": data["VehicleState.turn_signal"]
-                    },
-                },
-                device=self.device,
-            )
-            .auto_batch_size_(batch_dims=2)
-            .refine_names("b", "t")
-        )
-
-        for transform in self.input_transforms or ():
-            input = input.update(input.select(*transform.select).apply(transform.apply))
-
-        return input

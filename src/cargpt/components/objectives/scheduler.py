@@ -26,11 +26,11 @@ class ObjectiveScheduler:
         self.generator = np.random.Generator(np.random.PCG64())
 
     def sample(self) -> Iterable[ObjectiveName]:
-        objectives = self.generator.choice(  # pyright: ignore[reportCallIssue]
-            a=self.objectives,  # pyright: ignore[reportArgumentType]
+        objectives = self.generator.choice(
+            a=self.objectives,
             p=self.probabilities,
             size=self.sample_size,
             replace=False,
         )
 
-        return map(ObjectiveName, objectives)  # pyright: ignore[reportReturnType]
+        return map(ObjectiveName, objectives)

@@ -38,3 +38,17 @@ class Identity(nn.Identity, Invertible):
     @override
     def invert(self, input: Tensor) -> Tensor:
         return input
+
+
+class FunctionWrapper(nn.Module):
+    def __init__(self, func: Callable[..., Any]) -> None:
+        super().__init__()
+        self.func = func
+
+    @override
+    def forward(self, *args, **kwargs) -> Any:
+        return self.func(*args, **kwargs)
+
+    @override
+    def extra_repr(self) -> str:
+        return repr(self.func)
