@@ -82,8 +82,8 @@ hparams_updaters:
           in_channels:
             _target_: operator.mul
             _args_:
-              - 12
-              - 20
+              - 10 # num waypoints 
+              - 2
           hidden_channels:
             - 256
             - 512

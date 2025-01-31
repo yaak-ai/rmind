@@ -80,9 +80,11 @@ class PolicyObjective(Objective):
         ))
 
         if self.waypoints_encoder is not None:
-            waypoints = episode.inputs[Modality.INTENTIONS, "waypoints"]
-            waypoints = rearrange(waypoints, "bs ...-> bs (...)").to(torch.float32)
-            waypoints_summary = self.waypoints_encoder(waypoints * 10**4).unsqueeze(1)
+            waypoints = episode.inputs[Modality.INTENTIONS, "waypoints"][:, -1]
+            waypoints = rearrange(waypoints, "bs ...-> bs (...)").to(
+                torch.float32
+            )
+            waypoints_summary = self.waypoints_encoder(waypoints).unsqueeze(1)
 
             features = rearrange(
                 [observation_summary, observation_history, waypoints_summary],
@@ -150,10 +152,24 @@ class PolicyObjective(Objective):
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
 
-            features = rearrange(
-                [observation_summary, observation_history], "i b t 1 d -> b t 1 (i d)"
-            )
+            if self.waypoints_encoder is not None:
+                waypoints = episode.inputs[Modality.INTENTIONS, "waypoints"][:, -1]
+                waypoints = rearrange(waypoints * 1e4, "bs ...-> bs (...)").to(
+                    torch.float32
+                )
+                waypoints_summary = (
+                    self.waypoints_encoder(waypoints).unsqueeze(1).unsqueeze(1)
+                )
 
+                features = rearrange(
+                    [observation_summary, observation_history, waypoints_summary],
+                    "i b t 1 d -> b t 1 (i d)",
+                )
+            else:
+                features = rearrange(
+                    [observation_summary, observation_history],
+                    "i b t 1 d -> b t 1 (i d)",
+                )
             logits = self.heads.forward(features, batch_size=[b, 1])
 
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)

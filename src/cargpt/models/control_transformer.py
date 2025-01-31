@@ -4,6 +4,7 @@ from typing import Any, Self, override
 import more_itertools as mit
 import pytorch_lightning as pl
 import torch
+from enum import StrEnum, auto
 from hydra.utils import get_class, instantiate
 from lightning_fabric.plugins.io.torch_io import pl_load
 from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
@@ -44,6 +45,10 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             msg = f"objective scheduler enabled but {specified} != {scheduled}"
             raise ValueError(msg)
+        self.table_keys: dict[str, str] = get_table_keys(
+            self.hparams.dataset_source_type  # pyright: ignore[reportAttributeAccessIssue]
+        )
+
 
     @override
     @_restricted_classmethod
@@ -331,18 +336,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                         raise NotImplementedError
 
         cols = {
-            (Modality.CONTINUOUS, "gas_pedal"): "VehicleMotion.gas_pedal_normalized",
-            (
-                Modality.CONTINUOUS,
-                "brake_pedal",
-            ): "VehicleMotion.brake_pedal_normalized",
-            (
-                Modality.CONTINUOUS,
-                "steering_angle",
-            ): "VehicleMotion.steering_angle_normalized",
-            (Modality.CONTINUOUS, "speed"): "VehicleMotion.speed",
-            (Modality.DISCRETE, "turn_signal"): "VehicleState.turn_signal",
-        }
+                (Modality.CONTINUOUS, k): self.table_keys.get(k)
+                for k in ["speed", "gas_pedal", "brake_pedal", "steering_angle"]
+            }.update({
+                (Modality.DISCRETE, k): self.table_keys.get(k) for k in ["turn_signal"]
+            })
 
         by_key_modality_name = lambda x: x[0][-2:]  # noqa: E731
 
@@ -414,24 +412,23 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     def _build_input(self, batch: Any) -> TensorDict:
         data = batch.data
+        if self.hparams.dataset_source_type == "carla":  # pyright: ignore[reportAttributeAccessIssue]
+            data["control.turn_signal"] = torch.zeros_like(
+               data["control.brake"],
+                dtype=torch.int32,  # cant use torch.int8
+            )
+        
         input = (
             TensorDict.from_dict(
                 {
                     Modality.IMAGE: {"cam_front_left": data["cam_front_left"]},
                     Modality.CONTINUOUS: {
-                        "speed": data["VehicleMotion.speed"],
-                        "gas_pedal": data["VehicleMotion.gas_pedal_normalized"],
-                        "brake_pedal": data["VehicleMotion.brake_pedal_normalized"],
-                        "steering_angle": data[
-                            "VehicleMotion.steering_angle_normalized"
-                        ],
+                        k: data[self.table_keys.get(k)]
+                        for k in ["speed", "gas_pedal", "brake_pedal", "steering_angle"]
                     },
                     Modality.DISCRETE: {
-                        "turn_signal": data["VehicleState.turn_signal"]
-                    },
-                    Modality.INTENTIONS: {
-                        "waypoints": data["Waypoints.lon_lat_normalized"]
-                    },
+                        k: data[self.table_keys.get(k)] for k in ["turn_signal"]                    },
+                    Modality.INTENTIONS: {"waypoints": data["Waypoints.xy"]},
                 },
                 device=self.device,
             )
@@ -443,3 +440,32 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             input = input.update(input.select(*transform.select).apply(transform.apply))
 
         return input
+
+class DatasetSourceType(StrEnum):
+    YAAK = auto()
+    CARLA = auto()
+
+
+DATASET_KEY_MAPPINGS = {
+    DatasetSourceType.YAAK: {
+        "speed": "VehicleMotion.speed",
+        "gas_pedal": "VehicleMotion.gas_pedal_normalized",
+        "brake_pedal": "VehicleMotion.brake_pedal_normalized",
+        "steering_angle": "VehicleMotion.steering_angle_normalized",
+        "turn_signal": "VehicleState.turn_signal",
+    },
+    DatasetSourceType.CARLA: {
+        "speed": "state.velocity.value",
+        "gas_pedal": "control.throttle",
+        "brake_pedal": "control.brake",
+        "steering_angle": "control.steer",
+        "turn_signal": "control.turn_signal",  # not in original data
+    },
+}
+
+
+def get_table_keys(data_source: DatasetSourceType) -> dict[str, str]:
+    if data_source in DATASET_KEY_MAPPINGS:
+        return DATASET_KEY_MAPPINGS[data_source]
+    msg = "Unknown DataSourceType"
+    raise ValueError(msg)

@@ -1,7 +1,7 @@
 #@yaml/text-templated-strings
 
 #@ drives = [
-#@    'Niro115-HQ/2023-05-16--10-47-33',
+#@    'Niro101-HQ/2022-12-30--09-23-51',
 #@ ]
 
 #@ cameras = [
@@ -42,7 +42,7 @@ inputs:
               path: yaak_metadata_path
               fields: yaak_metadata_fields
             output_name: data
-            cache: true
+            cache: false
             func:
               _target_: hydra.utils.get_method
               path: rbyte.io.build_yaak_metadata_dataframe
@@ -82,10 +82,6 @@ inputs:
                       method: interp
                     longitude:
                       method: interp
-                    heading:
-                      method: interp
-                    heading_error:
-                      method: interp
 
                 VehicleMotion:
                   key: time_stamp
@@ -108,16 +104,15 @@ inputs:
               input: data_aligned
             output_name: data_updated
             func:
-              _target_: rbyte.io.DataFrameGnssWaypointsSampler
-              columns:
-                time_stamp: ImageMetadata.cam_front_left.time_stamp
-                latitude: Gnss.latitude
-                longitude: Gnss.longitude
-                heading_deg: Gnss.heading
-                heading_error: Gnss.heading_error
+              _target_: rbyte.io.dataframe.waypoints_merger.DataFrameWaypointsMerger
+              waypoints_path: ${paths.data_dir}/(@=input_id@)/waypoints.json
+              coordinates_type: lat_lon
+              ego_lon_x_col: Gnss.longitude
+              ego_lat_y_col: Gnss.latitude
+              timestamp_col: ImageMetadata.(@=cameras[0]@).time_stamp
               num_waypoints: 10
-              time_window_seconds: 60
-              radius_meters: 200
+              out_col: Waypoints.xy
+              predict_mode: true
 
           - _target_: pipefunc.PipeFunc
             renames:
@@ -218,10 +213,6 @@ inputs:
             latitude:
               _target_: polars.Float32
             longitude:
-              _target_: polars.Float32
-            heading:
-              _target_: polars.Float32
-            heading_error:
               _target_: polars.Float32
 
   #@ end

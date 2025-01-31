@@ -96,6 +96,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
                 (
                     PredictionResultKey.GROUND_TRUTH
                     | PredictionResultKey.PREDICTION
+                    | PredictionResultKey.PREDICTION_PROBS
                     | PredictionResultKey.PREDICTION_STD
                     | PredictionResultKey.SCORE_LOGPROB
                     | PredictionResultKey.SCORE_L1

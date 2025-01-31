@@ -40,3 +40,11 @@ hparams_updaters:
         apply:
           _target_: torch.atleast_3d
           _partial_: true
+
+  # add dataset_source_type
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: true
+    key: dataset_source_type
+    value: carla

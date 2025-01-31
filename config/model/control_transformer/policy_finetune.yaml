@@ -111,7 +111,7 @@ hparams_updaters:
         num_warmup_steps: 25000
         num_training_steps: 250000
 
-  # for old configs
+  # for old configs compatibility
   - _target_: omegaconf.OmegaConf.update
     _partial_: true
     _recursive_: false

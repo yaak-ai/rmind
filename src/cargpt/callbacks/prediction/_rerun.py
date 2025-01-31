@@ -34,7 +34,6 @@ from rerun.components import (
     ImageFormat,
     LatLonBatch,
     MarkerShape,
-    MarkerSizeBatch,
     Position2DBatch,
     ScalarBatch,
 )
@@ -120,7 +119,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                 case ("batch", "meta", *_):
                     pass
 
-                case (*_, last) if last.endswith("idx"):
+                case (*_, last) if last.endswith("idx") or last.endswith("_idx_"):
                     time_keys[TimeSequenceColumn].append(k)
 
                 case (*_, last) if last.endswith("time_stamp"):
@@ -128,7 +127,7 @@ class RerunPredictionWriter(BasePredictionWriter):
 
                 case _:
                     component_keys.append(k)
-
+        
         if self._blueprint is None:
             self._blueprint = self._build_blueprint(data)
 
@@ -202,9 +201,10 @@ class RerunPredictionWriter(BasePredictionWriter):
                         rearrange(array, "... h w c -> (...) (h w c)").view(np.uint8)
                     )
                 ]
-            case ("batch", "data", "Waypoints.lon_lat_normalized"):
+            case ("batch", "data", "Waypoints.xy"):
                 lengths = [array.shape[1] for _ in array]
-                array[..., 1] *= -1  # a hack, idk why it's required
+                array[..., 1] *= -1  # since rerun plots y axis down
+                breakpoint()
                 return (
                     [
                         Points2D.indicator(),
@@ -212,7 +212,7 @@ class RerunPredictionWriter(BasePredictionWriter):
                     ],
                     [Position2DBatch(array.reshape(-1, 2)).partition(lengths)],
                 )
-            case ("batch", "data", "Waypoints.lat_lon"):
+            case ("batch", "data", "Waypoints.mapview.lat_lon"):
                 lengths = [array.shape[1]] * len(array)
                 return (
                     [
@@ -221,8 +221,19 @@ class RerunPredictionWriter(BasePredictionWriter):
                     ],
                     [LatLonBatch(array.reshape(-1, 2)).partition(lengths)],
                 )
+                
+            case ("batch", "data", "Waypoints.mapview.xy"):
+                lengths = [array.shape[1]] * len(array)
+                array[..., 1] *= -1  # since rerun plots y axis down
+                return (
+                    [
+                        Points2D.indicator(),
+                        ColorBatch([cls.COLORS["RED"]] * len(array)),
+                    ],
+                    [Position2DBatch(array.reshape(-1, 2)).partition(lengths)],
+                )
 
-            case ("batch", "data", "Waypoints.heading_triangle"):
+            case ("batch", "data", "Waypoints.mapview.heading_triangle"):
                 a = array[:, 0:2]
                 b = array[:, 2:4]
                 c = array[:, 4:6]
@@ -239,7 +250,6 @@ class RerunPredictionWriter(BasePredictionWriter):
                 lengths = [triangle_batch.shape[1]] * len(triangle_batch)
                 return (
                     [
-                        # rr.GeoLineStrings.indicator(),
                         rr.GeoPoints.indicator(),
                         ColorBatch([cls.COLORS["BLUE"]] * len(array)),
                     ],
@@ -290,6 +300,13 @@ class RerunPredictionWriter(BasePredictionWriter):
 
     @classmethod
     def _build_blueprint(cls, data: TensorDict) -> rrb.Blueprint:
+        if ("batch", "data", "Waypoints.mapview.lat_lon") in data:
+            mapview_type = rrb.MapView
+        elif ("batch", "data", "Waypoints.mapview.xy") in data:
+            mapview_type = rrb.Spatial2DView
+        else:
+            raise ValueError("No mapview data found")
+
         return rrb.Blueprint(
             rrb.Horizontal(
                 name="inference",
@@ -322,20 +339,20 @@ class RerunPredictionWriter(BasePredictionWriter):
                                                     rrb.Tabs(
                                                         name="Waypoints",
                                                         contents=[
-                                                            rrb.MapView(
+                                                            mapview_type(
                                                                 name="Map View",
                                                                 origin="/batch/data",
                                                                 contents=[
-                                                                    "$origin/Waypoints.lat_lon",
-                                                                    # "$origin/Gnss.ego_lat_lon",
-                                                                    "$origin/Waypoints.heading_triangle",
+                                                                    "$origin/Waypoints.mapview.lat_lon",
+                                                                    "$origin/Waypoints.mapview.xy",
+                                                                    "$origin/Waypoints.mapview.heading_triangle",
                                                                 ],
                                                             ),
                                                             rrb.Spatial2DView(
                                                                 name="Normalized",
                                                                 origin="/batch/data",
                                                                 contents=[
-                                                                    "$origin/Waypoints.lon_lat_normalized"
+                                                                    "$origin/Waypoints.xy"
                                                                 ],
                                                             ),
                                                         ],
