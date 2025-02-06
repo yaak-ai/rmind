@@ -54,7 +54,7 @@ class PolicyObjective(Objective):
         embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
 
         embeddings = (
-            episode.index[-1]  # pyright: ignore[reportIndexIssue]
+            episode.index[-1]
             .select(
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
@@ -79,7 +79,7 @@ class PolicyObjective(Objective):
         logits = self.heads.forward(features)
         targets = TensorDict.from_dict(
             tree_map(
-                episode.get,  # pyright: ignore[reportAttributeAccessIssue]
+                episode.get,
                 self.targets,  # pyright: ignore[reportArgumentType]
                 is_leaf=lambda x: isinstance(x, tuple),
             )
@@ -118,7 +118,7 @@ class PolicyObjective(Objective):
             embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
 
             embeddings = (
-                episode.index[[-1]]  # pyright: ignore[reportIndexIssue]
+                episode.index[[-1]]
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
@@ -201,11 +201,11 @@ class PolicyObjective(Objective):
     ) -> AttentionMask:
         mask = ForwardDynamicsPredictionObjective._build_attention_mask(
             index, timestep, legend
-        ).clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
+        ).clone(recurse=True)
 
-        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
+        (t,) = index.batch_size
         for step in range(t):
-            past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
+            past, current = index[:step], index[step]
             current_observations = current.select(
                 *timestep.keys_by_type[TokenType.OBSERVATION]
             )

@@ -56,7 +56,7 @@ class InverseDynamicsPredictionObjective(Objective):
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
         observation_summaries = (
-            episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
+            episode.index.select(
                 k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
             )
             .parse(embedding)
@@ -72,7 +72,7 @@ class InverseDynamicsPredictionObjective(Objective):
         logits = self.heads.forward(features, batch_size=[b, t - 1])
         targets = TensorDict.from_dict(
             tree_map(
-                episode.get,  # pyright: ignore[reportAttributeAccessIssue]
+                episode.get,
                 self.targets,  # pyright: ignore[reportArgumentType]
                 is_leaf=lambda x: isinstance(x, tuple),
             )
@@ -108,7 +108,7 @@ class InverseDynamicsPredictionObjective(Objective):
 
             result[result_key] = (
                 # from relevant tokens
-                episode.index.select((  # pyright: ignore[reportAttributeAccessIssue]
+                episode.index.select((
                     Modality.SPECIAL,
                     SpecialToken.OBSERVATION_SUMMARY,
                 ))
@@ -131,7 +131,7 @@ class InverseDynamicsPredictionObjective(Objective):
             embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
 
             observation_summaries = (
-                episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
+                episode.index.select(
                     k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
                 )
                 .parse(embedding)
@@ -202,11 +202,11 @@ class InverseDynamicsPredictionObjective(Objective):
     ) -> AttentionMask:
         mask = ForwardDynamicsPredictionObjective._build_attention_mask(
             index, timestep, legend
-        ).clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
+        ).clone(recurse=True)
 
-        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
+        (t,) = index.batch_size
         for step in range(t):
-            past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
+            past, current = index[:step], index[step]
             current_observations = current.select(
                 *timestep.keys_by_type[TokenType.OBSERVATION]
             )

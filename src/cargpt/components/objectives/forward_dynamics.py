@@ -56,7 +56,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
 
         # all but last timestep
-        index = episode.index[:-1]  # pyright: ignore[reportIndexIssue]
+        index = episode.index[:-1]
 
         observations: TensorDict = index.select(
             *episode.timestep.keys_by_type[TokenType.OBSERVATION]
@@ -89,11 +89,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         logits = self.heads.forward(features)
 
         targets = TensorDict.from_dict(
-            tree_map(
-                episode.get,  # pyright: ignore[reportAttributeAccessIssue]
-                self.targets,
-                is_leaf=lambda x: isinstance(x, tuple),
-            )
+            tree_map(episode.get, self.targets, is_leaf=lambda x: isinstance(x, tuple))
         )[:, 1:]  # all but first timestep
 
         loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
@@ -128,7 +124,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             result[result_key] = (
                 # from relevant tokens
-                episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
+                episode.index.select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
                     (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY),
                 )
@@ -150,7 +146,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
             # all but last timestep
-            index = episode.index[:-1]  # pyright: ignore[reportIndexIssue]
+            index = episode.index[:-1]
 
             observations: TensorDict = (
                 index.select(*episode.timestep.keys_by_type[TokenType.OBSERVATION])
@@ -239,16 +235,16 @@ class ForwardDynamicsPredictionObjective(Objective):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
+        length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAssignmentType, reportAttributeAccessIssue]
         mask = AttentionMask(
-            data=torch.full((index.max + 1, index.max + 1), legend.DO_NOT_ATTEND),  # pyright: ignore[reportCallIssue]
-            legend=legend,  # pyright: ignore[reportCallIssue]
-            batch_size=[],  # pyright: ignore[reportCallIssue]
-            device=index.device,  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue]
+            data=torch.full((length, length), legend.DO_NOT_ATTEND),
+            legend=legend,
+            device=index.device,
         )
 
-        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
+        (t,) = index.batch_size
         for step in range(t):
-            past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
+            past, current = index[:step], index[step]
             current_observations = current.select(
                 *timestep.keys_by_type[TokenType.OBSERVATION]
             )

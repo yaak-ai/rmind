@@ -8,15 +8,14 @@ from typing import override
 import more_itertools as mit
 import torch
 from einops import pack, rearrange, repeat
-from jaxtyping import Float, Int, Shaped
+from jaxtyping import Float, Shaped
 from loguru import logger
 from pydantic import ConfigDict, RootModel, model_validator, validate_call
 from pydantic.dataclasses import dataclass
-from tensordict import (
-    TensorDict,
-    tensorclass,  # pyright: ignore[reportAttributeAccessIssue]
+from tensordict import TensorClass, TensorDict
+from tensordict.tensorclass import (
+    _eq as tensorclass_eq,  # pyright: ignore[reportAttributeAccessIssue]
 )
-from tensordict.tensorclass import _eq  # pyright: ignore[reportAttributeAccessIssue]
 from torch import Tensor
 from torch.nn import Embedding, Module
 
@@ -86,8 +85,7 @@ class Timestep(RootModel[tuple[TokenMeta, ...]], Hashable):
         )
 
 
-@tensorclass(frozen=True)
-class Index:
+class Index(TensorClass["frozen"], Hashable):  # pyright: ignore[reportInvalidTypeArguments]
     image: TensorDict
     continuous: TensorDict
     discrete: TensorDict
@@ -112,39 +110,17 @@ class Index:
             case _:
                 raise NotImplementedError
 
-        batch_size = [*src.shape[:dim], *self.batch_size]  # pyright: ignore[reportAttributeAccessIssue]
+        batch_size = [*src.shape[:dim], *self.batch_size]
 
-        return (
-            self.to_tensordict()  # pyright: ignore[reportAttributeAccessIssue]
-            .filter_non_tensor_data()  # https://github.com/pytorch/tensordict/issues/935
-            .apply(fn, batch_size=batch_size, device=src.device, inplace=False)
+        return self.to_tensordict(retain_none=False).apply(
+            fn, batch_size=batch_size, device=src.device, inplace=False
         )
-
-    @property
-    def all_values(self) -> Int[Tensor, "d"]:
-        return torch.cat(
-            list(
-                self.values(  # pyright: ignore[reportAttributeAccessIssue]
-                    include_nested=True, leaves_only=True
-                )
-            ),
-            -1,
-        ).flatten()
-
-    @property
-    def max(self) -> int:
-        return max(
-            self.apply(torch.max, batch_size=[]).values(  # pyright: ignore[reportAttributeAccessIssue]
-                include_nested=True, leaves_only=True
-            )
-        ).item()
 
     def __hash__(self) -> int:
         items = tuple(
             (k, tuple(v.flatten().tolist()))
             for k, v in sorted(
-                self.items(include_nested=True, leaves_only=True),  # pyright: ignore[reportAttributeAccessIssue]
-                key=itemgetter(0),
+                self.items(include_nested=True, leaves_only=True), key=itemgetter(0)
             )
         )
 
@@ -152,11 +128,10 @@ class Index:
 
 
 # HACK: need Index.__eq__ for @lru_cache but @tensorclass overrides it
-Index.__eq__ = lambda self, other: _eq(self, other).all()
+Index.__eq__ = lambda self, other: tensorclass_eq(self, other).all()
 
 
-@tensorclass(frozen=True)
-class Episode:
+class Episode(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArguments]
     input: TensorDict
     input_tokens: TensorDict
     input_embeddings: TensorDict
@@ -230,19 +205,17 @@ class EpisodeBuilder(Module):
         index = self._build_index(input_embeddings)
 
         position_embeddings = self._build_position_embeddings(
-            input_embeddings,
-            timestep_index=index[0],  # pyright: ignore[reportIndexIssue]
+            input_embeddings, timestep_index=index[0]
         )
 
         return Episode(
-            input=input,  # pyright: ignore[reportCallIssue]
-            input_tokens=input_tokens,  # pyright: ignore[reportCallIssue]
-            input_embeddings=input_embeddings,  # pyright: ignore[reportCallIssue]
-            position_embeddings=position_embeddings,  # pyright: ignore[reportCallIssue]
-            index=index,  # pyright: ignore[reportCallIssue]
-            timestep=self.timestep,  # pyright: ignore[reportCallIssue]
-            batch_size=[],  # pyright: ignore[reportCallIssue]
-            device=input.device,  # pyright: ignore[reportCallIssue]
+            input=input,
+            input_tokens=input_tokens,
+            input_embeddings=input_embeddings,
+            position_embeddings=position_embeddings,
+            index=index,
+            timestep=self.timestep,
+            device=input.device,
         )
 
     def _build_index(self, embeddings: TensorDict) -> Index:
@@ -252,12 +225,11 @@ class EpisodeBuilder(Module):
         timestep_length = sum(lengths)
         ranges = pairwise(accumulate(lengths, initial=0))
 
-        timestep_index = Index.from_dict(  # pyright: ignore[reportAttributeAccessIssue]
+        timestep_index = Index.from_dict(
             {
                 token.key: torch.arange(*_range)
                 for token, _range in zip(self.timestep, ranges, strict=True)
             },
-            batch_size=[],
             device=embeddings.device,
         )
 
@@ -300,7 +272,7 @@ class EpisodeBuilder(Module):
         ):
             case Embedding():
                 keys = self.timestep.keys_by_type[TokenType.OBSERVATION]
-                position = timestep_index.select(*keys).to_tensordict()  # pyright: ignore[reportAttributeAccessIssue]
+                position = timestep_index.select(*keys).to_tensordict(retain_none=False)
                 position_embedding = position.apply(pe_mod)
                 position_embeddings.select(*keys).apply(
                     add,
