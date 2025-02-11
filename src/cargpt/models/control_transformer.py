@@ -209,28 +209,26 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         input = self.input_builder.forward(batch)
         episode = self.episode_builder.forward(input)
 
-        predictions = TensorDict.from_dict(
-            {
-                name: objective.predict(
-                    episode=episode,
-                    encoder=self.encoder,
-                    result_keys=frozenset((
-                        PredictionResultKey.GROUND_TRUTH,
-                        PredictionResultKey.PREDICTION,
-                        PredictionResultKey.PREDICTION_STD,
-                        PredictionResultKey.PREDICTION_PROBS,
-                        PredictionResultKey.SCORE_LOGPROB,
-                        PredictionResultKey.SCORE_L1,
-                    )),
-                    tokenizers=self.episode_builder.tokenizers,
-                )
-                for name, objective in self.objectives.items()
-            },
-            batch_size=input.batch_size,
-        )
+        predictions = TensorDict({
+            name: objective.predict(
+                episode=episode,
+                encoder=self.encoder,
+                result_keys=frozenset((
+                    PredictionResultKey.GROUND_TRUTH,
+                    PredictionResultKey.PREDICTION,
+                    PredictionResultKey.PREDICTION_STD,
+                    PredictionResultKey.PREDICTION_PROBS,
+                    PredictionResultKey.SCORE_LOGPROB,
+                    PredictionResultKey.SCORE_L1,
+                    PredictionResultKey.SUMMARY_EMBEDDINGS,
+                )),
+                tokenizers=self.episode_builder.tokenizers,
+            )
+            for name, objective in self.objectives.items()
+        })
 
-        return TensorDict.from_dict(
-            {"input": input, "predictions": predictions}, batch_size=input.batch_size
+        return TensorDict(
+            {"input": input, "predictions": predictions}  # pyright: ignore[reportArgumentType]
         )
 
     @override

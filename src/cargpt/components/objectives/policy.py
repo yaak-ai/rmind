@@ -77,20 +77,20 @@ class PolicyObjective(Objective):
         )
 
         logits = self.heads.forward(features)
-        targets = TensorDict.from_dict(
+        targets = TensorDict(
             tree_map(
                 episode.get,
                 self.targets,  # pyright: ignore[reportArgumentType]
                 is_leaf=lambda x: isinstance(x, tuple),
             )
-        )[:, -1]
+        ).auto_batch_size_(2)[:, -1]
 
         loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
             logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),
             targets.apply(Rearrange("b 1 -> b"), batch_size=[]),
         )
 
-        return TensorDict.from_dict({"loss": loss})
+        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
 
     @override
     def predict(
@@ -102,7 +102,7 @@ class PolicyObjective(Objective):
         **kwargs: Any,
     ) -> TensorDict:
         b, t = episode.input.batch_size
-        result = TensorDict({}, batch_size=[b, t])
+        result = {}
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             result[result_key] = episode.input.select(*self.heads.tree_paths())
@@ -113,6 +113,7 @@ class PolicyObjective(Objective):
             PredictionResultKey.PREDICTION_PROBS,
             PredictionResultKey.SCORE_LOGPROB,
             PredictionResultKey.SCORE_L1,
+            PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
@@ -189,7 +190,12 @@ class PolicyObjective(Objective):
                     )
                 )
 
-        return result
+            if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
+                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                    embedding
+                )
+
+        return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)

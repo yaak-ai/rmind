@@ -64,20 +64,20 @@ class RandomMaskedHindsightControlObjective(Objective):
         index = episode.index.select(*episode.timestep.keys_by_type[TokenType.ACTION])
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = self.heads.forward(embeddings)
-        targets = TensorDict.from_dict(
+        targets = TensorDict(
             tree_map(
                 episode.get,
                 self.targets,  # pyright: ignore[reportArgumentType]
                 is_leaf=lambda x: isinstance(x, tuple),
             )
-        )[:, masked_action_timestep_idx]
+        ).auto_batch_size_(2)[:, masked_action_timestep_idx]
 
         loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
             logits.apply(Rearrange("b t 1 d -> (b t 1) d"), batch_size=[]),
             targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
-        return TensorDict.from_dict({"loss": loss})
+        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
 
     @override
     def predict(
@@ -89,7 +89,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
         b, t = episode.input.batch_size
-        result = TensorDict({}, batch_size=[b, t])
+        result = {}
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             result[result_key] = episode.input.select(*self.heads.tree_paths())
@@ -99,6 +99,7 @@ class RandomMaskedHindsightControlObjective(Objective):
             PredictionResultKey.PREDICTION_PROBS,
             PredictionResultKey.SCORE_LOGPROB,
             PredictionResultKey.SCORE_L1,
+            PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
             masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
             masked_observation_timestep_idx = np.random.choice(
@@ -178,7 +179,12 @@ class RandomMaskedHindsightControlObjective(Objective):
                     )
                 )
 
-        return result
+            if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
+                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                    embedding
+                )
+
+        return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)

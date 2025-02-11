@@ -61,20 +61,20 @@ class MemoryExtractionObjective(Objective):
         )
 
         logits = self.heads.forward(features, batch_size=[b, t - 1])
-        targets = TensorDict.from_dict(
+        targets = TensorDict(
             tree_map(
                 episode.get,
                 self.targets,  # pyright: ignore[reportArgumentType]
                 is_leaf=lambda x: isinstance(x, tuple),
             )
-        )[:, : t - 1]
+        ).auto_batch_size_(2)[:, : t - 1]
 
         loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
             logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),
             targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
-        return TensorDict.from_dict({"loss": loss})
+        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
 
     @override
     def predict(
@@ -86,7 +86,7 @@ class MemoryExtractionObjective(Objective):
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
         b, t = episode.input.batch_size
-        result = TensorDict({}, batch_size=[b, t])
+        result = {}
 
         timestep_padder = nan_padder(pad=(1, 0), dim=1)
 
@@ -100,6 +100,7 @@ class MemoryExtractionObjective(Objective):
         if result_keys & {
             PredictionResultKey.PREDICTION,
             PredictionResultKey.PREDICTION_PROBS,
+            PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
@@ -130,7 +131,12 @@ class MemoryExtractionObjective(Objective):
                     timestep_padder, batch_size=[b, t]
                 )
 
-        return result
+            if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
+                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                    embedding
+                )
+
+        return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)

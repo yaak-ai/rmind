@@ -6,12 +6,12 @@ import torch
 from einops import pack
 from einops.layers.torch import Rearrange
 from jaxtyping import Float
+from optree import tree_map
 from pydantic import ConfigDict, validate_call
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
-from torch.utils._pytree import tree_map
 
 from cargpt.components.episode import (
     Episode,
@@ -88,16 +88,20 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         logits = self.heads.forward(features)
 
-        targets = TensorDict.from_dict(
-            tree_map(episode.get, self.targets, is_leaf=lambda x: isinstance(x, tuple))
-        )[:, 1:]  # all but first timestep
+        targets = TensorDict(
+            tree_map(
+                episode.get,
+                self.targets,  # pyright: ignore[reportArgumentType]
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+        ).auto_batch_size_(2)[:, 1:]  # all but first timestep
 
         loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
             logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
             targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
         )
 
-        return TensorDict.from_dict({"loss": loss})
+        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
 
     @override
     def predict(
@@ -108,8 +112,8 @@ class ForwardDynamicsPredictionObjective(Objective):
         result_keys: AbstractSet[PredictionResultKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
+        result = {}
         b, t = episode.input.batch_size
-        result = TensorDict({}, batch_size=[b, t])
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
             result[result_key] = episode.input.select(*self.heads.tree_paths()).exclude(
@@ -142,9 +146,11 @@ class ForwardDynamicsPredictionObjective(Objective):
             PredictionResultKey.PREDICTION_PROBS,
             PredictionResultKey.SCORE_LOGPROB,
             PredictionResultKey.SCORE_L1,
+            PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+
             # all but last timestep
             index = episode.index[:-1]
 
@@ -225,7 +231,12 @@ class ForwardDynamicsPredictionObjective(Objective):
                     )
                 )
 
-        return result
+            if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
+                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                    embedding
+                )
+
+        return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)

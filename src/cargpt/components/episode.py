@@ -187,7 +187,7 @@ class EpisodeBuilder(Module):
     def forward(self, input: TensorDict) -> Episode:
         batch_size, device = input.batch_size, input.device
         special_tokens = (
-            TensorDict.from_dict(self.special_tokens, device=device)
+            TensorDict(self.special_tokens, device=device)  # pyright: ignore[reportArgumentType]
             .expand(*batch_size, 1)
             .auto_batch_size_(input.batch_dims)
         )

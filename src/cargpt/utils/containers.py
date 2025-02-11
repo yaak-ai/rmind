@@ -101,7 +101,7 @@ class ModuleDict(_ModuleDict):
     def _(self, *args: Tensor, **kwargs: Unpack[TensorDictKwargs]) -> TensorDict:
         tree = tree_map(lambda module: module.forward(*args), self.to_dict())
 
-        return TensorDict.from_dict(tree, **kwargs)
+        return TensorDict(tree, **kwargs)  # pyright: ignore[reportArgumentType]
 
     @_forward.register
     def _(self, *args: TensorDict, **kwargs: Unpack[TensorDictKwargs]) -> TensorDict:
