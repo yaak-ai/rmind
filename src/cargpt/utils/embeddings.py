@@ -66,6 +66,5 @@ class Embeddings(pl.LightningModule):
                 SpecialToken.ACTION_SUMMARY: action_summary,
                 SpecialToken.OBSERVATION_HISTORY: observation_history,
             },
-            batch_size=[],
             device=embedding.device,
         )

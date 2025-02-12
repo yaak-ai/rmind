@@ -10,6 +10,7 @@ logger:
   _target_: pytorch_lightning.loggers.WandbLogger
   log_model: all
 callbacks:
+  - _target_: cargpt.callbacks.LogitBiasSetter
   - _target_: cargpt.callbacks.ModelSummary
     depth: 5
   - _target_: pytorch_lightning.callbacks.ModelCheckpoint

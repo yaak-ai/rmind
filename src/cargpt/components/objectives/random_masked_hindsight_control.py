@@ -50,7 +50,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
         masked_observation_timestep_idx = np.random.choice(t, 1, replace=False).tolist()
 
-        episode = episode.clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
+        episode = episode.clone(recurse=True)
         episode.input_embeddings.select(
             *episode.timestep.keys_by_type[TokenType.ACTION]
         )[:, masked_action_timestep_idx] = -1.0
@@ -61,12 +61,12 @@ class RandomMaskedHindsightControlObjective(Objective):
 
         mask = self._build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
-        index = episode.index.select(*episode.timestep.keys_by_type[TokenType.ACTION])  # pyright: ignore[reportAttributeAccessIssue]
+        index = episode.index.select(*episode.timestep.keys_by_type[TokenType.ACTION])
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = self.heads.forward(embeddings)
         targets = TensorDict.from_dict(
             tree_map(
-                episode.get,  # pyright: ignore[reportAttributeAccessIssue]
+                episode.get,
                 self.targets,  # pyright: ignore[reportArgumentType]
                 is_leaf=lambda x: isinstance(x, tuple),
             )
@@ -105,7 +105,7 @@ class RandomMaskedHindsightControlObjective(Objective):
                 t, 1, replace=False
             ).tolist()
 
-            episode = episode.clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
+            episode = episode.clone(recurse=True)
             episode.input_embeddings.select(
                 *episode.timestep.keys_by_type[TokenType.ACTION]
             )[:, masked_action_timestep_idx] = -1.0
@@ -116,7 +116,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             mask = self._build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
-            index = episode.index.select(  # pyright: ignore[reportAttributeAccessIssue]
+            index = episode.index.select(
                 *episode.timestep.keys_by_type[TokenType.ACTION]
             )
             embeddings = index[masked_action_timestep_idx].parse(embedding)
@@ -188,16 +188,16 @@ class RandomMaskedHindsightControlObjective(Objective):
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
+        length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
         mask = AttentionMask(
-            data=torch.full((index.max + 1, index.max + 1), legend.DO_ATTEND),  # pyright: ignore[reportCallIssue]
-            legend=legend,  # pyright: ignore[reportCallIssue]
-            batch_size=[],  # pyright: ignore[reportCallIssue]
-            device=index.device,  # pyright: ignore[reportAttributeAccessIssue, reportCallIssue]
+            data=torch.full((length, length), legend.DO_ATTEND),
+            legend=legend,
+            device=index.device,
         )
 
-        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
+        (t,) = index.batch_size
         for step in range(t):
-            past, current, future = index[:step], index[step], index[step + 1 :]  # pyright: ignore[reportIndexIssue]
+            past, current, future = index[:step], index[step], index[step + 1 :]
             current_actions = current.select(*timestep.keys_by_type[TokenType.ACTION])
             current_action_summary = current.select((
                 Modality.SPECIAL,

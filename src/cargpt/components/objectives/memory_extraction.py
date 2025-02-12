@@ -54,7 +54,7 @@ class MemoryExtractionObjective(Objective):
         b, t = episode.input.batch_size
 
         features = (
-            episode.index[1:]  # pyright: ignore[reportIndexIssue]
+            episode.index[1:]
             .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
             .parse(embedding)
             .get(k)
@@ -63,7 +63,7 @@ class MemoryExtractionObjective(Objective):
         logits = self.heads.forward(features, batch_size=[b, t - 1])
         targets = TensorDict.from_dict(
             tree_map(
-                episode.get,  # pyright: ignore[reportAttributeAccessIssue]
+                episode.get,
                 self.targets,  # pyright: ignore[reportArgumentType]
                 is_leaf=lambda x: isinstance(x, tuple),
             )
@@ -105,7 +105,7 @@ class MemoryExtractionObjective(Objective):
             embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
 
             features = (
-                episode.index[1:]  # pyright: ignore[reportIndexIssue]
+                episode.index[1:]
                 .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
                 .parse(embedding)
                 .get(k)
@@ -142,11 +142,11 @@ class MemoryExtractionObjective(Objective):
     ) -> AttentionMask:
         mask = ForwardDynamicsPredictionObjective._build_attention_mask(
             index, timestep, legend
-        ).clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
+        ).clone(recurse=True)
 
-        (t,) = index.batch_size  # pyright: ignore[reportAttributeAccessIssue]
+        (t,) = index.batch_size
         for step in range(t):
-            past, current = index[:step], index[step]  # pyright: ignore[reportIndexIssue]
+            past, current = index[:step], index[step]
             current_observations = current.select(
                 *timestep.keys_by_type[TokenType.OBSERVATION]
             )

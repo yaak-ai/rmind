@@ -88,7 +88,7 @@ class RerunPredictionWriter(BasePredictionWriter):
         data = (
             prediction.select("input", "predictions")
             .auto_batch_size_(1)
-            .update({"batch": batch.to_tensordict().auto_batch_size_(1)})  # pyright: ignore[reportAttributeAccessIssue]
+            .update({"batch": batch.to_tensordict().auto_batch_size_(1)})
             .cpu()
         )
 

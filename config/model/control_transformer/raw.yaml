@@ -2,37 +2,58 @@ _target_: cargpt.models.control_transformer.ControlTransformer
 _recursive_: false
 input_builder:
   _target_: cargpt.components.input.InputBuilder
-  transforms:
-    _target_: cargpt.utils.ModuleDict
+  _convert_: all
+  keys:
     image:
-      _target_: torch.compile
-      model:
-        _target_: torch.nn.Sequential
-        _args_:
-          - _target_: einops.layers.torch.Rearrange
-            pattern: "... h w c -> ... c h w"
-          - _target_: torchvision.transforms.v2.CenterCrop
-            size: [320, 576]
-          - _target_: torchvision.transforms.v2.ToDtype
-            scale: true
-            dtype:
-              _target_: hydra.utils.get_object
-              path: torch.float32
-          - _target_: torchvision.transforms.v2.Normalize
-            mean: [0.485, 0.456, 0.406]
-            std: [0.229, 0.224, 0.225]
+      cam_front_left: [data, cam_front_left]
 
     continuous:
-      _target_: cargpt.components.nn.FunctionWrapper
-      func:
-        _target_: hydra.utils.get_method
-        path: torch.atleast_3d
+      speed: [data, VehicleMotion.speed]
+      gas_pedal: [data, VehicleMotion.gas_pedal_normalized]
+      gas_pedal_diff: [data, VehicleMotion.gas_pedal_normalized]
+      brake_pedal: [data, VehicleMotion.brake_pedal_normalized]
+      brake_pedal_diff: [data, VehicleMotion.brake_pedal_normalized]
+      steering_angle: [data, VehicleMotion.steering_angle_normalized]
+      steering_angle_diff: [data, VehicleMotion.steering_angle_normalized]
 
     discrete:
-      _target_: cargpt.components.nn.FunctionWrapper
-      func:
-        _target_: hydra.utils.get_method
-        path: torch.atleast_3d
+      turn_signal: [data, VehicleState.turn_signal]
+
+  transforms:
+    - select: [image]
+      apply:
+        _target_: torch.compile
+        model:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: einops.layers.torch.Rearrange
+              pattern: "... h w c -> ... c h w"
+            - _target_: torchvision.transforms.v2.CenterCrop
+              size: [320, 576]
+            - _target_: torchvision.transforms.v2.ToDtype
+              scale: true
+              dtype:
+                _target_: hydra.utils.get_object
+                path: torch.float32
+            - _target_: torchvision.transforms.v2.Normalize
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
+    - select:
+        - [continuous, gas_pedal_diff]
+        - [continuous, brake_pedal_diff]
+        - [continuous, steering_angle_diff]
+      apply:
+        _target_: cargpt.utils.functional.diff_last
+        _partial_: true
+        append:
+          _target_: hydra.utils.get_object
+          path: math.nan
+
+    - select: [continuous, discrete]
+      apply:
+        _target_: torch.atleast_3d
+        _partial_: true
 
 episode_builder:
   _target_: cargpt.components.episode.EpisodeBuilder

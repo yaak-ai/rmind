@@ -1,4 +1,4 @@
-import logging  # noqa: A005
+import logging
 import sys
 
 from loguru import logger

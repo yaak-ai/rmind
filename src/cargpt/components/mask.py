@@ -3,7 +3,7 @@ from typing import Self
 
 import torch
 from jaxtyping import Float
-from tensordict import tensorclass  # pyright: ignore[reportAttributeAccessIssue]
+from tensordict import TensorClass
 from torch import Tensor
 
 from cargpt.components.episode import Index
@@ -35,13 +35,14 @@ class WandbAttentionMaskLegend(float, Enum, metaclass=AttentionMaskLegend):
     DO_NOT_ATTEND = 0.0
 
 
-@tensorclass
-class AttentionMask:
-    data: Float[Tensor, "seq seq"]
+class AttentionMask(TensorClass):
+    data: Float[Tensor, "seq seq"]  # pyright: ignore[reportIncompatibleMethodOverride]
     legend: AttentionMaskLegend
 
     def _set(self, *, src: Index, dest: Index, val) -> Self:
-        grid = torch.meshgrid(src.all_values, dest.all_values, indexing="ij")
+        i = src.cat_from_tensordict(dim=-1).flatten()
+        j = dest.cat_from_tensordict(dim=-1).flatten()
+        grid = torch.meshgrid(i, j, indexing="ij")
         self.data[grid] = val
 
         return self
@@ -53,7 +54,7 @@ class AttentionMask:
         return self._set(src=src, dest=dest, val=self.legend.DO_NOT_ATTEND)
 
     def with_legend(self, legend: AttentionMaskLegend) -> Self:
-        mask = self.clone(recurse=True)  # pyright: ignore[reportAttributeAccessIssue]
+        mask = self.clone(recurse=True)
 
         if self.legend is legend:
             return mask

@@ -1,7 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Self, override
 
-import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from hydra.utils import get_class, instantiate
@@ -11,7 +10,6 @@ from lightning_fabric.plugins.io.torch_io import (
 from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from loguru import logger
 from omegaconf import DictConfig
-from optree import tree_flatten_with_path
 from pytorch_lightning.core.saving import _load_state
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import SingleDeviceStrategy
@@ -23,10 +21,9 @@ from torch.nn import Module  # noqa: TC002
 from cargpt.components.episode import EpisodeBuilder, Modality, PositionEncoding
 from cargpt.components.mask import WandbAttentionMaskLegend
 from cargpt.components.objectives import ObjectiveScheduler
-from cargpt.components.objectives.base import ObjectiveName, PredictionResultKey
+from cargpt.components.objectives.base import PredictionResultKey
 from cargpt.utils import ModuleDict
 from cargpt.utils._wandb import LoadableFromArtifact
-from cargpt.utils.containers import OPTREE_NAMESPACE
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -147,7 +144,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 name: self.objectives[name].forward(episode, self.encoder)
                 for name in objectives_to_compute
             },
-            batch_size=[],
             device=input.device,
         )
 
@@ -189,7 +185,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 name: objective.forward(episode, self.encoder)
                 for name, objective in self.objectives.items()
             },
-            batch_size=[],
             device=input.device,
         )
 
@@ -291,136 +286,3 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         logger.debug("configure_optimizers", result=result)
 
         return result
-
-    def _populate_logit_bias(self):
-        # https://openaccess.thecvf.com/content/CVPR2023/papers/Xu_Learning_Imbalanced_Data_With_Vision_Transformers_CVPR_2023_paper.pdf
-        # Section 3.2
-
-        import polars as pl  # noqa: PLC0415
-
-        samples = self.trainer.datamodule.train_dataloader().dataset.samples  # pyright: ignore[reportAttributeAccessIssue]
-
-        sample_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
-        diff_logit_bias_losses: list[tuple[tuple[str, ...], Module]] = []
-
-        paths, modules, _ = tree_flatten_with_path(
-            self.objectives,  # pyright: ignore[reportArgumentType]
-            namespace=OPTREE_NAMESPACE,
-        )
-        for k, mod in zip(paths, modules, strict=True):
-            if hasattr(mod, "logit_bias") and mod.logit_bias is None:
-                match k:
-                    case (objective, "losses", *_):
-                        match objective:
-                            case (
-                                ObjectiveName.FORWARD_DYNAMICS
-                                | ObjectiveName.INVERSE_DYNAMICS
-                                | ObjectiveName.RANDOM_MASKED_HINDSIGHT_CONTROL
-                                | ObjectiveName.POLICY
-                            ):
-                                dest = sample_logit_bias_losses
-
-                            case ObjectiveName.MEMORY_EXTRACTION:
-                                dest = diff_logit_bias_losses
-
-                            case _:
-                                raise NotImplementedError
-
-                        dest.append((k, mod))
-
-                    case _:
-                        raise NotImplementedError
-
-        cols = {
-            (Modality.CONTINUOUS, "gas_pedal"): "VehicleMotion.gas_pedal_normalized",
-            (
-                Modality.CONTINUOUS,
-                "gas_pedal_diff",
-            ): "VehicleMotion.gas_pedal_normalized",
-            (
-                Modality.CONTINUOUS,
-                "brake_pedal",
-            ): "VehicleMotion.brake_pedal_normalized",
-            (
-                Modality.CONTINUOUS,
-                "brake_pedal_diff",
-            ): "VehicleMotion.brake_pedal_normalized",
-            (
-                Modality.CONTINUOUS,
-                "steering_angle",
-            ): "VehicleMotion.steering_angle_normalized",
-            (
-                Modality.CONTINUOUS,
-                "steering_angle_diff",
-            ): "VehicleMotion.steering_angle_normalized",
-            (Modality.CONTINUOUS, "speed"): "VehicleMotion.speed",
-            (Modality.DISCRETE, "turn_signal"): "VehicleState.turn_signal",
-        }
-
-        by_key_modality_name = lambda x: x[0][-2:]  # noqa: E731
-
-        for k_loss, losses in mit.map_reduce(
-            sample_logit_bias_losses, keyfunc=by_key_modality_name
-        ).items():
-            values = (
-                samples.select(pl.col(cols[k_loss]).explode())
-                .to_torch()
-                .to(self.device)
-            )
-            tokenizer = self.episode_builder.tokenizers.get_deepest(k_loss)
-            labels = tokenizer(values)
-            freq = torch.bincount(
-                labels.flatten(),
-                weights=None,
-                minlength=self.episode_builder.embeddings.get(k_loss).weight.shape[0],
-            )
-
-            logit_bias = ((freq + 1) / freq.sum()).log()
-
-            for k_module, loss in losses:
-                logger.debug(
-                    "setting logit bias (sample-based)",
-                    module=".".join(k_module),
-                    loss=loss.__class__.__name__,
-                )
-
-                loss.logit_bias = logit_bias
-
-        for k_loss, losses in mit.map_reduce(
-            diff_logit_bias_losses, keyfunc=by_key_modality_name
-        ).items():
-            values = (
-                samples.select(
-                    pl.col(cols[k_loss]).list.diff(null_behavior="drop").explode()
-                )
-                .to_torch()
-                .to(self.device)
-            )
-
-            for k_module, loss in losses:
-                logger.debug(
-                    "setting logit bias (diff-based)",
-                    module=".".join(k_module),
-                    loss=loss.__class__.__name__,
-                )
-
-                match k_module:
-                    case (*k_objective, "losses", _modality, _name):
-                        objective = self.objectives.get(tuple(k_objective))
-                        tokenizer = self.episode_builder.tokenizers.get_deepest(k_loss)
-                        labels = tokenizer(values)
-                        freq = torch.bincount(
-                            labels.flatten(),
-                            weights=None,
-                            minlength=objective.heads.get(k_loss).out_features,
-                        )
-                        logit_bias = ((freq + 1) / freq.sum()).log()
-
-                        loss.logit_bias = logit_bias
-
-                    case _:
-                        raise NotImplementedError
-
-    @override
-    def on_fit_start(self) -> None:
-        self._populate_logit_bias()
