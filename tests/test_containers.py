@@ -34,17 +34,15 @@ def test_moduledict():
     assert transforms.get("does_not_exist", default=None) is None
 
     x = make_tensor(8, dtype=torch.float, device="cpu")
-    assert (
-        transforms.forward(x) == TensorDict.from_dict({"image": image_transform(x)})
-    ).all()  # pyright: ignore[reportAttributeAccessIssue]
+    assert (transforms.forward(x) == TensorDict({"image": image_transform(x)})).all()  # pyright: ignore[reportAttributeAccessIssue]
 
-    x = TensorDict.from_dict({
-        "image": {"cam_front_left": make_tensor(10, dtype=torch.float, device="cpu")}
+    x = TensorDict({
+        "image": {"cam_front_left": make_tensor(10, dtype=torch.float, device="cpu")}  # pyright: ignore[reportArgumentType]
     })
 
     assert (
         transforms.forward(x)
-        == TensorDict.from_dict({
-            "image": {"cam_front_left": image_transform(x["image"]["cam_front_left"])}
+        == TensorDict({
+            "image": {"cam_front_left": image_transform(x["image"]["cam_front_left"])}  # pyright: ignore[reportArgumentType]
         })
     ).all()  # pyright: ignore[reportAttributeAccessIssue]

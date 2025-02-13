@@ -34,7 +34,7 @@ class InputBuilder(Module):
     @override
     def forward(self, batch: Batch) -> TensorDict:
         input: TensorDict = (
-            TensorDict.from_dict(
+            TensorDict(
                 tree_map(
                     lambda k: batch.get(k, default=None),
                     self._keys,  # pyright: ignore[reportArgumentType]
