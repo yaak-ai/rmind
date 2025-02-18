@@ -18,7 +18,7 @@ from pytorch_lightning.utilities.model_helpers import _restricted_classmethod
 from tensordict import TensorDict
 from torch.nn import Module  # noqa: TC002
 
-from cargpt.components.episode import EpisodeBuilder, Modality, PositionEncoding
+from cargpt.components.episode import EpisodeBuilder
 from cargpt.components.mask import WandbAttentionMaskLegend
 from cargpt.components.objectives import ObjectiveScheduler
 from cargpt.components.objectives.base import PredictionResultKey
@@ -230,39 +230,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return TensorDict(
             {"input": input, "predictions": predictions}  # pyright: ignore[reportArgumentType]
         )
-
-    @override
-    def on_validation_epoch_start(self) -> None:
-        if not self.trainer.sanity_checking and isinstance(self.logger, WandbLogger):
-            from torchmetrics.functional import (  # noqa: PLC0415
-                pairwise_cosine_similarity as similarity_fn,
-            )
-            from wandb import Image  # noqa: PLC0415
-
-            # TODO: need access to episode index to build full episode position embedding
-            similarity_keys = (
-                ("embeddings", Modality.CONTINUOUS),
-                ("embeddings", Modality.DISCRETE),
-                ("position_encoding", PositionEncoding.IMAGE),
-                ("position_encoding", PositionEncoding.OBSERVATIONS),
-                ("position_encoding", PositionEncoding.TIMESTEP),
-            )
-
-            similarities = (
-                TensorDict.from_module(self.episode_builder)
-                .select(*similarity_keys)  # pyright: ignore[ reportAttributeAccessIssue]
-                .apply(similarity_fn, inplace=False)
-                .cpu()
-            )
-
-            self.logger.log_image(
-                key=f"embeddings/{similarity_fn.__name__}",
-                images=[
-                    Image(v, caption=".".join(k[:-1]))
-                    for k, v in similarities.items(True, True)
-                ],
-                step=self.trainer.global_step,
-            )
 
     @override
     def configure_optimizers(self):  # pyright: ignore[reportIncompatibleMethodOverride]
