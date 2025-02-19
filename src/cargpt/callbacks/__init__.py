@@ -1,3 +1,4 @@
+from .loggers import WandbImageParamLogger
 from .logit_bias import LogitBiasSetter
 from .model_summary import ModelSummary
 from .prediction import (
@@ -12,4 +13,5 @@ __all__ = [
     "ModelSummary",
     "RerunPredictionWriter",
     "TensorDictPredictionWriter",
+    "WandbImageParamLogger",
 ]

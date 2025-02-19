@@ -330,8 +330,8 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10.3" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3.2" },
     { name = "pytest-pudb", marker = "extra == 'dev'", specifier = ">=0.7.0" },
-    { name = "pytorch-lightning", specifier = ">=2.4.0" },
-    { name = "rbyte", extras = ["jpeg", "yaak"], specifier = "==0.12.0" },
+    { name = "pytorch-lightning", specifier = ">=2.5.0.post0" },
+    { name = "rbyte", extras = ["jpeg", "yaak"], specifier = "==0.12.1" },
     { name = "rerun-sdk", marker = "extra == 'predict'", specifier = "==0.21.0" },
     { name = "tensordict", specifier = ">=0.7.0" },
     { name = "torch" },
@@ -513,15 +513,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0f/d5/c66da9b79e5bdb124974bfe172b4daf3c984ebd9c2a06e2b8a4dc7331c72/defusedxml-0.7.1.tar.gz", hash = "sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69", size = 75520 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61", size = 25604 },
-]
-
-[[package]]
-name = "diskcache"
-version = "5.6.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3f/21/1c1ffc1a039ddcc459db43cc108658f32c57d271d7289a2794e401d0fdb6/diskcache-5.6.3.tar.gz", hash = "sha256:2c3a3fa2743d8535d832ec61c2054a1641f41775aa7c556758a109941e33e4fc", size = 67916 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/27/4570e78fc0bf5ea0ca45eb1de3818a23787af9b390c0b0a0033a1b8236f9/diskcache-5.6.3-py3-none-any.whl", hash = "sha256:5e31b2d5fbad117cc363ebaf6b689474db18a1f6438bc82358b024abd4c2ca19", size = 45550 },
 ]
 
 [[package]]
@@ -2266,11 +2257,10 @@ wheels = [
 
 [[package]]
 name = "rbyte"
-version = "0.12.0"
+version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cachetools" },
-    { name = "diskcache" },
     { name = "hydra-core" },
     { name = "more-itertools" },
     { name = "numpy" },
@@ -2285,9 +2275,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/60/8ddb010d27da80f515512f50633db025c6117b037e90e451ce2dadbe3130/rbyte-0.12.0.tar.gz", hash = "sha256:d410fcc8f915f4d7ec6f953e806632d4c85f794e9f678d4e6ee944e79c2a5e60", size = 29982 }
+sdist = { url = "https://files.pythonhosted.org/packages/6e/80/e69e56e761cdd0f8347e50445c0c8069db44a01a96ef03c8b4e8d2485807/rbyte-0.12.1.tar.gz", hash = "sha256:80e96c6371a907b12af3506b7ec038a6b570ddbd6567902ac919c78ef502c498", size = 30021 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/44/96d20ed48c966ee6fa1180222cbe6b9a9a2a2b717ad6dbea173924267c27/rbyte-0.12.0-py3-none-any.whl", hash = "sha256:e902e48b4fe1bd050dcdc196ba30863ea0b5d9db7223b40e6f98f75b042815cb", size = 48836 },
+    { url = "https://files.pythonhosted.org/packages/2b/64/cbfa9bec81152b10554e0c6fb487f021c79bb4dbf44124b3592ce23ba7d2/rbyte-0.12.1-py3-none-any.whl", hash = "sha256:292a7fc9ead69d402136b1b39727a9c16f8c43c5a76165215a9f553c78252718", size = 48910 },
 ]
 
 [package.optional-dependencies]
@@ -2487,18 +2477,18 @@ wheels = [
 
 [[package]]
 name = "simplejpeg"
-version = "1.8.0"
+version = "1.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e0/a3/953081883f6679378d8ca3efbe6801a2fb7730d7ef28c6b244b1cfe196e1/simplejpeg-1.8.0.tar.gz", hash = "sha256:43f78b0e7304a24751e14c429a8179a06623167e161e34ed7456dca9b36832cd", size = 5482647 }
+sdist = { url = "https://files.pythonhosted.org/packages/35/09/b8a6565fafd8ddf64d34d6bc5383878b9bd5fd2424d8a44f416140a6a589/simplejpeg-1.8.1.tar.gz", hash = "sha256:35bfc840f40c1e10f64f4e3e4c870e1b9c420e5eead3630539efe2cb53b5fd04", size = 5482958 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/f1/4aea68c9d5dcef2e81ab35a99dbb6d78e1942c3117faf2843749e154b8a4/simplejpeg-1.8.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:96c2ac63c3db92c30d13f29f5ce105e3a324a854a9e253077ca273f41ba63b9f", size = 492672 },
-    { url = "https://files.pythonhosted.org/packages/ae/16/d3c71eb661ac1317843215eb520b1228958e5444dca79106275da8f1e8db/simplejpeg-1.8.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1bcc1e41468c46dfb83cc6011f898a20d9d7eb2726b73a81a553e9bf661fa980", size = 443205 },
-    { url = "https://files.pythonhosted.org/packages/94/16/c4efefe70bdeadb7b81930e986847ca142cc3fdde1c97ec344858935b279/simplejpeg-1.8.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:99a91ce1b198939cdc29340b4cf86fcd8f1641c74fcabd99247d1276c00903d6", size = 445406 },
-    { url = "https://files.pythonhosted.org/packages/81/c0/762f2a4b73d56cd9908248b4e13fe268d4da40b82c07e92f999e775b7b48/simplejpeg-1.8.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:14d87b5ffc7290d5f4f3aa4fced30596e264204a530fc6ac133f3eaa990847d4", size = 425582 },
-    { url = "https://files.pythonhosted.org/packages/10/f7/db5d83e96167cafa488b7dea57a95a2e1059b9705bd7f2a70ce249317998/simplejpeg-1.8.0-cp312-cp312-win_amd64.whl", hash = "sha256:3a42a1ccead4103eee505082c09270517421bbaa758432b306d8a68036217e75", size = 306962 },
+    { url = "https://files.pythonhosted.org/packages/69/1f/f36e8d67f5b9514fd32875367cc7fd0a705ab5d39dbc3ee0f9db7485bc7c/simplejpeg-1.8.1-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:bff39798d2df5e21a881206981b851564aa82cf6ff830f819627a62b7368c5c7", size = 492670 },
+    { url = "https://files.pythonhosted.org/packages/da/6b/8b1fe754b16d867127b38accd58f2ca3fac393c7f10b683816a4eac1d0e3/simplejpeg-1.8.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:258f468770c4c757a056cc57f078c982b966d51c3964df005675777926a9ae32", size = 443197 },
+    { url = "https://files.pythonhosted.org/packages/3c/d0/b394ab7563bf913d32fef3a4d569fb4804fcf16b1bee2b49b5e5a6d26c54/simplejpeg-1.8.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c124ceead37c70dca10c0680c5e25ce2fb2d12a6ad570e4d596ceacd7b88338d", size = 445406 },
+    { url = "https://files.pythonhosted.org/packages/da/ef/7ac89ec596fac985a2b5cf348db8a7425ecb68857dd53ab1bdc1fe856412/simplejpeg-1.8.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8c728b386d6350edd27fbf783bc4cdf6cd2cd253411ade34164dc9d8e28626c2", size = 425582 },
+    { url = "https://files.pythonhosted.org/packages/48/a1/96fd9e0f0e273caea4edccdfa68b4b4f0514f7766efc78aef262e4edd1fa/simplejpeg-1.8.1-cp312-cp312-win_amd64.whl", hash = "sha256:e08fbb96e51d65848910530a973bdb3f3e69ba4c9ce47557cad81b67689021ea", size = 306964 },
 ]
 
 [[package]]
