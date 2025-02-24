@@ -1,0 +1,118 @@
+#@yaml/text-templated-strings
+
+#@ drives = [
+#@    'ConstructionObstacle/Town13_Rep0_1681_2_route0_11_08_03_01_34',
+#@    'VehicleTurningRoute/Town04_Rep0_Town04_Scenario4_58_route0_11_09_04_33_03',
+#@    'NonSignalizedJunctionRightTurn/Town13_Rep0_1484_0_route0_11_09_11_47_15',
+#@    'noScenarios/Town04_Rep0_Town04_ll_4_route0_11_08_07_48_02',
+#@    'PriorityAtJunction/Town13_Rep0_1095_2_route0_11_08_00_52_39',
+#@    'EnterActorFlow/Town12_Rep0_4378_0_route0_11_09_01_10_40',
+#@    'NonSignalizedJunctionRightTurn/Town13_Rep0_1536_0_route0_11_08_06_11_48',
+#@    'VehicleTurningRoute/Town02_Rep0_Town02_Scenario4_11_route0_11_08_22_34_32',
+#@    'InvadingTurn/Town13_Rep0_1205_0_route0_11_08_08_33_27',
+#@    'ControlLoss/Town05_Rep0_Town05_Scenario1_1_route0_11_09_11_47_59',
+#@  ]
+
+#@ cameras = [
+#@    'rgb',
+#@ ]
+---
+_target_: rbyte.Dataset
+_recursive_: false
+_convert_: all
+inputs:
+  #@ for input_id in drives:
+  (@=input_id@):
+    sources:
+      #@ for source_id in cameras:
+      (@=source_id@):
+        index_column: _idx_
+        source:
+          _target_: rbyte.io.PathTensorSource
+          path: "${paths.data_dir}/(@=input_id@)/(@=source_id@)/{:04d}.jpg"
+          decoder:
+            _target_: simplejpeg.decode_jpeg
+            _partial_: true
+            colorspace: rgb
+            fastdct: true
+            fastupsample: true
+
+      #@ end
+
+    samples:
+      pipeline:
+        _target_: pipefunc.Pipeline
+        validate_type_annotations: false
+        functions:
+          - _target_: pipefunc.PipeFunc
+            bound:
+              path: ${paths.data_dir}/(@=input_id@)/measurements.json
+            output_name: logs
+            func:
+              _target_: rbyte.io.JsonDataFrameBuilder
+              fields:
+                records:
+                  speed: 
+                  steer:
+                  throttle:
+                  brake:
+                    _target_: polars.Float32
+                  pos_global:
+
+          - _target_: pipefunc.PipeFunc
+            renames:
+              input: logs
+            output_name: data
+            func:
+              _target_: rbyte.io.DataFrameConcater
+              method: vertical          
+
+          - _target_: pipefunc.PipeFunc
+            renames:
+              input: data
+            output_name: data_indexed
+            func:
+              _target_: rbyte.io.DataFrameIndexer
+              name: _idx_
+
+          - _target_: pipefunc.PipeFunc
+            renames:
+              input: data_indexed
+            output_name: data_populated
+            func:
+              _target_: rbyte.io.DataFramePopulator
+              fields:
+                turn_signal:
+                  value: 0.0
+                  dtype:
+                    _target_: polars.UInt8
+                Waypoints.xy:
+                  value: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                  dtype:
+                    _target_: polars.List
+                    inner:
+                      _target_: polars.Float32
+
+
+          # - _target_: pipefunc.PipeFunc
+          #   renames:
+          #     input: data_indexed
+          #   output_name: data_filtered
+          #   func:
+          #     _target_: rbyte.io.DataFrameFilter
+          #     predicate: |
+          #       `throttle` > 0.5
+                
+          - _target_: pipefunc.PipeFunc
+            renames:
+              input: data_populated
+            output_name: samples
+            func:
+              _target_: rbyte.FixedWindowSampleBuilder
+              index_column: _idx_
+              every: 10i
+              period: 50i
+              closed: both
+              gather_every: 10
+              length: 6
+  #@ end

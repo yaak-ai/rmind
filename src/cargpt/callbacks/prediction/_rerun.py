@@ -204,7 +204,6 @@ class RerunPredictionWriter(BasePredictionWriter):
             case ("batch", "data", "Waypoints.xy"):
                 lengths = [array.shape[1] for _ in array]
                 array[..., 1] *= -1  # since rerun plots y axis down
-                breakpoint()
                 return (
                     [
                         Points2D.indicator(),

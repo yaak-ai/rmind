@@ -10,7 +10,7 @@ input_transforms:
         _args_:
           - _target_: einops.layers.torch.Rearrange
             pattern: "... h w c -> ... c h w"
-          - _target_: torchvision.transforms.v2.CenterCrop
+          - _target_: torchvision.transforms.v2.Resize
             size: [320, 576]
           - _target_: torchvision.transforms.v2.ToDtype
             scale: true

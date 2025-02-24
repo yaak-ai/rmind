@@ -154,7 +154,7 @@ class PolicyObjective(Objective):
 
             if self.waypoints_encoder is not None:
                 waypoints = episode.inputs[Modality.INTENTIONS, "waypoints"][:, -1]
-                waypoints = rearrange(waypoints * 1e4, "bs ...-> bs (...)").to(
+                waypoints = rearrange(waypoints, "bs ...-> bs (...)").to(
                     torch.float32
                 )
                 waypoints_summary = (

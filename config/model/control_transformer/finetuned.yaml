@@ -47,4 +47,4 @@ hparams_updaters:
     _recursive_: false
     merge: true
     key: dataset_source_type
-    value: carla
+    value: ${vars.dataset_source}

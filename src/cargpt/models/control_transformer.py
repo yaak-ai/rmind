@@ -49,7 +49,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             self.hparams.dataset_source_type  # pyright: ignore[reportAttributeAccessIssue]
         )
 
-
     @override
     @_restricted_classmethod
     def load_from_checkpoint(  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -336,11 +335,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                         raise NotImplementedError
 
         cols = {
-                (Modality.CONTINUOUS, k): self.table_keys.get(k)
-                for k in ["speed", "gas_pedal", "brake_pedal", "steering_angle"]
-            }.update({
-                (Modality.DISCRETE, k): self.table_keys.get(k) for k in ["turn_signal"]
-            })
+            **{(Modality.CONTINUOUS, k): self.table_keys.get(k) for k in ["speed", "gas_pedal", "brake_pedal", "steering_angle"]},
+            **{(Modality.DISCRETE, k): self.table_keys.get(k) for k in ["turn_signal"]}
+        }
 
         by_key_modality_name = lambda x: x[0][-2:]  # noqa: E731
 
@@ -412,23 +409,21 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     def _build_input(self, batch: Any) -> TensorDict:
         data = batch.data
-        if self.hparams.dataset_source_type == "carla":  # pyright: ignore[reportAttributeAccessIssue]
-            data["control.turn_signal"] = torch.zeros_like(
-               data["control.brake"],
-                dtype=torch.int32,  # cant use torch.int8
-            )
-        
+                
         input = (
             TensorDict.from_dict(
                 {
-                    Modality.IMAGE: {"cam_front_left": data["cam_front_left"]},
+                    Modality.IMAGE: {
+                        "cam_front_left": data[self.table_keys.get("cam_front_left")]
+                    },
                     Modality.CONTINUOUS: {
                         k: data[self.table_keys.get(k)]
                         for k in ["speed", "gas_pedal", "brake_pedal", "steering_angle"]
                     },
                     Modality.DISCRETE: {
-                        k: data[self.table_keys.get(k)] for k in ["turn_signal"]                    },
-                    Modality.INTENTIONS: {"waypoints": data["Waypoints.xy"]},
+                        k: data[self.table_keys.get(k)] for k in ["turn_signal"]
+                    },
+                    Modality.INTENTIONS: {"waypoints": data['Waypoints.xy']},
                 },
                 device=self.device,
             )
@@ -441,25 +436,37 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         return input
 
+
 class DatasetSourceType(StrEnum):
     YAAK = auto()
     CARLA = auto()
+    CARLA_GARAGE = auto()
 
 
-DATASET_KEY_MAPPINGS = {
+DATASET_KEY_MAPPINGS: dict[DatasetSourceType, dict[str, str | None]] = {
     DatasetSourceType.YAAK: {
         "speed": "VehicleMotion.speed",
         "gas_pedal": "VehicleMotion.gas_pedal_normalized",
         "brake_pedal": "VehicleMotion.brake_pedal_normalized",
         "steering_angle": "VehicleMotion.steering_angle_normalized",
         "turn_signal": "VehicleState.turn_signal",
+        "cam_front_left": "cam_front_left",
     },
     DatasetSourceType.CARLA: {
         "speed": "state.velocity.value",
         "gas_pedal": "control.throttle",
         "brake_pedal": "control.brake",
         "steering_angle": "control.steer",
-        "turn_signal": "control.turn_signal",  # not in original data
+        "turn_signal": "turn_signal",  # not in original data
+        "cam_front_left": "cam_front_left",
+    },
+    DatasetSourceType.CARLA_GARAGE: {
+        "speed": "speed",
+        "gas_pedal": "throttle",
+        "brake_pedal": "brake",
+        "steering_angle": "steer",
+        "turn_signal": "turn_signal",  # not in original data
+        "cam_front_left": "rgb",
     },
 }
 
