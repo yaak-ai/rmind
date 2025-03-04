@@ -337,7 +337,7 @@ class EpisodeBuilder(Module):
                 start = torch.randint(low, high, (1,)).item()
                 position = torch.arange(start=start, end=start + t, device=device)
                 position_embedding = rearrange(pe_mod(position), "t d -> t 1 d")
-                position_embeddings.apply(
+                position_embeddings.apply(  # pyright: ignore[reportArgumentType]
                     lambda emb: emb + position_embedding,
                     inplace=True,  # NOTE
                 )

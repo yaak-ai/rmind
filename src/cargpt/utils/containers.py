@@ -107,7 +107,7 @@ class ModuleDict(_ModuleDict):
     def _(self, *args: TensorDict, **kwargs: Unpack[TensorDictKwargs]) -> TensorDict:
         first, *rest = args
 
-        return first.named_apply(  # pyright: ignore[reportReturnType]
+        return first.named_apply(  # pyright: ignore[reportReturnType, reportArgumentType]
             lambda k, *v: self.get_deepest(k).forward(*v),
             *rest,
             nested_keys=True,

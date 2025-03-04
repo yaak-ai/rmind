@@ -25,207 +25,223 @@
 _target_: rbyte.Dataset
 _recursive_: false
 _convert_: all
-inputs:
+sources:
   #@ for input_id in drives:
   (@=input_id@):
-    sources:
-      #@ for source_id in cameras:
-      (@=source_id@):
-        index_column: "ImageMetadata.(@=source_id@).frame_idx"
-        source:
-          _target_: rbyte.io.PathTensorSource
-          path: "${paths.data_dir}/(@=input_id@)/frames/(@=source_id@).defish.mp4/576x324/{:09d}.jpg"
-          decoder:
-            _target_: simplejpeg.decode_jpeg
-            _partial_: true
-            colorspace: rgb
-            fastdct: true
-            fastupsample: true
+    #@ for camera in cameras:
+    (@=camera@):
+      index_column: "ImageMetadata.(@=camera@).frame_idx"
+      source:
+        _target_: rbyte.io.PathTensorSource
+        path: "${paths.data_dir}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324/{:09d}.jpg"
+        decoder:
+          _target_: simplejpeg.decode_jpeg
+          _partial_: true
+          colorspace: rgb
+          fastdct: true
+          fastupsample: true
+    #@ end
+  #@ end
+
+samples:
+  inputs:
+    #@ for input_id in drives:
+    (@=input_id@):
+      yaak_metadata_path: ${paths.data_dir}/(@=input_id@)/metadata.log
+      #@ for camera in cameras:
+      (@=camera@)_path: ${paths.data_dir}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324
+      #@ end
+    #@ end
+
+  executor:
+    _target_: concurrent.futures.ProcessPoolExecutor
+    mp_context:
+      _target_: multiprocessing.get_context
+      method: forkserver
+
+  storage: shared_memory_dict
+  scheduling_strategy: eager
+  persist_memory: false
+
+  pipeline:
+    _target_: pipefunc.Pipeline
+    validate_type_annotations: false
+    cache_type: disk
+    cache_kwargs:
+      cache_dir: ${paths.rbyte_cache_dir}
+    functions:
+      - _target_: pipefunc.PipeFunc
+        renames:
+          path: yaak_metadata_path
+        output_name: data
+        mapspec: "yaak_metadata_path[i] -> data[i]"
+        cache: true
+        func:
+          _target_: rbyte.io.YaakMetadataDataFrameBuilder
+          fields:
+            rbyte.io.yaak.proto.sensor_pb2.ImageMetadata:
+              time_stamp:
+                _target_: polars.Datetime
+                time_unit: ns
+
+              frame_idx:
+                _target_: polars.Int32
+
+              camera_name:
+                _target_: polars.Enum
+                categories:
+                  - cam_front_center
+                  - cam_front_left
+                  - cam_front_right
+                  - cam_left_forward
+                  - cam_right_forward
+                  - cam_left_backward
+                  - cam_right_backward
+                  - cam_rear
+
+            rbyte.io.yaak.proto.can_pb2.VehicleState:
+              time_stamp:
+                _target_: polars.Datetime
+                time_unit: ns
+
+              turn_signal:
+                _target_: polars.Int8
+
+            rbyte.io.yaak.proto.can_pb2.VehicleMotion:
+              time_stamp:
+                _target_: polars.Datetime
+                time_unit: ns
+
+              speed:
+                _target_: polars.Float32
+
+              gas_pedal_normalized:
+                _target_: polars.Float32
+
+              brake_pedal_normalized:
+                _target_: polars.Float32
+
+              steering_angle_normalized:
+                _target_: polars.Float32
+
+              gear:
+                _target_: polars.Enum
+                categories: ["0", "1", "2", "3"]
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: data
+        output_name: aligned
+        mapspec: "data[i] -> aligned[i]"
+        func:
+          _target_: rbyte.io.DataFrameAligner
+          separator: .
+          fields:
+            ImageMetadata.(@=cameras[0]@):
+              key: time_stamp
+
+            #@ for camera in cameras[1:]:
+            ImageMetadata.(@=camera@):
+              key: time_stamp
+              columns:
+                frame_idx:
+                  method: asof
+                  tolerance: 10ms
+                  strategy: nearest
+            #@ end
+
+            VehicleState:
+              key: time_stamp
+              columns:
+                turn_signal:
+                  method: asof
+                  tolerance: 100ms
+
+            VehicleMotion:
+              key: time_stamp
+              columns:
+                speed:
+                  method: interp
+                gas_pedal_normalized:
+                  method: interp
+                brake_pedal_normalized:
+                  method: interp
+                steering_angle_normalized:
+                  method: interp
+                gear:
+                  method: asof
+                  tolerance: 100ms
+                  strategy: nearest
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: aligned
+        output_name: filtered
+        mapspec: "aligned[i] -> filtered[i]"
+        func:
+          _target_: rbyte.io.DataFrameFilter
+          predicate: |
+            `VehicleMotion.gear` == '3' 
+            and `VehicleMotion.speed` between 0.0 and 130.0 
+            and `VehicleMotion.gas_pedal_normalized` between 0.0 and 1.0 
+            and `VehicleMotion.brake_pedal_normalized` between 0.0 and 1.0 
+            and `VehicleMotion.steering_angle_normalized` between -1.0 and 1.0
+
+      #@ for i, camera in enumerate(cameras):
+      - _target_: pipefunc.PipeFunc
+        renames:
+          path: (@=camera@)_path
+        output_name: (@=camera@)_meta
+        mapspec: "(@=camera@)_path[i] -> (@=camera@)_meta[i]"
+        cache: true
+        func:
+          _target_: rbyte.io.PathDataFrameBuilder
+          pattern: (?<frame_idx>\d+).jpg
+          fields:
+            frame_idx:
+              _target_: polars.Int32
+
+      - _target_: pipefunc.PipeFunc
+        #@ left = "filtered" if i == 0 else "joined_{}".format('_'.join(cameras[:i]))
+        #@ right = "{}_meta".format(camera)
+        #@ joined = "joined_{}".format('_'.join(cameras[:i+1]))
+        renames:
+          left: #@ left
+          right: #@ right
+        output_name: #@ joined
+        mapspec: "(@=left@)[i], (@=right@)[i] -> (@=joined@)[i]"
+        func:
+          _target_: rbyte.io.DataFrameJoiner
+          how: semi
+          left_on: ImageMetadata.(@=camera@).frame_idx
+          right_on: frame_idx
       #@ end
 
-    samples:
-      pipeline:
-        _target_: pipefunc.Pipeline
-        validate_type_annotations: false
-        cache_type: disk
-        cache_kwargs:
-          cache_dir: ${paths.rbyte_cache_dir}
-        functions:
-          - _target_: pipefunc.PipeFunc
-            renames:
-              path: yaak_metadata_path
-            output_name: data
-            cache: true
-            func:
-              _target_: rbyte.io.YaakMetadataDataFrameBuilder
-              fields:
-                rbyte.io.yaak.proto.sensor_pb2.ImageMetadata:
-                  time_stamp:
-                    _target_: polars.Datetime
-                    time_unit: ns
+      - _target_: pipefunc.PipeFunc
+        #@ input = "joined_{}".format('_'.join(cameras))
+        renames:
+          input: (@=input@)
+        output_name: samples
+        mapspec: "(@=input@)[i] -> samples[i]"
+        func:
+          _target_: rbyte.io.FixedWindowSampleBuilder
+          index_column: ImageMetadata.(@=cameras[0]@).frame_idx
+          every: 240i
+          closed: left
+          gather_every: 10
+          length: 24
 
-                  frame_idx:
-                    _target_: polars.Int32
-
-                  camera_name:
-                    _target_: polars.Enum
-                    categories:
-                      - cam_front_center
-                      - cam_front_left
-                      - cam_front_right
-                      - cam_left_forward
-                      - cam_right_forward
-                      - cam_left_backward
-                      - cam_right_backward
-                      - cam_rear
-
-                rbyte.io.yaak.proto.can_pb2.VehicleState:
-                  time_stamp:
-                    _target_: polars.Datetime
-                    time_unit: ns
-
-                  turn_signal:
-                    _target_: polars.Int8
-
-                rbyte.io.yaak.proto.can_pb2.VehicleMotion:
-                  time_stamp:
-                    _target_: polars.Datetime
-                    time_unit: ns
-
-                  speed:
-                    _target_: polars.Float32
-
-                  gas_pedal_normalized:
-                    _target_: polars.Float32
-
-                  brake_pedal_normalized:
-                    _target_: polars.Float32
-
-                  steering_angle_normalized:
-                    _target_: polars.Float32
-
-                  gear:
-                    _target_: polars.Enum
-                    categories: ["0", "1", "2", "3"]
-
-          - _target_: pipefunc.PipeFunc
-            renames:
-              input: data
-            output_name: data_aligned
-            func:
-              _target_: rbyte.io.DataFrameAligner
-              separator: .
-              fields:
-                ImageMetadata.(@=cameras[0]@):
-                  key: time_stamp
-
-                #@ for camera in cameras[1:]:
-                ImageMetadata.(@=camera@):
-                  key: time_stamp
-                  columns:
-                    frame_idx:
-                      method: asof
-                      tolerance: 10ms
-                      strategy: nearest
-                #@ end
-
-                VehicleState:
-                  key: time_stamp
-                  columns:
-                    turn_signal:
-                      method: asof
-                      tolerance: 100ms
-
-                VehicleMotion:
-                  key: time_stamp
-                  columns:
-                    speed:
-                      method: interp
-                    gas_pedal_normalized:
-                      method: interp
-                    brake_pedal_normalized:
-                      method: interp
-                    steering_angle_normalized:
-                      method: interp
-                    gear:
-                      method: asof
-                      tolerance: 100ms
-                      strategy: nearest
-
-          - _target_: pipefunc.PipeFunc
-            renames:
-              input: data_aligned
-            output_name: data_filtered
-            func:
-              _target_: rbyte.io.DataFrameFilter
-              predicate: |
-                `VehicleMotion.gear` == '3' 
-                and `VehicleMotion.speed` between 0.0 and 130.0 
-                and `VehicleMotion.gas_pedal_normalized` between 0.0 and 1.0 
-                and `VehicleMotion.brake_pedal_normalized` between 0.0 and 1.0 
-                and `VehicleMotion.steering_angle_normalized` between -1.0 and 1.0
-
-          #@ for i, camera in enumerate(cameras):
-          - _target_: pipefunc.PipeFunc
-            func:
-              _target_: rbyte.io.PathDataFrameBuilder
-              fields:
-                frame_idx:
-                  _target_: polars.Int32
-
-            output_name: data_(@=camera@)
-            bound:
-              path: "${paths.data_dir}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324/{frame_idx:09d}.jpg"
-
-          - _target_: pipefunc.PipeFunc
-            func:
-              _target_: hydra.utils.get_method
-              path: polars.DataFrame.join
-            #@ if i == len(cameras) - 1:
-            output_name: data_joined
-            #@ else:
-            output_name: data_joined_(@=camera@)
-            #@ end
-            renames:
-              #@ if i == 0:
-              self: data_filtered
-              #@ else:
-              self: data_joined_(@=cameras[i-1]@)
-              #@ end
-              other: data_(@=camera@)
-            bound:
-              how: semi
-              left_on: ImageMetadata.(@=camera@).frame_idx
-              right_on: frame_idx
-          #@ end
-
-          - _target_: pipefunc.PipeFunc
-            renames:
-              input: data_joined
-            output_name: samples
-            func:
-              _target_: rbyte.FixedWindowSampleBuilder
-              index_column: ImageMetadata.(@=cameras[0]@).frame_idx
-              every: 240i
-              # period: 230i
-              closed: left
-              gather_every: 10
-              length: 24
-
-          - _target_: pipefunc.PipeFunc
-            renames:
-              input: samples
-            output_name: samples_filtered
-            func:
-              _target_: rbyte.io.DataFrameFilter
-              predicate: |
-                not (
-                      array_upper(`VehicleMotion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
-                  and array_upper(`VehicleMotion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
-                  and array_upper(`VehicleMotion.speed`) >= 25.0
-                  and array_get(`VehicleMotion.speed`, -1) - array_get(`VehicleMotion.speed`, 1) >= -0.05 * array_mean(`VehicleMotion.speed`)
-                )
-
-      kwargs:
-        yaak_metadata_path: ${paths.data_dir}/(@=input_id@)/metadata.log
-  #@ end
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: samples
+        output_name: samples_filtered
+        mapspec: "samples[i] -> samples_filtered[i]"
+        func:
+          _target_: rbyte.io.DataFrameFilter
+          predicate: |
+            not (
+                  array_upper(`VehicleMotion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
+              and array_upper(`VehicleMotion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
+              and array_upper(`VehicleMotion.speed`) >= 25.0
+              and array_get(`VehicleMotion.speed`, -1) - array_get(`VehicleMotion.speed`, 1) >= -0.05 * array_mean(`VehicleMotion.speed`)
+            )
