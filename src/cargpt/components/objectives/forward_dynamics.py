@@ -74,7 +74,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             .get(k)
         )
 
-        features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType]
+        features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType, reportArgumentType]
             # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
             lambda obs: pack(
                 [
@@ -97,7 +97,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         ).auto_batch_size_(2)[:, 1:]  # all but first timestep
 
         loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
-            logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),
+            logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),  # pyright: ignore[reportArgumentType]
             targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
         )
 
@@ -172,7 +172,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 .get(k)
             )
 
-            features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType]
+            features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType, reportArgumentType]
                 # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
                 lambda obs: pack(
                     [
@@ -190,7 +190,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))
+                    logits.apply(lambda x: x.argmax(dim=-1))  # pyright: ignore[reportArgumentType]
                     .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
                     .named_apply(
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
@@ -199,14 +199,14 @@ class ForwardDynamicsPredictionObjective(Objective):
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 """Finds log prob of the correct token at each timestep."""
                 result[result_key] = (
-                    logits.apply(lambda x: x.softmax(dim=-1))
+                    logits.apply(lambda x: x.softmax(dim=-1))  # pyright: ignore[reportArgumentType]
                     .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
@@ -218,7 +218,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))
+                    logits.apply(lambda x: x.argmax(dim=-1))  # pyright: ignore[reportArgumentType]
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
                         nested_keys=True,

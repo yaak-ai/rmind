@@ -7,8 +7,8 @@ readme = "README.md"
 requires-python = ">=3.12, <3.13"
 dependencies = [
   "torch",
-  "tensordict>=0.7.0",
-  "rbyte[jpeg,yaak]==0.12.1",
+  "tensordict>=0.7.2",
+  "rbyte[jpeg,yaak]==0.14.2",
   "pytorch-lightning>=2.5.0.post0",
   "torchvision==0.20.1",
   "torchaudio==2.5.1",
@@ -23,9 +23,9 @@ dependencies = [
   "jaxtyping>=0.2.33",
   "torchinfo>=1.8.0",
   "pydantic>=2.10.3",
-  "polars>=1.20.0",
+  "polars>=1.24.0",
   "orjson>=3.10.12",
-  "optree>=0.14.0",
+  "optree>=0.14.1",
 ]
 
 [tool.uv]

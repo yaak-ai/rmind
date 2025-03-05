@@ -86,7 +86,7 @@ class PolicyObjective(Objective):
         ).auto_batch_size_(2)[:, -1]
 
         loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
-            logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),
+            logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),  # pyright: ignore[reportArgumentType]
             targets.apply(Rearrange("b 1 -> b"), batch_size=[]),
         )
 
@@ -146,19 +146,19 @@ class PolicyObjective(Objective):
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
-                result[result_key] = logits.apply(itemgetter((..., 0))).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.apply(itemgetter((..., 0))).apply(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_STD) in result_keys:
                 result[result_key] = (
-                    logits.apply(itemgetter((..., 1)))
+                    logits.apply(itemgetter((..., 1)))  # pyright: ignore[reportArgumentType]
                     .apply(lambda x: torch.sqrt(torch.exp(x)))  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(timestep_padder, batch_size=[b, t])
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(
+                result[result_key] = logits.apply(  # pyright: ignore[reportArgumentType]
                     lambda x: gauss_prob(
                         x[..., 0], mean=x[..., 0], std=torch.sqrt(torch.exp(x[..., 1]))
                     )
@@ -167,7 +167,7 @@ class PolicyObjective(Objective):
                 )
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
-                    logits.named_apply(
+                    logits.named_apply(  # pyright: ignore[reportArgumentType]
                         lambda k, x: gauss_prob(
                             episode.input[:, -1][k],
                             mean=x[..., 0].squeeze(-1),
@@ -181,7 +181,7 @@ class PolicyObjective(Objective):
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(itemgetter((..., 0)))
+                    logits.apply(itemgetter((..., 0)))  # pyright: ignore[reportArgumentType]
                     .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(
                         lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
