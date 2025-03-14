@@ -1,15 +1,14 @@
 from collections.abc import Callable, Sequence
+from contextlib import _GeneratorContextManager
 from functools import partial
 from pathlib import Path
-from typing import Literal, final, override
+from typing import Any, Literal, final, override
 
 import orjson
 import pytorch_lightning as pl
 from pydantic import validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
-from rbyte.batch import Batch
-from tensordict import TensorDict
-from torch import Tensor
+from tensordict import TensorClass, TensorDict
 
 from cargpt.utils import monkeypatched
 
@@ -23,6 +22,10 @@ class TensorDictPredictionWriter(BasePredictionWriter):
     _target_: cargpt.callbacks.TensorDictPredictionWriter
     write_interval: batch
     path: ${hydra:run.dir}/predictions/{batch_idx}/
+    select:
+      - [batch, data, ImageMetadata.cam_front_left.time_stamp]
+      - [batch, meta]
+      - predictions
     writer:
       _target_: tensordict.memmap
       _partial_: true
@@ -35,12 +38,14 @@ class TensorDictPredictionWriter(BasePredictionWriter):
         self,
         path: str,
         writer: Callable[[TensorDict, str], None],
+        select: Sequence[str | tuple[str, ...]] | None = None,
         write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "batch",
     ) -> None:
         super().__init__(write_interval)
 
         self._path = path
         self._writer = writer
+        self._select = select
 
     @override
     def write_on_batch_end(
@@ -49,16 +54,19 @@ class TensorDictPredictionWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
         prediction: TensorDict,
         batch_indices: Sequence[int] | None,
-        batch: Batch,
+        batch: TensorDict | TensorClass,
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
         data = (
-            prediction.select("input", "predictions")
+            prediction.clone(recurse=False)
+            .update({"batch": batch.clone(recurse=False).to_tensordict()})
             .auto_batch_size_(1)
-            .update({"batch": batch.to_tensordict().auto_batch_size_(1)})
-            .named_apply(self._filter, nested_keys=True)
+            .lock_()
         )
+
+        if self._select is not None:
+            data = data.select(*self._select)
 
         path = Path(
             self._path.format(batch_idx=batch_idx, dataloader_idx=dataloader_idx)
@@ -68,26 +76,8 @@ class TensorDictPredictionWriter(BasePredictionWriter):
         with self._patch_orjson_dumps():
             self._writer(data, path.resolve().as_posix())
 
-    @staticmethod
-    def _filter(key: tuple[str, ...], tensor: Tensor) -> Tensor | None:
-        # TODO: configurize
-        match key:
-            case ("batch", "data", name) if any(
-                map(name.endswith, ("idx", "time_stamp"))
-            ):
-                return tensor
-
-            case ("batch", "meta", *_):
-                return tensor
-
-            case ("predictions", *_):
-                return tensor
-
-            case _:
-                return None
-
     @classmethod
-    def _patch_orjson_dumps(cls):
+    def _patch_orjson_dumps(cls) -> _GeneratorContextManager[Any, None, None]:
         """
         WARN: hacky af workaround
 

@@ -5,10 +5,14 @@ defaults:
   - /vars: control_transformer/default
   - /model: control_transformer/finetuned
   - /datamodule: predict
+  - /loggers/rerun/prediction@rerun_logger
   - _self_
+
+rerun_logger: ???
 
 trainer:
   _target_: pytorch_lightning.Trainer
+  _convert_: all
   accelerator: gpu
   devices: 1
   benchmark: true
@@ -16,6 +20,7 @@ trainer:
   callbacks:
     - _target_: cargpt.callbacks.RerunPredictionWriter
       write_interval: batch
+      logger: ${rerun_logger}
 
     - _target_: cargpt.callbacks.ModelSummary
       depth: 5
