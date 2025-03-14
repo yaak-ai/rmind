@@ -4,13 +4,9 @@ from typing import Literal, final, override
 
 import polars as plr  # noqa: ICN001
 import pytorch_lightning as pl
+from pydantic import validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
-from rbyte.batch import Batch
-from tensordict import TensorDict
-from torch import Tensor
-
-from cargpt.components.episode import Modality
-from cargpt.components.objectives.base import PredictionResultKey
+from tensordict import TensorClass, TensorDict
 
 
 @final
@@ -26,24 +22,32 @@ class DataFramePredictionWriter(BasePredictionWriter):
     _target_: cargpt.callbacks.DataFramePredictionWriter
     write_interval: batch
     path: ${hydra:run.dir}/predictions/{batch_idx}.parquet
+    select:
+      - [batch, data, ImageMetadata.cam_front_left.time_stamp]
+      - [input, continuous]
+      - [input, discrete]
+      - [predictions, forward_dynamics, score_l1, continuous]
     writer:
         _target_: polars.DataFrame.write_parquet
         _partial_: true
     ```
     """
 
+    @validate_call
     def __init__(
         self,
         *,
-        writer: Callable[[plr.DataFrame, str], None],
         path: str,
+        writer: Callable[[plr.DataFrame, str], None],
+        select: Sequence[str | tuple[str, ...]] | None = None,
         separator: str = "/",
         write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "batch",
     ) -> None:
         super().__init__(write_interval=write_interval)
 
-        self._writer = writer
         self._path = path
+        self._writer = writer
+        self._select = select
         self._separator = separator
 
     @override
@@ -53,18 +57,21 @@ class DataFramePredictionWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
         prediction: TensorDict,
         batch_indices: Sequence[int] | None,
-        batch: Batch,
+        batch: TensorClass,
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
         data = (
-            prediction.select("input", "predictions")
+            prediction.clone(recurse=False)
+            .update({"batch": batch.clone(recurse=False).to_tensordict()})
             .auto_batch_size_(1)
-            .update({"batch": batch.to_tensordict().auto_batch_size_(1)})
-            .named_apply(self._filter, nested_keys=True)
-            .flatten_keys(self._separator)
-            .cpu()
+            .lock_()
         )
+
+        if self._select is not None:
+            data = data.select(*self._select)
+
+        data = data.flatten_keys(self._separator).cpu()
 
         try:
             df = plr.from_numpy(data.to_struct_array())
@@ -77,33 +84,3 @@ class DataFramePredictionWriter(BasePredictionWriter):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         self._writer(df, path.resolve().as_posix())
-
-    @staticmethod
-    def _filter(key: tuple[str, ...], tensor: Tensor) -> Tensor | None:
-        # TODO: configurize
-        match key:
-            case ("batch", "data", name) if any(
-                map(name.endswith, ("idx", "time_stamp"))
-            ):
-                return tensor
-
-            case ("input", Modality.CONTINUOUS | Modality.DISCRETE, _name):
-                return tensor
-
-            case (
-                "predictions",
-                _objective,
-                (
-                    PredictionResultKey.GROUND_TRUTH
-                    | PredictionResultKey.PREDICTION
-                    | PredictionResultKey.PREDICTION_STD
-                    | PredictionResultKey.SCORE_LOGPROB
-                    | PredictionResultKey.SCORE_L1
-                ),
-                (Modality.CONTINUOUS | Modality.DISCRETE),
-                _name,
-            ):
-                return tensor
-
-            case _:
-                return None

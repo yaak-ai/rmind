@@ -8,7 +8,7 @@ requires-python = ">=3.12, <3.13"
 dependencies = [
   "torch",
   "tensordict>=0.7.2",
-  "rbyte[jpeg,yaak]==0.14.2",
+  "rbyte[jpeg,yaak]==0.15.0",
   "pytorch-lightning>=2.5.0.post0",
   "torchvision==0.20.1",
   "torchaudio==2.5.1",
@@ -40,7 +40,7 @@ allow-direct-references = true
 
 [project.optional-dependencies]
 train = ["torchmetrics>=1.4.1", "transformers>=4.44.2", "wandb>=0.19.3"]
-predict = ["funcy>=2.0", "rerun-sdk==0.21.0", "wandb>=0.19.3"]
+predict = ["funcy>=2.0", "rerun-sdk==0.22.1", "wandb>=0.19.3"]
 dev = [
   "ipdb>=0.13.13",
   "ipython>=8.26.0",
@@ -58,7 +58,6 @@ notebook = [
   "torchshow>=0.5.1",
 ]
 test = ["pytest>=8.3.2"]
-
 
 [tool.basedpyright]
 # typeCheckingMode = "all" # TODO
@@ -110,7 +109,7 @@ ignore = [
   "TC001",
   "TD",
   "PLC2701",
-  "DOC",     # TODO: enable
+  "DOC", # TODO: enable
 ]
 
 [tool.ruff.format]

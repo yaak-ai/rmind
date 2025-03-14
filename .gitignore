@@ -148,3 +148,5 @@ config/dataset/*
 # artifacts
 inference_results/
 .rbyte_cache
+
+.dprint.json

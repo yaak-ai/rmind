@@ -1,0 +1,128 @@
+#@yaml/text-templated-strings
+
+#@ cameras = ['cam_front_left']
+---
+_target_: rbyte.viz.loggers.RerunLogger
+_convert_: all
+_recursive_: false
+application_id: [batch, meta, input_id]
+schema:
+  batch/(@=cameras[0]@)/time_stamp:
+    _target_: rerun.TimeNanosColumn
+    times: [batch, data, "ImageMetadata.(@=cameras[0]@).time_stamp"]
+
+  #@ for camera in cameras:
+  batch/(@=camera@)/frame_idx:
+    _target_: rerun.TimeSequenceColumn
+    times: [batch, data, ImageMetadata.(@=camera@).frame_idx]
+
+  batch/(@=camera@):
+    - _target_: rerun.Image.columns
+      buffer: [batch, data, (@=camera@)]
+
+    - static: true
+      entity:
+        _target_: rerun.Image.from_fields
+        format:
+          _target_: rerun.components.ImageFormat
+          height: 324
+          width: 576
+          color_model: RGB
+          channel_datatype: u8
+
+  input/image/(@=camera@):
+    - _target_: rerun.Image.columns
+      buffer: [input, image, (@=camera@)]
+
+    - static: true
+      entity:
+        _target_: rerun.Image.from_fields
+        format:
+          _target_: rerun.components.ImageFormat
+          height: 320
+          width: 576
+          color_model: RGB
+          channel_datatype: f32
+  #@ end
+
+  #@ for key in [
+  #@     "VehicleMotion.brake_pedal_normalized",
+  #@     "VehicleMotion.gas_pedal_normalized",
+  #@     "VehicleMotion.steering_angle_normalized",
+  #@     "VehicleMotion.gear",
+  #@     "VehicleState.turn_signal",
+  #@ ]:
+  batch/(@=key@):
+    - _target_: rerun.Scalar.columns
+      scalar: [batch, data, (@=key@)]
+
+    - static: true
+      entity:
+        _target_: rerun.SeriesLine
+  #@ end
+
+  #@ for modality, keys in {
+  #@     "continuous": [
+  #@         "brake_pedal",
+  #@         "brake_pedal_diff",
+  #@         "gas_pedal",
+  #@         "gas_pedal_diff",
+  #@         "steering_angle",
+  #@         "steering_angle_diff",
+  #@         "speed",
+  #@     ],
+  #@     "discrete": [
+  #@         "turn_signal",
+  #@     ],
+  #@ }.items():
+  #@ for key in keys:
+  input/(@=modality@)/(@=key@):
+    - _target_: rerun.Scalar.columns
+      scalar: [input, (@=modality@), (@=key@)]
+
+    - static: true
+      entity:
+        _target_: rerun.SeriesLine
+        name: (@=key@)
+  #@ end
+  #@ end
+
+  #@ predictions = {
+  #@     "forward_dynamics": {
+  #@         k: {"continuous": ["speed"], "discrete": ["turn_signal"]}
+  #@         for k in ["ground_truth", "prediction", "score_l1", "score_logprob"]
+  #@     },
+  #@     "inverse_dynamics": {
+  #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
+  #@         for k in ["ground_truth", "prediction", "score_l1", "score_logprob"]
+  #@     },
+  #@     "memory_extraction": {
+  #@         k: {"continuous": ["gas_pedal_diff", "brake_pedal_diff", "steering_angle_diff"]}
+  #@         for k in ["ground_truth", "prediction"]
+  #@     },
+  #@     "random_masked_hindsight_control": {
+  #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
+  #@         for k in ["ground_truth", "prediction", "score_l1", "score_logprob"]
+  #@     },
+  #@ }
+  #@ for key_objective, data_objective in predictions.items():
+  #@ for key_prediction, data_prediction in data_objective.items():
+  #@ for modality, keys in data_prediction.items():
+  #@ for key in keys:
+  predictions/(@=key_objective@)/(@=key_prediction@)/(@=modality@)/(@=key@):
+    - _target_: rerun.Scalar.columns
+      scalar:
+        - predictions
+        - (@=key_objective@)
+        - (@=key_prediction@)
+        - (@=modality@)
+        - (@=key@)
+
+    - static: true
+      entity:
+        _target_: rerun.SeriesLine
+        name: (@=key_prediction@)/(@=key@)
+  #@ end
+  #@ end
+  #@ end
+  #@ end
