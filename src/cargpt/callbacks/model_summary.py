@@ -1,10 +1,11 @@
 from collections.abc import Iterable
-from typing import Any, override
+from typing import Any
 
 import pytorch_lightning as pl
 from loguru import logger
 from pytorch_lightning.callbacks import ModelSummary as _ModelSummary
 from torchinfo import summary
+from typing_extensions import override
 
 
 class ModelSummary(_ModelSummary):

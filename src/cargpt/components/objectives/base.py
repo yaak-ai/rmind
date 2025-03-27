@@ -1,18 +1,19 @@
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
-from enum import StrEnum, auto, unique
-from typing import Any, override
+from enum import auto, unique
+from typing import Any
 
+from backports.strenum import StrEnum
 from optree import register_pytree_node
 from optree.utils import unzip2
 from tensordict import TensorDict
 from torch.nn import Module
+from typing_extensions import override
 
 from cargpt.components.episode import Episode, Modality
 from cargpt.utils.containers import OPTREE_NAMESPACE, ModuleDict
 
-type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
-
+Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 
 @unique
 class ObjectiveName(StrEnum):

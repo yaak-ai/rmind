@@ -1,12 +1,12 @@
 from collections.abc import Hashable, Mapping, Sequence
-from enum import StrEnum, auto, unique
+from enum import auto, unique
 from functools import cached_property
 from itertools import accumulate, pairwise, starmap
 from operator import add, attrgetter, itemgetter
-from typing import override
 
 import more_itertools as mit
 import torch
+from backports.strenum import StrEnum
 from einops import pack, rearrange, repeat
 from jaxtyping import Float, Shaped
 from loguru import logger
@@ -18,6 +18,7 @@ from tensordict.tensorclass import (
 )
 from torch import Tensor
 from torch.nn import Embedding, Module
+from typing_extensions import override
 
 from cargpt.utils import ModuleDict
 

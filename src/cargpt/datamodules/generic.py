@@ -1,8 +1,9 @@
-from typing import override
+from typing import Any
 
 import pytorch_lightning as pl
 from pydantic import InstanceOf, validate_call
 from torch.utils.data import DataLoader
+from typing_extensions import override
 
 
 class GenericDataModule[T](pl.LightningDataModule):

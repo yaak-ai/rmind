@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import Annotated, override
+from typing import Annotated
 
 import torch
 from jaxtyping import Float, Int, UInt
@@ -7,6 +7,7 @@ from torch import Tensor
 from torch.nn import Module
 from torchaudio.functional import mu_law_decoding
 from torchaudio.transforms import MuLawEncoding as _MuLawEncoding
+from typing_extensions import override
 
 from .base import Invertible
 

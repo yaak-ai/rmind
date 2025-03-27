@@ -1,8 +1,9 @@
 from collections.abc import Callable
 from functools import partial
-from typing import Any, override
+from typing import Any
 
 from torch import Tensor, nn
+from typing_extensions import override
 
 from .base import Invertible
 

@@ -1,6 +1,6 @@
 from collections.abc import Iterable, Mapping, Sequence
 from functools import singledispatchmethod
-from typing import Any, TypedDict, Unpack, final, overload, override
+from typing import Any, TypedDict, final, overload
 
 import torch
 from more_itertools import always_iterable
@@ -10,6 +10,7 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import ModuleDict as _ModuleDict
+from typing_extensions import Unpack, override
 
 OPTREE_NAMESPACE = "cargpt"
 

@@ -1,12 +1,13 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import override
 
 from einops.layers.torch import Rearrange
 from optree import tree_map
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
+from torch.utils._pytree import tree_map
+from typing_extensions import override
 
 from cargpt.components.episode import (
     Episode,

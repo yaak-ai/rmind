@@ -1,9 +1,9 @@
 from math import prod
-from typing import override
 
 from jaxtyping import Float
 from torch import Tensor, nn
 from torchvision.models import ResNet
+from typing_extensions import override
 
 
 class ResnetBackbone(nn.Module):

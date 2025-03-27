@@ -1,6 +1,5 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import override
 
 import torch
 from einops import rearrange
@@ -10,6 +9,8 @@ from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map
+from typing_extensions import override
 
 from cargpt.components.episode import (
     Episode,

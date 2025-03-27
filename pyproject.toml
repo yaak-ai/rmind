@@ -4,36 +4,43 @@ version = "0.1.0"
 description = ""
 authors = [{ name = "ML yaak team", email = "ml@yaak.ai" }]
 readme = "README.md"
-requires-python = ">=3.12, <3.13"
+requires-python = ">=3.10, <3.11"
 dependencies = [
-  "torch",
-  "tensordict>=0.7.2",
-  "pytorch-lightning>=2.5.0.post0",
-  "torchvision==0.20.1",
-  "torchaudio==2.5.1",
-  "xformers==0.0.28.post2",
-  "einops>=0.8.0",
-  "hydra-core>=1.3.2",
-  "loguru>=0.7.2",
-  "numpy<2.0.0",
-  "omegaconf>=2.3.0",
+  "torch==2.5.1",
+  "tensordict==0.6.2",
+  "pytorch-lightning >= 2.4.0",
+  "torchvision >= 0.20.0",
+  "torchaudio >= 2.4.0",
+  "xformers == 0.0.28.post3",
+  "einops >= 0.8.0",
+  "hydra-core >= 1.3.2",
+  "loguru >= 0.7.2",
+  "numpy < 2.0.0",
+  "omegaconf >= 2.3.0",
   "typing-extensions>=4.12.2",
   "more-itertools>=10.4.0",
   "jaxtyping>=0.2.33",
   "torchinfo>=1.8.0",
-  "pydantic>=2.11.3",
-  "polars>=1.24.0",
-  "orjson>=3.10.12",
-  "optree>=0.14.1",
-  "rbyte[jpeg,yaak,geo]",
+  "pandas>=2.2.3",
+  "backports-strenum>=1.3.1",
 ]
 
 [tool.uv]
 override-dependencies = ["torch==2.5.1"]
 
 [tool.uv.sources]
+rbyte = { path = "../rbyte/dist/rbyte-0.16.0-py3-none-any.whl" }
+
+<<<<<<< HEAD
+[tool.uv.sources]
 rbyte = { path = "../rbyte/dist/rbyte-0.18.1-py3-none-any.whl" }
 
+||||||| parent of 3ec548e (wip)
+=======
+[tool.uv.sources]
+rbyte = { path = "../rbyte/dist/rbyte-0.16.0-py3-none-any.whl" }
+
+>>>>>>> 3ec548e (wip)
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -42,8 +49,22 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [project.optional-dependencies]
-train = ["torchmetrics>=1.4.1", "transformers>=4.44.2", "wandb>=0.19.9"]
-predict = ["funcy>=2.0", "rerun-sdk==0.22.1", "wandb>=0.19.3"]
+train = [
+  "polars>=1.5.0",
+  "torchmetrics>=1.4.1",
+  "transformers>=4.44.2",
+  "wandb>=0.17.7",
+]
+predict = [
+  "funcy>=2.0",
+  "rerun-sdk >= 0.16.1",
+  "wandb>=0.17.7",
+]
+lint = [
+    "deptry>=0.19.1",
+    "pyright>=1.1.377",
+    "ruff>=0.6.2",
+]
 dev = [
   "ipdb>=0.13.13",
   "ipython>=8.26.0",

@@ -1,9 +1,8 @@
-from typing import override
-
 import torch
 from einops import einsum, rearrange
 from jaxtyping import Float, Shaped
 from torch import Tensor, nn
+from typing_extensions import override
 
 
 class PointPositionalEncoder3D(nn.Module):

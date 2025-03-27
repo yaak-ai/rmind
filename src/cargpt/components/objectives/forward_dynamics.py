@@ -1,6 +1,6 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
 
 import torch
 from einops import pack
@@ -12,6 +12,8 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map
+from typing_extensions import override
 
 from cargpt.components.episode import (
     Episode,

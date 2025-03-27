@@ -1,5 +1,4 @@
 from collections.abc import Callable, Mapping, Sequence
-from typing import override
 
 from optree import tree_map
 from pydantic import validate_call
@@ -8,10 +7,11 @@ from rbyte.config import BaseModel
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
+from typing_extensions import override
 
 from cargpt.components.episode import Modality
 
-type Keys = Mapping[Modality, Mapping[str, tuple[str, ...]]]
+Keys = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 
 
 class Transform(BaseModel):

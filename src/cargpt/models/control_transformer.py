@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Self, override
+from typing import Any
 
 import pytorch_lightning as pl
 import torch
@@ -16,11 +16,13 @@ from pytorch_lightning.strategies import SingleDeviceStrategy
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.utilities.model_helpers import _restricted_classmethod
 from tensordict import TensorDict
-from torch.nn import Module  # noqa: TC002
+from torch.nn import Module  # noqa: TCH002
+from typing_extensions import Self, override
 
 from cargpt.components.episode import EpisodeBuilder
 from cargpt.components.mask import WandbAttentionMaskLegend
-from cargpt.components.objectives import ObjectiveScheduler
+
+# from cargpt.components.objectives import ObjectiveScheduler
 from cargpt.components.objectives.base import PredictionResultKey
 from cargpt.utils import ModuleDict
 from cargpt.utils._wandb import LoadableFromArtifact
@@ -35,15 +37,15 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)  # pyright: ignore[reportAttributeAccessIssue]
         self.encoder: Module = instantiate(self.hparams.encoder)  # pyright: ignore[reportAttributeAccessIssue]
         self.objectives: ModuleDict = instantiate(self.hparams.objectives)  # pyright: ignore[reportAttributeAccessIssue]
-        self.objective_scheduler: ObjectiveScheduler | None = instantiate(
-            self.hparams.get("objective_scheduler")
-        )
-        if self.objective_scheduler is not None and (
-            (specified := set(self.objectives.keys()))
-            != (scheduled := {x.value for x in self.objective_scheduler.objectives})
-        ):
-            msg = f"objective scheduler enabled but {specified} != {scheduled}"
-            raise ValueError(msg)
+        # self.objective_scheduler: ObjectiveScheduler | None = instantiate(
+        #     self.hparams.get("objective_scheduler")
+        # )
+        # if self.objective_scheduler is not None and (
+        #     (specified := set(self.objectives.keys()))
+        #     != (scheduled := {x.value for x in self.objective_scheduler.objectives})
+        # ):
+        #     msg = f"objective scheduler enabled but {specified} != {scheduled}"
+        #     raise ValueError(msg)
 
     @override
     @_restricted_classmethod

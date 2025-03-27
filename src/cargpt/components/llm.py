@@ -1,9 +1,10 @@
-from typing import Literal, override
+from typing import Literal
 
 import torch
 from einops import rearrange, repeat
 from jaxtyping import Float
 from torch import Tensor, nn
+from typing_extensions import override
 from xformers.components import Activation, ResidualNormStyle, build_activation
 from xformers.components.attention import ScaledDotProduct
 from xformers.components.attention.core import scaled_query_key_softmax

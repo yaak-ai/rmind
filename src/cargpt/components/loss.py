@@ -1,11 +1,11 @@
 from collections.abc import Callable
-from typing import override
 
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
+from typing_extensions import override
 
 
 class FocalLoss(Module):

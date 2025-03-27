@@ -53,6 +53,11 @@ predict-debug +ARGS: template-config
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 
+predict-simple +ARGS: template-config
+    uv run python src/cargpt/scripts/predict_simple.py \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml {{ ARGS }}
+
 test *ARGS:
     uv run pytest --capture=no {{ ARGS }}
 
