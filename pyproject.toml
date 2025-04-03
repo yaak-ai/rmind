@@ -1,0 +1,10 @@
+[project]
+name = "rmind"
+version = "0.1.0"
+description = "PyTorch library to train end-to-end models from multimodal robotics dataset"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "rbyte>=0.16.1",
+    "torch>=2.6.0",
+]
