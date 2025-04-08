@@ -697,7 +697,7 @@ sources:
   (@=input_id@):
     #@ for camera in cameras:
     (@=camera@):
-      index_column: "ImageMetadata.(@=camera@).frame_idx"
+      index_column: "meta.ImageMetadata.(@=camera@).frame_idx"
       source:
         _target_: rbyte.io.PathTensorSource
         path: "${paths.data}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324/{:09d}.jpg"
@@ -715,6 +715,7 @@ samples:
     #@ for input_id in drives:
     (@=input_id@):
       yaak_metadata_path: ${paths.data}/(@=input_id@)/metadata.log
+      waypoints_path: ${paths.data}/(@=input_id@)/waypoints.json
       #@ for camera in cameras:
       (@=camera@)_path: ${paths.data}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324
       #@ end
@@ -740,8 +741,8 @@ samples:
       - _target_: pipefunc.PipeFunc
         renames:
           path: yaak_metadata_path
-        output_name: data
-        mapspec: "yaak_metadata_path[i] -> data[i]"
+        output_name: meta
+        mapspec: "yaak_metadata_path[i] -> meta[i]"
         cache: true
         func:
           _target_: rbyte.io.YaakMetadataDataFrameBuilder
@@ -749,7 +750,7 @@ samples:
             rbyte.io.yaak.proto.sensor_pb2.ImageMetadata:
               time_stamp:
                 _target_: polars.Datetime
-                time_unit: ns
+                time_unit: us
 
               frame_idx:
                 _target_: polars.Int32
@@ -769,7 +770,7 @@ samples:
             rbyte.io.yaak.proto.can_pb2.VehicleState:
               time_stamp:
                 _target_: polars.Datetime
-                time_unit: ns
+                time_unit: us
 
               turn_signal:
                 _target_: polars.Int8
@@ -777,7 +778,7 @@ samples:
             rbyte.io.yaak.proto.can_pb2.VehicleMotion:
               time_stamp:
                 _target_: polars.Datetime
-                time_unit: ns
+                time_unit: us
 
               speed:
                 _target_: polars.Float32
@@ -794,6 +795,54 @@ samples:
               gear:
                 _target_: polars.Enum
                 categories: ["0", "1", "2", "3"]
+                
+            rbyte.io.yaak.proto.sensor_pb2.Gnss:
+              time_stamp:
+                _target_: polars.Datetime
+                time_unit: us
+              latitude:
+                _target_: polars.Float32
+              longitude:
+                _target_: polars.Float32
+                
+      - _target_: pipefunc.PipeFunc
+        renames:
+          path: waypoints_path
+        output_name: features
+        mapspec: "waypoints_path[i] -> features[i]"
+        func:
+          _target_: rbyte.io.GeoDataFrameBuilder
+          srid: 4326
+          columns: [heading, timestamp, geometry]
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: features
+        output_name: features_converted
+        mapspec: "features[i] -> features_converted[i]"
+        func:
+          _target_: rbyte.io.DataFrameWithColumns
+          timestamp: "TIMESTAMP(CAST(timestamp AS string), '%s%.6f')"
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: features_converted
+        output_name: waypoints
+        mapspec: "features_converted[i] -> waypoints[i]"
+        func:
+          _target_: rbyte.io.WaypointBuilder
+          length: 10
+          columns:
+            points: geometry
+            output: waypoints      
+
+      - _target_: pipefunc.PipeFunc
+        output_name: data
+        mapspec: "meta[i], waypoints[i] -> data[i]"
+        func:
+          _target_: pipefunc.helpers.collect_kwargs
+          parameters: [meta, waypoints]
+          function_name: aggregate
 
       - _target_: pipefunc.PipeFunc
         renames:
@@ -804,55 +853,93 @@ samples:
           _target_: rbyte.io.DataFrameAligner
           separator: .
           fields:
-            ImageMetadata.(@=cameras[0]@):
-              key: time_stamp
+            meta:
+              ImageMetadata.(@=cameras[0]@):
+                key: time_stamp
 
-            #@ for camera in cameras[1:]:
-            ImageMetadata.(@=camera@):
-              key: time_stamp
+              #@ for camera in cameras[1:]:
+              ImageMetadata.(@=camera@):
+                key: time_stamp
+                columns:
+                  frame_idx:
+                    method: asof
+                    tolerance: 10ms
+                    strategy: nearest
+              #@ end
+
+              VehicleState:
+                key: time_stamp
+                columns:
+                  turn_signal:
+                    method: asof
+                    tolerance: 100ms
+
+              VehicleMotion:
+                key: time_stamp
+                columns:
+                  speed:
+                    method: interp
+                  gas_pedal_normalized:
+                    method: interp
+                  brake_pedal_normalized:
+                    method: interp
+                  steering_angle_normalized:
+                    method: interp
+                  gear:
+                    method: asof
+                    tolerance: 100ms
+                    strategy: nearest
+
+              Gnss:
+                key: time_stamp
+                columns:
+                  latitude:
+                    method: asof
+                    tolerance: 500ms
+                    strategy: nearest
+                  longitude:
+                    method: asof
+                    tolerance: 500ms
+                    strategy: nearest
+
+            waypoints:
+              key: timestamp
               columns:
-                frame_idx:
+                heading:
                   method: asof
-                  tolerance: 10ms
                   strategy: nearest
-            #@ end
 
-            VehicleState:
-              key: time_stamp
-              columns:
-                turn_signal:
+                waypoints:
                   method: asof
-                  tolerance: 100ms
-
-            VehicleMotion:
-              key: time_stamp
-              columns:
-                speed:
-                  method: interp
-                gas_pedal_normalized:
-                  method: interp
-                brake_pedal_normalized:
-                  method: interp
-                steering_angle_normalized:
-                  method: interp
-                gear:
-                  method: asof
-                  tolerance: 100ms
                   strategy: nearest
-
+      
       - _target_: pipefunc.PipeFunc
         renames:
           input: aligned
+        output_name: waypoints_normalized
+        mapspec: "aligned[i] -> waypoints_normalized[i]"
+        func:
+          _target_: rbyte.io.WaypointNormalizer
+          srid: 3857
+          columns:
+            ego: [meta.Gnss.longitude, meta.Gnss.latitude]
+            waypoints: waypoints.waypoints
+            heading: waypoints.heading
+            output: waypoints.waypoints_normalized
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: waypoints_normalized
         output_name: filtered
-        mapspec: "aligned[i] -> filtered[i]"
+        mapspec: "waypoints_normalized[i] -> filtered[i]"
         func:
           _target_: rbyte.io.DataFrameFilter
           predicate: |
-            `VehicleMotion.gear` == '3'
-            and `VehicleMotion.speed` between 0.0 and 130.0
-            and `VehicleMotion.gas_pedal_normalized` between 0.0 and 1.0
-            and `VehicleMotion.brake_pedal_normalized` between 0.0 and 1.0
-            and `VehicleMotion.steering_angle_normalized` between -1.0 and 1.0
+            `meta.VehicleMotion.gear` == '3'
+            and `meta.VehicleMotion.speed` between 0.0 and 130.0
+            and `meta.VehicleMotion.gas_pedal_normalized` between 0.0 and 1.0
+            and `meta.VehicleMotion.brake_pedal_normalized` between 0.0 and 1.0
+            and `meta.VehicleMotion.steering_angle_normalized` between -1.0 and 1.0
 
       #@ for i, camera in enumerate(cameras):
       - _target_: pipefunc.PipeFunc
@@ -880,7 +967,7 @@ samples:
         func:
           _target_: rbyte.io.DataFrameJoiner
           how: semi
-          left_on: ImageMetadata.(@=camera@).frame_idx
+          left_on: meta.ImageMetadata.(@=camera@).frame_idx
           right_on: frame_idx
       #@ end
 
@@ -892,7 +979,7 @@ samples:
         mapspec: "(@=input@)[i] -> samples[i]"
         func:
           _target_: rbyte.io.FixedWindowSampleBuilder
-          index_column: ImageMetadata.(@=cameras[0]@).frame_idx
+          index_column: meta.ImageMetadata.(@=cameras[0]@).frame_idx
           every: 10i
           period: 50i
           closed: both
@@ -908,8 +995,8 @@ samples:
           _target_: rbyte.io.DataFrameFilter
           predicate: |
             not (
-                  array_upper(`VehicleMotion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
-              and array_upper(`VehicleMotion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
-              and array_upper(`VehicleMotion.speed`) >= 25.0
-              and array_get(`VehicleMotion.speed`, -1) - array_get(`VehicleMotion.speed`, 1) >= -0.05 * array_mean(`VehicleMotion.speed`)
+                  array_upper(`meta.VehicleMotion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
+              and array_upper(`meta.VehicleMotion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
+              and array_upper(`meta.VehicleMotion.speed`) >= 25.0
+              and array_get(`meta.VehicleMotion.speed`, -1) - array_get(`meta.VehicleMotion.speed`, 1) >= -0.05 * array_mean(`meta.VehicleMotion.speed`)
             )

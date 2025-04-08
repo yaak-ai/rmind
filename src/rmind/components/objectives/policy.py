@@ -72,8 +72,13 @@ class PolicyObjective(Objective):
             SpecialToken.OBSERVATION_SUMMARY,
         ))
 
+        waypoints = episode.input_embeddings[Modality.POINTS, "waypoints"][:, -1].mean(
+            dim=1, keepdim=True
+        )
+
         features = rearrange(
-            [observation_summary, observation_history], "i b 1 d -> b 1 (i d)"
+            [observation_summary, observation_history, waypoints],
+            "i b 1 d -> b 1 (i d)",
         )
 
         logits = self.heads.forward(features)
@@ -137,8 +142,13 @@ class PolicyObjective(Objective):
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
 
+            waypoints = episode.input_embeddings[Modality.POINTS, "waypoints"][
+                :, [-1]
+            ].mean(dim=1, keepdim=True)
+
             features = rearrange(
-                [observation_summary, observation_history], "i b t 1 d -> b t 1 (i d)"
+                [observation_summary, observation_history, waypoints],
+                "i b t 1 d -> b t 1 (i d)",
             )
 
             logits = self.heads.forward(features, batch_size=[b, 1])

@@ -1,0 +1,353 @@
+#@yaml/text-templated-strings
+
+#@ drives = [
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_28_route0_11_09_04_45_55',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_8_route0_11_09_10_04_01',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_11_route0_11_08_21_16_22',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_13_route0_11_08_10_45_37',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_22_route0_11_08_18_43_56',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_42_route0_11_08_00_19_03',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_51_route0_11_09_10_26_06',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_29_route0_11_09_00_38_16',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_12_route0_11_09_06_48_48',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_50_route0_11_08_06_05_14',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_49_route0_11_08_07_08_46',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_9_route0_11_08_02_58_25',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_40_route0_11_08_17_39_25',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_21_route0_11_08_22_04_00',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_43_route0_11_08_18_04_32',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_10_route0_11_08_22_07_16',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_23_route0_11_08_23_34_14',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_41_route0_11_08_05_48_09',
+#@  'SignalizedJunctionLeftTurn/Town10_Rep0_Town10HD_Scenario7_20_route0_11_08_01_52_35',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_4_route0_11_09_03_57_45',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_5_route0_11_08_19_36_30',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_2_route0_11_09_05_09_09',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_6_route0_11_08_00_29_15',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_2_route0_11_08_11_51_14',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_10_route0_11_08_16_14_54',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_1_route0_11_08_04_04_28',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_4_route0_11_09_04_22_35',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_9_route0_11_08_02_59_33',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_11_route0_11_08_03_31_22',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_1_route0_11_09_08_02_36',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_8_route0_11_09_08_24_48',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_5_route0_11_08_23_35_06',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_0_route0_11_08_19_11_45',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_10_route0_11_07_23_59_02',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_0_route0_11_09_06_25_54',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_7_route0_11_08_13_18_54',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_3_route0_11_09_03_31_14',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_6_route0_11_09_03_50_36',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_9_route0_11_08_07_57_16',
+#@  'noScenarios/Town10_Rep0_Town10HD_lr_3_route0_11_09_00_26_59',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_8_route0_11_08_10_57_27',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_7_route0_11_09_02_14_10',
+#@  'noScenarios/Town10_Rep0_Town10HD_rl_11_route0_11_08_18_38_00',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_44_route0_11_08_23_58_41',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_31_route0_11_08_07_49_01',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_24_route0_11_08_08_52_40',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_7_route0_11_08_15_51_21',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_32_route0_11_08_16_08_06',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_30_route0_11_08_16_44_12',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_34_route0_11_08_09_43_55',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_36_route0_11_08_22_47_12',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_18_route0_11_08_01_12_39',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_48_route0_11_08_15_00_24',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_33_route0_11_08_01_27_09',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_0_route0_11_08_03_42_02',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_5_route0_11_08_05_30_52',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_17_route0_11_07_23_13_46',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_14_route0_11_08_21_24_31',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_57_route0_11_09_07_25_13',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_39_route0_11_09_05_54_54',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_35_route0_11_08_02_01_39',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_53_route0_11_08_02_55_39',
+#@  'SignalizedJunctionRightTurn/Town10_Rep0_Town10HD_Scenario9_56_route0_11_08_08_04_34',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_2_route0_11_08_08_04_18',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_10_route0_11_08_02_24_09',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_11_route0_11_08_09_56_33',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_13_route0_11_08_02_29_34',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_7_route0_11_08_13_47_26',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_9_route0_11_09_09_40_21',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_6_route0_11_09_08_02_58',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_8_route0_11_08_16_22_23',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_15_route0_11_08_01_47_56',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_0_route0_11_09_00_46_30',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_5_route0_11_08_11_50_32',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_3_route0_11_08_03_16_51',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_1_route0_11_09_04_21_22',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_4_route0_11_09_00_42_46',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_12_route0_11_08_06_43_23',
+#@  'ControlLoss/Town10_Rep0_Town10HD_Scenario1_14_route0_11_08_02_15_39',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_55_route0_11_08_14_08_47',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_4_route0_11_09_10_38_05',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_25_route0_11_08_13_00_14',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_1_route0_11_09_00_06_51',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_19_route0_11_08_23_39_38',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_52_route0_11_08_02_23_49',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_26_route0_11_09_11_58_21',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_54_route0_11_08_22_24_33',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_38_route0_11_07_23_26_25',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_3_route0_11_08_14_37_27',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_47_route0_11_09_00_57_26',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_46_route0_11_09_09_59_21',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_16_route0_11_09_00_48_34',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_37_route0_11_09_05_37_40',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_45_route0_11_08_20_45_24',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_15_route0_11_08_03_31_13',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_27_route0_11_08_09_31_47',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_6_route0_11_08_20_30_18',
+#@  'OppositeVehicleRunningRedLight/Town10_Rep0_Town10HD_Scenario8_2_route0_11_09_12_43_36',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_12_route0_11_09_02_30_09',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_3_route0_11_09_10_43_37',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_1_route0_11_08_21_01_07',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_14_route0_11_09_04_43_14',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_9_route0_11_09_00_40_43',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_7_route0_11_08_20_47_13',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_0_route0_11_08_18_43_30',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_2_route0_11_09_11_44_13',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_15_route0_11_08_20_54_24',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_11_route0_11_08_20_17_20',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_8_route0_11_09_06_27_32',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_13_route0_11_09_02_47_05',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_6_route0_11_08_23_25_18',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_5_route0_11_08_01_54_55',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_4_route0_11_09_00_14_32',
+#@  'DynamicObjectCrossing/Town10_Rep0_Town10HD_Scenario3_10_route0_11_08_04_50_13',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_1_route0_11_08_23_20_43',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_17_route0_11_08_17_25_48',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_39_route0_11_09_11_59_52',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_37_route0_11_08_23_08_11',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_42_route0_11_09_11_24_32',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_21_route0_11_08_05_19_39',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_28_route0_11_09_03_04_38',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_32_route0_11_08_04_25_16',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_30_route0_11_09_02_40_25',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_12_route0_11_08_18_07_06',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_8_route0_11_09_08_07_29',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_15_route0_11_08_22_41_08',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_40_route0_11_08_14_14_20',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_29_route0_11_09_12_06_25',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_19_route0_11_08_08_52_21',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_16_route0_11_08_03_47_10',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_25_route0_11_09_10_03_25',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_7_route0_11_09_00_21_39',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_36_route0_11_08_13_38_08',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_41_route0_11_09_01_08_13',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_0_route0_11_09_00_18_43',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_3_route0_11_08_07_34_15',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_9_route0_11_08_02_41_48',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_33_route0_11_08_07_13_02',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_6_route0_11_09_12_05_44',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_27_route0_11_07_23_53_18',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_23_route0_11_09_04_12_10',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_31_route0_11_09_11_15_02',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_13_route0_11_08_05_25_23',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_45_route0_11_08_05_11_11',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_24_route0_11_09_04_25_55',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_20_route0_11_08_13_06_17',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_43_route0_11_09_11_41_50',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_18_route0_11_08_00_26_39',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_10_route0_11_09_03_15_46',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_4_route0_11_09_09_43_46',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_34_route0_11_09_09_09_27',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_26_route0_11_09_03_45_06',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_44_route0_11_09_08_35_28',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_38_route0_11_08_00_52_06',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_22_route0_11_09_11_45_40',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_11_route0_11_09_11_33_42',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_35_route0_11_09_03_04_41',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_14_route0_11_08_21_32_12',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_5_route0_11_08_19_25_05',
+#@  'VehicleTurningRoute/Town10_Rep0_Town10HD_Scenario4_2_route0_11_09_00_28_15',
+#@ ]
+#@ cameras = [
+#@     'rgb',
+#@ ]
+---
+_target_: rbyte.Dataset
+_recursive_: false
+_convert_: all
+sources:
+  #@ for input_id in drives:
+  (@=input_id@):
+    #@ for source_id in cameras:
+    (@=source_id@):
+      index_column: meta._idx_
+      source:
+        _target_: rbyte.io.PathTensorSource
+        path: '${paths.data}/(@=input_id@)/(@=source_id@)/{:04d}.jpg'
+        decoder:
+          _target_: simplejpeg.decode_jpeg
+          _partial_: true
+          colorspace: rgb
+          fastdct: true
+          fastupsample: true
+
+    #@ end
+  #@ end
+
+samples:
+  inputs:
+    #@ for input_id in drives:
+    (@=input_id@):
+      measurements_path: ${paths.data}/(@=input_id@)/measurements.json
+      waypoints_path: ${paths.data}/(@=input_id@)/waypoints.json
+    #@ end
+
+  executor:
+    _target_: concurrent.futures.ThreadPoolExecutor
+
+  storage: dict
+  pipeline:
+    _target_: pipefunc.Pipeline
+    validate_type_annotations: false
+    functions:
+      - _target_: pipefunc.PipeFunc
+        renames:
+          path: measurements_path
+        output_name: records
+        output_picker:
+          _target_: hydra.utils.get_method
+          path: builtins.dict.get
+        mapspec: "measurements_path[i] -> records[i]"
+        func:
+          _target_: rbyte.io.JsonDataFrameBuilder
+          fields:
+            records:
+              speed:
+              steer:
+              throttle:
+              brake:
+                _target_: polars.Float32 # in data it's just 0 and 1
+              pos_global:
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: records
+        output_name: records_converted
+        mapspec: "records[i] -> records_converted[i]"
+        func:
+          _target_: rbyte.io.DataFrameQuery
+          query: |
+            SELECT
+              speed,
+              steer,
+              throttle,
+              brake,
+              array_get(pos_global, 2) as pos_global_x,
+              array_get(pos_global, 1) as pos_global_y
+            FROM self
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: records_converted
+        output_name: meta
+        mapspec: "records_converted[i] -> meta[i]"
+        func:
+          _target_: rbyte.io.DataFrameIndexer
+          name: _idx_
+          dtype:
+            _target_: polars.Int32
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          path: waypoints_path
+        output_name: features
+        mapspec: "waypoints_path[i] -> features[i]"
+        func:
+          _target_: rbyte.io.GeoDataFrameBuilder
+          srid: 0
+          columns: [heading, timestamp, geometry]
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: features
+        output_name: features_converted
+        mapspec: "features[i] -> features_converted[i]"
+        func:
+          _target_: rbyte.io.DataFrameQuery
+          query: |
+            SELECT * FROM self ORDER BY timestamp
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: features_converted
+        output_name: waypoints
+        mapspec: "features_converted[i] -> waypoints[i]"
+        func:
+          _target_: rbyte.io.WaypointBuilder
+          length: 10
+          columns:
+            points: geometry
+            output: waypoints
+
+      - _target_: pipefunc.PipeFunc
+        output_name: data
+        mapspec: "meta[i], waypoints[i] -> data[i]"
+        func:
+          _target_: pipefunc.helpers.collect_kwargs
+          parameters: [meta, waypoints]
+          function_name: aggregate
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: data
+        output_name: aligned
+        mapspec: "data[i] -> aligned[i]"
+        func:
+          _target_: rbyte.io.DataFrameAligner
+          separator: .
+          fields:
+            meta:
+              key: _idx_
+              columns:
+                records.speed:
+                  method: interp
+                records.steer:
+                  method: interp
+                records.throttle:
+                  method: interp
+                records.brake:
+                  method: interp
+                records.pos_global:
+                  method: asof
+                  strategy: nearest
+
+            waypoints:
+              key: timestamp
+              columns:
+                heading:
+                  method: asof
+                  strategy: nearest
+                waypoints:
+                  method: asof
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: aligned
+        output_name: with_waypoints_normalized
+        mapspec: "aligned[i] -> with_waypoints_normalized[i]"
+        func:
+          _target_: rbyte.io.WaypointNormalizer
+          srid: 0
+          columns:
+            ego: [meta.pos_global_x, meta.pos_global_y]
+            waypoints: waypoints.waypoints
+            heading: waypoints.heading
+            output: waypoints.waypoints_normalized
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: with_waypoints_normalized
+        output_name: samples
+        mapspec: "with_waypoints_normalized[i] -> samples[i]"
+        func:
+          _target_: rbyte.io.FixedWindowSampleBuilder
+          index_column: meta._idx_
+          every: 1i
+          period: 7i
+          closed: both
+          gather_every: 1
+          length: 8

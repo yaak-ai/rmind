@@ -52,9 +52,11 @@ class ForwardDynamicsPredictionObjective(Objective):
         # all but last timestep
         index = episode.index[:-1]
 
-        observations: TensorDict = index.select(
-            *episode.timestep.keys_by_type[TokenType.OBSERVATION]
-        ).parse(embedding)
+        observations: TensorDict = index.select(*[
+            k
+            for k in episode.timestep.keys_by_type[TokenType.OBSERVATION]
+            if k != (Modality.POINTS, "waypoints")
+        ]).parse(embedding)
 
         observation_summary = (
             index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))

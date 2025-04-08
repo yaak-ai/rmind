@@ -1,0 +1,9 @@
+# @package _global_
+
+defaults:
+  - yaak/control_transformer/finetune
+  - override /datamodule: carla_garage/train
+  - _self_
+
+paths:
+  data: /nasa/drives/carla_garage
