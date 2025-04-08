@@ -4,7 +4,7 @@ from typing import override
 
 from einops.layers.torch import Rearrange
 from optree import tree_map
-from pydantic import ConfigDict, validate_call
+from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
 
@@ -32,12 +32,12 @@ from cargpt.utils.functional import nan_padder
 class MemoryExtractionObjective(Objective):
     """Inspired by: Resolving Copycat Problems in Visual Imitation Learning via Residual Action Prediction (https://arxiv.org/abs/2207.09705)"""
 
-    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
+    @validate_call
     def __init__(
         self,
         *,
-        heads: ModuleDict,
-        losses: ModuleDict | None = None,
+        heads: InstanceOf[ModuleDict],
+        losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ):
         super().__init__()

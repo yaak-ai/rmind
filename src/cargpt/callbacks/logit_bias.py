@@ -16,7 +16,7 @@ class LogitBiasSetter(Callback):
         objectives = pl_module.objectives
         targets = []
 
-        for objective_key, objective in pl_module.objectives.items():
+        for objective_key, objective in objectives.items():
             loss_keys, losses, _ = tree_flatten_with_path(
                 objective.losses, namespace=OPTREE_NAMESPACE
             )
@@ -24,6 +24,9 @@ class LogitBiasSetter(Callback):
                 match loss:
                     case LogitBiasMixin(logit_bias=None):
                         targets.append((objective_key, loss_key, loss))
+
+        if not targets:
+            return
 
         input_keys, batch_keys, _ = tree_flatten_with_path(
             pl_module.input_builder.keys, is_leaf=lambda x: isinstance(x, tuple)

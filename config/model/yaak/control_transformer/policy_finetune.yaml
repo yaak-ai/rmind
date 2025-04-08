@@ -2,7 +2,6 @@ _target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_a
 artifact: ???
 # _target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
 # checkpoint_path: ???
-filename: model.ckpt
 strict: false
 hparams_updaters:
   # wrap hparams in DictConfig
@@ -23,36 +22,18 @@ hparams_updaters:
           continuous:
             gas_pedal:
               _target_: torchvision.ops.MLP
-              in_channels:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${vars.embedding_dim}
-              hidden_channels:
-                - 512
-                - 2
+              in_channels: 1024
+              hidden_channels: [512, 2]
               bias: False
             brake_pedal:
               _target_: torchvision.ops.MLP
-              in_channels:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${vars.embedding_dim}
-              hidden_channels:
-                - 512
-                - 2
+              in_channels: 1024
+              hidden_channels: [512, 2]
               bias: False
             steering_angle:
               _target_: torchvision.ops.MLP
-              in_channels:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${vars.embedding_dim}
-              hidden_channels:
-                - 512
-                - 2
+              in_channels: 1024
+              hidden_channels: [512, 2]
               bias: False
 
         targets:

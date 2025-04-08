@@ -41,7 +41,7 @@ def train(cfg: DictConfig):
     ) is not None:
         paths = {
             Path(path).resolve()
-            for path in check_output(  # noqa: S603
+            for path in check_output(
                 ["git", "ls-files"],  # noqa: S607
                 universal_newlines=True,
             ).splitlines()

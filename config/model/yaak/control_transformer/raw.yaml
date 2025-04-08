@@ -84,32 +84,32 @@ episode_builder:
       speed:
         _target_: cargpt.components.norm.UniformBinner
         range: [0.0, 130.0]
-        bins: 512
+        bins: ${embedding_dim}
 
       gas_pedal:
         _target_: cargpt.components.norm.UniformBinner
         range: [0.0, 1.0]
-        bins: 512
+        bins: ${embedding_dim}
 
       gas_pedal_diff:
         # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
         _target_: cargpt.components.norm.MuLawEncoding
-        quantization_channels: ${vars.embedding_dim}
+        quantization_channels: ${embedding_dim}
 
       brake_pedal:
         _target_: cargpt.components.norm.UniformBinner
         range: [0.0, 1.0]
-        bins: 512
+        bins: ${embedding_dim}
 
       brake_pedal_diff:
         # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
         _target_: cargpt.components.norm.MuLawEncoding
-        quantization_channels: ${vars.embedding_dim}
+        quantization_channels: ${embedding_dim}
 
       steering_angle:
         _target_: cargpt.components.norm.UniformBinner
         range: [-1.0, 1.0]
-        bins: 512
+        bins: ${embedding_dim}
 
       steering_angle_diff:
         _target_: cargpt.components.nn.Sequential
@@ -118,7 +118,7 @@ episode_builder:
             in_range: [-2.0, 2.0]
             out_range: [-1.0, 1.0]
           - _target_: cargpt.components.norm.MuLawEncoding
-            quantization_channels: ${vars.embedding_dim}
+            quantization_channels: ${embedding_dim}
 
     discrete:
       _target_: cargpt.components.nn.Identity
@@ -140,30 +140,30 @@ episode_builder:
       speed:
         _target_: cargpt.components.nn.Embedding
         num_embeddings: ${model.episode_builder.tokenizers.continuous.speed.bins}
-        embedding_dim: ${vars.embedding_dim}
+        embedding_dim: ${embedding_dim}
       gas_pedal:
         _target_: cargpt.components.nn.Embedding
         num_embeddings: ${model.episode_builder.tokenizers.continuous.gas_pedal.bins}
-        embedding_dim: ${vars.embedding_dim}
+        embedding_dim: ${embedding_dim}
       brake_pedal:
         _target_: cargpt.components.nn.Embedding
         num_embeddings: ${model.episode_builder.tokenizers.continuous.brake_pedal.bins}
-        embedding_dim: ${vars.embedding_dim}
+        embedding_dim: ${embedding_dim}
       steering_angle:
         _target_: cargpt.components.nn.Embedding
         num_embeddings: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
-        embedding_dim: ${vars.embedding_dim}
+        embedding_dim: ${embedding_dim}
 
     discrete:
       turn_signal:
         _target_: cargpt.components.nn.Embedding
         num_embeddings: 3
-        embedding_dim: ${vars.embedding_dim}
+        embedding_dim: ${embedding_dim}
 
     special:
       _target_: cargpt.components.nn.Embedding
       num_embeddings: 3
-      embedding_dim: ${vars.embedding_dim}
+      embedding_dim: ${embedding_dim}
 
   position_encoding:
     _target_: cargpt.utils.ModuleDict
@@ -172,43 +172,43 @@ episode_builder:
         row:
           _target_: cargpt.components.nn.Embedding
           num_embeddings: 10
-          embedding_dim: ${vars.embedding_dim}
+          embedding_dim: ${embedding_dim}
         col:
           _target_: cargpt.components.nn.Embedding
           num_embeddings: 18
-          embedding_dim: ${vars.embedding_dim}
+          embedding_dim: ${embedding_dim}
 
     observations:
       _target_: cargpt.components.nn.Embedding
       num_embeddings: 182
-      embedding_dim: ${vars.embedding_dim}
+      embedding_dim: ${embedding_dim}
 
     actions:
       _target_: cargpt.components.nn.Embedding
       num_embeddings: 1
-      embedding_dim: ${vars.embedding_dim}
+      embedding_dim: ${embedding_dim}
 
     special:
       _target_: cargpt.components.nn.Embedding
       num_embeddings: 1
-      embedding_dim: ${vars.embedding_dim}
+      embedding_dim: ${embedding_dim}
 
     timestep:
       _target_: cargpt.components.nn.Embedding
       num_embeddings: 24
-      embedding_dim: ${vars.embedding_dim}
+      embedding_dim: ${embedding_dim}
 
 encoder:
   _target_: cargpt.components.llm.xFormerEncoder
   config:
     _target_: xformers.factory.xFormerEncoderConfig
     reversible: True
-    num_layers: ${vars.encoder.num_layers}
-    dim_model: ${vars.embedding_dim}
+    num_layers: ${num_layers}
+    dim_model: ${embedding_dim}
     residual_norm_style: pre
     multi_head_config:
-      dim_model: ${vars.embedding_dim}
-      num_heads: ${vars.encoder.num_heads}
+      dim_model: ${embedding_dim}
+      num_heads: ${num_heads}
       residual_dropout: 0.1
       attention:
         name: scaled_dot_product
@@ -234,7 +234,7 @@ objectives:
             _target_: operator.mul
             _args_:
               - 2
-              - ${vars.embedding_dim}
+              - ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal.bins}
           bias: False
         brake_pedal:
@@ -243,7 +243,7 @@ objectives:
             _target_: operator.mul
             _args_:
               - 2
-              - ${vars.embedding_dim}
+              - ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal.bins}
           bias: False
         steering_angle:
@@ -252,7 +252,7 @@ objectives:
             _target_: operator.mul
             _args_:
               - 2
-              - ${vars.embedding_dim}
+              - ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
           bias: False
 
@@ -283,8 +283,8 @@ objectives:
             _target_: operator.mul
             _args_:
               - 3
-              - ${vars.embedding_dim}
-          out_features: ${vars.embedding_dim}
+              - ${embedding_dim}
+          out_features: ${embedding_dim}
           bias: False
       continuous:
         speed:
@@ -293,7 +293,7 @@ objectives:
             _target_: operator.mul
             _args_:
               - 3
-              - ${vars.embedding_dim}
+              - ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.speed.bins}
           bias: False
       discrete:
@@ -303,7 +303,7 @@ objectives:
             _target_: operator.mul
             _args_:
               - 3
-              - ${vars.embedding_dim}
+              - ${embedding_dim}
           out_features: ${model.episode_builder.embeddings.discrete.turn_signal.num_embeddings}
           bias: False
 
@@ -335,17 +335,17 @@ objectives:
       continuous:
         gas_pedal:
           _target_: torch.nn.Linear
-          in_features: ${vars.embedding_dim}
+          in_features: ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal.bins}
           bias: False
         brake_pedal:
           _target_: torch.nn.Linear
-          in_features: ${vars.embedding_dim}
+          in_features: ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal.bins}
           bias: False
         steering_angle:
           _target_: torch.nn.Linear
-          in_features: ${vars.embedding_dim}
+          in_features: ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
           bias: False
 
@@ -372,19 +372,19 @@ objectives:
       continuous:
         gas_pedal_diff:
           _target_: torch.nn.Linear
-          in_features: ${vars.embedding_dim}
+          in_features: ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal_diff.quantization_channels}
           bias: False
 
         brake_pedal_diff:
           _target_: torch.nn.Linear
-          in_features: ${vars.embedding_dim}
+          in_features: ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal_diff.quantization_channels}
           bias: False
 
         steering_angle_diff:
           _target_: torch.nn.Linear
-          in_features: ${vars.embedding_dim}
+          in_features: ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.steering_angle_diff._args_[1].quantization_channels}
           bias: False
 

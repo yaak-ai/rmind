@@ -1,16 +1,18 @@
-from typing import Any, override
+from typing import override
 
 import pytorch_lightning as pl
+from pydantic import InstanceOf, validate_call
 from torch.utils.data import DataLoader
 
 
-class GenericDataModule(pl.LightningDataModule):
+class GenericDataModule[T](pl.LightningDataModule):
+    @validate_call
     def __init__(
         self,
-        train: DataLoader[Any] | None = None,
-        val: DataLoader[Any] | None = None,
-        test: DataLoader[Any] | None = None,
-        predict: DataLoader[Any] | None = None,
+        train: InstanceOf[DataLoader[T]] | None = None,
+        val: InstanceOf[DataLoader[T]] | None = None,
+        test: InstanceOf[DataLoader[T]] | None = None,
+        predict: InstanceOf[DataLoader[T]] | None = None,
     ) -> None:
         super().__init__()
 
@@ -20,17 +22,17 @@ class GenericDataModule(pl.LightningDataModule):
         self._predict = predict
 
     @override
-    def train_dataloader(self):
+    def train_dataloader(self) -> DataLoader[T] | None:
         return self._train
 
     @override
-    def val_dataloader(self):
+    def val_dataloader(self) -> DataLoader[T] | None:
         return self._val
 
     @override
-    def test_dataloader(self):
+    def test_dataloader(self) -> DataLoader[T] | None:
         return self._test
 
     @override
-    def predict_dataloader(self):
+    def predict_dataloader(self) -> DataLoader[T] | None:
         return self._predict

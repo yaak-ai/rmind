@@ -8,12 +8,12 @@ class LoadableFromArtifact:
     ):
         import wandb  # noqa: PLC0415
 
-        match wandb.run:
-            case wandb.sdk.lib.RunDisabled() | None:  # pyright: ignore[reportAttributeAccessIssue]
-                artifact_obj = wandb.Api().artifact(artifact, type="model")
-
-            case _:
-                artifact_obj = wandb.run.use_artifact(artifact)
+        run = wandb.run
+        artifact_obj = (
+            run.use_artifact(artifact)
+            if run is not None and not run.disabled
+            else wandb.Api().artifact(artifact, type="model")
+        )
 
         artifact_dir = artifact_obj.download()
         ckpt_path = Path(artifact_dir) / filename

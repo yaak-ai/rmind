@@ -7,7 +7,7 @@ from einops import pack
 from einops.layers.torch import Rearrange
 from jaxtyping import Float
 from optree import tree_map
-from pydantic import ConfigDict, validate_call
+from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
@@ -36,12 +36,12 @@ if TYPE_CHECKING:
 
 
 class ForwardDynamicsPredictionObjective(Objective):
-    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
+    @validate_call
     def __init__(
         self,
         *,
-        heads: ModuleDict,
-        losses: ModuleDict | None = None,
+        heads: InstanceOf[ModuleDict],
+        losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ):
         super().__init__()

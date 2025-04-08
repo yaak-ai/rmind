@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from typing import Literal, final, override
 
 import pytorch_lightning as pl
-from pydantic import ConfigDict, validate_call
+from pydantic import InstanceOf, validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
 from rbyte.viz.loggers import RerunLogger
 from tensordict import TensorClass, TensorDict
@@ -10,10 +10,10 @@ from tensordict import TensorClass, TensorDict
 
 @final
 class RerunPredictionWriter(BasePredictionWriter):
-    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
+    @validate_call
     def __init__(
         self,
-        logger: RerunLogger,
+        logger: InstanceOf[RerunLogger],
         write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "batch",
     ) -> None:
         super().__init__(write_interval)

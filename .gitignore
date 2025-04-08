@@ -131,7 +131,7 @@ dmypy.json
 
 # Experiments
 artifacts
-wandb/
+./wandb/
 outputs/
 lightning_logs/
 .hydra
@@ -141,6 +141,7 @@ lightning_logs/
 
 # generated
 config/dataset/*
+config/loggers/*
 
 # editor
 .helix/

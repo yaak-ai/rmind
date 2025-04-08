@@ -2,7 +2,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import override
 
 from optree import tree_map
-from pydantic import ConfigDict, validate_call
+from pydantic import validate_call
 from rbyte.batch import Batch
 from rbyte.config import BaseModel
 from tensordict import TensorDict
@@ -20,7 +20,7 @@ class Transform(BaseModel):
 
 
 class InputBuilder(Module):
-    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
+    @validate_call
     def __init__(self, keys: Keys, transforms: Sequence[Transform]) -> None:
         super().__init__()
 
