@@ -35,6 +35,7 @@ class Modality(StrEnum):
     CONTINUOUS = auto()
     DISCRETE = auto()
     SPECIAL = auto()
+    POINTS = auto()
 
 
 @unique
@@ -90,6 +91,7 @@ class Index(TensorClass["frozen"], Hashable):  # pyright: ignore[reportInvalidTy
     continuous: TensorDict
     discrete: TensorDict
     special: TensorDict
+    points: TensorDict
 
     def parse(self, src: Shaped[Tensor, "..."], dim: int = 1) -> TensorDict:
         # https://github.com/pytorch/pytorch/issues/30574

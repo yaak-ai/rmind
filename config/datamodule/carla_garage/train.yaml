@@ -1,0 +1,15 @@
+defaults:
+  - /dataset/carla_garage/train_tiny@train.dataset
+  - _self_
+_target_: cargpt.datamodules.GenericDataModule
+train:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 64
+  shuffle: true
+  num_workers: 32
+  pin_memory: false
+  persistent_workers: true
+  multiprocessing_context: forkserver
+  collate_fn:
+    _target_: rbyte.utils.dataloader.collate_identity
+    _partial_: true

@@ -70,3 +70,4 @@ rerun bind="0.0.0.0" port="9876" ws-server-port="9877" web-viewer-port="9090":
 
 clean:
     rm -rf dist outputs lightning_logs wandb artifacts
+

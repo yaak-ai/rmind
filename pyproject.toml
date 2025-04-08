@@ -8,7 +8,6 @@ requires-python = ">=3.12, <3.13"
 dependencies = [
   "torch",
   "tensordict>=0.7.2",
-  "rbyte[jpeg,yaak]==0.18.0",
   "pytorch-lightning>=2.5.0.post0",
   "torchvision==0.20.1",
   "torchaudio==2.5.1",
@@ -26,10 +25,14 @@ dependencies = [
   "polars>=1.24.0",
   "orjson>=3.10.12",
   "optree>=0.14.1",
+  "rbyte[jpeg,yaak]",
 ]
 
 [tool.uv]
 override-dependencies = ["torch==2.5.1"]
+
+[tool.uv.sources]
+rbyte = { path = "../rbyte/dist/rbyte-0.17.0-py3-none-any.whl" }
 
 [build-system]
 requires = ["hatchling"]

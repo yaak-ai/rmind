@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - /model: carla_garage/control_transformer/raw
+  - /datamodule: carla_garage/train
+  - /trainer: default
+  - /paths: carla_garage/default
+  - /wandb: yaak/cargpt
+  - _self_
+
+num_heads: 4
+num_layers: 8
+embedding_dim: 512

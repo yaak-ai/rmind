@@ -6,7 +6,8 @@ benchmark: true
 max_epochs: -1
 log_every_n_steps: 100
 gradient_clip_val: 1.0
-check_val_every_n_epoch: 1
+check_val_every_n_epoch: 1000
+num_sanity_val_steps: 0
 logger:
   _target_: pytorch_lightning.loggers.WandbLogger
   log_model: all
@@ -24,7 +25,6 @@ callbacks:
     key: similarity
     select:
       - [episode_builder, embeddings, continuous]
-      - [episode_builder, embeddings, discrete]
       - [episode_builder, position_encoding, image]
       - [episode_builder, position_encoding, observations]
       - [episode_builder, position_encoding, timestep]
