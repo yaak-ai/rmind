@@ -1,4 +1,6 @@
-from enum import StrEnum, auto, unique
+from enum import auto, unique
+
+from backports.strenum import StrEnum
 
 
 @unique

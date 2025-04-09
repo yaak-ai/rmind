@@ -2,14 +2,14 @@ from collections.abc import Callable, Mapping, Sequence
 
 from optree import tree_map
 from pydantic import validate_call
-from rbyte.batch import Batch
-from rbyte.config import BaseModel
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from typing_extensions import override
 
 from cargpt.components.episode import Modality
+
+from .rbyte_typing import BaseModel, Batch
 
 Keys = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 

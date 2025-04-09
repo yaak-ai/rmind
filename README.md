@@ -4,6 +4,8 @@
 
 Self-supervised model trained on vehicle context and control signals from expert drives.
 
+> **Note:** This section is only for inference and does not include `rbyte` functionalities. Please ensure you are only using this for inference purposes and not for any other functionalities that might require `rbyte`.
+
 ## Package
 
 To run inference from another poetry venv:
