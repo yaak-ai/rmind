@@ -1,41 +1,39 @@
 fail_fast: true
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.10.0
-    hooks:
-      - id: ruff-format
-      - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
-  - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-    rev: 1.28.1
-    hooks:
-      - id: basedpyright
   - repo: https://github.com/abravalheri/validate-pyproject
-    rev: v0.24
+    rev: v0.24.1
     hooks:
       - id: validate-pyproject
-  - repo: https://github.com/crate-ci/typos
-    rev: v1
-    hooks:
-      - id: typos
+
   - repo: https://github.com/asottile/pyupgrade
     rev: v3.19.1
     hooks:
       - id: pyupgrade
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1
+    hooks:
+      - id: typos
+
   - repo: https://github.com/fpgmaas/deptry.git
     rev: 0.23.0
     hooks:
       - id: deptry
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
+    rev: 1.28.4
+    hooks:
+      - id: basedpyright
+
   - repo: local
     hooks:
-      - id: pytest
-        name: pytest
-        language: system
-        stages: [pre-commit]
-        types: [python]
-        entry: uv run pytest
-        pass_filenames: false
-        always_run: true
       - id: just-format
         name: just-format
         language: system

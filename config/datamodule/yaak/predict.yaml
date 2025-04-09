@@ -1,13 +1,13 @@
 defaults:
-  - /dataset/predict@predict.dataset
+  - /dataset/yaak/predict@predict.dataset
   - _self_
 
 _target_: cargpt.datamodules.GenericDataModule
 predict:
   _target_: torch.utils.data.DataLoader
   shuffle: false
-  batch_size: ${vars.data.predict.batch_size}
-  num_workers: 32
+  batch_size: 1
+  num_workers: 1
   pin_memory: false
   persistent_workers: true
   multiprocessing_context: forkserver

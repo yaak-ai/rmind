@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/control_transformer/raw
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /paths: yaak/default
+  - /wandb: yaak/cargpt
+  - _self_
+
+num_heads: 4
+num_layers: 8
+embedding_dim: 512

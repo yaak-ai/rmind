@@ -1,0 +1,4 @@
+entity: yaak
+project: cargpt
+settings:
+  start_method: thread

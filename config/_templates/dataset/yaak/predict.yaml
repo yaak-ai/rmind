@@ -33,7 +33,7 @@ sources:
       index_column: "ImageMetadata.(@=camera@).frame_idx"
       source:
         _target_: rbyte.io.PathTensorSource
-        path: "${paths.data_dir}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324/{:09d}.jpg"
+        path: "${paths.data}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324/{:09d}.jpg"
         decoder:
           _target_: simplejpeg.decode_jpeg
           _partial_: true
@@ -47,9 +47,9 @@ samples:
   inputs:
     #@ for input_id in drives:
     (@=input_id@):
-      yaak_metadata_path: ${paths.data_dir}/(@=input_id@)/metadata.log
+      yaak_metadata_path: ${paths.data}/(@=input_id@)/metadata.log
       #@ for camera in cameras:
-      (@=camera@)_path: ${paths.data_dir}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324
+      (@=camera@)_path: ${paths.data}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324
       #@ end
     #@ end
 
@@ -68,7 +68,7 @@ samples:
     validate_type_annotations: false
     cache_type: disk
     cache_kwargs:
-      cache_dir: ${paths.rbyte_cache_dir}
+      cache_dir: ${paths.rbyte.cache}
     functions:
       - _target_: pipefunc.PipeFunc
         renames:
@@ -181,10 +181,10 @@ samples:
         func:
           _target_: rbyte.io.DataFrameFilter
           predicate: |
-            `VehicleMotion.gear` == '3' 
-            and `VehicleMotion.speed` between 0.0 and 130.0 
-            and `VehicleMotion.gas_pedal_normalized` between 0.0 and 1.0 
-            and `VehicleMotion.brake_pedal_normalized` between 0.0 and 1.0 
+            `VehicleMotion.gear` == '3'
+            and `VehicleMotion.speed` between 0.0 and 130.0
+            and `VehicleMotion.gas_pedal_normalized` between 0.0 and 1.0
+            and `VehicleMotion.brake_pedal_normalized` between 0.0 and 1.0
             and `VehicleMotion.steering_angle_normalized` between -1.0 and 1.0
 
       #@ for i, camera in enumerate(cameras):

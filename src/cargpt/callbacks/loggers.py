@@ -2,7 +2,7 @@ from collections.abc import Callable, Sequence
 from typing import Annotated
 
 import pytorch_lightning as pl
-from pydantic import AfterValidator, ConfigDict, validate_call
+from pydantic import AfterValidator, validate_call
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.core.hooks import ModelHooks
 from pytorch_lightning.loggers import WandbLogger
@@ -19,7 +19,7 @@ def _validate_hook(value: str) -> str:
 
 
 class WandbImageParamLogger(Callback):
-    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
+    @validate_call
     def __init__(
         self,
         *,

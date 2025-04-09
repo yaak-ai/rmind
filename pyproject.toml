@@ -8,7 +8,7 @@ requires-python = ">=3.12, <3.13"
 dependencies = [
   "torch",
   "tensordict>=0.7.2",
-  "rbyte[jpeg,yaak]==0.15.0",
+  "rbyte[jpeg,yaak]==0.18.0",
   "pytorch-lightning>=2.5.0.post0",
   "torchvision==0.20.1",
   "torchaudio==2.5.1",
@@ -22,7 +22,7 @@ dependencies = [
   "more-itertools>=10.4.0",
   "jaxtyping>=0.2.33",
   "torchinfo>=1.8.0",
-  "pydantic>=2.10.3",
+  "pydantic>=2.11.3",
   "polars>=1.24.0",
   "orjson>=3.10.12",
   "optree>=0.14.1",
@@ -39,7 +39,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [project.optional-dependencies]
-train = ["torchmetrics>=1.4.1", "transformers>=4.44.2", "wandb>=0.19.3"]
+train = ["torchmetrics>=1.4.1", "transformers>=4.44.2", "wandb>=0.19.9"]
 predict = ["funcy>=2.0", "rerun-sdk==0.22.1", "wandb>=0.19.3"]
 dev = [
   "ipdb>=0.13.13",

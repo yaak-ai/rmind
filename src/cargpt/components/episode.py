@@ -10,7 +10,7 @@ import torch
 from einops import pack, rearrange, repeat
 from jaxtyping import Float, Shaped
 from loguru import logger
-from pydantic import ConfigDict, RootModel, model_validator, validate_call
+from pydantic import ConfigDict, InstanceOf, RootModel, model_validator, validate_call
 from pydantic.dataclasses import dataclass
 from tensordict import TensorClass, TensorDict
 from tensordict.tensorclass import (
@@ -152,15 +152,15 @@ class Episode(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArgume
 
 
 class EpisodeBuilder(Module):
-    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
+    @validate_call
     def __init__(
         self,
         *,
         special_tokens: Mapping[SpecialToken, int],
         timestep: Timestep,
-        tokenizers: ModuleDict,
-        embeddings: ModuleDict,
-        position_encoding: ModuleDict,
+        tokenizers: InstanceOf[ModuleDict],
+        embeddings: InstanceOf[ModuleDict],
+        position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
     ) -> None:
         super().__init__()

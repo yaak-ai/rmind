@@ -1,10 +1,9 @@
 # @package _global_
 
 defaults:
-  - /paths: default
-  - /vars: control_transformer/default
-  - /model: control_transformer/embeddings
-  - /datamodule: predict
+  - /model: yaak/control_transformer/pretrained
+  - /datamodule: yaak/predict
+  - /paths: yaak/default
   - _self_
 
 output_dir: ???

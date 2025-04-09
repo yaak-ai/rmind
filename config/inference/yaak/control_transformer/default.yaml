@@ -1,11 +1,10 @@
 # @package _global_
 
 defaults:
-  - /paths: default
-  - /vars: control_transformer/default
-  - /model: control_transformer/finetuned
-  - /datamodule: predict
-  - /loggers/rerun/prediction@rerun_logger
+  - /model: yaak/control_transformer/finetuned
+  - /datamodule: yaak/predict
+  - /paths: yaak/default
+  - /loggers/yaak/rerun/prediction@rerun_logger
   - _self_
 
 rerun_logger: ???

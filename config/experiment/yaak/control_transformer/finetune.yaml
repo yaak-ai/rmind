@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /paths: yaak/default
+  - /wandb: yaak/cargpt
+  - _self_
+
+embedding_dim: 512
