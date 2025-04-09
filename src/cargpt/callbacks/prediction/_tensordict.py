@@ -2,13 +2,14 @@ from collections.abc import Callable, Sequence
 from contextlib import _GeneratorContextManager
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, final, override
+from typing import Any, Literal, final
 
 import orjson
 import pytorch_lightning as pl
 from pydantic import validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorClass, TensorDict
+from typing_extensions import override
 
 from cargpt.utils import monkeypatched
 
