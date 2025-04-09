@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - /model: carla_garage/control_transformer/policy_finetune
+  - /datamodule: carla_garage/train
+  - /trainer: default
+  - /paths: carla_garage/default
+  - /wandb: yaak/cargpt
+  - _self_
+
+embedding_dim: 512

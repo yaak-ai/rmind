@@ -1,0 +1,87 @@
+_target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+# _target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
+# checkpoint_path: ???
+strict: false
+hparams_updaters:
+  # wrap hparams in DictConfig
+  - _target_: omegaconf.DictConfig
+    _partial_: true
+  # override objectives to only use copycat/policy
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: false
+    key: objectives
+    value:
+      _target_: cargpt.utils.ModuleDict
+      policy:
+        _target_: cargpt.components.objectives.PolicyObjective
+        heads:
+          _target_: cargpt.utils.ModuleDict
+          continuous:
+            gas_pedal:
+              _target_: torchvision.ops.MLP
+              in_channels: 1024
+              hidden_channels: [512, 2]
+              bias: False
+            brake_pedal:
+              _target_: torchvision.ops.MLP
+              in_channels: 1024
+              hidden_channels: [512, 2]
+              bias: False
+            steering_angle:
+              _target_: torchvision.ops.MLP
+              in_channels: 1024
+              hidden_channels: [512, 2]
+              bias: False
+
+        targets:
+          continuous:
+            gas_pedal: [input, continuous, gas_pedal]
+            brake_pedal: [input, continuous, brake_pedal]
+            steering_angle: [input, continuous, steering_angle]
+
+        losses:
+          _target_: cargpt.utils.ModuleDict
+          continuous:
+            gas_pedal:
+              _target_: cargpt.components.loss.GaussianNLLLoss
+            brake_pedal:
+              _target_: cargpt.components.loss.GaussianNLLLoss
+            steering_angle:
+              _target_: cargpt.components.loss.GaussianNLLLoss
+
+  # freeze episode builder (embeddings etc)
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: true
+    key: episode_builder.freeze
+    value: true
+  # freeze encoder
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: true
+    key: encoder.freeze
+    value: true
+  # remove objective scheduler since we only have a single objective
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: false
+    key: objective_scheduler
+    value: null
+  # for some reason lr_scheduler.scheduler isn't checkpointed? re-add
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: false
+    key: lr_scheduler
+    value:
+      interval: step
+      scheduler:
+        _target_: transformers.get_cosine_schedule_with_warmup
+        num_warmup_steps: 25000
+        num_training_steps: 250000

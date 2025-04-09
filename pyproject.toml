@@ -25,14 +25,14 @@ dependencies = [
   "polars>=1.24.0",
   "orjson>=3.10.12",
   "optree>=0.14.1",
-  "rbyte[jpeg,yaak]",
+  "rbyte[jpeg,yaak,geo]",
 ]
 
 [tool.uv]
 override-dependencies = ["torch==2.5.1"]
 
 [tool.uv.sources]
-rbyte = { path = "../rbyte/dist/rbyte-0.17.0-py3-none-any.whl" }
+rbyte = { path = "../rbyte/dist/rbyte-0.18.1-py3-none-any.whl" }
 
 [build-system]
 requires = ["hatchling"]
