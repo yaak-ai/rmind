@@ -1,6 +1,6 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import override
+from typing import cast, override
 
 from einops.layers.torch import Rearrange
 from optree import tree_map
@@ -30,7 +30,7 @@ from cargpt.utils.functional import nan_padder
 
 
 class MemoryExtractionObjective(Objective):
-    """Inspired by: Resolving Copycat Problems in Visual Imitation Learning via Residual Action Prediction (https://arxiv.org/abs/2207.09705)"""
+    """Inspired by: Resolving Copycat Problems in Visual Imitation Learning via Residual Action Prediction (https://arxiv.org/abs/2207.09705)."""
 
     @validate_call
     def __init__(
@@ -39,17 +39,17 @@ class MemoryExtractionObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
-    ):
+    ) -> None:
         super().__init__()
 
-        self.heads = heads
-        self.losses = losses
-        self.targets = targets
+        self.heads: ModuleDict = heads
+        self.losses: ModuleDict | None = losses
+        self.targets: Targets | None = targets
 
     @override
     def forward(self, episode: Episode, encoder: Module) -> TensorDict:
-        mask = self._build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+        mask = self.build_attention_mask(episode.index, episode.timestep)
+        embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
 
         b, t = episode.input.batch_size
 
@@ -102,8 +102,8 @@ class MemoryExtractionObjective(Objective):
             PredictionResultKey.PREDICTION_PROBS,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self._build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+            mask = self.build_attention_mask(episode.index, episode.timestep)
+            embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
 
             features = (
                 episode.index[1:]
@@ -118,7 +118,7 @@ class MemoryExtractionObjective(Objective):
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))  # pyright: ignore[reportArgumentType]
+                    logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
                         nested_keys=True,
@@ -127,7 +127,7 @@ class MemoryExtractionObjective(Objective):
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -140,15 +140,18 @@ class MemoryExtractionObjective(Objective):
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
-    def _build_attention_mask(
+    def build_attention_mask(
         cls,
         index: Index,
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        mask = ForwardDynamicsPredictionObjective._build_attention_mask(
-            index, timestep, legend
-        ).clone(recurse=True)
+        mask = cast(
+            "AttentionMask",
+            ForwardDynamicsPredictionObjective.build_attention_mask(
+                index, timestep, legend
+            ).clone(recurse=True),
+        )
 
         (t,) = index.batch_size
         for step in range(t):
@@ -171,12 +174,12 @@ class MemoryExtractionObjective(Objective):
             ))
 
             mask = (
-                mask._do_not_attend(current_observations, past_actions)
-                ._do_not_attend(current_observations, past_action_summary)
-                ._do_not_attend(current_observation_summary, past_actions)
-                ._do_not_attend(current_observation_summary, past_action_summary)
-                ._do_not_attend(current_observation_history, past_actions)
-                ._do_not_attend(current_observation_history, past_action_summary)
+                mask.do_not_attend(current_observations, past_actions)
+                .do_not_attend(current_observations, past_action_summary)
+                .do_not_attend(current_observation_summary, past_actions)
+                .do_not_attend(current_observation_summary, past_action_summary)
+                .do_not_attend(current_observation_history, past_actions)
+                .do_not_attend(current_observation_history, past_action_summary)
             )
 
         return mask

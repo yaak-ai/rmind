@@ -1,11 +1,14 @@
 from collections.abc import Iterable, Mapping, Sequence
 from functools import singledispatchmethod
-from typing import Any, TypedDict, Unpack, final, overload, override
+from typing import Any, TypedDict, Unpack, overload, override
 
 import torch
 from more_itertools import always_iterable
 from optree import PyTree, register_pytree_node, tree_map, tree_paths
-from optree.registry import _dict_flatten, _dict_unflatten
+from optree.registry import (
+    _dict_flatten,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+    _dict_unflatten,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+)
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
@@ -14,14 +17,13 @@ from torch.nn import ModuleDict as _ModuleDict
 OPTREE_NAMESPACE = "cargpt"
 
 
-class TensorDictKwargs(TypedDict):
+class TensorDictKwargs(TypedDict, total=False):
     batch_size: Sequence[int] | None
     device: torch.device | None
 
 
-@final
 class ModuleDict(_ModuleDict):
-    """A convenience wrapper around torch.nn.ModuleDict"""
+    """A convenience wrapper around torch.nn.ModuleDict."""
 
     __unspecified = object()
 
@@ -88,12 +90,16 @@ class ModuleDict(_ModuleDict):
         return obj
 
     @override
-    def forward(self, *args, **kwargs) -> TensorDict:
+    def forward(
+        self, *args: TensorDict | Tensor, **kwargs: Unpack[TensorDictKwargs]
+    ) -> TensorDict:
         return self._forward(*args, **kwargs)
 
     @singledispatchmethod
     def _forward(
-        self, *args: TensorDict | Tensor, **kwargs: Unpack[TensorDictKwargs]
+        self,
+        *args: TensorDict | Tensor,  # pyright: ignore[reportUnusedParameter]
+        **kwargs: Unpack[TensorDictKwargs],  # pyright: ignore[reportUnusedParameter]
     ) -> TensorDict:
         raise NotImplementedError
 
@@ -107,7 +113,7 @@ class ModuleDict(_ModuleDict):
     def _(self, *args: TensorDict, **kwargs: Unpack[TensorDictKwargs]) -> TensorDict:
         first, *rest = args
 
-        return first.named_apply(  # pyright: ignore[reportReturnType, reportArgumentType]
+        return first.named_apply(  # pyright: ignore[reportReturnType]
             lambda k, *v: self.get_deepest(k).forward(*v),
             *rest,
             nested_keys=True,
@@ -118,9 +124,9 @@ class ModuleDict(_ModuleDict):
         return tree_paths(self, namespace=OPTREE_NAMESPACE)  # pyright: ignore[reportArgumentType]
 
 
-register_pytree_node(
+register_pytree_node(  # pyright: ignore[reportUnusedCallResult]
     (cls := ModuleDict),  # pyright: ignore[reportArgumentType]
-    flatten_func=lambda obj: _dict_flatten(obj._modules),  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue]
+    flatten_func=lambda obj: _dict_flatten(obj._modules),  # pyright: ignore[reportArgumentType, reportAttributeAccessIssue]  # noqa: SLF001
     unflatten_func=lambda keys, values: ModuleDict(**_dict_unflatten(keys, values)),  # pyright: ignore[reportArgumentType]
     namespace=OPTREE_NAMESPACE,
 )

@@ -1,16 +1,15 @@
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
 import numpy as np
-
-from cargpt.components.objectives.base import ObjectiveName
+from pydantic import validate_call
 
 
 class ObjectiveScheduler:
-    def __init__(self, *, schedule: Mapping[str, float], sample_size: int):
+    @validate_call
+    def __init__(self, *, schedule: Mapping[str, float], sample_size: int) -> None:
         super().__init__()
 
         objectives, probabilities = zip(*schedule.items(), strict=True)
-        objectives = tuple(map(ObjectiveName, objectives))
 
         if sample_size not in (sample_size_range := range(1, len(objectives))):
             msg = f"sample_size must be in {sample_size_range}"
@@ -20,17 +19,15 @@ class ObjectiveScheduler:
             msg = f"probabilities must add up to {total}"
             raise ValueError(msg)
 
-        self.objectives = objectives
-        self.probabilities = probabilities
-        self.sample_size = sample_size
-        self.generator = np.random.Generator(np.random.PCG64())
+        self.objectives: Sequence[str] = objectives
+        self.probabilities: Sequence[float] = probabilities
+        self.sample_size: int = sample_size
+        self.generator: np.random.Generator = np.random.Generator(np.random.PCG64())
 
-    def sample(self) -> Iterable[ObjectiveName]:
-        objectives = self.generator.choice(
+    def sample(self) -> Iterable[str]:
+        return self.generator.choice(
             a=self.objectives,
             p=self.probabilities,
             size=self.sample_size,
             replace=False,
         )
-
-        return map(ObjectiveName, objectives)

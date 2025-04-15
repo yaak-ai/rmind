@@ -1,15 +1,17 @@
-from typing import Literal, override
+from typing import Any, Literal, final, override
 
 import torch
 from einops import rearrange, repeat
-from jaxtyping import Float
 from torch import Tensor, nn
 from xformers.components import Activation, ResidualNormStyle, build_activation
 from xformers.components.attention import ScaledDotProduct
 from xformers.components.attention.core import scaled_query_key_softmax
 from xformers.components.feedforward import register_feedforward
 from xformers.components.feedforward.mlp import Feedforward, MlpConfig
-from xformers.components.multi_head_dispatch import _fold_heads, _split_heads
+from xformers.components.multi_head_dispatch import (
+    _fold_heads,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+    _split_heads,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+)
 from xformers.components.reversible import ReversibleSequence
 from xformers.factory.model_factory import (
     get_weight_init_fn,
@@ -19,6 +21,7 @@ from xformers.factory.model_factory import (
 )
 
 
+@final
 @register_feedforward("MLPGLU", MlpConfig)
 class MLPGLU(Feedforward):
     def __init__(
@@ -28,8 +31,8 @@ class MLPGLU(Feedforward):
         activation: str,
         hidden_layer_multiplier: int,
         bias: bool = True,  # noqa: FBT001, FBT002
-        *_args,
-        **_kwargs,
+        *_args: Any,
+        **_kwargs: Any,
     ) -> None:
         super().__init__()
         dim_mlp = hidden_layer_multiplier * dim_model
@@ -43,19 +46,19 @@ class MLPGLU(Feedforward):
     def forward(self, input: Tensor) -> Tensor:
         # FFN_GEGLU eq. 6, https://arxiv.org/pdf/2002.05202v1.pdf
         x = self.l1(input)
-        xW, xV = x.chunk(2, dim=-1)
-        geglu = self.a1(xW) * xV
+        xw, xv = x.chunk(2, dim=-1)
+        geglu = self.a1(xw) * xv
         return self.l2(self.d1(geglu))
 
 
-class xFormerEncoder(nn.Module):
+class xFormerEncoder(nn.Module):  # noqa: N801
     def __init__(
         self,
         *,
         config: xFormerEncoderConfig,
         weight_init: xFormerWeightInit = xFormerWeightInit.ViT,
         freeze: bool | None = None,
-    ):
+    ) -> None:
         super().__init__()
 
         if any((
@@ -65,25 +68,23 @@ class xFormerEncoder(nn.Module):
         )):
             raise NotImplementedError
 
-        self.encoders = ReversibleSequence(
+        self.encoders: ReversibleSequence = ReversibleSequence(
             nn.ModuleList(
                 nn.ModuleList(xFormerEncoderBlock.get_reversible_layer(config))
                 for _ in range(config.num_layers)
             )
         )
-        self.layer_norm = nn.LayerNorm(config.dim_model)
+        self.layer_norm: nn.LayerNorm = nn.LayerNorm(config.dim_model)
 
         init_fn = get_weight_init_fn(weight_init)
         for name, module in self.encoders.named_children():
             init_fn(module=module, name=name, gain=1.0)
 
         if freeze is not None:
-            self.requires_grad_(not freeze).train(not freeze)
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
-    def forward(
-        self, src: Float[Tensor, "b s d"], mask: Float[Tensor, "s s"]
-    ) -> Float[Tensor, "b s d"]:
+    def forward(self, src: Tensor, mask: Tensor) -> Tensor:
         x = torch.cat([src, src], dim=-1)
         x = self.encoders(x, att_mask=mask)
         x = torch.stack(x.chunk(2, dim=-1))
@@ -93,15 +94,14 @@ class xFormerEncoder(nn.Module):
 
     def compute_attention_rollout(
         self,
-        src: Float[Tensor, "b s d"],
-        mask: Float[Tensor, "s s"],
+        src: Tensor,
+        mask: Tensor,
         *,
         head_fusion: Literal["max", "min", "mean"] = "max",
         drop_ratio: float | None = None,
-    ) -> Float[Tensor, "b s s"]:
-        """
-        [1] Quantifying Attention Flow in Transformers (https://arxiv.org/abs/2005.00928)
-        [2] Exploring Explainability for Vision Transformers (https://jacobgil.github.io/deeplearning/vision-transformer-explainability)
+    ) -> Tensor:
+        """[1] Quantifying Attention Flow in Transformers (https://arxiv.org/abs/2005.00928)
+        [2] Exploring Explainability for Vision Transformers (https://jacobgil.github.io/deeplearning/vision-transformer-explainability).
         """
         b, s, _ = src.shape
         identity = torch.eye(s, s, device=mask.device)
@@ -142,11 +142,8 @@ class xFormerEncoder(nn.Module):
                             attn = attn.max(axis=1)[0]  # pyright: ignore[reportCallIssue]
                         case "min":
                             attn = attn.min(axis=1)[0]  # pyright: ignore[reportCallIssue]
-                        case _:
-                            msg = f"Attention head fusion type {head_fusion} not supported"
-                            raise NotImplementedError(msg)
 
-                    # TODO: exclude certain indices from getting dropped?
+                    # TODO: exclude certain indices from getting dropped?  # noqa: FIX002
                     if drop_ratio is not None:
                         attn_flat = rearrange(attn, "b s_from s_to -> (b s_from) s_to)")
                         drop_count = int(attn_flat.shape[-1] * drop_ratio)

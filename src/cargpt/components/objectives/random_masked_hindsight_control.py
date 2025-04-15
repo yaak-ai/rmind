@@ -8,6 +8,7 @@ from einops.layers.torch import Rearrange
 from optree import tree_map
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
+from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
 
@@ -36,19 +37,19 @@ class RandomMaskedHindsightControlObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
-    ):
+    ) -> None:
         super().__init__()
 
-        self.heads = heads
-        self.losses = losses
-        self.targets = targets
+        self.heads: ModuleDict = heads
+        self.losses: ModuleDict | None = losses
+        self.targets: Targets | None = targets
 
     @override
     def forward(self, episode: Episode, encoder: Module) -> TensorDict:
         _, t = episode.input.batch_size
 
-        masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
-        masked_observation_timestep_idx = np.random.choice(t, 1, replace=False).tolist()
+        masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()  # noqa: NPY002
+        masked_observation_timestep_idx = np.random.choice(t, 1, replace=False).tolist()  # noqa: NPY002
 
         episode = episode.clone(recurse=True)
         episode.input_embeddings.select(
@@ -59,8 +60,8 @@ class RandomMaskedHindsightControlObjective(Objective):
             *episode.timestep.keys_by_type[TokenType.OBSERVATION]
         )[:, masked_observation_timestep_idx] = -1.0
 
-        mask = self._build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+        mask = self.build_attention_mask(episode.index, episode.timestep)
+        embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
         index = episode.index.select(*episode.timestep.keys_by_type[TokenType.ACTION])
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = self.heads.forward(embeddings)
@@ -101,8 +102,8 @@ class RandomMaskedHindsightControlObjective(Objective):
             PredictionResultKey.SCORE_L1,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
-            masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()
-            masked_observation_timestep_idx = np.random.choice(
+            masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()  # noqa: NPY002
+            masked_observation_timestep_idx = np.random.choice(  # noqa: NPY002
                 t, 1, replace=False
             ).tolist()
 
@@ -115,8 +116,8 @@ class RandomMaskedHindsightControlObjective(Objective):
                 *episode.timestep.keys_by_type[TokenType.OBSERVATION]
             )[:, masked_observation_timestep_idx] = -1.0
 
-            mask = self._build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+            mask = self.build_attention_mask(episode.index, episode.timestep)
+            embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
             index = episode.index.select(
                 *episode.timestep.keys_by_type[TokenType.ACTION]
             )
@@ -124,8 +125,8 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             logits = self.heads.forward(embeddings)
 
-            def timestep_padder(x):
-                """insert NaN at all indices except `masked_action_timestep_idx`"""
+            def timestep_padder(x: Tensor) -> Tensor:
+                """Insert NaN at all indices except `masked_action_timestep_idx`."""
                 match x.shape:
                     case (b, _, *rest):
                         size = (b, t, *rest)
@@ -139,7 +140,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))  # pyright: ignore[reportArgumentType]
+                    logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
                         nested_keys=True,
@@ -148,13 +149,13 @@ class RandomMaskedHindsightControlObjective(Objective):
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.softmax(dim=-1))  # pyright: ignore[reportArgumentType]
+                    logits.apply(lambda x: x.softmax(dim=-1))
                     .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
@@ -166,7 +167,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))  # pyright: ignore[reportArgumentType]
+                    logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
                         nested_keys=True,
@@ -188,7 +189,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
-    def _build_attention_mask(
+    def build_attention_mask(
         cls,
         index: Index,
         timestep: Timestep,
@@ -196,12 +197,12 @@ class RandomMaskedHindsightControlObjective(Objective):
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
         mask = AttentionMask(
-            data=torch.full((length, length), legend.DO_ATTEND),
+            mask=torch.full((length, length), legend.DO_ATTEND),
             legend=legend,
             device=index.device,
         )
 
-        (t,) = index.batch_size
+        (t,) = index.batch_size  # pyright: ignore[reportAssignmentType]
         for step in range(t):
             past, current, future = index[:step], index[step], index[step + 1 :]
             current_actions = current.select(*timestep.keys_by_type[TokenType.ACTION])
@@ -221,14 +222,14 @@ class RandomMaskedHindsightControlObjective(Objective):
             ))
 
             mask = (
-                mask._do_not_attend(current_actions, past_actions)
-                ._do_not_attend(current_actions, past_action_summary)
-                ._do_not_attend(current_actions, future_actions)
-                ._do_not_attend(current_actions, future_action_summary)
-                ._do_not_attend(current_action_summary, past_actions)
-                ._do_not_attend(current_action_summary, past_action_summary)
-                ._do_not_attend(current_action_summary, future_actions)
-                ._do_not_attend(current_action_summary, future_action_summary)
+                mask.do_not_attend(current_actions, past_actions)
+                .do_not_attend(current_actions, past_action_summary)
+                .do_not_attend(current_actions, future_actions)
+                .do_not_attend(current_actions, future_action_summary)
+                .do_not_attend(current_action_summary, past_actions)
+                .do_not_attend(current_action_summary, past_action_summary)
+                .do_not_attend(current_action_summary, future_actions)
+                .do_not_attend(current_action_summary, future_action_summary)
             )
 
         return mask

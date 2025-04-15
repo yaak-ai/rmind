@@ -1,22 +1,26 @@
+from typing import override
+
 import pytest
 import torch
 from tensordict import TensorDict
+from torch import Tensor
 from torch.testing import make_tensor
 
 from cargpt.utils.containers import ModuleDict
 
 
 class Multiplier(torch.nn.Module):
-    def __init__(self, alpha):
+    def __init__(self, alpha: float) -> None:
         super().__init__()
 
-        self.alpha = alpha
+        self.alpha: float = alpha
 
-    def forward(self, x):
+    @override
+    def forward(self, x: Tensor) -> Tensor:
         return x * self.alpha
 
 
-def test_moduledict():
+def test_moduledict() -> None:
     image_transform = Multiplier(alpha=2.0)
     transforms = ModuleDict(image=image_transform)
 
@@ -24,12 +28,12 @@ def test_moduledict():
 
     assert transforms.get("image") is image_transform
     with pytest.raises(KeyError):
-        transforms.get(("image", "cam_front_left"))
+        _ = transforms.get(("image", "cam_front_left"))
 
     assert transforms.get_deepest(("image", "cam_front_left")) is image_transform
 
     with pytest.raises(KeyError):
-        transforms.get("does_not_exist")
+        _ = transforms.get("does_not_exist")
 
     assert transforms.get("does_not_exist", default=None) is None
 

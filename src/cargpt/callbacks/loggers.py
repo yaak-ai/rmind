@@ -1,5 +1,5 @@
 from collections.abc import Callable, Sequence
-from typing import Annotated
+from typing import Annotated, final
 
 import pytorch_lightning as pl
 from pydantic import AfterValidator, validate_call
@@ -18,6 +18,7 @@ def _validate_hook(value: str) -> str:
     return value
 
 
+@final
 class WandbImageParamLogger(Callback):
     @validate_call
     def __init__(
@@ -53,7 +54,7 @@ class WandbImageParamLogger(Callback):
                 key=self._key,
                 images=[
                     Image(v, caption=".".join(k[:-1]))
-                    for k, v in data.cpu().items(True, True)
+                    for k, v in data.cpu().items(include_nested=True, leaves_only=True)
                 ],
                 step=trainer.global_step,
             )

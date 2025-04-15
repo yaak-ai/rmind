@@ -12,12 +12,6 @@ from tensordict import TensorClass, TensorDict
 @final
 class DataFramePredictionWriter(BasePredictionWriter):
     """
-    A PyTorch Lightning callback for writing model predictions to a file via a
-    polars DataFrame. May be useful for integration with external tools (e.g.
-    https://github.com/yaak-ai/sexy).
-
-    Example:
-
     ```yaml
     _target_: cargpt.callbacks.DataFramePredictionWriter
     write_interval: batch

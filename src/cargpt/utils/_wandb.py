@@ -1,11 +1,12 @@
 from pathlib import Path
+from typing import Any, Self
 
 
 class LoadableFromArtifact:
     @classmethod
     def load_from_wandb_artifact(
-        cls, artifact: str, filename: str = "model.ckpt", **kwargs
-    ):
+        cls, artifact: str, filename: str = "model.ckpt", **kwargs: Any
+    ) -> Self:
         import wandb  # noqa: PLC0415
 
         run = wandb.run

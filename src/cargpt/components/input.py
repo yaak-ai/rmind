@@ -24,8 +24,8 @@ class InputBuilder(Module):
     def __init__(self, keys: Keys, transforms: Sequence[Transform]) -> None:
         super().__init__()
 
-        self._keys = keys
-        self._transforms = transforms
+        self._keys: Keys = keys
+        self._transforms: Sequence[Transform] = transforms
 
     @property
     def keys(self) -> Keys:

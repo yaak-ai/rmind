@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 from subprocess import check_output  # noqa: S404
 
@@ -6,16 +5,15 @@ import hydra
 import pytorch_lightning as pl
 import wandb
 from hydra.utils import instantiate
-from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
-from torch import multiprocessing as mp
+from structlog import get_logger
 
-from cargpt.utils.logging import setup_logging
+logger = get_logger(__name__)
 
 
-def _train(cfg: DictConfig):
-    pl.seed_everything(cfg.seed, workers=True)
+def _train(cfg: DictConfig) -> None:
+    pl.seed_everything(cfg.seed, workers=True)  # pyright: ignore[reportUnusedCallResult]
 
     logger.debug("instantiating model", target=cfg.model._target_)
     model: pl.LightningModule = instantiate(cfg.model)
@@ -32,7 +30,7 @@ def _train(cfg: DictConfig):
 
 
 @hydra.main(version_base=None)
-def train(cfg: DictConfig):
+def train(cfg: DictConfig) -> None:
     if (
         run := rank_zero_only(wandb.init)(
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # pyright: ignore[reportArgumentType]
@@ -52,14 +50,9 @@ def train(cfg: DictConfig):
     return _train(cfg)
 
 
-@logger.catch(onerror=lambda _: sys.exit(1))
-def main():
-    mp.set_start_method("forkserver", force=True)
-    mp.set_forkserver_preload(["rbyte"])
-    setup_logging()
+if __name__ == "__main__":
+    import logging
+
+    logging.getLogger("xformers").setLevel(logging.ERROR)
 
     train()
-
-
-if __name__ == "__main__":
-    main()

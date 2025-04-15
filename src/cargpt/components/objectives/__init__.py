@@ -1,4 +1,4 @@
-from .base import Objective, ObjectiveName
+from .base import Objective
 from .forward_dynamics import ForwardDynamicsPredictionObjective
 from .inverse_dynamics import InverseDynamicsPredictionObjective
 from .memory_extraction import MemoryExtractionObjective
@@ -11,7 +11,6 @@ __all__ = [
     "InverseDynamicsPredictionObjective",
     "MemoryExtractionObjective",
     "Objective",
-    "ObjectiveName",
     "ObjectiveScheduler",
     "PolicyObjective",
     "RandomMaskedHindsightControlObjective",

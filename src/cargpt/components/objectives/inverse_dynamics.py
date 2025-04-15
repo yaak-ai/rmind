@@ -1,6 +1,6 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import override
+from typing import cast, override
 
 import torch
 from einops import rearrange
@@ -40,12 +40,12 @@ class InverseDynamicsPredictionObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
-    ):
+    ) -> None:
         super().__init__()
 
-        self.heads = heads
-        self.losses = losses
-        self.targets = targets
+        self.heads: ModuleDict = heads
+        self.losses: ModuleDict | None = losses
+        self.targets: Targets | None = targets
 
     @override
     def forward(self, episode: Episode, encoder: Module) -> TensorDict:
@@ -53,8 +53,8 @@ class InverseDynamicsPredictionObjective(Objective):
             raise RuntimeError
 
         b, t = episode.input.batch_size
-        mask = self._build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+        mask = self.build_attention_mask(episode.index, episode.timestep)
+        embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
         observation_summaries = (
             episode.index.select(
                 k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
@@ -101,9 +101,9 @@ class InverseDynamicsPredictionObjective(Objective):
             result[result_key] = episode.input.select(*self.heads.tree_paths())
 
         if (result_key := PredictionResultKey.ATTENTION) in result_keys:
-            mask = self._build_attention_mask(episode.index, episode.timestep)
+            mask = self.build_attention_mask(episode.index, episode.timestep)
             attention = encoder.compute_attention_rollout(
-                src=episode.embeddings_packed, mask=mask.data, drop_ratio=0.9
+                src=episode.embeddings_packed, mask=mask.mask, drop_ratio=0.9
             )
 
             result[result_key] = (
@@ -128,8 +128,8 @@ class InverseDynamicsPredictionObjective(Objective):
             PredictionResultKey.SCORE_L1,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self._build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+            mask = self.build_attention_mask(episode.index, episode.timestep)
+            embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
 
             observation_summaries = (
                 episode.index.select(
@@ -151,7 +151,7 @@ class InverseDynamicsPredictionObjective(Objective):
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))  # pyright: ignore[reportArgumentType]
+                    logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
                         nested_keys=True,
@@ -160,13 +160,13 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue ]
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.softmax(dim=-1))  # pyright: ignore[reportArgumentType]
+                    logits.apply(lambda x: x.softmax(dim=-1))
                     .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
@@ -178,7 +178,7 @@ class InverseDynamicsPredictionObjective(Objective):
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))  # pyright: ignore[reportArgumentType]
+                    logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
                         nested_keys=True,
@@ -200,15 +200,18 @@ class InverseDynamicsPredictionObjective(Objective):
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
-    def _build_attention_mask(
+    def build_attention_mask(
         cls,
         index: Index,
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        mask = ForwardDynamicsPredictionObjective._build_attention_mask(
-            index, timestep, legend
-        ).clone(recurse=True)
+        mask = cast(
+            "AttentionMask",
+            ForwardDynamicsPredictionObjective.build_attention_mask(
+                index, timestep, legend
+            ).clone(recurse=True),
+        )
 
         (t,) = index.batch_size
         for step in range(t):
@@ -231,12 +234,12 @@ class InverseDynamicsPredictionObjective(Objective):
             ))
 
             mask = (
-                mask._do_not_attend(current_observations, past_actions)
-                ._do_not_attend(current_observations, past_action_summary)
-                ._do_not_attend(current_observation_summary, past_actions)
-                ._do_not_attend(current_observation_summary, past_action_summary)
-                ._do_not_attend(current_observation_history, past_actions)
-                ._do_not_attend(current_observation_history, past_action_summary)
+                mask.do_not_attend(current_observations, past_actions)
+                .do_not_attend(current_observations, past_action_summary)
+                .do_not_attend(current_observation_summary, past_actions)
+                .do_not_attend(current_observation_summary, past_action_summary)
+                .do_not_attend(current_observation_history, past_actions)
+                .do_not_attend(current_observation_history, past_action_summary)
             )
 
         return mask

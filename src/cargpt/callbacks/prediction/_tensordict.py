@@ -1,8 +1,7 @@
 from collections.abc import Callable, Sequence
-from contextlib import _GeneratorContextManager
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, final, override
+from typing import Literal, final, override
 
 import orjson
 import pytorch_lightning as pl
@@ -16,8 +15,6 @@ from cargpt.utils import monkeypatched
 @final
 class TensorDictPredictionWriter(BasePredictionWriter):
     """
-    Example:
-
     ```yaml
     _target_: cargpt.callbacks.TensorDictPredictionWriter
     write_interval: batch
@@ -73,19 +70,15 @@ class TensorDictPredictionWriter(BasePredictionWriter):
         )
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        with self._patch_orjson_dumps():
+        with self._patched_orjson_dumps():
             self._writer(data, path.resolve().as_posix())
 
     @classmethod
-    def _patch_orjson_dumps(cls) -> _GeneratorContextManager[Any, None, None]:
-        """
-        WARN: hacky af workaround
-
-        `TensorDict.memmap` uses `orjson.dumps` to serialize metadata,
-        which may contain StrEnum keys. `orjson.dumps` doesn't handle
-        those without the `orjson.OPT_NON_STR_KEYS` option set (see
-        https://github.com/ijl/orjson/issues/414).
-        """
+    def _patched_orjson_dumps(cls):  # noqa: ANN206
+        # `TensorDict.memmap` uses `orjson.dumps` to serialize metadata,
+        # which may contain StrEnum keys. `orjson.dumps` doesn't handle
+        # those without the `orjson.OPT_NON_STR_KEYS` option set (see
+        # https://github.com/ijl/orjson/issues/414).
         return monkeypatched(
             orjson, "dumps", partial(orjson.dumps, option=orjson.OPT_NON_STR_KEYS)
         )
