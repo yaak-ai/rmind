@@ -1,0 +1,42 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+  pull_request:
+
+  workflow_dispatch:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+          lfs: true
+
+      - name: setup just
+        uses: extractions/setup-just@v2
+
+      - name: setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+
+      - run: just sync
+      - run: just format --check
+      - run: just lint
+      - run: just typecheck
+      - run: just test
