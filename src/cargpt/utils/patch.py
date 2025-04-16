@@ -1,9 +1,11 @@
 import contextlib
+from collections.abc import Generator
+from typing import Any
 
 
 @contextlib.contextmanager
-def monkeypatched(object, name, patch):
-    old = getattr(object, name)
-    setattr(object, name, patch)
-    yield object
-    setattr(object, name, old)
+def monkeypatched(obj: Any, name: str, patch: Any) -> Generator[Any, None, None]:
+    old = getattr(obj, name)
+    setattr(obj, name, patch)
+    yield obj
+    setattr(obj, name, old)

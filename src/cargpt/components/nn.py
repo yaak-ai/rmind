@@ -12,11 +12,11 @@ _default_embedding_weight_init_fn = partial(nn.init.normal_, mean=0.0, std=0.02)
 class Embedding(nn.Embedding):
     def __init__(
         self,
-        *args,
+        *args: Any,
         weight_init_fn: Callable[[Tensor], Any] = _default_embedding_weight_init_fn,
-        **kwargs,
-    ):
-        self.weight_init_fn = weight_init_fn
+        **kwargs: Any,
+    ) -> None:
+        self.weight_init_fn: Callable[[Tensor], Any] = weight_init_fn
 
         super().__init__(*args, **kwargs)
 
@@ -38,17 +38,3 @@ class Identity(nn.Identity, Invertible):
     @override
     def invert(self, input: Tensor) -> Tensor:
         return input
-
-
-class FunctionWrapper(nn.Module):
-    def __init__(self, func: Callable[..., Any]) -> None:
-        super().__init__()
-        self.func = func
-
-    @override
-    def forward(self, *args, **kwargs) -> Any:
-        return self.func(*args, **kwargs)
-
-    @override
-    def extra_repr(self) -> str:
-        return repr(self.func)

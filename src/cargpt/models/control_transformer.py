@@ -1,37 +1,68 @@
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Self, override
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
 import torch
 from hydra.utils import get_class, instantiate
-from lightning_fabric.plugins.io.torch_io import (
+from lightning_fabric.utilities.types import (
+    _MAP_LOCATION_TYPE,  # pyright: ignore[reportPrivateUsage]
+    _PATH,  # pyright: ignore[reportPrivateUsage]
+)
+from lightning_utilities.core.rank_zero import rank_zero_warn
+from omegaconf import DictConfig
+from pydantic import BaseModel, ConfigDict, Field, ImportString
+from pytorch_lightning.core.saving import (
+    _load_state,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
     pl_load,  # pyright: ignore[reportPrivateImportUsage]
 )
-from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
-from loguru import logger
-from omegaconf import DictConfig
-from pytorch_lightning.core.saving import _load_state
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.strategies import SingleDeviceStrategy
 from pytorch_lightning.strategies.ddp import DDPStrategy
-from pytorch_lightning.utilities.model_helpers import _restricted_classmethod
+from pytorch_lightning.utilities.migration.utils import (
+    _pl_migrate_checkpoint,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+    pl_legacy_patch,
+)
+from pytorch_lightning.utilities.model_helpers import (
+    _restricted_classmethod,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+)
+from pytorch_lightning.utilities.types import OptimizerLRScheduler
+from structlog import get_logger
 from tensordict import TensorDict
+from torch import Tensor
 from torch.nn import Module  # noqa: TC002
 
-from cargpt.components.episode import EpisodeBuilder
 from cargpt.components.mask import WandbAttentionMaskLegend
-from cargpt.components.objectives import ObjectiveScheduler
 from cargpt.components.objectives.base import PredictionResultKey
-from cargpt.utils import ModuleDict
 from cargpt.utils._wandb import LoadableFromArtifact
+
+if TYPE_CHECKING:
+    from cargpt.components.episode import EpisodeBuilder
+    from cargpt.components.objectives import ObjectiveScheduler
+    from cargpt.utils import ModuleDict
+
+logger = get_logger(__name__)
+
+
+class HydraConfig[T](BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="allow")
+
+    target: ImportString[type[T]] = Field(alias="_target_")
+    recursive: bool = Field(alias="_recursive_", default=True)
+    convert: Literal["none", "partial", "object", "all"] = Field(
+        alias="_convert_", default="all"
+    )
+    partial: bool = Field(alias="_partial_", default=False)
+
+    def instantiate(self, **kwargs: object) -> T:
+        return instantiate(self.model_dump(by_alias=True), **kwargs)
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
-    def __init__(self, **_kwargs) -> None:
+    def __init__(self, **_kwargs: Any) -> None:
         super().__init__()
         self.save_hyperparameters()
 
-        self.input_builder = instantiate(self.hparams.input_builder)  # pyright: ignore[reportAttributeAccessIssue]
+        self.input_builder: Module = instantiate(self.hparams.input_builder)  # pyright: ignore[reportAttributeAccessIssue]
         self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)  # pyright: ignore[reportAttributeAccessIssue]
         self.encoder: Module = instantiate(self.hparams.encoder)  # pyright: ignore[reportAttributeAccessIssue]
         self.objectives: ModuleDict = instantiate(self.hparams.objectives)  # pyright: ignore[reportAttributeAccessIssue]
@@ -39,8 +70,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             self.hparams.get("objective_scheduler")
         )
         if self.objective_scheduler is not None and (
-            (specified := set(self.objectives.keys()))
-            != (scheduled := {x.value for x in self.objective_scheduler.objectives})
+            (specified := self.objectives.keys())
+            != (scheduled := set(self.objective_scheduler.objectives))
         ):
             msg = f"objective scheduler enabled but {specified} != {scheduled}"
             raise ValueError(msg)
@@ -48,7 +79,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     @_restricted_classmethod
     def load_from_checkpoint(  # pyright: ignore[reportIncompatibleMethodOverride]
-        cls,
+        cls,  # noqa: N805
         checkpoint_path: _PATH,
         *,
         map_location: _MAP_LOCATION_TYPE = None,
@@ -72,12 +103,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 )
 
             case _:
-                from pytorch_lightning.utilities.migration.utils import pl_legacy_patch  # noqa: I001, PLC0415
-                from pytorch_lightning.utilities.migration.utils import (  # noqa: PLC0415
-                    _pl_migrate_checkpoint,
-                )
-                from lightning_utilities.core.rank_zero import rank_zero_warn  # noqa: PLC0415
-
                 with pl_legacy_patch():
                     checkpoint = pl_load(checkpoint_path, map_location=map_location)
 
@@ -116,7 +141,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 return model.to(device)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
 
     @override
-    def training_step(self, batch: TensorDict, *args):
+    def training_step(self, batch: TensorDict, _batch_idx: int) -> Tensor:
         all_objectives = tuple(self.objectives.keys())
         scheduled_objectives = (
             all_objectives
@@ -147,8 +172,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             device=input.device,
         )
 
-        losses = metrics.select(*((name, "loss") for name in objectives_to_compute))
-        losses.select(*(set(objectives_to_compute) - set(scheduled_objectives))).zero_()
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]  # noqa: SIM118
+        losses.select(*(set(metrics.keys()) - set(scheduled_objectives))).zero_()  # pyright: ignore[reportArgumentType]
         loss_total = losses.sum(reduce=True)
 
         metrics["loss", "total"] = loss_total
@@ -159,9 +184,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             from wandb import Image  # noqa: PLC0415
 
-            for name, module in self.objectives.items():
-                mask = module._build_attention_mask(episode.index, episode.timestep)
-                img = Image(mask.with_legend(WandbAttentionMaskLegend).data)
+            for name, objective in self.objectives.items():
+                mask = objective.build_attention_mask(episode.index, episode.timestep)
+                img = Image(mask.with_legend(WandbAttentionMaskLegend).mask)
                 self.logger.log_image(f"masks/{name}", [img], step=step)
 
         self.log_dict(
@@ -177,7 +202,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return loss_total
 
     @override
-    def validation_step(self, batch: TensorDict, *args):
+    def validation_step(self, batch: TensorDict, _batch_idx: int) -> Tensor:
         input = self.input_builder.forward(batch)
         episode = self.episode_builder.forward(input)
         metrics = TensorDict(
@@ -188,7 +213,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             device=input.device,
         )
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]  # noqa: SIM118
         metrics["loss", "total"] = sum(
             losses.values(include_nested=True, leaves_only=True)
         )
@@ -205,7 +230,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics["loss", "total"]
 
     @override
-    def predict_step(self, batch: TensorDict):
+    def predict_step(self, batch: TensorDict) -> TensorDict:
         input = self.input_builder.forward(batch)
         episode = self.episode_builder.forward(input)
 
@@ -232,17 +257,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         )
 
     @override
-    def configure_optimizers(self):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def configure_optimizers(self) -> OptimizerLRScheduler:
         result = {}
 
         if (cfg := self.hparams.get("optimizer")) is not None:
-            from cargpt.components.optimizers import SelectiveAdamW  # noqa: PLC0415
+            from cargpt.components import optimizers  # noqa: PLC0415
 
-            result["optimizer"] = (
-                instantiate(cfg, module=self)
-                if get_class(cfg._target_) is SelectiveAdamW
-                else instantiate(cfg, params=self.parameters())
-            )
+            match get_class(cfg._target_):
+                case optimizers.SelectiveAdamW:
+                    result["optimizer"] = instantiate(cfg, module=self)
+
+                case _:
+                    result["optimizer"] = instantiate(cfg, params=self.parameters())
 
         if (cfg := self.hparams.get("lr_scheduler")) is not None:
             scheduler = instantiate(cfg.pop("scheduler"), optimizer=result["optimizer"])
@@ -250,4 +276,4 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         logger.debug("configure_optimizers", result=result)
 
-        return result
+        return result  # pyright: ignore[reportReturnType]

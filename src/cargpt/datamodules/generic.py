@@ -16,10 +16,10 @@ class GenericDataModule[T](pl.LightningDataModule):
     ) -> None:
         super().__init__()
 
-        self._train = train
-        self._val = val
-        self._test = test
-        self._predict = predict
+        self._train: DataLoader[T] | None = train
+        self._val: DataLoader[T] | None = val
+        self._test: DataLoader[T] | None = test
+        self._predict: DataLoader[T] | None = predict
 
     @override
     def train_dataloader(self) -> DataLoader[T] | None:

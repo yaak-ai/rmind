@@ -1,20 +1,23 @@
-import multiprocessing as mp
-import sys
+#! /usr/bin/env python
 from typing import TYPE_CHECKING
 
 import hydra
 from hydra.utils import instantiate
-from loguru import logger
 from omegaconf import DictConfig
+from pytorch_lightning.utilities.types import (
+    _PREDICT_OUTPUT,  # pyright: ignore[reportPrivateUsage]
+)
+from structlog import get_logger
 
-from cargpt.utils.logging import setup_logging
+logger = get_logger(__name__)
+
 
 if TYPE_CHECKING:
     import pytorch_lightning as pl
 
 
 @hydra.main(version_base=None)
-def predict(cfg: DictConfig):
+def predict(cfg: DictConfig) -> _PREDICT_OUTPUT | None:
     logger.debug("instantiating model", target=cfg.model._target_)
     model: pl.LightningModule = instantiate(cfg.model)
 
@@ -29,14 +32,9 @@ def predict(cfg: DictConfig):
     return trainer.predict(model=model, datamodule=datamodule, return_predictions=False)
 
 
-@logger.catch(onerror=lambda _: sys.exit(1))
-def main():
-    mp.set_start_method("spawn", force=True)
-    mp.set_forkserver_preload(["torch"])
-    setup_logging()
+if __name__ == "__main__":
+    import logging
+
+    logging.getLogger("xformers").setLevel(logging.ERROR)
 
     predict()
-
-
-if __name__ == "__main__":
-    main()

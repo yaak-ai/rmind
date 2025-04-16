@@ -1,25 +1,22 @@
 from collections.abc import Callable
-from typing import override
+from typing import Any, override
 
 import torch
 import torch.nn.functional as F
-from jaxtyping import Float, Int
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
 
 class FocalLoss(Module):
-    """https://arxiv.org/pdf/1708.02002.pdf"""
+    """https://arxiv.org/pdf/1708.02002.pdf."""
 
-    def __init__(self, *, gamma: float = 2.0):
+    def __init__(self, *, gamma: float = 2.0) -> None:
         super().__init__()
 
-        self.gamma = gamma
+        self.gamma: float = gamma
 
     @override
-    def forward(
-        self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]
-    ) -> Float[Tensor, ""]:
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
         ce_loss = F.cross_entropy(input, target, reduction="none")
         pt = torch.exp(-ce_loss)
 
@@ -27,12 +24,14 @@ class FocalLoss(Module):
 
 
 class LogitBiasMixin:
+    _logit_bias: Tensor | None  # pyright: ignore[reportUninitializedInstanceVariable]
+
     @property
-    def logit_bias(self) -> Float[Tensor, "d"] | None:
+    def logit_bias(self) -> Tensor | None:
         return self._logit_bias
 
     @logit_bias.setter
-    def logit_bias(self, value: Float[Tensor, "d"] | None):
+    def logit_bias(self, value: Tensor | None) -> None:
         match value:
             case Tensor():
                 if hasattr(self, "_logit_bias"):
@@ -45,48 +44,51 @@ class LogitBiasMixin:
 
 
 class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss):
-    def __init__(
-        self, *, logit_bias: Float[Tensor, "d"] | None = None, gamma: float = 2.0
-    ):
+    def __init__(self, *, logit_bias: Tensor | None = None, gamma: float = 2.0) -> None:
         super().__init__(gamma=gamma)
 
-        self.logit_bias = logit_bias
+        self.logit_bias: Tensor | None = logit_bias
 
     @override
-    def forward(self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]):
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
         return super().forward(input + self.logit_bias, target)
 
 
 class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
-    def __init__(self, *args, logit_bias: Float[Tensor, "d"] | None = None, **kwargs):
+    def __init__(
+        self, *args: Any, logit_bias: Tensor | None = None, **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
 
-        self.logit_bias = logit_bias
+        self.logit_bias: Tensor | None = logit_bias
 
     @override
-    def forward(self, input: Float[Tensor, "b d"], target: Int[Tensor, "b"]):
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
         return super().forward(input + self.logit_bias, target)
 
 
 class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
-    """
-    Class that makes vanilla torch.nn.GaussianNLLLoss compatible with carGPT pipeline
-    """
+    """Class that makes vanilla torch.nn.GaussianNLLLoss compatible with carGPT pipeline."""
 
     def __init__(
         self,
-        *args,
-        var_pos_function: Callable[
-            [Tensor], Tensor
-        ] = torch.exp,  # NOTE: use torch.ones_like to get vanilla MSE
-        **kwargs,
-    ):
+        *args: Any,
+        # NOTE: use torch.ones_like to get vanilla MSE
+        var_pos_function: Callable[[Tensor], Tensor] = torch.exp,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
-        self.var_pos_function = var_pos_function
+
+        self.var_pos_function: Callable[[Tensor], Tensor] = var_pos_function
 
     @override
-    def forward(self, input: Tensor, target: Float[Tensor, "b"], var=None):
+    def forward(
+        self, input: Tensor, target: Tensor, var: Tensor | None = None
+    ) -> Tensor:
+        if var is not None:
+            raise ValueError
+
         mean, log_var = input[..., 0], input[..., 1]
-        return super().forward(
-            input=mean, target=target, var=self.var_pos_function(log_var)
-        )
+        var = self.var_pos_function(log_var)
+
+        return super().forward(input=mean, target=target, var=var)

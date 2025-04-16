@@ -1,7 +1,8 @@
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from enum import StrEnum, auto, unique
-from typing import Any, override
+from typing import Any, Never
 
 from optree import register_pytree_node
 from optree.utils import unzip2
@@ -12,15 +13,6 @@ from cargpt.components.episode import Episode, Modality
 from cargpt.utils.containers import OPTREE_NAMESPACE, ModuleDict
 
 type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
-
-
-@unique
-class ObjectiveName(StrEnum):
-    FORWARD_DYNAMICS = auto()
-    INVERSE_DYNAMICS = auto()
-    RANDOM_MASKED_HINDSIGHT_CONTROL = auto()
-    MEMORY_EXTRACTION = auto()
-    POLICY = auto()
 
 
 @unique
@@ -35,7 +27,7 @@ class PredictionResultKey(StrEnum):
     SUMMARY_EMBEDDINGS = auto()
 
 
-def _not_implemented(*_args, **_kwargs):
+def _not_implemented(*_args: Any, **_kwargs: Any) -> Never:
     raise NotImplementedError
 
 
@@ -46,9 +38,9 @@ def objective_flatten(
     return values, list(keys), keys
 
 
-class Objective(Module):
+class Objective(Module, ABC):
     def __init_subclass__(cls) -> None:
-        register_pytree_node(
+        register_pytree_node(  # pyright: ignore[reportUnusedCallResult]
             cls,  # pyright: ignore[reportArgumentType]
             flatten_func=objective_flatten,  # pyright: ignore[reportArgumentType]
             unflatten_func=_not_implemented,
@@ -59,10 +51,7 @@ class Objective(Module):
     def __getitem__(self, name: str) -> Any:
         return getattr(self, name)
 
-    @override
-    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
-        raise NotImplementedError
-
+    @abstractmethod
     def predict(
         self,
         *,
@@ -70,5 +59,4 @@ class Objective(Module):
         encoder: Module,
         result_keys: AbstractSet[PredictionResultKey],
         tokenizers: ModuleDict | None = None,
-    ) -> TensorDict:
-        raise NotImplementedError
+    ) -> TensorDict: ...

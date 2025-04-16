@@ -2,12 +2,13 @@ from collections.abc import Iterable
 from typing import Any, override
 
 import pytorch_lightning as pl
-from loguru import logger
-from pytorch_lightning.callbacks import ModelSummary as _ModelSummary
+from structlog import get_logger
 from torchinfo import summary
 
+logger = get_logger(__name__)
 
-class ModelSummary(_ModelSummary):
+
+class ModelSummary(pl.Callback):
     def __init__(
         self,
         col_width: int = 16,
@@ -27,4 +28,4 @@ class ModelSummary(_ModelSummary):
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.is_global_zero:
             summary_str = str(summary(pl_module, **self._kwargs, verbose=0))
-            logger.info(f"\n{summary_str}")
+            logger.info(f"\n{summary_str}")  # noqa: G004

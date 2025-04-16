@@ -1,7 +1,7 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
 from operator import itemgetter
-from typing import Any, override
+from typing import Any, cast, override
 
 import torch
 from einops import rearrange
@@ -41,17 +41,17 @@ class PolicyObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
-    ):
+    ) -> None:
         super().__init__()
 
-        self.heads = heads
-        self.losses = losses
-        self.targets = targets
+        self.heads: ModuleDict = heads
+        self.losses: ModuleDict | None = losses
+        self.targets: Targets | None = targets
 
     @override
     def forward(self, episode: Episode, encoder: Module) -> TensorDict:
-        mask = self._build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+        mask = self.build_attention_mask(episode.index, episode.timestep)
+        embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
 
         embeddings = (
             episode.index[-1]
@@ -115,8 +115,8 @@ class PolicyObjective(Objective):
             PredictionResultKey.SCORE_L1,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self._build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.embeddings_packed, mask=mask.data)
+            mask = self.build_attention_mask(episode.index, episode.timestep)
+            embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
 
             embeddings = (
                 episode.index[[-1]]
@@ -146,19 +146,19 @@ class PolicyObjective(Objective):
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
-                result[result_key] = logits.apply(itemgetter((..., 0))).apply(  # pyright: ignore[reportAttributeAccessIssue, reportArgumentType]
+                result[result_key] = logits.apply(itemgetter((..., 0))).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_STD) in result_keys:
                 result[result_key] = (
-                    logits.apply(itemgetter((..., 1)))  # pyright: ignore[reportArgumentType]
+                    logits.apply(itemgetter((..., 1)))
                     .apply(lambda x: torch.sqrt(torch.exp(x)))  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(timestep_padder, batch_size=[b, t])
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(  # pyright: ignore[reportArgumentType]
+                result[result_key] = logits.apply(
                     lambda x: gauss_prob(
                         x[..., 0], mean=x[..., 0], std=torch.sqrt(torch.exp(x[..., 1]))
                     )
@@ -167,7 +167,7 @@ class PolicyObjective(Objective):
                 )
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
-                    logits.named_apply(  # pyright: ignore[reportArgumentType]
+                    logits.named_apply(
                         lambda k, x: gauss_prob(
                             episode.input[:, -1][k],
                             mean=x[..., 0].squeeze(-1),
@@ -181,7 +181,7 @@ class PolicyObjective(Objective):
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(itemgetter((..., 0)))  # pyright: ignore[reportArgumentType]
+                    logits.apply(itemgetter((..., 0)))
                     .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(
                         lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
@@ -199,15 +199,18 @@ class PolicyObjective(Objective):
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)
-    def _build_attention_mask(
+    def build_attention_mask(
         cls,
         index: Index,
         timestep: Timestep,
         legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
     ) -> AttentionMask:
-        mask = ForwardDynamicsPredictionObjective._build_attention_mask(
-            index, timestep, legend
-        ).clone(recurse=True)
+        mask = cast(
+            "AttentionMask",
+            ForwardDynamicsPredictionObjective.build_attention_mask(
+                index, timestep, legend
+            ).clone(recurse=True),
+        )
 
         (t,) = index.batch_size
         for step in range(t):
@@ -230,12 +233,12 @@ class PolicyObjective(Objective):
             ))
 
             mask = (
-                mask._do_not_attend(current_observations, past_actions)
-                ._do_not_attend(current_observations, past_action_summary)
-                ._do_not_attend(current_observation_summary, past_actions)
-                ._do_not_attend(current_observation_summary, past_action_summary)
-                ._do_not_attend(current_observation_history, past_actions)
-                ._do_not_attend(current_observation_history, past_action_summary)
+                mask.do_not_attend(current_observations, past_actions)
+                .do_not_attend(current_observations, past_action_summary)
+                .do_not_attend(current_observation_summary, past_actions)
+                .do_not_attend(current_observation_summary, past_action_summary)
+                .do_not_attend(current_observation_history, past_actions)
+                .do_not_attend(current_observation_history, past_action_summary)
             )
 
         return mask

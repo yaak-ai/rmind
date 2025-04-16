@@ -7,8 +7,8 @@ from cargpt.components.nn import Sequential
 from cargpt.components.norm import Scaler, UniformBinner
 
 
-def test_scaler():
-    module = Scaler(in_range=[0.0, 100.0], out_range=[-1.0, 1.0])
+def test_scaler() -> None:
+    module = Scaler(in_range=(0.0, 100.0), out_range=(-1.0, 1.0))
 
     x = make_tensor(
         1024,
@@ -23,8 +23,8 @@ def test_scaler():
     assert_close(x_rt, x)
 
 
-def test_uniform_binner():
-    module = UniformBinner(range=[5.0, 130.0], bins=1024)
+def test_uniform_binner() -> None:
+    module = UniformBinner(range=(5.0, 130.0), bins=1024)
     x = make_tensor(
         1024, dtype=torch.float, device="cpu", low=module.range[0], high=module.range[1]
     )
@@ -34,10 +34,10 @@ def test_uniform_binner():
     assert_close(x_rt, x, rtol=0.0, atol=bin_width / 2.0)
 
 
-def test_sequential():
+def test_sequential() -> None:
     module = Sequential(
         *(
-            Scaler(in_range=in_range, out_range=out_range)
+            Scaler(in_range=in_range, out_range=out_range)  # pyright: ignore[reportArgumentType]
             for in_range, out_range in pairwise([0.0, 10.0**x] for x in range(1, 6))
         )
     )

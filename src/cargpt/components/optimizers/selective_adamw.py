@@ -1,26 +1,26 @@
 from collections.abc import Iterable
 from typing import Any
 
-from loguru import logger
+from pydantic import InstanceOf, validate_call
 from torch.nn import Module
 from torch.optim.adamw import AdamW
 
 
 class SelectiveAdamW(AdamW):
-    """
-    AdamW with selective weight decay
+    """AdamW with selective weight decay.
 
     https://stats.stackexchange.com/questions/576463/why-not-perform-weight-decay-on-layernorm-embedding
     """
 
+    @validate_call
     def __init__(
         self,
-        module: Module,
+        module: InstanceOf[Module],
         *,
         weight_decay: float = 1e-2,
         weight_decay_module_blacklist: Iterable[type[Module]],
-        **kwargs: dict[str, Any],
-    ):
+        **kwargs: Any,
+    ) -> None:
         if "params" in kwargs or weight_decay == 0.0:
             raise ValueError
 
@@ -43,8 +43,6 @@ class SelectiveAdamW(AdamW):
                     case _:
                         raise NotImplementedError
 
-        logger.trace("overriding weight_decay=0", params=weight_decay_param_blacklist)
-
         params = dict(module.named_parameters())
         weight_decay_param_whitelist = params.keys() - weight_decay_param_blacklist
 
@@ -59,4 +57,4 @@ class SelectiveAdamW(AdamW):
             },
         ]
 
-        super().__init__(params=param_groups, **kwargs)  # pyright: ignore[reportArgumentType]
+        super().__init__(params=param_groups, **kwargs)
