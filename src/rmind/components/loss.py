@@ -68,8 +68,6 @@ class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
 
 
 class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
-    """Class that makes vanilla torch.nn.GaussianNLLLoss compatible with carGPT pipeline."""
-
     def __init__(
         self,
         *args: Any,

@@ -1,7 +1,5 @@
-_target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
-# _target_: cargpt.models.control_transformer.ControlTransformer.load_from_checkpoint
-# checkpoint_path: ???
 strict: false
 hparams_updaters:
   # wrap hparams in DictConfig
@@ -14,11 +12,11 @@ hparams_updaters:
     merge: false
     key: objectives
     value:
-      _target_: cargpt.utils.ModuleDict
+      _target_: rmind.utils.ModuleDict
       policy:
-        _target_: cargpt.components.objectives.PolicyObjective
+        _target_: rmind.components.objectives.PolicyObjective
         heads:
-          _target_: cargpt.utils.ModuleDict
+          _target_: rmind.utils.ModuleDict
           continuous:
             gas_pedal:
               _target_: torchvision.ops.MLP
@@ -43,14 +41,14 @@ hparams_updaters:
             steering_angle: [input, continuous, steering_angle]
 
         losses:
-          _target_: cargpt.utils.ModuleDict
+          _target_: rmind.utils.ModuleDict
           continuous:
             gas_pedal:
-              _target_: cargpt.components.loss.GaussianNLLLoss
+              _target_: rmind.components.loss.GaussianNLLLoss
             brake_pedal:
-              _target_: cargpt.components.loss.GaussianNLLLoss
+              _target_: rmind.components.loss.GaussianNLLLoss
             steering_angle:
-              _target_: cargpt.components.loss.GaussianNLLLoss
+              _target_: rmind.components.loss.GaussianNLLLoss
 
   # freeze episode builder (embeddings etc)
   - _target_: omegaconf.OmegaConf.update

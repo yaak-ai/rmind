@@ -17,7 +17,7 @@ from tensordict.tensorclass import (
 )
 from torch import Tensor, nn
 
-from cargpt.utils import ModuleDict
+from rmind.utils import ModuleDict
 
 logger = get_logger(__name__)
 

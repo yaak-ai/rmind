@@ -5,7 +5,7 @@ import torch
 from tensordict import TensorClass
 from torch import Tensor
 
-from cargpt.components.episode import Index
+from rmind.components.episode import Index
 
 
 class AttentionMaskLegend(EnumMeta):

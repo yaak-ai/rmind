@@ -6,7 +6,7 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.testing import make_tensor
 
-from cargpt.utils.containers import ModuleDict
+from rmind.utils.containers import ModuleDict
 
 
 class Multiplier(torch.nn.Module):

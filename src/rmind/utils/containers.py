@@ -14,7 +14,7 @@ from torch import Tensor
 from torch.nn import Module
 from torch.nn import ModuleDict as _ModuleDict
 
-OPTREE_NAMESPACE = "cargpt"
+OPTREE_NAMESPACE = "rmind"
 
 
 class TensorDictKwargs(TypedDict, total=False):

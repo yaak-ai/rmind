@@ -1,4 +1,4 @@
 entity: yaak
-project: cargpt
+project: rmind
 settings:
   start_method: thread
