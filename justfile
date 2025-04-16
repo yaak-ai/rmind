@@ -1,5 +1,3 @@
-set shell := ["zsh", "-cu"]
-
 export HYDRA_FULL_ERROR := "1"
 export PYTHONOPTIMIZE := "1"
 export RERUN_STRICT := "1"
@@ -8,7 +6,7 @@ _default:
     @just --list --unsorted
 
 sync:
-    uv sync --all-extras --dev
+    uv sync --all-extras --locked
 
 install-tools:
     uv tool install --force --upgrade basedpyright
@@ -19,36 +17,45 @@ install-tools:
 setup: sync install-tools
     uvx pre-commit install --install-hooks
 
+format *ARGS:
+    uvx ruff format {{ ARGS }}
+
+lint *ARGS:
+    uvx ruff check {{ ARGS }}
+
+typecheck *ARGS:
+    uvx basedpyright {{ ARGS }}
+
 # run pre-commit on all files
 pre-commit:
     uvx pre-commit run --all-files --color=always
 
 # generate config files from templates with ytt
-template-config:
+generate-config:
     ytt --file {{ justfile_directory() }}/config/_templates \
         --output-files {{ justfile_directory() }}/config/ \
         --output yaml \
         --ignore-unknown-comments \
         --strict
 
-train *ARGS: template-config
+train *ARGS: generate-config
     uv run src/cargpt/scripts/train.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml {{ ARGS }}
 
 # train with runtime type checking and no wandb
-train-debug *ARGS: template-config
+train-debug *ARGS: generate-config
     WANDB_MODE=disabled uv run src/cargpt/scripts/train.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml {{ ARGS }}
 
-predict +ARGS: template-config
+predict +ARGS: generate-config
     uv run src/cargpt/scripts/predict.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 
 # predict with runtime type checking
-predict-debug +ARGS: template-config
+predict-debug +ARGS: generate-config
     uv run src/cargpt/scripts/predict.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
