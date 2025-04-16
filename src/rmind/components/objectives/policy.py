@@ -12,7 +12,7 @@ from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
 
-from cargpt.components.episode import (
+from rmind.components.episode import (
     Episode,
     Index,
     Modality,
@@ -20,17 +20,17 @@ from cargpt.components.episode import (
     Timestep,
     TokenType,
 )
-from cargpt.components.mask import (
+from rmind.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
     XFormersAttentionMaskLegend,
 )
-from cargpt.components.objectives.base import Objective, PredictionResultKey, Targets
-from cargpt.components.objectives.forward_dynamics import (
+from rmind.components.objectives.base import Objective, PredictionResultKey, Targets
+from rmind.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from cargpt.utils import ModuleDict
-from cargpt.utils.functional import gauss_prob, nan_padder
+from rmind.utils import ModuleDict
+from rmind.utils.functional import gauss_prob, nan_padder
 
 
 class PolicyObjective(Objective):

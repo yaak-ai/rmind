@@ -31,14 +31,14 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module  # noqa: TC002
 
-from cargpt.components.mask import WandbAttentionMaskLegend
-from cargpt.components.objectives.base import PredictionResultKey
-from cargpt.utils._wandb import LoadableFromArtifact
+from rmind.components.mask import WandbAttentionMaskLegend
+from rmind.components.objectives.base import PredictionResultKey
+from rmind.utils._wandb import LoadableFromArtifact
 
 if TYPE_CHECKING:
-    from cargpt.components.episode import EpisodeBuilder
-    from cargpt.components.objectives import ObjectiveScheduler
-    from cargpt.utils import ModuleDict
+    from rmind.components.episode import EpisodeBuilder
+    from rmind.components.objectives import ObjectiveScheduler
+    from rmind.utils import ModuleDict
 
 logger = get_logger(__name__)
 
@@ -261,7 +261,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         result = {}
 
         if (cfg := self.hparams.get("optimizer")) is not None:
-            from cargpt.components import optimizers  # noqa: PLC0415
+            from rmind.components import optimizers  # noqa: PLC0415
 
             match get_class(cfg._target_):
                 case optimizers.SelectiveAdamW:

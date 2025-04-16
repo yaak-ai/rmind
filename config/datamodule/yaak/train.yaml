@@ -3,7 +3,7 @@ defaults:
   - /dataset/yaak/val@val.dataset
   - _self_
 
-_target_: cargpt.datamodules.GenericDataModule
+_target_: rmind.datamodules.GenericDataModule
 train:
   _target_: torch.utils.data.DataLoader
   batch_size: 64

@@ -13,7 +13,7 @@ from tensordict import TensorClass, TensorDict
 class DataFramePredictionWriter(BasePredictionWriter):
     """
     ```yaml
-    _target_: cargpt.callbacks.DataFramePredictionWriter
+    _target_: rmind.callbacks.DataFramePredictionWriter
     write_interval: batch
     path: ${hydra:run.dir}/predictions/{batch_idx}.parquet
     select:

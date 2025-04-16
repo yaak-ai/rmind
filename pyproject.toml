@@ -1,7 +1,7 @@
 [project]
-name = "cargpt"
+name = "rmind"
 version = "0.1.0"
-description = ""
+description = "Foundation models for spatial intelligence"
 authors = [{ name = "ML yaak team", email = "ml@yaak.ai" }]
 readme = "README.md"
 requires-python = ">=3.12, <3.13"
@@ -25,6 +25,19 @@ dependencies = [
   "optree>=0.15.0",
   "structlog>=25.2.0",
 ]
+license = { text = "Apache-2.0" }
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+repo = "https://github.com/yaak-ai/rbyte"
 
 [tool.uv]
 override-dependencies = ["torch==2.5.1"]
@@ -113,7 +126,7 @@ split-on-trailing-comma = false
 
 [tool.deptry.per_rule_ignores]
 DEP001 = [
-  "cargpt",
+  "rmind",
 ]
 
 DEP002 = [

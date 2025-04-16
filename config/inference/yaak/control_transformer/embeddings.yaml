@@ -15,7 +15,7 @@ trainer:
   benchmark: true
   logger: false
   callbacks:
-    - _target_: cargpt.callbacks.TensorDictPredictionWriter
+    - _target_: rmind.callbacks.TensorDictPredictionWriter
       write_interval: batch
       path: ${hydra:run.dir}/predictions/{batch_idx:06}/
       writer:
@@ -23,7 +23,7 @@ trainer:
         _partial_: true
         copy_existing: true
 
-    - _target_: cargpt.callbacks.ModelSummary
+    - _target_: rmind.callbacks.ModelSummary
       depth: 5
 datamodule:
   predict:

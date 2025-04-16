@@ -1,4 +1,4 @@
-_target_: cargpt.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
 filename: model.ckpt
 hparams_updaters:

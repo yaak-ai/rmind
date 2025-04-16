@@ -5,7 +5,7 @@ defaults:
   - /datamodule: yaak/train
   - /trainer: default
   - /paths: yaak/default
-  - /wandb: yaak/cargpt
+  - /wandb: yaak/rmind
   - _self_
 
 num_heads: 4

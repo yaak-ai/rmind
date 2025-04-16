@@ -2,7 +2,7 @@ defaults:
   - /dataset/yaak/predict@predict.dataset
   - _self_
 
-_target_: cargpt.datamodules.GenericDataModule
+_target_: rmind.datamodules.GenericDataModule
 predict:
   _target_: torch.utils.data.DataLoader
   shuffle: false

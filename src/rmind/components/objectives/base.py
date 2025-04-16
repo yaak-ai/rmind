@@ -9,8 +9,8 @@ from optree.utils import unzip2
 from tensordict import TensorDict
 from torch.nn import Module
 
-from cargpt.components.episode import Episode, Modality
-from cargpt.utils.containers import OPTREE_NAMESPACE, ModuleDict
+from rmind.components.episode import Episode, Modality
+from rmind.utils.containers import OPTREE_NAMESPACE, ModuleDict
 
 type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 

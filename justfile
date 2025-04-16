@@ -39,24 +39,24 @@ generate-config:
         --strict
 
 train *ARGS: generate-config
-    uv run src/cargpt/scripts/train.py \
+    uv run src/rmind/scripts/train.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml {{ ARGS }}
 
 # train with runtime type checking and no wandb
 train-debug *ARGS: generate-config
-    WANDB_MODE=disabled uv run src/cargpt/scripts/train.py \
+    WANDB_MODE=disabled uv run src/rmind/scripts/train.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml {{ ARGS }}
 
 predict +ARGS: generate-config
-    uv run src/cargpt/scripts/predict.py \
+    uv run src/rmind/scripts/predict.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 
 # predict with runtime type checking
 predict-debug +ARGS: generate-config
-    uv run src/cargpt/scripts/predict.py \
+    uv run src/rmind/scripts/predict.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 

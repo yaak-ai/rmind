@@ -8,8 +8,8 @@ from rbyte import Dataset
 from structlog import get_logger
 from torch.utils.data import DataLoader
 
-from cargpt.components.loss import LogitBiasMixin
-from cargpt.utils.containers import OPTREE_NAMESPACE
+from rmind.components.loss import LogitBiasMixin
+from rmind.utils.containers import OPTREE_NAMESPACE
 
 logger = get_logger(__name__)
 
