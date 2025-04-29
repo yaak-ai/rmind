@@ -8,19 +8,19 @@ input_builder:
       cam_front_left: [data, cam_front_left]
 
     continuous:
-      speed: [data, meta.VehicleMotion.speed]
-      gas_pedal: [data, meta.VehicleMotion.gas_pedal_normalized]
-      gas_pedal_diff: [data, meta.VehicleMotion.gas_pedal_normalized]
-      brake_pedal: [data, meta.VehicleMotion.brake_pedal_normalized]
-      brake_pedal_diff: [data, meta.VehicleMotion.brake_pedal_normalized]
-      steering_angle: [data, meta.VehicleMotion.steering_angle_normalized]
-      steering_angle_diff: [data, meta.VehicleMotion.steering_angle_normalized]
+      speed: [data, meta/VehicleMotion/speed]
+      gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
+      gas_pedal_diff: [data, meta/VehicleMotion/gas_pedal_normalized]
+      brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
+      brake_pedal_diff: [data, meta/VehicleMotion/brake_pedal_normalized]
+      steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
+      steering_angle_diff: [data, meta/VehicleMotion/steering_angle_normalized]
       
     points:
-      waypoints: [data, waypoints.waypoints_normalized]      
+      waypoints: [data, waypoints/waypoints_normalized]      
 
     discrete:
-      turn_signal: [data, meta.VehicleState.turn_signal]
+      turn_signal: [data, meta/VehicleState/turn_signal]
 
   transforms:
     - select: [image]

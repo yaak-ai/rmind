@@ -8,16 +8,16 @@ input_builder:
       cam_front_left: [data, rgb]
 
     continuous:
-      speed: [data, meta.speed]
-      gas_pedal: [data, meta.throttle]
-      gas_pedal_diff: [data, meta.throttle]
-      brake_pedal: [data, meta.brake]
-      brake_pedal_diff: [data, meta.brake]
-      steering_angle: [data, meta.steer]
-      steering_angle_diff: [data, meta.steer]
+      speed: [data, meta/speed]
+      gas_pedal: [data, meta/throttle]
+      gas_pedal_diff: [data, meta/throttle]
+      brake_pedal: [data, meta/brake]
+      brake_pedal_diff: [data, meta/brake]
+      steering_angle: [data, meta/steer]
+      steering_angle_diff: [data, meta/steer]
 
     points:
-      waypoints: [data, waypoints.waypoints_normalized]
+      waypoints: [data, waypoints/waypoints_normalized]
 
   transforms:
     - select: [image]
