@@ -45,7 +45,6 @@ class InputBuilder(Module):
             .filter_non_tensor_data()
             .filter_empty_()
             .auto_batch_size_(batch_dims=2)
-            .refine_names("b", "t")
         )
 
         for transform in self._transforms:

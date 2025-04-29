@@ -163,21 +163,7 @@ samples:
                   tolerance: 100ms
                   strategy: nearest
 
-      - _target_: pipefunc.PipeFunc
-        renames:
-          input: aligned
-        output_name: filtered
-        mapspec: "aligned[i] -> filtered[i]"
-        func:
-          _target_: rbyte.io.DataFrameFilter
-          predicate: |
-            `VehicleMotion.gear` == '3'
-            and `VehicleMotion.speed` between 0.0 and 130.0
-            and `VehicleMotion.gas_pedal_normalized` between 0.0 and 1.0
-            and `VehicleMotion.brake_pedal_normalized` between 0.0 and 1.0
-            and `VehicleMotion.steering_angle_normalized` between -1.0 and 1.0
-
-      #@ for i, camera in enumerate(cameras):
+      #@ for camera in cameras:
       - _target_: pipefunc.PipeFunc
         renames:
           path: (@=camera@)_path
@@ -190,49 +176,64 @@ samples:
           fields:
             frame_idx:
               _target_: polars.Int32
-
-      - _target_: pipefunc.PipeFunc
-        #@ left = "filtered" if i == 0 else "joined_{}".format('_'.join(cameras[:i]))
-        #@ right = "{}_meta".format(camera)
-        #@ joined = "joined_{}".format('_'.join(cameras[:i+1]))
-        renames:
-          left: #@ left
-          right: #@ right
-        output_name: #@ joined
-        mapspec: "(@=left@)[i], (@=right@)[i] -> (@=joined@)[i]"
-        func:
-          _target_: rbyte.io.DataFrameJoiner
-          how: semi
-          left_on: ImageMetadata.(@=camera@).frame_idx
-          right_on: frame_idx
       #@ end
 
       - _target_: pipefunc.PipeFunc
-        #@ input = "joined_{}".format('_'.join(cameras))
-        renames:
-          input: (@=input@)
-        output_name: samples
-        mapspec: "(@=input@)[i] -> samples[i]"
+        output_name: query_context
+        mapspec: #@ ", ".join(["aligned[i]"] + ["{}_meta[i]".format(camera) for camera in cameras]) + " -> query_context[i]"
         func:
-          _target_: rbyte.io.FixedWindowSampleBuilder
-          index_column: ImageMetadata.(@=cameras[0]@).frame_idx
-          every: 10i
-          period: 110i
-          closed: both
-          gather_every: 10
-          length: 12
+          _target_: pipefunc.helpers.collect_kwargs
+          parameters: #@ ["aligned"] + ["{}_meta".format(camera) for camera in cameras]
 
       - _target_: pipefunc.PipeFunc
         renames:
-          input: samples
+          context: query_context
+        output_name: filtered
+        mapspec: "query_context[i] -> filtered[i]"
+        func:
+          _target_: rbyte.io.DataFrameDuckDbQuery
+        bound:
+          query: |
+            SELECT * EXCLUDE "VehicleMotion.gear"
+            FROM aligned
+              SEMI JOIN cam_front_left_meta
+                ON aligned."ImageMetadata.cam_front_left.frame_idx" = cam_front_left_meta.frame_idx
+
+            WHERE COLUMNS(*) IS NOT NULL
+              AND aligned."VehicleMotion.gear" == '3'
+              AND aligned."VehicleMotion.speed" BETWEEN 0.0 AND 130.0
+              AND aligned."VehicleMotion.gas_pedal_normalized" BETWEEN 0.0 AND 1.0
+              AND aligned."VehicleMotion.brake_pedal_normalized" BETWEEN 0.0 AND 1.0
+              AND aligned."VehicleMotion.steering_angle_normalized" BETWEEN -1.0 AND 1.0
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: filtered
+        output_name: samples
+        mapspec: "filtered[i] -> samples[i]"
+        func:
+          _target_: rbyte.io.DataFrameGroupByDynamic
+          index_column: ImageMetadata.(@=cameras[0]@).frame_idx
+          every: 10i
+          period: 120i
+          closed: left
+          gather_every:
+            ImageMetadata.cam_front_left.frame_idx: 10
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          self: samples
         output_name: samples_filtered
         mapspec: "samples[i] -> samples_filtered[i]"
         func:
-          _target_: rbyte.io.DataFrameFilter
-          predicate: |
-            not (
-                  array_upper(`VehicleMotion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
-              and array_upper(`VehicleMotion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
-              and array_upper(`VehicleMotion.speed`) >= 25.0
-              and array_get(`VehicleMotion.speed`, -1) - array_get(`VehicleMotion.speed`, 1) >= -0.05 * array_mean(`VehicleMotion.speed`)
+          _target_: hydra.utils.get_method
+          path: polars.DataFrame.sql
+        bound:
+          query: |
+            SELECT * FROM self WHERE array_length(`ImageMetadata.(@=cameras[0]@).time_stamp`) == 120
+              AND NOT (
+                    array_upper(`VehicleMotion.gas_pedal_normalized`) <= (1.0/255 + 0.001)
+                AND array_upper(`VehicleMotion.brake_pedal_normalized`) <= (1.0/164 + 0.001)
+                AND array_upper(`VehicleMotion.speed`) >= 25.0
+                AND array_get(`VehicleMotion.speed`, -1) - array_get(`VehicleMotion.speed`, 1) >= -0.05 * array_mean(`VehicleMotion.speed`)
             )
