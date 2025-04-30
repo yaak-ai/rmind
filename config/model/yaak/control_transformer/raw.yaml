@@ -52,13 +52,19 @@ input_builder:
         append:
           _target_: hydra.utils.get_object
           path: math.nan
+    
+    - select: [points, waypoints]
+      apply:
+        _target_: torchvision.transforms.v2.ToDtype
+        scale: true
+        dtype:
+          _target_: hydra.utils.get_object
+          path: torch.float32
 
-    - select: [continuous, discrete]
+    - select: [continuous, discrete, points]
       apply:
         _target_: torch.atleast_3d
         _partial_: true
-
-
 
 episode_builder:
   _target_: rmind.components.episode.EpisodeBuilder
@@ -165,15 +171,9 @@ episode_builder:
 
     points:
       waypoints:
-        _target_: rmind.components.nn.Sequential
-        _args_:
-          - _target_: torchvision.transforms.v2.ToDtype
-            dtype:
-              _target_: hydra.utils.get_object
-              path: torch.float32
-          - _target_: torch.nn.Linear
-            in_features: 2
-            out_features: ${embedding_dim}
+        _target_: torch.nn.Linear
+        in_features: 2
+        out_features: ${embedding_dim}
 
     discrete:
       turn_signal:

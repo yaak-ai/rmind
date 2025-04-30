@@ -192,7 +192,7 @@ samples:
   inputs:
     #@ for input_id in drives:
     (@=input_id@):
-      meta_path: ${paths.data}/(@=input_id@)/meta.json
+      measurements_path: ${paths.data}/(@=input_id@)/measurements.json
       waypoints_path: ${paths.data}/(@=input_id@)/waypoints.json
     #@ end
 
@@ -212,9 +212,9 @@ samples:
     functions:
       - _target_: pipefunc.PipeFunc
         renames:
-          path: meta_path
+          path: measurements_path
         output_name: meta
-        mapspec: "meta_path[i] -> meta[i]"
+        mapspec: "measurements_path[i] -> meta[i]"
         func:
           _target_: rbyte.io.DuckDbDataFrameBuilder
         bound:
