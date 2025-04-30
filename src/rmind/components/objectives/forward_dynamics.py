@@ -55,7 +55,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         observations: TensorDict = index.select(*[
             k
             for k in episode.timestep.keys_by_type[TokenType.OBSERVATION]
-            if k != (Modality.POINTS, "waypoints")
+            if k != (Modality.CONTEXT, "waypoints")
         ]).parse(embedding)
 
         observation_summary = (

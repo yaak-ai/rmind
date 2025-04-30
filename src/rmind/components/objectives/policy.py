@@ -72,7 +72,7 @@ class PolicyObjective(Objective):
             SpecialToken.OBSERVATION_SUMMARY,
         ))
 
-        waypoints = episode.input_embeddings[Modality.POINTS, "waypoints"][:, -1].mean(
+        waypoints = episode.input_embeddings[Modality.CONTEXT, "waypoints"][:, -1].mean(
             dim=1, keepdim=True
         )
 
@@ -142,7 +142,7 @@ class PolicyObjective(Objective):
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
 
-            waypoints = episode.input_embeddings[Modality.POINTS, "waypoints"][
+            waypoints = episode.input_embeddings[Modality.CONTEXT, "waypoints"][
                 :, [-1]
             ].mean(dim=1, keepdim=True)
 

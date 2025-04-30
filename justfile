@@ -14,8 +14,11 @@ install-tools:
     uv tool install --force --upgrade deptry
     uv tool install --force --upgrade pre-commit --with pre-commit-uv
 
-setup: sync install-tools
+setup: sync install-tools install-duckdb-extensions
     uvx pre-commit install --install-hooks
+
+install-duckdb-extensions:
+    uv run python -c "import duckdb; duckdb.connect().install_extension('spatial')"
 
 format *ARGS:
     uvx ruff format {{ ARGS }}

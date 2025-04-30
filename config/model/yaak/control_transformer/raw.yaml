@@ -16,7 +16,7 @@ input_builder:
       steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
       steering_angle_diff: [data, meta/VehicleMotion/steering_angle_normalized]
       
-    points:
+    context:
       waypoints: [data, waypoints/waypoints_normalized]      
 
     discrete:
@@ -53,7 +53,7 @@ input_builder:
           _target_: hydra.utils.get_object
           path: math.nan
     
-    - select: [points, waypoints]
+    - select: [context, waypoints]
       apply:
         _target_: torchvision.transforms.v2.ToDtype
         scale: true
@@ -74,7 +74,7 @@ episode_builder:
     - [observation, image, cam_front_left]
     - [observation, continuous, speed]
     - [observation, discrete, turn_signal]
-    - [observation, points, waypoints]
+    - [observation, context, waypoints]
     - [special, special, observation_summary]
     - [special, special, observation_history]
     - [action, continuous, gas_pedal]
@@ -134,7 +134,7 @@ episode_builder:
     discrete:
       _target_: rmind.components.nn.Identity
       
-    points:
+    context:
       waypoints:
         _target_: rmind.components.nn.Identity
 
@@ -169,7 +169,7 @@ episode_builder:
         num_embeddings: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
         embedding_dim: ${embedding_dim}
 
-    points:
+    context:
       waypoints:
         _target_: torch.nn.Linear
         in_features: 2
