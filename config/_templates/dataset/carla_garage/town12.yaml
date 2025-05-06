@@ -1955,15 +1955,16 @@ samples:
 
       - _target_: pipefunc.PipeFunc
         renames:
-          self: with_waypoints_normalized
+          df: with_waypoints_normalized
         output_name: filtered
         mapspec: "with_waypoints_normalized[i] -> filtered[i]"
         func:
-          _target_: hydra.utils.get_method
-          path: polars.DataFrame.sql
+          _target_: rbyte.io.DataFrameDuckDbQuery
         bound:
           query: |
-            SELECT * EXCLUDE `meta/pos_global` FROM self WHERE COLUMNS(*) IS NOT NULL
+            SELECT *
+            FROM df
+            WHERE COLUMNS(*) IS NOT NULL
 
       - _target_: pipefunc.PipeFunc
         renames:
@@ -1978,14 +1979,21 @@ samples:
 
       - _target_: pipefunc.PipeFunc
         renames:
-          self: samples
-        output_name: samples_filtered
-        mapspec: "samples[i] -> samples_filtered[i]"
+          df: samples
+        output_name: samples_cast
+        mapspec: "samples[i] -> samples_cast[i]"
         func:
-          _target_: hydra.utils.get_method
-          path: polars.DataFrame.sql
+          _target_: rbyte.io.DataFrameDuckDbQuery
         bound:
           query: |
-            SELECT * FROM self WHERE array_length(`meta/_idx_`) == 8
-        
-
+            SELECT
+                "meta/_idx_"::INT32[8] AS "meta/_idx_",
+                "meta/speed"::FLOAT[8] AS "meta/speed",
+                "meta/steer"::FLOAT[8] AS "meta/steer",
+                "meta/throttle"::FLOAT[8] AS "meta/throttle",
+                "meta/brake"::FLOAT[8] AS "meta/brake",
+                "waypoints/waypoints_normalized"::FLOAT[2][10][8] AS "waypoints/waypoints_normalized",
+            FROM
+                df
+            WHERE
+                array_length("meta/_idx_") == 8

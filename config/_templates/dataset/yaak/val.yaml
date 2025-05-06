@@ -305,18 +305,29 @@ samples:
 
       - _target_: pipefunc.PipeFunc
         renames:
-          self: samples
-        output_name: samples_cleaned
-        mapspec: "samples[i] -> samples_cleaned[i]"
+          df: samples
+        output_name: samples_cast
+        mapspec: "samples[i] -> samples_cast[i]"
         func:
-          _target_: hydra.utils.get_method
-          path: polars.DataFrame.sql
+          _target_: rbyte.io.DataFrameDuckDbQuery
         bound:
           query: |
-            SELECT * FROM self WHERE array_length(`meta/ImageMetadata.(@=cameras[0]@)/time_stamp`) == 12
-              AND NOT (
-                    array_upper(`meta/VehicleMotion/gas_pedal_normalized`) <= (1.0/255 + 0.001)
-                AND array_upper(`meta/VehicleMotion/brake_pedal_normalized`) <= (1.0/164 + 0.001)
-                AND array_upper(`meta/VehicleMotion/speed`) >= 25.0
-                AND array_get(`meta/VehicleMotion/speed`, -1) - array_get(`meta/VehicleMotion/speed`, 1) >= -0.05 * array_mean(`meta/VehicleMotion/speed`)
-            )
+            SELECT 
+                "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[12] AS "meta/ImageMetadata.cam_front_left/time_stamp",
+                "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[12] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                "meta/VehicleMotion/speed"::FLOAT[12] AS "meta/VehicleMotion/speed",
+                "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[12] AS "meta/VehicleMotion/gas_pedal_normalized",
+                "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[12] AS "meta/VehicleMotion/brake_pedal_normalized",
+                "meta/VehicleMotion/steering_angle_normalized"::FLOAT[12] AS "meta/VehicleMotion/steering_angle_normalized",
+                "meta/VehicleState/turn_signal"::INT8[12] AS "meta/VehicleState/turn_signal",
+                "waypoints/waypoints_normalized"::FLOAT[2][10][12] AS "waypoints/waypoints_normalized"
+            FROM 
+                df
+            WHERE 
+                len("meta/ImageMetadata.cam_front_left/frame_idx") == 12 
+                AND NOT (
+                    list_max("meta/VehicleMotion/gas_pedal_normalized") <= (1.0 / 255 + 0.001) AND
+                    list_max("meta/VehicleMotion/brake_pedal_normalized") <= (1.0 / 164 + 0.001) AND
+                    list_max("meta/VehicleMotion/speed") >= 25.0 AND
+                    list_last("meta/VehicleMotion/speed") - list_first("meta/VehicleMotion/speed") >= -0.05 * list_avg("meta/VehicleMotion/speed")
+                )

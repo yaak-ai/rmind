@@ -53,15 +53,7 @@ input_builder:
           _target_: hydra.utils.get_object
           path: math.nan
     
-    - select: [context, waypoints]
-      apply:
-        _target_: torchvision.transforms.v2.ToDtype
-        scale: true
-        dtype:
-          _target_: hydra.utils.get_object
-          path: torch.float32
-
-    - select: [continuous, discrete, points]
+    - select: [continuous, discrete, context]
       apply:
         _target_: torch.atleast_3d
         _partial_: true
