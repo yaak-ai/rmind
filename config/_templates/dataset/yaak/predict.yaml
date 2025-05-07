@@ -33,7 +33,7 @@ sources:
       index_column: "meta/ImageMetadata.(@=camera@)/frame_idx"
       source:
         _target_: rbyte.io.PathTensorSource
-        path: "${paths.data}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324/{:09d}.jpg"
+        path: "${paths.data}/(@=input_id@)/frames/(@=camera@).pii.mp4/576x324/{:09d}.jpg"
         decoder:
           _target_: simplejpeg.decode_jpeg
           _partial_: true
@@ -50,7 +50,7 @@ samples:
       yaak_metadata_path: ${paths.data}/(@=input_id@)/metadata.log
       waypoints_path: ${paths.data}/(@=input_id@)/waypoints.json
       #@ for camera in cameras:
-      (@=camera@)_path: ${paths.data}/(@=input_id@)/frames/(@=camera@).defish.mp4/576x324
+      (@=camera@)_path: ${paths.data}/(@=input_id@)/frames/(@=camera@).pii.mp4/576x324
       #@ end
     #@ end
 
