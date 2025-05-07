@@ -5,22 +5,19 @@ input_builder:
   _convert_: all
   keys:
     image:
-      cam_front_left: [data, cam_front_left]
+      cam_front_left: [data, rgb]
 
     continuous:
-      speed: [data, meta/VehicleMotion/speed]
-      gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
-      gas_pedal_diff: [data, meta/VehicleMotion/gas_pedal_normalized]
-      brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
-      brake_pedal_diff: [data, meta/VehicleMotion/brake_pedal_normalized]
-      steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
-      steering_angle_diff: [data, meta/VehicleMotion/steering_angle_normalized]
-      
-    context:
-      waypoints: [data, waypoints/waypoints_normalized]      
+      speed: [data, meta/speed]
+      gas_pedal: [data, meta/throttle]
+      gas_pedal_diff: [data, meta/throttle]
+      brake_pedal: [data, meta/brake]
+      brake_pedal_diff: [data, meta/brake]
+      steering_angle: [data, meta/steer]
+      steering_angle_diff: [data, meta/steer]
 
-    discrete:
-      turn_signal: [data, meta/VehicleState/turn_signal]
+    context:
+      waypoints: [data, waypoints/waypoints_normalized]
 
   transforms:
     - select: [image]
@@ -31,7 +28,7 @@ input_builder:
           _args_:
             - _target_: einops.layers.torch.Rearrange
               pattern: "... h w c -> ... c h w"
-            - _target_: torchvision.transforms.v2.CenterCrop
+            - _target_: torchvision.transforms.v2.Resize
               size: [320, 576]
             - _target_: torchvision.transforms.v2.ToDtype
               scale: true
@@ -52,8 +49,8 @@ input_builder:
         append:
           _target_: hydra.utils.get_object
           path: math.nan
-    
-    - select: [continuous, discrete, context]
+
+    - select: [continuous, context]
       apply:
         _target_: torch.atleast_3d
         _partial_: true
@@ -65,7 +62,6 @@ episode_builder:
   timestep:
     - [observation, image, cam_front_left]
     - [observation, continuous, speed]
-    - [observation, discrete, turn_signal]
     - [observation, context, waypoints]
     - [special, special, observation_summary]
     - [special, special, observation_history]
@@ -122,9 +118,6 @@ episode_builder:
             out_range: [-1.0, 1.0]
           - _target_: rmind.components.norm.MuLawEncoding
             quantization_channels: ${embedding_dim}
-
-    discrete:
-      _target_: rmind.components.nn.Identity
       
     context:
       waypoints:
@@ -166,12 +159,6 @@ episode_builder:
         _target_: torch.nn.Linear
         in_features: 2
         out_features: ${embedding_dim}
-
-    discrete:
-      turn_signal:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 3
-        embedding_dim: ${embedding_dim}
 
     special:
       _target_: rmind.components.nn.Embedding
@@ -309,24 +296,12 @@ objectives:
               - ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.speed.bins}
           bias: False
-      discrete:
-        turn_signal:
-          _target_: torch.nn.Linear
-          in_features:
-            _target_: operator.mul
-            _args_:
-              - 3
-              - ${embedding_dim}
-          out_features: ${model.episode_builder.embeddings.discrete.turn_signal.num_embeddings}
-          bias: False
 
     targets:
       image:
         cam_front_left: [input_embeddings, image, cam_front_left]
       continuous:
         speed: [input_tokens, continuous, speed]
-      discrete:
-        turn_signal: [input_tokens, discrete, turn_signal]
 
     losses:
       _target_: rmind.utils.ModuleDict
@@ -336,9 +311,6 @@ objectives:
           reduction: mean
       continuous:
         speed:
-          _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-      discrete:
-        turn_signal:
           _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
   random_masked_hindsight_control:
@@ -442,6 +414,7 @@ optimizer:
 lr_scheduler:
   interval: step
   scheduler:
+    # TODO: this is like 5 lines -- reimplement and drop transformers dep?
     _target_: transformers.get_cosine_schedule_with_warmup
     num_warmup_steps: 25000
     num_training_steps: 250000

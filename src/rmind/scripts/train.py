@@ -45,7 +45,9 @@ def train(cfg: DictConfig) -> None:
             ).splitlines()
         }
 
-        run.log_code(root=".", include_fn=lambda path: Path(path).resolve() in paths)
+        _ = run.log_code(
+            root=".", include_fn=lambda path: Path(path).resolve() in paths
+        )
 
     return _train(cfg)
 

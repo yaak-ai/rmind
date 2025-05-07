@@ -35,6 +35,7 @@ class Modality(StrEnum):
     CONTINUOUS = auto()
     DISCRETE = auto()
     SPECIAL = auto()
+    CONTEXT = auto()
 
 
 @unique
@@ -97,6 +98,7 @@ class Index(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArgument
     continuous: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     discrete: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     special: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
+    context: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
 
     def parse(self, src: Tensor, dim: int = 1) -> TensorDict:
         # https://github.com/pytorch/pytorch/issues/30574
