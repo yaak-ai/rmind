@@ -984,16 +984,16 @@ wheels = [
 
 [[package]]
 name = "pipefunc"
-version = "0.68.0"
+version = "0.76.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "networkx" },
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/52/fac647b5baa9c29b1d5c54547d1e98ec867c89c7d25fb2edc835f8ae72df/pipefunc-0.68.0.tar.gz", hash = "sha256:c22a0bdc887022ed43a8667d1eada7839d95198fcf8fb36ca8d271613dbbd776", size = 340214 }
+sdist = { url = "https://files.pythonhosted.org/packages/57/87/366d3d2a872d294ccab21547e50404e86d0bef63ef89adc981a83a3e324b/pipefunc-0.76.0.tar.gz", hash = "sha256:6c7e84848e305972e9981ddbc4ea2c78554de2cfaeb031dda303d3768a2e03de", size = 357295 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/14/99ef307b1125aeae7fcb377af8e953daa74b5ae65d7411fff55371a9e638/pipefunc-0.68.0-py3-none-any.whl", hash = "sha256:a3a17a814c645b7aefca6181fd878c4f941a9b769441888d58e83bd9857c1869", size = 180019 },
+    { url = "https://files.pythonhosted.org/packages/c8/fa/6289a79ba4284b66a6854acd1abeca063e74a147190764d2c16425a051d8/pipefunc-0.76.0-py3-none-any.whl", hash = "sha256:aecceed730fa75740b52c30aa1b1dfda4b9fae702f39c007e4a506e68b4383f8", size = 188887 },
 ]
 
 [package.optional-dependencies]
@@ -1356,7 +1356,7 @@ wheels = [
 
 [[package]]
 name = "rbyte"
-version = "0.26.0"
+version = "0.27.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cachetools" },
@@ -1374,9 +1374,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3b/a9/66869af65d7213bac8fe0ab5d60c630cc469bff937b6eb2578506a605b36/rbyte-0.26.0.tar.gz", hash = "sha256:42a13431a14c55449c177118324defcdd9e02307721b50e1309d88047a7af5d5", size = 30721 }
+sdist = { url = "https://files.pythonhosted.org/packages/51/8f/ec999d36dba7883a5c09cde6aff94f4b25764ac0eb4717fb2057421d82f7/rbyte-0.27.0.tar.gz", hash = "sha256:9aa7ec46a5a29f98d66b77537865fc338a139946de29727b8d7f838e98630870", size = 29754 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/d3/37dfdb045bc48a657772eb7a7b291237b0b295b5fd40f723496d306ec955/rbyte-0.26.0-py3-none-any.whl", hash = "sha256:2a1a1fbb76eaf4d2a05d96f8a145fec7c5204159b55bbb339b4d4f0e2c1d42c6", size = 49032 },
+    { url = "https://files.pythonhosted.org/packages/3d/b8/3fb4cbd1c56b07581c09693d8db1453a320491b3c9f6b067c082c9526d26/rbyte-0.27.0-py3-none-any.whl", hash = "sha256:13334a6ca0d5f48d72d2f1c637077dcc766531a37f07abc1989b349acb38b8c9", size = 46678 },
 ]
 
 [package.optional-dependencies]
@@ -1543,7 +1543,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11.4" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3.2" },
     { name = "pytorch-lightning", specifier = ">=2.5.0.post0" },
-    { name = "rbyte", extras = ["geo", "jpeg", "yaak"], specifier = "==0.26.0" },
+    { name = "rbyte", extras = ["geo", "jpeg", "yaak"], specifier = "==0.27.0" },
     { name = "rbyte", extras = ["visualize"], marker = "extra == 'predict'" },
     { name = "structlog", specifier = ">=25.2.0" },
     { name = "tensordict", specifier = ">=0.8.2" },

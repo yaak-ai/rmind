@@ -982,3 +982,4 @@ samples:
                     list_max("meta/VehicleMotion/speed") >= 25.0 AND
                     list_last("meta/VehicleMotion/speed") - list_first("meta/VehicleMotion/speed") >= -0.05 * list_avg("meta/VehicleMotion/speed")
                 )
+                AND list_max(apply(FLATTEN(FLATTEN("waypoints/waypoints_normalized")), x -> ABS(x))) <= 300
