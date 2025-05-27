@@ -144,7 +144,7 @@ class PolicyObjective(Objective):
 
             waypoints = episode.input_embeddings[Modality.CONTEXT, "waypoints"][
                 :, [-1]
-            ].mean(dim=1, keepdim=True)
+            ].mean(dim=2, keepdim=True)
 
             features = rearrange(
                 [observation_summary, observation_history, waypoints],
