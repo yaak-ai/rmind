@@ -2,6 +2,7 @@ from typing import override
 
 import pytorch_lightning as pl
 import torch
+import torchvision
 from optree import tree_flatten_with_path
 from pytorch_lightning.callbacks import Callback
 from rbyte import Dataset
@@ -73,6 +74,21 @@ class LogitBiasSetter(Callback):
             logger.debug("setting logit bias", objective=objective_key, loss=loss_key)
             head = objectives[objective_key].heads.get(loss_key)
             freq = torch.bincount(
-                labels[*loss_key], weights=None, minlength=head.out_features
+                labels[*loss_key], weights=None, minlength=self._get_out_features(head)
             )
             loss.logit_bias = ((freq + 1) / freq.sum()).log()
+
+    @staticmethod
+    def _get_out_features(head: torch.nn.Module) -> int:
+        match head:
+            case torch.nn.Linear():
+                return head.out_features
+            case torchvision.ops.MLP():
+                for layer in reversed(head):
+                    if isinstance(layer, torch.nn.Linear):
+                        return layer.out_features
+                msg = "No Linear layer found in MLP"
+                raise ValueError(msg)
+            case _:
+                msg = f"Unsupported head type: {type(head)}"
+                raise NotImplementedError(msg)

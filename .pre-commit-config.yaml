@@ -6,7 +6,7 @@ repos:
       - id: validate-pyproject
 
   - repo: https://github.com/asottile/pyupgrade
-    rev: v3.19.1
+    rev: v3.20.0
     hooks:
       - id: pyupgrade
 
@@ -21,14 +21,14 @@ repos:
       - id: deptry
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.7
+    rev: v0.11.13
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
   - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-    rev: 1.29.2
+    rev: 1.29.4
     hooks:
       - id: basedpyright
 

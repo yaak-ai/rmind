@@ -1,6 +1,5 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from operator import itemgetter
 from typing import Any, cast, override
 
 import torch
@@ -152,29 +151,38 @@ class PolicyObjective(Objective):
             )
 
             logits = self.heads.forward(features, batch_size=[b, 1])
+            if set(logits.keys()) != {Modality.DISCRETE, Modality.CONTINUOUS}:  # pyright: ignore[reportArgumentType]
+                msg = f"Only {Modality.DISCRETE} and {Modality.CONTINUOUS} modalities are supported, got {logits.keys()}"
+                raise ValueError(msg)
 
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION) in result_keys:
-                result[result_key] = logits.apply(itemgetter((..., 0))).apply(  # pyright: ignore[reportAttributeAccessIssue]
-                    timestep_padder, batch_size=[b, t]
-                )
+                result[result_key] = logits.named_apply(
+                    lambda k, x: x[..., 0]
+                    if k[0] == Modality.CONTINUOUS
+                    else torch.argmax(x, dim=-1),
+                    nested_keys=True,
+                ).apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
 
             if (result_key := PredictionResultKey.PREDICTION_STD) in result_keys:
-                result[result_key] = (
-                    logits.apply(itemgetter((..., 1)))
-                    .apply(lambda x: torch.sqrt(torch.exp(x)))  # pyright: ignore[reportAttributeAccessIssue]
-                    .apply(timestep_padder, batch_size=[b, t])
-                )
+                result[result_key] = logits.named_apply(
+                    lambda k, x: torch.sqrt(torch.exp(x[..., 1]))
+                    if k[0] == Modality.CONTINUOUS
+                    else torch.ones_like(x[..., 0]),
+                    nested_keys=True,
+                ).apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(
-                    lambda x: gauss_prob(
+                result[result_key] = logits.named_apply(
+                    lambda k, x: gauss_prob(
                         x[..., 0], mean=x[..., 0], std=torch.sqrt(torch.exp(x[..., 1]))
                     )
-                ).apply(  # pyright: ignore[reportAttributeAccessIssue]
-                    timestep_padder, batch_size=[b, t]
-                )
+                    if k[0] == Modality.CONTINUOUS
+                    else F.softmax(x, dim=-1),
+                    nested_keys=True,
+                ).apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
+
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
                     logits.named_apply(
@@ -182,7 +190,9 @@ class PolicyObjective(Objective):
                             episode.input[:, -1][k],
                             mean=x[..., 0].squeeze(-1),
                             std=torch.sqrt(torch.exp(x[..., 1].squeeze(-1))),
-                        ),
+                        )
+                        if k[0] == Modality.CONTINUOUS
+                        else F.log_softmax(x, dim=-1),
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
@@ -191,7 +201,12 @@ class PolicyObjective(Objective):
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(itemgetter((..., 0)))
+                    logits.named_apply(
+                        lambda k, x: x[..., 0]
+                        if k[0] == Modality.CONTINUOUS
+                        else torch.argmax(x, dim=-1),
+                        nested_keys=True,
+                    )
                     .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(
                         lambda pred, gt: F.l1_loss(
