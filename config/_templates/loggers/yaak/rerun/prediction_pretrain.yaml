@@ -6,15 +6,16 @@ _target_: rbyte.viz.loggers.RerunLogger
 _convert_: all
 _recursive_: false
 application_id: [batch, meta, input_id]
+port: 9877
 schema:
   batch/(@=cameras[0]@)/time_stamp:
     _target_: rerun.TimeNanosColumn
-    times: [batch, data, "ImageMetadata.(@=cameras[0]@).time_stamp"]
+    times: [batch, data, "meta/ImageMetadata.(@=cameras[0]@)/time_stamp"]
 
   #@ for camera in cameras:
   batch/(@=camera@)/frame_idx:
     _target_: rerun.TimeSequenceColumn
-    times: [batch, data, ImageMetadata.(@=camera@).frame_idx]
+    times: [batch, data, meta/ImageMetadata.(@=camera@)/frame_idx]
 
   batch/(@=camera@):
     - _target_: rerun.Image.columns
@@ -46,11 +47,10 @@ schema:
   #@ end
 
   #@ for key in [
-  #@     "VehicleMotion.brake_pedal_normalized",
-  #@     "VehicleMotion.gas_pedal_normalized",
-  #@     "VehicleMotion.steering_angle_normalized",
-  #@     "VehicleMotion.gear",
-  #@     "VehicleState.turn_signal",
+  #@     "meta/VehicleMotion/brake_pedal_normalized",
+  #@     "meta/VehicleMotion/gas_pedal_normalized",
+  #@     "meta/VehicleMotion/steering_angle_normalized",
+  #@     "meta/VehicleState/turn_signal",
   #@ ]:
   batch/(@=key@):
     - _target_: rerun.Scalar.columns

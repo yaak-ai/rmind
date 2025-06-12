@@ -124,7 +124,7 @@ class PolicyObjective(Objective):
             embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
 
             embeddings = (
-                episode.index[[-1]]
+                episode.index[-1]
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
@@ -143,12 +143,12 @@ class PolicyObjective(Objective):
             ))
 
             waypoints = episode.input_embeddings[Modality.CONTEXT, "waypoints"][
-                :, [-1]
+                :, -1
             ].mean(dim=1, keepdim=True)
 
             features = rearrange(
                 [observation_summary, observation_history, waypoints],
-                "i b t 1 d -> b t 1 (i d)",
+                "i b 1 d -> b 1 (i d)",
             )
 
             logits = self.heads.forward(features, batch_size=[b, 1])
@@ -194,7 +194,9 @@ class PolicyObjective(Objective):
                     logits.apply(itemgetter((..., 0)))
                     .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
                     .apply(
-                        lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
+                        lambda pred, gt: F.l1_loss(
+                            pred, gt.squeeze(-1), reduction="none"
+                        ),
                         episode.input,
                         nested_keys=True,
                     )

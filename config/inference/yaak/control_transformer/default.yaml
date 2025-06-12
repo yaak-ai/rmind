@@ -4,7 +4,7 @@ defaults:
   - /model: yaak/control_transformer/finetuned
   - /datamodule: yaak/predict
   - /paths: yaak/default
-  - /loggers/yaak/rerun/prediction@rerun_logger
+  - /loggers/yaak/rerun/prediction_policy@rerun_logger
   - _self_
 
 rerun_logger: ???
