@@ -296,7 +296,7 @@ samples:
 
       - _target_: pipefunc.PipeFunc
         renames:
-          input: with_waypoints_normalized
+          df: with_waypoints_normalized
         output_name: with_waypoints_filtered
         mapspec: "with_waypoints_normalized[i] -> with_waypoints_filtered[i]"
         func:
@@ -306,9 +306,9 @@ samples:
             SELECT
               *
             FROM
-              with_waypoints_normalized
+              df
             WHERE
-              list_max(apply(FLATTEN("waypoints/waypoints_normalized"), x -> ABS(x))) <= 300
+              list_max(apply(FLATTEN("waypoints/waypoints_normalized"), x -> ABS(x))) < 300
 
       - _target_: pipefunc.PipeFunc
         renames:
