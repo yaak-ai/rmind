@@ -16,8 +16,6 @@ from pytorch_lightning.core.saving import (
     pl_load,  # pyright: ignore[reportPrivateImportUsage]
 )
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.strategies import SingleDeviceStrategy
-from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.utilities.migration.utils import (
     _pl_migrate_checkpoint,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
     pl_legacy_patch,
@@ -37,7 +35,6 @@ from rmind.utils._wandb import LoadableFromArtifact
 
 if TYPE_CHECKING:
     from rmind.components.episode import EpisodeBuilder
-    from rmind.components.objectives import ObjectiveScheduler
     from rmind.utils import ModuleDict
 
 logger = get_logger(__name__)
@@ -66,15 +63,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)  # pyright: ignore[reportAttributeAccessIssue]
         self.encoder: Module = instantiate(self.hparams.encoder)  # pyright: ignore[reportAttributeAccessIssue]
         self.objectives: ModuleDict = instantiate(self.hparams.objectives)  # pyright: ignore[reportAttributeAccessIssue]
-        self.objective_scheduler: ObjectiveScheduler | None = instantiate(
-            self.hparams.get("objective_scheduler")
-        )
-        if self.objective_scheduler is not None and (
-            (specified := self.objectives.keys())
-            != (scheduled := set(self.objective_scheduler.objectives))
-        ):
-            msg = f"objective scheduler enabled but {specified} != {scheduled}"
-            raise ValueError(msg)
 
     @override
     @_restricted_classmethod
@@ -142,42 +130,21 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def training_step(self, batch: TensorDict, _batch_idx: int) -> Tensor:
-        all_objectives = tuple(self.objectives.keys())
-        scheduled_objectives = (
-            all_objectives
-            if self.objective_scheduler is None
-            else tuple(self.objective_scheduler.sample())
-        )
-
-        match strategy := self.trainer.strategy:
-            case SingleDeviceStrategy():
-                objectives_to_compute = scheduled_objectives
-
-            case DDPStrategy():
-                # compute all objectives since we need a static graph
-                objectives_to_compute = all_objectives
-
-            case _:
-                msg = f"Don't know the correct way to handle {strategy}"
-                raise NotImplementedError(msg)
-
         input = self.input_builder.forward(batch)
         episode = self.episode_builder.forward(input)
 
         metrics = TensorDict(
             {
-                name: self.objectives[name].forward(episode, self.encoder)
-                for name in objectives_to_compute
+                name: objective.forward(episode, self.encoder)
+                for name, objective in self.objectives.items()
             },
             device=input.device,
         )
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]  # noqa: SIM118
-        losses.select(*(set(metrics.keys()) - set(scheduled_objectives))).zero_()  # pyright: ignore[reportArgumentType]
-        loss_total = losses.sum(reduce=True)
-
-        metrics["loss", "total"] = loss_total
-
+        metrics["loss", "total"] = sum(
+            losses.values(include_nested=True, leaves_only=True)
+        )
         if (
             isinstance(self.logger, WandbLogger)
             and (step := self.trainer.global_step) == 0
@@ -201,7 +168,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             sync_dist=True,
         )
 
-        return loss_total
+        return metrics["loss", "total"]
 
     @override
     def validation_step(self, batch: TensorDict, _batch_idx: int) -> Tensor:

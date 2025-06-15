@@ -8,9 +8,6 @@ hparams_updaters:
   # 2. delete unnecessary keys
   - _target_: funcy.del_in
     _partial_: true
-    path: ["objective_scheduler"]
-  - _target_: funcy.del_in
-    _partial_: true
     path: ["objectives", "inverse_dynamics", "losses"]
   - _target_: funcy.del_in
     _partial_: true
