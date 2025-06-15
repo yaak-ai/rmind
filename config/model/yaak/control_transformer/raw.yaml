@@ -15,9 +15,9 @@ input_builder:
       brake_pedal_diff: [data, meta/VehicleMotion/brake_pedal_normalized]
       steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
       steering_angle_diff: [data, meta/VehicleMotion/steering_angle_normalized]
-      
+
     context:
-      waypoints: [data, waypoints/waypoints_normalized]      
+      waypoints: [data, waypoints/waypoints_normalized]
 
     discrete:
       turn_signal: [data, meta/VehicleState/turn_signal]
@@ -125,7 +125,7 @@ episode_builder:
 
     discrete:
       _target_: rmind.components.nn.Identity
-      
+
     context:
       waypoints:
         _target_: rmind.components.nn.Identity
@@ -142,6 +142,8 @@ episode_builder:
           freeze: True
         - _target_: einops.layers.torch.Rearrange
           pattern: "... c h w -> ... (h w) c"
+        - _target_: torch.nn.LayerNorm
+          normalized_shape: ${embedding_dim}
 
     continuous:
       speed:
@@ -163,9 +165,13 @@ episode_builder:
 
     context:
       waypoints:
-        _target_: torch.nn.Linear
-        in_features: 2
-        out_features: ${embedding_dim}
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.Linear
+            in_features: 2
+            out_features: ${embedding_dim}
+          - _target_: torch.nn.LayerNorm
+            normalized_shape: ${embedding_dim}
 
     discrete:
       turn_signal:
@@ -212,26 +218,14 @@ episode_builder:
       embedding_dim: ${embedding_dim}
 
 encoder:
-  _target_: rmind.components.llm.xFormerEncoder
-  config:
-    _target_: xformers.factory.xFormerEncoderConfig
-    reversible: True
-    num_layers: ${num_layers}
-    dim_model: ${embedding_dim}
-    residual_norm_style: pre
-    multi_head_config:
-      dim_model: ${embedding_dim}
-      num_heads: ${num_heads}
-      residual_dropout: 0.1
-      attention:
-        name: scaled_dot_product
-        dropout: 0.1
-        causal: False
-    feedforward_config:
-      name: MLPGLU
-      dropout: 0.1
-      activation: gelu
-      hidden_layer_multiplier: 1
+  _target_: rmind.components.llm.TransformerEncoder
+  dim_model: ${embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  attn_dropout: 0.1
+  resid_dropout: 0.1
+  mlp_dropout: 0.1
+  hidden_layer_multiplier: 1
 
 objectives:
   _target_: rmind.utils.ModuleDict
@@ -430,15 +424,6 @@ objectives:
 
         steering_angle_diff:
           _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-
-objective_scheduler:
-  _target_: rmind.components.objectives.ObjectiveScheduler
-  schedule:
-    inverse_dynamics: 0.25
-    forward_dynamics: 0.25
-    random_masked_hindsight_control: 0.25
-    memory_extraction: 0.25
-  sample_size: 1
 
 optimizer:
   _target_: rmind.components.optimizers.SelectiveAdamW

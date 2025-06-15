@@ -1,4 +1,4 @@
-from typing import override
+from typing import final, override
 
 import torch
 from pydantic import validate_call

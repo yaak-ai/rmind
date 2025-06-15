@@ -1497,7 +1497,6 @@ dependencies = [
     { name = "torchaudio" },
     { name = "torchinfo" },
     { name = "torchvision" },
-    { name = "xformers" },
 ]
 
 [package.optional-dependencies]
