@@ -1,4 +1,5 @@
 from typing import final, override
+from typing import final, override
 
 import torch
 from pydantic import validate_call
@@ -117,4 +118,4 @@ class Normalize(Module):
 
     @override
     def forward(self, input: Tensor) -> Tensor:
-        return torch.nn.functional.normalize(input, dim=self.dim, p=self.p)
+        return input / torch.norm(input, dim=self.dim, p=self.p, keepdim=True)
