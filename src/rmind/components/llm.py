@@ -1,72 +1,92 @@
-from typing import Any, Literal, final, override
+from typing import Any, override
 
-import torch
-from einops import rearrange, repeat
 from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
 
+
 class TransformerEncoderBlock(nn.Module):
-    def __init__(self, embedding_dim, num_heads, attn_dropout=0.1, resid_dropout=0.1, ffn_dropout=0.1, activation="gelu", hidden_layer_multiplier=1):
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        embedding_dim: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+    ) -> None:
         super().__init__()
 
         # f
-        self.pre_norm = nn.LayerNorm(embedding_dim)  # pre-norm
+        self.pre_norm: nn.LayerNorm = nn.LayerNorm(embedding_dim)  # pre-norm
 
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim=embedding_dim, num_heads=num_heads, dropout=attn_dropout, batch_first=True
+        self.mha: nn.MultiheadAttention = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
         )
 
-        self.resid_drop = nn.Dropout(resid_dropout, inplace=False)
+        self.resid_drop: nn.Dropout = nn.Dropout(resid_dropout, inplace=False)
 
         # g
-        self.post_norm = nn.LayerNorm(embedding_dim)  # ffn
+        self.post_norm: nn.LayerNorm = nn.LayerNorm(embedding_dim)  # ffn
 
-        self.mlp = MLPGLU(
-                dim_model=embedding_dim,
-                dropout=ffn_dropout,
-                activation="gelu",
-                hidden_layer_multiplier=hidden_layer_multiplier,
-            )
+        self.mlp: MLPGLU = MLPGLU(
+            dim_model=embedding_dim,
+            dropout=mlp_dropout,
+            activation="gelu",
+            hidden_layer_multiplier=hidden_layer_multiplier,
+        )
 
-    def forward(self, x, attn_mask=None):
-
+    @override
+    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
         # f
         residual = x
         x_norm = self.pre_norm(x)
-        mha, _ = self.self_attn(x_norm, x_norm, x_norm, attn_mask=attn_mask)
+        mha, _ = self.mha(x_norm, x_norm, x_norm, attn_mask=mask, need_weights=False)
         x = residual + self.resid_drop(mha)
 
         # g
         residual = x
-        y = residual + self.mlp(self.post_norm(x))
-
-        return y
+        mlp = self.mlp(self.post_norm(x))
+        return residual + mlp
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, dim_model, num_layers, num_heads, attn_dropout=0.1, resid_dropout=0.1, ffn_dropout=0.1, hidden_layer_multiplier=1):
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        dim_model: int,
+        num_layers: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+    ) -> None:
         super().__init__()
-        self.layers = nn.ModuleList([
+        self.layers = nn.ModuleList([  # pyright: ignore[reportUnannotatedClassAttribute]
             TransformerEncoderBlock(
                 embedding_dim=dim_model,
                 num_heads=num_heads,
                 attn_dropout=attn_dropout,
-                ffn_dropout=ffn_dropout,
+                mlp_dropout=mlp_dropout,
                 resid_dropout=resid_dropout,
-                hidden_layer_multiplier=hidden_layer_multiplier
-            ) for _ in range(num_layers)
+                hidden_layer_multiplier=hidden_layer_multiplier,
+            )
+            for _ in range(num_layers)
         ])
         # https://github.com/karpathy/nanoGPT/blob/master/model.py#L182
-        self.layer_norm = nn.LayerNorm(dim_model)
+        self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
 
-
-    def forward(self, x, attn_mask=None):
+    @override
+    def forward(self, src: Tensor, mask: Tensor) -> Tensor:
+        x = src
 
         for layer in self.layers:
             if self.training:
-                x = checkpoint(layer, x, attn_mask)
+                x = checkpoint(layer, x, mask, use_reentrant=False)
             else:
-                x = layer(x, attn_mask)
+                x = layer(x, mask)
 
         return self.layer_norm(x)
 
@@ -83,10 +103,14 @@ class MLPGLU(nn.Module):
     ) -> None:
         super().__init__()
         dim_mlp = hidden_layer_multiplier * dim_model
-        self.l1 = nn.Linear(in_features=dim_model, out_features=dim_mlp * 2, bias=bias)
-        self.a1 = nn.GELU()
-        self.d1 = nn.Dropout(dropout)
-        self.l2 = nn.Linear(in_features=dim_mlp, out_features=dim_model, bias=bias)
+        self.l1: nn.Linear = nn.Linear(
+            in_features=dim_model, out_features=dim_mlp * 2, bias=bias
+        )
+        self.a1: nn.GELU = nn.GELU()
+        self.d1: nn.Dropout = nn.Dropout(dropout)
+        self.l2: nn.Linear = nn.Linear(
+            in_features=dim_mlp, out_features=dim_model, bias=bias
+        )
 
     @override
     def forward(self, input: Tensor) -> Tensor:
