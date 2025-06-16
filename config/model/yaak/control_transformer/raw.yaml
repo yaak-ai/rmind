@@ -218,7 +218,7 @@ encoder:
   num_heads: ${num_heads}
   attn_dropout: 0.1
   resid_dropout: 0.1
-  ffn_dropout: 0.1
+  mlp_dropout: 0.1
   hidden_layer_multiplier: 1
 
 objectives:
