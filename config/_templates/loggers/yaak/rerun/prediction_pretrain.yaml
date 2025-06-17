@@ -90,19 +90,19 @@ schema:
   #@ predictions = {
   #@     "forward_dynamics": {
   #@         k: {"continuous": ["speed"], "discrete": ["turn_signal"]}
-  #@         for k in ["ground_truth", "prediction", "score_l1", "score_logprob"]
+  #@         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
   #@     },
   #@     "inverse_dynamics": {
   #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
-  #@         for k in ["ground_truth", "prediction", "score_l1", "score_logprob"]
+  #@         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
   #@     },
   #@     "memory_extraction": {
   #@         k: {"continuous": ["gas_pedal_diff", "brake_pedal_diff", "steering_angle_diff"]}
-  #@         for k in ["ground_truth", "prediction"]
+  #@         for k in ["ground_truth", "prediction_value"]
   #@     },
   #@     "random_masked_hindsight_control": {
   #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
-  #@         for k in ["ground_truth", "prediction", "score_l1", "score_logprob"]
+  #@         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
   #@     },
   #@ }
   #@ for key_objective, data_objective in predictions.items():

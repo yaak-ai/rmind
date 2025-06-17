@@ -83,12 +83,17 @@ class LogitBiasSetter(Callback):
         match head:
             case torch.nn.Linear():
                 return head.out_features
-            case torchvision.ops.MLP():
-                for layer in reversed(head):
-                    if isinstance(layer, torch.nn.Linear):
-                        return layer.out_features
-                msg = "No Linear layer found in MLP"
-                raise ValueError(msg)
+            case torch.nn.Sequential():
+                try:
+                    last_linear_layer = next(
+                        layer
+                        for layer in reversed(head)
+                        if isinstance(layer, torch.nn.Linear)
+                    )
+                except StopIteration:
+                    raise ValueError("No Linear layer found")
+                else:
+                    return last_linear_layer.out_features
             case _:
                 msg = f"Unsupported head type: {type(head)}"
                 raise NotImplementedError(msg)

@@ -98,7 +98,7 @@ class MemoryExtractionObjective(Objective):
             )
 
         if result_keys & {
-            PredictionResultKey.PREDICTION,
+            PredictionResultKey.PREDICTION_VALUE,
             PredictionResultKey.PREDICTION_PROBS,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
@@ -116,7 +116,7 @@ class MemoryExtractionObjective(Objective):
 
             timestep_padder = nan_padder(pad=(1, 0), dim=1)
 
-            if (result_key := PredictionResultKey.PREDICTION) in result_keys:
+            if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
