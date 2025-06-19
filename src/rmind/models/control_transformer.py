@@ -124,9 +124,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                         case _:
                             raise NotImplementedError
                 checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = hparams
-                for key in list(checkpoint["state_dict"].keys()):
-                    if "_logit_bias" in key:
-                        checkpoint["state_dict"].pop(key)
 
                 model = _load_state(cls, checkpoint, strict=strict, **kwargs)
                 state_dict = checkpoint["state_dict"]

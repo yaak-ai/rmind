@@ -2,7 +2,6 @@ from typing import override
 
 import pytorch_lightning as pl
 import torch
-import torchvision
 from optree import tree_flatten_with_path
 from pytorch_lightning.callbacks import Callback
 from rbyte import Dataset
@@ -91,7 +90,8 @@ class LogitBiasSetter(Callback):
                         if isinstance(layer, torch.nn.Linear)
                     )
                 except StopIteration:
-                    raise ValueError("No Linear layer found")
+                    msg = "No Linear layer found"
+                    raise ValueError(msg)
                 else:
                     return last_linear_layer.out_features
             case _:
