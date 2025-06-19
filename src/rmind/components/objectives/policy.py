@@ -222,7 +222,9 @@ class PolicyObjective(Objective):
                     case PredictionResultKey.PREDICTION_PROBS:
                         result = F.softmax(x, dim=-1)
                     case PredictionResultKey.SCORE_LOGPROB:
-                        result = F.cross_entropy(x, gt.long(), reduction="none")
+                        result = F.cross_entropy(
+                            x.squeeze(1), gt.squeeze(1).long(), reduction="none"
+                        ).unsqueeze(1)
                     case PredictionResultKey.SCORE_L1:
                         result = F.l1_loss(
                             prediction.float(), gt.float(), reduction="none"
