@@ -160,107 +160,82 @@ class PolicyObjective(Objective):
 
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
-
-            result.update(
-                {
-                    result_key: logits.named_apply(
-                        lambda action_type, x: PolicyObjective._process_logits(action_type, x, result_key, episode.input),
-                        nested_keys=True,
-                    ).apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
-                    for result_key in result_keys & {
-                        PredictionResultKey.PREDICTION_VALUE,
-                        PredictionResultKey.PREDICTION_STD,
-                        PredictionResultKey.PREDICTION_PROBS,
-                        PredictionResultKey.SCORE_LOGPROB,
-                        PredictionResultKey.SCORE_L1,
-                    }
+            result.update({
+                result_key: logits.named_apply(
+                    lambda action_type,
+                    x,
+                    result_key=result_key: PolicyObjective._process_logits(
+                        action_type, x, result_key, episode
+                    ),
+                    nested_keys=True,
+                ).apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
+                for result_key in result_keys
+                & {
+                    PredictionResultKey.PREDICTION_VALUE,
+                    PredictionResultKey.PREDICTION_STD,
+                    PredictionResultKey.PREDICTION_PROBS,
+                    PredictionResultKey.SCORE_LOGPROB,
+                    PredictionResultKey.SCORE_L1,
                 }
-            )
+            })
 
         return TensorDict(result).auto_batch_size_(2)
 
     @staticmethod
-    def _process_logits(
+    def _process_logits(  # noqa: C901, PLR0912
         action_type: ActionType,
         x: torch.Tensor,
         prediction_result_key: PredictionResultKey,
-        episode_input: TensorDict,
+        episode: Episode,
     ) -> torch.Tensor:
-        gt = episode_input[action_type][:, -1]
-        match prediction_result_key:
-            case PredictionResultKey.PREDICTION_VALUE:
-                match action_type:
-                    case (Modality.CONTINUOUS, _):
-                        return x[..., 0]
-                    case (Modality.DISCRETE, "turn_signal"):
-                        return torch.argmax(x, dim=-1)
+        gt = episode.input[action_type][:, -1]
+        result: torch.Tensor
+
+        match action_type:
+            case (Modality.CONTINUOUS, _):
+                mean = x[..., 0]
+                std = torch.sqrt(torch.exp(x[..., 1]))
+
+                match prediction_result_key:
+                    case PredictionResultKey.PREDICTION_VALUE:
+                        result = mean
+                    case PredictionResultKey.PREDICTION_STD:
+                        result = std
+                    case PredictionResultKey.PREDICTION_PROBS:
+                        result = gauss_prob(mean, mean=mean, std=std)
+                    case PredictionResultKey.SCORE_LOGPROB:
+                        result = -torch.log(gauss_prob(gt, mean=mean, std=std))
+                    case PredictionResultKey.SCORE_L1:
+                        result = F.l1_loss(mean, gt, reduction="none")
                     case _:
-                        msg = f"Invalid action type: {action_type}"
+                        msg = f"Invalid prediction key for continuous action: {prediction_result_key}"
                         raise ValueError(msg)
 
-            case PredictionResultKey.PREDICTION_STD:
-                match action_type:
-                    case (Modality.CONTINUOUS, _):
-                        return torch.sqrt(torch.exp(x[..., 1]))
-                    case (Modality.DISCRETE, "turn_signal"):
-                        return torch.ones_like(x[..., 0])
-                    case _:
-                        msg = f"Invalid action type: {action_type}"
-                        raise ValueError(msg)
+            case (Modality.DISCRETE, "turn_signal"):
+                prediction = torch.argmax(x, dim=-1)
 
-            case PredictionResultKey.PREDICTION_PROBS:
-                match action_type:
-                    case (Modality.CONTINUOUS, _):
-                        return gauss_prob(
-                            x[..., 0],
-                            mean=x[..., 0],
-                            std=torch.sqrt(torch.exp(x[..., 1])),
-                        )
-                    case (Modality.DISCRETE, "turn_signal"):
-                        return F.softmax(x, dim=-1) # all 3 categories probs
-                    case _:
-                        msg = f"Invalid action type: {action_type}"
-                        raise ValueError(msg)
-
-            case PredictionResultKey.SCORE_LOGPROB:
-                match action_type:
-                    case (Modality.CONTINUOUS, _):
-                        return -torch.log(
-                            gauss_prob(
-                                gt,
-                                mean=x[..., 0],
-                                std=torch.sqrt(torch.exp(x[..., 1])),
-                            )
-                        )
-                    case (Modality.DISCRETE, "turn_signal"):
-                        return -torch.log(
-                            F.softmax(x, dim=-1)[..., gt]
+                match prediction_result_key:
+                    case PredictionResultKey.PREDICTION_VALUE:
+                        result = prediction
+                    case PredictionResultKey.PREDICTION_STD:
+                        result = torch.ones_like(x[..., 0])  # placeholder
+                    case PredictionResultKey.PREDICTION_PROBS:
+                        result = F.softmax(x, dim=-1)
+                    case PredictionResultKey.SCORE_LOGPROB:
+                        result = F.cross_entropy(x, gt.long(), reduction="none")
+                    case PredictionResultKey.SCORE_L1:
+                        result = F.l1_loss(
+                            prediction.float(), gt.float(), reduction="none"
                         )
                     case _:
-                        msg = f"Invalid action type: {action_type}"
-                        raise ValueError(msg)
-
-            case PredictionResultKey.SCORE_L1:
-                match action_type:
-                    case (Modality.CONTINUOUS, _):
-                        return F.l1_loss(
-                            x[..., 0],
-                            gt,
-                            reduction="none",
-                        )
-                    case (Modality.DISCRETE, "turn_signal"):
-                        return F.l1_loss(
-                            torch.argmax(x, dim=-1),
-                            gt,
-                            reduction="none",
-                        )
-                    case _:
-                        msg = f"Invalid action type: {action_type}"
+                        msg = f"Invalid prediction key for discrete action: {prediction_result_key}"
                         raise ValueError(msg)
 
             case _:
-                msg = f"Invalid prediction result key: {prediction_result_key}"
+                msg = f"Invalid action type: {action_type}"
                 raise ValueError(msg)
+
+        return result
 
     @classmethod
     @lru_cache(maxsize=1, typed=True)

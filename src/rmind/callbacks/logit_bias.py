@@ -91,7 +91,7 @@ class LogitBiasSetter(Callback):
                     )
                 except StopIteration:
                     msg = "No Linear layer found"
-                    raise ValueError(msg)
+                    raise ValueError(msg) from None
                 else:
                     return last_linear_layer.out_features
             case _:
