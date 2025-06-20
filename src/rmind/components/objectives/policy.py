@@ -1,18 +1,22 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import Any, cast, override
+from typing import Any, cast, overload, override
 
 import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
-from optree import tree_map
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
+from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map, tree_map_with_path  # noqa: PLC2701
 
+from rmind.components.base import TensorTree
+from rmind.components.containers import ModuleDict
 from rmind.components.episode import (
     Episode,
+    EpisodeExport,
     Index,
     Modality,
     SpecialToken,
@@ -22,13 +26,12 @@ from rmind.components.episode import (
 from rmind.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
-    XFormersAttentionMaskLegend,
+    TorchAttentionMaskLegend,
 )
 from rmind.components.objectives.base import Objective, PredictionResultKey, Targets
 from rmind.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from rmind.utils import ModuleDict
 from rmind.utils.functional import gauss_prob, nan_padder
 
 
@@ -37,20 +40,113 @@ class PolicyObjective(Objective):
     def __init__(
         self,
         *,
+        encoder: InstanceOf[Module],
         heads: InstanceOf[ModuleDict],
+        mask: InstanceOf[Tensor] | None = None,
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
+        self.encoder: Module = encoder
         self.heads: ModuleDict = heads
+        self.mask: Tensor | None = mask
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
+    @overload
+    def forward(self, episode: Episode) -> TensorDict: ...
+
+    @overload
+    def forward(self, episode: EpisodeExport) -> TensorTree: ...
+
     @override
-    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
-        mask = self.build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
+    def forward(self, episode: Episode | EpisodeExport) -> TensorDict | TensorTree:
+        embedding = self.encoder(src=episode.embeddings_packed, mask=self.mask)
+
+        if isinstance(episode, Episode):
+            _b, _ = episode.input.batch_size
+
+            embeddings = (
+                episode.index[-1]
+                .select(
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                )
+                .parse(embedding)
+            )
+
+            observation_history = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_HISTORY,
+            ))
+
+            observation_summary = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            ))
+
+            waypoints = episode.input_embeddings[Modality.CONTEXT, "waypoints"][
+                :, -1
+            ].mean(dim=1, keepdim=True)
+
+        else:
+            observation_summary = embedding[
+                :,
+                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
+                    SpecialToken.OBSERVATION_SUMMARY.value
+                ][-1],
+            ]
+
+            observation_history = embedding[
+                :,
+                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
+                    SpecialToken.OBSERVATION_HISTORY.value
+                ][-1],
+            ]
+
+            waypoints = episode.input_embeddings[Modality.CONTEXT.value]["waypoints"][  # pyright: ignore[reportArgumentType]
+                :, -1
+            ].mean(dim=1, keepdim=True)  # pyright: ignore[reportAttributeAccessIssue]
+
+        features = rearrange(
+            [observation_summary, observation_history, waypoints],
+            "i b 1 d -> b 1 (i d)",
+        )
+
+        logits = self.heads.forward(features)
+
+        if isinstance(episode, Episode):
+
+            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:  # pyright: ignore[reportRedeclaration]
+                match nk:
+                    case (Modality.CONTINUOUS, _):
+                        return x[..., 0]
+                    case (Modality.DISCRETE, "turn_signal"):
+                        return torch.argmax(x, dim=-1)
+                    case _:
+                        raise NotImplementedError
+
+            return TensorDict(logits).named_apply(fn, nested_keys=True)  # pyright: ignore[reportReturnType]
+
+        def fn(kp: tuple[Any, ...], v: Tensor) -> Tensor:
+            if kp[0].key == Modality.CONTINUOUS.value:
+                return v[..., 0]
+
+            if kp[0].key == Modality.DISCRETE.value and kp[1].key == "turn_signal":
+                return torch.argmax(v, dim=-1)
+
+            raise NotImplementedError
+
+        return tree_map_with_path(fn, logits)
+
+    @override
+    def compute_losses(self, episode: Episode) -> TensorTree:
+        src = episode.embeddings_packed
+        mask = self.build_attention_mask(
+            episode.index, episode.timestep, TorchAttentionMaskLegend
+        )
+        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))
 
         embeddings = (
             episode.index[-1]
@@ -81,27 +177,22 @@ class PolicyObjective(Objective):
         )
 
         logits = self.heads.forward(features)
-        targets = TensorDict(
-            tree_map(
-                episode.get,
-                self.targets,  # pyright: ignore[reportArgumentType]
-                is_leaf=lambda x: isinstance(x, tuple),
-            )
-        ).auto_batch_size_(2)[:, -1]
-
-        loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
-            logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),  # pyright: ignore[reportArgumentType]
-            targets.apply(Rearrange("b 1 -> b"), batch_size=[]),
+        targets = tree_map(
+            lambda k: episode.get(k)[:, -1],
+            self.targets,
+            is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
+        return self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
+            tree_map(Rearrange("b 1 d -> b d"), logits),
+            tree_map(Rearrange("b 1 -> b"), targets),
+        )
 
     @override
     def predict(  # noqa: C901, PLR0915
         self,
-        *,
         episode: Episode,
-        encoder: Module,
+        *,
         result_keys: AbstractSet[PredictionResultKey],
         **kwargs: Any,
     ) -> TensorDict:
@@ -120,7 +211,7 @@ class PolicyObjective(Objective):
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
             mask = self.build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
+            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)
             if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
                 result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
                     embedding
@@ -154,7 +245,9 @@ class PolicyObjective(Objective):
                 "i b 1 d -> b 1 (i d)",
             )
 
-            logits = self.heads.forward(features, batch_size=[b, 1])
+            logits = TensorDict.from_dict(
+                self.heads.forward(features), batch_size=[b, 1]
+            )
 
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
@@ -172,7 +265,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -191,7 +284,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -212,7 +305,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -237,7 +330,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -262,19 +355,19 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
         return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
-    @lru_cache(maxsize=1, typed=True)
+    @lru_cache(maxsize=2, typed=True)  # potentially different train/val masks
     def build_attention_mask(
         cls,
         index: Index,
         timestep: Timestep,
-        legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
+        legend: AttentionMaskLegend = TorchAttentionMaskLegend,
     ) -> AttentionMask:
         mask = cast(
             "AttentionMask",
@@ -287,7 +380,9 @@ class PolicyObjective(Objective):
         for step in range(t):
             past, current = index[:step], index[step]
             current_observations = current.select(
-                *timestep.keys_by_type[TokenType.OBSERVATION]
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
             )
             current_observation_summary = current.select((
                 Modality.SPECIAL,
@@ -297,7 +392,11 @@ class PolicyObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
-            past_actions = past.select(*timestep.keys_by_type[TokenType.ACTION])
+            past_actions = past.select(
+                *timestep.get(TokenType.ACTION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
             past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
