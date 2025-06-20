@@ -35,6 +35,7 @@ class PointPositionalEncoder3D(nn.Module):
     def forward(self, points: Tensor) -> Tensor:
         x = einsum(points, self.inv_freq, "... xyz, c -> ... xyz c")
         pe_sine = rearrange(
-            [x.sin(), x.cos()], "sin_cos ... xyz c -> ... (xyz c sin_cos)"
+            [x.sin(), x.cos()],  # pyright: ignore[reportCallIssue]
+            "sin_cos ... xyz c -> ... (xyz c sin_cos)",
         )
         return self.mlp(pe_sine)

@@ -1,0 +1,9 @@
+_target_: rmind.components.llm.TransformerEncoder
+_once_: True
+dim_model: ${embedding_dim}
+num_layers: ${num_layers}
+num_heads: ${num_heads}
+attn_dropout: 0.1
+resid_dropout: 0.1
+mlp_dropout: 0.1
+hidden_layer_multiplier: 1

@@ -39,4 +39,10 @@ jobs:
       - run: just format --check
       - run: just lint
       - run: just typecheck
+
+      - name: setup ytt
+        uses: carvel-dev/setup-action@v2
+        with:
+          only: ytt
+
       - run: just test

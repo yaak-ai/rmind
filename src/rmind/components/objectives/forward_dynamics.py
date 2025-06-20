@@ -5,12 +5,13 @@ from typing import override
 import torch
 from einops import pack
 from einops.layers.torch import Rearrange
-from optree import tree_map
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map  # noqa: PLC2701
 
+from rmind.components.containers import ModuleDict
 from rmind.components.episode import (
     Episode,
     Index,
@@ -22,10 +23,14 @@ from rmind.components.episode import (
 from rmind.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
-    XFormersAttentionMaskLegend,
+    TorchAttentionMaskLegend,
 )
-from rmind.components.objectives.base import Objective, PredictionResultKey, Targets
-from rmind.utils import ModuleDict
+from rmind.components.objectives.base import (
+    Metrics,
+    Objective,
+    PredictionResultKey,
+    Targets,
+)
 from rmind.utils.functional import nan_padder
 
 
@@ -34,29 +39,33 @@ class ForwardDynamicsPredictionObjective(Objective):
     def __init__(
         self,
         *,
+        encoder: InstanceOf[Module],
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
+        self.encoder: Module = encoder
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
     @override
-    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
-        mask = self.build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
+    def compute_metrics(self, episode: Episode) -> Metrics:
+        src = episode.embeddings_packed
+        mask = self.build_attention_mask(
+            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+        )
+        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))
 
-        # all but last timestep
-        index = episode.index[:-1]
+        index = episode.index[:-1]  # all but last timestep
 
-        observations: TensorDict = index.select(*[
-            k
-            for k in episode.timestep.keys_by_type[TokenType.OBSERVATION]
-            if k != (Modality.CONTEXT, "waypoints")
-        ]).parse(embedding)
+        observations = index.select(
+            *episode.timestep.get(TokenType.OBSERVATION)
+            .exclude((Modality.CONTEXT, "waypoints"))
+            .keys(include_nested=True, leaves_only=True)
+        ).parse(embedding)
 
         observation_summary = (
             index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
@@ -70,7 +79,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             .get(k)
         )
 
-        features: TensorDict = observations.apply(  # pyright: ignore[reportAssignmentType]
+        features: TensorDict = observations.apply(
             # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
             lambda obs: pack(
                 [
@@ -82,29 +91,26 @@ class ForwardDynamicsPredictionObjective(Objective):
             )[0]
         )
 
-        logits = self.heads.forward(features)
+        logits = self.heads(features.to_dict())
 
-        targets = TensorDict(
-            tree_map(
-                episode.get,
-                self.targets,  # pyright: ignore[reportArgumentType]
-                is_leaf=lambda x: isinstance(x, tuple),
-            )
-        ).auto_batch_size_(2)[:, 1:]  # all but first timestep
-
-        loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
-            logits.apply(Rearrange("b t s d -> (b t s) d"), batch_size=[]),  # pyright: ignore[reportArgumentType]
-            targets.apply(Rearrange("b t s ... -> (b t s) ..."), batch_size=[]),
+        targets = tree_map(
+            lambda k: episode.get(k)[:, 1:],
+            self.targets,
+            is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
+        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+            tree_map(Rearrange("b t s d -> (b t s) d"), logits),
+            tree_map(Rearrange("b t s ... -> (b t s) ..."), targets),
+        )
+
+        return {"loss": losses}
 
     @override
     def predict(
         self,
-        *,
         episode: Episode,
-        encoder: Module,
+        *,
         result_keys: AbstractSet[PredictionResultKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
@@ -117,8 +123,10 @@ class ForwardDynamicsPredictionObjective(Objective):
             )
 
         if (result_key := PredictionResultKey.ATTENTION) in result_keys:
-            mask = self.build_attention_mask(episode.index, episode.timestep)
-            attention = encoder.compute_attention_rollout(
+            mask = self.build_attention_mask(
+                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+            )
+            attention = self.encoder.compute_attention_rollout(  # pyright: ignore[reportCallIssue]
                 src=episode.embeddings_packed, mask=mask.mask, drop_ratio=0.9
             )
 
@@ -144,14 +152,20 @@ class ForwardDynamicsPredictionObjective(Objective):
             PredictionResultKey.SCORE_L1,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self.build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
+            mask = self.build_attention_mask(
+                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+            )
+            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)
 
             # all but last timestep
             index = episode.index[:-1]
 
             observations: TensorDict = (
-                index.select(*episode.timestep.keys_by_type[TokenType.OBSERVATION])
+                index.select(
+                    *episode.timestep.get(TokenType.OBSERVATION).keys(
+                        include_nested=True, leaves_only=True
+                    )
+                )
                 .exclude(Modality.IMAGE)
                 .parse(embedding)
             )
@@ -180,22 +194,22 @@ class ForwardDynamicsPredictionObjective(Objective):
                 )[0]
             )
 
-            logits = self.heads.forward(features)
+            logits = self.heads(features)
 
             timestep_padder = nan_padder(pad=(1, 0), dim=1)
 
             if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
-                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
+                    .apply(timestep_padder, batch_size=[b, t])
                     .named_apply(
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
                         nested_keys=True,
                     )
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -203,7 +217,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 """Finds log prob of the correct token at each timestep."""
                 result[result_key] = (
                     logits.apply(lambda x: x.softmax(dim=-1))
-                    .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportAttributeAccessIssue]
+                    .apply(Rearrange("b t 1 d -> b t d"))
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
                         lambda probs, tokens: probs.gather(dim=-1, index=tokens),
@@ -215,8 +229,8 @@ class ForwardDynamicsPredictionObjective(Objective):
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
+                    .named_apply(
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
@@ -235,25 +249,22 @@ class ForwardDynamicsPredictionObjective(Objective):
         return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
-    @lru_cache(maxsize=1, typed=True)
+    @lru_cache(maxsize=2, typed=True)  # potentially different train/val masks
     def build_attention_mask(
-        cls,
-        index: Index,
-        timestep: Timestep,
-        legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
+        cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAssignmentType, reportAttributeAccessIssue]
         mask = AttentionMask(
-            mask=torch.full((length, length), legend.DO_NOT_ATTEND),
-            legend=legend,
-            device=index.device,
+            mask=torch.full((length, length), legend.DO_NOT_ATTEND), legend=legend
         )
 
         (t,) = index.batch_size
         for step in range(t):
             past, current = index[:step], index[step]
             current_observations = current.select(
-                *timestep.keys_by_type[TokenType.OBSERVATION]
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
             )
             current_observation_summary = current.select((
                 Modality.SPECIAL,
@@ -263,7 +274,11 @@ class ForwardDynamicsPredictionObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
-            current_actions = current.select(*timestep.keys_by_type[TokenType.ACTION])
+            current_actions = current.select(
+                *timestep.get(TokenType.ACTION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
             current_action_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
