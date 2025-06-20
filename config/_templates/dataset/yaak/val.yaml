@@ -251,7 +251,7 @@ samples:
         bound:
           query: |
             LOAD spatial;
-            SELECT 
+            SELECT
               * EXCLUDE "meta/VehicleMotion/gear",
               ST_AsWKB(
                 ST_Transform(
@@ -322,7 +322,7 @@ samples:
           _target_: rbyte.io.DataFrameDuckDbQuery
         bound:
           query: |
-            SELECT 
+            SELECT
                 "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[12] AS "meta/ImageMetadata.cam_front_left/time_stamp",
                 "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[12] AS "meta/ImageMetadata.cam_front_left/frame_idx",
                 "meta/VehicleMotion/speed"::FLOAT[12] AS "meta/VehicleMotion/speed",
@@ -334,7 +334,7 @@ samples:
             FROM
                 df
             WHERE
-                len("meta/ImageMetadata.cam_front_left/frame_idx") == 12 
+                len("meta/ImageMetadata.cam_front_left/frame_idx") == 12
                 AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 110
                 AND NOT (
                     list_max("meta/VehicleMotion/gas_pedal_normalized") <= (1.0 / 255 + 0.001)

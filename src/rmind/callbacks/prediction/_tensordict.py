@@ -9,7 +9,7 @@ from pydantic import validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorClass, TensorDict
 
-from rmind.utils import monkeypatched
+from rmind.utils.patch import monkeypatched
 
 
 @final

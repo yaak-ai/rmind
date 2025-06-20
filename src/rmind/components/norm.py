@@ -11,6 +11,9 @@ from .base import Invertible
 
 
 class Clamp(Module):
+    min_value: Tensor  # pyright: ignore[reportUninitializedInstanceVariable]
+    max_value: Tensor  # pyright: ignore[reportUninitializedInstanceVariable]
+
     @validate_call
     def __init__(self, *, min_value: float, max_value: float) -> None:
         super().__init__()
@@ -19,8 +22,8 @@ class Clamp(Module):
         self.register_buffer("max_value", torch.tensor(max_value))
 
     @override
-    def forward(self, x: Tensor) -> Tensor:
-        return torch.clamp(x, min=self.min_value, max=self.max_value)
+    def forward(self, input: Tensor) -> Tensor:
+        return torch.clamp(input, min=self.min_value, max=self.max_value)
 
     @override
     def extra_repr(self) -> str:
@@ -28,6 +31,9 @@ class Clamp(Module):
 
 
 class Scaler(Module, Invertible):
+    in_range: Tensor
+    out_range: Tensor
+
     @validate_call
     def __init__(
         self, *, in_range: tuple[float, float], out_range: tuple[float, float]
@@ -38,26 +44,29 @@ class Scaler(Module, Invertible):
         self.register_buffer("out_range", torch.tensor(out_range))
 
     @override
-    def forward(self, x: Tensor) -> Tensor:
-        in_min, in_max = self.in_range
-        if x.min() < in_min or x.max() > in_max:
+    def forward(self, input: Tensor) -> Tensor:
+        input_min, input_max = self.in_range
+
+        if torch.compiler.is_exporting():
+            input = torch.clamp(input, input_min, input_max)
+        elif input.min() < input_min or input.max() > input_max:
             msg = "input out of range"
             raise ValueError(msg)
 
         out_min, out_max = self.out_range
-        out_std = (x - in_min) / (in_max - in_min)
+        out_std = (input - input_min) / (input_max - input_min)
 
         return out_std * (out_max - out_min) + out_min
 
     @override
     def invert(self, input: Tensor) -> Tensor:
-        in_min, in_max = self.out_range
-        if input.min() < in_min or input.max() > in_max:
+        input_min, input_max = self.out_range
+        if input.min() < input_min or input.max() > input_max:
             msg = "input out of range"
             raise ValueError(msg)
 
         out_min, out_max = self.in_range
-        out_std = (input - in_min) / (in_max - in_min)
+        out_std = (input - input_min) / (input_max - input_min)
 
         return out_std * (out_max - out_min) + out_min
 
@@ -67,6 +76,9 @@ class Scaler(Module, Invertible):
 
 
 class UniformBinner(Module, Invertible):
+    range: Tensor
+    bins: Tensor
+
     @validate_call
     def __init__(self, *, range: tuple[float, float], bins: int) -> None:
         super().__init__()
@@ -75,20 +87,24 @@ class UniformBinner(Module, Invertible):
         self.register_buffer("bins", torch.tensor(bins))
 
     @override
-    def forward(self, x: Tensor) -> Tensor:
-        x_min, x_max = self.range
-        if x.min() < x_min or x.max() > x_max:
+    def forward(self, input: Tensor) -> Tensor:
+        input_min, input_max = self.range
+
+        if torch.compiler.is_exporting():
+            input = torch.clamp(input, input_min, input_max)
+        elif input.min() < input_min or input.max() > input_max:
             msg = "input out of range"
             raise ValueError(msg)
 
-        x_norm = (x - x_min) / (x_max - x_min)
+        x_norm = (input - input_min) / (input_max - input_min)
 
         return (x_norm * self.bins).to(torch.long).clamp(max=self.bins - 1)
 
     @override
     def invert(self, input: Tensor) -> Tensor:
-        x_min, x_max = 0, self.bins - 1
-        if input.min() < x_min or input.max() > x_max:
+        input_min, input_max = 0, self.bins - 1
+
+        if input.min() < input_min or input.max() > input_max:
             msg = "input out of range"
             raise ValueError(msg)
 

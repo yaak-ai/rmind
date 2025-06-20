@@ -47,11 +47,11 @@ class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss):
     def __init__(self, *, logit_bias: Tensor | None = None, gamma: float = 2.0) -> None:
         super().__init__(gamma=gamma)
 
-        self.logit_bias: Tensor | None = logit_bias
+        self._logit_bias: Tensor | None = logit_bias
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)
+        return super().forward(input + self.logit_bias, target)  # pyright: ignore[reportOperatorIssue]
 
 
 class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
@@ -60,11 +60,11 @@ class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
     ) -> None:
         super().__init__(*args, **kwargs)
 
-        self.logit_bias: Tensor | None = logit_bias
+        self._logit_bias: Tensor | None = logit_bias
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)
+        return super().forward(input + self.logit_bias, target)  # pyright: ignore[reportOperatorIssue]
 
 
 class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
@@ -80,7 +80,7 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         self.var_pos_function: Callable[[Tensor], Tensor] = var_pos_function
 
     @override
-    def forward(
+    def forward(  # pyright: ignore[reportIncompatibleMethodOverride]
         self, input: Tensor, target: Tensor, var: Tensor | None = None
     ) -> Tensor:
         if var is not None:
