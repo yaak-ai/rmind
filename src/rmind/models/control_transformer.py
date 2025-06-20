@@ -1,16 +1,17 @@
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, override
+from typing import Any, Self, overload, override
 
 import pytorch_lightning as pl
 import torch
-from hydra.utils import get_class, instantiate
+from hydra.utils import get_class
+from hydra_once import instantiate
 from lightning_fabric.utilities.types import (
     _MAP_LOCATION_TYPE,  # pyright: ignore[reportPrivateUsage]
     _PATH,  # pyright: ignore[reportPrivateUsage]
 )
 from lightning_utilities.core.rank_zero import rank_zero_warn
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, Field, ImportString
+from pydantic import InstanceOf, validate_call
 from pytorch_lightning.core.saving import (
     _load_state,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
     pl_load,  # pyright: ignore[reportPrivateImportUsage]
@@ -26,52 +27,57 @@ from pytorch_lightning.utilities.model_helpers import (
     _restricted_classmethod,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
 )
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
+from rbyte.config import HydraConfig
 from structlog import get_logger
-from tensordict import TensorDict
+from tensordict import TensorClass, TensorDict
 from torch import Tensor
-from torch.nn import Module  # noqa: TC002
+from torch.nn import Module
+from torch.utils._pytree import tree_map
 
+from rmind.components.base import TensorDictExport
+from rmind.components.containers import ModuleDict
 from rmind.components.mask import WandbAttentionMaskLegend
-from rmind.components.objectives.base import PredictionResultKey
+from rmind.components.objectives import ObjectiveScheduler
+from rmind.components.objectives.base import Objective, PredictionResultKey
 from rmind.utils._wandb import LoadableFromArtifact
-
-if TYPE_CHECKING:
-    from rmind.components.episode import EpisodeBuilder
-    from rmind.components.objectives import ObjectiveScheduler
-    from rmind.utils import ModuleDict
 
 logger = get_logger(__name__)
 
 
-class HydraConfig[T](BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="allow")
+def maybe_instantiate(value: Any | HydraConfig[Any]) -> Any:
+    match value:
+        case HydraConfig():
+            return instantiate(value.model_dump(by_alias=True))
 
-    target: ImportString[type[T]] = Field(alias="_target_")
-    recursive: bool = Field(alias="_recursive_", default=True)
-    convert: Literal["none", "partial", "object", "all"] = Field(
-        alias="_convert_", default="all"
-    )
-    partial: bool = Field(alias="_partial_", default=False)
-
-    def instantiate(self, **kwargs: object) -> T:
-        return instantiate(self.model_dump(by_alias=True), **kwargs)
+        case _:
+            return value
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
-    def __init__(self, **_kwargs: Any) -> None:
+    @validate_call
+    def __init__(
+        self,
+        *,
+        input_builder: InstanceOf[Module] | HydraConfig[Module],
+        episode_builder: InstanceOf[Module] | HydraConfig[Module],
+        objectives: InstanceOf[ModuleDict] | HydraConfig[ModuleDict],
+        objective_scheduler: InstanceOf[ObjectiveScheduler]
+        | HydraConfig[ObjectiveScheduler]
+        | None = None,
+        **_kwargs: Any,
+    ) -> None:
         super().__init__()
         self.save_hyperparameters()
 
-        self.input_builder: Module = instantiate(self.hparams.input_builder)  # pyright: ignore[reportAttributeAccessIssue]
-        self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)  # pyright: ignore[reportAttributeAccessIssue]
-        self.encoder: Module = instantiate(self.hparams.encoder)  # pyright: ignore[reportAttributeAccessIssue]
-        self.objectives: ModuleDict = instantiate(self.hparams.objectives)  # pyright: ignore[reportAttributeAccessIssue]
-        self.objective_scheduler: ObjectiveScheduler | None = instantiate(
-            self.hparams.get("objective_scheduler")
+        self._input_builder: Module = maybe_instantiate(input_builder)
+        self._episode_builder: Module = maybe_instantiate(episode_builder)
+        self._objectives: ModuleDict = maybe_instantiate(objectives)
+        self._objective_scheduler: ObjectiveScheduler | None = maybe_instantiate(
+            objective_scheduler
         )
-        if self.objective_scheduler is not None and (
-            (specified := self.objectives.keys())
-            != (scheduled := set(self.objective_scheduler.objectives))
+        if self._objective_scheduler is not None and (
+            (specified := self._objectives.keys())
+            != (scheduled := set(self._objective_scheduler.objectives))
         ):
             msg = f"objective scheduler enabled but {specified} != {scheduled}"
             raise ValueError(msg)
@@ -142,11 +148,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def training_step(self, batch: TensorDict, _batch_idx: int) -> Tensor:
-        all_objectives = tuple(self.objectives.keys())
+        all_objectives = tuple(self._objectives.keys())
         scheduled_objectives = (
             all_objectives
-            if self.objective_scheduler is None
-            else tuple(self.objective_scheduler.sample())
+            if self._objective_scheduler is None
+            else tuple(self._objective_scheduler.sample())
         )
 
         match strategy := self.trainer.strategy:
@@ -161,22 +167,21 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 msg = f"Don't know the correct way to handle {strategy}"
                 raise NotImplementedError(msg)
 
-        input = self.input_builder.forward(batch)
-        episode = self.episode_builder.forward(input)
+        input = self._input_builder.forward(batch)
+        episode = self._episode_builder.forward(input)
 
-        metrics = TensorDict(
+        losses = TensorDict(
             {
-                name: self.objectives[name].forward(episode, self.encoder)
+                name: self._objectives[name].compute_losses(episode, self.encoder)
                 for name in objectives_to_compute
             },
             device=input.device,
         )
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]  # noqa: SIM118
-        losses.select(*(set(metrics.keys()) - set(scheduled_objectives))).zero_()  # pyright: ignore[reportArgumentType]
+        losses.select(*(set(losses.keys()) - set(scheduled_objectives))).zero_()  # pyright: ignore[reportArgumentType]
         loss_total = losses.sum(reduce=True)
 
-        metrics["loss", "total"] = loss_total
+        losses["total"] = loss_total
 
         if (
             isinstance(self.logger, WandbLogger)
@@ -184,7 +189,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             from wandb import Image  # noqa: PLC0415
 
-            for name, objective in self.objectives.items():
+            for name, objective in self._objectives.items():
                 mask = objective.build_attention_mask(episode.index, episode.timestep)
                 img = Image(mask.with_legend(WandbAttentionMaskLegend).mask)
                 self.logger.log_image(f"masks/{name}", [img], step=step)
@@ -192,9 +197,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.log_dict(
             {
                 "/".join(["train", *k]): v
-                for k, v in metrics.detach().items(
-                    include_nested=True, leaves_only=True
-                )
+                for k, v in losses.detach().items(include_nested=True, leaves_only=True)
             },
             sync_dist=True,
         )
@@ -203,12 +206,12 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def validation_step(self, batch: TensorDict, _batch_idx: int) -> Tensor:
-        input = self.input_builder.forward(batch)
-        episode = self.episode_builder.forward(input)
+        input = self._input_builder.forward(batch)
+        episode = self._episode_builder.forward(input)
         metrics = TensorDict(
             {
                 name: objective.forward(episode, self.encoder)
-                for name, objective in self.objectives.items()
+                for name, objective in self._objectives.items()
             },
             device=input.device,
         )
@@ -231,8 +234,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def predict_step(self, batch: TensorDict) -> TensorDict:
-        input = self.input_builder.forward(batch)
-        episode = self.episode_builder.forward(input)
+        input = self._input_builder.forward(batch)
+        episode = self._episode_builder.forward(input)
 
         predictions = TensorDict({
             name: objective.predict(
@@ -247,14 +250,41 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     PredictionResultKey.SCORE_L1,
                     PredictionResultKey.SUMMARY_EMBEDDINGS,
                 )),
-                tokenizers=self.episode_builder.tokenizers,
+                tokenizers=self._episode_builder.tokenizers,
             )
-            for name, objective in self.objectives.items()
+            for name, objective in self._objectives.items()
         })
 
         return TensorDict(
             {"input": input, "predictions": predictions}  # pyright: ignore[reportArgumentType]
         )
+
+    @overload
+    def forward(self, batch: TensorDict | TensorClass) -> TensorDict: ...
+
+    @overload
+    def forward(self, batch: TensorDictExport) -> TensorDictExport: ...
+
+    @override
+    def forward(
+        self, batch: TensorDict | TensorClass | TensorDictExport
+    ) -> TensorDict | TensorDictExport:
+        if isinstance(batch, TensorClass):
+            batch = batch.to_tensordict()
+
+        input = self._input_builder(batch)
+        if isinstance(input, TensorDict):
+            input = input.auto_batch_size_(2)
+
+        episode = self._episode_builder(input)
+
+        outputs = tree_map(
+            lambda objective: objective.forward(episode),
+            self._objectives.to_dict(),
+            is_leaf=lambda x: isinstance(x, Objective),
+        )
+
+        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:

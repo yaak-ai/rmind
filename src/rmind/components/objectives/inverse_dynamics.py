@@ -5,12 +5,13 @@ from typing import cast, override
 import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
-from optree import tree_map
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map  # noqa: PLC2701
 
+from rmind.components.containers import ModuleDict
 from rmind.components.episode import (
     Episode,
     Index,
@@ -28,7 +29,6 @@ from rmind.components.objectives.base import Objective, PredictionResultKey, Tar
 from rmind.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from rmind.utils import ModuleDict
 from rmind.utils.functional import nan_padder
 
 
@@ -37,24 +37,26 @@ class InverseDynamicsPredictionObjective(Objective):
     def __init__(
         self,
         *,
+        encoder: InstanceOf[Module],
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
-        self.heads: ModuleDict = heads
-        self.losses: ModuleDict | None = losses
-        self.targets: Targets | None = targets
+        self._encoder: Module = encoder
+        self._heads: ModuleDict = heads
+        self._losses: ModuleDict | None = losses
+        self._targets: Targets | None = targets
 
     @override
-    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
-        if self.losses is None:
+    def compute_losses(self, episode: Episode) -> TensorDict:
+        if self._losses is None:
             raise RuntimeError
 
         b, t = episode.input.batch_size
         mask = self.build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
+        embedding = self._encoder(src=episode.embeddings_packed, mask=mask.mask)
         observation_summaries = (
             episode.index.select(
                 k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
@@ -69,28 +71,21 @@ class InverseDynamicsPredictionObjective(Objective):
             "i ... d -> ... (i d)",
         )
 
-        logits = self.heads.forward(features, batch_size=[b, t - 1])
+        logits = self._heads.forward(features, batch_size=[b, t - 1])
         targets = TensorDict(
-            tree_map(
-                episode.get,
-                self.targets,  # pyright: ignore[reportArgumentType]
-                is_leaf=lambda x: isinstance(x, tuple),
-            )
+            tree_map(episode.get, self._targets, is_leaf=lambda x: isinstance(x, tuple))
         ).auto_batch_size_(2)[:, :-1]
 
-        loss = self.losses.forward(
+        return self._losses.forward(
             logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),  # pyright: ignore[reportArgumentType]
             targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
-        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
-
     @override
     def predict(
         self,
-        *,
         episode: Episode,
-        encoder: Module,
+        *,
         result_keys: AbstractSet[PredictionResultKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
@@ -98,11 +93,11 @@ class InverseDynamicsPredictionObjective(Objective):
         result = {}
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
-            result[result_key] = episode.input.select(*self.heads.tree_paths())
+            result[result_key] = episode.input.select(*self._heads.tree_paths())
 
         if (result_key := PredictionResultKey.ATTENTION) in result_keys:
             mask = self.build_attention_mask(episode.index, episode.timestep)
-            attention = encoder.compute_attention_rollout(
+            attention = self.encoder.compute_attention_rollout(
                 src=episode.embeddings_packed, mask=mask.mask, drop_ratio=0.9
             )
 
@@ -129,7 +124,7 @@ class InverseDynamicsPredictionObjective(Objective):
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
             mask = self.build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
+            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)
 
             observation_summaries = (
                 episode.index.select(
@@ -145,7 +140,7 @@ class InverseDynamicsPredictionObjective(Objective):
                 "i b t 1 d -> b t 1 (i d)",
             )
 
-            logits = self.heads.forward(features, batch_size=[b, t - 1])
+            logits = self._heads.forward(features, batch_size=[b, t - 1])
 
             timestep_padder = nan_padder(pad=(0, 1), dim=1)
 

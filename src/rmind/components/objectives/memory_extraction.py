@@ -3,11 +3,12 @@ from functools import lru_cache
 from typing import cast, override
 
 from einops.layers.torch import Rearrange
-from optree import tree_map
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
+from torch.utils._pytree import tree_map  # noqa: PLC2701
 
+from rmind.components.containers import ModuleDict
 from rmind.components.episode import (
     Episode,
     Index,
@@ -25,7 +26,6 @@ from rmind.components.objectives.base import Objective, PredictionResultKey, Tar
 from rmind.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from rmind.utils import ModuleDict
 from rmind.utils.functional import nan_padder
 
 
@@ -47,7 +47,7 @@ class MemoryExtractionObjective(Objective):
         self.targets: Targets | None = targets
 
     @override
-    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
+    def compute_losses(self, episode: Episode, encoder: Module) -> TensorDict:
         mask = self.build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
 
@@ -62,26 +62,20 @@ class MemoryExtractionObjective(Objective):
 
         logits = self.heads.forward(features, batch_size=[b, t - 1])
         targets = TensorDict(
-            tree_map(
-                episode.get,
-                self.targets,  # pyright: ignore[reportArgumentType]
-                is_leaf=lambda x: isinstance(x, tuple),
-            )
+            tree_map(episode.get, self.targets, is_leaf=lambda x: isinstance(x, tuple))
         ).auto_batch_size_(2)[:, : t - 1]
 
-        loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
+        return self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
             logits.apply(Rearrange("b t 1 d -> (b t) d"), batch_size=[]),  # pyright: ignore[reportArgumentType]
             targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
 
-        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
-
     @override
     def predict(
         self,
-        *,
         episode: Episode,
         encoder: Module,
+        *,
         result_keys: AbstractSet[PredictionResultKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:

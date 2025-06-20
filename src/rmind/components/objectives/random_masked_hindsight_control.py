@@ -5,13 +5,14 @@ from typing import override
 import numpy as np
 import torch
 from einops.layers.torch import Rearrange
-from optree import tree_map
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map  # noqa: PLC2701
 
+from rmind.components.containers import ModuleDict
 from rmind.components.episode import (
     Episode,
     Index,
@@ -26,7 +27,6 @@ from rmind.components.mask import (
     XFormersAttentionMaskLegend,
 )
 from rmind.components.objectives.base import Objective, PredictionResultKey, Targets
-from rmind.utils import ModuleDict
 
 
 class RandomMaskedHindsightControlObjective(Objective):
@@ -45,7 +45,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         self.targets: Targets | None = targets
 
     @override
-    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
+    def compute_losses(self, episode: Episode, encoder: Module) -> TensorDict:
         _, t = episode.input.batch_size
 
         masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()  # noqa: NPY002
@@ -66,26 +66,20 @@ class RandomMaskedHindsightControlObjective(Objective):
         embeddings = index[masked_action_timestep_idx].parse(embedding)
         logits = self.heads.forward(embeddings)
         targets = TensorDict(
-            tree_map(
-                episode.get,
-                self.targets,  # pyright: ignore[reportArgumentType]
-                is_leaf=lambda x: isinstance(x, tuple),
-            )
+            tree_map(episode.get, self.targets, is_leaf=lambda x: isinstance(x, tuple))
         ).auto_batch_size_(2)[:, masked_action_timestep_idx]
 
-        loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
-            logits.apply(Rearrange("b t 1 d -> (b t 1) d"), batch_size=[]),  # pyright: ignore[reportArgumentType]
+        return self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
+            logits.apply(Rearrange("b t 1 d -> (b t 1) d"), batch_size=[]),
             targets.apply(Rearrange("b t 1 -> (b t)"), batch_size=[]),
         )
-
-        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
 
     @override
     def predict(
         self,
-        *,
         episode: Episode,
         encoder: Module,
+        *,
         result_keys: AbstractSet[PredictionResultKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
@@ -141,22 +135,22 @@ class RandomMaskedHindsightControlObjective(Objective):
             if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
+                    .named_apply(
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.softmax(dim=-1))
-                    .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportAttributeAccessIssue]
+                    .apply(Rearrange("b t 1 d -> b t d"))
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
                         lambda probs, tokens: probs.gather(dim=-1, index=tokens),
@@ -168,8 +162,8 @@ class RandomMaskedHindsightControlObjective(Objective):
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess]
+                    .named_apply(
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])

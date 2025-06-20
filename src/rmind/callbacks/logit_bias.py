@@ -2,14 +2,13 @@ from typing import override
 
 import pytorch_lightning as pl
 import torch
-from optree import tree_flatten_with_path
 from pytorch_lightning.callbacks import Callback
 from rbyte import Dataset
 from structlog import get_logger
+from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
 from torch.utils.data import DataLoader
 
 from rmind.components.loss import LogitBiasMixin
-from rmind.utils.containers import OPTREE_NAMESPACE
 
 logger = get_logger(__name__)
 
@@ -35,9 +34,8 @@ class LogitBiasSetter(Callback):
         targets: list[tuple[str, tuple[str, ...], LogitBiasMixin]] = []
 
         for objective_key, objective in objectives.items():
-            loss_keys, losses, _ = tree_flatten_with_path(
-                objective.losses, namespace=OPTREE_NAMESPACE
-            )
+            breakpoint()
+            loss_keys, losses, _ = tree_flatten_with_path(objective.losses)
             for loss_key, loss in zip(loss_keys, losses, strict=True):
                 match loss:
                     case LogitBiasMixin(logit_bias=None):
@@ -49,6 +47,7 @@ class LogitBiasSetter(Callback):
         if not targets:
             return
 
+        breakpoint()
         input_keys, batch_keys, _ = tree_flatten_with_path(
             pl_module.input_builder.keys, is_leaf=lambda x: isinstance(x, tuple)
         )
