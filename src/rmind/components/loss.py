@@ -37,7 +37,7 @@ class LogitBiasMixin:
                 if hasattr(self, "_logit_bias"):
                     del self._logit_bias
 
-                self.register_buffer("_logit_bias", value, persistent=True)  # pyright: ignore[reportAttributeAccessIssue]
+                self.register_buffer("_logit_bias", value, persistent=False)  # pyright: ignore[reportAttributeAccessIssue]
 
             case None:
                 self._logit_bias = None

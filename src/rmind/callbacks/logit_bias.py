@@ -73,6 +73,27 @@ class LogitBiasSetter(Callback):
             logger.debug("setting logit bias", objective=objective_key, loss=loss_key)
             head = objectives[objective_key].heads.get(loss_key)
             freq = torch.bincount(
-                labels[*loss_key], weights=None, minlength=head.out_features
+                labels[*loss_key], weights=None, minlength=self._get_out_features(head)
             )
             loss.logit_bias = ((freq + 1) / freq.sum()).log()
+
+    @staticmethod
+    def _get_out_features(head: torch.nn.Module) -> int:
+        match head:
+            case torch.nn.Linear():
+                return head.out_features
+            case torch.nn.Sequential():
+                try:
+                    last_linear_layer = next(
+                        layer
+                        for layer in reversed(head)
+                        if isinstance(layer, torch.nn.Linear)
+                    )
+                except StopIteration:
+                    msg = "No Linear layer found"
+                    raise ValueError(msg) from None
+                else:
+                    return last_linear_layer.out_features
+            case _:
+                msg = f"Unsupported head type: {type(head)}"
+                raise NotImplementedError(msg)

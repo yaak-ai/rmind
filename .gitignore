@@ -131,6 +131,7 @@ dmypy.json
 
 # Experiments
 artifacts
+wandb
 ./wandb/
 outputs/
 lightning_logs/
