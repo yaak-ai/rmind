@@ -29,13 +29,14 @@ from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from structlog import get_logger
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Module  # noqa: TC002
 
 from rmind.components.mask import WandbAttentionMaskLegend
 from rmind.components.objectives.base import PredictionResultKey
 from rmind.utils._wandb import LoadableFromArtifact
 
 if TYPE_CHECKING:
+    from torch.nn import Module
+
     from rmind.components.episode import EpisodeBuilder
     from rmind.components.objectives import ObjectiveScheduler
     from rmind.utils import ModuleDict

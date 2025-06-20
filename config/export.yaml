@@ -1,0 +1,256 @@
+# @package _global_
+
+defaults:
+  - /paths: yaak/default
+  - /dataset: yaak/export
+  - _self_
+
+num_heads: 4
+num_layers: 8
+embedding_dim: 512
+
+module:
+  _target_: rmind.models.control_transformer.ControlTransformer
+  _recursive_: false
+  input_builder:
+    _target_: rmind.components.input.InputBuilder
+    _convert_: all
+    keys:
+      image:
+        cam_front_left: [data, cam_front_left]
+
+      continuous:
+        speed: [data, meta/VehicleMotion/speed]
+        gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
+        gas_pedal_diff: [data, meta/VehicleMotion/gas_pedal_normalized]
+        brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
+        brake_pedal_diff: [data, meta/VehicleMotion/brake_pedal_normalized]
+        steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
+        steering_angle_diff: [data, meta/VehicleMotion/steering_angle_normalized]
+      
+      context:
+        waypoints: [data, waypoints/waypoints_normalized]      
+
+      discrete:
+        turn_signal: [data, meta/VehicleState/turn_signal]
+
+    transforms:
+      - select: [image]
+        apply:
+          _target_: torch.compile
+          model:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: einops.layers.torch.Rearrange
+                pattern: "... h w c -> ... c h w"
+              - _target_: torchvision.transforms.v2.CenterCrop
+                size: [320, 576]
+              - _target_: torchvision.transforms.v2.ToDtype
+                scale: true
+                dtype:
+                  _target_: hydra.utils.get_object
+                  path: torch.float32
+              - _target_: torchvision.transforms.v2.Normalize
+                mean: [0.485, 0.456, 0.406]
+                std: [0.229, 0.224, 0.225]
+
+      - select:
+          - [continuous, gas_pedal_diff]
+          - [continuous, brake_pedal_diff]
+          - [continuous, steering_angle_diff]
+        apply:
+          _target_: rmind.utils.functional.diff_last
+          _partial_: true
+          append:
+            _target_: hydra.utils.get_object
+            path: math.nan
+    
+      - select: [continuous, discrete, context]
+        apply:
+          _target_: torch.atleast_3d
+          _partial_: true
+
+  episode_builder:
+    _target_: rmind.components.episode.EpisodeBuilder
+    _recursive_: true
+    _convert_: all
+    timestep:
+      - [observation, image, cam_front_left]
+      - [observation, continuous, speed]
+      - [observation, discrete, turn_signal]
+      - [observation, context, waypoints]
+      - [special, special, observation_summary]
+      - [special, special, observation_history]
+      - [action, continuous, gas_pedal]
+      - [action, continuous, brake_pedal]
+      - [action, continuous, steering_angle]
+      - [special, special, action_summary]
+    special_tokens:
+      observation_summary: 0
+      observation_history: 1
+      action_summary: 2
+
+    tokenizers:
+      _target_: rmind.utils.ModuleDict
+      image:
+        _target_: rmind.components.nn.Identity
+
+      continuous:
+        speed:
+          _target_: rmind.components.norm.UniformBinner
+          range: [0.0, 130.0]
+          bins: ${embedding_dim}
+
+        gas_pedal:
+          _target_: rmind.components.norm.UniformBinner
+          range: [0.0, 1.0]
+          bins: ${embedding_dim}
+
+        gas_pedal_diff:
+          # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
+          _target_: rmind.components.norm.MuLawEncoding
+          quantization_channels: ${embedding_dim}
+
+        brake_pedal:
+          _target_: rmind.components.norm.UniformBinner
+          range: [0.0, 1.0]
+          bins: ${embedding_dim}
+
+        brake_pedal_diff:
+          # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
+          _target_: rmind.components.norm.MuLawEncoding
+          quantization_channels: ${embedding_dim}
+
+        steering_angle:
+          _target_: rmind.components.norm.UniformBinner
+          range: [-1.0, 1.0]
+          bins: ${embedding_dim}
+
+        steering_angle_diff:
+          _target_: rmind.components.nn.Sequential
+          _args_:
+            - _target_: rmind.components.norm.Scaler
+              in_range: [-2.0, 2.0]
+              out_range: [-1.0, 1.0]
+            - _target_: rmind.components.norm.MuLawEncoding
+              quantization_channels: ${embedding_dim}
+
+      discrete:
+        _target_: rmind.components.nn.Identity
+      
+      context:
+        waypoints:
+          _target_: rmind.components.nn.Identity
+
+    embeddings:
+      _target_: rmind.utils.ModuleDict
+      image:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: rmind.components.resnet.ResnetBackbone
+            resnet:
+              _target_: torchvision.models.resnet18
+              weights: IMAGENET1K_V1
+            freeze: True
+          - _target_: einops.layers.torch.Rearrange
+            pattern: "... c h w -> ... (h w) c"
+
+      continuous:
+        speed:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${module.episode_builder.tokenizers.continuous.speed.bins}
+          embedding_dim: ${embedding_dim}
+        gas_pedal:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${module.episode_builder.tokenizers.continuous.gas_pedal.bins}
+          embedding_dim: ${embedding_dim}
+        brake_pedal:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${module.episode_builder.tokenizers.continuous.brake_pedal.bins}
+          embedding_dim: ${embedding_dim}
+        steering_angle:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${module.episode_builder.tokenizers.continuous.steering_angle.bins}
+          embedding_dim: ${embedding_dim}
+
+      context:
+        waypoints:
+          _target_: torch.nn.Linear
+          in_features: 2
+          out_features: ${embedding_dim}
+
+      discrete:
+        turn_signal:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 3
+          embedding_dim: ${embedding_dim}
+
+      special:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 3
+        embedding_dim: ${embedding_dim}
+
+    position_encoding:
+      _target_: rmind.utils.ModuleDict
+      image:
+        patch:
+          row:
+            _target_: rmind.components.nn.Embedding
+            num_embeddings: 10
+            embedding_dim: ${embedding_dim}
+          col:
+            _target_: rmind.components.nn.Embedding
+            num_embeddings: 18
+            embedding_dim: ${embedding_dim}
+
+      observations:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 192
+        embedding_dim: ${embedding_dim}
+
+      actions:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 1
+        embedding_dim: ${embedding_dim}
+
+      special:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 1
+        embedding_dim: ${embedding_dim}
+
+      timestep:
+        _target_: rmind.components.nn.Embedding
+        # num_embeddings: 24
+        num_embeddings: 6
+        embedding_dim: ${embedding_dim}
+
+  encoder:
+    _target_: rmind.components.llm.IdentityEncoder
+
+  objectives:
+    _target_: rmind.utils.ModuleDict
+    _convert_: all
+    policy:
+      _target_: rmind.components.objectives.PolicyObjective
+      heads:
+        _target_: rmind.utils.ModuleDict
+        continuous:
+          gas_pedal:
+            _target_: torchvision.ops.MLP
+            in_channels: 1536
+            hidden_channels: [512, 2]
+            bias: False
+          brake_pedal:
+            _target_: torchvision.ops.MLP
+            in_channels: 1536
+            hidden_channels: [512, 2]
+            bias: False
+          steering_angle:
+            _target_: torchvision.ops.MLP
+            in_channels: 1536
+            hidden_channels: [512, 2]
+            bias: False
+
+model:
+  _target_: rmind.models.control_transformer_export.ControlTransformerExportable
+  module: ${module}

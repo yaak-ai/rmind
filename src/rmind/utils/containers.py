@@ -55,21 +55,19 @@ class ModuleDict(_ModuleDict):
         obj = self
 
         for k in always_iterable(key):
-            match obj:
-                case ModuleDict():
-                    try:
-                        obj = obj[k]
-                    except KeyError:
-                        if default is self.__unspecified:
-                            raise KeyError(key) from None
-
-                        return default
-
-                case _:
+            if isinstance(obj, ModuleDict):
+                try:
+                    obj = obj[k]
+                except KeyError:
                     if default is self.__unspecified:
                         raise KeyError(key) from None
 
                     return default
+
+            elif default is self.__unspecified:
+                raise KeyError(key) from None
+            else:
+                return default
 
         return obj
 
@@ -77,15 +75,13 @@ class ModuleDict(_ModuleDict):
         obj = self
 
         for k in always_iterable(key):
-            match obj:
-                case ModuleDict():
-                    try:
-                        obj = obj[k]
-                    except KeyError:
-                        break
-
-                case _:
+            if isinstance(obj, ModuleDict):
+                try:
+                    obj = obj[k]
+                except KeyError:
                     break
+            else:
+                break
 
         return obj
 

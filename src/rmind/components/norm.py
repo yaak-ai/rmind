@@ -40,9 +40,10 @@ class Scaler(Module, Invertible):
     @override
     def forward(self, x: Tensor) -> Tensor:
         in_min, in_max = self.in_range
-        if x.min() < in_min or x.max() > in_max:
-            msg = "input out of range"
-            raise ValueError(msg)
+        # TODO
+        # if x.min() < in_min or x.max() > in_max:
+        #     msg = "input out of range"
+        #     raise ValueError(msg)
 
         out_min, out_max = self.out_range
         out_std = (x - in_min) / (in_max - in_min)
@@ -77,9 +78,10 @@ class UniformBinner(Module, Invertible):
     @override
     def forward(self, x: Tensor) -> Tensor:
         x_min, x_max = self.range
-        if x.min() < x_min or x.max() > x_max:
-            msg = "input out of range"
-            raise ValueError(msg)
+        # TODO
+        # if x.min() < x_min or x.max() > x_max:
+        #     msg = "input out of range"
+        #     raise ValueError(msg)
 
         x_norm = (x - x_min) / (x_max - x_min)
 
@@ -88,9 +90,10 @@ class UniformBinner(Module, Invertible):
     @override
     def invert(self, input: Tensor) -> Tensor:
         x_min, x_max = 0, self.bins - 1
-        if input.min() < x_min or input.max() > x_max:
-            msg = "input out of range"
-            raise ValueError(msg)
+        # TODO
+        # if input.min() < x_min or input.max() > x_max:
+        #     msg = "input out of range"
+        #     raise ValueError(msg)
 
         start, end = self.range
         width = (end - start) / self.bins
