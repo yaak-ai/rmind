@@ -40,6 +40,13 @@ class SelectiveAdamW(AdamW):
                     case "bias":
                         weight_decay_param_blacklist.add(param_name)
 
+                    # https://github.com/pytorch/pytorch/blob/v2.7.0/torch/nn/modules/activation.py#L1091
+                    case "in_proj_weight":
+                        pass
+
+                    case "in_proj_bias":
+                        weight_decay_param_blacklist.add(param_name)
+
                     case _:
                         raise NotImplementedError
 

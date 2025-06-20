@@ -1483,7 +1483,7 @@ wheels = [
 
 [[package]]
 name = "rmind"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },
@@ -1503,7 +1503,6 @@ dependencies = [
     { name = "torchaudio" },
     { name = "torchinfo" },
     { name = "torchvision" },
-    { name = "xformers" },
 ]
 
 [package.optional-dependencies]
@@ -1555,7 +1554,6 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'train'", specifier = ">=4.44.2" },
     { name = "wandb", marker = "extra == 'predict'", specifier = ">=0.19.3" },
     { name = "wandb", marker = "extra == 'train'", specifier = ">=0.19.9" },
-    { name = "xformers", specifier = "==0.0.28.post2" },
 ]
 provides-extras = ["train", "predict", "test"]
 
@@ -1994,19 +1992,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/41/53/2e0253c5efd69c9656b1843892052a31c36d37ad42812b5da45c62191f7e/widgetsnbextension-4.0.14.tar.gz", hash = "sha256:a3629b04e3edb893212df862038c7232f62973373869db5084aed739b437b5af", size = 1097428 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ca/51/5447876806d1088a0f8f71e16542bf350918128d0a69437df26047c8e46f/widgetsnbextension-4.0.14-py3-none-any.whl", hash = "sha256:4875a9eaf72fbf5079dc372a51a9f268fc38d46f767cbf85c43a36da5cb9b575", size = 2196503 },
-]
-
-[[package]]
-name = "xformers"
-version = "0.0.28.post2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "torch" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/88/05/52bff6efbedce1d5f5cff3676fbbd320ad67a206b9180b5092820c794d12/xformers-0.0.28.post2.tar.gz", hash = "sha256:805c91b19e81958bf05b0daf48962eb44a83b9d696a5ab3ef348368af14aad37", size = 7758835 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f8/29/6249cf020247d1213cce27e7bf83d466d3be4c1403dbe583d8f6e11ede46/xformers-0.0.28.post2-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:1299cb2ce567c68b1ed2f3553ae903669800e07ad76fe7748f01879ee426feb9", size = 16715709 },
 ]
 
 [[package]]
