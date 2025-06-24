@@ -1,6 +1,6 @@
 [project]
 name = "rmind"
-version = "0.2.0"
+version = "0.1.0"
 description = "Foundation models for spatial intelligence"
 authors = [{ name = "ML yaak team", email = "ml@yaak.ai" }]
 readme = "README.md"

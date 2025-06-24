@@ -1,4 +1,4 @@
-from typing import Any, override
+from typing import Any, final, override
 
 from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
@@ -16,7 +16,8 @@ class TransformerEncoderBlock(nn.Module):
     ) -> None:
         super().__init__()
 
-        # f
+        # self.pre_norm and self.mha mimic f in
+        # https://github.com/facebookresearch/xformers/blob/v0.0.28.post2/xformers/components/reversible.py#L72
         self.pre_norm: nn.LayerNorm = nn.LayerNorm(embedding_dim)  # pre-norm
 
         self.mha: nn.MultiheadAttention = nn.MultiheadAttention(
@@ -26,9 +27,12 @@ class TransformerEncoderBlock(nn.Module):
             batch_first=True,
         )
 
+        # https://github.com/facebookresearch/xformers/blob/v0.0.28.post2/xformers/components/multi_head_dispatch.py#L258
         self.resid_drop: nn.Dropout = nn.Dropout(resid_dropout, inplace=False)
 
-        # g
+        # self.post_norm and self.mlp mimic g in
+        # https://github.com/facebookresearch/xformers/blob/v0.0.28.post2/xformers/components/reversible.py#L72
+
         self.post_norm: nn.LayerNorm = nn.LayerNorm(embedding_dim)  # ffn
 
         self.mlp: MLPGLU = MLPGLU(
@@ -79,7 +83,7 @@ class TransformerEncoder(nn.Module):
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
 
     @override
-    def forward(self, src: Tensor, mask: Tensor) -> Tensor:
+    def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
         x = src
 
         for layer in self.layers:
@@ -91,6 +95,7 @@ class TransformerEncoder(nn.Module):
         return self.layer_norm(x)
 
 
+@final
 class MLPGLU(nn.Module):
     def __init__(
         self,
@@ -103,14 +108,10 @@ class MLPGLU(nn.Module):
     ) -> None:
         super().__init__()
         dim_mlp = hidden_layer_multiplier * dim_model
-        self.l1: nn.Linear = nn.Linear(
-            in_features=dim_model, out_features=dim_mlp * 2, bias=bias
-        )
-        self.a1: nn.GELU = nn.GELU()
-        self.d1: nn.Dropout = nn.Dropout(dropout)
-        self.l2: nn.Linear = nn.Linear(
-            in_features=dim_mlp, out_features=dim_model, bias=bias
-        )
+        self.l1 = nn.Linear(in_features=dim_model, out_features=dim_mlp * 2, bias=bias)
+        self.a1 = nn.GELU()
+        self.d1 = nn.Dropout(dropout)
+        self.l2 = nn.Linear(in_features=dim_mlp, out_features=dim_model, bias=bias)
 
     @override
     def forward(self, input: Tensor) -> Tensor:
