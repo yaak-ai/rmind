@@ -1,6 +1,5 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from operator import itemgetter
 from typing import Any, cast, override
 
 import torch
@@ -98,7 +97,7 @@ class PolicyObjective(Objective):
         return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
 
     @override
-    def predict(
+    def predict(  # noqa: C901, PLR0915
         self,
         *,
         episode: Episode,
@@ -113,7 +112,7 @@ class PolicyObjective(Objective):
             result[result_key] = episode.input.select(*self.heads.tree_paths())
 
         if result_keys & {
-            PredictionResultKey.PREDICTION,
+            PredictionResultKey.PREDICTION_VALUE,
             PredictionResultKey.PREDICTION_STD,
             PredictionResultKey.PREDICTION_PROBS,
             PredictionResultKey.SCORE_LOGPROB,
@@ -122,6 +121,10 @@ class PolicyObjective(Objective):
         }:
             mask = self.build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
+            if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
+                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                    embedding
+                )
 
             embeddings = (
                 episode.index[-1]
@@ -155,56 +158,112 @@ class PolicyObjective(Objective):
 
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
-            if (result_key := PredictionResultKey.PREDICTION) in result_keys:
-                result[result_key] = logits.apply(itemgetter((..., 0))).apply(  # pyright: ignore[reportAttributeAccessIssue]
+            if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
+
+                def fn(
+                    action_type: tuple[Modality, str], x: torch.Tensor
+                ) -> torch.Tensor:
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            return x[..., 0]
+                        case (Modality.DISCRETE, "turn_signal"):
+                            return torch.argmax(x, dim=-1)
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_STD) in result_keys:
-                result[result_key] = (
-                    logits.apply(itemgetter((..., 1)))
-                    .apply(lambda x: torch.sqrt(torch.exp(x)))  # pyright: ignore[reportAttributeAccessIssue]
-                    .apply(timestep_padder, batch_size=[b, t])
+
+                def fn(
+                    action_type: tuple[Modality, str], x: torch.Tensor
+                ) -> torch.Tensor:
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            return torch.sqrt(torch.exp(x[..., 1]))
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            return torch.ones_like(x[..., 0])  # placeholder
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                    timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(
-                    lambda x: gauss_prob(
-                        x[..., 0], mean=x[..., 0], std=torch.sqrt(torch.exp(x[..., 1]))
-                    )
-                ).apply(  # pyright: ignore[reportAttributeAccessIssue]
+
+                def fn(
+                    action_type: tuple[Modality, str], x: torch.Tensor
+                ) -> torch.Tensor:
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            mean = x[..., 0]
+                            std = torch.sqrt(torch.exp(x[..., 1]))
+                            return gauss_prob(mean, mean=mean, std=std)
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            return F.softmax(x, dim=-1)
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
                     timestep_padder, batch_size=[b, t]
                 )
+
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
-                result[result_key] = (
-                    logits.named_apply(
-                        lambda k, x: gauss_prob(
-                            episode.input[:, -1][k],
-                            mean=x[..., 0].squeeze(-1),
-                            std=torch.sqrt(torch.exp(x[..., 1].squeeze(-1))),
-                        ),
-                        nested_keys=True,
-                    )
-                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
-                    .apply(lambda x: -torch.log(x))
+
+                def fn(
+                    action_type: tuple[Modality, str], x: torch.Tensor
+                ) -> torch.Tensor:
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            mean = x[..., 0]
+                            std = torch.sqrt(torch.exp(x[..., 1]))
+                            return -torch.log(gauss_prob(mean, mean=mean, std=std))
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            gt = episode.input[action_type][:, -1]
+                            return F.cross_entropy(
+                                x.squeeze(1), gt.squeeze(1).long(), reduction="none"
+                            ).unsqueeze(1)
+
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                    timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
-                result[result_key] = (
-                    logits.apply(itemgetter((..., 0)))
-                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportAttributeAccessIssue]
-                    .apply(
-                        lambda pred, gt: F.l1_loss(
-                            pred, gt.squeeze(-1), reduction="none"
-                        ),
-                        episode.input,
-                        nested_keys=True,
-                    )
-                )
 
-            if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
-                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
-                    embedding
+                def fn(
+                    action_type: tuple[Modality, str], x: torch.Tensor
+                ) -> torch.Tensor:
+                    gt = episode.input[action_type][:, -1]
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            return F.l1_loss(x, gt, reduction="none")
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            return F.l1_loss(
+                                torch.argmax(x, dim=-1).float(),
+                                gt.float(),
+                                reduction="none",
+                            )
+
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                    timestep_padder, batch_size=[b, t]
                 )
 
         return TensorDict(result).auto_batch_size_(2)

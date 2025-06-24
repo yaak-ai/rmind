@@ -96,7 +96,7 @@ class RandomMaskedHindsightControlObjective(Objective):
             result[result_key] = episode.input.select(*self.heads.tree_paths())
 
         if result_keys & {
-            PredictionResultKey.PREDICTION,
+            PredictionResultKey.PREDICTION_VALUE,
             PredictionResultKey.PREDICTION_PROBS,
             PredictionResultKey.SCORE_LOGPROB,
             PredictionResultKey.SCORE_L1,
@@ -138,7 +138,7 @@ class RandomMaskedHindsightControlObjective(Objective):
                 out[:, masked_action_timestep_idx] = x
                 return out
 
-            if (result_key := PredictionResultKey.PREDICTION) in result_keys:
+            if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
                     .named_apply(  # pyright: ignore[reportAttributeAccessIssue]

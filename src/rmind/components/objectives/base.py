@@ -17,7 +17,7 @@ type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 
 @unique
 class PredictionResultKey(StrEnum):
-    PREDICTION = auto()
+    PREDICTION_VALUE = auto()
     PREDICTION_STD = auto()
     PREDICTION_PROBS = auto()
     SCORE_LOGPROB = auto()

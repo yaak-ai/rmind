@@ -65,13 +65,13 @@ episode_builder:
   timestep:
     - [observation, image, cam_front_left]
     - [observation, continuous, speed]
-    - [observation, discrete, turn_signal]
     - [observation, context, waypoints]
     - [special, special, observation_summary]
     - [special, special, observation_history]
     - [action, continuous, gas_pedal]
     - [action, continuous, brake_pedal]
     - [action, continuous, steering_angle]
+    - [action, discrete, turn_signal]
     - [special, special, action_summary]
   special_tokens:
     observation_summary: 0
@@ -256,12 +256,25 @@ objectives:
               - ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
           bias: False
+      discrete:
+        turn_signal:
+          _target_: torch.nn.Linear
+          in_features:
+            _target_: operator.mul
+            _args_:
+              - 2
+              - ${embedding_dim}
+          out_features: 3
+          bias: False
 
     targets:
       continuous:
         gas_pedal: [input_tokens, continuous, gas_pedal]
         brake_pedal: [input_tokens, continuous, brake_pedal]
         steering_angle: [input_tokens, continuous, steering_angle]
+      discrete:
+        turn_signal: [input_tokens, discrete, turn_signal]
+
 
     losses:
       _target_: rmind.utils.ModuleDict
@@ -271,6 +284,9 @@ objectives:
         brake_pedal:
           _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
         steering_angle:
+          _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+      discrete:
+        turn_signal:
           _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
   forward_dynamics:
@@ -297,24 +313,12 @@ objectives:
               - ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.speed.bins}
           bias: False
-      discrete:
-        turn_signal:
-          _target_: torch.nn.Linear
-          in_features:
-            _target_: operator.mul
-            _args_:
-              - 3
-              - ${embedding_dim}
-          out_features: ${model.episode_builder.embeddings.discrete.turn_signal.num_embeddings}
-          bias: False
 
     targets:
       image:
         cam_front_left: [input_embeddings, image, cam_front_left]
       continuous:
         speed: [input_tokens, continuous, speed]
-      discrete:
-        turn_signal: [input_tokens, discrete, turn_signal]
 
     losses:
       _target_: rmind.utils.ModuleDict
@@ -324,9 +328,6 @@ objectives:
           reduction: mean
       continuous:
         speed:
-          _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-      discrete:
-        turn_signal:
           _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
   random_masked_hindsight_control:
@@ -349,12 +350,20 @@ objectives:
           in_features: ${embedding_dim}
           out_features: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
           bias: False
+      discrete:
+        turn_signal:
+          _target_: torch.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: 3
+          bias: False
 
     targets:
       continuous:
         gas_pedal: [input_tokens, continuous, gas_pedal]
         brake_pedal: [input_tokens, continuous, brake_pedal]
         steering_angle: [input_tokens, continuous, steering_angle]
+      discrete:
+        turn_signal: [input_tokens, discrete, turn_signal]
 
     losses:
       _target_: rmind.utils.ModuleDict
@@ -364,6 +373,9 @@ objectives:
         brake_pedal:
           _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
         steering_angle:
+          _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+      discrete:
+        turn_signal:
           _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
   memory_extraction:

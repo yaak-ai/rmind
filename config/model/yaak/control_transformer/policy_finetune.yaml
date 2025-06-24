@@ -33,12 +33,20 @@ hparams_updaters:
               in_channels: 1536
               hidden_channels: [512, 2]
               bias: False
+          discrete:
+            turn_signal:
+              _target_: torchvision.ops.MLP
+              in_channels: 1536
+              hidden_channels: [512, 3]
+              bias: False
 
         targets:
           continuous:
             gas_pedal: [input, continuous, gas_pedal]
             brake_pedal: [input, continuous, brake_pedal]
             steering_angle: [input, continuous, steering_angle]
+          discrete:
+            turn_signal: [input, discrete, turn_signal]
 
         losses:
           _target_: rmind.utils.ModuleDict
@@ -49,6 +57,9 @@ hparams_updaters:
               _target_: rmind.components.loss.GaussianNLLLoss
             steering_angle:
               _target_: rmind.components.loss.GaussianNLLLoss
+          discrete:
+            turn_signal:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
   # freeze episode builder (embeddings etc)
   - _target_: omegaconf.OmegaConf.update

@@ -89,8 +89,8 @@ schema:
 
   #@ predictions = {
   #@     "policy": {
-  #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
-  #@         for k in ["ground_truth", "prediction", "score_l1", "score_logprob"]
+  #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"], "discrete": ["turn_signal"]}
+  #@         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
   #@     },
   #@ }
   #@ for key_objective, data_objective in predictions.items():
