@@ -1,5 +1,5 @@
 from collections.abc import Callable, Sequence
-from typing import Annotated, final
+from typing import Annotated, Any, final
 
 import pytorch_lightning as pl
 from pydantic import AfterValidator, validate_call
@@ -28,19 +28,35 @@ class WandbImageParamLogger(Callback):
         key: str,
         select: Sequence[str | tuple[str, ...]],
         apply: Callable[[Tensor], Tensor] | None = None,
+        every_n_batch: int | None = None,
     ) -> None:
         self._key = key
         self._select = select
         self._apply = apply
+        if every_n_batch is not None and "batch" not in when:
+            msg = "`every_n_batch` is only supported for batch-based hooks"
+            raise ValueError(msg)
+        self._every_n_batch = every_n_batch
         setattr(self, when, self._call)
 
-    def _call(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def _call(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> None:
         if trainer.sanity_checking or not (
             loggers := [
                 logger
                 for logger in pl_module.loggers
                 if isinstance(logger, WandbLogger)
             ]
+        ):
+            return
+
+        if (self._every_n_batch is not None) and (
+            trainer.global_step % self._every_n_batch != 0
         ):
             return
 
