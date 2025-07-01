@@ -1,3 +1,4 @@
+import inspect
 from collections.abc import Callable, Sequence
 from typing import Annotated, Any, final
 
@@ -18,6 +19,18 @@ def _validate_hook(value: str) -> str:
     return value
 
 
+BATCH_HOOKS = frozenset({
+    "on_train_batch_start",
+    "on_train_batch_end",
+    "on_validation_batch_start",
+    "on_validation_batch_end",
+    "on_test_batch_start",
+    "on_test_batch_end",
+    "on_predict_batch_start",
+    "on_predict_batch_end",
+})
+
+
 @final
 class WandbImageParamLogger(Callback):
     @validate_call
@@ -33,19 +46,27 @@ class WandbImageParamLogger(Callback):
         self._key = key
         self._select = select
         self._apply = apply
-        if every_n_batch is not None and "batch" not in when:
-            msg = "`every_n_batch` is only supported for batch-based hooks"
+        if every_n_batch is not None and when not in BATCH_HOOKS:
+            msg = (
+                "`every_n_batch` is only supported for batch-based hooks: "
+                + ", ".join(f"`{hook}`" for hook in BATCH_HOOKS)
+                + f". Got `{when}`"
+            )
             raise ValueError(msg)
         self._every_n_batch = every_n_batch
+        self._when = when
         setattr(self, when, self._call)
 
-    def _call(
-        self,
-        trainer: pl.Trainer,
-        pl_module: pl.LightningModule,
-        *_args: Any,
-        **_kwargs: Any,
-    ) -> None:
+    def _call(self, *args: Any, **kwargs: Any) -> None:
+        base_hook_method = getattr(pl.Callback, self._when)
+        sig = inspect.signature(base_hook_method)
+
+        bound_args = sig.bind(self, *args, **kwargs)
+        bound_args.apply_defaults()
+        pl_module = bound_args.arguments["pl_module"]
+        trainer = bound_args.arguments["trainer"]
+        batch_idx = bound_args.arguments.get("batch_idx", None)
+
         if trainer.sanity_checking or not (
             loggers := [
                 logger
@@ -55,8 +76,10 @@ class WandbImageParamLogger(Callback):
         ):
             return
 
-        if (self._every_n_batch is not None) and (
-            trainer.global_step % self._every_n_batch != 0
+        if (
+            (self._every_n_batch is not None)
+            and (batch_idx is not None)
+            and (batch_idx % self._every_n_batch != 0)
         ):
             return
 
