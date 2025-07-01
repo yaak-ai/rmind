@@ -57,16 +57,13 @@ class WandbImageParamLogger(Callback):
         self._when = when
         setattr(self, when, self._call)
 
-    def _call(self, *args: Any, **kwargs: Any) -> None:
-        base_hook_method = getattr(pl.Callback, self._when)
-        sig = inspect.signature(base_hook_method)
-
-        bound_args = sig.bind(self, *args, **kwargs)
-        bound_args.apply_defaults()
-        pl_module = bound_args.arguments["pl_module"]
-        trainer = bound_args.arguments["trainer"]
-        batch_idx = bound_args.arguments.get("batch_idx", None)
-
+    def _call(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         if trainer.sanity_checking or not (
             loggers := [
                 logger
@@ -75,6 +72,13 @@ class WandbImageParamLogger(Callback):
             ]
         ):
             return
+
+        base_hook_method = getattr(pl.Callback, self._when)
+        sig = inspect.signature(base_hook_method)
+
+        bound_args = sig.bind(self, trainer, pl_module, *args, **kwargs)
+        bound_args.apply_defaults()
+        batch_idx = bound_args.arguments.get("batch_idx")
 
         if (
             (self._every_n_batch is not None)
