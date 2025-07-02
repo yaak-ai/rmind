@@ -37,3 +37,7 @@ def diff_last(input: Tensor, n: int = 1, *, append: float | None = None) -> Tens
         else None
     )
     return torch.diff(input, n=n, dim=-1, append=append_)
+
+
+def normalize_angle(input: Tensor) -> Tensor:
+    return ((input % 360) + 360) % 360 / 360

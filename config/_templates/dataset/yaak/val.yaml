@@ -330,7 +330,8 @@ samples:
                 "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[12] AS "meta/VehicleMotion/brake_pedal_normalized",
                 "meta/VehicleMotion/steering_angle_normalized"::FLOAT[12] AS "meta/VehicleMotion/steering_angle_normalized",
                 "meta/VehicleState/turn_signal"::INT8[12] AS "meta/VehicleState/turn_signal",
-                "waypoints/waypoints_normalized"::FLOAT[2][10][12] AS "waypoints/waypoints_normalized"
+                "waypoints/waypoints_normalized"::FLOAT[2][10][12] AS "waypoints/waypoints_normalized",
+                "waypoints/heading"::FLOAT[12] AS "waypoints/heading"
             FROM
                 df
             WHERE

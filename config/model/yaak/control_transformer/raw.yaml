@@ -18,6 +18,7 @@ input_builder:
       
     context:
       waypoints: [data, waypoints/waypoints_normalized]      
+      heading: [data, waypoints/heading]
 
     discrete:
       turn_signal: [data, meta/VehicleState/turn_signal]
@@ -52,7 +53,12 @@ input_builder:
         append:
           _target_: hydra.utils.get_object
           path: math.nan
-
+    
+    - select: [context, heading]
+      apply:
+        _target_: rmind.utils.functional.normalize_angle
+        _partial_: true
+    
     - select: [continuous, discrete, context]
       apply:
         _target_: torch.atleast_3d
@@ -66,6 +72,7 @@ episode_builder:
     - [observation, image, cam_front_left]
     - [observation, continuous, speed]
     - [observation, context, waypoints]
+    - [observation, context, heading]
     - [special, special, observation_summary]
     - [special, special, observation_history]
     - [action, continuous, gas_pedal]
@@ -130,6 +137,11 @@ episode_builder:
       waypoints:
         _target_: rmind.components.nn.Identity
 
+      heading:
+        _target_: rmind.components.norm.UniformBinner
+        range: [0.0, 1.0]
+        bins: ${embedding_dim}
+
   embeddings:
     _target_: rmind.utils.ModuleDict
     image:
@@ -163,9 +175,19 @@ episode_builder:
 
     context:
       waypoints:
-        _target_: torch.nn.Linear
-        in_features: 2
-        out_features: ${embedding_dim}
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.Linear
+            in_features: 2
+            out_features: ${embedding_dim}
+          - _target_: rmind.components.norm.Normalize
+            p: 2
+            dim: -1
+            
+      heading:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: ${model.episode_builder.tokenizers.context.heading.bins}
+        embedding_dim: ${embedding_dim}
 
     discrete:
       turn_signal:
@@ -193,7 +215,7 @@ episode_builder:
 
     observations:
       _target_: rmind.components.nn.Embedding
-      num_embeddings: 192
+      num_embeddings: 192 # 180(img) + 10(wpts) + 1(heading) + 1(speed)
       embedding_dim: ${embedding_dim}
 
     actions:

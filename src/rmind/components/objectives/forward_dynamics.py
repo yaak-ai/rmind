@@ -55,7 +55,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         observations: TensorDict = index.select(*[
             k
             for k in episode.timestep.keys_by_type[TokenType.OBSERVATION]
-            if k != (Modality.CONTEXT, "waypoints")
+            if k not in {(Modality.CONTEXT, "waypoints"), (Modality.CONTEXT, "heading")}
         ]).parse(embedding)
 
         observation_summary = (
