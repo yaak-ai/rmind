@@ -1,6 +1,7 @@
 from typing import Any, final, override
 
 from torch import Tensor, nn
+from torch.nn.modules.module import Module
 from torch.utils.checkpoint import checkpoint
 
 
@@ -86,11 +87,18 @@ class TransformerEncoder(nn.Module):
     def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
         x = src
 
+        if self.training:
+
+            def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
+                return checkpoint(layer, layer_input, mask, use_reentrant=False)
+
+        else:
+
+            def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
+                return layer(layer_input, mask)
+
         for layer in self.layers:
-            if self.training:
-                x = checkpoint(layer, x, mask, use_reentrant=False)
-            else:
-                x = layer(x, mask)
+            x = run_layer(layer, x, mask)
 
         return self.layer_norm(x)
 
