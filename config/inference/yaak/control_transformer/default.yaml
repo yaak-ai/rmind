@@ -20,6 +20,21 @@ trainer:
     - _target_: rmind.callbacks.RerunPredictionWriter
       write_interval: batch
       logger: ${rerun_logger}
-
+    - _target_: rmind.callbacks.DataFramePredictionWriter
+      write_interval: batch
+      path: predictions/${model.artifact}/${now:%Y-%m-%d--%H-%M-%S}/{batch_idx}.parquet
+      select:
+        - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+        - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+        - [batch, meta, input_id]
+        - [predictions, policy, ground_truth]
+        - [predictions, policy, prediction_value]
+        - [predictions, policy, prediction_std]
+        - [predictions, policy, prediction_probs]
+        - [predictions, policy, score_l1]
+        - [predictions, policy, score_logprob]
+      writer:
+          _target_: polars.DataFrame.write_parquet
+          _partial_: true
     - _target_: rmind.callbacks.ModelSummary
       depth: 5

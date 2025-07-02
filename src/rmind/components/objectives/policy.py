@@ -249,7 +249,7 @@ class PolicyObjective(Objective):
                     gt = episode.input[action_type][:, -1]
                     match action_type:
                         case (Modality.CONTINUOUS, _):
-                            return F.l1_loss(x, gt, reduction="none")
+                            return F.l1_loss(x[..., 0], gt, reduction="none")
 
                         case (Modality.DISCRETE, "turn_signal"):
                             return F.l1_loss(
