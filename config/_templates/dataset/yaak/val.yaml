@@ -127,13 +127,14 @@ samples:
         mapspec: "waypoints_path[i] -> waypoints_raw[i]"
         func:
           _target_: rbyte.io.DuckDbDataFrameBuilder
+          udfs: [rbyte.io._duckdb.udfs.Wgs84ToUtm]
         bound:
           query: |
             LOAD spatial;
             SET TimeZone = 'UTC';
-            SELECT TO_TIMESTAMP(timestamp)::TIMESTAMP as timestamp,
+            SELECT TO_TIMESTAMP(timestamp)::TIMESTAMP AS timestamp,
                    heading,
-                   ST_AsWKB(ST_Transform(geom, 'EPSG:4326', 'EPSG:3857', always_xy := true)) AS geometry
+                   ST_Wgs84ToUtm(ST_AsWKB(geom)) AS geometry
             FROM ST_Read('{path}')
 
       - _target_: pipefunc.PipeFunc
@@ -248,63 +249,84 @@ samples:
         mapspec: "query_context[i] -> filtered[i]"
         func:
           _target_: rbyte.io.DataFrameDuckDbQuery
+          udfs: [rbyte.io._duckdb.udfs.Wgs84ToUtm]
         bound:
           query: |
             LOAD spatial;
-            SELECT 
-              * EXCLUDE "meta/VehicleMotion/gear",
-              ST_AsWKB(
-                ST_Transform(
-                  ST_Point("meta/Gnss/longitude", "meta/Gnss/latitude"),
-                  'EPSG:4326',
-                  'EPSG:3857',
-                  always_xy := true
-                )
-              ) as "meta/Gnss/longitude_latitude"
-            FROM aligned
-              SEMI JOIN cam_front_left_meta
-                ON aligned."meta/ImageMetadata.cam_front_left/frame_idx" = cam_front_left_meta.frame_idx
-            WHERE COLUMNS(*) IS NOT NULL
-              AND aligned."meta/VehicleMotion/gear" == '3'
-              AND aligned."meta/VehicleMotion/speed" BETWEEN 0.0 AND 130.0
-              AND aligned."meta/VehicleMotion/gas_pedal_normalized" BETWEEN 0.0 AND 1.0
-              AND aligned."meta/VehicleMotion/brake_pedal_normalized" BETWEEN 0.0 AND 1.0
-              AND aligned."meta/VehicleMotion/steering_angle_normalized" BETWEEN -1.0 AND 1.0
+            WITH
+              base_data AS (
+                SELECT
+                  *,
+                  ST_GeomFromWKB(ST_Wgs84ToUtm(
+                    ST_AsWKB(
+                      ST_Point(
+                        "meta/Gnss/longitude",
+                        "meta/Gnss/latitude"
+                      )
+                    )
+                  )) AS ego_geom,
+                  ST_GeomFromWKB("waypoints/waypoints") AS waypoints_geom
+                FROM
+                  aligned
+                  SEMI JOIN cam_front_left_meta
+                  ON aligned."meta/ImageMetadata.cam_front_left/frame_idx"
+                  = cam_front_left_meta.frame_idx
+                WHERE
+                  aligned."meta/VehicleMotion/gear" == '3'
+                  AND aligned."meta/VehicleMotion/speed" BETWEEN 0.0 AND 130.0
+                  AND aligned."meta/VehicleMotion/gas_pedal_normalized" BETWEEN 0.0 AND 1.0
+                  AND aligned."meta/VehicleMotion/brake_pedal_normalized" BETWEEN 0.0 AND 1.0
+                  AND aligned."meta/VehicleMotion/steering_angle_normalized" BETWEEN -1.0 AND 1.0
+                  AND "meta/Gnss/longitude" IS NOT NULL
+                  AND "meta/Gnss/latitude" IS NOT NULL
+                  AND "waypoints/waypoints" IS NOT NULL
+                  AND "waypoints/heading" IS NOT NULL
+              ),
+              normalized_geometries AS (
+                SELECT
+                  *,
+                  ST_Rotate(
+                    ST_Translate(
+                      waypoints_geom,
+                      - ST_X(ego_geom),
+                      - ST_Y(ego_geom)
+                    ),
+                    radians("waypoints/heading")
+                  ) AS normalized_waypoints_geom
+                FROM
+                  base_data
+              )
+            SELECT
+              * EXCLUDE (
+                "meta/VehicleMotion/gear",
+                waypoints_geom,
+                normalized_waypoints_geom
+              ),
+              (
+                SELECT
+                  list(
+                    [ST_X(p.point_struct.geom), ST_Y(p.point_struct.geom)]
+                    ORDER BY
+                      p.point_struct.path
+                  )
+                FROM
+                  UNNEST(ST_Dump(normalized_waypoints_geom)) AS p(point_struct)
+              ) AS "waypoints/waypoints_normalized"
+            FROM
+              normalized_geometries
+            WHERE
+              ST_Contains(
+                ST_MakeEnvelope(-150, -150, 150, 150),
+                normalized_waypoints_geom
+              )
+            ORDER BY
+              "meta/ImageMetadata.cam_front_left/time_stamp";
 
       - _target_: pipefunc.PipeFunc
         renames:
           input: filtered
-        output_name: with_waypoints_normalized
-        mapspec: "filtered[i] -> with_waypoints_normalized[i]"
-        func:
-          _target_: rbyte.io.WaypointNormalizer
-          columns:
-            ego: meta/Gnss/longitude_latitude
-            waypoints: waypoints/waypoints
-            heading: waypoints/heading
-            output: waypoints/waypoints_normalized
-
-      - _target_: pipefunc.PipeFunc
-        renames:
-          df: with_waypoints_normalized
-        output_name: with_waypoints_filtered
-        mapspec: "with_waypoints_normalized[i] -> with_waypoints_filtered[i]"
-        func:
-          _target_: rbyte.io.DataFrameDuckDbQuery
-        bound:
-          query: |
-            SELECT
-              *
-            FROM
-              df
-            WHERE
-              list_max(apply(FLATTEN("waypoints/waypoints_normalized"), x -> ABS(x))) < 300
-
-      - _target_: pipefunc.PipeFunc
-        renames:
-          input: with_waypoints_filtered
         output_name: samples
-        mapspec: "with_waypoints_filtered[i] -> samples[i]"
+        mapspec: "filtered[i] -> samples[i]"
         func:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.(@=cameras[0]@)/frame_idx
@@ -330,7 +352,8 @@ samples:
                 "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[12] AS "meta/VehicleMotion/brake_pedal_normalized",
                 "meta/VehicleMotion/steering_angle_normalized"::FLOAT[12] AS "meta/VehicleMotion/steering_angle_normalized",
                 "meta/VehicleState/turn_signal"::INT8[12] AS "meta/VehicleState/turn_signal",
-                "waypoints/waypoints_normalized"::FLOAT[2][10][12] AS "waypoints/waypoints_normalized"
+                "waypoints/waypoints_normalized"::FLOAT[2][10][12] AS "waypoints/waypoints_normalized",
+                "waypoints/heading"::FLOAT[12] AS "waypoints/heading"
             FROM
                 df
             WHERE
