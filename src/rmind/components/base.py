@@ -1,5 +1,4 @@
-from collections.abc import Mapping
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from torch import Tensor
 

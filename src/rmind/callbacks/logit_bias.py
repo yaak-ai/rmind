@@ -34,7 +34,6 @@ class LogitBiasSetter(Callback):
         targets: list[tuple[str, tuple[str, ...], LogitBiasMixin]] = []
 
         for objective_key, objective in objectives.items():
-            breakpoint()
             loss_keys, losses, _ = tree_flatten_with_path(objective.losses)
             for loss_key, loss in zip(loss_keys, losses, strict=True):
                 match loss:
@@ -47,7 +46,6 @@ class LogitBiasSetter(Callback):
         if not targets:
             return
 
-        breakpoint()
         input_keys, batch_keys, _ = tree_flatten_with_path(
             pl_module.input_builder.keys, is_leaf=lambda x: isinstance(x, tuple)
         )

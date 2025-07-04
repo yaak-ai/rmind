@@ -16,12 +16,10 @@ from torchvision.models import resnet18
 from torchvision.ops import MLP
 from torchvision.transforms.v2 import CenterCrop, Normalize, ToDtype
 
-from rmind.components.base import TensorDictExport
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import (
     Episode,
     EpisodeBuilder,
-    EpisodeExport,
     Modality,
     PositionEncoding,
     SpecialToken,
