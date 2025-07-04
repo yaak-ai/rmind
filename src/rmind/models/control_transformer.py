@@ -186,7 +186,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
             for name, objective in self.objectives.items():
                 mask = objective.build_attention_mask(episode.index, episode.timestep)
-                img = Image(mask.with_legend(WandbAttentionMaskLegend).mask)
+                img = Image(
+                    mask.with_legend(WandbAttentionMaskLegend).mask.unsqueeze(0)
+                )
                 self.logger.log_image(f"masks/{name}", [img], step=step)
 
         self.log_dict(

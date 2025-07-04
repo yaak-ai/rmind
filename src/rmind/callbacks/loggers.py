@@ -9,6 +9,7 @@ from pytorch_lightning.core.hooks import ModelHooks
 from pytorch_lightning.loggers import WandbLogger
 from tensordict import TensorDict
 from torch import Tensor
+
 from wandb import Image
 
 
@@ -96,7 +97,12 @@ class WandbImageParamLogger(Callback):
             logger.log_image(
                 key=self._key,
                 images=[
-                    Image(v, caption=".".join(k[:-1]))
+                    Image(
+                        ((v - v.min()) / (v.max() - v.min()) * 255)
+                        .clamp(0, 255)
+                        .unsqueeze(0),
+                        caption=".".join(k[:-1]),
+                    )
                     for k, v in data.cpu().items(include_nested=True, leaves_only=True)
                 ],
                 step=trainer.global_step,
