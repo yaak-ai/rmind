@@ -8,7 +8,6 @@ requires-python = ">=3.12, <3.13"
 dependencies = [
   "torch",
   "tensordict>=0.8.3",
-  "rbyte[geo,jpeg,yaak]==0.28.1",
   "pytorch-lightning>=2.5.2",
   "torchvision==0.20.1",
   "torchaudio==2.5.1",
@@ -24,6 +23,7 @@ dependencies = [
   "orjson>=3.10.18",
   "optree>=0.16.0",
   "structlog>=25.4.0",
+  "rbyte[geo,jpeg,yaak]",
 ]
 license = { text = "Apache-2.0" }
 classifiers = [
@@ -41,6 +41,9 @@ repo = "https://github.com/yaak-ai/rbyte"
 
 [tool.uv]
 override-dependencies = ["torch==2.5.1"]
+
+[tool.uv.sources]
+rbyte = { path = "/nasa/team-space/nikita/wheels/rbyte-0.28.2-py3-none-any.whl" }
 
 [build-system]
 requires = ["hatchling"]
