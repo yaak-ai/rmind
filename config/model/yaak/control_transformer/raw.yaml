@@ -120,8 +120,6 @@ episode_builder:
           - _target_: rmind.components.norm.Scaler
             in_range: [-2.0, 2.0]
             out_range: [-1.0, 1.0]
-          - _target_: torch.nn.LayerNorm
-            normalized_shape: ${embedding_dim}
 
     discrete:
       _target_: rmind.components.nn.Identity
@@ -170,9 +168,8 @@ episode_builder:
           - _target_: torch.nn.Linear
             in_features: 2
             out_features: ${embedding_dim}
-          - _target_: rmind.components.norm.Normalize
-            p: 2
-            dim: -1
+          - _target_: torch.nn.LayerNorm
+            normalized_shape: ${embedding_dim}
 
     discrete:
       turn_signal:
