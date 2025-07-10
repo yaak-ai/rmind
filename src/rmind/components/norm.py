@@ -106,15 +106,3 @@ class MuLawEncoding(_MuLawEncoding, Invertible):
     @override
     def invert(self, input: Tensor) -> Tensor:
         return mu_law_decoding(input, self.quantization_channels)
-
-
-@final
-class Normalize(Module):
-    def __init__(self, p: int = 2, dim: int = -1) -> None:
-        super().__init__()
-        self.p = p
-        self.dim = dim
-
-    @override
-    def forward(self, input: Tensor) -> Tensor:
-        return input / torch.norm(input, dim=self.dim, p=self.p, keepdim=True)
