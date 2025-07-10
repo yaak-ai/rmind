@@ -8,7 +8,7 @@ requires-python = ">=3.12, <3.13"
 dependencies = [
   "torch",
   "tensordict>=0.8.3",
-  "rbyte[geo,jpeg,yaak]==0.28.1",
+  "rbyte[geo,jpeg,yaak]",
   "pytorch-lightning>=2.5.2",
   "torchvision==0.20.1",
   "torchaudio==2.5.1",
@@ -40,6 +40,9 @@ repo = "https://github.com/yaak-ai/rbyte"
 
 [tool.uv]
 override-dependencies = ["torch==2.5.1"]
+
+[tool.uv.sources]
+rbyte = { path = "/nasa/team-space/nikita/wheels/rbyte-0.28.2-py3-none-any.whl" }
 
 [build-system]
 requires = ["hatchling"]
