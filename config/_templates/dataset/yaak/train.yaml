@@ -927,10 +927,7 @@ samples:
                   AND aligned."meta/VehicleMotion/gas_pedal_normalized" BETWEEN 0.0 AND 1.0
                   AND aligned."meta/VehicleMotion/brake_pedal_normalized" BETWEEN 0.0 AND 1.0
                   AND aligned."meta/VehicleMotion/steering_angle_normalized" BETWEEN -1.0 AND 1.0
-                  AND "meta/Gnss/longitude" IS NOT NULL
-                  AND "meta/Gnss/latitude" IS NOT NULL
-                  AND "waypoints/waypoints" IS NOT NULL
-                  AND "waypoints/heading" IS NOT NULL
+                  AND COLUMNS(*) IS NOT NULL
               ),
               normalized_geometries AS (
                 SELECT

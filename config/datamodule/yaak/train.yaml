@@ -6,7 +6,7 @@ defaults:
 _target_: rmind.datamodules.GenericDataModule
 train:
   _target_: torch.utils.data.DataLoader
-  batch_size: 48
+  batch_size: 64
   shuffle: true
   num_workers: 32
   pin_memory: false
