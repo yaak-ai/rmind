@@ -57,6 +57,7 @@ class PolicyObjective(Objective):
             .select(
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                 (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                (Modality.CONTEXT, "waypoints"),
             )
             .parse(embedding)
         )
@@ -71,7 +72,7 @@ class PolicyObjective(Objective):
             SpecialToken.OBSERVATION_SUMMARY,
         ))
 
-        waypoints = episode.input_embeddings[Modality.CONTEXT, "waypoints"][:, -1].mean(
+        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
             dim=1, keepdim=True
         )
 
@@ -131,6 +132,7 @@ class PolicyObjective(Objective):
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                    (Modality.CONTEXT, "waypoints"),
                 )
                 .parse(embedding)
             )
@@ -145,9 +147,9 @@ class PolicyObjective(Objective):
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
 
-            waypoints = episode.input_embeddings[Modality.CONTEXT, "waypoints"][
-                :, -1
-            ].mean(dim=1, keepdim=True)
+            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
+                dim=1, keepdim=True
+            )
 
             features = rearrange(
                 [observation_summary, observation_history, waypoints],
