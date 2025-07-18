@@ -67,6 +67,7 @@ class TransformerEncoder(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
+        freeze: bool | None = None,  # noqa: FBT001
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([  # pyright: ignore[reportUnannotatedClassAttribute]
@@ -82,6 +83,8 @@ class TransformerEncoder(nn.Module):
         ])
         # https://github.com/karpathy/nanoGPT/blob/master/model.py#L182
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
     def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
