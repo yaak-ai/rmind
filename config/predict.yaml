@@ -3,3 +3,5 @@
 defaults:
   - inference: null
   - _self_
+
+matmul_precision: "high"

@@ -3,6 +3,7 @@ from subprocess import check_output  # noqa: S404
 
 import hydra
 import pytorch_lightning as pl
+import torch
 import wandb
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -16,6 +17,8 @@ def _train(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed, workers=True)  # pyright: ignore[reportUnusedCallResult]
 
     logger.debug("instantiating model", target=cfg.model._target_)
+    torch.set_float32_matmul_precision(cfg.matmul_precision)
+
     model: pl.LightningModule = instantiate(cfg.model)
 
     logger.debug("instantiating datamodule", target=cfg.datamodule._target_)

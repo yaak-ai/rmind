@@ -2,6 +2,7 @@
 from typing import TYPE_CHECKING
 
 import hydra
+import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 from pytorch_lightning.utilities.types import (
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 
 @hydra.main(version_base=None)
 def predict(cfg: DictConfig) -> _PREDICT_OUTPUT | None:
+    torch.set_float32_matmul_precision(cfg.matmul_precision)
     logger.debug("instantiating model", target=cfg.model._target_)
     model: pl.LightningModule = instantiate(cfg.model)
 
