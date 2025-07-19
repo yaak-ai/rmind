@@ -54,11 +54,11 @@ class RandomMaskedHindsightControlObjective(Objective):
         episode = episode.clone(recurse=True)
         episode.input_embeddings.select(
             *episode.timestep.keys_by_type[TokenType.ACTION]
-        )[:, masked_action_timestep_idx] = -1.0
+        )[:, masked_action_timestep_idx].apply_(lambda x: x.fill_(-1.0))
 
         episode.input_embeddings.select(
             *episode.timestep.keys_by_type[TokenType.OBSERVATION]
-        )[:, masked_observation_timestep_idx] = -1.0
+        )[:, masked_observation_timestep_idx].apply_(lambda x: x.fill_(-1.0))
 
         mask = self.build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)

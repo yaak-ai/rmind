@@ -4,6 +4,7 @@ from typing import Literal, final, override
 
 import polars as plr  # noqa: ICN001
 import pytorch_lightning as pl
+import torch
 from pydantic import validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
 from tensordict import TensorClass, TensorDict
@@ -65,7 +66,11 @@ class DataFramePredictionWriter(BasePredictionWriter):
         if self._select is not None:
             data = data.select(*self._select)
 
-        data = data.flatten_keys(self._separator).cpu()
+        data = (
+            data.flatten_keys(self._separator)
+            .cpu()
+            .apply(lambda x: x.float() if x.dtype == torch.bfloat16 else x)
+        )
 
         try:
             df = plr.from_numpy(data.to_struct_array())
