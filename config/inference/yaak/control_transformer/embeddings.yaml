@@ -13,6 +13,7 @@ trainer:
   accelerator: gpu
   devices: 1
   benchmark: true
+  precision: "bf16-mixed"
   logger: false
   callbacks:
     - _target_: rmind.callbacks.TensorDictPredictionWriter
