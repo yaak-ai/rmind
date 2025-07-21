@@ -134,6 +134,7 @@ artifacts
 wandb
 ./wandb/
 outputs/
+predictions/
 lightning_logs/
 .hydra
 

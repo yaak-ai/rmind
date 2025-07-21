@@ -220,26 +220,14 @@ episode_builder:
       embedding_dim: ${embedding_dim}
 
 encoder:
-  _target_: rmind.components.llm.xFormerEncoder
-  config:
-    _target_: xformers.factory.xFormerEncoderConfig
-    reversible: True
-    num_layers: ${num_layers}
-    dim_model: ${embedding_dim}
-    residual_norm_style: pre
-    multi_head_config:
-      dim_model: ${embedding_dim}
-      num_heads: ${num_heads}
-      residual_dropout: 0.1
-      attention:
-        name: scaled_dot_product
-        dropout: 0.1
-        causal: False
-    feedforward_config:
-      name: MLPGLU
-      dropout: 0.1
-      activation: gelu
-      hidden_layer_multiplier: 1
+  _target_: rmind.components.llm.TransformerEncoder
+  dim_model: ${embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  attn_dropout: 0.1
+  resid_dropout: 0.1
+  mlp_dropout: 0.1
+  hidden_layer_multiplier: 1
 
 objectives:
   _target_: rmind.utils.ModuleDict
