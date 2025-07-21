@@ -142,6 +142,9 @@ episode_builder:
           freeze: True
         - _target_: einops.layers.torch.Rearrange
           pattern: "... c h w -> ... (h w) c"
+        - _target_: rmind.components.norm.Normalize
+          p: 2
+          dim: -1
 
     continuous:
       speed:
@@ -163,9 +166,14 @@ episode_builder:
 
     context:
       waypoints:
-        _target_: torch.nn.Linear
-        in_features: 2
-        out_features: ${embedding_dim}
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.Linear
+            in_features: 2
+            out_features: ${embedding_dim}
+          - _target_: rmind.components.norm.Normalize
+            p: 2
+            dim: -1
 
     discrete:
       turn_signal:
