@@ -117,4 +117,4 @@ class Normalize(Module):
 
     @override
     def forward(self, input: Tensor) -> Tensor:
-        return input / torch.norm(input, dim=self.dim, p=self.p, keepdim=True)
+        return torch.nn.functional.normalize(input, p=self.p, dim=self.dim)
