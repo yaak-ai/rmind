@@ -5,3 +5,4 @@ defaults:
   - _self_
 
 seed: 1337
+matmul_precision: "high"
