@@ -75,13 +75,6 @@ hparams_updaters:
     merge: true
     key: encoder.freeze
     value: true
-  # remove objective scheduler since we only have a single objective
-  - _target_: omegaconf.OmegaConf.update
-    _partial_: true
-    _recursive_: false
-    merge: false
-    key: objective_scheduler
-    value: null
   # for some reason lr_scheduler.scheduler isn't checkpointed? re-add
   - _target_: omegaconf.OmegaConf.update
     _partial_: true

@@ -391,15 +391,6 @@ objectives:
         steering_angle_diff:
           _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
-objective_scheduler:
-  _target_: rmind.components.objectives.ObjectiveScheduler
-  schedule:
-    inverse_dynamics: 0.25
-    forward_dynamics: 0.25
-    random_masked_hindsight_control: 0.25
-    memory_extraction: 0.25
-  sample_size: 1
-
 optimizer:
   _target_: rmind.components.optimizers.SelectiveAdamW
   _recursive_: true
