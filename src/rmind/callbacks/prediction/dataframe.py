@@ -65,7 +65,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
         if self._select is not None:
             data = data.select(*self._select)
 
-        data = data.flatten_keys(self._separator).cpu()
+        data = data.flatten_keys(self._separator).cpu().float()
 
         try:
             df = plr.from_numpy(data.to_struct_array())
