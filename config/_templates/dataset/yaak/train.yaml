@@ -942,6 +942,35 @@ samples:
       - _target_: pipefunc.PipeFunc
         renames:
           input: filtered
+        output_name: with_waypoints_normalized
+        mapspec: "filtered[i] -> with_waypoints_normalized[i]"
+        func:
+          _target_: rbyte.io.WaypointNormalizer
+          columns:
+            ego: meta/Gnss/longitude_latitude
+            waypoints: waypoints/waypoints
+            heading: waypoints/heading
+            output: waypoints/waypoints_normalized
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          df: with_waypoints_normalized
+        output_name: with_waypoints_filtered
+        mapspec: "with_waypoints_normalized[i] -> with_waypoints_filtered[i]"
+        func:
+          _target_: rbyte.io.DataFrameDuckDbQuery
+        bound:
+          query: |
+            SELECT
+              *
+            FROM
+              df
+            WHERE
+              list_max(apply(FLATTEN("waypoints/waypoints_normalized"), x -> ABS(x))) < 300
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: with_waypoints_filtered
         output_name: samples
         mapspec: "filtered[i] -> samples[i]"
         func:
@@ -970,7 +999,7 @@ samples:
                 "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/brake_pedal_normalized",
                 "meta/VehicleMotion/steering_angle_normalized"::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
                 "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
-                "waypoints/waypoints_normalized"::FLOAT[2][10][6] AS "waypoints/waypoints_normalized",
+                "waypoints/waypoints_normalized"::FLOAT[2][10][6] AS "waypoints/waypoints_normalized"
             FROM
                 samples
             WHERE
