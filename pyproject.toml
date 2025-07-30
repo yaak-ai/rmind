@@ -39,7 +39,13 @@ repo = "https://github.com/yaak-ai/rbyte"
 [project.optional-dependencies]
 predict = ["funcy>=2.0", "wandb>=0.21.0", "rbyte[visualize]"]
 test = ["pytest>=8.4.1", "pytest-lazy-fixtures>=1.1.4"]
-train = ["torchmetrics>=1.4.1", "transformers>=4.44.2", "wandb>=0.21.0"]
+train = [
+  "contextily>=1.6.2",
+  "matplotlib>=3.10.3",
+  "torchmetrics>=1.4.1",
+  "transformers>=4.44.2",
+  "wandb>=0.21.0",
+]
 
 [dependency-groups]
 dev = ["ipython", "lovely-tensors", "pudb", "wat-inspector"]

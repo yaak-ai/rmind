@@ -1,4 +1,4 @@
-from .loggers import WandbImageParamLogger
+from .loggers import WandbImageParamLogger, WandbWaypointsLogger
 from .logit_bias import LogitBiasSetter
 from .prediction import (
     DataFramePredictionWriter,
@@ -12,4 +12,5 @@ __all__ = [
     "RerunPredictionWriter",
     "TensorDictPredictionWriter",
     "WandbImageParamLogger",
+    "WandbWaypointsLogger",
 ]
