@@ -14,11 +14,11 @@ def test_scaler() -> None:
         1024,
         dtype=torch.float,
         device="cpu",
-        low=module.in_range[0],
-        high=module.in_range[1],
+        low=module.in_range[0].item(),
+        high=module.in_range[1].item(),
     )
 
-    x_rt = module.invert(module.forward(x))
+    x_rt = module.invert(module(x))
 
     assert_close(x_rt, x)
 
@@ -26,12 +26,16 @@ def test_scaler() -> None:
 def test_uniform_binner() -> None:
     module = UniformBinner(range=(5.0, 130.0), bins=1024)
     x = make_tensor(
-        1024, dtype=torch.float, device="cpu", low=module.range[0], high=module.range[1]
+        1024,
+        dtype=torch.float,
+        device="cpu",
+        low=module.range[0].item(),
+        high=module.range[1].item(),
     )
-    x_rt = module.invert(module.forward(x))
+    x_rt = module.invert(module(x))
 
     bin_width = (module.range[1] - module.range[0]) / module.bins
-    assert_close(x_rt, x, rtol=0.0, atol=bin_width / 2.0)
+    assert_close(x_rt, x, rtol=0.0, atol=(bin_width / 2.0).item())
 
 
 def test_sequential() -> None:
@@ -46,10 +50,10 @@ def test_sequential() -> None:
         1024,
         dtype=torch.float,
         device="cpu",
-        low=module[0].in_range[0].item(),
-        high=module[0].in_range[1].item(),
+        low=module[0].in_range[0].item(),  # pyright: ignore[reportIndexIssue]
+        high=module[0].in_range[1].item(),  # pyright: ignore[reportIndexIssue]
     )
 
-    x_rt = module.invert(module.forward(x))
+    x_rt = module.invert(module(x))
 
     assert_close(x_rt, x)
