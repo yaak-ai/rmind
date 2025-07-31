@@ -31,7 +31,6 @@ dependencies = [
   "tensordict>=0.9.1",
   "torch>=2.7.1",
   "torchaudio==2.7.1",
-  "torchinfo>=1.8.0",
   "torchvision==0.22.1",
 ]
 
