@@ -1,7 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar, Literal, Self, override
 
-import more_itertools as mit
 import pytorch_lightning as pl
 import torch
 from lightning_fabric.utilities.types import (
@@ -50,6 +49,7 @@ class LRSchedulerHydraConfig(BaseModel):
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     episode_builder: Module
+    encoder: Module | None
     objectives: ModuleDict
     optimizer: HydraConfig[Optimizer] | None = None
     lr_scheduler: LRSchedulerHydraConfig | None = None
@@ -59,6 +59,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self,
         *,
         episode_builder: HydraConfig[Module] | InstanceOf[Module],
+        encoder: HydraConfig[Module] | InstanceOf[Module] | None = None,
         objectives: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
@@ -67,41 +68,39 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         hparams = {}
 
-        match episode_builder:
-            case HydraConfig():
-                self.episode_builder = episode_builder.instantiate()
-                hparams["episode_builder"] = episode_builder.model_dump(by_alias=True)
+        if isinstance(episode_builder, HydraConfig):
+            hparams["episode_builder"] = episode_builder.model_dump()
+            episode_builder = episode_builder.instantiate()
 
-            case Module():
-                self.episode_builder = episode_builder
+        self.episode_builder = episode_builder
 
-        match objectives:
-            case HydraConfig():
-                self.objectives = objectives.instantiate()
-                hparams["objectives"] = objectives.model_dump(by_alias=True)
+        if isinstance(encoder, HydraConfig):
+            hparams["encoder"] = encoder.model_dump()
+            encoder = encoder.instantiate()
 
-            case ModuleDict():
-                self.objectives = objectives
+        self.encoder = encoder
+
+        if isinstance(objectives, HydraConfig):
+            hparams["objectives"] = objectives.model_dump()
+            objectives = objectives.instantiate()
+
+        self.objectives = objectives
+        if self.encoder is not None:
+            for objective in self.objectives.values():
+                if hasattr(objective, "encoder") and objective.encoder is None:  # pyright: ignore[reportUnnecessaryComparison]
+                    objective.encoder = self.encoder
+
+        if optimizer is not None:
+            hparams["optimizer"] = optimizer.model_dump()
 
         self.optimizer = optimizer
-        if optimizer is not None:
-            hparams["optimizer"] = optimizer.model_dump(by_alias=True)
+
+        if lr_scheduler is not None:
+            hparams["lr_scheduler"] = lr_scheduler.model_dump()
 
         self.lr_scheduler = lr_scheduler
-        if lr_scheduler is not None:
-            hparams["lr_scheduler"] = lr_scheduler.model_dump(by_alias=True)
 
         self.save_hyperparameters(hparams)
-
-        if not mit.all_equal(
-            (
-                objective.encoder
-                for objective in self.objectives.values()
-                if hasattr(objective, "encoder")
-            ),
-            key=id,
-        ):
-            logger.warning("objectives have different encoders")
 
     @override
     @_restricted_classmethod

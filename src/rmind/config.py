@@ -1,13 +1,17 @@
 from collections.abc import Callable
 from typing import ClassVar, Literal
 
-from hydra_once import instantiate
+from hydra.utils import instantiate
 from pydantic import BaseModel, ConfigDict, Field, ImportString
 
 
 class HydraConfig[T](BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(
-        frozen=True, extra="allow", validate_assignment=True, populate_by_name=True
+        frozen=True,
+        extra="allow",
+        validate_assignment=True,
+        populate_by_name=True,
+        serialize_by_alias=True,
     )
 
     target: ImportString[type[T] | Callable[..., T]] = Field(
@@ -20,4 +24,4 @@ class HydraConfig[T](BaseModel):
     partial: bool = Field(alias="_partial_", default=False)
 
     def instantiate(self, **kwargs: object) -> T:
-        return instantiate(self.model_dump(by_alias=True), cache=True, **kwargs)
+        return instantiate(self.model_dump(), **kwargs)

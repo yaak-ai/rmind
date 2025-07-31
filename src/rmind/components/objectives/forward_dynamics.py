@@ -1,6 +1,6 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import override
+from typing import final, override
 
 import torch
 from einops import pack
@@ -34,22 +34,23 @@ from rmind.components.objectives.base import (
 from rmind.utils.functional import nan_padder
 
 
+@final
 class ForwardDynamicsPredictionObjective(Objective):
     @validate_call
     def __init__(
         self,
         *,
-        encoder: InstanceOf[Module],
+        encoder: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
-        self.encoder: Module = encoder
-        self.heads: ModuleDict = heads
-        self.losses: ModuleDict | None = losses
-        self.targets: Targets | None = targets
+        self.encoder = encoder
+        self.heads = heads
+        self.losses = losses
+        self.targets = targets
 
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
@@ -57,7 +58,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         mask = self.build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
-        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))
+        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))  # pyright: ignore[reportOptionalCall]
 
         index = episode.index[:-1]  # all but last timestep
 
@@ -126,7 +127,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             mask = self.build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             )
-            attention = self.encoder.compute_attention_rollout(  # pyright: ignore[reportCallIssue]
+            attention = self.encoder.compute_attention_rollout(  # pyright: ignore[reportCallIssue, reportOptionalMemberAccess]
                 src=episode.embeddings_packed, mask=mask.mask, drop_ratio=0.9
             )
 
@@ -155,7 +156,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             mask = self.build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             )
-            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)
+            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)  # pyright: ignore[reportOptionalCall]
 
             # all but last timestep
             index = episode.index[:-1]

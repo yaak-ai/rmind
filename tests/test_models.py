@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 import pytorch_lightning as pl
 from hydra import compose, initialize
-from hydra_once import instantiate
+from hydra.utils import instantiate
 from pytest_lazy_fixtures import lf
 from rbyte.batch import Batch
 from tensordict import TensorDict
@@ -47,7 +47,10 @@ def datamodule(
 @pytest.fixture
 def trainer() -> pl.Trainer:
     return pl.Trainer(
-        devices=1, fast_dev_run=1, callbacks=[LogitBiasSetter()], precision="bf16-mixed"
+        accelerator="cpu",
+        fast_dev_run=1,
+        callbacks=[LogitBiasSetter()],
+        precision="bf16-mixed",
     )
 
 

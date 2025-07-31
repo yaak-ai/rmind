@@ -1,6 +1,6 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import Any, cast, overload, override
+from typing import Any, cast, final, overload, override
 
 import torch
 from einops import rearrange
@@ -40,24 +40,25 @@ from rmind.components.objectives.forward_dynamics import (
 from rmind.utils.functional import gauss_prob, nan_padder
 
 
+@final
 class PolicyObjective(Objective):
     @validate_call
     def __init__(
         self,
         *,
-        encoder: InstanceOf[Module],
-        heads: InstanceOf[ModuleDict],
+        encoder: InstanceOf[Module] | None = None,
         mask: InstanceOf[Tensor] | None = None,
+        heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
-        self.encoder: Module = encoder
-        self.heads: ModuleDict = heads
-        self.mask: Tensor | None = mask
-        self.losses: ModuleDict | None = losses
-        self.targets: Targets | None = targets
+        self.encoder = encoder
+        self.mask = mask
+        self.heads = heads
+        self.losses = losses
+        self.targets = targets
 
     @overload
     def forward(self, episode: Episode) -> TensorDict: ...
@@ -67,7 +68,40 @@ class PolicyObjective(Objective):
 
     @override
     def forward(self, episode: Episode | EpisodeExport) -> TensorDict | TensorTree:
-        embedding = self.encoder(src=episode.embeddings_packed, mask=self.mask)
+        logits = self._compute_logits(episode)
+
+        if isinstance(episode, Episode):
+
+            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:  # pyright: ignore[reportRedeclaration]
+                match nk:
+                    case (Modality.CONTINUOUS, _):
+                        return x[..., 0]
+                    case (Modality.DISCRETE, "turn_signal"):
+                        return torch.argmax(x, dim=-1)
+                    case _:
+                        raise NotImplementedError
+
+            return TensorDict(logits).named_apply(fn, nested_keys=True)  # pyright: ignore[reportReturnType, reportArgumentType]
+
+        def fn(kp: tuple[Any, ...], v: Tensor) -> Tensor:
+            if kp[0].key == Modality.CONTINUOUS.value:
+                return v[..., 0]
+
+            if kp[0].key == Modality.DISCRETE.value and kp[1].key == "turn_signal":
+                return torch.argmax(v, dim=-1)
+
+            raise NotImplementedError
+
+        return tree_map_with_path(fn, logits)
+
+    def _compute_logits(self, episode: Episode | EpisodeExport) -> TensorTree:
+        mask = self.mask
+        if mask is None and isinstance(episode, Episode):
+            mask = self.build_attention_mask(
+                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+            ).mask
+
+        embedding = self.encoder(src=episode.embeddings_packed, mask=mask)  # pyright: ignore[reportOptionalCall]
 
         if isinstance(episode, Episode):
             _b, _ = episode.input.batch_size
@@ -116,74 +150,15 @@ class PolicyObjective(Objective):
             ].mean(dim=1, keepdim=True)
 
         features = rearrange(
-            [observation_summary, observation_history, waypoints],
+            [observation_summary, observation_history.detach(), waypoints],
             "i b 1 d -> b 1 (i d)",
         )
 
-        logits = self.heads(features)
-
-        if isinstance(episode, Episode):
-
-            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:  # pyright: ignore[reportRedeclaration]
-                match nk:
-                    case (Modality.CONTINUOUS, _):
-                        return x[..., 0]
-                    case (Modality.DISCRETE, "turn_signal"):
-                        return torch.argmax(x, dim=-1)
-                    case _:
-                        raise NotImplementedError
-
-            return TensorDict(logits).named_apply(fn, nested_keys=True)  # pyright: ignore[reportReturnType]
-
-        def fn(kp: tuple[Any, ...], v: Tensor) -> Tensor:
-            if kp[0].key == Modality.CONTINUOUS.value:
-                return v[..., 0]
-
-            if kp[0].key == Modality.DISCRETE.value and kp[1].key == "turn_signal":
-                return torch.argmax(v, dim=-1)
-
-            raise NotImplementedError
-
-        return tree_map_with_path(fn, logits)
+        return self.heads(features)
 
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
-        src = episode.embeddings_packed
-        mask = self.build_attention_mask(
-            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-        )
-        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))
-
-        embeddings = (
-            episode.index[-1]
-            .select(
-                (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
-                (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
-                (Modality.CONTEXT, "waypoints"),
-            )
-            .parse(embedding)
-        )
-
-        observation_history = embeddings.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_HISTORY,
-        )).detach()  # NOTE: equivalent to stop gradient layer in paper
-
-        observation_summary = embeddings.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_SUMMARY,
-        ))
-
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
-        )
-
-        features = rearrange(
-            [observation_summary, observation_history, waypoints],
-            "i b 1 d -> b 1 (i d)",
-        )
-
-        logits = self.heads(features)
+        logits = self._compute_logits(episode)
         targets = tree_map(
             lambda k: episode.get(k)[:, -1],
             self.targets,
@@ -222,7 +197,7 @@ class PolicyObjective(Objective):
             mask = self.build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             )
-            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)
+            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)  # pyright: ignore[reportOptionalCall]
             if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
                 result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
                     embedding

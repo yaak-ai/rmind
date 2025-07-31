@@ -1,6 +1,6 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import override
+from typing import final, override
 
 import numpy as np
 import torch
@@ -34,22 +34,23 @@ from rmind.components.objectives.base import (
 )
 
 
+@final
 class RandomMaskedHindsightControlObjective(Objective):
     @validate_call
     def __init__(
         self,
         *,
-        encoder: InstanceOf[Module],
+        encoder: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
-        self.encoder: Module = encoder
-        self.heads: ModuleDict = heads
-        self.losses: ModuleDict | None = losses
-        self.targets: Targets | None = targets
+        self.encoder = encoder
+        self.heads = heads
+        self.losses = losses
+        self.targets = targets
 
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
@@ -75,7 +76,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         mask = self.build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
-        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))
+        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))  # pyright: ignore[reportOptionalCall]
 
         index = episode.index.select(
             *episode.timestep.get(TokenType.ACTION).keys(
@@ -139,7 +140,7 @@ class RandomMaskedHindsightControlObjective(Objective):
             mask = self.build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             )
-            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)
+            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)  # pyright: ignore[reportOptionalCall]
             index = episode.index.select(
                 *episode.timestep.get(TokenType.ACTION).keys(
                     include_nested=True, leaves_only=True
