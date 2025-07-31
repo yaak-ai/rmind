@@ -24,7 +24,7 @@ class AttentionMaskLegend(EnumMeta):
         return super().__new__(metacls, cls, bases, classdict)
 
 
-class XFormersAttentionMaskLegend(float, Enum, metaclass=AttentionMaskLegend):
+class TorchAttentionMaskLegend(float, Enum, metaclass=AttentionMaskLegend):
     DO_ATTEND: float = 0.0
     DO_NOT_ATTEND: float = float("-inf")
 

@@ -6,7 +6,7 @@ _default:
     @just --list --unsorted
 
 sync:
-    uv sync --all-extras --locked
+    uv sync --all-extras --all-groups --locked
 
 install-tools:
     uv tool install --force --upgrade basedpyright
@@ -46,7 +46,6 @@ train *ARGS: generate-config
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml {{ ARGS }}
 
-# train with runtime type checking and no wandb
 train-debug *ARGS: generate-config
     WANDB_MODE=disabled uv run src/rmind/scripts/train.py \
         --config-path {{ justfile_directory() }}/config \
@@ -57,13 +56,12 @@ predict +ARGS: generate-config
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 
-# predict with runtime type checking
 predict-debug +ARGS: generate-config
     uv run src/rmind/scripts/predict.py \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml {{ ARGS }}
 
-test *ARGS:
+test *ARGS: generate-config
     uv run pytest --capture=no {{ ARGS }}
 
 # start rerun server and viewer

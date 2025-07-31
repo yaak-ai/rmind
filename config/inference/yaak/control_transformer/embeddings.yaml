@@ -24,8 +24,8 @@ trainer:
         _partial_: true
         copy_existing: true
 
-    - _target_: rmind.callbacks.ModelSummary
-      depth: 5
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 5
 datamodule:
   predict:
     shuffle: true

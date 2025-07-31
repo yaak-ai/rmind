@@ -1,80 +1,93 @@
 from typing import override
 
 import pytorch_lightning as pl
+import rbyte
 import torch
-from optree import tree_flatten_with_path
+from pydantic import InstanceOf, validate_call
 from pytorch_lightning.callbacks import Callback
-from rbyte import Dataset
 from structlog import get_logger
-from torch.utils.data import DataLoader
+from tensordict import TensorClass, TensorDict
+from torch.utils._pytree import (
+    KeyPath,
+    key_get,  # noqa: PLC2701
+    tree_flatten_with_path,  # noqa: PLC2701
+    tree_map,  # noqa: PLC2701
+)
 
 from rmind.components.loss import LogitBiasMixin
-from rmind.utils.containers import OPTREE_NAMESPACE
+from rmind.models.control_transformer import ControlTransformer
+from rmind.utils.pytree import path_to_key
 
 logger = get_logger(__name__)
 
 
 class LogitBiasSetter(Callback):
     @override
-    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    @validate_call
+    def on_fit_start(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, trainer: InstanceOf[pl.Trainer], pl_module: InstanceOf[ControlTransformer]
+    ) -> None:
+        objectives = pl_module.objectives
+        losses: list[tuple[str, KeyPath, LogitBiasMixin]] = []
+
+        for objective_key, objective in objectives.items():
+            for loss_keypath, loss in tree_flatten_with_path(objective.losses)[0]:
+                match loss:
+                    case LogitBiasMixin(logit_bias=None):
+                        losses.append((objective_key, loss_keypath, loss))
+
+                    case _:
+                        pass
+
+        if not losses:
+            return
+
+        keypaths, _ = tree_flatten_with_path(
+            pl_module.episode_builder.input_transform[0].paths,  # pyright: ignore[reportIndexIssue, reportAttributeAccessIssue]
+            is_leaf=lambda x: isinstance(x, tuple),
+        )
+        loss_keypaths = {keypath for (_, keypath, _) in losses}
+        batch_keys = {
+            path_to_key(batch_keypath)
+            for input_keypath, batch_keypath in keypaths
+            if input_keypath in loss_keypaths
+        }
+
         if trainer.train_dataloader is None:
             trainer.fit_loop.setup_data()
 
-        match dataloader := trainer.train_dataloader:
-            case DataLoader():
-                match dataset := dataloader.dataset:
-                    case Dataset():
-                        pass
+        match dataset := trainer.train_dataloader.dataset:  # pyright: ignore[reportOptionalMemberAccess]
+            case rbyte.Dataset():
+                batch = dataset.get_batch(slice(-1), keys=batch_keys).to_tensordict()  # pyright: ignore[reportArgumentType]
 
-                    case _:
-                        raise NotImplementedError
+            case TensorDict() | TensorClass():  # used in tests
+                batch = dataset.select(*batch_keys).to_tensordict()
+
             case _:
                 raise NotImplementedError
 
-        objectives = pl_module.objectives
-        targets: list[tuple[str, tuple[str, ...], LogitBiasMixin]] = []
-
-        for objective_key, objective in objectives.items():
-            loss_keys, losses, _ = tree_flatten_with_path(
-                objective.losses, namespace=OPTREE_NAMESPACE
+        with torch.inference_mode():
+            input = pl_module.episode_builder.input_transform(  # pyright: ignore[reportCallIssue]
+                batch.to(device=pl_module.device).to_dict()
             )
-            for loss_key, loss in zip(loss_keys, losses, strict=True):
-                match loss:
-                    case LogitBiasMixin(logit_bias=None):
-                        targets.append((objective_key, loss_key, loss))
-
-                    case _:
-                        pass
-
-        if not targets:
-            return
-
-        input_keys, batch_keys, _ = tree_flatten_with_path(
-            pl_module.input_builder.keys, is_leaf=lambda x: isinstance(x, tuple)
-        )
-        loss_keys = {k_loss for (_, k_loss, _) in targets}
-        batch_keys = {
-            batch_key
-            for batch_key, input_key in zip(batch_keys, input_keys, strict=True)
-            if input_key in loss_keys
-        }
-
-        batch = dataset.get_batch(slice(-1), keys=batch_keys)  # pyright: ignore[reportArgumentType]
-
-        input = (
-            pl_module.input_builder.forward(batch.to(device=pl_module.device))
-            .apply(torch.flatten, batch_size=[])
-            # `*_diff`s contain NaNs for last timestep
-            .apply(lambda x: x[~x.isnan()])
-        )
-        labels = pl_module.episode_builder.tokenizers.forward(input)
-
-        for objective_key, loss_key, loss in targets:
-            logger.debug("setting logit bias", objective=objective_key, loss=loss_key)
-            head = objectives[objective_key].heads.get(loss_key)
-            freq = torch.bincount(
-                labels[*loss_key], weights=None, minlength=self._get_out_features(head)
+            input = tree_map(
+                lambda x: torch.flatten(
+                    x[~x.isnan()]  # `*_diff`s contain NaNs for last timestep
+                )
+                if x is not None
+                else None,
+                input,
             )
+            labels = pl_module.episode_builder.tokenizers(input)  # pyright: ignore[reportCallIssue]
+
+        for objective_key, loss_keypath, loss in losses:
+            logger.debug(
+                "setting logit bias", objective=objective_key, loss=loss_keypath
+            )
+            loss_head = key_get(objectives[objective_key].heads, loss_keypath)
+            loss_labels = key_get(labels, loss_keypath)
+            minlength = self._get_out_features(loss_head)
+            freq = torch.bincount(input=loss_labels, weights=None, minlength=minlength)
             loss.logit_bias = ((freq + 1) / freq.sum()).log()
 
     @staticmethod

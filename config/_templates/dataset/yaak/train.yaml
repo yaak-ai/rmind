@@ -901,7 +901,7 @@ samples:
         bound:
           query: |
             LOAD spatial;
-            SELECT 
+            SELECT
               * EXCLUDE "meta/VehicleMotion/gear",
               ST_AsWKB(
                 ST_Transform(
@@ -944,8 +944,11 @@ samples:
         bound:
           query: |
             SELECT
-              *
-            FROM
+              *,
+              [
+                ST_X(ST_GeomFromWKB("meta/Gnss/longitude_latitude")),
+                ST_Y(ST_GeomFromWKB("meta/Gnss/longitude_latitude"))
+              ] AS "ego/xy",            FROM
               df
             WHERE
               list_max(apply(FLATTEN("waypoints/waypoints_normalized"), x -> ABS(x))) < 300
@@ -981,6 +984,8 @@ samples:
                 "meta/VehicleMotion/steering_angle_normalized"::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
                 "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
                 "waypoints/waypoints_normalized"::FLOAT[2][10][6] AS "waypoints/waypoints_normalized"
+                "waypoints/waypoints"::FLOAT[2][10][6] AS "waypoints/waypoints",
+                "ego/xy"::FLOAT[2][6] AS "ego/xy",
             FROM
                 df
             WHERE
