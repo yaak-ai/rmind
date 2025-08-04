@@ -46,19 +46,25 @@ class RandomMaskedHindsightControlObjective(Objective):
 
     @override
     def forward(self, episode: Episode, encoder: Module) -> TensorDict:
-        _, t = episode.input.batch_size
+        b, t = episode.input.batch_size
+        device = episode.device
 
         masked_action_timestep_idx = np.random.choice(t, 2, replace=False).tolist()  # noqa: NPY002
         masked_observation_timestep_idx = np.random.choice(t, 1, replace=False).tolist()  # noqa: NPY002
 
         episode = episode.clone(recurse=True)
+
+        mask_action = torch.zeros((b, t), dtype=torch.bool, device=device)
+        mask_action[:, masked_action_timestep_idx] = True
         episode.input_embeddings.select(
             *episode.timestep.keys_by_type[TokenType.ACTION]
-        )[:, masked_action_timestep_idx].apply_(lambda x: x.fill_(-1.0))
+        ).masked_fill_(mask_action, -1.0)
 
+        mask_observation = torch.zeros((b, t), dtype=torch.bool, device=device)
+        mask_observation[:, masked_observation_timestep_idx] = True
         episode.input_embeddings.select(
             *episode.timestep.keys_by_type[TokenType.OBSERVATION]
-        )[:, masked_observation_timestep_idx].apply_(lambda x: x.fill_(-1.0))
+        ).masked_fill_(mask_observation, -1.0)
 
         mask = self.build_attention_mask(episode.index, episode.timestep)
         embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
@@ -90,6 +96,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
         b, t = episode.input.batch_size
+        device = episode.device
         result = {}
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
@@ -108,13 +115,18 @@ class RandomMaskedHindsightControlObjective(Objective):
             ).tolist()
 
             episode = episode.clone(recurse=True)
+
+            mask_action = torch.zeros((b, t), dtype=torch.bool, device=device)
+            mask_action[:, masked_action_timestep_idx] = True
             episode.input_embeddings.select(
                 *episode.timestep.keys_by_type[TokenType.ACTION]
-            )[:, masked_action_timestep_idx] = -1.0
+            ).masked_fill_(mask_action, -1.0)
 
+            mask_observation = torch.zeros((b, t), dtype=torch.bool, device=device)
+            mask_observation[:, masked_observation_timestep_idx] = True
             episode.input_embeddings.select(
                 *episode.timestep.keys_by_type[TokenType.OBSERVATION]
-            )[:, masked_observation_timestep_idx] = -1.0
+            ).masked_fill_(mask_observation, -1.0)
 
             mask = self.build_attention_mask(episode.index, episode.timestep)
             embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
