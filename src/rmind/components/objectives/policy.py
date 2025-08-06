@@ -1,18 +1,22 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import Any, cast, override
+from typing import Any, cast, final, overload, override
 
 import torch
 from einops import rearrange
 from einops.layers.torch import Rearrange
-from optree import tree_map
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
+from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
+from torch.utils._pytree import tree_map, tree_map_with_path  # noqa: PLC2701
 
+from rmind.components.base import TensorTree
+from rmind.components.containers import ModuleDict
 from rmind.components.episode import (
     Episode,
+    EpisodeExport,
     Index,
     Modality,
     SpecialToken,
@@ -22,87 +26,161 @@ from rmind.components.episode import (
 from rmind.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
-    XFormersAttentionMaskLegend,
+    TorchAttentionMaskLegend,
 )
-from rmind.components.objectives.base import Objective, PredictionResultKey, Targets
+from rmind.components.objectives.base import (
+    Metrics,
+    Objective,
+    PredictionResultKey,
+    Targets,
+)
 from rmind.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from rmind.utils import ModuleDict
 from rmind.utils.functional import gauss_prob, nan_padder
 
 
+@final
 class PolicyObjective(Objective):
     @validate_call
     def __init__(
         self,
         *,
+        encoder: InstanceOf[Module] | None = None,
+        mask: InstanceOf[Tensor] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
-        self.heads: ModuleDict = heads
-        self.losses: ModuleDict | None = losses
-        self.targets: Targets | None = targets
+        self.encoder = encoder
+        self.mask = mask
+        self.heads = heads
+        self.losses = losses
+        self.targets = targets
+
+        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
+            self.build_attention_mask
+        )
+
+    @overload
+    def forward(self, episode: Episode) -> TensorDict: ...
+
+    @overload
+    def forward(self, episode: EpisodeExport) -> TensorTree: ...
 
     @override
-    def forward(self, episode: Episode, encoder: Module) -> TensorDict:
-        mask = self.build_attention_mask(episode.index, episode.timestep)
-        embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
+    def forward(self, episode: Episode | EpisodeExport) -> TensorDict | TensorTree:
+        logits = self._compute_logits(episode)
 
-        embeddings = (
-            episode.index[-1]
-            .select(
-                (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
-                (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
-                (Modality.CONTEXT, "waypoints"),
+        if isinstance(episode, Episode):
+
+            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:  # pyright: ignore[reportRedeclaration]
+                match nk:
+                    case (Modality.CONTINUOUS, _):
+                        return x[..., 0]
+                    case (Modality.DISCRETE, "turn_signal"):
+                        return torch.argmax(x, dim=-1)
+                    case _:
+                        raise NotImplementedError
+
+            return TensorDict(logits).named_apply(fn, nested_keys=True)  # pyright: ignore[reportReturnType, reportArgumentType]
+
+        def fn(kp: tuple[Any, ...], v: Tensor) -> Tensor:
+            if kp[0].key == Modality.CONTINUOUS.value:
+                return v[..., 0]
+
+            if kp[0].key == Modality.DISCRETE.value and kp[1].key == "turn_signal":
+                return torch.argmax(v, dim=-1)
+
+            raise NotImplementedError
+
+        return tree_map_with_path(fn, logits)
+
+    def _compute_logits(self, episode: Episode | EpisodeExport) -> TensorTree:
+        mask = self.mask
+        if mask is None and isinstance(episode, Episode):
+            mask = self._build_attention_mask(
+                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+            ).mask.to(device=episode.device)
+
+        embedding = self.encoder(src=episode.embeddings_packed, mask=mask)  # pyright: ignore[reportOptionalCall]
+
+        if isinstance(episode, Episode):
+            _b, _ = episode.input.batch_size
+
+            embeddings = (
+                episode.index[-1]
+                .select(
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                    (Modality.CONTEXT, "waypoints"),
+                )
+                .parse(embedding)
             )
-            .parse(embedding)
-        )
 
-        observation_history = embeddings.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_HISTORY,
-        )).detach()  # NOTE: equivalent to stop gradient layer in paper
+            observation_history = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_HISTORY,
+            ))
 
-        observation_summary = embeddings.get((
-            Modality.SPECIAL,
-            SpecialToken.OBSERVATION_SUMMARY,
-        ))
+            observation_summary = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            ))
 
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
-        )
+            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
+                dim=1, keepdim=True
+            )
+
+        else:
+            observation_summary = embedding[
+                :,
+                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
+                    SpecialToken.OBSERVATION_SUMMARY.value
+                ][-1],
+            ]
+
+            observation_history = embedding[
+                :,
+                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
+                    SpecialToken.OBSERVATION_HISTORY.value
+                ][-1],
+            ]
+
+            waypoints = embedding[
+                :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # pyright: ignore[reportArgumentType]
+            ].mean(dim=1, keepdim=True)
 
         features = rearrange(
-            [observation_summary, observation_history, waypoints],
+            [observation_summary, observation_history.detach(), waypoints],
             "i b 1 d -> b 1 (i d)",
         )
 
-        logits = self.heads.forward(features)
-        targets = TensorDict(
-            tree_map(
-                episode.get,
-                self.targets,  # pyright: ignore[reportArgumentType]
-                is_leaf=lambda x: isinstance(x, tuple),
-            )
-        ).auto_batch_size_(2)[:, -1]
+        return self.heads(features)
 
-        loss = self.losses.forward(  # pyright: ignore[reportOptionalMemberAccess]
-            logits.apply(Rearrange("b 1 d -> b d"), batch_size=[]),  # pyright: ignore[reportArgumentType]
-            targets.apply(Rearrange("b 1 -> b"), batch_size=[]),
+    @override
+    def compute_metrics(self, episode: Episode) -> Metrics:
+        logits = self._compute_logits(episode)
+        targets = tree_map(
+            lambda k: episode.get(k)[:, -1],
+            self.targets,
+            is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        return TensorDict({"loss": loss})  # pyright: ignore[reportArgumentType]
+        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+            tree_map(Rearrange("b 1 d -> b d"), logits),
+            tree_map(Rearrange("b 1 -> b"), targets),
+        )
+
+        return {"loss": losses}
 
     @override
     def predict(  # noqa: C901, PLR0915
         self,
-        *,
         episode: Episode,
-        encoder: Module,
+        *,
         result_keys: AbstractSet[PredictionResultKey],
         **kwargs: Any,
     ) -> TensorDict:
@@ -120,8 +198,14 @@ class PolicyObjective(Objective):
             PredictionResultKey.SCORE_L1,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self.build_attention_mask(episode.index, episode.timestep)
-            embedding = encoder(src=episode.embeddings_packed, mask=mask.mask)
+            mask = self._build_attention_mask(
+                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+            )
+
+            embedding = self.encoder(
+                src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            )  # pyright: ignore[reportOptionalCall]
+
             if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
                 result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
                     embedding
@@ -156,7 +240,7 @@ class PolicyObjective(Objective):
                 "i b 1 d -> b 1 (i d)",
             )
 
-            logits = self.heads.forward(features, batch_size=[b, 1])
+            logits = TensorDict(self.heads(features), batch_size=[b, 1])
 
             timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
 
@@ -271,17 +355,13 @@ class PolicyObjective(Objective):
         return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
-    @lru_cache(maxsize=1, typed=True)
     def build_attention_mask(
-        cls,
-        index: Index,
-        timestep: Timestep,
-        legend: AttentionMaskLegend = XFormersAttentionMaskLegend,
+        cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
         mask = cast(
             "AttentionMask",
             ForwardDynamicsPredictionObjective.build_attention_mask(
-                index, timestep, legend
+                index, timestep, legend=legend
             ).clone(recurse=True),
         )
 
@@ -289,7 +369,9 @@ class PolicyObjective(Objective):
         for step in range(t):
             past, current = index[:step], index[step]
             current_observations = current.select(
-                *timestep.keys_by_type[TokenType.OBSERVATION]
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
             )
             current_observation_summary = current.select((
                 Modality.SPECIAL,
@@ -299,7 +381,11 @@ class PolicyObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
-            past_actions = past.select(*timestep.keys_by_type[TokenType.ACTION])
+            past_actions = past.select(
+                *timestep.get(TokenType.ACTION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
             past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,

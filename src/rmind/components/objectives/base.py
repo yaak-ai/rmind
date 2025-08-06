@@ -2,15 +2,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from enum import StrEnum, auto, unique
-from typing import Any, Never
+from typing import Any, Never, TypedDict
 
-from optree import register_pytree_node
-from optree.utils import unzip2
 from tensordict import TensorDict
 from torch.nn import Module
+from torch.utils._pytree import Context, register_pytree_node  # noqa: PLC2701
 
+from rmind.components.base import TensorTree
+from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, Modality
-from rmind.utils.containers import OPTREE_NAMESPACE, ModuleDict
 
 type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 
@@ -23,28 +23,26 @@ class PredictionResultKey(StrEnum):
     SCORE_LOGPROB = auto()
     SCORE_L1 = auto()
     GROUND_TRUTH = auto()
-    ATTENTION = auto()
     SUMMARY_EMBEDDINGS = auto()
+
+
+class Metrics(TypedDict):
+    loss: TensorTree | None
 
 
 def _not_implemented(*_args: Any, **_kwargs: Any) -> Never:
     raise NotImplementedError
 
 
-def objective_flatten(
-    objective: Module,
-) -> tuple[tuple[Module, ...], list[str], tuple[str, ...]]:
-    keys, values = unzip2(sorted(objective.named_children()))
-    return values, list(keys), keys
+def objective_flatten(objective: Module) -> tuple[list[Module], Context]:
+    keys, values = zip(*sorted(objective.named_children()), strict=True)
+    return values, keys  # pyright: ignore[reportReturnType]
 
 
 class Objective(Module, ABC):
     def __init_subclass__(cls) -> None:
-        register_pytree_node(  # pyright: ignore[reportUnusedCallResult]
-            cls,  # pyright: ignore[reportArgumentType]
-            flatten_func=objective_flatten,  # pyright: ignore[reportArgumentType]
-            unflatten_func=_not_implemented,
-            namespace=OPTREE_NAMESPACE,
+        register_pytree_node(
+            cls, flatten_fn=objective_flatten, unflatten_fn=_not_implemented
         )
         return super().__init_subclass__()
 
@@ -52,11 +50,13 @@ class Objective(Module, ABC):
         return getattr(self, name)
 
     @abstractmethod
+    def compute_metrics(self, episode: Episode) -> Metrics: ...
+
+    @abstractmethod
     def predict(
         self,
-        *,
         episode: Episode,
-        encoder: Module,
+        *,
         result_keys: AbstractSet[PredictionResultKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict: ...

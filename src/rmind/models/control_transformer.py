@@ -1,16 +1,15 @@
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, override
+from typing import Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
 import torch
-from hydra.utils import get_class, instantiate
 from lightning_fabric.utilities.types import (
     _MAP_LOCATION_TYPE,  # pyright: ignore[reportPrivateUsage]
     _PATH,  # pyright: ignore[reportPrivateUsage]
 )
 from lightning_utilities.core.rank_zero import rank_zero_warn
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, Field, ImportString
+from pydantic import BaseModel, ConfigDict, InstanceOf, validate_call
 from pytorch_lightning.core.saving import (
     _load_state,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
     pl_load,  # pyright: ignore[reportPrivateImportUsage]
@@ -27,42 +26,81 @@ from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from structlog import get_logger
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Module  # noqa: TC002
+from torch.nn import Module
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 
+from rmind.components.base import TensorTree
+from rmind.components.containers import ModuleDict
 from rmind.components.mask import WandbAttentionMaskLegend
 from rmind.components.objectives.base import PredictionResultKey
+from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
-
-if TYPE_CHECKING:
-    from rmind.components.episode import EpisodeBuilder
-    from rmind.utils import ModuleDict
 
 logger = get_logger(__name__)
 
 
-class HydraConfig[T](BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="allow")
+class LRSchedulerHydraConfig(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
-    target: ImportString[type[T]] = Field(alias="_target_")
-    recursive: bool = Field(alias="_recursive_", default=True)
-    convert: Literal["none", "partial", "object", "all"] = Field(
-        alias="_convert_", default="all"
-    )
-    partial: bool = Field(alias="_partial_", default=False)
-
-    def instantiate(self, **kwargs: object) -> T:
-        return instantiate(self.model_dump(by_alias=True), **kwargs)
+    interval: Literal["epoch", "step"]
+    scheduler: HydraConfig[LRScheduler]
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
-    def __init__(self, **_kwargs: Any) -> None:
-        super().__init__()
-        self.save_hyperparameters()
+    episode_builder: Module
+    encoder: Module | None
+    objectives: ModuleDict
+    optimizer: HydraConfig[Optimizer] | None = None
+    lr_scheduler: LRSchedulerHydraConfig | None = None
 
-        self.input_builder: Module = instantiate(self.hparams.input_builder)  # pyright: ignore[reportAttributeAccessIssue]
-        self.episode_builder: EpisodeBuilder = instantiate(self.hparams.episode_builder)  # pyright: ignore[reportAttributeAccessIssue]
-        self.encoder: Module = instantiate(self.hparams.encoder)  # pyright: ignore[reportAttributeAccessIssue]
-        self.objectives: ModuleDict = instantiate(self.hparams.objectives)  # pyright: ignore[reportAttributeAccessIssue]
+    @validate_call
+    def __init__(
+        self,
+        *,
+        episode_builder: HydraConfig[Module] | InstanceOf[Module],
+        encoder: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        objectives: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
+        optimizer: HydraConfig[Optimizer] | None = None,
+        lr_scheduler: LRSchedulerHydraConfig | None = None,
+    ) -> None:
+        super().__init__()
+
+        hparams = {}
+
+        if isinstance(episode_builder, HydraConfig):
+            hparams["episode_builder"] = episode_builder.model_dump()
+            episode_builder = episode_builder.instantiate()
+
+        self.episode_builder = episode_builder
+
+        if isinstance(encoder, HydraConfig):
+            hparams["encoder"] = encoder.model_dump()
+            encoder = encoder.instantiate()
+
+        self.encoder = encoder
+
+        if isinstance(objectives, HydraConfig):
+            hparams["objectives"] = objectives.model_dump()
+            objectives = objectives.instantiate()
+
+        self.objectives = objectives
+        if self.encoder is not None:
+            for objective in self.objectives.values():
+                if hasattr(objective, "encoder") and objective.encoder is None:  # pyright: ignore[reportUnnecessaryComparison]
+                    objective.encoder = self.encoder
+
+        if optimizer is not None:
+            hparams["optimizer"] = optimizer.model_dump()
+
+        self.optimizer = optimizer
+
+        if lr_scheduler is not None:
+            hparams["lr_scheduler"] = lr_scheduler.model_dump()
+
+        self.lr_scheduler = lr_scheduler
+
+        self.save_hyperparameters(hparams)
 
     @override
     @_restricted_classmethod
@@ -129,22 +167,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 return model.to(device)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
 
     @override
-    def training_step(self, batch: TensorDict, _batch_idx: int) -> Tensor:
-        input = self.input_builder.forward(batch)
-        episode = self.episode_builder.forward(input)
+    def training_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
+        episode = self.episode_builder(batch)
 
-        metrics = TensorDict(
-            {
-                name: objective.forward(episode, self.encoder)
-                for name, objective in self.objectives.items()
-            },
-            device=input.device,
-        )
+        metrics = TensorDict({
+            name: objective.compute_metrics(episode)  # pyright: ignore[reportCallIssue]
+            for name, objective in self.objectives.items()
+        })
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]  # noqa: SIM118
-        metrics["loss", "total"] = sum(
-            losses.values(include_nested=True, leaves_only=True)
-        )
+        loss_total = losses.sum(reduce=True)
+        metrics["loss", "total"] = loss_total
+
         if (
             isinstance(self.logger, WandbLogger)
             and (step := self.trainer.global_step) == 0
@@ -152,10 +186,10 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             from wandb import Image  # noqa: PLC0415
 
             for name, objective in self.objectives.items():
-                mask = objective.build_attention_mask(episode.index, episode.timestep)
-                img = Image(
-                    mask.with_legend(WandbAttentionMaskLegend).mask.unsqueeze(0)
+                mask = objective.build_attention_mask(  # pyright: ignore[reportCallIssue]
+                    episode.index, episode.timestep, legend=WandbAttentionMaskLegend
                 )
+                img = Image(mask.mask.unsqueeze(0))
                 self.logger.log_image(f"masks/{name}", [img], step=step)
 
         self.log_dict(
@@ -171,21 +205,16 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics["loss", "total"]
 
     @override
-    def validation_step(self, batch: TensorDict, _batch_idx: int) -> Tensor:
-        input = self.input_builder.forward(batch)
-        episode = self.episode_builder.forward(input)
-        metrics = TensorDict(
-            {
-                name: objective.forward(episode, self.encoder)
-                for name, objective in self.objectives.items()
-            },
-            device=input.device,
-        )
+    def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
+        episode = self.episode_builder(batch)
+        metrics = TensorDict({
+            name: objective.compute_metrics(episode)  # pyright: ignore[reportCallIssue]
+            for name, objective in self.objectives.items()
+        })
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]  # noqa: SIM118
-        metrics["loss", "total"] = sum(
-            losses.values(include_nested=True, leaves_only=True)
-        )
+        loss_total = losses.sum(reduce=True)
+        metrics["loss", "total"] = loss_total
 
         if not self.trainer.sanity_checking:
             self.log_dict(
@@ -199,14 +228,12 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return metrics["loss", "total"]
 
     @override
-    def predict_step(self, batch: TensorDict) -> TensorDict:
-        input = self.input_builder.forward(batch)
-        episode = self.episode_builder.forward(input)
+    def predict_step(self, batch: dict[str, Any]) -> TensorDict:
+        episode = self.episode_builder(batch)
 
-        predictions = TensorDict({
-            name: objective.predict(
+        return TensorDict({
+            name: objective.predict(  # pyright: ignore[reportCallIssue]
                 episode=episode,
-                encoder=self.encoder,
                 result_keys=frozenset((
                     PredictionResultKey.GROUND_TRUTH,
                     PredictionResultKey.PREDICTION_VALUE,
@@ -221,28 +248,38 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             for name, objective in self.objectives.items()
         })
 
-        return TensorDict(
-            {"input": input, "predictions": predictions}  # pyright: ignore[reportArgumentType]
-        )
+    @override
+    def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
+        episode = self.episode_builder(batch)
+
+        outputs = {
+            name: objective(episode) for name, objective in self.objectives.items()
+        }
+
+        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        result = {}
-
-        if (cfg := self.hparams.get("optimizer")) is not None:
+        if self.optimizer is not None:
             from rmind.components import optimizers  # noqa: PLC0415
 
-            match get_class(cfg._target_):
+            match self.optimizer.target:
                 case optimizers.SelectiveAdamW:
-                    result["optimizer"] = instantiate(cfg, module=self)
+                    optimizer = self.optimizer.instantiate(module=self)
 
                 case _:
-                    result["optimizer"] = instantiate(cfg, params=self.parameters())
+                    optimizer = self.optimizer.instantiate(params=self.parameters())
 
-        if (cfg := self.hparams.get("lr_scheduler")) is not None:
-            scheduler = instantiate(cfg.pop("scheduler"), optimizer=result["optimizer"])
-            result["lr_scheduler"] = {"scheduler": scheduler, **cfg}
+        else:
+            msg = "optimizer not specified"
+            raise ValueError(msg)
 
-        logger.debug("configure_optimizers", result=result)
+        if self.lr_scheduler is not None:
+            scheduler = self.lr_scheduler.scheduler.instantiate(optimizer=optimizer)
+            lr_scheduler = {"scheduler": scheduler} | self.lr_scheduler.model_dump(
+                exclude={"scheduler"}
+            )
 
-        return result  # pyright: ignore[reportReturnType]
+            return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}  # pyright: ignore[reportReturnType]
+
+        return {"optimizer": optimizer}

@@ -901,7 +901,7 @@ samples:
         bound:
           query: |
             LOAD spatial;
-            SELECT 
+            SELECT
               * EXCLUDE "meta/VehicleMotion/gear",
               ST_AsWKB(
                 ST_Transform(

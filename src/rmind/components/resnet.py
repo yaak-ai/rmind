@@ -15,9 +15,9 @@ class ResnetBackbone(nn.Module):
             self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
-    def forward(self, x: Tensor) -> Tensor:
-        *b, c, h, w = x.shape
-        x = x.view(prod(b), c, h, w)
+    def forward(self, input: Tensor) -> Tensor:
+        *b, c, h, w = input.shape
+        x = input.view(prod(b), c, h, w)
 
         x = self.resnet.conv1(x)
         x = self.resnet.bn1(x)
