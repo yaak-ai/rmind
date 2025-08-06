@@ -7,13 +7,13 @@ from rmind.components.nn import Sequential
 from rmind.components.norm import Scaler, UniformBinner
 
 
-def test_scaler() -> None:
-    module = Scaler(in_range=(0.0, 100.0), out_range=(-1.0, 1.0))
+def test_scaler(device: torch.device) -> None:
+    module = Scaler(in_range=(0.0, 100.0), out_range=(-1.0, 1.0)).to(device)
 
     x = make_tensor(
         1024,
         dtype=torch.float,
-        device="cpu",
+        device=device,
         low=module.in_range[0].item(),
         high=module.in_range[1].item(),
     )
@@ -23,12 +23,12 @@ def test_scaler() -> None:
     assert_close(x_rt, x)
 
 
-def test_uniform_binner() -> None:
-    module = UniformBinner(range=(5.0, 130.0), bins=1024)
+def test_uniform_binner(device: torch.device) -> None:
+    module = UniformBinner(range=(5.0, 130.0), bins=1024).to(device)
     x = make_tensor(
         1024,
         dtype=torch.float,
-        device="cpu",
+        device=device,
         low=module.range[0].item(),
         high=module.range[1].item(),
     )
@@ -38,18 +38,18 @@ def test_uniform_binner() -> None:
     assert_close(x_rt, x, rtol=0.0, atol=(bin_width / 2.0).item())
 
 
-def test_sequential() -> None:
+def test_sequential(device: torch.device) -> None:
     module = Sequential(
         *(
             Scaler(in_range=in_range, out_range=out_range)  # pyright: ignore[reportArgumentType]
             for in_range, out_range in pairwise([0.0, 10.0**x] for x in range(1, 6))
         )
-    )
+    ).to(device)
 
     x = make_tensor(
         1024,
         dtype=torch.float,
-        device="cpu",
+        device=device,
         low=module[0].in_range[0].item(),  # pyright: ignore[reportIndexIssue]
         high=module[0].in_range[1].item(),  # pyright: ignore[reportIndexIssue]
     )

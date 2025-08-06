@@ -1,4 +1,5 @@
 import pytest
+import torch
 from pytest_lazy_fixtures import lf
 
 from rmind.components.containers import ModuleDict
@@ -16,7 +17,11 @@ from rmind.components.objectives.base import Objective, PredictionResultKey
         lf("policy_objective"),
     ],
 )
-def test_compute_metrics(objective: Objective, episode: Episode) -> None:
+def test_compute_metrics(
+    objective: Objective, episode: Episode, device: torch.device
+) -> None:
+    objective = objective.to(device)
+    episode = episode.to(device)
     metrics = objective.compute_metrics(episode)
     assert "loss" in metrics
 
@@ -32,8 +37,12 @@ def test_compute_metrics(objective: Objective, episode: Episode) -> None:
     ],
 )
 def test_predict(
-    objective: Objective, episode: Episode, tokenizers: ModuleDict
+    objective: Objective, episode: Episode, tokenizers: ModuleDict, device: torch.device
 ) -> None:
+    objective = objective.to(device)
+    episode = episode.to(device)
+    tokenizers = tokenizers.to(device)
+
     result_keys = set(PredictionResultKey)
     predictions = objective.predict(
         episode, result_keys=result_keys, tokenizers=tokenizers

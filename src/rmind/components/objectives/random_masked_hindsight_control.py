@@ -54,15 +54,21 @@ class RandomMaskedHindsightControlObjective(Objective):
         self.losses = losses
         self.targets = targets
 
+        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
+            self.build_attention_mask
+        )
+
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
         episode, mask_action_timestep = self._mask_episode(episode)
-
-        src = episode.embeddings_packed
-        mask = self.build_attention_mask(
+        mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
-        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))  # pyright: ignore[reportOptionalCall]
+
+        embedding = self.encoder(
+            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+        )  # pyright: ignore[reportOptionalCall]
+
         keys_action = episode.timestep.get(TokenType.ACTION).keys(
             include_nested=True, leaves_only=True
         )
@@ -92,7 +98,6 @@ class RandomMaskedHindsightControlObjective(Objective):
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
         b, t = episode.input.batch_size
-        device = episode.device
         result = {}
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
@@ -106,10 +111,14 @@ class RandomMaskedHindsightControlObjective(Objective):
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
             episode, mask_action_timestep = self._mask_episode(episode)
-            mask = self.build_attention_mask(
+            mask = self._build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             )
-            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)  # pyright: ignore[reportOptionalCall]
+
+            embedding = self.encoder(
+                src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            )  # pyright: ignore[reportOptionalCall]
+
             keys_action = episode.timestep.get(TokenType.ACTION).keys(
                 include_nested=True, leaves_only=True
             )
@@ -218,7 +227,6 @@ class RandomMaskedHindsightControlObjective(Objective):
         return episode, mask_action_timestep
 
     @classmethod
-    @lru_cache(maxsize=2, typed=True)  # potentially different train/val masks
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:

@@ -52,13 +52,19 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.losses = losses
         self.targets = targets
 
+        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
+            self.build_attention_mask
+        )
+
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
-        src = episode.embeddings_packed
-        mask = self.build_attention_mask(
+        mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
-        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))  # pyright: ignore[reportOptionalCall]
+
+        embedding = self.encoder(
+            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+        )  # pyright: ignore[reportOptionalCall]
 
         index = episode.index[:-1]  # all but last timestep
 
@@ -130,10 +136,13 @@ class ForwardDynamicsPredictionObjective(Objective):
             PredictionResultKey.SCORE_L1,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self.build_attention_mask(
+            mask = self._build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             )
-            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)  # pyright: ignore[reportOptionalCall]
+
+            embedding = self.encoder(
+                src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            )  # pyright: ignore[reportOptionalCall]
 
             # all but last timestep
             index = episode.index[:-1]
@@ -228,13 +237,14 @@ class ForwardDynamicsPredictionObjective(Objective):
         return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
-    @lru_cache(maxsize=2, typed=True)  # potentially different train/val masks
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAssignmentType, reportAttributeAccessIssue]
         mask = AttentionMask(
-            mask=torch.full((length, length), legend.DO_NOT_ATTEND), legend=legend
+            mask=torch.full((length, length), legend.DO_NOT_ATTEND),
+            legend=legend,
+            device="cpu",
         )
 
         (t,) = index.batch_size

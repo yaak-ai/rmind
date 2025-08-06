@@ -56,6 +56,18 @@ def _set_float32_matmul_precision() -> Generator[None, Any, None]:  # pyright: i
 
 
 @pytest.fixture
+def device() -> torch.device:
+    if torch.backends.mps.is_available():
+        device = "mps"
+    elif torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
+
+    return torch.device(device)
+
+
+@pytest.fixture
 def batch() -> Batch:
     return Batch(
         data=TensorDict(
@@ -256,8 +268,8 @@ def episode(episode_builder: EpisodeBuilder, batch_dict: TensorTree) -> Episode:
 def encoder() -> Module:
     return TransformerEncoder(
         dim_model=EMBEDDING_DIM,
-        num_heads=4,
-        num_layers=8,
+        num_heads=1,
+        num_layers=1,
         attn_dropout=0.1,
         resid_dropout=0.1,
         mlp_dropout=0.1,

@@ -60,6 +60,10 @@ class PolicyObjective(Objective):
         self.losses = losses
         self.targets = targets
 
+        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
+            self.build_attention_mask
+        )
+
     @overload
     def forward(self, episode: Episode) -> TensorDict: ...
 
@@ -95,14 +99,13 @@ class PolicyObjective(Objective):
         return tree_map_with_path(fn, logits)
 
     def _compute_logits(self, episode: Episode | EpisodeExport) -> TensorTree:
-        src = episode.embeddings_packed
         mask = self.mask
         if mask is None and isinstance(episode, Episode):
-            mask = self.build_attention_mask(
+            mask = self._build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-            ).mask.to(device=src.device)
+            ).mask.to(device=episode.device)
 
-        embedding = self.encoder(src=src, mask=mask)  # pyright: ignore[reportOptionalCall]
+        embedding = self.encoder(src=episode.embeddings_packed, mask=mask)  # pyright: ignore[reportOptionalCall]
 
         if isinstance(episode, Episode):
             _b, _ = episode.input.batch_size
@@ -195,10 +198,14 @@ class PolicyObjective(Objective):
             PredictionResultKey.SCORE_L1,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self.build_attention_mask(
+            mask = self._build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             )
-            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)  # pyright: ignore[reportOptionalCall]
+
+            embedding = self.encoder(
+                src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            )  # pyright: ignore[reportOptionalCall]
+
             if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
                 result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
                     embedding
@@ -348,7 +355,6 @@ class PolicyObjective(Objective):
         return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
-    @lru_cache(maxsize=2, typed=True)  # potentially different train/val masks
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:

@@ -148,6 +148,8 @@ register_pytree_node(
     flatten_with_keys_fn=_td_flatten_with_keys,  # pyright: ignore[reportArgumentType]
 )
 
+TimestepExport = dict[TokenType, dict[tuple[Modality, str], Tensor]]
+
 
 class Episode(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArguments]
     input: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -183,7 +185,7 @@ class EpisodeExport:
     input_embeddings: TensorTree
     position_embeddings: TensorTree
     index: TensorTree
-    timestep: dict[TokenType, dict[tuple[Modality, str], int]]
+    timestep: TimestepExport
 
     @property
     def embeddings(self) -> TensorTree:
@@ -272,7 +274,8 @@ class EpisodeBuilder(Module):
         timestep_index = tree_map(itemgetter(0), index)
 
         timestep = unflatten_keys({
-            tuple(map(str, k)): torch.tensor(idx) for idx, k in enumerate(self.timestep)
+            tuple(map(str, k)): torch.tensor(idx, device=device)
+            for idx, k in enumerate(self.timestep)
         })
 
         position_embeddings = self._build_position_embeddings(
@@ -305,6 +308,7 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),  # pyright: ignore[reportAttributeAccessIssue]
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
+                device=device,
             )
         )
 

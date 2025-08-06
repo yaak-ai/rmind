@@ -55,13 +55,19 @@ class InverseDynamicsPredictionObjective(Objective):
         self.losses = losses
         self.targets = targets
 
+        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
+            self.build_attention_mask
+        )
+
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
-        src = episode.embeddings_packed
-        mask = self.build_attention_mask(
+        mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
-        embedding = self.encoder(src=src, mask=mask.mask.to(device=src.device))  # pyright: ignore[reportOptionalCall]
+
+        embedding = self.encoder(
+            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+        )  # pyright: ignore[reportOptionalCall]
 
         observation_summaries = (
             episode.index.select(
@@ -113,10 +119,13 @@ class InverseDynamicsPredictionObjective(Objective):
             PredictionResultKey.SCORE_L1,
             PredictionResultKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self.build_attention_mask(
+            mask = self._build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             )
-            embedding = self.encoder(src=episode.embeddings_packed, mask=mask.mask)  # pyright: ignore[reportOptionalCall]
+
+            embedding = self.encoder(
+                src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            )  # pyright: ignore[reportOptionalCall]
 
             observation_summaries = (
                 episode.index.select(
@@ -186,7 +195,6 @@ class InverseDynamicsPredictionObjective(Objective):
         return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
-    @lru_cache(maxsize=2, typed=True)  # potentially different train/val masks
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
@@ -194,7 +202,9 @@ class InverseDynamicsPredictionObjective(Objective):
             "AttentionMask",
             ForwardDynamicsPredictionObjective.build_attention_mask(
                 index, timestep, legend=legend
-            ).clone(recurse=True),
+            )
+            .clone(recurse=True)
+            .to("cpu"),
         )
 
         (t,) = index.batch_size

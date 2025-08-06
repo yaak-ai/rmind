@@ -132,8 +132,6 @@ def test_module_export_aoti(
         assert_close(
             actual,
             expected,
-            rtol=None,
-            atol=None,
             equal_nan=True,
             check_dtype=True,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",

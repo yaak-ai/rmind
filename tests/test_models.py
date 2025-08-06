@@ -73,10 +73,11 @@ def datamodule(
 @pytest.fixture
 def trainer() -> pl.Trainer:
     return pl.Trainer(
-        accelerator="cpu",
+        devices=1,
         fast_dev_run=1,
         callbacks=[LogitBiasSetter()],
         precision="bf16-mixed",
+        enable_progress_bar=False,
     )
 
 
@@ -122,7 +123,7 @@ def model_yaak_control_transformer_raw() -> ControlTransformer:
     with initialize(version_base=None, config_path=CONFIG_PATH):
         cfg = compose(
             "model/yaak/control_transformer/raw",
-            overrides=["+num_heads=4", "+num_layers=8", "+embedding_dim=512"],
+            overrides=["+num_heads=1", "+num_layers=1", "+embedding_dim=512"],
         )
 
     return instantiate(cfg.model.yaak.control_transformer)
