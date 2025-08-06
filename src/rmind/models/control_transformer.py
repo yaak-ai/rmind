@@ -139,6 +139,16 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
                 # update hparams
                 hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
+
+                def replace_target(d) -> None:
+                    if isinstance(d, dict):
+                        for k, v in d.items():
+                            if k == "_target_":
+                                d[k] = f"{v.__module__}.{v.__name__}"
+                            else:
+                                replace_target(v)
+                replace_target(hparams)
+
                 for fn in hparams_updaters:
                     match result := fn(hparams):
                         case DictConfig():

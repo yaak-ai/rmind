@@ -64,6 +64,9 @@ predict-debug +ARGS: generate-config
 test *ARGS: generate-config
     uv run pytest --capture=no {{ ARGS }}
 
+export *ARGS:
+    uv run src/rmind/scripts/export.py
+
 # start rerun server and viewer
 rerun bind="0.0.0.0" port="9877" web-viewer-port="9090":
     uvx --from rerun-sdk@latest rerun \
