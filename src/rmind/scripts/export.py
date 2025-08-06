@@ -1,25 +1,24 @@
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import hydra
 import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 from structlog import get_logger
+from tensordict import TensorDict
 from torch.nn import Module
+from torch.testing import make_tensor
 from torch.utils._pytree import key_get, keystr, tree_flatten_with_path  # noqa: PLC2701
 
-from rmind.models.control_transformer import ControlTransformer
+if TYPE_CHECKING:
+    from rmind.models.control_transformer import ControlTransformer
 
 logger = get_logger(__name__)
 
 
-def create_dummy_inputs(
-    model: ControlTransformer, device: str = "cpu"
-) -> tuple[Any, ...]:
+def create_dummy_inputs(device: torch.device) -> tuple[Any, ...]:
     """Create dummy inputs matching the expected input format for the model."""
-    from tensordict import TensorDict
-    from torch.testing import make_tensor
 
     # Create dummy batch similar to conftest.py
     dummy_batch = {
@@ -71,6 +70,26 @@ def create_dummy_inputs(
     return (dummy_batch,)
 
 
+def verify_output(
+    output: Any,
+    reference_items: list[tuple[tuple[Any, ...], Any]],
+    rtol: float | None = 0.0,
+    atol: float | None = 0.0,
+) -> None:
+    """Verify that the output matches the reference items."""
+    for kp, expected in reference_items:
+        actual = key_get(output, kp)
+        torch.testing.assert_close(
+            actual,
+            expected,
+            rtol=rtol,
+            atol=atol,
+            equal_nan=True,
+            check_dtype=True,
+            msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
+        )
+
+
 def export_model_aoti(
     model: Module, dummy_inputs: tuple[Any, ...], output_path: Path, strict: bool = True
 ) -> None:
@@ -90,40 +109,21 @@ def export_model_aoti(
         torch.compiler._is_exporting_flag = True  # pyright: ignore[reportPrivateUsage]
         try:
             export_output = model(*dummy_inputs)
+            breakpoint()
 
             # Verify export mode output matches
-            for kp, expected in reference_items:
-                actual = key_get(export_output, kp)
-                torch.testing.assert_close(
-                    actual,
-                    expected,
-                    rtol=0.0,
-                    atol=0.0,
-                    equal_nan=True,
-                    check_dtype=True,
-                    msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
-                )
+            verify_output(export_output, reference_items)
         finally:
             torch.compiler._is_exporting_flag = False  # pyright: ignore[reportPrivateUsage]
 
         # Export the model
-        logger.info("Exporting model with torch.export")
+        logger.info("Exporting model with `torch.export` to", output_path=output_path)
         exported = torch.export.export(model, args=dummy_inputs, strict=strict)
 
         # Verify exported model output
         logger.debug("Verifying exported model output")
         exported_output = exported.module()(*dummy_inputs)
-        for kp, expected in reference_items:
-            actual = key_get(exported_output, kp)
-            torch.testing.assert_close(
-                actual,
-                expected,
-                rtol=0.0,
-                atol=0.0,
-                equal_nan=True,
-                check_dtype=True,
-                msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
-            )
+        verify_output(exported_output, reference_items)
 
         # Compile and package with AOT
         logger.info("Compiling with AOT Inductor", output_path=output_path)
@@ -141,17 +141,7 @@ def export_model_aoti(
         package = torch._inductor.aoti_load_package(output_path)  # pyright: ignore[reportPrivateUsage]
         package_output = package(*dummy_inputs)
 
-        for kp, expected in reference_items:
-            actual = key_get(package_output, kp)
-            torch.testing.assert_close(
-                actual,
-                expected,
-                rtol=None,
-                atol=None,
-                equal_nan=True,
-                check_dtype=True,
-                msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
-            )
+        verify_output(package_output, reference_items, rtol=None, atol=None)
 
         logger.info("AOT export completed successfully", output_path=output_path)
 
@@ -162,19 +152,17 @@ def export(cfg: DictConfig) -> None:
     torch.set_float32_matmul_precision(cfg.matmul_precision)
     logger.info("Instantiating model", target=cfg.model._target_)
     model: ControlTransformer = instantiate(cfg.model)
-    breakpoint()
 
     device = model.device
     assert device is not None, "Device is not set"
 
-    # # Create dummy inputs
     logger.info("Creating dummy inputs")
-    dummy_inputs = create_dummy_inputs(model, device)
+    dummy_inputs = create_dummy_inputs(device)
 
-    #Export path
     output_dir = Path(cfg.get("output_dir", "exports"))
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{model.__class__.__name__.lower()}.so"
+    logger.info("Output path", output_path=output_path)
 
     # # Export model
     export_model_aoti(
