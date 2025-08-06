@@ -1,0 +1,9 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/control_transformer/finetuned
+  - /paths: yaak/default
+  - _self_
+
+output_dir: exported_models
+export_strict: true
