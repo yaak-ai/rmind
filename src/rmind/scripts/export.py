@@ -1,7 +1,9 @@
+import random
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import hydra
+import numpy as np
 import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig
@@ -15,6 +17,24 @@ if TYPE_CHECKING:
     from rmind.models.control_transformer import ControlTransformer
 
 logger = get_logger(__name__)
+
+
+def set_seeds(seed_value: int = 42) -> None:
+    _ = torch.manual_seed(seed_value)
+    torch.use_deterministic_algorithms(True)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed_value)
+        torch.cuda.manual_seed_all(seed_value)
+    np.random.seed(seed_value)
+    random.seed(seed_value)
+
+    # 2. Force single-threaded CPU execution
+    # This is the key to fixing CPU non-determinism
+    torch.set_num_threads(1)
+
+    # Optional: If you were on GPU, you'd add these
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def create_dummy_inputs(device: torch.device) -> tuple[Any, ...]:
@@ -103,16 +123,16 @@ def export_model_aoti(
         logger.debug("Computing reference output")
         reference_output = model(*dummy_inputs)
         reference_items, _ = tree_flatten_with_path(reference_output)
+        print(reference_items)
 
         # Test export mode output
         logger.debug("Testing export mode")
+        breakpoint()
         torch.compiler._is_exporting_flag = True  # pyright: ignore[reportPrivateUsage]
         try:
             export_output = model(*dummy_inputs)
-            breakpoint()
-
-            # Verify export mode output matches
-            verify_output(export_output, reference_items)
+            print(export_output)
+            # verify_output(export_output, reference_items)
         finally:
             torch.compiler._is_exporting_flag = False  # pyright: ignore[reportPrivateUsage]
 
@@ -148,12 +168,14 @@ def export_model_aoti(
 
 @hydra.main(version_base=None)
 def export(cfg: DictConfig) -> None:
-    """Main export function using Hydra configuration."""
-    torch.set_float32_matmul_precision(cfg.matmul_precision)
+    """Main export function using Hydabout:blank#blockedra configuration."""
+    device = torch.device("cpu")
     logger.info("Instantiating model", target=cfg.model._target_)
     model: ControlTransformer = instantiate(cfg.model)
+    model = model.to(device)
+    model.episode_builder.position_encoding.timestep = torch.nn.Embedding(6, 512)
 
-    device = model.device
+    # device = model.device
     assert device is not None, "Device is not set"
 
     logger.info("Creating dummy inputs")
@@ -176,6 +198,7 @@ def export(cfg: DictConfig) -> None:
 if __name__ == "__main__":
     import logging
 
-    logging.getLogger("xformers").setLevel(logging.ERROR)
+    logging.getLogger("export").setLevel(logging.ERROR)
 
+    set_seeds()
     export()

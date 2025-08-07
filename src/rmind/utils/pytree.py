@@ -11,10 +11,12 @@ from torch.utils._pytree import (
 
 
 def tree_paths(
-    tree: PyTree, /, is_leaf: Callable[[PyTree], bool] | None = None
+    tree: PyTree, /, is_leaf: Callable[[PyTree], bool] | None = None, with_leaves: bool = False
 ) -> tuple[KeyPath, ...]:
     items, _ = tree_flatten_with_path(tree, is_leaf=is_leaf)
-    key_paths, _ = zip(*items, strict=True)
+    key_paths, leaf_values = zip(*items, strict=True)
+    if with_leaves:
+        return zip(key_paths, leaf_values, strict=True)
 
     return key_paths
 

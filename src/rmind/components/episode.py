@@ -202,7 +202,9 @@ class EpisodeExport:
         embeddings = self.embeddings
         paths = (
             (modality, name)
-            for (_token_type, modality, name) in tree_paths(self.timestep)
+            for (_token_type, modality, name), _ in sorted(
+                tree_paths(self.timestep, with_leaves=True), key=itemgetter(1)
+            )
         )
         packed, _ = pack([key_get(embeddings, path) for path in paths], "b t * d")
 
