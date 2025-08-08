@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from typing import Any
 
 import pytest
@@ -71,6 +72,32 @@ def control_transformer(
     return ControlTransformer(episode_builder=episode_builder, objectives=objectives)
 
 
+def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
+    episode_dict = (src := episode).to_dict() | {
+        "embeddings": src.embeddings.to_dict(),
+        "embeddings_packed": src.embeddings_packed,
+    }
+    episode_export_dict = asdict(src := episode_export) | {
+        "embeddings": src.embeddings,
+        "embeddings_packed": src.embeddings_packed,
+    }
+
+    for kp, expected in tree_flatten_with_path(episode_dict)[0]:
+        actual = key_get(episode_export_dict, kp)
+        if isinstance(actual, (int, float)):
+            actual = torch.tensor(actual, dtype=expected.dtype, device=expected.device)
+
+        assert_close(
+            actual,
+            expected,
+            rtol=0.0,
+            atol=0.0,
+            equal_nan=True,
+            check_dtype=True,
+            msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
+        )
+
+
 @pytest.mark.parametrize(
     ("module", "args", "args_export"),
     [
@@ -97,7 +124,13 @@ def test_module_export_aoti(
         module_export_output = module(*args_export)
 
     for kp, expected in module_output_items:
-        actual = key_get(module_export_output, kp)
+        match actual := key_get(module_export_output, kp):
+            case int() | float():
+                actual = torch.tensor(actual)
+
+            case _:
+                pass
+
         assert_close(
             actual,
             expected,
@@ -108,11 +141,14 @@ def test_module_export_aoti(
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
         )
 
-    exported = torch.export.export(module, args=args_export)
+    exported = torch.export.export(module, args=args_export, strict=True)
     exported_output = exported.module()(*args_export)
 
     for kp, expected in module_output_items:
         actual = key_get(exported_output, kp)
+        if isinstance(actual, (int, float)):
+            actual = torch.tensor(actual, dtype=expected.dtype, device=expected.device)
+
         assert_close(
             actual,
             expected,
@@ -129,6 +165,9 @@ def test_module_export_aoti(
 
     for kp, expected in module_output_items:
         actual = key_get(package_output, kp)
+        if isinstance(actual, (int, float)):
+            actual = torch.tensor(actual, dtype=expected.dtype, device=expected.device)
+
         assert_close(
             actual,
             expected,
