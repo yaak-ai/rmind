@@ -55,8 +55,8 @@ def train(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    import logging
+    import multiprocessing as mp
 
-    logging.getLogger("xformers").setLevel(logging.ERROR)
+    mp.set_forkserver_preload(["polars", "duckdb"])
 
     train()
