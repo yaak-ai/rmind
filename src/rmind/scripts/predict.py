@@ -1,4 +1,5 @@
 #! /usr/bin/env python
+import multiprocessing as mp
 from typing import TYPE_CHECKING
 
 import hydra
@@ -36,8 +37,8 @@ def predict(cfg: DictConfig) -> _PREDICT_OUTPUT | None:
 
 
 if __name__ == "__main__":
-    import logging
+    import multiprocessing as mp
 
-    logging.getLogger("xformers").setLevel(logging.ERROR)
+    mp.set_forkserver_preload(["polars", "duckdb"])
 
     predict()
