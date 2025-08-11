@@ -26,6 +26,7 @@ from torch.utils._pytree import (
     key_get,  # noqa: PLC2701
     register_pytree_node,  # noqa: PLC2701
     tree_leaves,  # noqa: PLC2701
+    tree_leaves_with_path,  # noqa: PLC2701
     tree_map,  # noqa: PLC2701
     tree_map_with_path,  # noqa: PLC2701
 )
@@ -148,7 +149,7 @@ register_pytree_node(
     flatten_with_keys_fn=_td_flatten_with_keys,  # pyright: ignore[reportArgumentType]
 )
 
-TimestepExport = dict[TokenType, dict[tuple[Modality, str], Tensor]]
+TimestepExport = dict[TokenType, dict[tuple[Modality, str], int]]
 
 
 class Episode(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArguments]
@@ -202,8 +203,11 @@ class EpisodeExport:
         embeddings = self.embeddings
         paths = (
             (modality, name)
-            for (_token_type, modality, name) in tree_paths(self.timestep)
+            for (_token_type, modality, name), _pos in sorted(
+                tree_leaves_with_path(self.timestep), key=itemgetter(1)
+            )
         )
+
         packed, _ = pack([key_get(embeddings, path) for path in paths], "b t * d")
 
         return rearrange(packed, "b t s d -> b (t s) d")
@@ -274,8 +278,7 @@ class EpisodeBuilder(Module):
         timestep_index = tree_map(itemgetter(0), index)
 
         timestep = unflatten_keys({
-            tuple(map(str, k)): torch.tensor(idx, device=device)
-            for idx, k in enumerate(self.timestep)
+            tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
 
         position_embeddings = self._build_position_embeddings(

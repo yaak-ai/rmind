@@ -30,7 +30,7 @@ def key_get_default(obj: Any, kp: KeyPath, default: object) -> Any:
         return default
 
 
-def unflatten_keys[K, T](data: Mapping[tuple[Any, ...], T]) -> dict[Any, Any]:
+def unflatten_keys(data: Mapping[tuple[Any, ...], Any]) -> dict[Any, Any]:
     out = {}
     for k, v in data.items():
         *k_prefix, k_last = k
