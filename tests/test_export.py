@@ -1,4 +1,5 @@
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -112,6 +113,7 @@ def test_module_export_aoti(
     args: tuple[Any],
     args_export: tuple[Any],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     module = module.eval()
 
@@ -159,7 +161,9 @@ def test_module_export_aoti(
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
         )
 
-    package_path = torch._inductor.aoti_compile_and_package(exported)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+    package_path = torch._inductor.aoti_compile_and_package(  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+        exported, package_path=tmp_path / "package.pt2"
+    )
     package = torch._inductor.aoti_load_package(package_path)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     package_output = package(*args_export)
 

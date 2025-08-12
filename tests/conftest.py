@@ -79,12 +79,6 @@ def batch() -> Batch:
                     low=0,
                     high=256,
                 ),
-                "meta/ImageMetadata.cam_front_left/frame_idx": make_tensor(
-                    (1, 6), dtype=torch.int32, device="cpu", low=0
-                ),
-                "meta/ImageMetadata.cam_front_left/time_stamp": make_tensor(
-                    (1, 6), dtype=torch.int64, device="cpu", low=0
-                ),
                 "meta/VehicleMotion/brake_pedal_normalized": make_tensor(
                     (1, 6), dtype=torch.float32, device="cpu", low=0.0, high=1.0
                 ),

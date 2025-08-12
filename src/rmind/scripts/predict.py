@@ -6,9 +6,6 @@ import hydra
 import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig
-from pytorch_lightning.utilities.types import (
-    _PREDICT_OUTPUT,  # pyright: ignore[reportPrivateUsage]
-)
 from structlog import get_logger
 
 logger = get_logger(__name__)
@@ -19,7 +16,7 @@ if TYPE_CHECKING:
 
 
 @hydra.main(version_base=None)
-def predict(cfg: DictConfig) -> _PREDICT_OUTPUT | None:
+def main(cfg: DictConfig) -> None:
     torch.set_float32_matmul_precision(cfg.matmul_precision)
 
     logger.debug("instantiating model", target=cfg.model._target_)
@@ -33,7 +30,7 @@ def predict(cfg: DictConfig) -> _PREDICT_OUTPUT | None:
 
     logger.debug("starting prediction")
 
-    return trainer.predict(model=model, datamodule=datamodule, return_predictions=False)
+    trainer.predict(model=model, datamodule=datamodule, return_predictions=False)  # pyright: ignore[reportUnusedCallResult]
 
 
 if __name__ == "__main__":
@@ -41,4 +38,4 @@ if __name__ == "__main__":
 
     mp.set_forkserver_preload(["polars", "duckdb"])
 
-    predict()
+    main()
