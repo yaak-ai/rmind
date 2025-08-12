@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from enum import StrEnum, auto, unique
 from itertools import accumulate, pairwise
 from operator import itemgetter
-from typing import Any, NamedTuple, final, overload, override
+from typing import Any, NamedTuple, final, override
 
 import more_itertools as mit
 import torch
@@ -149,7 +149,7 @@ register_pytree_node(
     flatten_with_keys_fn=_td_flatten_with_keys,  # pyright: ignore[reportArgumentType]
 )
 
-TimestepExport = dict[TokenType, dict[tuple[Modality, str], int]]
+TimestepExport = dict[str, dict[tuple[Modality, str], int]]
 
 
 class Episode(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArguments]
@@ -345,22 +345,12 @@ class EpisodeBuilder(Module):
             timestep_index,
         )
 
-    @overload
-    def _build_position_embeddings(
-        self, embeddings: TensorDict, timestep_index: Index, timestep: TensorDict
-    ) -> TensorDict: ...
-
-    @overload
-    def _build_position_embeddings(
-        self, embeddings: TensorTree, timestep_index: TensorTree, timestep: TensorTree
-    ) -> TensorTree: ...
-
     def _build_position_embeddings(
         self,
-        embeddings: TensorDict | TensorTree,
-        timestep_index: Index | TensorTree,
-        timestep: TensorDict | TensorTree,
-    ) -> TensorDict | TensorTree:
+        embeddings: TensorTree,
+        timestep_index: TensorTree,
+        timestep: TimestepExport,
+    ) -> TensorTree:
         position_embeddings = {}
 
         (_, t), device = mit.one({
@@ -437,14 +427,18 @@ class EpisodeBuilder(Module):
                 k_pe := PositionEncoding.TIMESTEP.value, default=None
             )
         ) is not None:
-            # build a sequence starting from a random index (simplified [0])
-            # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
-            # ---
-            # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
+            if not torch.compiler.is_exporting():
+                # build a sequence starting from a random index (simplified [0])
+                # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
+                # ---
+                # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
 
-            low, high = 0, mod_pe.num_embeddings - t + 1  # pyright: ignore[reportAttributeAccessIssue]
-            start = torch.randint(low, high, (1,)).item()
-            position = torch.arange(start=start, end=start + t, device=device)
+                low, high = 0, mod_pe.num_embeddings - t + 1  # pyright: ignore[reportAttributeAccessIssue]
+                start = torch.randint(low, high, (1,)).item()
+                position = torch.arange(start=start, end=start + t, device=device)
+            else:
+                position = torch.arange(t, device=device)
+
             position_embedding = rearrange(mod_pe(position), "t d -> t 1 d")  # pyright: ignore[reportCallIssue]
 
             position_embeddings[k_pe] = tree_map(

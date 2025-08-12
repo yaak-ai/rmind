@@ -32,7 +32,7 @@ def _train(cfg: DictConfig) -> None:
 
 
 @hydra.main(version_base=None)
-def train(cfg: DictConfig) -> None:
+def main(cfg: DictConfig) -> None:
     if (
         run := rank_zero_only(wandb.init)(
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # pyright: ignore[reportArgumentType]
@@ -59,4 +59,4 @@ if __name__ == "__main__":
 
     mp.set_forkserver_preload(["polars", "duckdb"])
 
-    train()
+    main()
