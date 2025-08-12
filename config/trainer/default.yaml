@@ -38,11 +38,12 @@ callbacks:
     when: on_train_batch_end
     every_n_batch: 100
     key: waypoints
+    crs: "EPSG:25832"
     select:
-      image: ['data', 'cam_front_left']
-      waypoints_normalized: ['data', 'waypoints/waypoints_normalized']
-      waypoints_gps: ['data', 'waypoints/waypoints']
-      ego_gps: ['data', 'ego/xy']
       input_id: ['meta', 'input_id']
-      frame_idx: ['data', 'meta/ImageMetadata.cam_front_left/frame_idx']
       time_stamp: ['data', 'meta/ImageMetadata.cam_front_left/time_stamp']
+      frame_idx: ['data', 'meta/ImageMetadata.cam_front_left/frame_idx']
+      image: ['data', 'cam_front_left']
+      waypoints_xy_normalized: ['data', 'waypoints/xy_normalized']
+      waypoints_xy: ['data', 'waypoints/xy']
+      ego_xy: ['data', 'meta/Gnss/xy']

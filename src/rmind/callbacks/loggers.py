@@ -1,6 +1,7 @@
 import inspect
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Annotated, Any, final
 
 import contextily as ctx
@@ -119,6 +120,15 @@ class WandbWaypointsLogger(Callback):
     in_clip_idx: int = -1
     map_zoom_factor: float = 2.5
 
+    class Columns(StrEnum):
+        INPUT_ID = "input_id"
+        TIME_STAMP = "time_stamp"
+        FRAME_IDX = "frame_idx"
+        IMAGE = "image"
+        WAYPOINTS_XY_NORMALIZED = "waypoints_xy_normalized"
+        WAYPOINTS_XY = "waypoints_xy"
+        EGO_XY = "ego_xy"
+
     def __init__(
         self,
         *,
@@ -126,6 +136,7 @@ class WandbWaypointsLogger(Callback):
         when: Annotated[str, AfterValidator(_validate_hook)],
         key: str,
         every_n_batch: int | None = None,
+        crs: str | None = None,
     ) -> None:
         self._key = key
         if every_n_batch is not None and when not in BATCH_HOOKS:
@@ -138,6 +149,7 @@ class WandbWaypointsLogger(Callback):
         self._every_n_batch = every_n_batch
         self._when = when
         self._select = {k: tuple(v) for k, v in select.items()}
+        self._crs = crs
         setattr(self, when, self._call)
 
     def _call(
@@ -173,28 +185,34 @@ class WandbWaypointsLogger(Callback):
 
         batch = TensorDict(batch).auto_batch_size_()[self.in_batch_idx]
         caption = []
-        if "input_id" in self._select:
+        if self.Columns.INPUT_ID in self._select:
             caption.append(
-                batch.get(self._select["input_id"]).data[self.in_batch_idx].item()
+                batch.get(self._select[self.Columns.INPUT_ID])
+                .data[self.in_batch_idx]
+                .item()
             )
-        if "time_stamp" in self._select:
+        if self.Columns.TIME_STAMP in self._select:
             time_stamp = (
-                batch.get_at(self._select["time_stamp"], self.in_clip_idx).cpu().item()
+                batch.get_at(self._select[self.Columns.TIME_STAMP], self.in_clip_idx)
+                .cpu()
+                .item()
             )
             caption.append(
                 datetime.fromtimestamp(time_stamp * 1e-6, tz=UTC).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
             )
-        if "frame_idx" in self._select:
+        if self.Columns.FRAME_IDX in self._select:
             frame_idx = (
-                batch.get_at(self._select["frame_idx"], self.in_clip_idx).cpu().item()
+                batch.get_at(self._select[self.Columns.FRAME_IDX], self.in_clip_idx)
+                .cpu()
+                .item()
             )
             caption.append(f"frame_idx: {frame_idx}")
         caption = " | ".join(caption)
 
         log_images = []
-        if "image" in self._select:
+        if self.Columns.IMAGE in self._select:
             log_images.append(
                 Image(
                     rearrange(
@@ -204,10 +222,10 @@ class WandbWaypointsLogger(Callback):
                     caption=caption,
                 )
             )
-        if "waypoints_normalized" in self._select:
+        if self.Columns.WAYPOINTS_XY_NORMALIZED in self._select:
             log_images.append(self._plot_waypoints_normalized(batch, caption))
-        if "waypoints_gps" in self._select:
-            log_images.append(self._plot_waypoints_gps(batch, caption))
+        if self.Columns.WAYPOINTS_XY in self._select:
+            log_images.append(self._plot_waypoints_on_map(batch, caption))
 
         for logger in loggers:
             logger.log_image(key=self._key, images=log_images, step=trainer.global_step)
@@ -215,28 +233,31 @@ class WandbWaypointsLogger(Callback):
     def _plot_waypoints_normalized(
         self, batch: TensorDict, caption: str | None = None
     ) -> Image:
-        wpts_normalized = batch.get_at(
-            self._select["waypoints_normalized"], self.in_clip_idx
+        wpts_xy_normalized = batch.get_at(
+            self._select[self.Columns.WAYPOINTS_XY_NORMALIZED], self.in_clip_idx
         ).cpu()
 
-        fig = plt.figure(figsize=(8, 8))
-        wpts_x = wpts_normalized[:, 0]
-        wpts_y = wpts_normalized[:, 1]
-        plt.plot(wpts_x, wpts_y, "bo-", label="Waypoints", markersize=5)  # type: ignore[reportUnknownReturnType]
+        fig = plt.figure(figsize=(8, 8), frameon=False)
+        wpts_x = wpts_xy_normalized[:, 0]
+        wpts_y = wpts_xy_normalized[:, 1]
+        plt.plot(wpts_x, wpts_y, "bo-", markersize=5)  # type: ignore[reportUnknownReturnType]
         for i, (x, y) in enumerate(zip(wpts_x, wpts_y, strict=True)):
             plt.annotate(str(i), (x, y), xytext=(5, 5), textcoords="offset points")  # type: ignore[reportUnknownReturnType]
+        plt.plot(0, 0, "ro")  # type: ignore[reportUnknownReturnType]
         plt.grid(True)  # noqa: FBT003
         plt.axis("equal")  # type: ignore[reportUnknownReturnType]
         return Image(fig, caption=caption)
 
-    def _plot_waypoints_gps(
+    def _plot_waypoints_on_map(
         self, batch: TensorDict, caption: str | None = None
     ) -> Image:
-        wpts_gps = batch.get_at(self._select["waypoints_gps"], self.in_clip_idx).cpu()
+        wpts_xy = batch.get_at(
+            self._select[self.Columns.WAYPOINTS_XY], self.in_clip_idx
+        ).cpu()
         fig, ax = plt.subplots(figsize=(8, 8), frameon=False)
         ax.scatter(
-            wpts_gps[:, 0],
-            wpts_gps[:, 1],
+            wpts_xy[:, 0],
+            wpts_xy[:, 1],
             color="deeppink",
             s=150,
             alpha=0.8,
@@ -259,13 +280,15 @@ class WandbWaypointsLogger(Callback):
         ax.set_xlim(x_center - plot_range / 2, x_center + plot_range / 2)  # type: ignore[reportUnknownReturnType]
         ax.set_ylim(y_center - plot_range / 2, y_center + plot_range / 2)  # type: ignore[reportUnknownReturnType]
 
-        ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik)  # type: ignore[reportUnknownReturnType]
+        ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=self._crs)  # type: ignore[reportUnknownReturnType]
         ax.set_axis_off()
-        if "ego_gps" in self._select:
-            ego_gps = batch.get_at(self._select["ego_gps"], self.in_clip_idx).cpu()
+        if self.Columns.EGO_XY in self._select:
+            ego_xy = batch.get_at(
+                self._select[self.Columns.EGO_XY], self.in_clip_idx
+            ).cpu()
             ax.scatter(
-                ego_gps[0],
-                ego_gps[1],
+                ego_xy[0],
+                ego_xy[1],
                 color="blue",
                 marker="*",
                 s=400,  # make it bigger

@@ -1897,7 +1897,7 @@ samples:
           length: 10
           columns:
             points: geometry
-            output: waypoints
+            output: xy
 
       - _target_: pipefunc.PipeFunc
         output_name: data
@@ -1951,7 +1951,7 @@ samples:
             ego: meta/pos_global
             waypoints: waypoints/waypoints
             heading: waypoints/heading
-            output: waypoints/waypoints_normalized
+            output: waypoints/xy
 
       - _target_: pipefunc.PipeFunc
         renames:
@@ -1992,7 +1992,7 @@ samples:
                 "meta/steer"::FLOAT[8] AS "meta/steer",
                 "meta/throttle"::FLOAT[8] AS "meta/throttle",
                 "meta/brake"::FLOAT[8] AS "meta/brake",
-                "waypoints/waypoints_normalized"::FLOAT[2][10][8] AS "waypoints/waypoints_normalized",
+                "waypoints/xy_normalized"::FLOAT[2][10][8] AS "waypoints/xy_normalized",
             FROM
                 df
             WHERE

@@ -37,7 +37,7 @@ episode_builder:
         steering_angle_diff: [data, meta/steer]
 
       context:
-        waypoints: [data, waypoints/waypoints_normalized]
+        waypoints: [data, waypoints/xy_normalized]
 
     transforms:
       - select: [image]
