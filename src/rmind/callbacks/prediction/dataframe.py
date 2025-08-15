@@ -1,12 +1,12 @@
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Literal, final, override
+from typing import Any, Literal, final, override
 
 import polars as plr  # noqa: ICN001
 import pytorch_lightning as pl
 from pydantic import validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
-from tensordict import TensorClass, TensorDict
+from tensordict import TensorDict
 
 
 @final
@@ -51,13 +51,13 @@ class DataFramePredictionWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
         prediction: TensorDict,
         batch_indices: Sequence[int] | None,
-        batch: TensorClass,
+        batch: dict[str, Any],
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
         data = (
             prediction.clone(recurse=False)
-            .update({"batch": batch.clone(recurse=False).to_tensordict()})
+            .update({"batch": TensorDict(batch)})
             .auto_batch_size_(1)
             .lock_()
         )
@@ -65,7 +65,11 @@ class DataFramePredictionWriter(BasePredictionWriter):
         if self._select is not None:
             data = data.select(*self._select)
 
-        data = data.flatten_keys(self._separator).cpu().float()
+        data = (
+            data.flatten_keys(self._separator)
+            .cpu()
+            .apply(lambda x: x.float() if x.is_floating_point() else x)
+        )
 
         try:
             df = plr.from_numpy(data.to_struct_array())

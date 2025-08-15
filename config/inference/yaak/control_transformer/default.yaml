@@ -28,12 +28,12 @@ trainer:
         - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
         - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
         - [batch, meta, input_id]
-        - [predictions, policy, ground_truth]
-        - [predictions, policy, prediction_value]
-        - [predictions, policy, prediction_std]
-        - [predictions, policy, prediction_probs]
-        - [predictions, policy, score_l1]
-        - [predictions, policy, score_logprob]
+        - [policy, ground_truth]
+        - [policy, prediction_value]
+        - [policy, prediction_std]
+        - [policy, prediction_probs]
+        - [policy, score_l1]
+        - [policy, score_logprob]
       writer:
           _target_: polars.DataFrame.write_parquet
           _partial_: true

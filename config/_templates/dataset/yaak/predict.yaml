@@ -332,7 +332,7 @@ samples:
                 "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
                 "waypoints/waypoints_normalized"::FLOAT[2][10][6] AS "waypoints/waypoints_normalized",
             FROM
-                df
+                samples
             WHERE
                 len("meta/ImageMetadata.cam_front_left/frame_idx") = 6
                 AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 50

@@ -12,5 +12,5 @@ predict:
   persistent_workers: true
   multiprocessing_context: forkserver
   collate_fn:
-    _target_: rbyte.utils.dataloader.collate_identity
+    _target_: tensordict.TensorDict.to_dict
     _partial_: true

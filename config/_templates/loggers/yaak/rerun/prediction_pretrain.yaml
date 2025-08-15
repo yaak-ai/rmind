@@ -1,25 +1,24 @@
 #@yaml/text-templated-strings
-
-#@ cameras = ['cam_front_left']
 ---
 _target_: rbyte.viz.loggers.RerunLogger
 _convert_: all
 _recursive_: false
-application_id: [batch, meta, input_id]
+application_id: prediction_pretrain
+recording_name: [batch, meta, input_id]
 port: 9877
 schema:
-  batch/(@=cameras[0]@)/time_stamp:
-    _target_: rerun.TimeNanosColumn
-    times: [batch, data, "meta/ImageMetadata.(@=cameras[0]@)/time_stamp"]
+  batch/cam_front_left/time_stamp:
+    _target_: rerun.TimeColumn
+    timestamp: [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+    dtype: datetime64[us]
 
-  #@ for camera in cameras:
-  batch/(@=camera@)/frame_idx:
-    _target_: rerun.TimeSequenceColumn
-    times: [batch, data, meta/ImageMetadata.(@=camera@)/frame_idx]
+  batch/cam_front_left/frame_idx:
+    _target_: rerun.TimeColumn
+    sequence: [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
 
-  batch/(@=camera@):
+  batch/cam_front_left:
     - _target_: rerun.Image.columns
-      buffer: [batch, data, (@=camera@)]
+      buffer: [batch, data, cam_front_left]
 
     - static: true
       entity:
@@ -31,21 +30,6 @@ schema:
           color_model: RGB
           channel_datatype: u8
 
-  input/image/(@=camera@):
-    - _target_: rerun.Image.columns
-      buffer: [input, image, (@=camera@)]
-
-    - static: true
-      entity:
-        _target_: rerun.Image.from_fields
-        format:
-          _target_: rerun.components.ImageFormat
-          height: 320
-          width: 576
-          color_model: RGB
-          channel_datatype: f32
-  #@ end
-
   #@ for key in [
   #@     "meta/VehicleMotion/brake_pedal_normalized",
   #@     "meta/VehicleMotion/gas_pedal_normalized",
@@ -53,38 +37,12 @@ schema:
   #@     "meta/VehicleState/turn_signal",
   #@ ]:
   batch/(@=key@):
-    - _target_: rerun.Scalar.columns
-      scalar: [batch, data, (@=key@)]
+    - _target_: rerun.Scalars.columns
+      scalars: [batch, data, (@=key@)]
 
     - static: true
       entity:
-        _target_: rerun.SeriesLine
-  #@ end
-
-  #@ for modality, keys in {
-  #@     "continuous": [
-  #@         "brake_pedal",
-  #@         "brake_pedal_diff",
-  #@         "gas_pedal",
-  #@         "gas_pedal_diff",
-  #@         "steering_angle",
-  #@         "steering_angle_diff",
-  #@         "speed",
-  #@     ],
-  #@     "discrete": [
-  #@         "turn_signal",
-  #@     ],
-  #@ }.items():
-  #@ for key in keys:
-  input/(@=modality@)/(@=key@):
-    - _target_: rerun.Scalar.columns
-      scalar: [input, (@=modality@), (@=key@)]
-
-    - static: true
-      entity:
-        _target_: rerun.SeriesLine
-        name: (@=key@)
-  #@ end
+        _target_: rerun.SeriesLines
   #@ end
 
   #@ predictions = {
@@ -106,13 +64,12 @@ schema:
   #@     },
   #@ }
   #@ for key_objective, data_objective in predictions.items():
-  #@ for key_prediction, data_prediction in data_objective.items():
-  #@ for modality, keys in data_prediction.items():
-  #@ for key in keys:
-  predictions/(@=key_objective@)/(@=key_prediction@)/(@=modality@)/(@=key@):
-    - _target_: rerun.Scalar.columns
-      scalar:
-        - predictions
+  #@  for key_prediction, data_prediction in data_objective.items():
+  #@    for modality, keys in data_prediction.items():
+  #@      for key in keys:
+  (@=key_objective@)/(@=key_prediction@)/(@=modality@)/(@=key@):
+    - _target_: rerun.Scalars.columns
+      scalars:
         - (@=key_objective@)
         - (@=key_prediction@)
         - (@=modality@)
@@ -120,9 +77,9 @@ schema:
 
     - static: true
       entity:
-        _target_: rerun.SeriesLine
-        name: (@=key_prediction@)/(@=key@)
-  #@ end
-  #@ end
-  #@ end
+        _target_: rerun.SeriesLines
+        names: (@=key_prediction@)/(@=key@)
+  #@      end
+  #@    end
+  #@  end
   #@ end
