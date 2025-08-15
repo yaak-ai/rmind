@@ -44,25 +44,29 @@ generate-config:
 train *ARGS: generate-config
     uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
-        --config-name train.yaml {{ ARGS }}
+        --config-name train.yaml \
+        {{ ARGS }}
 
 train-debug *ARGS: generate-config
     WANDB_MODE=disabled uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
-        --config-name train.yaml {{ ARGS }}
+        --config-name train.yaml \
+        {{ ARGS }}
 
 predict +ARGS: generate-config
     uv run rmind-predict \
         --config-path {{ justfile_directory() }}/config \
-        --config-name predict.yaml {{ ARGS }}
+        --config-name predict.yaml \
+        {{ ARGS }}
 
 test *ARGS: generate-config
     uv run pytest --capture=no {{ ARGS }}
 
-export_ *ARGS: generate-config
-    uv run rmind-export \
+export-aoti *ARGS: generate-config
+    uv run rmind-export-aoti \
         --config-path {{ justfile_directory() }}/config \
-        --config-name export.yaml {{ ARGS }}
+        --config-name export_aoti.yaml \
+        {{ ARGS }}
 
 # start rerun server and viewer
 rerun bind="0.0.0.0" port="9877" web-viewer-port="9090":

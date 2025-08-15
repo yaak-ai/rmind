@@ -6,9 +6,10 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BeforeValidator, InstanceOf
 from pydantic.dataclasses import dataclass
+from pytorch_lightning import LightningModule
+from pytorch_lightning.utilities.model_summary.model_summary import ModelSummary
 from structlog import get_logger
 from tensordict import TensorDict
-from torch.nn import Module
 from torch.testing import make_tensor
 
 from rmind.config import HydraConfig
@@ -18,8 +19,8 @@ logger = get_logger(__name__)
 
 @dataclass
 class Config:
-    module: HydraConfig[Module]
-    package_path: Path
+    model: HydraConfig[LightningModule]
+    path: Path
     device: Annotated[InstanceOf[torch.device], BeforeValidator(torch.device)]
 
 
@@ -51,24 +52,26 @@ BATCH = TensorDict({  # pyright: ignore[reportArgumentType]
 })
 
 
-@hydra.main(version_base=None, config_name="export")
+@hydra.main(version_base=None)
+@torch.inference_mode()
 def main(cfg: DictConfig) -> None:
     config = Config(**OmegaConf.to_container(cfg, resolve=True))  # pyright: ignore[reportCallIssue]
 
-    logger.debug("instantiating")
-    # TODO: summary  # noqa: FIX002
-    module = config.module.instantiate().eval().to(config.device)
+    logger.debug("instantiating", target=config.model.target)
+    model = config.model.instantiate()
+    model = model.eval().to(config.device)
+    logger.debug(f"instantiated\n{ModelSummary(model)}")  # noqa: G004
 
     logger.debug("exporting")
     batch = BATCH.to(config.device).to_dict()
-    exported_program = torch.export.export(module, (batch,), strict=True)
+    exported_program = torch.export.export(model, (batch,), strict=True)
 
-    logger.debug("AOTI compiling and packaging")
-    package_path = torch._inductor.aoti_compile_and_package(  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
-        exported_program, package_path=config.package_path
+    logger.debug("compiling")
+    path = torch._inductor.aoti_compile_and_package(  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+        exported_program, package_path=config.path
     )
 
-    logger.debug("compiled", package_path=package_path.resolve().as_posix())  # pyright: ignore[reportAttributeAccessIssue]
+    logger.debug("compiled", path=path.resolve().as_posix())  # pyright: ignore[reportAttributeAccessIssue]
 
 
 if __name__ == "__main__":

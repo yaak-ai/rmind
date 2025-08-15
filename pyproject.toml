@@ -28,16 +28,16 @@ dependencies = [
   "rbyte[geo,jpeg,yaak]==0.30.0",
   "structlog>=25.2.0",
   "tensordict>=0.9.1",
-  "torch>=2.7.1",
-  "torchaudio==2.7.1",
-  "torchvision==0.22.1",
+  "torch>=2.8.0",
+  "torchaudio",
+  "torchvision",
 ]
 
 [project.urls]
 repo = "https://github.com/yaak-ai/rbyte"
 
 [project.scripts]
-rmind-export = "rmind.scripts.export:main"
+rmind-export-aoti = "rmind.scripts.export_aoti:main"
 rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 

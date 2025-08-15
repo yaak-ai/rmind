@@ -4,10 +4,10 @@ embedding_dim: 512
 num_heads: 4
 num_layers: 8
 
-package_path: ${hydra:run.dir}/model.pt2
+path: ${hydra:run.dir}/model.pt2
 device: cpu
 
-module:
+model:
   _target_: rmind.models.control_transformer.ControlTransformer
   _recursive_: false
   _convert_: all

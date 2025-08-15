@@ -6,9 +6,15 @@ import pytest
 import torch
 from pytest_lazy_fixtures import lf
 from torch import Tensor
+from torch._prims_common import DeviceLikeType
 from torch.nn import Module
 from torch.testing import assert_close
-from torch.utils._pytree import key_get, keystr, tree_flatten_with_path  # noqa: PLC2701
+from torch.utils._pytree import (
+    key_get,  # noqa: PLC2701
+    keystr,  # noqa: PLC2701
+    tree_flatten_with_path,  # noqa: PLC2701
+    tree_map_only,  # noqa: PLC2701
+)
 from torchvision.ops import MLP
 
 from rmind.components.base import TensorTree
@@ -73,7 +79,19 @@ def control_transformer(
     return ControlTransformer(episode_builder=episode_builder, objectives=objectives)
 
 
-def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
+@pytest.fixture(
+    scope="module", params=["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+)
+def device(request) -> torch.device:  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]  # noqa: ANN001
+    return torch.device(request.param)
+
+
+def test_episode(
+    episode: Episode, episode_export: EpisodeExport, device: torch.device
+) -> None:
+    episode = episode.to(device)
+    episode_export = tree_map_only(Tensor, lambda x: x.to(device), episode_export)
+
     episode_dict = (src := episode).to_dict() | {
         "embeddings": src.embeddings.to_dict(),
         "embeddings_packed": src.embeddings_packed,
@@ -85,16 +103,19 @@ def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
 
     for kp, expected in tree_flatten_with_path(episode_dict)[0]:
         actual = key_get(episode_export_dict, kp)
-        if isinstance(actual, (int, float)):
-            actual = torch.tensor(actual, dtype=expected.dtype, device=expected.device)
+        match expected, actual:
+            case (Tensor(shape=[]), int() | float()):
+                expected = expected.item()  # noqa: PLW2901
+
+            case _:
+                pass
 
         assert_close(
             actual,
-            expected,
+            expected=expected,
             rtol=0.0,
             atol=0.0,
             equal_nan=True,
-            check_dtype=True,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
         )
 
@@ -106,16 +127,20 @@ def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
         (lf("policy_objective"), (lf("episode"),), (lf("episode_export"),)),
         (lf("control_transformer"), (lf("batch_dict"),), (lf("batch_dict"),)),
     ],
+    ids=("episode_builder", "policy_objective", "control_transformer"),
 )
 @torch.inference_mode()
-def test_module_export_aoti(
+def test_module_export_aoti(  # noqa: PLR0913, PLR0917
     module: Module,
     args: tuple[Any],
     args_export: tuple[Any],
+    device: DeviceLikeType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    module = module.eval()
+    module = module.eval().to(device)
+    args = tree_map_only(Tensor, lambda x: x.to(device), args)
+    args_export = tree_map_only(Tensor, lambda x: x.to(device), args_export)
 
     module_output = module(*args)
     module_output_items, _ = tree_flatten_with_path(module_output)
@@ -126,9 +151,10 @@ def test_module_export_aoti(
         module_export_output = module(*args_export)
 
     for kp, expected in module_output_items:
-        match actual := key_get(module_export_output, kp):
-            case int() | float():
-                actual = torch.tensor(actual)
+        actual = key_get(module_export_output, kp)
+        match expected, actual:
+            case (Tensor(shape=[]), int() | float()):
+                expected = expected.item()  # noqa: PLW2901
 
             case _:
                 pass
@@ -139,7 +165,6 @@ def test_module_export_aoti(
             rtol=0.0,
             atol=0.0,
             equal_nan=True,
-            check_dtype=True,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
         )
 
@@ -148,8 +173,12 @@ def test_module_export_aoti(
 
     for kp, expected in module_output_items:
         actual = key_get(exported_output, kp)
-        if isinstance(actual, (int, float)):
-            actual = torch.tensor(actual, dtype=expected.dtype, device=expected.device)
+        match expected, actual:
+            case (Tensor(shape=[]), int() | float()):
+                expected = expected.item()  # noqa: PLW2901
+
+            case _:
+                pass
 
         assert_close(
             actual,
@@ -157,7 +186,6 @@ def test_module_export_aoti(
             rtol=0.0,
             atol=0.0,
             equal_nan=True,
-            check_dtype=True,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
         )
 
@@ -167,15 +195,19 @@ def test_module_export_aoti(
     package = torch._inductor.aoti_load_package(package_path)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     package_output = package(*args_export)
 
-    for kp, expected in module_output_items:
+    exported_output_items, _ = tree_flatten_with_path(package_output)
+    for kp, expected in exported_output_items:
         actual = key_get(package_output, kp)
-        if isinstance(actual, (int, float)):
-            actual = torch.tensor(actual, dtype=expected.dtype, device=expected.device)
+        match expected, actual:
+            case (Tensor(shape=[]), int() | float()):
+                expected = expected.item()  # noqa: PLW2901
+
+            case _:
+                pass
 
         assert_close(
             actual,
             expected,
             equal_nan=True,
-            check_dtype=True,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
         )
