@@ -1,7 +1,6 @@
 import inspect
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
-from enum import StrEnum
+from enum import StrEnum, auto
 from typing import Annotated, Any, final
 
 import contextily as ctx
@@ -14,7 +13,9 @@ from pytorch_lightning.core.hooks import ModelHooks
 from pytorch_lightning.loggers import WandbLogger
 from tensordict import TensorDict
 from torch import Tensor
+from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
 
+from rmind.utils.pytree import key_get_default
 from wandb import Image
 
 
@@ -114,25 +115,22 @@ class WandbImageParamLogger(Callback):
             )
 
 
+NoneKey = (MappingKey(None),)
+
+
 @final
 class WandbWaypointsLogger(Callback):
-    in_batch_idx: int = 0
-    in_clip_idx: int = -1
-    map_zoom_factor: float = 2.5
+    class DataColumns(StrEnum):
+        IMAGE = auto()
+        WAYPOINTS_XY_NORMALIZED = auto()
+        WAYPOINTS_XY = auto()
+        EGO_XY = auto()
 
-    class Columns(StrEnum):
-        INPUT_ID = "input_id"
-        TIME_STAMP = "time_stamp"
-        FRAME_IDX = "frame_idx"
-        IMAGE = "image"
-        WAYPOINTS_XY_NORMALIZED = "waypoints_xy_normalized"
-        WAYPOINTS_XY = "waypoints_xy"
-        EGO_XY = "ego_xy"
-
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
-        select: dict[str, str | tuple[str, ...]],
+        data: dict[DataColumns, list[str]],
+        caption: dict[str, list[str]],
         when: Annotated[str, AfterValidator(_validate_hook)],
         key: str,
         every_n_batch: int | None = None,
@@ -148,7 +146,16 @@ class WandbWaypointsLogger(Callback):
             raise ValueError(msg)
         self._every_n_batch = every_n_batch
         self._when = when
-        self._select = {k: tuple(v) for k, v in select.items()}
+        self._data_paths = tree_map(
+            lambda v: tuple(map(MappingKey, v)),
+            data,
+            is_leaf=lambda x: isinstance(x, list),
+        )
+        self._caption_paths = tree_map(
+            lambda v: tuple(map(MappingKey, v)),
+            caption,
+            is_leaf=lambda x: isinstance(x, list),
+        )
         self._crs = crs
         setattr(self, when, self._call)
 
@@ -183,59 +190,61 @@ class WandbWaypointsLogger(Callback):
         ) or (trainer.current_epoch != 0):
             return
 
-        batch = TensorDict(batch).auto_batch_size_()[self.in_batch_idx]
-        caption = []
-        if self.Columns.INPUT_ID in self._select:
-            caption.append(
-                batch.get(self._select[self.Columns.INPUT_ID])
-                .data[self.in_batch_idx]
-                .item()
+        caption = " | ".join(
+            f"{k}: {key_get(batch, v).item() if key_get(batch, v) is Tensor else key_get(batch, v)}"
+            for k, v in self._caption_paths.items()
+        )
+
+        log_images: list[Image] = []
+        if (
+            image := key_get_default(
+                batch, self._data_paths.get(self.DataColumns.IMAGE, NoneKey), None
             )
-        if self.Columns.TIME_STAMP in self._select:
-            time_stamp = (
-                batch.get_at(self._select[self.Columns.TIME_STAMP], self.in_clip_idx)
-                .cpu()
-                .item()
+        ) is not None:
+            log_images.append(
+                Image(rearrange(image, "w h c -> c w h"), caption=caption)
             )
-            caption.append(
-                datetime.fromtimestamp(time_stamp * 1e-6, tz=UTC).strftime(
-                    "%Y-%m-%d %H:%M:%S"
+        if (
+            wpts_xy_normalized := key_get_default(
+                batch,
+                self._data_paths.get(self.DataColumns.WAYPOINTS_XY_NORMALIZED, NoneKey),
+                None,
+            )
+        ) is not None:
+            log_images.append(
+                self._plot_waypoints_normalized(
+                    wpts_xy_normalized=wpts_xy_normalized, caption=caption
                 )
             )
-        if self.Columns.FRAME_IDX in self._select:
-            frame_idx = (
-                batch.get_at(self._select[self.Columns.FRAME_IDX], self.in_clip_idx)
-                .cpu()
-                .item()
+        if (
+            wpts_xy := key_get_default(
+                batch,
+                self._data_paths.get(self.DataColumns.WAYPOINTS_XY, NoneKey),
+                None,
             )
-            caption.append(f"frame_idx: {frame_idx}")
-        caption = " | ".join(caption)
-
-        log_images = []
-        if self.Columns.IMAGE in self._select:
+        ) is not None:
             log_images.append(
-                Image(
-                    rearrange(
-                        batch.get_at(self._select["image"], self.in_clip_idx),
-                        "w h c -> c w h",
+                self._plot_waypoints_on_map(
+                    wpts_xy=wpts_xy,
+                    ego_xy=key_get_default(
+                        batch,
+                        self._data_paths.get(self.DataColumns.EGO_XY, NoneKey),
+                        None,
                     ),
                     caption=caption,
                 )
             )
-        if self.Columns.WAYPOINTS_XY_NORMALIZED in self._select:
-            log_images.append(self._plot_waypoints_normalized(batch, caption))
-        if self.Columns.WAYPOINTS_XY in self._select:
-            log_images.append(self._plot_waypoints_on_map(batch, caption))
+        if not log_images:
+            return
 
         for logger in loggers:
             logger.log_image(key=self._key, images=log_images, step=trainer.global_step)
 
+    @staticmethod
     def _plot_waypoints_normalized(
-        self, batch: TensorDict, caption: str | None = None
+        wpts_xy_normalized: Tensor, caption: str | None = None
     ) -> Image:
-        wpts_xy_normalized = batch.get_at(
-            self._select[self.Columns.WAYPOINTS_XY_NORMALIZED], self.in_clip_idx
-        ).cpu()
+        wpts_xy_normalized = wpts_xy_normalized.cpu()
 
         fig = plt.figure(figsize=(8, 8), frameon=False)
         wpts_x = wpts_xy_normalized[:, 0]
@@ -248,12 +257,16 @@ class WandbWaypointsLogger(Callback):
         plt.axis("equal")  # type: ignore[reportUnknownReturnType]
         return Image(fig, caption=caption)
 
+    @staticmethod
     def _plot_waypoints_on_map(
-        self, batch: TensorDict, caption: str | None = None
+        wpts_xy: Tensor,
+        ego_xy: Tensor | None = None,
+        caption: str | None = None,
+        map_zoom_factor: float = 2.5,
+        crs: str | None = "EPSG:25832",
     ) -> Image:
-        wpts_xy = batch.get_at(
-            self._select[self.Columns.WAYPOINTS_XY], self.in_clip_idx
-        ).cpu()
+        wpts_xy = wpts_xy.cpu()
+
         fig, ax = plt.subplots(figsize=(8, 8), frameon=False)
         ax.scatter(
             wpts_xy[:, 0],
@@ -275,17 +288,15 @@ class WandbWaypointsLogger(Callback):
         x_center = x_min + x_range / 2
         y_center = y_min + y_range / 2
 
-        plot_range = max(x_range, y_range) * self.map_zoom_factor
+        plot_range = max(x_range, y_range) * map_zoom_factor
 
         ax.set_xlim(x_center - plot_range / 2, x_center + plot_range / 2)  # type: ignore[reportUnknownReturnType]
         ax.set_ylim(y_center - plot_range / 2, y_center + plot_range / 2)  # type: ignore[reportUnknownReturnType]
 
-        ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=self._crs)  # type: ignore[reportUnknownReturnType]
+        ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=crs)  # type: ignore[reportUnknownReturnType]
         ax.set_axis_off()
-        if self.Columns.EGO_XY in self._select:
-            ego_xy = batch.get_at(
-                self._select[self.Columns.EGO_XY], self.in_clip_idx
-            ).cpu()
+        if ego_xy is not None:
+            ego_xy = ego_xy.cpu()
             ax.scatter(
                 ego_xy[0],
                 ego_xy[1],
