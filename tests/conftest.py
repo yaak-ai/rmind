@@ -100,7 +100,7 @@ def batch() -> Batch:
                 "meta/VehicleState/turn_signal": make_tensor(
                     (1, 6), dtype=torch.int64, device="cpu", low=0, high=3
                 ),
-                "waypoints/waypoints_normalized": make_tensor(
+                "waypoints/xy_normalized": make_tensor(
                     (1, 6, 10, 2), dtype=torch.float32, device="cpu", low=0.0, high=20.0
                 ),
             },
@@ -189,9 +189,7 @@ def episode_builder(tokenizers: ModuleDict) -> Module:
                         "meta/VehicleMotion/steering_angle_normalized",
                     ),
                 },
-                Modality.CONTEXT: {
-                    "waypoints": ("data", "waypoints/waypoints_normalized")
-                },
+                Modality.CONTEXT: {"waypoints": ("data", "waypoints/xy_normalized")},
                 Modality.DISCRETE: {
                     "turn_signal": ("data", "meta/VehicleState/turn_signal")
                 },
