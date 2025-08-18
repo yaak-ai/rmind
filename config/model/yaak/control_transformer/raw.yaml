@@ -168,6 +168,10 @@ episode_builder:
             freeze: True
           - _target_: einops.layers.torch.Rearrange
             pattern: "... c h w -> ... (h w) c"
+          - _target_: torch.nn.Linear
+            in_features: 512
+            out_features: ${embedding_dim}
+            bias: False
           - _target_: rmind.components.norm.Normalize
             p: 2
             dim: -1
