@@ -14,9 +14,9 @@ from pytorch_lightning.loggers import WandbLogger
 from tensordict import TensorDict
 from torch import Tensor
 from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
+from wandb import Image
 
 from rmind.utils.pytree import key_get_default
-from wandb import Image
 
 
 def _validate_hook(value: str) -> str:

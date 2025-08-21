@@ -55,7 +55,14 @@ class PolicyObjective(Objective):
         super().__init__()
 
         self.encoder = encoder
-        self.mask = mask
+
+        match mask:
+            case Tensor():
+                self.register_buffer("_mask", mask, persistent=True)
+
+            case None:
+                self._mask = None
+
         self.heads = heads
         self.losses = losses
         self.targets = targets
@@ -63,6 +70,10 @@ class PolicyObjective(Objective):
         self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
             self.build_attention_mask
         )
+
+    @property
+    def mask(self) -> Tensor | None:
+        return self._mask
 
     @overload
     def forward(self, episode: Episode) -> TensorDict: ...

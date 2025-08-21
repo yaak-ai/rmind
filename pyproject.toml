@@ -28,13 +28,18 @@ dependencies = [
   "rbyte[geo,jpeg,yaak]==0.30.0",
   "structlog>=25.2.0",
   "tensordict>=0.9.1",
-  "torch>=2.7.1",
-  "torchaudio==2.7.1",
-  "torchvision==0.22.1",
+  "torch>=2.8.0",
+  "torchaudio",
+  "torchvision",
 ]
 
 [project.urls]
 repo = "https://github.com/yaak-ai/rbyte"
+
+[project.scripts]
+rmind-export-onnx = "rmind.scripts.export_onnx:main"
+rmind-predict = "rmind.scripts.predict:main"
+rmind-train = "rmind.scripts.train:main"
 
 [project.optional-dependencies]
 predict = ["funcy>=2.0", "wandb>=0.21.0", "rbyte[visualize]"]
@@ -49,6 +54,8 @@ train = [
 
 [dependency-groups]
 dev = ["ipython", "lovely-tensors", "pudb", "wat-inspector"]
+export = ["onnx>=1.18.0", "onnxscript>=0.3.2"]
+test = ["pytest-lazy-fixtures>=1.1.4", "pytest>=8.4.1"]
 
 [build-system]
 requires = ["hatchling"]

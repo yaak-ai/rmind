@@ -42,27 +42,31 @@ generate-config:
         --strict
 
 train *ARGS: generate-config
-    uv run src/rmind/scripts/train.py \
+    uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
-        --config-name train.yaml {{ ARGS }}
+        --config-name train.yaml \
+        {{ ARGS }}
 
 train-debug *ARGS: generate-config
-    WANDB_MODE=disabled uv run src/rmind/scripts/train.py \
+    WANDB_MODE=disabled uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
-        --config-name train.yaml {{ ARGS }}
+        --config-name train.yaml \
+        {{ ARGS }}
 
 predict +ARGS: generate-config
-    uv run src/rmind/scripts/predict.py \
+    uv run rmind-predict \
         --config-path {{ justfile_directory() }}/config \
-        --config-name predict.yaml {{ ARGS }}
-
-predict-debug +ARGS: generate-config
-    uv run src/rmind/scripts/predict.py \
-        --config-path {{ justfile_directory() }}/config \
-        --config-name predict.yaml {{ ARGS }}
+        --config-name predict.yaml \
+        {{ ARGS }}
 
 test *ARGS: generate-config
     uv run pytest --capture=no {{ ARGS }}
+
+export-onnx *ARGS: generate-config
+    uv run --group export rmind-export-onnx \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name export_onnx.yaml \
+        {{ ARGS }}
 
 # start rerun server and viewer
 rerun bind="0.0.0.0" port="9877" web-viewer-port="9090":
