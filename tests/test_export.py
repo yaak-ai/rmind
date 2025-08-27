@@ -44,7 +44,9 @@ def episode_export(
 @pytest.fixture
 def policy_mask(episode: Episode) -> Tensor:
     return PolicyObjective.build_attention_mask(
-        episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+        episode.index,
+        episode.timestep,
+        legend=TorchAttentionMaskLegend,  # pyright: ignore[reportArgumentType]
     ).mask
 
 

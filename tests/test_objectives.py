@@ -36,10 +36,11 @@ def test_compute_metrics(
         lf("policy_objective"),
     ],
 )
+@torch.inference_mode()
 def test_predict(
     objective: Objective, episode: Episode, tokenizers: ModuleDict, device: torch.device
 ) -> None:
-    objective = objective.to(device)
+    objective = objective.to(device).eval()
     episode = episode.to(device)
     tokenizers = tokenizers.to(device)
 

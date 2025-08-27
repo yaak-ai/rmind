@@ -1,44 +1,54 @@
-from enum import Enum, EnumMeta, _EnumDict  # pyright: ignore[reportPrivateUsage]
-from typing import Self
+from enum import Enum, EnumMeta
+from typing import Any, ClassVar, Protocol, Self, final, runtime_checkable
 
 import torch
 from tensordict import TensorClass
 from torch import Tensor
+from torch.types import Number
 
 from rmind.components.episode import Index
 
 
-class AttentionMaskLegend(EnumMeta):
-    DO_ATTEND: float  # pyright: ignore[reportUninitializedInstanceVariable]
-    DO_NOT_ATTEND: float  # pyright: ignore[reportUninitializedInstanceVariable]
+class AttentionMaskLegendMeta(EnumMeta):
+    MEMBERS: ClassVar[set[str]] = {"DO_ATTEND", "DO_NOT_ATTEND"}
 
-    def __new__(metacls, cls: str, bases: tuple[type, ...], classdict: _EnumDict):  # noqa: ANN204
-        if bases != (required := (float, Enum)):
-            msg = f"required bases: {required}"
+    def __new__(metacls, *args: Any, **kwargs: Any) -> type:
+        cls = super().__new__(metacls, *args, **kwargs)
+        if set(cls.__members__.keys()) != (required := metacls.MEMBERS):
+            msg = f"{cls} must define exactly the following members: {required}"
             raise ValueError(msg)
 
-        if set(classdict._member_names) != (required := metacls.__annotations__.keys()):  # pyright: ignore[reportAttributeAccessIssue]  # noqa: SLF001
-            msg = f"required attrs: {required}"
-            raise ValueError(msg)
-
-        return super().__new__(metacls, cls, bases, classdict)
+        return cls
 
 
-class TorchAttentionMaskLegend(float, Enum, metaclass=AttentionMaskLegend):
-    DO_ATTEND: float = 0.0
-    DO_NOT_ATTEND: float = float("-inf")
+@runtime_checkable
+class MaskValue(Protocol):
+    value: Number
 
 
-class WandbAttentionMaskLegend(float, Enum, metaclass=AttentionMaskLegend):
-    DO_ATTEND: float = 1.0
-    DO_NOT_ATTEND: float = 0.0
+@runtime_checkable
+class AttentionMaskLegend(Protocol):
+    DO_ATTEND: MaskValue
+    DO_NOT_ATTEND: MaskValue
+
+
+@final
+class TorchAttentionMaskLegend(Enum, metaclass=AttentionMaskLegendMeta):
+    DO_ATTEND = False
+    DO_NOT_ATTEND = True
+
+
+@final
+class WandbAttentionMaskLegend(Enum, metaclass=AttentionMaskLegendMeta):
+    DO_ATTEND = 1.0
+    DO_NOT_ATTEND = 0.0
 
 
 class AttentionMask(TensorClass):
     mask: Tensor  # pyright: ignore[reportUninitializedInstanceVariable]
     legend: AttentionMaskLegend  # pyright: ignore[reportUninitializedInstanceVariable]
 
-    def _set(self, *, src: Index, dest: Index, val: float) -> Self:
+    def _set(self, *, src: Index, dest: Index, val: Number) -> Self:
         i = src.cat_from_tensordict(dim=-1).flatten()
         j = dest.cat_from_tensordict(dim=-1).flatten()
         grid = torch.meshgrid(i, j, indexing="ij")
@@ -47,22 +57,7 @@ class AttentionMask(TensorClass):
         return self
 
     def do_attend(self, src: Index, dest: Index) -> Self:
-        return self._set(src=src, dest=dest, val=self.legend.DO_ATTEND)
+        return self._set(src=src, dest=dest, val=self.legend.DO_ATTEND.value)
 
     def do_not_attend(self, src: Index, dest: Index) -> Self:
-        return self._set(src=src, dest=dest, val=self.legend.DO_NOT_ATTEND)
-
-    def with_legend(self, legend: AttentionMaskLegend) -> Self:
-        mask = self.clone(recurse=True)
-
-        if self.legend is legend:
-            return mask
-
-        attend = mask.mask == self.legend.DO_ATTEND
-        do_not_attend = mask.mask == self.legend.DO_NOT_ATTEND
-
-        mask.legend = legend
-        mask.mask[attend] = mask.legend.DO_ATTEND
-        mask.mask[do_not_attend] = mask.legend.DO_NOT_ATTEND
-
-        return mask
+        return self._set(src=src, dest=dest, val=self.legend.DO_NOT_ATTEND.value)
