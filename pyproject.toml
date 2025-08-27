@@ -60,9 +60,9 @@ dev = [
   "wat-inspector",
 ]
 export = [
-  "onnx>=1.18.0",
+  "onnx>=1.19.1",
   "onnxruntime>=1.23.1",
-  "onnxscript>=0.3.2",
+  "onnxscript>=0.5.3",
 ]
 test = [
   "pytest>=8.4.1",
