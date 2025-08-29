@@ -48,7 +48,6 @@ train = [
   "contextily>=1.6.2",
   "matplotlib>=3.10.3",
   "torchmetrics>=1.4.1",
-  "transformers>=4.44.2",
   "wandb>=0.21.0",
 ]
 
@@ -82,7 +81,6 @@ DEP001 = ["rmind"]
 DEP002 = [
   "funcy",
   "torchmetrics",
-  "transformers",
   "pytest",
   "pytest-lazy-fixtures",
 ]
