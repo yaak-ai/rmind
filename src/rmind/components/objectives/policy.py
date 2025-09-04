@@ -96,7 +96,7 @@ class PolicyObjective(Objective):
                     case (Modality.CONTINUOUS, _):
                         return x[..., 0]
                     case (Modality.DISCRETE, "turn_signal"):
-                        return torch.argmax(x, dim=-1)
+                        return non_zero_signal_with_threshold(x).class_idx
                     case _:
                         raise NotImplementedError
 
@@ -107,7 +107,7 @@ class PolicyObjective(Objective):
                 return v[..., 0]
 
             if kp[0].key == Modality.DISCRETE.value and kp[1].key == "turn_signal":
-                return torch.argmax(v, dim=-1)
+                return non_zero_signal_with_threshold(v).class_idx
 
             raise NotImplementedError
 

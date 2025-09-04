@@ -45,7 +45,7 @@ class SignalWithThresholdResult(NamedTuple):
 
 
 def non_zero_signal_with_threshold(
-    logits: Tensor, threshold: float = 0.85
+    logits: Tensor, threshold: float = 0.8
 ) -> SignalWithThresholdResult:
     # assuming zero signal is at index 0
     probs = F.softmax(logits, dim=-1)
