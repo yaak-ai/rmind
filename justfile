@@ -51,6 +51,8 @@ train-debug *ARGS: generate-config
     WANDB_MODE=disabled uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml \
+        num_heads=1 \
+        num_layers=1 \
         {{ ARGS }}
 
 predict +ARGS: generate-config

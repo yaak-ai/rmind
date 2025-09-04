@@ -258,8 +258,36 @@ class EpisodeBuilder(Module):
 
     @override
     def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
+        speed_dropout_probability = 0.25
+        waypoints_dropout_probability = 0.25
+
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
+
+        if (
+            "speed_mask_token" in batch["meta"]
+            and torch.rand(1) < speed_dropout_probability
+        ):
+            speed_shape = input_tokens["continuous"]["speed"].shape
+            speed_dtype = input_tokens["continuous"]["speed"].dtype
+            speed_device = input_tokens["continuous"]["speed"].device
+            input_tokens["continuous"]["speed"] = (
+                batch["meta"]["speed_mask_token"]
+                .expand(speed_shape)
+                .to(dtype=speed_dtype, device=speed_device)
+            )
+        if (
+            "waypoint_mask_vector" in batch["meta"]
+            and torch.rand(1) < waypoints_dropout_probability
+        ):
+            waypoints_shape = input_tokens["context"]["waypoints"].shape
+            waypoints_dtype = input_tokens["context"]["waypoints"].dtype
+            waypoints_device = input_tokens["context"]["waypoints"].device
+            input_tokens["context"]["waypoints"] = (
+                batch["meta"]["waypoint_mask_vector"]
+                .expand(waypoints_shape)
+                .to(dtype=waypoints_dtype, device=waypoints_device)
+            )
 
         batch_size, device = mit.one({
             (leaf.shape[:2], leaf.device)

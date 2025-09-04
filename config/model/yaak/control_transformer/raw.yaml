@@ -175,7 +175,7 @@ episode_builder:
       continuous:
         speed:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: ${speed_bins}
+          num_embeddings: ${speed_bins_with_mask}
           embedding_dim: ${embedding_dim}
         gas_pedal:
           _target_: rmind.components.nn.Embedding
@@ -355,7 +355,7 @@ objectives:
                 _args_:
                   - 3
                   - ${embedding_dim}
-              out_features: ${speed_bins}
+              out_features: ${speed_bins_with_mask}
               bias: False
 
       targets:

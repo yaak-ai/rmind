@@ -27,10 +27,15 @@ class SelectiveAdamW(AdamW):
         submodules = dict(module.named_modules())
         params = dict(module.named_parameters())
         for param_name in params:
-            submodule_name, param_type = param_name.rsplit(sep=".", maxsplit=1)
+            if "." in param_name:
+                submodule_name, param_type = param_name.rsplit(sep=".", maxsplit=1)
+            else:
+                submodule_name = ""
+                param_type = param_name
+
             match param_type:
                 case "weight":
-                    if isinstance(
+                    if submodule_name and isinstance(
                         submodules[submodule_name], weight_decay_module_blacklist
                     ):
                         weight_decay_param_blacklist.add(param_name)
@@ -38,13 +43,16 @@ class SelectiveAdamW(AdamW):
                 case "bias" | "in_proj_bias":
                     weight_decay_param_blacklist.add(param_name)
 
+                case "waypoint_mask_vector":
+                    weight_decay_param_blacklist.add(param_name)
+
                 # https://github.com/pytorch/pytorch/blob/v2.7.0/torch/nn/modules/activation.py#L1091
                 case "in_proj_weight":
                     pass
 
                 case _:
-                    raise NotImplementedError
-
+                    msg = f"Optimizer does not have a rule for parameter type: {param_type}"
+                    raise NotImplementedError(msg)
         weight_decay_param_whitelist = params.keys() - weight_decay_param_blacklist
 
         param_groups = [
