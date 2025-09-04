@@ -234,6 +234,7 @@ class EpisodeBuilder(Module):
         embeddings: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
+        modality_dropouts: dict[str, dict[str, float]] | None = None,  # fix
     ) -> None:
         super().__init__()
 
@@ -243,6 +244,7 @@ class EpisodeBuilder(Module):
         self.tokenizers = tokenizers
         self.embeddings = embeddings
         self.position_encoding = position_encoding
+        self.modality_dropouts = modality_dropouts
 
         if freeze is not None:
             if freeze is False and (
@@ -258,35 +260,28 @@ class EpisodeBuilder(Module):
 
     @override
     def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
-        speed_dropout_probability = 0.25
-        waypoints_dropout_probability = 0.25
-
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
-        if (
-            "speed_mask_token" in batch["meta"]
-            and torch.rand(1) < speed_dropout_probability
-        ):
-            speed_shape = input_tokens["continuous"]["speed"].shape
-            speed_dtype = input_tokens["continuous"]["speed"].dtype
-            speed_device = input_tokens["continuous"]["speed"].device
-            input_tokens["continuous"]["speed"] = (
-                batch["meta"]["speed_mask_token"]
-                .expand(speed_shape)
-                .to(dtype=speed_dtype, device=speed_device)
+        for key, dropout_probability in tree_leaves_with_path(self.modality_dropouts):
+            if not batch.get("mask_token"):
+                # we are not in training mode
+                continue
+
+            token = key_get(input_tokens, key)
+            mask_token = key_get(batch["mask_token"], key)
+
+            # Generate random mask per sample in batch
+            batch_size = token.shape[0]
+            sample_mask = (
+                torch.rand(batch_size, device=token.device) < dropout_probability
             )
-        if (
-            "waypoint_mask_vector" in batch["meta"]
-            and torch.rand(1) < waypoints_dropout_probability
-        ):
-            waypoints_shape = input_tokens["context"]["waypoints"].shape
-            waypoints_dtype = input_tokens["context"]["waypoints"].dtype
-            waypoints_device = input_tokens["context"]["waypoints"].device
-            input_tokens["context"]["waypoints"] = (
-                batch["meta"]["waypoint_mask_vector"]
-                .expand(waypoints_shape)
-                .to(dtype=waypoints_dtype, device=waypoints_device)
+
+            masked_token = mask_token.expand(token.shape).to(
+                dtype=token.dtype, device=token.device
+            )
+            input_tokens[key[0].key][key[1].key] = torch.where(
+                sample_mask.view(-1, *([1] * (token.ndim - 1))), masked_token, token
             )
 
         batch_size, device = mit.one({

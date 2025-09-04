@@ -175,8 +175,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
         # add masks to pass it to episode_builder
-        batch["meta"]["waypoint_mask_vector"] = self.waypoint_mask_vector
-        batch["meta"]["speed_mask_token"] = self.speed_mask_token
+        batch['mask_token'] = {}
+        batch["mask_token"]["continuous"] = {}
+        batch["mask_token"]["context"] = {}
+        batch["mask_token"]["context"]["waypoints"] = self.waypoint_mask_vector
+        batch["mask_token"]["continuous"]["speed"] = self.speed_mask_token
 
         episode = self.episode_builder(batch)
 

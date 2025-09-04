@@ -249,6 +249,12 @@ episode_builder:
         num_embeddings: 24
         embedding_dim: ${embedding_dim}
 
+  modality_dropouts:
+    continuous:
+      speed: 0.25
+    context:
+      waypoints: 0.25
+
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
   dim_model: ${embedding_dim}
