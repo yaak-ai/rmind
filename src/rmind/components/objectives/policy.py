@@ -37,7 +37,11 @@ from rmind.components.objectives.base import (
 from rmind.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from rmind.utils.functional import gauss_prob, nan_padder
+from rmind.utils.functional import (
+    gauss_prob,
+    nan_padder,
+    non_zero_signal_with_threshold,
+)
 
 
 @final
@@ -92,7 +96,7 @@ class PolicyObjective(Objective):
                     case (Modality.CONTINUOUS, _):
                         return x[..., 0]
                     case (Modality.DISCRETE, "turn_signal"):
-                        return torch.argmax(x, dim=-1)
+                        return non_zero_signal_with_threshold(x).class_idx
                     case _:
                         raise NotImplementedError
 
@@ -103,7 +107,7 @@ class PolicyObjective(Objective):
                 return v[..., 0]
 
             if kp[0].key == Modality.DISCRETE.value and kp[1].key == "turn_signal":
-                return torch.argmax(v, dim=-1)
+                return non_zero_signal_with_threshold(v).class_idx
 
             raise NotImplementedError
 
@@ -264,7 +268,7 @@ class PolicyObjective(Objective):
                         case (Modality.CONTINUOUS, _):
                             return x[..., 0]
                         case (Modality.DISCRETE, "turn_signal"):
-                            return torch.argmax(x, dim=-1)
+                            return non_zero_signal_with_threshold(x).class_idx
                         case _:
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
@@ -283,7 +287,7 @@ class PolicyObjective(Objective):
                             return torch.sqrt(torch.exp(x[..., 1]))
 
                         case (Modality.DISCRETE, "turn_signal"):
-                            return torch.ones_like(x[..., 0])  # placeholder
+                            return torch.zeros_like(x[..., 0])  # placeholder
                         case _:
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
@@ -304,7 +308,8 @@ class PolicyObjective(Objective):
                             return gauss_prob(mean, mean=mean, std=std)
 
                         case (Modality.DISCRETE, "turn_signal"):
-                            return F.softmax(x, dim=-1)
+                            return non_zero_signal_with_threshold(x).prob
+
                         case _:
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
@@ -350,7 +355,7 @@ class PolicyObjective(Objective):
 
                         case (Modality.DISCRETE, "turn_signal"):
                             return F.l1_loss(
-                                torch.argmax(x, dim=-1).float(),
+                                non_zero_signal_with_threshold(x).class_idx.float(),
                                 gt.float(),
                                 reduction="none",
                             )
