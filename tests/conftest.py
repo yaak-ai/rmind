@@ -45,6 +45,10 @@ from rmind.components.objectives import (
 from rmind.components.resnet import ResnetBackbone
 
 EMBEDDING_DIM = 512
+SPEED_BINS = 512
+GAS_PEDAL_BINS = 255
+BRAKE_PEDAL_BINS = 165
+STEERING_ANGLE_BINS = 961
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -116,15 +120,17 @@ def tokenizers() -> ModuleDict:
     return ModuleDict({
         Modality.IMAGE: Identity(),
         Modality.CONTINUOUS: {
-            "speed": UniformBinner(range=(0.0, 130.0), bins=EMBEDDING_DIM),
-            "gas_pedal": UniformBinner(range=(0.0, 1.0), bins=EMBEDDING_DIM),
-            "gas_pedal_diff": MuLawEncoding(quantization_channels=EMBEDDING_DIM),
-            "brake_pedal": UniformBinner(range=(0.0, 1.0), bins=EMBEDDING_DIM),
-            "brake_pedal_diff": MuLawEncoding(quantization_channels=EMBEDDING_DIM),
-            "steering_angle": UniformBinner(range=(-1.0, 1.0), bins=EMBEDDING_DIM),
+            "speed": UniformBinner(range=(0.0, 130.0), bins=SPEED_BINS),
+            "gas_pedal": UniformBinner(range=(0.0, 1.0), bins=GAS_PEDAL_BINS),
+            "gas_pedal_diff": MuLawEncoding(quantization_channels=GAS_PEDAL_BINS),
+            "brake_pedal": UniformBinner(range=(0.0, 1.0), bins=BRAKE_PEDAL_BINS),
+            "brake_pedal_diff": MuLawEncoding(quantization_channels=BRAKE_PEDAL_BINS),
+            "steering_angle": UniformBinner(
+                range=(-1.0, 1.0), bins=STEERING_ANGLE_BINS
+            ),
             "steering_angle_diff": Sequential(
                 Scaler(in_range=(-2.0, 2.0), out_range=(-1.0, 1.0)),
-                MuLawEncoding(quantization_channels=EMBEDDING_DIM),
+                MuLawEncoding(quantization_channels=STEERING_ANGLE_BINS),
             ),
         },
         Modality.DISCRETE: Identity(),
@@ -220,12 +226,12 @@ def episode_builder(tokenizers: ModuleDict) -> Module:
                 _Normalize(p=2, dim=-1),
             ),
             Modality.CONTINUOUS: {
-                "speed": Embedding(EMBEDDING_DIM, EMBEDDING_DIM),
-                "gas_pedal": Embedding(EMBEDDING_DIM, EMBEDDING_DIM),
+                "speed": Embedding(SPEED_BINS, EMBEDDING_DIM),
+                "gas_pedal": Embedding(GAS_PEDAL_BINS, EMBEDDING_DIM),
                 "gas_pedal_diff": None,
-                "brake_pedal": Embedding(EMBEDDING_DIM, EMBEDDING_DIM),
+                "brake_pedal": Embedding(BRAKE_PEDAL_BINS, EMBEDDING_DIM),
                 "brake_pedal_diff": None,
-                "steering_angle": Embedding(EMBEDDING_DIM, EMBEDDING_DIM),
+                "steering_angle": Embedding(STEERING_ANGLE_BINS, EMBEDDING_DIM),
                 "steering_angle_diff": None,
             },
             Modality.CONTEXT: {
@@ -280,10 +286,12 @@ def inverse_dynamics_prediction_objective(
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": Linear(2 * EMBEDDING_DIM, EMBEDDING_DIM, bias=False),
-                    "brake_pedal": Linear(2 * EMBEDDING_DIM, EMBEDDING_DIM, bias=False),
+                    "gas_pedal": Linear(2 * EMBEDDING_DIM, GAS_PEDAL_BINS, bias=False),
+                    "brake_pedal": Linear(
+                        2 * EMBEDDING_DIM, BRAKE_PEDAL_BINS, bias=False
+                    ),
                     "steering_angle": Linear(
-                        2 * EMBEDDING_DIM, EMBEDDING_DIM, bias=False
+                        2 * EMBEDDING_DIM, STEERING_ANGLE_BINS, bias=False
                     ),
                 },
                 Modality.DISCRETE: {
@@ -332,7 +340,7 @@ def forward_dynamics_prediction_objective(
                     )
                 },
                 Modality.CONTINUOUS: {
-                    "speed": Linear(3 * EMBEDDING_DIM, EMBEDDING_DIM, bias=False)
+                    "speed": Linear(3 * EMBEDDING_DIM, SPEED_BINS, bias=False)
                 },
             }
         ),
@@ -366,9 +374,11 @@ def random_masked_hindsight_control_objective(
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": Linear(EMBEDDING_DIM, EMBEDDING_DIM, bias=False),
-                    "brake_pedal": Linear(EMBEDDING_DIM, EMBEDDING_DIM, bias=False),
-                    "steering_angle": Linear(EMBEDDING_DIM, EMBEDDING_DIM, bias=False),
+                    "gas_pedal": Linear(EMBEDDING_DIM, GAS_PEDAL_BINS, bias=False),
+                    "brake_pedal": Linear(EMBEDDING_DIM, BRAKE_PEDAL_BINS, bias=False),
+                    "steering_angle": Linear(
+                        EMBEDDING_DIM, STEERING_ANGLE_BINS, bias=False
+                    ),
                 },
                 Modality.DISCRETE: {
                     "turn_signal": Linear(EMBEDDING_DIM, 3, bias=False)
@@ -409,12 +419,12 @@ def memory_extraction_objective(encoder: Module) -> MemoryExtractionObjective:
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal_diff": Linear(EMBEDDING_DIM, EMBEDDING_DIM, bias=False),
+                    "gas_pedal_diff": Linear(EMBEDDING_DIM, GAS_PEDAL_BINS, bias=False),
                     "brake_pedal_diff": Linear(
-                        EMBEDDING_DIM, EMBEDDING_DIM, bias=False
+                        EMBEDDING_DIM, BRAKE_PEDAL_BINS, bias=False
                     ),
                     "steering_angle_diff": Linear(
-                        EMBEDDING_DIM, EMBEDDING_DIM, bias=False
+                        EMBEDDING_DIM, STEERING_ANGLE_BINS, bias=False
                     ),
                 }
             }

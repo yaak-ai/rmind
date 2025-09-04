@@ -25,6 +25,13 @@ from rmind.components.objectives import (
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
 from rmind.models.control_transformer import ControlTransformer
+from tests.conftest import (
+    BRAKE_PEDAL_BINS,
+    EMBEDDING_DIM,
+    GAS_PEDAL_BINS,
+    SPEED_BINS,
+    STEERING_ANGLE_BINS,
+)
 
 CONFIG_PATH = "../config"
 
@@ -123,7 +130,15 @@ def model_yaak_control_transformer_raw() -> ControlTransformer:
     with initialize(version_base=None, config_path=CONFIG_PATH):
         cfg = compose(
             "model/yaak/control_transformer/raw",
-            overrides=["+num_heads=1", "+num_layers=1", "+embedding_dim=512"],
+            overrides=[
+                "+num_heads=1",
+                "+num_layers=1",
+                f"+embedding_dim={EMBEDDING_DIM}",
+                f"+speed_bins={SPEED_BINS}",
+                f"+gas_pedal_bins={GAS_PEDAL_BINS}",
+                f"+brake_pedal_bins={BRAKE_PEDAL_BINS}",
+                f"+steering_angle_bins={STEERING_ANGLE_BINS}",
+            ],
         )
 
     return instantiate(cfg.model.yaak.control_transformer)

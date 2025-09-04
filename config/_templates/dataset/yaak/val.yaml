@@ -44,7 +44,7 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: "${hydra:run.dir}/dataset/yaak/val/samples"
+  run_folder: ${paths.rbyte.cache}/yaak/val/samples
   scheduling_strategy: eager
   return_results: false
   persist_memory: false

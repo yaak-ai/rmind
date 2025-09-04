@@ -112,32 +112,32 @@ episode_builder:
         speed:
           _target_: rmind.components.norm.UniformBinner
           range: [0.0, 130.0]
-          bins: ${embedding_dim}
+          bins: ${speed_bins}
 
         gas_pedal:
           _target_: rmind.components.norm.UniformBinner
           range: [0.0, 1.0]
-          bins: ${embedding_dim}
+          bins: ${gas_pedal_bins}
 
         gas_pedal_diff:
           # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
           _target_: rmind.components.norm.MuLawEncoding
-          quantization_channels: ${embedding_dim}
+          quantization_channels: ${gas_pedal_bins}
 
         brake_pedal:
           _target_: rmind.components.norm.UniformBinner
           range: [0.0, 1.0]
-          bins: ${embedding_dim}
+          bins: ${brake_pedal_bins}
 
         brake_pedal_diff:
           # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
           _target_: rmind.components.norm.MuLawEncoding
-          quantization_channels: ${embedding_dim}
+          quantization_channels: ${brake_pedal_bins}
 
         steering_angle:
           _target_: rmind.components.norm.UniformBinner
           range: [-1.0, 1.0]
-          bins: ${embedding_dim}
+          bins: ${steering_angle_bins}
 
         steering_angle_diff:
           _target_: rmind.components.nn.Sequential
@@ -146,7 +146,7 @@ episode_builder:
               in_range: [-2.0, 2.0]
               out_range: [-1.0, 1.0]
             - _target_: rmind.components.norm.MuLawEncoding
-              quantization_channels: ${embedding_dim}
+              quantization_channels: ${steering_angle_bins}
 
       discrete:
         _target_: rmind.components.nn.Identity
@@ -175,19 +175,19 @@ episode_builder:
       continuous:
         speed:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: ${embedding_dim}
+          num_embeddings: ${speed_bins}
           embedding_dim: ${embedding_dim}
         gas_pedal:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: ${embedding_dim}
+          num_embeddings: ${gas_pedal_bins}
           embedding_dim: ${embedding_dim}
         brake_pedal:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: ${embedding_dim}
+          num_embeddings: ${brake_pedal_bins}
           embedding_dim: ${embedding_dim}
         steering_angle:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: ${embedding_dim}
+          num_embeddings: ${steering_angle_bins}
           embedding_dim: ${embedding_dim}
         gas_pedal_diff: null
         brake_pedal_diff: null
@@ -277,7 +277,7 @@ objectives:
                 _args_:
                   - 2
                   - ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${gas_pedal_bins}
               bias: False
             brake_pedal:
               _target_: torch.nn.Linear
@@ -286,7 +286,7 @@ objectives:
                 _args_:
                   - 2
                   - ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${brake_pedal_bins}
               bias: False
             steering_angle:
               _target_: torch.nn.Linear
@@ -295,7 +295,7 @@ objectives:
                 _args_:
                   - 2
                   - ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${steering_angle_bins}
               bias: False
           discrete:
             turn_signal:
@@ -355,7 +355,7 @@ objectives:
                 _args_:
                   - 3
                   - ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${speed_bins}
               bias: False
 
       targets:
@@ -386,19 +386,19 @@ objectives:
             gas_pedal:
               _target_: torch.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${gas_pedal_bins}
               bias: False
 
             brake_pedal:
               _target_: torch.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${brake_pedal_bins}
               bias: False
 
             steering_angle:
               _target_: torch.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${steering_angle_bins}
               bias: False
 
           discrete:
@@ -442,19 +442,19 @@ objectives:
             gas_pedal_diff:
               _target_: torch.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${gas_pedal_bins}
               bias: False
 
             brake_pedal_diff:
               _target_: torch.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${brake_pedal_bins}
               bias: False
 
             steering_angle_diff:
               _target_: torch.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+              out_features: ${steering_angle_bins}
               bias: False
 
       targets:
