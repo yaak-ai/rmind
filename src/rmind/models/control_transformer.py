@@ -100,6 +100,12 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         self.lr_scheduler = lr_scheduler
 
+        self.speed_mask_token = torch.Tensor([512])
+
+        self.waypoint_mask_vector = torch.nn.Parameter(
+            torch.randn(2)
+        )  # mask for [x,y] coordinate
+
         self.save_hyperparameters(hparams)
 
     @override
@@ -168,6 +174,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
+        # add masks to pass it to episode_builder
+        batch['mask_token'] = {}
+        batch["mask_token"]["continuous"] = {}
+        batch["mask_token"]["context"] = {}
+        batch["mask_token"]["context"]["waypoints"] = self.waypoint_mask_vector
+        batch["mask_token"]["continuous"]["speed"] = self.speed_mask_token
+
         episode = self.episode_builder(batch)
 
         metrics = TensorDict({

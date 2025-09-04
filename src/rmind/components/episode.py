@@ -234,6 +234,7 @@ class EpisodeBuilder(Module):
         embeddings: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
+        modality_dropouts: dict[str, dict[str, float]] | None = None,  # fix
     ) -> None:
         super().__init__()
 
@@ -243,6 +244,7 @@ class EpisodeBuilder(Module):
         self.tokenizers = tokenizers
         self.embeddings = embeddings
         self.position_encoding = position_encoding
+        self.modality_dropouts = modality_dropouts
 
         if freeze is not None:
             if freeze is False and (
@@ -260,6 +262,27 @@ class EpisodeBuilder(Module):
     def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
+
+        for key, dropout_probability in tree_leaves_with_path(self.modality_dropouts):
+            if not batch.get("mask_token"):
+                # we are not in training mode
+                continue
+
+            token = key_get(input_tokens, key)
+            mask_token = key_get(batch["mask_token"], key)
+
+            # Generate random mask per sample in batch
+            batch_size = token.shape[0]
+            sample_mask = (
+                torch.rand(batch_size, device=token.device) < dropout_probability
+            )
+
+            masked_token = mask_token.expand(token.shape).to(
+                dtype=token.dtype, device=token.device
+            )
+            input_tokens[key[0].key][key[1].key] = torch.where(
+                sample_mask.view(-1, *([1] * (token.ndim - 1))), masked_token, token
+            )
 
         batch_size, device = mit.one({
             (leaf.shape[:2], leaf.device)

@@ -175,7 +175,7 @@ episode_builder:
       continuous:
         speed:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: ${speed_bins}
+          num_embeddings: ${speed_bins_with_mask}
           embedding_dim: ${embedding_dim}
         gas_pedal:
           _target_: rmind.components.nn.Embedding
@@ -248,6 +248,12 @@ episode_builder:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 24
         embedding_dim: ${embedding_dim}
+
+  modality_dropouts:
+    continuous:
+      speed: 0.25
+    context:
+      waypoints: 0.25
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
@@ -355,7 +361,7 @@ objectives:
                 _args_:
                   - 3
                   - ${embedding_dim}
-              out_features: ${speed_bins}
+              out_features: ${speed_bins_with_mask}
               bias: False
 
       targets:
