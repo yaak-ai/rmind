@@ -242,7 +242,7 @@ class ForwardDynamicsPredictionObjective(Objective):
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAssignmentType, reportAttributeAccessIssue]
         mask = AttentionMask(
-            mask=torch.full((length, length), legend.DO_NOT_ATTEND),
+            mask=torch.full((length, length), legend.DO_NOT_ATTEND.value),
             legend=legend,
             device="cpu",
         )

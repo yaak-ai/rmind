@@ -232,7 +232,7 @@ class RandomMaskedHindsightControlObjective(Objective):
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
         mask = AttentionMask(
-            mask=torch.full((length, length), legend.DO_ATTEND),
+            mask=torch.full((length, length), legend.DO_ATTEND.value),
             legend=legend,
             device=index.device,
         )

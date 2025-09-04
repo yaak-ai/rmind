@@ -266,7 +266,7 @@ def episode(episode_builder: EpisodeBuilder, batch_dict: TensorTree) -> Episode:
 def encoder() -> Module:
     return TransformerEncoder(
         dim_model=EMBEDDING_DIM,
-        num_heads=1,
+        num_heads=2,
         num_layers=1,
         attn_dropout=0.1,
         resid_dropout=0.1,
