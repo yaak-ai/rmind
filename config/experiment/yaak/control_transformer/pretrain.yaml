@@ -16,5 +16,3 @@ speed_bins: 512
 gas_pedal_bins: 255
 brake_pedal_bins: 165
 steering_angle_bins: 961
-
-speed_bins_with_mask: 513

@@ -175,7 +175,11 @@ episode_builder:
       continuous:
         speed:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: ${speed_bins_with_mask}
+          num_embeddings: 
+            _target_: operator.add
+            _args_:
+              - ${speed_bins}
+              - 1
           embedding_dim: ${embedding_dim}
         gas_pedal:
           _target_: rmind.components.nn.Embedding
@@ -255,7 +259,8 @@ episode_builder:
         _target_: rmind.components.episode.ModalityDropout
         mask:
           _target_: torch.Tensor
-          data: [512]
+          data: 
+            - ${speed_bins}
         probability: 0.25
     context:
       waypoints:
@@ -373,7 +378,11 @@ objectives:
                 _args_:
                   - 3
                   - ${embedding_dim}
-              out_features: ${speed_bins_with_mask}
+              out_features:
+                _target_: operator.add
+                _args_:
+                  - ${speed_bins}
+                  - 1
               bias: False
 
       targets:
