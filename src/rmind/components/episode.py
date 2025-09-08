@@ -76,9 +76,25 @@ class TokenMeta(NamedTuple):
     name: str
 
 
-class ModalityDropout(TensorClass):
-    mask: Tensor | torch.nn.Parameter  # pyright: ignore[reportUninitializedInstanceVariable]
-    probability: float  # pyright: ignore[reportUninitializedInstanceVariable]
+@final
+class ModalityDropout(Module):
+    def __init__(self, probability: float, mask_embedding_dim: int) -> None:
+        super().__init__()
+        self.probability = probability
+        self.mask_embedding_dim = mask_embedding_dim
+        self.mask_embedding = torch.nn.Parameter(torch.randn(mask_embedding_dim))
+
+    @override
+    def forward(self, embeddings: Tensor) -> Tensor:
+        mask = self.mask_embedding.expand(embeddings.shape).to(
+            dtype=embeddings.dtype, device=embeddings.device
+        )
+
+        sample_mask = (
+            torch.rand(embeddings.shape[0], device=embeddings.device) < self.probability
+        ).view(-1, *([1] * (embeddings.ndim - 1)))
+
+        return torch.where(sample_mask, mask, embeddings)
 
 
 class Index(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArguments]
@@ -237,9 +253,9 @@ class EpisodeBuilder(Module):
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
+        modality_dropouts: InstanceOf[ModuleDict] | None = None,
         position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
-        modality_dropouts: Any = None,
     ) -> None:
         super().__init__()
 
@@ -268,24 +284,6 @@ class EpisodeBuilder(Module):
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
-        for path, dropout in tree_leaves_with_path(
-            self.modality_dropouts, is_leaf=lambda x: isinstance(x, ModalityDropout)
-        ):
-            if batch["phase"] == "val":
-                break
-
-            token = key_get(input_tokens, path)
-            masked_token = dropout.mask.expand(token.shape).to(
-                dtype=token.dtype, device=token.device
-            )
-
-            sample_mask = (
-                torch.rand(token.shape[0], device=token.device) < dropout.probability
-            ).view(-1, *([1] * (token.ndim - 1)))
-
-            modality, name = [k.key for k in path]
-            input_tokens[modality][name] = torch.where(sample_mask, masked_token, token)
-
         batch_size, device = mit.one({
             (leaf.shape[:2], leaf.device)
             for leaf in tree_leaves(input_tokens)
@@ -298,6 +296,8 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
+        if batch["phase"] == "train":
+            input_embeddings = self.modality_dropouts(input_embeddings)
 
         index = self._build_index(input_embeddings)
         timestep_index = tree_map(itemgetter(0), index)

@@ -175,11 +175,7 @@ episode_builder:
       continuous:
         speed:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: 
-            _target_: operator.add
-            _args_:
-              - ${speed_bins}
-              - 1
+          num_embeddings: ${speed_bins}
           embedding_dim: ${embedding_dim}
         gas_pedal:
           _target_: rmind.components.nn.Embedding
@@ -219,6 +215,41 @@ episode_builder:
         num_embeddings: 3
         embedding_dim: ${embedding_dim}
 
+  modality_dropouts:
+    _target_: rmind.components.containers.ModuleDict
+    modules:
+      image:
+        _target_: rmind.components.episode.ModalityDropout
+        mask_embedding_dim: ${embedding_dim}
+        probability: 0.5
+
+      continuous:
+        speed:
+          _target_: rmind.components.episode.ModalityDropout
+          mask_embedding_dim: ${embedding_dim}
+          probability: 0.5
+        gas_pedal:
+          _target_: rmind.components.nn.Identity
+        brake_pedal:
+          _target_: rmind.components.nn.Identity
+        steering_angle:
+          _target_: rmind.components.nn.Identity
+        gas_pedal_diff: null
+        brake_pedal_diff: null
+        steering_angle_diff: null
+
+      discrete:
+        _target_: rmind.components.nn.Identity
+
+      context:
+        waypoints:
+          _target_: rmind.components.episode.ModalityDropout
+          mask_embedding_dim: ${embedding_dim}
+          probability: 0.5
+
+      special:
+        _target_: rmind.components.nn.Identity
+
   position_encoding:
     _target_: rmind.components.containers.ModuleDict
     modules:
@@ -253,24 +284,6 @@ episode_builder:
         num_embeddings: 24
         embedding_dim: ${embedding_dim}
 
-  modality_dropouts:
-    continuous:
-      speed:
-        _target_: rmind.components.episode.ModalityDropout
-        mask:
-          _target_: torch.Tensor
-          data: 
-            - ${speed_bins}
-        probability: 0.25
-    context:
-      waypoints:
-        _target_: rmind.components.episode.ModalityDropout
-        mask:
-          _target_: torch.nn.Parameter
-          data:
-            _target_: torch.randn
-            size: [2]
-        probability: 0.25
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
@@ -378,11 +391,7 @@ objectives:
                 _args_:
                   - 3
                   - ${embedding_dim}
-              out_features:
-                _target_: operator.add
-                _args_:
-                  - ${speed_bins}
-                  - 1
+              out_features: ${speed_bins}
               bias: False
 
       targets:

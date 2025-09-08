@@ -43,7 +43,7 @@ class SelectiveAdamW(AdamW):
                 case "bias" | "in_proj_bias":
                     weight_decay_param_blacklist.add(param_name)
 
-                case "waypoint_mask_vector":
+                case "mask_embedding":
                     weight_decay_param_blacklist.add(param_name)
 
                 # https://github.com/pytorch/pytorch/blob/v2.7.0/torch/nn/modules/activation.py#L1091
