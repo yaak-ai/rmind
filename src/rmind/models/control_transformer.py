@@ -100,6 +100,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         self.lr_scheduler = lr_scheduler
 
+        self.save_hyperparameters(hparams)
+
     @override
     @_restricted_classmethod
     def load_from_checkpoint(  # pyright: ignore[reportIncompatibleMethodOverride]

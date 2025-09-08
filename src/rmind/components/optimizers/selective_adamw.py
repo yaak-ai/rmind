@@ -27,15 +27,10 @@ class SelectiveAdamW(AdamW):
         submodules = dict(module.named_modules())
         params = dict(module.named_parameters())
         for param_name in params:
-            if "." in param_name:
-                submodule_name, param_type = param_name.rsplit(sep=".", maxsplit=1)
-            else:
-                submodule_name = ""
-                param_type = param_name
-
+            submodule_name, param_type = param_name.rsplit(sep=".", maxsplit=1)
             match param_type:
                 case "weight":
-                    if submodule_name and isinstance(
+                    if isinstance(
                         submodules[submodule_name], weight_decay_module_blacklist
                     ):
                         weight_decay_param_blacklist.add(param_name)

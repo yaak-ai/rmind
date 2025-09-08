@@ -264,8 +264,8 @@ class EpisodeBuilder(Module):
         self.input_transform = input_transform
         self.tokenizers = tokenizers
         self.embeddings = embeddings
-        self.position_encoding = position_encoding
         self.modality_dropouts = modality_dropouts
+        self.position_encoding = position_encoding
 
         if freeze is not None:
             if freeze is False and (
