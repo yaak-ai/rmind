@@ -76,6 +76,11 @@ class TokenMeta(NamedTuple):
     name: str
 
 
+class ModalityDropout(TensorClass):
+    mask: Tensor | torch.nn.Parameter  # pyright: ignore[reportUninitializedInstanceVariable]
+    probability: float  # pyright: ignore[reportUninitializedInstanceVariable]
+
+
 class Index(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArguments]
     image: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     continuous: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -234,7 +239,7 @@ class EpisodeBuilder(Module):
         embeddings: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
-        modality_dropouts: dict[str, dict[str, float]] | None = None,  # fix
+        modality_dropouts: Any = None,
     ) -> None:
         super().__init__()
 
@@ -263,26 +268,23 @@ class EpisodeBuilder(Module):
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
-        for key, dropout_probability in tree_leaves_with_path(self.modality_dropouts):
-            if not batch.get("mask_token"):
-                # we are not in training mode
-                continue
+        for path, dropout in tree_leaves_with_path(
+            self.modality_dropouts, is_leaf=lambda x: isinstance(x, ModalityDropout)
+        ):
+            if batch["phase"] == "val":
+                break
 
-            token = key_get(input_tokens, key)
-            mask_token = key_get(batch["mask_token"], key)
-
-            # Generate random mask per sample in batch
-            batch_size = token.shape[0]
-            sample_mask = (
-                torch.rand(batch_size, device=token.device) < dropout_probability
-            )
-
-            masked_token = mask_token.expand(token.shape).to(
+            token = key_get(input_tokens, path)
+            masked_token = dropout.mask.expand(token.shape).to(
                 dtype=token.dtype, device=token.device
             )
-            input_tokens[key[0].key][key[1].key] = torch.where(
-                sample_mask.view(-1, *([1] * (token.ndim - 1))), masked_token, token
-            )
+
+            sample_mask = (
+                torch.rand(token.shape[0], device=token.device) < dropout.probability
+            ).view(-1, *([1] * (token.ndim - 1)))
+
+            modality, name = [k.key for k in path]
+            input_tokens[modality][name] = torch.where(sample_mask, masked_token, token)
 
         batch_size, device = mit.one({
             (leaf.shape[:2], leaf.device)

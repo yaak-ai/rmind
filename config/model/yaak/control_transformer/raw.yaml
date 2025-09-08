@@ -251,9 +251,21 @@ episode_builder:
 
   modality_dropouts:
     continuous:
-      speed: 0.25
+      speed:
+        _target_: rmind.components.episode.ModalityDropout
+        mask:
+          _target_: torch.Tensor
+          data: [512]
+        probability: 0.25
     context:
-      waypoints: 0.25
+      waypoints:
+        _target_: rmind.components.episode.ModalityDropout
+        mask:
+          _target_: torch.nn.Parameter
+          data:
+            _target_: torch.randn
+            size: [2]
+        probability: 0.25
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
