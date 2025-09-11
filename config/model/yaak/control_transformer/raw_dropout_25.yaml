@@ -227,7 +227,7 @@ episode_builder:
         speed:
           _target_: rmind.components.episode.ModalityDropout
           mask_embedding_dim: ${embedding_dim}
-          probability: 0
+          probability: 0.25
         gas_pedal:
           _target_: rmind.components.nn.Identity
         brake_pedal:
@@ -245,7 +245,7 @@ episode_builder:
         waypoints:
           _target_: rmind.components.episode.ModalityDropout
           mask_embedding_dim: ${embedding_dim}
-          probability: 0
+          probability: 0.25
 
       special:
         _target_: rmind.components.nn.Identity
