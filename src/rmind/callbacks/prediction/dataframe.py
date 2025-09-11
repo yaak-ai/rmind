@@ -1,3 +1,4 @@
+import shutil
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal, final, override
@@ -82,3 +83,27 @@ class DataFramePredictionWriter(BasePredictionWriter):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         self._writer(df, path.resolve().as_posix())
+
+    @override
+    def on_predict_end(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
+        path_template = Path(self._path)
+        parent_dir = path_template.parent
+
+        if not parent_dir.exists():
+            return
+
+        pattern = path_template.name.replace("{batch_idx}", "*").replace(
+            "{dataloader_idx}", "*"
+        )
+        parquet_files = list(parent_dir.glob(pattern))
+
+        if not parquet_files:
+            return
+
+        plr.concat([plr.read_parquet(f) for f in sorted(parquet_files)]).write_parquet(
+            parent_dir.with_suffix(".parquet")
+        )
+
+        shutil.rmtree(parent_dir)
