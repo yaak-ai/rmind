@@ -35,7 +35,7 @@ callbacks:
       _target_: torchmetrics.functional.pairwise_cosine_similarity
       _partial_: true
   - _target_: rmind.callbacks.WandbWaypointsLogger
-    when: on_train_batch_end
+    when: on_validation_batch_end
     every_n_batch: 100
     key: waypoints
     crs: "EPSG:25832"

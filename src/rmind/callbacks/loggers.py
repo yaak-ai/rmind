@@ -6,17 +6,21 @@ from typing import Annotated, Any, final
 import contextily as ctx
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
+from contextily.tile import requests
 from einops import rearrange
 from pydantic import AfterValidator, validate_call
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.core.hooks import ModelHooks
 from pytorch_lightning.loggers import WandbLogger
+from structlog import get_logger
 from tensordict import TensorDict
 from torch import Tensor
 from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
 from wandb import Image
 
 from rmind.utils.pytree import key_get_default
+
+logger_ = get_logger(__name__)
 
 
 def _validate_hook(value: str) -> str:
@@ -71,12 +75,16 @@ class WandbImageParamLogger(Callback):
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        if trainer.sanity_checking or not (
-            loggers := [
-                logger
-                for logger in pl_module.loggers
-                if isinstance(logger, WandbLogger)
-            ]
+        if (
+            trainer.sanity_checking
+            or not (
+                loggers := [
+                    logger
+                    for logger in pl_module.loggers
+                    if isinstance(logger, WandbLogger)
+                ]
+            )
+            or not trainer.is_global_zero
         ):
             return
 
@@ -166,12 +174,16 @@ class WandbWaypointsLogger(Callback):
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        if trainer.sanity_checking or not (
-            loggers := [
-                logger
-                for logger in pl_module.loggers
-                if isinstance(logger, WandbLogger)
-            ]
+        if (
+            trainer.sanity_checking
+            or not (
+                loggers := [
+                    logger
+                    for logger in pl_module.loggers
+                    if isinstance(logger, WandbLogger)
+                ]
+            )
+            or not trainer.is_global_zero
         ):
             return
 
@@ -293,7 +305,11 @@ class WandbWaypointsLogger(Callback):
         ax.set_xlim(x_center - plot_range / 2, x_center + plot_range / 2)  # type: ignore[reportUnknownReturnType]
         ax.set_ylim(y_center - plot_range / 2, y_center + plot_range / 2)  # type: ignore[reportUnknownReturnType]
 
-        ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=crs)  # type: ignore[reportUnknownReturnType]
+        try:
+            ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=crs)  # type: ignore[reportUnknownReturnType]
+        except requests.exceptions.ConnectionError:
+            logger_.warning("Failed to load tiles for basemap")
+
         ax.set_axis_off()
         if ego_xy is not None:
             ego_xy = ego_xy.cpu()
