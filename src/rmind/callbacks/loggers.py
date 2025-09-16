@@ -20,7 +20,7 @@ from wandb import Image
 
 from rmind.utils.pytree import key_get_default
 
-logger_ = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 def _validate_hook(value: str) -> str:
@@ -79,9 +79,9 @@ class WandbImageParamLogger(Callback):
             trainer.sanity_checking
             or not (
                 loggers := [
-                    logger
-                    for logger in pl_module.loggers
-                    if isinstance(logger, WandbLogger)
+                    logger_
+                    for logger_ in pl_module.loggers
+                    if isinstance(logger_, WandbLogger)
                 ]
             )
             or not trainer.is_global_zero
@@ -107,8 +107,8 @@ class WandbImageParamLogger(Callback):
         if self._apply is not None:
             data = data.apply(self._apply, inplace=False)
 
-        for logger in loggers:
-            logger.log_image(
+        for logger_ in loggers:
+            logger_.log_image(
                 key=self._key,
                 images=[
                     Image(
@@ -178,9 +178,9 @@ class WandbWaypointsLogger(Callback):
             trainer.sanity_checking
             or not (
                 loggers := [
-                    logger
-                    for logger in pl_module.loggers
-                    if isinstance(logger, WandbLogger)
+                    logger_
+                    for logger_ in pl_module.loggers
+                    if isinstance(logger_, WandbLogger)
                 ]
             )
             or not trainer.is_global_zero
@@ -249,8 +249,10 @@ class WandbWaypointsLogger(Callback):
         if not log_images:
             return
 
-        for logger in loggers:
-            logger.log_image(key=self._key, images=log_images, step=trainer.global_step)
+        for logger_ in loggers:
+            logger_.log_image(
+                key=self._key, images=log_images, step=trainer.global_step
+            )
 
     @staticmethod
     def _plot_waypoints_normalized(
@@ -308,7 +310,7 @@ class WandbWaypointsLogger(Callback):
         try:
             ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=crs)  # type: ignore[reportUnknownReturnType]
         except requests.exceptions.ConnectionError:
-            logger_.warning("Failed to load tiles for basemap")
+            logger.warning("Failed to load tiles for basemap")
 
         ax.set_axis_off()
         if ego_xy is not None:
