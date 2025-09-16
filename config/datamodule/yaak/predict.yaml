@@ -6,8 +6,8 @@ _target_: rmind.datamodules.GenericDataModule
 predict:
   _target_: torch.utils.data.DataLoader
   shuffle: false
-  batch_size: 1
-  num_workers: 1
+  batch_size: 16
+  num_workers: 16
   pin_memory: false
   persistent_workers: true
   multiprocessing_context: forkserver

@@ -23,7 +23,7 @@ trainer:
       logger: ${rerun_logger}
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
-      path: predictions/${model.artifact}/${now:%Y-%m-%d--%H-%M-%S}/{batch_idx}.parquet
+      path: predictions/${model.artifact}/${now:%Y-%m-%d--%H-%M-%S}/{batch_idx:06}.parquet
       select:
         - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
         - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]

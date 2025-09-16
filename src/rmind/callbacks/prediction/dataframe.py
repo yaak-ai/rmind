@@ -1,3 +1,4 @@
+import shutil
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal, final, override
@@ -82,3 +83,11 @@ class DataFramePredictionWriter(BasePredictionWriter):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         self._writer(df, path.resolve().as_posix())
+
+    @override
+    def on_predict_end(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
+        parent_dir = Path(self._path).parent
+        plr.scan_parquet(parent_dir).sink_parquet(parent_dir.with_suffix(".parquet"))
+        shutil.rmtree(parent_dir)
