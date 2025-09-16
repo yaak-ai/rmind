@@ -53,17 +53,17 @@ def predict_dataset(batch: Batch) -> TensorDict:
 
 @pytest.fixture
 def train_dataloader(train_dataset: TensorDict) -> DataLoader[Any]:
-    return DataLoader(train_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # pyright: ignore[reportArgumentType]
+    return DataLoader(train_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # ty: ignore[invalid-argument-type]
 
 
 @pytest.fixture
 def val_dataloader(val_dataset: TensorDict) -> DataLoader[Any]:
-    return DataLoader(val_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # pyright: ignore[reportArgumentType]
+    return DataLoader(val_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # ty: ignore[invalid-argument-type]
 
 
 @pytest.fixture
 def predict_dataloader(predict_dataset: TensorDict) -> DataLoader[Any]:
-    return DataLoader(predict_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # pyright: ignore[reportArgumentType]
+    return DataLoader(predict_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # ty: ignore[invalid-argument-type]
 
 
 @pytest.fixture
@@ -109,10 +109,10 @@ def objectives(
 def optimizer() -> HydraConfig[Optimizer]:
     return HydraConfig[Optimizer](
         target="rmind.components.optimizers.SelectiveAdamW",
-        lr=1e-5,  # pyright: ignore[reportCallIssue]
-        betas=[0.9, 0.95],  # pyright: ignore[reportCallIssue]
-        weight_decay=0.1,  # pyright: ignore[reportCallIssue]
-        weight_decay_module_blacklist=[Embedding, LayerNorm],  # pyright: ignore[reportCallIssue]
+        lr=1e-5,  # ty: ignore[unknown-argument]
+        betas=[0.9, 0.95],  # ty: ignore[unknown-argument]
+        weight_decay=0.1,  # ty: ignore[unknown-argument]
+        weight_decay_module_blacklist=[Embedding, LayerNorm],  # ty: ignore[unknown-argument]
     )
 
 
@@ -155,7 +155,7 @@ def test_fit(
 def test_predict(
     trainer: pl.Trainer, model: pl.LightningModule, datamodule: pl.LightningDataModule
 ) -> None:
-    trainer.predict(model, datamodule=datamodule, return_predictions=False)  # pyright: ignore[reportUnusedCallResult]
+    trainer.predict(model, datamodule=datamodule, return_predictions=False)
 
 
 @pytest.mark.parametrize("model", [lf("model_yaak_control_transformer_raw")])

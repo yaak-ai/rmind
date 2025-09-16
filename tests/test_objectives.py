@@ -48,4 +48,4 @@ def test_predict(
     predictions = objective.predict(
         episode, result_keys=result_keys, tokenizers=tokenizers
     )
-    assert set(predictions.keys()).issubset(result_keys)  # pyright: ignore[reportArgumentType]
+    assert set(predictions.keys()).issubset(result_keys)

@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 class LogitBiasSetter(Callback):
     @override
     @validate_call
-    def on_fit_start(  # pyright: ignore[reportIncompatibleMethodOverride]
+    def on_fit_start(
         self, trainer: InstanceOf[pl.Trainer], pl_module: InstanceOf[ControlTransformer]
     ) -> None:
         objectives = pl_module.objectives
@@ -43,7 +43,7 @@ class LogitBiasSetter(Callback):
             return
 
         keypaths, _ = tree_flatten_with_path(
-            pl_module.episode_builder.input_transform[0].paths,  # pyright: ignore[reportIndexIssue, reportAttributeAccessIssue]
+            pl_module.episode_builder.input_transform[0].paths,
             is_leaf=lambda x: isinstance(x, tuple),
         )
         loss_keypaths = {keypath for (_, keypath, _) in losses}
@@ -56,9 +56,9 @@ class LogitBiasSetter(Callback):
         if trainer.train_dataloader is None:
             trainer.fit_loop.setup_data()
 
-        match dataset := trainer.train_dataloader.dataset:  # pyright: ignore[reportOptionalMemberAccess]
+        match dataset := trainer.train_dataloader.dataset:
             case rbyte.Dataset():
-                batch = dataset.get_batch(slice(-1), keys=batch_keys).to_tensordict()  # pyright: ignore[reportArgumentType]
+                batch = dataset.get_batch(slice(-1), keys=batch_keys).to_tensordict()
 
             case TensorDict() | TensorClass():  # used in tests
                 batch = dataset.select(*batch_keys).to_tensordict()
@@ -67,7 +67,7 @@ class LogitBiasSetter(Callback):
                 raise NotImplementedError
 
         with torch.inference_mode():
-            input = pl_module.episode_builder.input_transform(  # pyright: ignore[reportCallIssue]
+            input = pl_module.episode_builder.input_transform(
                 batch.to(device=pl_module.device).to_dict()
             )
             input = tree_map(
@@ -78,7 +78,7 @@ class LogitBiasSetter(Callback):
                 else None,
                 input,
             )
-            labels = pl_module.episode_builder.tokenizers(input)  # pyright: ignore[reportCallIssue]
+            labels = pl_module.episode_builder.tokenizers(input)
 
         for objective_key, loss_keypath, loss in losses:
             logger.debug(

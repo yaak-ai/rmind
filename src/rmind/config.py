@@ -35,4 +35,4 @@ class HydraConfig[T](BaseModel):
 
     @field_serializer("target", when_used="always")
     def serialize_target(self, target: Any, _info: SerializationInfo) -> str:  # noqa: PLR6301
-        return ImportString._serialize(target)  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
+        return ImportString._serialize(target)  # noqa: SLF001
