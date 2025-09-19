@@ -1,4 +1,3 @@
-import itertools
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
 from typing import final, override
@@ -228,7 +227,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         return episode, mask_action_timestep
 
     @classmethod
-    def build_attention_mask(
+    def build_attention_mask(  # noqa: PLR0914
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
@@ -272,14 +271,25 @@ class RandomMaskedHindsightControlObjective(Objective):
                 .do_not_attend(current_action_summary, future_action_summary)
             )
 
-        for modality_i, modality_j in itertools.permutations(
-            timestep.get(TokenType.OBSERVATION).keys(
-                include_nested=True, leaves_only=True
-            ),
-            2,
-        ):
+        observation_summary = index.select((
+            Modality.SPECIAL,
+            SpecialToken.OBSERVATION_SUMMARY,
+        ))
+        observation_history = index.select((
+            Modality.SPECIAL,
+            SpecialToken.OBSERVATION_HISTORY,
+        ))
+        observation_keys = timestep.get(TokenType.OBSERVATION).keys(
+            include_nested=True, leaves_only=True
+        )
+        for modality_i in observation_keys:
             mask = mask.do_not_attend(
-                index.select(modality_i), index.select(modality_j)
-            )
+                index.select(modality_i), observation_summary
+            ).do_not_attend(index.select(modality_i), observation_history)
+            for modality_j in observation_keys:
+                if modality_i != modality_j:
+                    mask = mask.do_not_attend(
+                        index.select(modality_i), index.select(modality_j)
+                    )
 
         return mask
