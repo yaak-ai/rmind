@@ -203,7 +203,9 @@ class PolicyObjective(Objective):
         result = {}
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
-            result[result_key] = episode.input.select(*self.heads.tree_paths())
+            result[result_key] = episode.input.select(*self.heads.tree_paths()).squeeze(
+                -1
+            )
 
         if result_keys & {
             PredictionResultKey.PREDICTION_VALUE,
