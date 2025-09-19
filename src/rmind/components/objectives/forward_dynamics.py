@@ -1,3 +1,4 @@
+import itertools
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
 from typing import final, override
@@ -282,6 +283,16 @@ class ForwardDynamicsPredictionObjective(Objective):
                 .do_not_attend(current_observation_summary, current_action_summary)
                 .do_not_attend(current_observation_history, current_actions)
                 .do_not_attend(current_observation_history, current_action_summary)
+            )
+
+        for modality_i, modality_j in itertools.permutations(
+            timestep.get(TokenType.OBSERVATION).keys(
+                include_nested=True, leaves_only=True
+            ),
+            2,
+        ):
+            mask = mask.do_not_attend(
+                index.select(modality_i), index.select(modality_j)
             )
 
         return mask
