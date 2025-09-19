@@ -4,7 +4,7 @@ from typing import Any, Literal, final, override
 import pytorch_lightning as pl
 from pydantic import InstanceOf, validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
-from rbyte.viz.loggers import RerunLogger
+from rbyte.viz.loggers import RerunLogger  # ty: ignore[possibly-unbound-import]
 from tensordict import TensorDict
 
 

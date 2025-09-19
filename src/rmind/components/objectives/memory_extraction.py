@@ -66,7 +66,7 @@ class MemoryExtractionObjective(Objective):
 
         embedding = self.encoder(
             src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-        )  # pyright: ignore[reportOptionalCall]
+        )
 
         features = (
             episode.index[1:]
@@ -84,7 +84,7 @@ class MemoryExtractionObjective(Objective):
             is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+        losses = self.losses(
             tree_map(Rearrange("b t 1 d -> (b t) d"), logits),
             tree_map(Rearrange("b t -> (b t)"), targets),
         )
@@ -122,7 +122,7 @@ class MemoryExtractionObjective(Objective):
 
             embedding = self.encoder(
                 src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # pyright: ignore[reportOptionalCall]
+            )
 
             features = (
                 episode.index[1:]
@@ -137,16 +137,16 @@ class MemoryExtractionObjective(Objective):
 
             if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                    logits.apply(lambda x: x.argmax(dim=-1))  # ty: ignore[possibly-unbound-attribute]
+                    .named_apply(
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty: ignore[call-non-callable, possibly-unbound-attribute]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # ty: ignore[possibly-unbound-attribute]
                     timestep_padder, batch_size=[b, t]
                 )
 

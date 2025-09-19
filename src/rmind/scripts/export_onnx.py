@@ -26,7 +26,7 @@ class Config:
 @hydra.main(version_base=None)
 @torch.inference_mode()
 def main(cfg: DictConfig) -> None:
-    config = Config(**OmegaConf.to_container(cfg, resolve=True))  # pyright: ignore[reportCallIssue]
+    config = Config(**OmegaConf.to_container(cfg, resolve=True))  # ty: ignore[missing-argument]
 
     logger.debug("instantiating", target=config.model.target)
     args = instantiate(config.args, _recursive_=True, _convert_="all")

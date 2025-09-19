@@ -37,7 +37,7 @@ class Sequential(nn.Sequential, Invertible):
     @override
     def invert(self, input: Tensor) -> Tensor:
         for module in reversed(self):
-            input = module.invert(input)  # pyright: ignore[reportCallIssue]
+            input = module.invert(input)
         return input
 
 

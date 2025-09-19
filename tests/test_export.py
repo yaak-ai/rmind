@@ -46,7 +46,7 @@ def policy_mask(episode: Episode) -> Tensor:
     return PolicyObjective.build_attention_mask(
         episode.index,
         episode.timestep,
-        legend=TorchAttentionMaskLegend,  # pyright: ignore[reportArgumentType]
+        legend=TorchAttentionMaskLegend,  # ty: ignore[invalid-argument-type]
     ).mask
 
 
@@ -83,7 +83,7 @@ def control_transformer(
 @pytest.fixture(
     scope="module", params=["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 )
-def device(request) -> torch.device:  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]  # noqa: ANN001
+def device(request) -> torch.device:  # noqa: ANN001
     return torch.device(request.param)
 
 
@@ -181,7 +181,7 @@ def test_torch_export_fake(
 def test_torch_export(module: Module, args: tuple[Any], device: DeviceLikeType) -> None:
     module = module.eval().to(device)
     args = tree_map_only(Tensor, lambda x: x.to(device), args)
-    torch.export.export(module, args=args, strict=True)  # pyright: ignore[reportUnusedCallResult]
+    torch.export.export(module, args=args, strict=True)
 
 
 @pytest.mark.parametrize(
@@ -191,7 +191,7 @@ def test_torch_export(module: Module, args: tuple[Any], device: DeviceLikeType) 
 def test_onnx_export(module: Module, args: tuple[Any]) -> None:
     module = module.eval()
     exported_program = torch.export.export(module, args=args, strict=True)
-    torch.onnx.export(  # pyright: ignore[reportUnusedCallResult]
+    torch.onnx.export(
         model=exported_program,
         external_data=False,
         dynamo=True,
