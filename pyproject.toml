@@ -28,7 +28,7 @@ dependencies = [
   "rbyte[geo,jpeg,yaak]==0.30.0",
   "structlog>=25.2.0",
   "tensordict>=0.9.1",
-  "torch>=2.8.0",
+  "torch>=2.7.0",
   "torchaudio",
   "torchvision",
 ]
