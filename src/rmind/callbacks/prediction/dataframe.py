@@ -44,6 +44,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
         self._writer = writer
         self._select = select
         self._separator = separator
+        self._written_paths: list[str] = []
 
     @override
     def write_on_batch_end(
@@ -83,11 +84,18 @@ class DataFramePredictionWriter(BasePredictionWriter):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         self._writer(df, path.resolve().as_posix())
+        if path.exists():
+            self._written_paths.append(path.resolve().as_posix())
 
     @override
     def on_predict_end(
         self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
-        parent_dir = Path(self._path).parent
-        plr.scan_parquet(parent_dir).sink_parquet(parent_dir.with_suffix(".parquet"))
+        if not self._written_paths:
+            return
+
+        parent_dir = Path(self._written_paths[0]).parent
+        plr.scan_parquet(self._written_paths).sink_parquet(
+            parent_dir.with_suffix(".parquet")
+        )
         shutil.rmtree(parent_dir)
