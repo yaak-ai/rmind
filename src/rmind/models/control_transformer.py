@@ -246,7 +246,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 tokenizers=self.episode_builder.tokenizers,
             )
             for name, objective in self.objectives.items()
-        })
+        }).auto_batch_size_(1)
 
     @override
     def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
