@@ -130,7 +130,6 @@ class PolicyObjective(Objective):
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
-                    (Modality.CONTEXT, "waypoints"),
                 )
                 .parse(embedding)
             )
@@ -144,10 +143,6 @@ class PolicyObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
-
-            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                dim=1, keepdim=True
-            )
 
         else:
             observation_summary = embedding[
@@ -164,13 +159,8 @@ class PolicyObjective(Objective):
                 ][-1],
             ]
 
-            waypoints = embedding[
-                :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # pyright: ignore[reportArgumentType]
-            ].mean(dim=1, keepdim=True)
-
         features = rearrange(
-            [observation_summary, observation_history.detach(), waypoints],
-            "i b 1 d -> b 1 (i d)",
+            [observation_summary, observation_history.detach()], "i b 1 d -> b 1 (i d)"
         )
 
         return self.heads(features)
@@ -233,7 +223,6 @@ class PolicyObjective(Objective):
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
-                    (Modality.CONTEXT, "waypoints"),
                 )
                 .parse(embedding)
             )
@@ -248,12 +237,12 @@ class PolicyObjective(Objective):
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
 
-            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                dim=1, keepdim=True
-            )
-
             features = rearrange(
-                [observation_summary, observation_history, waypoints],
+                [
+                    observation_summary,
+                    observation_history,
+                    # waypoints
+                ],
                 "i b 1 d -> b 1 (i d)",
             )
 

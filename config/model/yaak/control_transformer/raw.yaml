@@ -215,6 +215,42 @@ episode_builder:
         num_embeddings: 3
         embedding_dim: ${embedding_dim}
 
+  modality_dropouts:
+    _target_: rmind.components.containers.ModuleDict
+    modules:
+      image:
+        _target_: rmind.components.episode.ModalityDropout
+        mask_embedding_dim: ${embedding_dim}
+        probability: 0
+
+      continuous:
+        speed:
+          _target_: rmind.components.episode.ModalityDropout
+          mask_embedding_dim: ${embedding_dim}
+          probability: 0.25
+        gas_pedal:
+          _target_: rmind.components.nn.Identity
+        brake_pedal:
+          _target_: rmind.components.nn.Identity
+        steering_angle:
+          _target_: rmind.components.nn.Identity
+        gas_pedal_diff: null
+        brake_pedal_diff: null
+        steering_angle_diff: null
+
+      discrete:
+        _target_: rmind.components.nn.Identity
+
+      context:
+        waypoints:
+          _target_: rmind.components.episode.ModalityDropout
+          mask_embedding_dim: ${embedding_dim}
+          probability: 0.25
+
+      special:
+        _target_: rmind.components.nn.Identity
+
+
   position_encoding:
     _target_: rmind.components.containers.ModuleDict
     modules:
