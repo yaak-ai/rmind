@@ -168,6 +168,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
+        batch["phase"] = "train"
         episode = self.episode_builder(batch)
 
         metrics = TensorDict({
@@ -206,6 +207,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
+        batch["phase"] = "val"
         episode = self.episode_builder(batch)
         metrics = TensorDict({
             name: objective.compute_metrics(episode)  # pyright: ignore[reportCallIssue]
@@ -229,6 +231,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
+        batch["phase"] = "predict"
         episode = self.episode_builder(batch)
 
         return TensorDict({
