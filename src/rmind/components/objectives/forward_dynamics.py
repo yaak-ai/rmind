@@ -74,31 +74,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             .keys(include_nested=True, leaves_only=True)
         ).parse(embedding)
 
-        observation_summary = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
-
-        action_summary = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
-
-        features: TensorDict = observations.apply(
-            # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
-            lambda obs: pack(
-                [
-                    obs,
-                    observation_summary.broadcast_to(obs.shape),
-                    action_summary.broadcast_to(obs.shape),
-                ],
-                "b t p *",
-            )[0]
-        )
-
-        logits = self.heads(features.to_dict())
+        logits = self.heads(observations.to_dict())
 
         targets = tree_map(
             lambda k: episode.get(k)[:, 1:],
@@ -255,6 +231,11 @@ class ForwardDynamicsPredictionObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
+            past_observations = past.select(
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
             current_observation_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
@@ -278,10 +259,24 @@ class ForwardDynamicsPredictionObjective(Objective):
                 .do_attend(current, past)
                 .do_not_attend(current_observations, current_actions)
                 .do_not_attend(current_observations, current_action_summary)
+                .do_not_attend(current_observations, current_observation_summary)
+                .do_not_attend(current_observations, current_observation_history)
+                .do_not_attend(past_observations, current_observation_summary)
+                .do_not_attend(past_observations, current_observation_history)
                 .do_not_attend(current_observation_summary, current_actions)
                 .do_not_attend(current_observation_summary, current_action_summary)
                 .do_not_attend(current_observation_history, current_actions)
                 .do_not_attend(current_observation_history, current_action_summary)
             )
+
+            # Only attend to Image modality
+            for modality in timestep.get(TokenType.OBSERVATION):
+                if modality != Modality.IMAGE:
+                    mask = mask.do_not_attend(
+                        current_observation_summary, index.select(modality)
+                    )
+                    mask = mask.do_not_attend(
+                        current_observation_history, index.select(modality)
+                    )
 
         return mask

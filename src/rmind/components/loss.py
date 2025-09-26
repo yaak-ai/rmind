@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Any, override
+from typing import Any, final, override
 
 import torch
 import torch.nn.functional as F
@@ -90,3 +90,50 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         var = self.var_pos_function(log_var)
 
         return super().forward(input=mean, target=target, var=var)
+
+
+@final
+class SoftCLIPLoss(Module):
+    def __init__(
+        self,
+        temp_pred: float = 0.1,
+        temp_soft: float = 0.01,
+        reduction: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.temp_pred = temp_pred
+        self.temp_soft = temp_soft
+        self.reduction = reduction
+
+    @override
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        input, target: [M, D] where M = B * T * N
+          - Already flattened batch, timesteps, and tokens.
+          - D = embedding dimension
+        Returns: scalar loss
+        """
+        # Normalize embeddings
+        input = F.normalize(input, dim=-1)
+        target = F.normalize(target, dim=-1)
+
+        # [M, M] similarity between input and target
+        logits = input @ target.T / self.temp_pred
+        log_probs = F.log_softmax(logits, dim=-1)
+
+        # Soft labels from target-target similarities
+        sim_tt = target @ target.T / self.temp_soft
+        soft_targets = F.softmax(sim_tt, dim=-1).detach()
+
+        # Cross-entropy with soft labels
+        loss_i = -(soft_targets * log_probs).sum(dim=-1).mean()
+
+        # Target->input direction
+        logits_t = target @ input.T / self.temp_pred
+        log_probs_t = F.log_softmax(logits_t, dim=-1)
+
+        sim_pp = input @ input.T / self.temp_soft
+        soft_targets_t = F.softmax(sim_pp, dim=-1).detach()
+
+        loss_t = -(soft_targets_t * log_probs_t).sum(dim=-1).mean()
+        return (loss_i + loss_t) / 2

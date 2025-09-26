@@ -272,39 +272,23 @@ objectives:
           continuous:
             gas_pedal:
               _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
+              in_features: ${embedding_dim}
               out_features: ${gas_pedal_bins}
               bias: False
             brake_pedal:
               _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
+              in_features: ${embedding_dim}
               out_features: ${brake_pedal_bins}
               bias: False
             steering_angle:
               _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
+              in_features: ${embedding_dim}
               out_features: ${steering_angle_bins}
               bias: False
           discrete:
             turn_signal:
               _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${embedding_dim}
+              in_features: ${embedding_dim}
               out_features: 3
               bias: False
 
@@ -338,23 +322,14 @@ objectives:
         modules:
           image:
             cam_front_left:
-              _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 3
-                  - ${embedding_dim}
+              _target_: torch.nn.Identity
+              in_features: ${embedding_dim}
               out_features: ${embedding_dim}
-              bias: False
 
           continuous:
             speed:
               _target_: torch.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 3
-                  - ${embedding_dim}
+              in_features: ${embedding_dim}
               out_features: ${speed_bins}
               bias: False
 
@@ -369,7 +344,7 @@ objectives:
         modules:
           image:
             cam_front_left:
-              _target_: torch.nn.MSELoss
+              _target_: rmind.components.loss.SoftCLIPLoss
               reduction: mean
 
           continuous:
