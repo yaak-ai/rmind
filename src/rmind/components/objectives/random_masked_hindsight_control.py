@@ -245,6 +245,21 @@ class RandomMaskedHindsightControlObjective(Objective):
         for step in range(t):
             past, current, future = index[:step], index[step], index[step + 1 :]
             current_actions = current.select(*action_keys)
+            past_observations = past.select(
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
+            current_observations = current.select(
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
+            future_observations = future.select(
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
             current_action_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
@@ -259,9 +274,23 @@ class RandomMaskedHindsightControlObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
+            current_observation_summary = current.select((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            ))
+            current_observation_history = current.select((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_HISTORY,
+            ))
 
             mask = (
                 mask.do_not_attend(current_actions, past_actions)
+                .do_not_attend(past_observations, current_observation_summary)
+                .do_not_attend(past_observations, current_observation_history)
+                .do_not_attend(current_observations, current_observation_summary)
+                .do_not_attend(current_observations, current_observation_history)
+                .do_not_attend(future_observations, current_observation_summary)
+                .do_not_attend(future_observations, current_observation_history)
                 .do_not_attend(current_actions, past_action_summary)
                 .do_not_attend(current_actions, future_actions)
                 .do_not_attend(current_actions, future_action_summary)
@@ -270,5 +299,17 @@ class RandomMaskedHindsightControlObjective(Objective):
                 .do_not_attend(current_action_summary, future_actions)
                 .do_not_attend(current_action_summary, future_action_summary)
             )
+
+            # Only attend to Image modality
+            for modality in timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                ):
+                if modality is not Modality.Image:
+                    mask = mask.do_not_attend(
+                        current_observation_summary, index.select(modality)
+                    )
+                    mask = mask.do_not_attend(
+                        current_observation_history, index.select(modality)
+                    )
 
         return mask

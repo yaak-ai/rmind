@@ -92,38 +92,43 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         return super().forward(input=mean, target=target, var=var)
 
 class SoftCLIPLoss(Module):
-    def __init__(self, temp_pred: float = 0.1, temp_soft: float = 0.01, symmetric: bool = True):
+    def __init__(self, temp_pred: float = 0.1, temp_soft: float = 0.01, symmetric: bool = True, reduction: str | None = None):
 
         super().__init__()
         self.temp_pred = temp_pred
         self.temp_soft = temp_soft
         self.symmetric = symmetric
+        self.reduction = reduction
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
-        pred, target: [B, N, D] (batch, tokens, dim)
+        input, target: [B, N, D] (batch, tokens, dim)
         Returns scalar loss
         """
-        B, N, D = pred.shape
-        pred = F.normalize(pred, dim=-1)
+        B, N, D = input.shape
+        input = F.normalize(input, dim=-1)
         target = F.normalize(target, dim=-1)
 
-        logits = torch.einsum("bnd,bmd->bnm", pred, target) / self.temp_pred
+        logits = torch.einsum("bnd,bmd->bnm", input, target) / self.temp_pred
         log_probs = F.log_softmax(logits, dim=-1)
 
         sim_tt = torch.einsum("bnd,bmd->bnm", target, target) / self.temp_soft
         soft_targets = F.softmax(sim_tt, dim=-1).detach()
 
         loss_i = -(soft_targets * log_probs).sum(dim=-1).mean()
+        loss = loss_i
 
         if self.symmetric:
-            logits_t = torch.einsum("bnd,bmd->bnm", target, pred) / self.temp_pred
+            logits_t = torch.einsum("bnd,bmd->bnm", target, input) / self.temp_pred
             log_probs_t = F.log_softmax(logits_t, dim=-1)
 
-            sim_pp = torch.einsum("bnd,bmd->bnm", pred, pred) / self.temp_soft
+            sim_pp = torch.einsum("bnd,bmd->bnm", input, input) / self.temp_soft
             soft_targets_t = F.softmax(sim_pp, dim=-1).detach()
 
             loss_t = -(soft_targets_t * log_probs_t).sum(dim=-1).mean()
-            return (loss_i + loss_t) / 2
+            loss = (loss_i + loss_t) / 2
 
-        return loss_i
+        if self.reduction:
+            loss = loss.mean()
+
+        return loss
