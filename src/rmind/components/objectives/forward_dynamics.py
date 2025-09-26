@@ -270,10 +270,8 @@ class ForwardDynamicsPredictionObjective(Objective):
             )
 
             # Only attend to Image modality
-            for modality in timestep.get(TokenType.OBSERVATION).keys(
-                include_nested=True, leaves_only=True
-            ):
-                if modality is not Modality.IMAGE:
+            for modality in timestep.get(TokenType.OBSERVATION):
+                if modality != Modality.IMAGE:
                     mask = mask.do_not_attend(
                         current_observation_summary, index.select(modality)
                     )
