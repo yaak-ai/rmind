@@ -3,7 +3,6 @@ from functools import lru_cache
 from typing import final, override
 
 import torch
-import itertools as it
 from einops import pack
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
@@ -272,9 +271,9 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             # Only attend to Image modality
             for modality in timestep.get(TokenType.OBSERVATION).keys(
-                    include_nested=True, leaves_only=True
-                ):
-                if modality is not Modality.Image:
+                include_nested=True, leaves_only=True
+            ):
+                if modality is not Modality.IMAGE:
                     mask = mask.do_not_attend(
                         current_observation_summary, index.select(modality)
                     )

@@ -227,7 +227,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         return episode, mask_action_timestep
 
     @classmethod
-    def build_attention_mask(
+    def build_attention_mask(  # noqa: PLR0914
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
@@ -302,9 +302,9 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             # Only attend to Image modality
             for modality in timestep.get(TokenType.OBSERVATION).keys(
-                    include_nested=True, leaves_only=True
-                ):
-                if modality is not Modality.Image:
+                include_nested=True, leaves_only=True
+            ):
+                if modality is not Modality.IMAGE:
                     mask = mask.do_not_attend(
                         current_observation_summary, index.select(modality)
                     )
