@@ -285,15 +285,15 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             mask = (
                 mask.do_not_attend(current_actions, past_actions)
+                .do_not_attend(current_actions, past_action_summary)
+                .do_not_attend(current_actions, future_actions)
+                .do_not_attend(current_actions, future_action_summary)
                 .do_not_attend(past_observations, current_observation_summary)
                 .do_not_attend(past_observations, current_observation_history)
                 .do_not_attend(current_observations, current_observation_summary)
                 .do_not_attend(current_observations, current_observation_history)
                 .do_not_attend(future_observations, current_observation_summary)
                 .do_not_attend(future_observations, current_observation_history)
-                .do_not_attend(current_actions, past_action_summary)
-                .do_not_attend(current_actions, future_actions)
-                .do_not_attend(current_actions, future_action_summary)
                 .do_not_attend(current_action_summary, past_actions)
                 .do_not_attend(current_action_summary, past_action_summary)
                 .do_not_attend(current_action_summary, future_actions)
