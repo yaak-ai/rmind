@@ -221,12 +221,22 @@ episode_builder:
       image:
         _target_: rmind.components.episode.ModalityDropout
         mask_embedding_dim: ${embedding_dim}
+        weight_init_fn:
+          _partial_: true
+          _target_: torch.nn.functional.normalize
+          p: 2
+          dim: -1
         probability: 0
 
       continuous:
         speed:
           _target_: rmind.components.episode.ModalityDropout
           mask_embedding_dim: ${embedding_dim}
+          weight_init_fn:
+            _partial_: true
+            _target_: torch.nn.init.normal_
+            mean: 0.0
+            std: 0.02
           probability: 0.25
         gas_pedal:
           _target_: rmind.components.nn.Identity
@@ -245,6 +255,11 @@ episode_builder:
         waypoints:
           _target_: rmind.components.episode.ModalityDropout
           mask_embedding_dim: ${embedding_dim}
+          weight_init_fn:
+            _partial_: true
+            _target_: torch.nn.functional.normalize
+            p: 2
+            dim: -1
           probability: 0.25
 
       special:

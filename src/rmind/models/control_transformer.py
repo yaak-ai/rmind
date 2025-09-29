@@ -1,5 +1,4 @@
 from collections.abc import Callable, Mapping, Sequence
-from enum import StrEnum, auto
 from typing import Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
@@ -46,12 +45,6 @@ class LRSchedulerHydraConfig(BaseModel):
 
     interval: Literal["epoch", "step"]
     scheduler: HydraConfig[LRScheduler]
-
-
-class Phase(StrEnum):
-    TRAIN = auto()
-    VAL = auto()
-    PREDICT = auto()
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -175,7 +168,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
-        episode = self.episode_builder(batch, phase=Phase.TRAIN)
+        episode = self.episode_builder(batch)
 
         metrics = TensorDict({
             name: objective.compute_metrics(episode)  # pyright: ignore[reportCallIssue]
@@ -213,7 +206,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
-        episode = self.episode_builder(batch, phase=Phase.VAL)
+        episode = self.episode_builder(batch)
         metrics = TensorDict({
             name: objective.compute_metrics(episode)  # pyright: ignore[reportCallIssue]
             for name, objective in self.objectives.items()
@@ -236,7 +229,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
-        episode = self.episode_builder(batch, phase=Phase.PREDICT)
+        episode = self.episode_builder(batch)
 
         return TensorDict({
             name: objective.predict(  # pyright: ignore[reportCallIssue]

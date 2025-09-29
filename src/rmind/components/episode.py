@@ -33,7 +33,6 @@ from torch.utils._pytree import (
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.models.control_transformer import Phase
 from rmind.utils.pytree import tree_paths, unflatten_keys
 
 logger = get_logger(__name__)
@@ -155,14 +154,25 @@ TimestepExport = dict[str, dict[tuple[Modality, str], int]]
 
 @final
 class ModalityDropout(Module):
-    def __init__(self, probability: float, mask_embedding_dim: int) -> None:
+    def __init__(
+        self,
+        probability: float,
+        mask_embedding_dim: int,
+        weight_init_fn: Callable[[Tensor], Any] | None = None,
+    ) -> None:
         super().__init__()
         self.probability = probability
         self.mask_embedding_dim = mask_embedding_dim
         self.mask_embedding = torch.nn.Parameter(torch.randn(mask_embedding_dim))
 
+        if weight_init_fn is not None:
+            self.mask_embedding.data = weight_init_fn(self.mask_embedding)
+
     @override
     def forward(self, embeddings: Tensor) -> Tensor:
+        if not self.training:
+            return embeddings
+
         mask = self.mask_embedding.expand(embeddings.shape).to(
             dtype=embeddings.dtype, device=embeddings.device
         )
@@ -281,7 +291,7 @@ class EpisodeBuilder(Module):
             self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
-    def forward(self, batch: TensorTree, phase: Phase) -> Episode | EpisodeExport:
+    def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
@@ -297,8 +307,7 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
-        if phase == Phase.TRAIN:
-            input_embeddings = self.modality_dropouts(input_embeddings)
+        input_embeddings = self.modality_dropouts(input_embeddings)
 
         index = self._build_index(input_embeddings)
         timestep_index = tree_map(itemgetter(0), index)

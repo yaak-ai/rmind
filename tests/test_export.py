@@ -58,11 +58,11 @@ def policy_objective(encoder: Module, policy_mask: Tensor) -> PolicyObjective:
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(1536, [512, 2], bias=False),
-                    "brake_pedal": MLP(1536, [512, 2], bias=False),
-                    "steering_angle": MLP(1536, [512, 2], bias=False),
+                    "gas_pedal": MLP(1024, [512, 2], bias=False),
+                    "brake_pedal": MLP(1024, [512, 2], bias=False),
+                    "steering_angle": MLP(1024, [512, 2], bias=False),
                 },
-                Modality.DISCRETE: {"turn_signal": MLP(1536, [512, 3], bias=False)},
+                Modality.DISCRETE: {"turn_signal": MLP(1024, [512, 3], bias=False)},
             }
         ),
     )

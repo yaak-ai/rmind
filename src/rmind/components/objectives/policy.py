@@ -238,12 +238,7 @@ class PolicyObjective(Objective):
             ))
 
             features = rearrange(
-                [
-                    observation_summary,
-                    observation_history,
-                    # waypoints
-                ],
-                "i b 1 d -> b 1 (i d)",
+                [observation_summary, observation_history], "i b 1 d -> b 1 (i d)"
             )
 
             logits = TensorDict(self.heads(features), batch_size=[b, 1])
