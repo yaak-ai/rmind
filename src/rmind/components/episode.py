@@ -152,6 +152,38 @@ register_pytree_node(
 TimestepExport = dict[str, dict[tuple[Modality, str], int]]
 
 
+@final
+class ModalityDropout(Module):
+    def __init__(
+        self,
+        probability: float,
+        mask_embedding_dim: int,
+        weight_init_fn: Callable[[Tensor], Any] | None = None,
+    ) -> None:
+        super().__init__()
+        self.probability = probability
+        self.mask_embedding_dim = mask_embedding_dim
+        self.mask_embedding = torch.nn.Parameter(torch.randn(mask_embedding_dim))
+
+        if weight_init_fn is not None:
+            self.mask_embedding.data = weight_init_fn(self.mask_embedding)
+
+    @override
+    def forward(self, embeddings: Tensor) -> Tensor:
+        if not self.training:
+            return embeddings
+
+        mask = self.mask_embedding.expand(embeddings.shape).to(
+            dtype=embeddings.dtype, device=embeddings.device
+        )
+
+        sample_mask = (
+            torch.rand(embeddings.shape[0], device=embeddings.device) < self.probability
+        ).view(-1, *([1] * (embeddings.ndim - 1)))
+
+        return torch.where(sample_mask, mask, embeddings)
+
+
 class Episode(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArguments]
     input: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_tokens: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -232,6 +264,7 @@ class EpisodeBuilder(Module):
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
+        modality_dropouts: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
     ) -> None:
@@ -242,6 +275,7 @@ class EpisodeBuilder(Module):
         self.input_transform = input_transform
         self.tokenizers = tokenizers
         self.embeddings = embeddings
+        self.modality_dropouts = modality_dropouts
         self.position_encoding = position_encoding
 
         if freeze is not None:
@@ -273,6 +307,7 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
+        input_embeddings = self.modality_dropouts(input_embeddings)
 
         index = self._build_index(input_embeddings)
         timestep_index = tree_map(itemgetter(0), index)

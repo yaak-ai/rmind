@@ -41,7 +41,8 @@ class SelectiveAdamW(AdamW):
                 # https://github.com/pytorch/pytorch/blob/v2.7.0/torch/nn/modules/activation.py#L1091
                 case "in_proj_weight":
                     pass
-
+                case "mask_embedding":
+                    pass
                 case _:
                     raise NotImplementedError
 

@@ -18,6 +18,7 @@ from rmind.components.episode import (
     Episode,
     EpisodeBuilder,
     Modality,
+    ModalityDropout,
     PositionEncoding,
     SpecialToken,
     TokenMeta,
@@ -254,6 +255,23 @@ def episode_builder(tokenizers: ModuleDict) -> Module:
             PositionEncoding.SPECIAL: Embedding(1, EMBEDDING_DIM),
             PositionEncoding.TIMESTEP: Embedding(6, EMBEDDING_DIM),
         }),
+        modality_dropouts=ModuleDict({
+            Modality.IMAGE: ModalityDropout(0, EMBEDDING_DIM),
+            Modality.CONTINUOUS: ModuleDict({
+                "speed": ModalityDropout(0, EMBEDDING_DIM),
+                "gas_pedal": ModalityDropout(0, EMBEDDING_DIM),
+                "gas_pedal_diff": None,
+                "brake_pedal": ModalityDropout(0, EMBEDDING_DIM),
+                "brake_pedal_diff": None,
+                "steering_angle": ModalityDropout(0, EMBEDDING_DIM),
+                "steering_angle_diff": None,
+            }),
+            Modality.DISCRETE: ModalityDropout(0, EMBEDDING_DIM),
+            Modality.CONTEXT: ModuleDict({
+                "waypoints": ModalityDropout(0, EMBEDDING_DIM)
+            }),
+            Modality.SPECIAL: ModalityDropout(0, EMBEDDING_DIM),
+        }),
     )
 
 
@@ -465,17 +483,17 @@ def policy_objective(encoder: Module) -> PolicyObjective:
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False),
+                    "gas_pedal": MLP(2 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False),
                     "brake_pedal": MLP(
-                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
+                        2 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
                     ),
                     "steering_angle": MLP(
-                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
+                        2 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
                     ),
                 },
                 Modality.DISCRETE: {
                     "turn_signal": MLP(
-                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 3], bias=False
+                        2 * EMBEDDING_DIM, [EMBEDDING_DIM, 3], bias=False
                     )
                 },
             }
