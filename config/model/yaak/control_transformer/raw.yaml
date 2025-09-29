@@ -322,14 +322,23 @@ objectives:
         modules:
           image:
             cam_front_left:
-              _target_: torch.nn.Identity
-              in_features: ${embedding_dim}
+              _target_: torch.nn.Linear
+              in_features:
+                _target_: operator.mul
+                _args_:
+                  - 2
+                  - ${embedding_dim}
               out_features: ${embedding_dim}
+              bias: False
 
           continuous:
             speed:
               _target_: torch.nn.Linear
-              in_features: ${embedding_dim}
+              in_features:
+                _target_: operator.mul
+                _args_:
+                  - 2
+                  - ${embedding_dim}
               out_features: ${speed_bins}
               bias: False
 

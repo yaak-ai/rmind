@@ -241,73 +241,92 @@ class RandomMaskedHindsightControlObjective(Objective):
         action_keys = timestep.get(TokenType.ACTION).keys(
             include_nested=True, leaves_only=True
         )
+        obs_keys = timestep.get(TokenType.OBSERVATION).keys(
+            include_nested=True, leaves_only=True
+        )
 
         for step in range(t):
             past, current, future = index[:step], index[step], index[step + 1 :]
+
+            # Actions
             current_actions = current.select(*action_keys)
-            past_observations = past.select(
-                *timestep.get(TokenType.OBSERVATION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            current_observations = current.select(
-                *timestep.get(TokenType.OBSERVATION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            future_observations = future.select(
-                *timestep.get(TokenType.OBSERVATION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
+            past_actions = past.select(*action_keys)
+            future_actions = future.select(*action_keys)
+
+            # Action summaries
             current_action_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
-            past_actions = past.select(*action_keys)
             past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
-            future_actions = future.select(*action_keys)
             future_action_summary = future.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
-            current_observation_summary = current.select((
+
+            # Observations (current only)
+            current_obs = current.select(*obs_keys)
+
+            # Observation summary/history
+            current_obs_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
-            current_observation_history = current.select((
+            current_obs_history = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
 
+            # --- 1. Actions & Action Summaries ---
             mask = (
                 mask.do_not_attend(current_actions, past_actions)
-                .do_not_attend(current_actions, past_action_summary)
                 .do_not_attend(current_actions, future_actions)
+                .do_not_attend(current_actions, past_action_summary)
                 .do_not_attend(current_actions, future_action_summary)
                 .do_not_attend(current_action_summary, past_actions)
-                .do_not_attend(current_action_summary, past_action_summary)
                 .do_not_attend(current_action_summary, future_actions)
+                .do_not_attend(current_action_summary, past_action_summary)
                 .do_not_attend(current_action_summary, future_action_summary)
-                .do_not_attend(past_observations, current_observation_summary)
-                .do_not_attend(past_observations, current_observation_history)
-                .do_not_attend(current_observations, current_observation_summary)
-                .do_not_attend(current_observations, current_observation_history)
-                .do_not_attend(future_observations, current_observation_summary)
-                .do_not_attend(future_observations, current_observation_history)
             )
 
+            # --- 2. Observations ---
+            mask = (
+                mask.do_not_attend(current_obs, past_actions)
+                .do_not_attend(current_obs, current_actions)
+                .do_not_attend(current_obs, future_actions)
+                .do_not_attend(current_obs, past_action_summary)
+                .do_not_attend(current_obs, current_action_summary)
+                .do_not_attend(current_obs, future_action_summary)
+            )
+
+            # --- 3. Observation Summary & History ---
+            # Cannot attend to any actions or action summaries
+            mask = (
+                mask.do_not_attend(current_obs_summary, past_actions)
+                .do_not_attend(current_obs_summary, current_actions)
+                .do_not_attend(current_obs_summary, future_actions)
+                .do_not_attend(current_obs_summary, past_action_summary)
+                .do_not_attend(current_obs_summary, current_action_summary)
+                .do_not_attend(current_obs_summary, future_action_summary)
+                .do_not_attend(current_obs_history, past_actions)
+                .do_not_attend(current_obs_history, current_actions)
+                .do_not_attend(current_obs_history, future_actions)
+                .do_not_attend(current_obs_history, past_action_summary)
+                .do_not_attend(current_obs_history, current_action_summary)
+                .do_not_attend(current_obs_history, future_action_summary)
+            )
+
+            # --- 3. Observation Summary & History ---
             # Only attend to Image modality
-            for modality in timestep.get(TokenType.OBSERVATION):
+            for modality, _ in timestep.get(TokenType.OBSERVATION):
                 if modality != Modality.IMAGE:
                     mask = mask.do_not_attend(
-                        current_observation_summary, index.select(modality)
+                        current_obs_summary, index.select(modality)
                     )
                     mask = mask.do_not_attend(
-                        current_observation_history, index.select(modality)
+                        current_obs_history, index.select(modality)
                     )
-
         return mask

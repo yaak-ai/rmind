@@ -74,7 +74,20 @@ class ForwardDynamicsPredictionObjective(Objective):
             .keys(include_nested=True, leaves_only=True)
         ).parse(embedding)
 
-        logits = self.heads(observations.to_dict())
+        action_summary = (
+            index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+
+        features: TensorDict = observations.apply(
+            # pack: (obs[0], action_summary), (obs[1], action_summary), ...
+            lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
+                0
+            ]
+        )
+
+        logits = self.heads(features.to_dict())
 
         targets = tree_map(
             lambda k: episode.get(k)[:, 1:],
@@ -213,7 +226,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
-    def build_attention_mask(
+    def build_attention_mask(  # noqq PLR0914
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAssignmentType, reportAttributeAccessIssue]
@@ -270,7 +283,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             )
 
             # Only attend to Image modality
-            for modality in timestep.get(TokenType.OBSERVATION):
+            for modality, _ in timestep.get(TokenType.OBSERVATION):
                 if modality != Modality.IMAGE:
                     mask = mask.do_not_attend(
                         current_observation_summary, index.select(modality)
