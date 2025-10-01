@@ -3,10 +3,11 @@ from typing import Any
 
 import pytest
 import pytorch_lightning as pl
+import torch
 from hydra import compose, initialize
 from hydra.utils import instantiate
 from pytest_lazy_fixtures import lf
-from rbyte.batch import Batch
+from rbyte.types import Batch
 from tensordict import TensorDict
 from torch.nn import LayerNorm, Module
 from torch.optim import Optimizer
@@ -38,17 +39,17 @@ CONFIG_PATH = "../config"
 
 @pytest.fixture
 def train_dataset(batch: Batch) -> TensorDict:
-    return batch.to_tensordict()
+    return batch.to_tensordict()  # pyright: ignore[reportReturnType]
 
 
 @pytest.fixture
 def val_dataset(batch: Batch) -> TensorDict:
-    return batch.to_tensordict()
+    return batch.to_tensordict()  # pyright: ignore[reportReturnType]
 
 
 @pytest.fixture
 def predict_dataset(batch: Batch) -> TensorDict:
-    return batch.to_tensordict()
+    return batch.to_tensordict()  # pyright: ignore[reportReturnType]
 
 
 @pytest.fixture
@@ -78,8 +79,9 @@ def datamodule(
 
 
 @pytest.fixture
-def trainer() -> pl.Trainer:
+def trainer(device: torch.device) -> pl.Trainer:
     return pl.Trainer(
+        accelerator=device.type,
         devices=1,
         fast_dev_run=1,
         callbacks=[LogitBiasSetter()],

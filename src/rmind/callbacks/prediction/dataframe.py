@@ -74,9 +74,9 @@ class DataFramePredictionWriter(BasePredictionWriter):
         )
 
         try:
-            df = plr.from_numpy(data.to_struct_array())
+            df = plr.from_numpy(data.to_struct_array())  # pyright: ignore[reportOptionalMemberAccess]
         except:  # noqa: E722
-            df = plr.from_dict(data.numpy())
+            df = plr.from_dict(data.numpy())  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]
 
         path = Path(
             self._path.format(batch_idx=batch_idx, dataloader_idx=dataloader_idx)
