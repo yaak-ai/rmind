@@ -355,6 +355,8 @@ objectives:
             cam_front_left:
               _target_: rmind.components.loss.SoftCLIPLoss
               reduction: mean
+              T: 5
+              N: 180
 
           continuous:
             speed:

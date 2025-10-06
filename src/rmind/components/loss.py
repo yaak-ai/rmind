@@ -96,6 +96,8 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
 class SoftCLIPLoss(Module):
     def __init__(
         self,
+        T: int = 6,  # noqa: N803
+        N: int = 180,  # noqa: N803
         temp_pred: float = 0.1,
         temp_soft: float = 0.01,
         reduction: str | None = None,
@@ -104,36 +106,38 @@ class SoftCLIPLoss(Module):
         self.temp_pred = temp_pred
         self.temp_soft = temp_soft
         self.reduction = reduction
+        self.T = T
+        self.N = N
 
     @override
-    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:  # noqa: PLR0914
         """
-        input, target: [M, D] where M = B * T * N
-          - Already flattened batch, timesteps, and tokens.
-          - D = embedding dimension
-        Returns: scalar loss
+        input, target: [B * T * S, D]
         """
-        # Normalize embeddings
-        input = F.normalize(input, dim=-1)
-        target = F.normalize(target, dim=-1)
+        _, D = input.shape  # noqa: N806
+        input = input.view(-1, self.T, self.N, D)
+        target = target.view(-1, self.T, self.N, D)
+        B, T, S, _ = input.shape  # noqa: N806
 
-        # [M, M] similarity between input and target
-        logits = input @ target.T / self.temp_pred
-        log_probs = F.log_softmax(logits, dim=-1)
+        input = F.normalize(input.view(B, T, S, D), dim=-1)  # [B, T, S, D]
+        target = F.normalize(target.view(B, T, S, D), dim=-1)  # [B, T, S, D]
 
-        # Soft labels from target-target similarities
-        sim_tt = target @ target.T / self.temp_soft
+        # [B, T, S, S] similarities
+        logits = torch.einsum("btsd,btud->btsu", input, target) / self.temp_pred
+        log_probs = F.log_softmax(logits, dim=-1)  # along last dim
+
+        sim_tt = torch.einsum("btsd,btud->btsu", target, target) / self.temp_soft
         soft_targets = F.softmax(sim_tt, dim=-1).detach()
 
-        # Cross-entropy with soft labels
         loss_i = -(soft_targets * log_probs).sum(dim=-1).mean()
 
-        # Target->input direction
-        logits_t = target @ input.T / self.temp_pred
+        # Symmetric direction
+        logits_t = torch.einsum("btsd,btud->btsu", target, input) / self.temp_pred
         log_probs_t = F.log_softmax(logits_t, dim=-1)
 
-        sim_pp = input @ input.T / self.temp_soft
+        sim_pp = torch.einsum("btsd,btud->btsu", input, input) / self.temp_soft
         soft_targets_t = F.softmax(sim_pp, dim=-1).detach()
 
         loss_t = -(soft_targets_t * log_probs_t).sum(dim=-1).mean()
+
         return (loss_i + loss_t) / 2

@@ -321,7 +321,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             # --- 3. Observation Summary & History ---
             # Only attend to Image modality
-            for modality, _ in timestep.get(TokenType.OBSERVATION):
+            for modality in timestep.get(TokenType.OBSERVATION):
                 if modality != Modality.IMAGE:
                     mask = mask.do_not_attend(
                         current_obs_summary, index.select(modality)
