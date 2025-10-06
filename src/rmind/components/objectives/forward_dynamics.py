@@ -74,12 +74,6 @@ class ForwardDynamicsPredictionObjective(Objective):
             .keys(include_nested=True, leaves_only=True)
         ).parse(embedding)
 
-        observation_summary = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
-
         action_summary = (
             index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
             .parse(embedding)
@@ -87,15 +81,10 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         features: TensorDict = observations.apply(
-            # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
-            lambda obs: pack(
-                [
-                    obs,
-                    observation_summary.broadcast_to(obs.shape),
-                    action_summary.broadcast_to(obs.shape),
-                ],
-                "b t p *",
-            )[0]
+            # pack: (obs[0], action_summary), (obs[1], action_summary), ...
+            lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
+                0
+            ]
         )
 
         logits = self.heads(features.to_dict())
@@ -237,7 +226,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         return TensorDict(result).auto_batch_size_(2)
 
     @classmethod
-    def build_attention_mask(
+    def build_attention_mask(  # noqq PLR0914
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAssignmentType, reportAttributeAccessIssue]
@@ -251,6 +240,11 @@ class ForwardDynamicsPredictionObjective(Objective):
         for step in range(t):
             past, current = index[:step], index[step]
             current_observations = current.select(
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
+            past_observations = past.select(
                 *timestep.get(TokenType.OBSERVATION).keys(
                     include_nested=True, leaves_only=True
                 )
@@ -278,10 +272,24 @@ class ForwardDynamicsPredictionObjective(Objective):
                 .do_attend(current, past)
                 .do_not_attend(current_observations, current_actions)
                 .do_not_attend(current_observations, current_action_summary)
+                .do_not_attend(current_observations, current_observation_summary)
+                .do_not_attend(current_observations, current_observation_history)
+                .do_not_attend(past_observations, current_observation_summary)
+                .do_not_attend(past_observations, current_observation_history)
                 .do_not_attend(current_observation_summary, current_actions)
                 .do_not_attend(current_observation_summary, current_action_summary)
                 .do_not_attend(current_observation_history, current_actions)
                 .do_not_attend(current_observation_history, current_action_summary)
             )
+
+            # Only attend to Image modality
+            for modality in timestep.get(TokenType.OBSERVATION):
+                if modality != Modality.IMAGE:
+                    mask = mask.do_not_attend(
+                        current_observation_summary, index.select(modality)
+                    )
+                    mask = mask.do_not_attend(
+                        current_observation_history, index.select(modality)
+                    )
 
         return mask

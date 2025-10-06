@@ -283,3 +283,74 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}  # pyright: ignore[reportReturnType]
 
         return {"optimizer": optimizer}
+
+    def tie_linear_to_embedding(self) -> None:
+        """
+        Tie nn.Linear weights to nn.Embedding weights by reference (shared Parameter).
+
+        pairs: iterable of (linear_path, embedding_path) relative to `root`
+          - linear must be nn.Linear with shape [out_features, in_features]
+          - embedding must be nn.Embedding with shape [num_embeddings, embedding_dim]
+          - out_features must equal num_embeddings; in_features must equal embedding_dim
+        """
+
+        pairs = [
+            # Inverse dynamics
+            (
+                "objectives.inverse_dynamics.heads.continuous.gas_pedal",
+                "episode_builder.embeddings.continuous.gas_pedal",
+            ),
+            (
+                "objectives.inverse_dynamics.heads.continuous.brake_pedal",
+                "episode_builder.embeddings.continuous.brake_pedal",
+            ),
+            (
+                "objectives.inverse_dynamics.heads.continuous.steering_angle",
+                "episode_builder.embeddings.continuous.steering_angle",
+            ),
+            (
+                "objectives.inverse_dynamics.heads.discrete.turn_signal",
+                "episode_builder.embeddings.discrete.turn_signal",
+            ),
+            # Forward dynamics (speed)
+            (
+                "objectives.forward_dynamics.heads.continuous.speed",
+                "episode_builder.embeddings.continuous.speed",
+            ),
+            # Random Masked Hindsight Control (actions)
+            (
+                "objectives.random_masked_hindsight_control.heads.continuous.gas_pedal",
+                "episode_builder.embeddings.continuous.gas_pedal",
+            ),
+            (
+                "objectives.random_masked_hindsight_control.heads.continuous.brake_pedal",
+                "episode_builder.embeddings.continuous.brake_pedal",
+            ),
+            (
+                "objectives.random_masked_hindsight_control.heads.continuous.steering_angle",
+                "episode_builder.embeddings.continuous.steering_angle",
+            ),
+            (
+                "objectives.random_masked_hindsight_control.heads.discrete.turn_signal",
+                "episode_builder.embeddings.discrete.turn_signal",
+            ),
+            # Memory extraction
+            # ("objectives.memory_extraction.heads.continuous.gas_pedal_diff",
+            #  "episode_builder.embeddings.continuous.gas_pedal"),
+            # ("objectives.memory_extraction.heads.continuous.brake_pedal_diff",
+            #  "episode_builder.embeddings.continuous.brake_pedal"),
+            # ("objectives.memory_extraction.heads.continuous.steering_angle_diff",
+            #  "episode_builder.embeddings.continuous.steering_angle"),
+        ]
+
+        for linear_path, emb_path in pairs:
+            lin = self.get_submodule(linear_path)
+            emb = self.get_submodule(emb_path)
+            logger.warning(f"Tying weights in {linear_path} to {emb_path}")  # noqa: G004
+
+            # Basic shape checks
+            assert lin.weight.shape == emb.weight.shape, (  # noqa: S101
+                f"Shape mismatch: {linear_path}.weight {lin.weight.shape} vs {emb_path}.weight {emb.weight.shape}"
+            )
+
+            lin.weight = emb.weight

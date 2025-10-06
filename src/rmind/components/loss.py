@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Any, override
+from typing import Any, final, override
 
 import torch
 import torch.nn.functional as F
@@ -90,3 +90,54 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         var = self.var_pos_function(log_var)
 
         return super().forward(input=mean, target=target, var=var)
+
+
+@final
+class SoftCLIPLoss(Module):
+    def __init__(
+        self,
+        T: int = 6,  # noqa: N803
+        N: int = 180,  # noqa: N803
+        temp_pred: float = 0.1,
+        temp_soft: float = 0.01,
+        reduction: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.temp_pred = temp_pred
+        self.temp_soft = temp_soft
+        self.reduction = reduction
+        self.T = T
+        self.N = N
+
+    @override
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:  # noqa: PLR0914
+        """
+        input, target: [B * T * S, D]
+        """
+        _, D = input.shape  # noqa: N806
+        input = input.view(-1, self.T, self.N, D)
+        target = target.view(-1, self.T, self.N, D)
+        B, T, S, _ = input.shape  # noqa: N806
+
+        input = F.normalize(input.view(B, T, S, D), dim=-1)  # [B, T, S, D]
+        target = F.normalize(target.view(B, T, S, D), dim=-1)  # [B, T, S, D]
+
+        # [B, T, S, S] similarities
+        logits = torch.einsum("btsd,btud->btsu", input, target) / self.temp_pred
+        log_probs = F.log_softmax(logits, dim=-1)  # along last dim
+
+        sim_tt = torch.einsum("btsd,btud->btsu", target, target) / self.temp_soft
+        soft_targets = F.softmax(sim_tt, dim=-1).detach()
+
+        loss_i = -(soft_targets * log_probs).sum(dim=-1).mean()
+
+        # Symmetric direction
+        logits_t = torch.einsum("btsd,btud->btsu", target, input) / self.temp_pred
+        log_probs_t = F.log_softmax(logits_t, dim=-1)
+
+        sim_pp = torch.einsum("btsd,btud->btsu", input, input) / self.temp_soft
+        soft_targets_t = F.softmax(sim_pp, dim=-1).detach()
+
+        loss_t = -(soft_targets_t * log_probs_t).sum(dim=-1).mean()
+
+        return (loss_i + loss_t) / 2

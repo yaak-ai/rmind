@@ -78,15 +78,11 @@ class InverseDynamicsPredictionObjective(Objective):
         )
 
         # order: (o0, o1), (o1, o2), (o2, o3), ...
-        features = rearrange(
-            [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-            "i ... d -> ... (i d)",
-        )
-
+        features = observation_summaries
         logits = self.heads(features)
 
         targets = tree_map(
-            lambda k: episode.get(k)[:, :-1],
+            lambda k: episode.get(k),
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
