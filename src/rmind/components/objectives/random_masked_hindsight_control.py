@@ -67,7 +67,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
         embedding = self.encoder(
             src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-        )  # pyright: ignore[reportOptionalCall]
+        )
 
         keys_action = episode.timestep.get(TokenType.ACTION).keys(
             include_nested=True, leaves_only=True
@@ -82,7 +82,7 @@ class RandomMaskedHindsightControlObjective(Objective):
             is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+        losses = self.losses(
             tree_map(Rearrange("b t 1 d -> (b t 1) d"), logits),
             tree_map(Rearrange("b t 1 -> (b t)"), targets),
         )
@@ -117,7 +117,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             embedding = self.encoder(
                 src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # pyright: ignore[reportOptionalCall]
+            )
 
             keys_action = episode.timestep.get(TokenType.ACTION).keys(
                 include_nested=True, leaves_only=True
@@ -145,23 +145,23 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                    logits.apply(lambda x: x.argmax(dim=-1))  # ty: ignore[possibly-unbound-attribute]
+                    .named_apply(
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty: ignore[call-non-callable, possibly-unbound-attribute]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # ty: ignore[possibly-unbound-attribute]
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.softmax(dim=-1))
-                    .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportAttributeAccessIssue]
+                    logits.apply(lambda x: x.softmax(dim=-1))  # ty: ignore[possibly-unbound-attribute]
+                    .apply(Rearrange("b t 1 d -> b t d"))
                     .apply(timestep_padder, batch_size=[b, t])
                     .apply(
                         lambda probs, tokens: probs.gather(dim=-1, index=tokens),
@@ -172,9 +172,9 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
                 result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                    logits.apply(lambda x: x.argmax(dim=-1))  # ty: ignore[possibly-unbound-attribute]
+                    .named_apply(
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty: ignore[call-non-callable, possibly-unbound-attribute]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
@@ -230,14 +230,14 @@ class RandomMaskedHindsightControlObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
+        length: int = index.max(reduce=True).item() + 1
         mask = AttentionMask(
             mask=torch.full((length, length), legend.DO_ATTEND.value),
             legend=legend,
             device=index.device,
         )
 
-        (t,) = index.batch_size  # pyright: ignore[reportAssignmentType]
+        (t,) = index.batch_size
         action_keys = timestep.get(TokenType.ACTION).keys(
             include_nested=True, leaves_only=True
         )

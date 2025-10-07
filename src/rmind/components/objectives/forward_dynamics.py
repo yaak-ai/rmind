@@ -64,7 +64,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         embedding = self.encoder(
             src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-        )  # pyright: ignore[reportOptionalCall]
+        )
 
         index = episode.index[:-1]  # all but last timestep
 
@@ -106,7 +106,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+        losses = self.losses(
             tree_map(Rearrange("b t s d -> (b t s) d"), logits),
             tree_map(Rearrange("b t s ... -> (b t s) ..."), targets),
         )
@@ -142,7 +142,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             embedding = self.encoder(
                 src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # pyright: ignore[reportOptionalCall]
+            )
 
             # all but last timestep
             index = episode.index[:-1]
@@ -187,7 +187,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                     .apply(lambda x: x.argmax(dim=-1))
                     .apply(timestep_padder, batch_size=[b, t])
                     .named_apply(
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty: ignore[call-non-callable, possibly-unbound-attribute]
                         nested_keys=True,
                     )
                 )
@@ -218,7 +218,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                     logits.exclude(Modality.IMAGE)
                     .apply(lambda x: x.argmax(dim=-1))
                     .named_apply(
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty: ignore[call-non-callable, possibly-unbound-attribute]
                         nested_keys=True,
                     )
                     .apply(timestep_padder, batch_size=[b, t])
@@ -240,7 +240,7 @@ class ForwardDynamicsPredictionObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAssignmentType, reportAttributeAccessIssue]
+        length: int = index.max(reduce=True).item() + 1
         mask = AttentionMask(
             mask=torch.full((length, length), legend.DO_NOT_ATTEND.value),
             legend=legend,

@@ -30,7 +30,7 @@ def main(cfg: DictConfig) -> None:
 
     logger.debug("starting prediction")
 
-    trainer.predict(model=model, datamodule=datamodule, return_predictions=False)  # pyright: ignore[reportUnusedCallResult]
+    trainer.predict(model=model, datamodule=datamodule, return_predictions=False)
 
 
 if __name__ == "__main__":

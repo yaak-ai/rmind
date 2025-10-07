@@ -8,14 +8,8 @@ _default:
 sync:
     uv sync --all-extras --all-groups --locked
 
-install-tools:
-    uv tool install --force --upgrade basedpyright
-    uv tool install --force --upgrade ruff
-    uv tool install --force --upgrade deptry
-    uv tool install --force --upgrade pre-commit --with pre-commit-uv
-
-setup: sync install-tools install-duckdb-extensions
-    uvx pre-commit install --install-hooks
+setup: sync install-duckdb-extensions
+    uvx --with=pre-commit-uv pre-commit install --install-hooks
 
 install-duckdb-extensions:
     uv run python -c "import duckdb; duckdb.connect().install_extension('spatial')"
@@ -27,11 +21,11 @@ lint *ARGS:
     uvx ruff check {{ ARGS }}
 
 typecheck *ARGS:
-    uvx basedpyright {{ ARGS }}
+    uvx ty@latest check {{ ARGS }}
 
 # run pre-commit on all files
 pre-commit:
-    uvx pre-commit run --all-files --color=always
+    uvx --with=pre-commit-uv pre-commit run --all-files --color=always
 
 # generate config files from templates with ytt
 generate-config:

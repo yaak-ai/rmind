@@ -91,7 +91,7 @@ class PolicyObjective(Objective):
 
         if isinstance(episode, Episode):
 
-            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:  # pyright: ignore[reportRedeclaration]
+            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:
                 match nk:
                     case (Modality.CONTINUOUS, _):
                         return x[..., 0]
@@ -100,7 +100,7 @@ class PolicyObjective(Objective):
                     case _:
                         raise NotImplementedError
 
-            return TensorDict(logits).named_apply(fn, nested_keys=True)  # pyright: ignore[reportReturnType, reportArgumentType]
+            return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty: ignore[invalid-return-type]
 
         def fn(kp: tuple[Any, ...], v: Tensor) -> Tensor:
             if kp[0].key == Modality.CONTINUOUS.value:
@@ -120,7 +120,7 @@ class PolicyObjective(Objective):
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             ).mask.to(device=episode.device)
 
-        embedding = self.encoder(src=episode.embeddings_packed, mask=mask)  # pyright: ignore[reportOptionalCall]
+        embedding = self.encoder(src=episode.embeddings_packed, mask=mask)
 
         if isinstance(episode, Episode):
             _b, _ = episode.input.batch_size
@@ -152,20 +152,20 @@ class PolicyObjective(Objective):
         else:
             observation_summary = embedding[
                 :,
-                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
+                episode.index[Modality.SPECIAL.value][  # ty: ignore[invalid-argument-type]
                     SpecialToken.OBSERVATION_SUMMARY.value
                 ][-1],
             ]
 
             observation_history = embedding[
                 :,
-                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
+                episode.index[Modality.SPECIAL.value][  # ty: ignore[invalid-argument-type]
                     SpecialToken.OBSERVATION_HISTORY.value
                 ][-1],
             ]
 
             waypoints = embedding[
-                :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # pyright: ignore[reportArgumentType]
+                :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # ty: ignore[invalid-argument-type]
             ].mean(dim=1, keepdim=True)
 
         features = rearrange(
@@ -184,7 +184,7 @@ class PolicyObjective(Objective):
             is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+        losses = self.losses(
             tree_map(Rearrange("b 1 d -> b d"), logits),
             tree_map(Rearrange("b 1 -> b"), targets),
         )
@@ -221,7 +221,7 @@ class PolicyObjective(Objective):
 
             embedding = self.encoder(
                 src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # pyright: ignore[reportOptionalCall]
+            )
 
             if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
                 result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
@@ -275,7 +275,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # ty: ignore[possibly-unbound-attribute]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -294,7 +294,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # ty: ignore[possibly-unbound-attribute]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -316,7 +316,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # ty: ignore[possibly-unbound-attribute]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -341,7 +341,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # ty: ignore[possibly-unbound-attribute]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -353,7 +353,7 @@ class PolicyObjective(Objective):
                     gt = episode.input[action_type][:, -1]
                     match action_type:
                         case (Modality.CONTINUOUS, _):
-                            return F.l1_loss(x[..., 0], gt, reduction="none")
+                            return F.l1_loss(x[..., 0], gt, reduction="none")  # ty: ignore[invalid-argument-type]
 
                         case (Modality.DISCRETE, "turn_signal"):
                             return F.l1_loss(
@@ -366,7 +366,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # ty: ignore[possibly-unbound-attribute]
                     timestep_padder, batch_size=[b, t]
                 )
 

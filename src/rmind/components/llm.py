@@ -70,7 +70,7 @@ class TransformerEncoder(nn.Module):
         freeze: bool | None = None,  # noqa: FBT001
     ) -> None:
         super().__init__()
-        self.layers = nn.ModuleList([  # pyright: ignore[reportUnannotatedClassAttribute]
+        self.layers = nn.ModuleList([
             TransformerEncoderBlock(
                 embedding_dim=dim_model,
                 num_heads=num_heads,
@@ -85,7 +85,7 @@ class TransformerEncoder(nn.Module):
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
 
         if freeze is not None:
-            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+            self.requires_grad_(not freeze).train(not freeze)
 
     @override
     def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
