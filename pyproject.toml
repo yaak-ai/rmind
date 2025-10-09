@@ -25,16 +25,16 @@ dependencies = [
   "polars>=1.32.2",
   "pydantic>=2.11.4",
   "pytorch-lightning>=2.5.2",
-  "rbyte[geo,jpeg,yaak]==0.30.0",
+  "rbyte[geo,jpeg,yaak]==0.31.0",
   "structlog>=25.2.0",
-  "tensordict>=0.9.1",
+  "tensordict-nightly==2025.9.24",  # rbyte dep
   "torch>=2.8.0",
-  "torchaudio",
-  "torchvision",
+  "torchaudio==2.8.0",
+  "torchvision==0.23.0",
 ]
 
 [project.urls]
-repo = "https://github.com/yaak-ai/rbyte"
+repo = "https://github.com/yaak-ai/rmind"
 
 [project.scripts]
 rmind-export-onnx = "rmind.scripts.export_onnx:main"
@@ -52,9 +52,22 @@ train = [
 ]
 
 [dependency-groups]
-dev = ["ipython", "lovely-tensors", "pudb", "wat-inspector"]
-export = ["onnx>=1.18.0", "onnxscript>=0.3.2"]
-test = ["pytest-lazy-fixtures>=1.1.4", "pytest>=8.4.1"]
+dev = [
+  "deptry>=0.23.1",
+  "ipython",
+  "lovely-tensors",
+  "pudb",
+  "wat-inspector",
+]
+export = [
+  "onnx>=1.18.0",
+  "onnxruntime>=1.23.1",
+  "onnxscript>=0.3.2",
+]
+test = [
+  "pytest>=8.4.1",
+  "pytest-lazy-fixtures>=1.1.4",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -84,9 +97,11 @@ DEP002 = [
   "pytest",
   "pytest-lazy-fixtures",
 ]
+DEP003 = ["rmind"]
 
 [tool.deptry.package_module_name_map]
 hydra-core = "hydra"
+tensordict-nightly = "tensordict"
 pytorch-lightning = [
   "pytorch_lightning",
   "lightning_fabric",

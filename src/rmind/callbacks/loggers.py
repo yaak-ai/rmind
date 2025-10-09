@@ -115,9 +115,9 @@ class WandbImageParamLogger(Callback):
                         ((v - v.min()) / (v.max() - v.min()) * 255)
                         .clamp(0, 255)
                         .unsqueeze(0),
-                        caption=".".join(k[:-1]),
+                        caption=".".join(k[:-1]),  # pyright: ignore[reportCallIssue, reportArgumentType]
                     )
-                    for k, v in data.cpu().items(include_nested=True, leaves_only=True)
+                    for k, v in data.cpu().items(include_nested=True, leaves_only=True)  # pyright: ignore[reportOptionalMemberAccess]
                 ],
                 step=trainer.global_step,
             )

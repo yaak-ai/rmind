@@ -76,7 +76,7 @@ class TokenMeta(NamedTuple):
     name: str
 
 
-class Index(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArguments]
+class Index(TensorClass["frozen"]):
     image: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     continuous: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     discrete: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -107,7 +107,7 @@ class Index(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArgument
 
         return self.to_tensordict(retain_none=False).apply(
             fn, batch_size=batch_size, device=src.device, inplace=False
-        )
+        )  # pyright: ignore[reportReturnType]
 
     @override
     def __hash__(self) -> int:
@@ -128,7 +128,7 @@ Index.__eq__ = lambda self, other: tensorclass_eq(self, other).all()
 class Timestep(TensorDict, Hashable):
     @override
     def __eq__(self, other: object) -> bool:
-        return super().__eq__(other).all()  # pyright: ignore[reportAttributeAccessIssue]
+        return super().__eq__(other).all()
 
     @override
     def __hash__(self) -> int:
@@ -152,7 +152,7 @@ register_pytree_node(
 TimestepExport = dict[str, dict[tuple[Modality, str], int]]
 
 
-class Episode(TensorClass["frozen"]):  # pyright: ignore[reportInvalidTypeArguments]
+class Episode(TensorClass["frozen"]):
     input: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_tokens: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -298,17 +298,17 @@ class EpisodeBuilder(Module):
             else Episode(
                 input=TensorDict.from_dict(
                     input, batch_dims=2
-                ).filter_non_tensor_data(),  # pyright: ignore[reportAttributeAccessIssue]
+                ).filter_non_tensor_data(),
                 input_tokens=TensorDict.from_dict(
                     input_tokens, batch_dims=2
-                ).filter_non_tensor_data(),  # pyright: ignore[reportAttributeAccessIssue]
+                ).filter_non_tensor_data(),
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
-                ).filter_non_tensor_data(),  # pyright: ignore[reportAttributeAccessIssue]
+                ).filter_non_tensor_data(),
                 position_embeddings=TensorDict.from_dict(
                     position_embeddings,  # pyright: ignore[reportArgumentType]
                     batch_dims=2,
-                ).filter_non_tensor_data(),  # pyright: ignore[reportAttributeAccessIssue]
+                ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
                 device=device,

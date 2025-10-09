@@ -5,14 +5,12 @@ import pytest
 import torch
 from pytest_lazy_fixtures import lf
 from torch import Tensor
-from torch._prims_common import DeviceLikeType
 from torch.nn import Module
 from torch.testing import assert_close
 from torch.utils._pytree import (
     key_get,  # noqa: PLC2701
     keystr,  # noqa: PLC2701
     tree_flatten_with_path,  # noqa: PLC2701
-    tree_map_only,  # noqa: PLC2701
 )
 from torchvision.ops import MLP
 
@@ -42,16 +40,18 @@ def episode_export(
 
 
 @pytest.fixture
-def policy_mask(episode: Episode) -> Tensor:
+def policy_mask(episode: Episode, device: torch.device) -> Tensor:
     return PolicyObjective.build_attention_mask(
         episode.index,
         episode.timestep,
         legend=TorchAttentionMaskLegend,  # pyright: ignore[reportArgumentType]
-    ).mask
+    ).mask.to(device)
 
 
 @pytest.fixture
-def policy_objective(encoder: Module, policy_mask: Tensor) -> PolicyObjective:
+def policy_objective(
+    encoder: Module, policy_mask: Tensor, device: torch.device
+) -> PolicyObjective:
     return PolicyObjective(
         encoder=encoder,
         mask=policy_mask,
@@ -65,34 +65,24 @@ def policy_objective(encoder: Module, policy_mask: Tensor) -> PolicyObjective:
                 Modality.DISCRETE: {"turn_signal": MLP(1536, [512, 3], bias=False)},
             }
         ),
-    )
+    ).to(device)
 
 
 @pytest.fixture
-def objectives(policy_objective: Module) -> ModuleDict:
-    return ModuleDict({"policy": policy_objective})
+def objectives(policy_objective: Module, device: torch.device) -> ModuleDict:
+    return ModuleDict({"policy": policy_objective}).to(device)
 
 
 @pytest.fixture
 def control_transformer(
-    episode_builder: Module, objectives: ModuleDict
+    episode_builder: Module, objectives: ModuleDict, device: torch.device
 ) -> ControlTransformer:
-    return ControlTransformer(episode_builder=episode_builder, objectives=objectives)
+    return ControlTransformer(
+        episode_builder=episode_builder, objectives=objectives
+    ).to(device)
 
 
-@pytest.fixture(
-    scope="module", params=["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
-)
-def device(request) -> torch.device:  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]  # noqa: ANN001
-    return torch.device(request.param)
-
-
-def test_episode(
-    episode: Episode, episode_export: EpisodeExport, device: torch.device
-) -> None:
-    episode = episode.to(device)
-    episode_export = tree_map_only(Tensor, lambda x: x.to(device), episode_export)
-
+def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
     episode_dict = (src := episode).to_dict() | {
         "embeddings": src.embeddings.to_dict(),
         "embeddings_packed": src.embeddings_packed,
@@ -135,12 +125,9 @@ def test_torch_export_fake(
     module: Module,
     args: tuple[Any],
     args_export: tuple[Any],
-    device: DeviceLikeType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = module.eval().to(device)
-    args = tree_map_only(Tensor, lambda x: x.to(device), args)
-    args_export = tree_map_only(Tensor, lambda x: x.to(device), args_export)
+    module = module.eval()
 
     module_output = module(*args)
     module_output_items, _ = tree_flatten_with_path(module_output)
@@ -176,25 +163,28 @@ def test_torch_export_fake(
         (lf("policy_objective"), (lf("episode_export"),)),
         (lf("control_transformer"), (lf("batch_dict"),)),
     ],
+    ids=["episode_builder", "policy_objective", "control_transformer"],
 )
 @torch.inference_mode()
-def test_torch_export(module: Module, args: tuple[Any], device: DeviceLikeType) -> None:
-    module = module.eval().to(device)
-    args = tree_map_only(Tensor, lambda x: x.to(device), args)
-    torch.export.export(module, args=args, strict=True)  # pyright: ignore[reportUnusedCallResult]
+def test_torch_export(module: Module, args: tuple[Any]) -> None:
+    torch.export.export(module.eval(), args=args, strict=True)  # pyright: ignore[reportUnusedCallResult]
 
 
 @pytest.mark.parametrize(
-    ("module", "args"), [(lf("control_transformer"), (lf("batch_dict"),))]
+    ("module", "args"),
+    [(lf("control_transformer"), (lf("batch_dict"),))],
+    ids=["control_transformer"],
 )
 @torch.inference_mode()
 def test_onnx_export(module: Module, args: tuple[Any]) -> None:
     module = module.eval()
     exported_program = torch.export.export(module, args=args, strict=True)
-    torch.onnx.export(  # pyright: ignore[reportUnusedCallResult]
+    program = torch.onnx.export(
         model=exported_program,
         external_data=False,
         dynamo=True,
         optimize=True,
         verify=True,
     )
+
+    assert program is not None

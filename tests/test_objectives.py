@@ -17,13 +17,8 @@ from rmind.components.objectives.base import Objective, PredictionResultKey
         lf("policy_objective"),
     ],
 )
-def test_compute_metrics(
-    objective: Objective, episode: Episode, device: torch.device
-) -> None:
-    objective = objective.to(device)
-    episode = episode.to(device)
-    metrics = objective.compute_metrics(episode)
-    assert "loss" in metrics
+def test_compute_metrics(objective: Objective, episode: Episode) -> None:
+    assert "loss" in objective.compute_metrics(episode)
 
 
 @pytest.mark.parametrize(
@@ -38,14 +33,10 @@ def test_compute_metrics(
 )
 @torch.inference_mode()
 def test_predict(
-    objective: Objective, episode: Episode, tokenizers: ModuleDict, device: torch.device
+    objective: Objective, episode: Episode, tokenizers: ModuleDict
 ) -> None:
-    objective = objective.to(device).eval()
-    episode = episode.to(device)
-    tokenizers = tokenizers.to(device)
-
     result_keys = set(PredictionResultKey)
     predictions = objective.predict(
         episode, result_keys=result_keys, tokenizers=tokenizers
     )
-    assert set(predictions.keys()).issubset(result_keys)  # pyright: ignore[reportArgumentType]
+    assert set(predictions.keys()).issubset(result_keys)

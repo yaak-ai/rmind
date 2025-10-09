@@ -1,5 +1,5 @@
 # @package _global_
-
+---
 defaults:
   - /model: yaak/control_transformer/finetuned
   - /datamodule: yaak/predict
@@ -35,7 +35,7 @@ trainer:
         - [policy, score_l1]
         - [policy, score_logprob]
       writer:
-          _target_: polars.DataFrame.write_parquet
-          _partial_: true
+        _target_: polars.DataFrame.write_parquet
+        _partial_: true
     - _target_: pytorch_lightning.callbacks.ModelSummary
       max_depth: 5
