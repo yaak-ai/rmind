@@ -56,6 +56,8 @@ episode_builder:
                 pattern: "... h w c -> ... c h w"
               - _target_: torchvision.transforms.v2.CenterCrop
                 size: [320, 576]
+              - _target_: torchvision.transforms.v2.Resize
+                size: [256, 256]
               - _target_: torchvision.transforms.v2.ToDtype
                 scale: true
                 dtype:
@@ -161,16 +163,14 @@ episode_builder:
       image:
         _target_: torch.nn.Sequential
         _args_:
-          - _target_: rmind.components.resnet.ResnetBackbone
-            resnet:
-              _target_: torchvision.models.resnet18
-              weights: IMAGENET1K_V1
+          - _target_: rmind.components.timm_backbone.TimmBackbone
+            model_name: vit_small_patch16_dinov3.lvd1689m
             freeze: True
           - _target_: einops.layers.torch.Rearrange
             pattern: "... c h w -> ... (h w) c"
-          - _target_: rmind.components.norm.Normalize
-            p: 2
-            dim: -1
+          # - _target_: rmind.components.norm.Normalize
+          #   p: 2
+          #   dim: -1
 
       continuous:
         speed:
@@ -220,18 +220,18 @@ episode_builder:
     modules:
       image:
         patch:
-          row:
-            _target_: rmind.components.nn.Embedding
-            num_embeddings: 10
-            embedding_dim: ${embedding_dim}
-          col:
-            _target_: rmind.components.nn.Embedding
-            num_embeddings: 18
-            embedding_dim: ${embedding_dim}
+      #     row:
+      #       _target_: rmind.components.nn.Embedding
+      #       num_embeddings: 16
+      #       embedding_dim: ${embedding_dim}
+      #     col:
+      #       _target_: rmind.components.nn.Embedding
+      #       num_embeddings: 16
+      #       embedding_dim: ${embedding_dim}
 
       observations:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 192
+        num_embeddings: 268 # 16 x 16 + 10 + 1 + 1 
         embedding_dim: ${embedding_dim}
 
       actions:
