@@ -11,7 +11,6 @@ sync:
 install-tools:
     uv tool install --force --upgrade basedpyright
     uv tool install --force --upgrade ruff
-    uv tool install --force --upgrade deptry
     uv tool install --force --upgrade pre-commit --with pre-commit-uv
 
 setup: sync install-tools install-duckdb-extensions
@@ -21,17 +20,17 @@ install-duckdb-extensions:
     uv run python -c "import duckdb; duckdb.connect().install_extension('spatial')"
 
 format *ARGS:
-    uvx ruff format {{ ARGS }}
+    uvx --from ruff@latest ruff format {{ ARGS }}
 
 lint *ARGS:
-    uvx ruff check {{ ARGS }}
+    uvx --from ruff@latest ruff check {{ ARGS }}
 
 typecheck *ARGS:
-    uvx basedpyright {{ ARGS }}
+    uvx --from basedpyright@latest basedpyright {{ ARGS }}
 
 # run pre-commit on all files
-pre-commit:
-    uvx pre-commit run --all-files --color=always
+pre-commit *ARGS:
+    uvx pre-commit run --all-files --color=always {{ ARGS }}
 
 # generate config files from templates with ytt
 generate-config:
@@ -60,7 +59,7 @@ predict +ARGS: generate-config
         {{ ARGS }}
 
 test *ARGS: generate-config
-    uv run pytest --capture=no {{ ARGS }}
+    uv run pytest --capture=no -v {{ ARGS }}
 
 export-onnx *ARGS: generate-config
     uv run --group export rmind-export-onnx \
@@ -69,15 +68,8 @@ export-onnx *ARGS: generate-config
         {{ ARGS }}
 
 # start rerun server and viewer
-rerun bind="0.0.0.0" port="9877" web-viewer-port="9090":
-    uvx --from rerun-sdk@latest rerun \
-    	--bind {{ bind }} \
-    	--port {{ port }} \
-    	--web-viewer \
-    	--web-viewer-port {{ web-viewer-port }} \
-    	--memory-limit 95% \
-    	--server-memory-limit 95% \
-    	--expect-data-soon \
+rerun *ARGS:
+    uvx --from rerun-sdk@latest rerun --serve-web {{ ARGS }}
 
 clean:
     rm -rf dist outputs lightning_logs wandb artifacts

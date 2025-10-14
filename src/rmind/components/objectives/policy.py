@@ -1,6 +1,6 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import Any, cast, final, overload, override
+from typing import Any, final, overload, override
 
 import torch
 from einops import rearrange
@@ -100,7 +100,7 @@ class PolicyObjective(Objective):
                     case _:
                         raise NotImplementedError
 
-            return TensorDict(logits).named_apply(fn, nested_keys=True)  # pyright: ignore[reportReturnType, reportArgumentType]
+            return TensorDict(logits).named_apply(fn, nested_keys=True)
 
         def fn(kp: tuple[Any, ...], v: Tensor) -> Tensor:
             if kp[0].key == Modality.CONTINUOUS.value:
@@ -126,13 +126,13 @@ class PolicyObjective(Objective):
             _b, _ = episode.input.batch_size
 
             embeddings = (
-                episode.index[-1]
+                episode.index[-1]  # pyright: ignore[reportCallIssue]
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
                 )
-                .parse(embedding)
+                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
             )
 
             observation_history = embeddings.get((
@@ -203,7 +203,9 @@ class PolicyObjective(Objective):
         result = {}
 
         if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
-            result[result_key] = episode.input.select(*self.heads.tree_paths())
+            result[result_key] = episode.input.select(*self.heads.tree_paths()).squeeze(
+                -1
+            )
 
         if result_keys & {
             PredictionResultKey.PREDICTION_VALUE,
@@ -222,18 +224,18 @@ class PolicyObjective(Objective):
             )  # pyright: ignore[reportOptionalCall]
 
             if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
-                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
                     embedding
                 )
 
             embeddings = (
-                episode.index[-1]
+                episode.index[-1]  # pyright: ignore[reportCallIssue]
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
                 )
-                .parse(embedding)
+                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
             )
 
             observation_history = embeddings.get((
@@ -273,7 +275,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -292,7 +294,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -314,7 +316,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -339,7 +341,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -364,7 +366,7 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
                     timestep_padder, batch_size=[b, t]
                 )
 
@@ -374,12 +376,9 @@ class PolicyObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        mask = cast(
-            "AttentionMask",
-            ForwardDynamicsPredictionObjective.build_attention_mask(
-                index, timestep, legend=legend
-            ).clone(recurse=True),
-        )
+        mask = ForwardDynamicsPredictionObjective.build_attention_mask(
+            index, timestep, legend=legend
+        ).clone(recurse=True)
 
         (t,) = index.batch_size
         for step in range(t):
@@ -389,11 +388,11 @@ class PolicyObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            current_observation_summary = current.select((
+            current_observation_summary = current.select((  # pyright: ignore[reportCallIssue]
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
-            current_observation_history = current.select((
+            current_observation_history = current.select((  # pyright: ignore[reportCallIssue]
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
@@ -402,18 +401,18 @@ class PolicyObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            past_action_summary = past.select((
+            past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
 
             mask = (
-                mask.do_not_attend(current_observations, past_actions)
-                .do_not_attend(current_observations, past_action_summary)
-                .do_not_attend(current_observation_summary, past_actions)
-                .do_not_attend(current_observation_summary, past_action_summary)
-                .do_not_attend(current_observation_history, past_actions)
-                .do_not_attend(current_observation_history, past_action_summary)
+                mask.do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observations, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_summary, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_summary, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_history, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_history, past_action_summary)  # pyright: ignore[reportArgumentType]
             )
 
         return mask

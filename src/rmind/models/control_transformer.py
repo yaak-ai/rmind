@@ -175,7 +175,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             for name, objective in self.objectives.items()
         })
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]  # noqa: SIM118
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
         loss_total = losses.sum(reduce=True)
         metrics["loss", "total"] = loss_total
 
@@ -212,7 +212,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             for name, objective in self.objectives.items()
         })
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # pyright: ignore[reportGeneralTypeIssues]  # noqa: SIM118
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
         loss_total = losses.sum(reduce=True)
         metrics["loss", "total"] = loss_total
 
@@ -246,7 +246,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 tokenizers=self.episode_builder.tokenizers,
             )
             for name, objective in self.objectives.items()
-        })
+        }).auto_batch_size_(1)
 
     @override
     def forward(self, batch: TensorTree) -> TensorTree | TensorDict:

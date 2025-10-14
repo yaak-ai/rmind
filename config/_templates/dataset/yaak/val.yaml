@@ -9,15 +9,15 @@
 #@ ]
 
 ---
-_target_: rbyte.Dataset
+_target_: rbyte.Dataset.from_config
 _recursive_: false
 _convert_: all
-sources:
-  #@ for drive_id in drives:
-  (@=drive_id@):
-    cam_front_left:
-      index_column: "meta/ImageMetadata.cam_front_left/frame_idx"
-      source:
+streams:
+  cam_front_left:
+    index: meta/ImageMetadata.cam_front_left/frame_idx
+    sources:
+      #@ for/end drive_id in drives:
+      (@=drive_id@):
         _target_: rbyte.io.PathTensorSource
         path: "${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324/{:09d}.jpg"
         decoder:
@@ -26,16 +26,24 @@ sources:
           colorspace: rgb
           fastdct: true
           fastupsample: true
-  #@ end
 
 samples:
   inputs:
-    #@ for drive_id in drives:
-    - input_id: (@=drive_id@)
-      yaak_metadata_path: ${paths.data}/(@=drive_id@)/metadata.log
-      waypoints_path: ${paths.data}/(@=drive_id@)/waypoints.json
-      cam_front_left_path: ${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324
-    #@ end
+    input_id:
+      #@ for/end drive_id in drives:
+      - (@=drive_id@)
+
+    yaak_metadata_path:
+      #@ for/end drive_id in drives:
+      - ${paths.data}/(@=drive_id@)/metadata.log
+
+    waypoints_path:
+      #@ for/end drive_id in drives:
+      - ${paths.data}/(@=drive_id@)/waypoints.json
+
+    cam_front_left_path:
+      #@ for/end drive_id in drives:
+      - ${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324
 
   executor:
     _target_: concurrent.futures.ProcessPoolExecutor
@@ -215,7 +223,6 @@ samples:
             frame_idx:
               _target_: polars.Int32
 
-
       - _target_: pipefunc.PipeFunc
         output_name: filtered
         mapspec: "aligned[i], cam_front_left_meta[i] -> filtered[i]"
@@ -343,4 +350,4 @@ samples:
         output_name: samples_aggregated
         func:
           _target_: rbyte.io.DataFrameConcater
-          key_column: __input_id
+          key_column: input_id

@@ -10,6 +10,7 @@ from tensordict import TensorClass, TensorDict
 from torch.utils._pytree import (
     KeyPath,
     key_get,  # noqa: PLC2701
+    keystr,  # noqa: PLC2701
     tree_flatten_with_path,  # noqa: PLC2701
     tree_map,  # noqa: PLC2701
 )
@@ -56,15 +57,20 @@ class LogitBiasSetter(Callback):
         if trainer.train_dataloader is None:
             trainer.fit_loop.setup_data()
 
+        logger.debug("computing logit bias from dataset")
         match dataset := trainer.train_dataloader.dataset:  # pyright: ignore[reportOptionalMemberAccess]
             case rbyte.Dataset():
-                batch = dataset.get_batch(slice(-1), keys=batch_keys).to_tensordict()  # pyright: ignore[reportArgumentType]
+                batch = dataset.get_batch(
+                    slice(None), include_streams=False, include_meta=False
+                )
 
             case TensorDict() | TensorClass():  # used in tests
-                batch = dataset.select(*batch_keys).to_tensordict()
+                batch = dataset
 
             case _:
                 raise NotImplementedError
+
+        batch = batch.select(*batch_keys).to_tensordict()
 
         with torch.inference_mode():
             input = pl_module.episode_builder.input_transform(  # pyright: ignore[reportCallIssue]
@@ -82,7 +88,9 @@ class LogitBiasSetter(Callback):
 
         for objective_key, loss_keypath, loss in losses:
             logger.debug(
-                "setting logit bias", objective=objective_key, loss=loss_keypath
+                "setting logit bias",
+                objective=objective_key,
+                loss_key=keystr(loss_keypath),
             )
             loss_head = key_get(objectives[objective_key].heads, loss_keypath)
             loss_labels = key_get(labels, loss_keypath)

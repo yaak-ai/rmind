@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 import torch
 from einops.layers.torch import Rearrange
-from rbyte.batch import Batch
+from rbyte.types import Batch
 from tensordict import TensorDict
 from torch.nn import Linear, Module, MSELoss
 from torch.testing import make_tensor
@@ -59,64 +59,70 @@ def _set_float32_matmul_precision() -> Generator[None, Any, None]:  # pyright: i
     torch.set_float32_matmul_precision(prev)
 
 
-@pytest.fixture
-def device() -> torch.device:
-    if torch.backends.mps.is_available():
-        device = "mps"
-    elif torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
+@pytest.fixture(
+    scope="module",
+    params=[
+        next(
+            device
+            for device in ("cuda", "mps", "cpu")
+            if getattr(torch, device).is_available()
+        )
+    ],
+)
+def device(request) -> torch.device:  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]  # noqa: ANN001
+    return torch.device(request.param)
 
-    return torch.device(device)
 
-
-@pytest.fixture
-def batch() -> Batch:
+@pytest.fixture(scope="module")
+def batch(device: torch.device) -> Batch:
     return Batch(
         data=TensorDict(
             {
                 "cam_front_left": make_tensor(
                     (1, 6, 324, 576, 3),
                     dtype=torch.uint8,
-                    device="cpu",
+                    device=device,
                     low=0,
                     high=256,
                 ),
                 "meta/VehicleMotion/brake_pedal_normalized": make_tensor(
-                    (1, 6), dtype=torch.float32, device="cpu", low=0.0, high=1.0
+                    (1, 6), dtype=torch.float32, device=device, low=0.0, high=1.0
                 ),
                 "meta/VehicleMotion/gas_pedal_normalized": make_tensor(
-                    (1, 6), dtype=torch.float32, device="cpu", low=0.0, high=1.0
+                    (1, 6), dtype=torch.float32, device=device, low=0.0, high=1.0
                 ),
                 "meta/VehicleMotion/steering_angle_normalized": make_tensor(
-                    (1, 6), dtype=torch.float32, device="cpu", low=-1.0, high=1.0
+                    (1, 6), dtype=torch.float32, device=device, low=-1.0, high=1.0
                 ),
                 "meta/VehicleMotion/speed": make_tensor(
-                    (1, 6), dtype=torch.float32, device="cpu", low=0.0, high=130.0
+                    (1, 6), dtype=torch.float32, device=device, low=0.0, high=130.0
                 ),
                 "meta/VehicleState/turn_signal": make_tensor(
-                    (1, 6), dtype=torch.int64, device="cpu", low=0, high=3
+                    (1, 6), dtype=torch.int64, device=device, low=0, high=3
                 ),
                 "waypoints/xy_normalized": make_tensor(
-                    (1, 6, 10, 2), dtype=torch.float32, device="cpu", low=0.0, high=20.0
+                    (1, 6, 10, 2),
+                    dtype=torch.float32,
+                    device=device,
+                    low=0.0,
+                    high=20.0,
                 ),
             },
             batch_size=[1],
-            device=None,
+            device=device,
         ),
         batch_size=[1],
-        device=None,
+        device=device,
     )
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def batch_dict(batch: Batch) -> TensorTree:
     return batch.to_dict(retain_none=False)
 
 
-@pytest.fixture
-def tokenizers() -> ModuleDict:
+@pytest.fixture(scope="module")
+def tokenizers(device: torch.device) -> ModuleDict:
     return ModuleDict({
         Modality.IMAGE: Identity(),
         Modality.CONTINUOUS: {
@@ -135,11 +141,11 @@ def tokenizers() -> ModuleDict:
         },
         Modality.DISCRETE: Identity(),
         Modality.CONTEXT: {"waypoints": Identity()},
-    })
+    }).to(device)
 
 
-@pytest.fixture
-def episode_builder(tokenizers: ModuleDict) -> Module:
+@pytest.fixture(scope="module")
+def episode_builder(tokenizers: ModuleDict, device: torch.device) -> Module:
     return EpisodeBuilder(
         special_tokens={
             SpecialToken.OBSERVATION_SUMMARY: 0,
@@ -254,15 +260,15 @@ def episode_builder(tokenizers: ModuleDict) -> Module:
             PositionEncoding.SPECIAL: Embedding(1, EMBEDDING_DIM),
             PositionEncoding.TIMESTEP: Embedding(6, EMBEDDING_DIM),
         }),
-    )
+    ).to(device)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def episode(episode_builder: EpisodeBuilder, batch_dict: TensorTree) -> Episode:
     return episode_builder(batch_dict)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def encoder() -> Module:
     return TransformerEncoder(
         dim_model=EMBEDDING_DIM,
@@ -275,9 +281,9 @@ def encoder() -> Module:
     )
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def inverse_dynamics_prediction_objective(
-    encoder: Module,
+    encoder: Module, device: torch.device
 ) -> InverseDynamicsPredictionObjective:
     logit_bias = torch.tensor(0)
 
@@ -321,12 +327,12 @@ def inverse_dynamics_prediction_objective(
                 "turn_signal": ("input_tokens", modality, "turn_signal")
             },
         },
-    )
+    ).to(device)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def forward_dynamics_prediction_objective(
-    encoder: Module,
+    encoder: Module, device: torch.device
 ) -> ForwardDynamicsPredictionObjective:
     logit_bias = torch.tensor(0)
 
@@ -360,12 +366,12 @@ def forward_dynamics_prediction_objective(
                 "speed": ("input_tokens", modality, "speed")
             },
         },
-    )
+    ).to(device)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def random_masked_hindsight_control_objective(
-    encoder: Module,
+    encoder: Module, device: torch.device
 ) -> RandomMaskedHindsightControlObjective:
     logit_bias = torch.tensor(0)
 
@@ -407,11 +413,13 @@ def random_masked_hindsight_control_objective(
                 "turn_signal": ("input_tokens", modality, "turn_signal")
             },
         },
-    )
+    ).to(device)
 
 
-@pytest.fixture
-def memory_extraction_objective(encoder: Module) -> MemoryExtractionObjective:
+@pytest.fixture(scope="module")
+def memory_extraction_objective(
+    encoder: Module, device: torch.device
+) -> MemoryExtractionObjective:
     logit_bias = torch.tensor(0)
 
     return MemoryExtractionObjective(
@@ -453,11 +461,11 @@ def memory_extraction_objective(encoder: Module) -> MemoryExtractionObjective:
                 ),
             }
         },
-    )
+    ).to(device)
 
 
-@pytest.fixture
-def policy_objective(encoder: Module) -> PolicyObjective:
+@pytest.fixture(scope="module")
+def policy_objective(encoder: Module, device: torch.device) -> PolicyObjective:
     logit_bias = torch.tensor(0)
 
     return PolicyObjective(
@@ -502,4 +510,4 @@ def policy_objective(encoder: Module) -> PolicyObjective:
                 "turn_signal": ("input", modality, "turn_signal")
             },
         },
-    )
+    ).to(device)

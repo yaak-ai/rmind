@@ -1,6 +1,6 @@
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import cast, final, override
+from typing import final, override
 
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
@@ -69,9 +69,9 @@ class MemoryExtractionObjective(Objective):
         )  # pyright: ignore[reportOptionalCall]
 
         features = (
-            episode.index[1:]
+            episode.index[1:]  # pyright: ignore[reportCallIssue]
             .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
-            .parse(embedding)
+            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
             .get(k)
         )
 
@@ -125,9 +125,9 @@ class MemoryExtractionObjective(Objective):
             )  # pyright: ignore[reportOptionalCall]
 
             features = (
-                episode.index[1:]
+                episode.index[1:]  # pyright: ignore[reportCallIssue]
                 .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
-                .parse(embedding)
+                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
                 .get(k)
             )
 
@@ -138,20 +138,20 @@ class MemoryExtractionObjective(Objective):
             if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
                 result[result_key] = (
                     logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportAttributeAccessIssue]
+                    .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
                         nested_keys=True,
                     )
-                    .apply(timestep_padder, batch_size=[b, t])
+                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportOptionalMemberAccess]
                 )
 
             if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportAttributeAccessIssue]
+                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportOptionalMemberAccess]
                     timestep_padder, batch_size=[b, t]
                 )
 
             if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
-                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
                     embedding
                 )
 
@@ -161,14 +161,9 @@ class MemoryExtractionObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        mask = cast(
-            "AttentionMask",
-            ForwardDynamicsPredictionObjective.build_attention_mask(
-                index, timestep, legend=legend
-            )
-            .clone(recurse=True)
-            .to("cpu"),
-        )
+        mask = ForwardDynamicsPredictionObjective.build_attention_mask(
+            index, timestep, legend=legend
+        ).clone(recurse=True)
 
         (t,) = index.batch_size
         for step in range(t):
@@ -178,11 +173,11 @@ class MemoryExtractionObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            current_observation_summary = current.select((
+            current_observation_summary = current.select((  # pyright: ignore[reportCallIssue]
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
-            current_observation_history = current.select((
+            current_observation_history = current.select((  # pyright: ignore[reportCallIssue]
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
@@ -191,18 +186,18 @@ class MemoryExtractionObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            past_action_summary = past.select((
+            past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
 
             mask = (
-                mask.do_not_attend(current_observations, past_actions)
-                .do_not_attend(current_observations, past_action_summary)
-                .do_not_attend(current_observation_summary, past_actions)
-                .do_not_attend(current_observation_summary, past_action_summary)
-                .do_not_attend(current_observation_history, past_actions)
-                .do_not_attend(current_observation_history, past_action_summary)
+                mask.do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observations, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_summary, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_summary, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_history, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_history, past_action_summary)  # pyright: ignore[reportArgumentType]
             )
 
         return mask

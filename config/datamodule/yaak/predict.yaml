@@ -1,16 +1,17 @@
+---
 defaults:
   - /dataset/yaak/predict@predict.dataset
   - _self_
 
 _target_: rmind.datamodules.GenericDataModule
 predict:
-  _target_: torch.utils.data.DataLoader
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 16
   shuffle: false
-  batch_size: 1
-  num_workers: 1
-  pin_memory: false
-  persistent_workers: true
-  multiprocessing_context: forkserver
   collate_fn:
-    _target_: tensordict.TensorDict.to_dict
+    _target_: rbyte.types.Batch.to_dict
     _partial_: true
+
+  num_workers: 2
+  pin_memory: true
+  method: thread

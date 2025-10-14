@@ -153,3 +153,7 @@ inference_results/
 .rbyte_cache
 
 .dprint.json
+
+# env
+.direnv
+.envrc

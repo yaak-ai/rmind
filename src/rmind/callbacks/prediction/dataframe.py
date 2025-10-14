@@ -1,3 +1,4 @@
+import shutil
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal, final, override
@@ -43,6 +44,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
         self._writer = writer
         self._select = select
         self._separator = separator
+        self._written_paths: list[str] = []
 
     @override
     def write_on_batch_end(
@@ -72,9 +74,9 @@ class DataFramePredictionWriter(BasePredictionWriter):
         )
 
         try:
-            df = plr.from_numpy(data.to_struct_array())
+            df = plr.from_numpy(data.to_struct_array())  # pyright: ignore[reportOptionalMemberAccess]
         except:  # noqa: E722
-            df = plr.from_dict(data.numpy())
+            df = plr.from_dict(data.numpy())  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]
 
         path = Path(
             self._path.format(batch_idx=batch_idx, dataloader_idx=dataloader_idx)
@@ -82,3 +84,18 @@ class DataFramePredictionWriter(BasePredictionWriter):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         self._writer(df, path.resolve().as_posix())
+        if path.exists():
+            self._written_paths.append(path.resolve().as_posix())
+
+    @override
+    def on_predict_end(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
+        if not self._written_paths:
+            return
+
+        parent_dir = Path(self._written_paths[0]).parent
+        plr.scan_parquet(self._written_paths).sink_parquet(
+            parent_dir.with_suffix(".parquet")
+        )
+        shutil.rmtree(parent_dir)
