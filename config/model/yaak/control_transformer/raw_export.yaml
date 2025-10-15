@@ -1,0 +1,214 @@
+---
+_target_: rmind.models.control_transformer.ControlTransformer
+_recursive_: false
+_convert_: all
+
+episode_builder:
+  _target_: rmind.components.episode.EpisodeBuilder
+  _recursive_: true
+  _convert_: all
+  timestep:
+    - [observation, image, cam_front_left]
+    - [observation, continuous, speed]
+    - [observation, context, waypoints]
+    - [special, special, observation_summary]
+    - [special, special, observation_history]
+    - [action, continuous, gas_pedal]
+    - [action, continuous, brake_pedal]
+    - [action, continuous, steering_angle]
+    - [action, discrete, turn_signal]
+    - [special, special, action_summary]
+
+  special_tokens:
+    observation_summary: 0
+    observation_history: 1
+    action_summary: 2
+
+  # TODO: need image normalization?
+  input_transform:
+    _target_: torch.nn.Sequential
+    _convert_: all
+    _args_:
+      - _target_: rmind.components.nn.Remapper
+        paths:
+          image:
+            cam_front_left: [data, cam_front_left]
+
+          continuous:
+            speed: [data, meta/VehicleMotion/speed]
+            gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
+            brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
+            steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
+
+          context:
+            waypoints: [data, waypoints/waypoints_normalized]
+
+          discrete:
+            turn_signal: [data, meta/VehicleState/turn_signal]
+
+  tokenizers:
+    _target_: rmind.components.containers.ModuleDict
+    modules:
+      image:
+        _target_: rmind.components.nn.Identity
+
+      continuous:
+        speed:
+          _target_: rmind.components.norm.UniformBinner
+          range: [0.0, 130.0]
+          bins: ${speed_bins}
+
+        gas_pedal:
+          _target_: rmind.components.norm.UniformBinner
+          range: [0.0, 1.0]
+          bins: ${gas_pedal_bins}
+
+        brake_pedal:
+          _target_: rmind.components.norm.UniformBinner
+          range: [0.0, 1.0]
+          bins: ${brake_pedal_bins}
+
+        steering_angle:
+          _target_: rmind.components.norm.UniformBinner
+          range: [-1.0, 1.0]
+          bins: ${steering_angle_bins}
+
+      discrete:
+        _target_: rmind.components.nn.Identity
+
+      context:
+        waypoints:
+          _target_: rmind.components.nn.Identity
+
+  embeddings:
+    _target_: rmind.components.containers.ModuleDict
+    modules:
+      image:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: rmind.components.resnet.ResnetBackbone
+            resnet:
+              _target_: torchvision.models.resnet18
+              weights: IMAGENET1K_V1
+            freeze: True
+          - _target_: einops.layers.torch.Rearrange
+            pattern: "... c h w -> ... (h w) c"
+          - _target_: rmind.components.norm.Normalize
+            p: 2
+            dim: -1
+
+      continuous:
+        speed:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${speed_bins}
+          embedding_dim: ${embedding_dim}
+        gas_pedal:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${gas_pedal_bins}
+          embedding_dim: ${embedding_dim}
+        brake_pedal:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${brake_pedal_bins}
+          embedding_dim: ${embedding_dim}
+        steering_angle:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${steering_angle_bins}
+          embedding_dim: ${embedding_dim}
+
+      context:
+        waypoints:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: torch.nn.Linear
+              in_features: 2
+              out_features: ${embedding_dim}
+            - _target_: rmind.components.norm.Normalize
+              p: 2
+              dim: -1
+
+      discrete:
+        turn_signal:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 3
+          embedding_dim: ${embedding_dim}
+
+      special:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 3
+        embedding_dim: ${embedding_dim}
+
+  position_encoding:
+    _target_: rmind.components.containers.ModuleDict
+    modules:
+      image:
+        patch:
+          row:
+            _target_: rmind.components.nn.Embedding
+            num_embeddings: 10
+            embedding_dim: ${embedding_dim}
+          col:
+            _target_: rmind.components.nn.Embedding
+            num_embeddings: 18
+            embedding_dim: ${embedding_dim}
+
+      observations:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 192
+        embedding_dim: ${embedding_dim}
+
+      actions:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 1
+        embedding_dim: ${embedding_dim}
+
+      special:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 1
+        embedding_dim: ${embedding_dim}
+
+      timestep:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 24
+        embedding_dim: ${embedding_dim}
+
+encoder:
+  _target_: rmind.components.llm.TransformerEncoder
+  dim_model: ${embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  attn_dropout: 0.1
+  resid_dropout: 0.1
+  mlp_dropout: 0.1
+  hidden_layer_multiplier: 1
+
+objectives:
+  _target_: rmind.components.containers.ModuleDict
+  _convert_: all
+  modules:
+    policy:
+      _target_: rmind.components.objectives.PolicyObjective
+      heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            gas_pedal:
+              _target_: torchvision.ops.MLP
+              in_channels: 1536
+              hidden_channels: [512, 2]
+              bias: False
+            brake_pedal:
+              _target_: torchvision.ops.MLP
+              in_channels: 1536
+              hidden_channels: [512, 2]
+              bias: False
+            steering_angle:
+              _target_: torchvision.ops.MLP
+              in_channels: 1536
+              hidden_channels: [512, 2]
+              bias: False
+          discrete:
+            turn_signal:
+              _target_: torchvision.ops.MLP
+              in_channels: 1536
+              hidden_channels: [512, 3]
+              bias: False

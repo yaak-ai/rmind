@@ -6,7 +6,7 @@ repos:
       - id: validate-pyproject
 
   - repo: https://github.com/asottile/pyupgrade
-    rev: v3.20.0
+    rev: v3.21.0
     hooks:
       - id: pyupgrade
 
@@ -28,12 +28,12 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-    rev: 1.31.6
+    rev: 1.31.7
     hooks:
       - id: basedpyright
 
   - repo: https://github.com/tombi-toml/tombi-pre-commit
-    rev: v0.6.25
+    rev: v0.6.31
     hooks:
       - id: tombi-format
       - id: tombi-lint

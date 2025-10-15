@@ -1068,7 +1068,7 @@ wheels = [
 
 [[package]]
 name = "onnx"
-version = "1.19.0"
+version = "1.19.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ml-dtypes" },
@@ -1076,14 +1076,14 @@ dependencies = [
     { name = "protobuf" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/bf/b0a63ee9f3759dcd177b28c6f2cb22f2aecc6d9b3efecaabc298883caa5f/onnx-1.19.0.tar.gz", hash = "sha256:aa3f70b60f54a29015e41639298ace06adf1dd6b023b9b30f1bca91bb0db9473", size = 11949859, upload-time = "2025-08-27T02:34:27.107Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/2f/c619eb65769357e9b6de9212c9a821ab39cd484448e5d6b3fb5fb0a64c6d/onnx-1.19.1.tar.gz", hash = "sha256:737524d6eb3907d3499ea459c6f01c5a96278bb3a0f2ff8ae04786fb5d7f1ed5", size = 12033525, upload-time = "2025-10-10T04:01:34.342Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/94/f56f6ca5e2f921b28c0f0476705eab56486b279f04e1d568ed64c14e7764/onnx-1.19.0-cp312-cp312-macosx_12_0_universal2.whl", hash = "sha256:61d94e6498ca636756f8f4ee2135708434601b2892b7c09536befb19bc8ca007", size = 18322331, upload-time = "2025-08-27T02:33:20.373Z" },
-    { url = "https://files.pythonhosted.org/packages/c8/00/8cc3f3c40b54b28f96923380f57c9176872e475face726f7d7a78bd74098/onnx-1.19.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:224473354462f005bae985c72028aaa5c85ab11de1b71d55b06fdadd64a667dd", size = 18027513, upload-time = "2025-08-27T02:33:23.44Z" },
-    { url = "https://files.pythonhosted.org/packages/61/90/17c4d2566fd0117a5e412688c9525f8950d467f477fbd574e6b32bc9cb8d/onnx-1.19.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:1ae475c85c89bc4d1f16571006fd21a3e7c0e258dd2c091f6e8aafb083d1ed9b", size = 18202278, upload-time = "2025-08-27T02:33:26.103Z" },
-    { url = "https://files.pythonhosted.org/packages/bc/6e/a9383d9cf6db4ac761a129b081e9fa5d0cd89aad43cf1e3fc6285b915c7d/onnx-1.19.0-cp312-cp312-win32.whl", hash = "sha256:323f6a96383a9cdb3960396cffea0a922593d221f3929b17312781e9f9b7fb9f", size = 16333080, upload-time = "2025-08-27T02:33:28.559Z" },
-    { url = "https://files.pythonhosted.org/packages/a7/2e/3ff480a8c1fa7939662bdc973e41914add2d4a1f2b8572a3c39c2e4982e5/onnx-1.19.0-cp312-cp312-win_amd64.whl", hash = "sha256:50220f3499a499b1a15e19451a678a58e22ad21b34edf2c844c6ef1d9febddc2", size = 16453927, upload-time = "2025-08-27T02:33:31.177Z" },
-    { url = "https://files.pythonhosted.org/packages/57/37/ad500945b1b5c154fe9d7b826b30816ebd629d10211ea82071b5bcc30aa4/onnx-1.19.0-cp312-cp312-win_arm64.whl", hash = "sha256:efb768299580b786e21abe504e1652ae6189f0beed02ab087cd841cb4bb37e43", size = 16426022, upload-time = "2025-08-27T02:33:33.515Z" },
+    { url = "https://files.pythonhosted.org/packages/50/07/f6c5b2cffef8c29e739616d1415aea22f7b7ef1f19c17f02b7cff71f5498/onnx-1.19.1-cp312-cp312-macosx_12_0_universal2.whl", hash = "sha256:3612193a89ddbce5c4e86150869b9258780a82fb8c4ca197723a4460178a6ce9", size = 18327840, upload-time = "2025-10-10T04:00:24.259Z" },
+    { url = "https://files.pythonhosted.org/packages/93/20/0568ebd52730287ae80cac8ac893a7301c793ea1630984e2519ee92b02a9/onnx-1.19.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:6c2fd2f744e7a3880ad0c262efa2edf6d965d0bd02b8f327ec516ad4cb0f2f15", size = 18042539, upload-time = "2025-10-10T04:00:27.693Z" },
+    { url = "https://files.pythonhosted.org/packages/14/fd/cd7a0fd10a04f8cc5ae436b63e0022e236fe51b9dbb8ee6317fd48568c72/onnx-1.19.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:485d3674d50d789e0ee72fa6f6e174ab81cb14c772d594f992141bd744729d8a", size = 18218271, upload-time = "2025-10-10T04:00:30.495Z" },
+    { url = "https://files.pythonhosted.org/packages/65/68/cc8b8c05469fe08384b446304ad7e6256131ca0463bf6962366eebec98c0/onnx-1.19.1-cp312-cp312-win32.whl", hash = "sha256:638bc56ff1a5718f7441e887aeb4e450f37a81c6eac482040381b140bd9ba601", size = 16345111, upload-time = "2025-10-10T04:00:34.982Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/5e/d1cb16693598a512c2cf9ffe0841d8d8fd2c83ae8e889efd554f5aa427cf/onnx-1.19.1-cp312-cp312-win_amd64.whl", hash = "sha256:bc7e2e4e163e679721e547958b5a7db875bf822cad371b7c1304aa4401a7c7a4", size = 16465621, upload-time = "2025-10-10T04:00:39.107Z" },
+    { url = "https://files.pythonhosted.org/packages/90/32/da116cc61fdef334782aa7f87a1738431dd1af1a5d1a44bd95d6d51ad260/onnx-1.19.1-cp312-cp312-win_arm64.whl", hash = "sha256:17c215b1c0f20fe93b4cbe62668247c1d2294b9bc7f6be0ca9ced28e980c07b7", size = 16437505, upload-time = "2025-10-10T04:00:42.255Z" },
 ]
 
 [[package]]
@@ -1867,9 +1867,9 @@ dev = [
     { name = "wat-inspector" },
 ]
 export = [
-    { name = "onnx", specifier = ">=1.18.0" },
+    { name = "onnx", specifier = ">=1.19.1" },
     { name = "onnxruntime", specifier = ">=1.23.1" },
-    { name = "onnxscript", specifier = ">=0.3.2" },
+    { name = "onnxscript", specifier = ">=0.5.3" },
 ]
 test = [
     { name = "pytest", specifier = ">=8.4.1" },
