@@ -134,3 +134,18 @@ class Normalize(Module):
     @override
     def forward(self, input: Tensor) -> Tensor:
         return torch.nn.functional.normalize(input, p=self.p, dim=self.dim)
+
+
+@final
+class ScaleByVectorDimensionality(Module):
+    def __init__(self, dim: int = 512, up: bool = False, down: bool = False) -> None:  # noqa: FBT001,FBT002
+        super().__init__()
+        self.up = up
+        self.down = down
+        self.factor = dim
+
+    @override
+    def forward(self, input: Tensor) -> Tensor:
+        if self.up:
+            return input * self.factor
+        return input / self.factor

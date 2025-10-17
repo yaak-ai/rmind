@@ -168,9 +168,9 @@ episode_builder:
             freeze: True
           - _target_: einops.layers.torch.Rearrange
             pattern: "... c h w -> ... (h w) c"
-          # - _target_: rmind.components.norm.Normalize
-          #   p: 2
-          #   dim: -1
+          - _target_: rmind.components.norm.ScaleByVectorDimensionality
+            down: true
+            dim: ${embedding_dim}
 
       continuous:
         speed:
@@ -200,9 +200,6 @@ episode_builder:
             - _target_: torch.nn.Linear
               in_features: 2
               out_features: ${embedding_dim}
-            - _target_: rmind.components.norm.Normalize
-              p: 2
-              dim: -1
 
       discrete:
         turn_signal:
@@ -231,7 +228,7 @@ episode_builder:
 
       observations:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 268 # 16 x 16 + 10 + 1 + 1 
+        num_embeddings: 268 # 16 x 16 + 10 + 1 + 1
         embedding_dim: ${embedding_dim}
 
       actions:
