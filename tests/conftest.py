@@ -255,7 +255,7 @@ def episode_builder(tokenizers: ModuleDict, device: torch.device) -> Module:
                     "col": Embedding(18, EMBEDDING_DIM),
                 }
             },
-            PositionEncoding.OBSERVATIONS: Embedding(192, EMBEDDING_DIM),
+            PositionEncoding.OBSERVATIONS: Embedding(191, EMBEDDING_DIM),
             PositionEncoding.ACTIONS: Embedding(1, EMBEDDING_DIM),
             PositionEncoding.SPECIAL: Embedding(1, EMBEDDING_DIM),
             PositionEncoding.TIMESTEP: Embedding(6, EMBEDDING_DIM),
