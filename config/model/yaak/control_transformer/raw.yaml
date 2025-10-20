@@ -231,7 +231,7 @@ episode_builder:
 
       observations:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 192
+        num_embeddings: 191
         embedding_dim: ${embedding_dim}
 
       actions:
