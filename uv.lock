@@ -1778,6 +1778,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },
+    { name = "einops-exts" },
     { name = "hydra-core" },
     { name = "more-itertools" },
     { name = "numpy" },
@@ -1833,6 +1834,7 @@ test = [
 requires-dist = [
     { name = "contextily", marker = "extra == 'train'", specifier = ">=1.6.2" },
     { name = "einops", specifier = ">=0.8.1" },
+    { name = "einops-exts", specifier = ">=0.0.4" },
     { name = "funcy", marker = "extra == 'predict'", specifier = ">=2.0" },
     { name = "hydra-core", specifier = ">=1.3.2" },
     { name = "matplotlib", marker = "extra == 'train'", specifier = ">=3.10.3" },

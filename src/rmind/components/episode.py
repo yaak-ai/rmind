@@ -233,6 +233,7 @@ class EpisodeBuilder(Module):
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
+        perceiver_resampler: InstanceOf[ModuleDict] | None = None,
         freeze: bool | None = None,
     ) -> None:
         super().__init__()
@@ -242,6 +243,7 @@ class EpisodeBuilder(Module):
         self.input_transform = input_transform
         self.tokenizers = tokenizers
         self.embeddings = embeddings
+        self.perceiver_resampler = perceiver_resampler
         self.position_encoding = position_encoding
 
         if freeze is not None:
@@ -273,6 +275,8 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
+        if self.perceiver_resampler is not None:
+            input_embeddings = self.perceiver_resampler(input_embeddings)
 
         index = self._build_index(input_embeddings)
         timestep_index = tree_map(itemgetter(0), index)

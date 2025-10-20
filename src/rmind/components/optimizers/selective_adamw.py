@@ -39,7 +39,14 @@ class SelectiveAdamW(AdamW):
                     weight_decay_param_blacklist.add(param_name)
 
                 # https://github.com/pytorch/pytorch/blob/v2.7.0/torch/nn/modules/activation.py#L1091
-                case "in_proj_weight":
+                case (
+                    "in_proj_weight"
+                    | "cls_token"
+                    | "reg_token"
+                    | "gamma_1"
+                    | "gamma_2"
+                    | "latents"
+                ):
                     pass
 
                 case _:

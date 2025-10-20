@@ -214,6 +214,23 @@ episode_builder:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 3
         embedding_dim: ${embedding_dim}
+  perceiver_resampler:
+    _target_: rmind.components.containers.ModuleDict
+    modules:
+      image:
+        _target_: rmind.components.perceiver_resampler.PerceiverResampler
+        dim: ${embedding_dim} 
+        num_latents: 32
+        depth: 2
+        heads: 6
+      continuous:
+        _target_: torch.nn.Identity
+      context: 
+        _target_: torch.nn.Identity
+      discrete:
+        _target_: torch.nn.Identity
+      special:
+        _target_: torch.nn.Identity
 
   position_encoding:
     _target_: rmind.components.containers.ModuleDict
@@ -231,7 +248,8 @@ episode_builder:
 
       observations:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 191
+        # num_embeddings: 267 # 16 x 16 + 10 + 1
+        num_embeddings: 43 # 32 + 10 + 1
         embedding_dim: ${embedding_dim}
 
       actions:
