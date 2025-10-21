@@ -6,6 +6,7 @@ import pytorch_lightning as pl
 import torch
 from hydra import compose, initialize
 from hydra.utils import instantiate
+from optree import tree_all, tree_map
 from pytest_lazy_fixtures import lf
 from rbyte.types import Batch
 from tensordict import TensorDict
@@ -158,6 +159,31 @@ def test_predict(
     trainer: pl.Trainer, model: pl.LightningModule, datamodule: pl.LightningDataModule
 ) -> None:
     trainer.predict(model, datamodule=datamodule, return_predictions=False)  # pyright: ignore[reportUnusedCallResult]
+
+
+@pytest.mark.parametrize("model", [lf("model_yaak_control_transformer_raw")])
+def test_shared_encoder_state_dict(model: pl.LightningModule) -> None:
+    state_dict = model.state_dict()
+    encoder_keys = []
+    objective_encoder_keys = []
+    for k in state_dict:
+        match k.split(".", maxsplit=3):
+            case ["encoder", *_]:
+                encoder_keys.append(k)
+
+            case ["objectives", _objective, "encoder", *_]:
+                objective_encoder_keys.append(k)
+
+            case _:
+                pass
+
+    assert encoder_keys
+    assert not objective_encoder_keys
+
+    state_dict_ref = tree_map(torch.Tensor.clone, state_dict)  # pyright: ignore[reportArgumentType]
+    model.load_state_dict(state_dict)  # pyright: ignore[reportUnusedCallResult]
+    state_dict_reload = model.state_dict()
+    assert tree_all(tree_map(torch.equal, state_dict_ref, state_dict_reload))  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize("model", [lf("model_yaak_control_transformer_raw")])

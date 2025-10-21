@@ -1,4 +1,5 @@
 from collections.abc import Callable, Mapping, Sequence
+from itertools import product
 from typing import Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
@@ -27,6 +28,9 @@ from structlog import get_logger
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
+from torch.nn.modules.module import (
+    _IncompatibleKeys,  # pyright: ignore[reportPrivateUsage]
+)
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -101,6 +105,83 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.lr_scheduler = lr_scheduler
 
         self.save_hyperparameters(hparams)
+
+    @override
+    def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        shared_encoder_objectives = {
+            k
+            for k, v in self.objectives.items()
+            if getattr(v, "encoder", None) is self.encoder
+        }
+
+        shared_encoder_objective_keys = set()
+        state_dict = super().state_dict(*args, **kwargs)
+
+        for k in state_dict:
+            match k.split(".", maxsplit=3):
+                case ["objectives", objective, "encoder", *_] if (
+                    objective in shared_encoder_objectives
+                ):
+                    shared_encoder_objective_keys.add(k)
+
+                case _:
+                    pass
+
+        return {
+            k: v
+            for k, v in state_dict.items()
+            if k not in shared_encoder_objective_keys
+        }
+
+    @override
+    def load_state_dict(
+        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
+    ) -> _IncompatibleKeys:
+        incompatible_keys = super().load_state_dict(
+            state_dict, strict=False, assign=assign
+        )
+        if incompatible_keys.missing_keys:
+            encoder_keys = [k for k in state_dict if k.startswith("encoder.")]
+            shared_encoder_objectives = {
+                k
+                for k, v in self.objectives.items()
+                if getattr(v, "encoder", None) is self.encoder
+            }
+            shared_encoder_objective_keys = map(
+                ".".join,
+                product(("objectives",), shared_encoder_objectives, encoder_keys),
+            )
+            missing_keys = set(incompatible_keys.missing_keys) - set(
+                shared_encoder_objective_keys
+            )
+            incompatible_keys = incompatible_keys._replace(
+                missing_keys=list(missing_keys)
+            )
+
+        # mimic `super().load_state_dict` `strict` handling
+        error_msgs: list[str] = []
+        if strict:
+            if unexpected_keys := incompatible_keys.unexpected_keys:
+                error_msgs.append(
+                    "Unexpected key(s) in state_dict: {}. ".format(
+                        ", ".join(f'"{k}"' for k in unexpected_keys)
+                    )
+                )
+
+            if missing_keys := incompatible_keys.missing_keys:
+                error_msgs.append(
+                    "Missing key(s) in state_dict: {}. ".format(
+                        ", ".join(f'"{k}"' for k in missing_keys)
+                    )
+                )
+
+        if error_msgs:
+            msg = "Error(s) in loading state_dict for {}:\n\t{}".format(
+                self.__class__.__name__, "\n\t".join(error_msgs)
+            )
+            raise RuntimeError(msg)
+
+        return incompatible_keys
 
     @override
     @_restricted_classmethod
