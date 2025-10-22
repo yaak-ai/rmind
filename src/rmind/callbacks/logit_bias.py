@@ -15,7 +15,7 @@ from torch.utils._pytree import (
     tree_map,  # noqa: PLC2701
 )
 
-from rmind.components.loss import LogitBiasMixin
+from rmind.components.loss import HasLogitBias
 from rmind.models.control_transformer import ControlTransformer
 from rmind.utils.pytree import path_to_key
 
@@ -29,12 +29,12 @@ class LogitBiasSetter(Callback):
         self, trainer: InstanceOf[pl.Trainer], pl_module: InstanceOf[ControlTransformer]
     ) -> None:
         objectives = pl_module.objectives
-        losses: list[tuple[str, KeyPath, LogitBiasMixin]] = []
+        losses: list[tuple[str, KeyPath, HasLogitBias]] = []
 
         for objective_key, objective in objectives.items():
             for loss_keypath, loss in tree_flatten_with_path(objective.losses)[0]:
                 match loss:
-                    case LogitBiasMixin(logit_bias=None):
+                    case HasLogitBias(logit_bias=None):
                         losses.append((objective_key, loss_keypath, loss))
 
                     case _:
