@@ -21,7 +21,7 @@ repos:
       - id: deptry
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.0
+    rev: v0.14.1
     hooks:
       - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
@@ -33,7 +33,7 @@ repos:
       - id: basedpyright
 
   - repo: https://github.com/tombi-toml/tombi-pre-commit
-    rev: v0.6.31
+    rev: v0.6.37
     hooks:
       - id: tombi-format
       - id: tombi-lint

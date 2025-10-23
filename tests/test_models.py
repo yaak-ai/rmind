@@ -194,8 +194,7 @@ def test_resume_from_checkpoint(
     tmp_path: Path,
 ) -> None:
     trainer.fit(model, datamodule=datamodule)
-
     ckpt_path = tmp_path / "model.ckpt"
     trainer.save_checkpoint(ckpt_path)
-
-    trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
+    model = model.__class__.load_from_checkpoint(ckpt_path, strict=True)
+    trainer.fit(model, datamodule=datamodule)

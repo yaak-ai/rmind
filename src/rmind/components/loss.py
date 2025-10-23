@@ -1,10 +1,15 @@
 from collections.abc import Callable
-from typing import Any, override
+from typing import Any, Protocol, override, runtime_checkable
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
+
+
+@runtime_checkable
+class HasLogitBias(Protocol):
+    logit_bias: Tensor | None
 
 
 class FocalLoss(Module):
@@ -23,44 +28,24 @@ class FocalLoss(Module):
         return ((1 - pt).pow(self.gamma) * ce_loss).mean()
 
 
-class LogitBiasMixin:
-    _logit_bias: Tensor | None  # pyright: ignore[reportUninitializedInstanceVariable]
-
-    @property
-    def logit_bias(self) -> Tensor | None:
-        return self._logit_bias
-
-    @logit_bias.setter
-    def logit_bias(self, value: Tensor | None) -> None:
-        match value:
-            case Tensor():
-                if hasattr(self, "_logit_bias"):
-                    del self._logit_bias
-
-                self.register_buffer("_logit_bias", value, persistent=False)  # pyright: ignore[reportAttributeAccessIssue]
-
-            case None:
-                self._logit_bias = None
-
-
-class LogitBiasFocalLoss(LogitBiasMixin, FocalLoss):
+class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
     def __init__(self, *, logit_bias: Tensor | None = None, gamma: float = 2.0) -> None:
         super().__init__(gamma=gamma)
 
-        self._logit_bias: Tensor | None = logit_bias
+        self.logit_bias: Tensor | None = logit_bias
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         return super().forward(input + self.logit_bias, target)  # pyright: ignore[reportOperatorIssue]
 
 
-class LogitBiasCrossEntropyLoss(LogitBiasMixin, CrossEntropyLoss):
+class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
     def __init__(
         self, *args: Any, logit_bias: Tensor | None = None, **kwargs: Any
     ) -> None:
         super().__init__(*args, **kwargs)
 
-        self._logit_bias: Tensor | None = logit_bias
+        self.logit_bias: Tensor | None = logit_bias
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
