@@ -42,7 +42,7 @@ rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 
 [project.optional-dependencies]
-predict = ["funcy>=2.0", "wandb>=0.21.0", "rbyte[visualize]"]
+predict = ["funcy>=2.0", "wandb>=0.21.0", "rbyte[visualize]", "pipefunc"]
 test = ["pytest>=8.4.1", "pytest-lazy-fixtures>=1.1.4"]
 train = [
   "contextily>=1.6.2",
