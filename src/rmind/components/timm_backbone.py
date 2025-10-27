@@ -24,6 +24,10 @@ class TimmBackbone(nn.Module):
     def forward(self, input: Tensor) -> Tensor:
         *b, c, h, w = input.shape
         x = input.view(prod(b), c, h, w)
-        x = self.model(x)[-1]
+        x = self.model(
+            x
+        )[
+            -2
+        ]  # we need penultimate layer since its feature maps are better https://github.com/facebookresearch/dinov3/issues/25#issuecomment-3258176327
         *_, c, h, w = x.shape
         return x.view(*b, c, h, w)
