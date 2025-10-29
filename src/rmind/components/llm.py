@@ -4,6 +4,8 @@ from torch import Tensor, nn
 from torch.nn.modules.module import Module
 from torch.utils.checkpoint import checkpoint
 
+from rmind.components.nn import default_weight_init_fn
+
 
 class TransformerEncoderBlock(nn.Module):
     def __init__(  # noqa: PLR0913, PLR0917
@@ -83,9 +85,20 @@ class TransformerEncoder(nn.Module):
         ])
         # https://github.com/karpathy/nanoGPT/blob/master/model.py#L182
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
+        self.apply(self._init_weights)  # pyright: ignore[reportUnusedCallResult]
 
         if freeze is not None:
             self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+
+    @staticmethod
+    def _init_weights(module: Module) -> None:
+        match module:
+            case nn.Linear():
+                default_weight_init_fn(module.weight)  # pyright: ignore[reportUnusedCallResult]
+                if module.bias is not None:  # pyright: ignore[reportUnnecessaryComparison]
+                    nn.init.zeros_(module.bias)  # pyright: ignore[reportUnusedCallResult]
+            case _:
+                pass
 
     @override
     def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
