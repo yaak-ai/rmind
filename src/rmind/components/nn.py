@@ -13,14 +13,16 @@ from rmind.utils.pytree import key_get_default
 
 from .base import Invertible
 
-_default_embedding_weight_init_fn = partial(nn.init.normal_, mean=0.0, std=0.02)
+default_weight_init_fn = partial(
+    nn.init.trunc_normal_, mean=0.0, std=0.02, a=-0.04, b=0.04
+)
 
 
 class Embedding(nn.Embedding):
     def __init__(
         self,
         *args: Any,
-        weight_init_fn: Callable[[Tensor], Any] = _default_embedding_weight_init_fn,
+        weight_init_fn: Callable[[Tensor], Any] = default_weight_init_fn,
         **kwargs: Any,
     ) -> None:
         self.weight_init_fn: Callable[[Tensor], Any] = weight_init_fn
