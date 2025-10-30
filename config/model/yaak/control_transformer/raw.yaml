@@ -236,7 +236,7 @@ episode_builder:
         patch:
       observations:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 731 # 20 * 36 + 10 + 1
+        num_embeddings: 267 # 16 * 16 + 10 + 1
         embedding_dim: ${embedding_dim}
 
       actions:
