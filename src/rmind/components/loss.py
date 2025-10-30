@@ -104,7 +104,7 @@ class GramAnchoringObjective(Module):
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         # Don't update target
-        target = target.detch()  # pyright: ignore[reportAttributeAccessIssue]
+        target = target.detach()
 
         sim_input = tm.pairwise_cosine_similarity(input, input)  # pyright: ignore[reportAttributeAccessIssue]
         sim_target = tm.pairwise_cosine_similarity(target, target)  # pyright: ignore[reportAttributeAccessIssue]
