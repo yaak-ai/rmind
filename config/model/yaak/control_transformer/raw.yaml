@@ -57,7 +57,7 @@ episode_builder:
               - _target_: torchvision.transforms.v2.CenterCrop
                 size: [320, 576]
               - _target_: torchvision.transforms.v2.Resize
-                size: [256, 256]
+                size: [192, 352]
               - _target_: torchvision.transforms.v2.ToDtype
                 scale: true
                 dtype:
@@ -168,27 +168,42 @@ episode_builder:
             freeze: True
           - _target_: einops.layers.torch.Rearrange
             pattern: "... c h w -> ... (h w) c"
-          - _target_: rmind.components.norm.ScaleByVectorDimensionality
-            down: true
-            dim: ${embedding_dim}
-
+          - _target_: torch.nn.LayerNorm
+            normalized_shape: ${embedding_dim}
+            elementwise_affine: False
       continuous:
         speed:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${speed_bins}
-          embedding_dim: ${embedding_dim}
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Embedding
+              num_embeddings: ${speed_bins}
+              embedding_dim: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
         gas_pedal:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${gas_pedal_bins}
-          embedding_dim: ${embedding_dim}
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Embedding
+              num_embeddings: ${gas_pedal_bins}
+              embedding_dim: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
         brake_pedal:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${brake_pedal_bins}
-          embedding_dim: ${embedding_dim}
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Embedding
+              num_embeddings: ${brake_pedal_bins}
+              embedding_dim: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
         steering_angle:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${steering_angle_bins}
-          embedding_dim: ${embedding_dim}
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Embedding
+              num_embeddings: ${steering_angle_bins}
+              embedding_dim: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
         gas_pedal_diff: null
         brake_pedal_diff: null
         steering_angle_diff: null
@@ -217,18 +232,9 @@ episode_builder:
     modules:
       image:
         patch:
-      #     row:
-      #       _target_: rmind.components.nn.Embedding
-      #       num_embeddings: 16
-      #       embedding_dim: ${embedding_dim}
-      #     col:
-      #       _target_: rmind.components.nn.Embedding
-      #       num_embeddings: 16
-      #       embedding_dim: ${embedding_dim}
-
       observations:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 267 # 16 x 16 + 10 + 1
+        num_embeddings: 275 # 20 x 36 + 10 + 1
         embedding_dim: ${embedding_dim}
 
       actions:
@@ -366,8 +372,8 @@ objectives:
         modules:
           image:
             cam_front_left:
-              _target_: torch.nn.MSELoss
-              reduction: mean
+              _target_: rmind.components.loss.GramAnchoringObjective
+              weight: 100
 
           continuous:
             speed:

@@ -1,8 +1,10 @@
 from collections.abc import Callable
-from typing import Any, override
+from typing import Any, final, override
 
 import torch
 import torch.nn.functional as F
+import torchmetrics as tm
+from einops import rearrange
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
@@ -90,3 +92,27 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         var = self.var_pos_function(log_var)
 
         return super().forward(input=mean, target=target, var=var)
+
+
+# https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
+@final
+class GramAnchoringObjective(Module):
+    def __init__(self, *args: Any, weight: float = 1.0, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.weight: float = weight
+        self.mse_loss = torch.nn.MSELoss()
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        input = rearrange(input, "b t s d -> (b t s) d")
+
+        # Don't update target
+        target = target.detch()  # pyright: ignore[reportAttributeAccessIssue]
+        target = rearrange(target, "b t s d -> (b t s) d")
+
+        sim_input = tm.pairwise_cosine_similarity(input, input)  # pyright: ignore[reportAttributeAccessIssue]
+        sim_target = tm.pairwise_cosine_similarity(target, target)  # pyright: ignore[reportAttributeAccessIssue]
+
+        loss = self.mse_loss(sim_input, sim_target)
+
+        return self.weight * loss
