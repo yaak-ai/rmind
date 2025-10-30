@@ -1,6 +1,6 @@
 ---
 defaults:
-  - /dataset/yaak/val@train.dataset
+  - /dataset/yaak/train@train.dataset
   - /dataset/yaak/val@val.dataset
   - _self_
 
