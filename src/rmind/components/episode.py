@@ -243,8 +243,8 @@ class EpisodeBuilder(Module):
         self.input_transform = input_transform
         self.tokenizers = tokenizers
         self.embeddings = embeddings
-        self.perceiver_resampler = perceiver_resampler
         self.position_encoding = position_encoding
+        self.perceiver_resampler = perceiver_resampler
 
         if freeze is not None:
             if freeze is False and (
@@ -275,9 +275,6 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
-        if self.perceiver_resampler is not None:
-            input_embeddings = self.perceiver_resampler(input_embeddings)
-
         index = self._build_index(input_embeddings)
         timestep_index = tree_map(itemgetter(0), index)
 
@@ -288,6 +285,17 @@ class EpisodeBuilder(Module):
         position_embeddings = self._build_position_embeddings(
             input_embeddings, timestep_index, timestep
         )
+        if self.perceiver_resampler is not None:
+            # if embeddings are resampled, we need to provide pe for them and then don't need them in future
+            input_embeddings['image']['cam_front_left'] = self.perceiver_resampler(input_embeddings['image']['cam_front_left'] + position_embeddings['image']['cam_front_left'])['image']
+            index = self._build_index(input_embeddings)
+            timestep_index = tree_map(itemgetter(0), index)
+
+            timestep = unflatten_keys({
+                tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
+            })
+
+            position_embeddings['image']['cam_front_left'] = torch.zeros_like(input_embeddings['image']['cam_front_left'])
 
         return (
             EpisodeExport(
