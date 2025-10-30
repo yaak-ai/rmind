@@ -274,8 +274,8 @@ class EpisodeBuilder(Module):
             for k, v in self.special_tokens.items()
         }
 
-        input_embeddings = self.embeddings(input_tokens)
-        input_embeddings = self.normalization(input_embeddings)
+        embeddings = self.embeddings(input_tokens)
+        input_embeddings = self.normalization(embeddings)
 
         index = self._build_index(input_embeddings)
         timestep_index = tree_map(itemgetter(0), index)
