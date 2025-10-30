@@ -4,7 +4,6 @@ from typing import Any, final, override
 import torch
 import torch.nn.functional as F
 import torchmetrics as tm
-from einops import rearrange
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
@@ -104,11 +103,8 @@ class GramAnchoringObjective(Module):
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        input = rearrange(input, "b t s d -> (b t s) d")
-
         # Don't update target
         target = target.detch()  # pyright: ignore[reportAttributeAccessIssue]
-        target = rearrange(target, "b t s d -> (b t s) d")
 
         sim_input = tm.pairwise_cosine_similarity(input, input)  # pyright: ignore[reportAttributeAccessIssue]
         sim_target = tm.pairwise_cosine_similarity(target, target)  # pyright: ignore[reportAttributeAccessIssue]
