@@ -3,7 +3,6 @@ from typing import Any, final, override
 
 import torch
 import torch.nn.functional as F
-import torchmetrics as tm
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
@@ -106,7 +105,10 @@ class GramAnchoringObjective(Module):
         # Don't update target
         target = target.detach()
 
-        sim_input = tm.functional.pairwise_cosine_similarity(input, input)
-        sim_target = tm.functional.pairwise_cosine_similarity(target, target)
+        input = F.normalize(input, dim=-1)
+        target = F.normalize(target, dim=-1)
+
+        sim_input = torch.matmul(input, input.t())
+        sim_target = torch.matmul(target, target.t())
 
         return self.weight * self.mse_loss(sim_input, sim_target)

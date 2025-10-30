@@ -232,6 +232,7 @@ class EpisodeBuilder(Module):
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
+        normalization: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
     ) -> None:
@@ -242,6 +243,7 @@ class EpisodeBuilder(Module):
         self.input_transform = input_transform
         self.tokenizers = tokenizers
         self.embeddings = embeddings
+        self.normalization = normalization
         self.position_encoding = position_encoding
 
         if freeze is not None:
@@ -273,6 +275,7 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
+        input_embeddings = self.normalization(input_embeddings)
 
         index = self._build_index(input_embeddings)
         timestep_index = tree_map(itemgetter(0), index)
