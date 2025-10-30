@@ -11,10 +11,16 @@ class TimmBackbone(nn.Module):
         model_name: str = "vit_small_patch16_dinov3.lvd1689m",
         *,
         freeze: bool | None = None,
+        out_indices: list[int] | None = None,
+        img_size: list[int] | None = None,
     ) -> None:
         super().__init__()
         self.model: nn.Module = create_model(
-            model_name, pretrained=True, features_only=True
+            model_name,
+            pretrained=True,
+            features_only=True,
+            out_indices=out_indices,
+            img_size=img_size,
         )
 
         if freeze is not None:

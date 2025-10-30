@@ -166,6 +166,8 @@ episode_builder:
           - _target_: rmind.components.timm_backbone.TimmBackbone
             model_name: vit_small_patch16_dinov3.lvd1689m
             freeze: True
+            out_indices: [10]
+            img_size: [192, 352]
           - _target_: einops.layers.torch.Rearrange
             pattern: "... c h w -> ... (h w) c"
           - _target_: torch.nn.LayerNorm
