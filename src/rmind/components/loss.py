@@ -113,6 +113,4 @@ class GramAnchoringObjective(Module):
         sim_input = tm.pairwise_cosine_similarity(input, input)  # pyright: ignore[reportAttributeAccessIssue]
         sim_target = tm.pairwise_cosine_similarity(target, target)  # pyright: ignore[reportAttributeAccessIssue]
 
-        loss = self.mse_loss(sim_input, sim_target)
-
-        return self.weight * loss
+        return self.weight * self.mse_loss(sim_input, sim_target)
