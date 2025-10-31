@@ -1,13 +1,13 @@
 ---
 defaults:
-  - /dataset/yaak/train@train.dataset
+  - /dataset/yaak/val@train.dataset
   - /dataset/yaak/val@val.dataset
   - _self_
 
 _target_: rmind.datamodules.GenericDataModule
 train:
   _target_: rbyte.dataloader.TorchDataNodeDataLoader
-  batch_size: 24
+  batch_size: 64
   shuffle: true
   collate_fn:
     _target_: rbyte.types.Batch.to_dict
@@ -19,7 +19,7 @@ train:
 
 val:
   _target_: rbyte.dataloader.TorchDataNodeDataLoader
-  batch_size: 24
+  batch_size: 32
   shuffle: false
   collate_fn:
     _target_: rbyte.types.Batch.to_dict

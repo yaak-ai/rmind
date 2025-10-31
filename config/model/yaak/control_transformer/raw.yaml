@@ -394,7 +394,8 @@ objectives:
             cam_front_left:
               _target_: rmind.components.loss.GramAnchoringObjective
               weight: 100
-
+              patches: 256
+              timestep: 5
           continuous:
             speed:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss

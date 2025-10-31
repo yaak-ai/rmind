@@ -3,6 +3,7 @@ from typing import Any, final, override
 
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
@@ -95,20 +96,40 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
 # https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
 @final
 class GramAnchoringObjective(Module):
-    def __init__(self, *args: Any, weight: float = 1.0, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        weight: float = 1.0,
+        patches: int = 256,
+        timestep: int = 6,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
-        self.weight: float = weight
+        self.weight = weight
+        self.patches = patches
+        self.timestep = timestep
         self.mse_loss = torch.nn.MSELoss()
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        # Don't update target
+        # Trust but ~~verify~~ detach
         target = target.detach()
 
+        input = rearrange(
+            input, "(b t p) d -> b t p d", t=self.timestep, p=self.patches
+        )
+        target = rearrange(
+            target, "(b t p) d -> b t p d", t=self.timestep, p=self.patches
+        )
+
+        # B T P D
         input = F.normalize(input, dim=-1)
         target = F.normalize(target, dim=-1)
 
-        sim_input = torch.matmul(input, input.t())
-        sim_target = torch.matmul(target, target.t())
+        # B T P P
+        sim_input = torch.matmul(input, input.transpose(-1, -2))
+        sim_target = torch.matmul(target, target.transpose(-1, -2))
 
-        return self.weight * self.mse_loss(sim_input, sim_target)
+        # B T P
+        sim = (input * target).sum(dim=-1).mean()
+        return self.weight * (1.0 - sim + self.mse_loss(sim_input, sim_target))
