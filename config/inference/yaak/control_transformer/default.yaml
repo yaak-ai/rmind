@@ -18,9 +18,6 @@ trainer:
   precision: "bf16-mixed"
   logger: false
   callbacks:
-    - _target_: rmind.callbacks.RerunPredictionWriter
-      write_interval: batch
-      logger: ${rerun_logger}
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
       path: predictions/${model.artifact}/${now:%Y-%m-%d--%H-%M-%S}/{batch_idx:06}.parquet

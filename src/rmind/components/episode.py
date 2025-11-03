@@ -179,6 +179,35 @@ class Episode(TensorClass["frozen"]):
         return rearrange(packed, "b t s d -> b (t s) d")
 
 
+@final
+class ModalityDropout(Module):
+    def __init__(
+        self,
+        probability: float,
+        mask_embedding_dim: int,
+        weight_init_fn: Callable[[Tensor], Any] | None = None,
+    ) -> None:
+        super().__init__()
+        self.probability = probability
+        self.mask_embedding_dim = mask_embedding_dim
+        self.mask_embedding = torch.randn(mask_embedding_dim)
+
+        if weight_init_fn is not None:
+            self.mask_embedding.data = weight_init_fn(self.mask_embedding)
+
+    @override
+    def forward(self, embeddings: Tensor) -> Tensor:
+        mask = self.mask_embedding.expand(embeddings.shape).to(
+            dtype=embeddings.dtype, device=embeddings.device
+        )
+
+        sample_mask = (
+            torch.rand(embeddings.shape[0], device=embeddings.device) < self.probability
+        ).view(-1, *([1] * (embeddings.ndim - 1)))
+
+        return torch.where(sample_mask, mask, embeddings)
+
+
 @dataclass(frozen=True, kw_only=True)
 class EpisodeExport:
     input: TensorTree
@@ -237,6 +266,9 @@ class EpisodeBuilder(Module):
         freeze: bool | None = None,
     ) -> None:
         super().__init__()
+        from torch import nn
+        from functools import partial
+        embedding_dim = 512
 
         self.special_tokens = special_tokens
         self.timestep = timestep
@@ -245,6 +277,29 @@ class EpisodeBuilder(Module):
         self.embeddings = embeddings
         self.position_encoding = position_encoding
         self.perceiver_resampler = perceiver_resampler
+        self.modality_dropout = ModuleDict({
+            # Modality.IMAGE.value: ModalityDropout(probability=1, mask_embedding_dim=embedding_dim, weight_init_fn=partial(nn.functional.normalize, p=2, dim=-1)),
+            Modality.IMAGE.value: nn.Identity(),
+            Modality.CONTINUOUS.value: {
+                # "speed": ModalityDropout(
+                #     probability=1,
+                #     mask_embedding_dim=embedding_dim,
+                #     weight_init_fn=partial(nn.init.normal_, mean=0, std=0.02),
+                # ),    
+                "speed": nn.Identity(),
+                "gas_pedal": nn.Identity(),
+                "gas_pedal_diff": nn.Identity(),
+                "brake_pedal": nn.Identity(),
+                "brake_pedal_diff": nn.Identity(),
+                "steering_angle": nn.Identity(),
+                "steering_angle_diff": nn.Identity(),
+            },
+            Modality.DISCRETE.value: nn.Identity(),
+            Modality.CONTEXT.value: {
+                "waypoints": ModalityDropout(probability=1, mask_embedding_dim=embedding_dim, weight_init_fn=partial(nn.functional.normalize, p=2, dim=-1)),
+            },
+            Modality.SPECIAL.value: nn.Identity(),
+        })
 
         if freeze is not None:
             if freeze is False and (
@@ -275,6 +330,7 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
+        input_embeddings = self.modality_dropout(input_embeddings)
         index = self._build_index(input_embeddings)
         timestep_index = tree_map(itemgetter(0), index)
 
@@ -287,7 +343,12 @@ class EpisodeBuilder(Module):
         )
         if self.perceiver_resampler is not None:
             # if embeddings are resampled, we need to provide pe for them and then don't need them in future
-            input_embeddings['image']['cam_front_left'] = self.perceiver_resampler(input_embeddings['image']['cam_front_left'] + position_embeddings['image']['cam_front_left'])['image']
+            input_embeddings[Modality.IMAGE.value]["cam_front_left"] = (
+                self.perceiver_resampler(
+                    input_embeddings[Modality.IMAGE.value]["cam_front_left"]
+                    + position_embeddings[Modality.IMAGE.value]["cam_front_left"]
+                )["image"]
+            )
             index = self._build_index(input_embeddings)
             timestep_index = tree_map(itemgetter(0), index)
 
@@ -295,7 +356,9 @@ class EpisodeBuilder(Module):
                 tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
             })
 
-            position_embeddings['image']['cam_front_left'] = torch.zeros_like(input_embeddings['image']['cam_front_left'])
+            position_embeddings["image"]["cam_front_left"] = torch.zeros_like(
+                input_embeddings["image"]["cam_front_left"]
+            )
 
         return (
             EpisodeExport(
