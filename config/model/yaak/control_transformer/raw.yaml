@@ -393,7 +393,7 @@ objectives:
           image:
             cam_front_left:
               _target_: rmind.components.loss.GramAnchoringObjective
-              weight: 100
+              weight: 10
               patches: 256
               timestep: 5
           continuous:
