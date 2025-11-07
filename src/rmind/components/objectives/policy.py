@@ -144,6 +144,12 @@ class PolicyObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
+            action_summary = (
+                episode.index[-2]
+                .select((Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
+                .parse(embedding)
+                .get((Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
+            )
 
             waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
                 dim=1, keepdim=True
@@ -169,7 +175,12 @@ class PolicyObjective(Objective):
             ].mean(dim=1, keepdim=True)
 
         features = rearrange(
-            [observation_summary, observation_history.detach(), waypoints],
+            [
+                observation_summary,
+                observation_history.detach(),
+                action_summary,
+                waypoints,
+            ],
             "i b 1 d -> b 1 (i d)",
         )
 
@@ -251,9 +262,15 @@ class PolicyObjective(Objective):
             waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
                 dim=1, keepdim=True
             )
+            action_summary = (
+                episode.index[-2]
+                .select((Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
+                .parse(embedding)
+                .get((Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
+            )
 
             features = rearrange(
-                [observation_summary, observation_history, waypoints],
+                [observation_summary, observation_history, action_summary, waypoints],
                 "i b 1 d -> b 1 (i d)",
             )
 
