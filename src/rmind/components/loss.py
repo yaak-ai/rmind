@@ -102,12 +102,14 @@ class GramAnchoringObjective(Module):
         weight: float = 1.0,
         patches: int = 256,
         timestep: int = 6,
+        gamma: int = 2,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.weight = weight
         self.patches = patches
         self.timestep = timestep
+        self.gamma = gamma
         self.mse_loss = torch.nn.MSELoss()
 
     @override
@@ -127,9 +129,19 @@ class GramAnchoringObjective(Module):
         target = F.normalize(target, dim=-1)
 
         # B T P P
-        sim_input = torch.matmul(input, input.transpose(-1, -2))
-        sim_target = torch.matmul(target, target.transpose(-1, -2))
+        cross_time_pred = torch.matmul(input[:, 1:], target[:, :-1].transpose(-1, -2))
+        cross_time_gt = torch.matmul(target[:, 1:], target[:, :-1].transpose(-1, -2))
 
         # B T P
-        sim = (input * target).sum(dim=-1).mean()
-        return self.weight * (1.0 - sim + self.mse_loss(sim_input, sim_target))
+        similarity = (target[:, 1:] * target[:, :-1]).sum(dim=-1)
+        gating_weight = (1.0 - similarity).pow(self.gamma)
+
+        # B T P
+        diff = (cross_time_pred - cross_time_gt).pow(2).mean(dim=-1)
+        cross_time_gram_loss = (gating_weight * diff).sum() / (
+            gating_weight.sum() + 1e-6
+        )
+
+        # B T P
+        sim_loss = 1.0 - (input[:, 1:] * target[:, 1:]).sum(dim=-1).mean()
+        return self.weight * (sim_loss + cross_time_gram_loss)

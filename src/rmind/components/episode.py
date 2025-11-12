@@ -156,13 +156,15 @@ class Episode(TensorClass["frozen"]):
     input: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_tokens: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
+    projected_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     position_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     index: Index  # pyright: ignore[reportUninitializedInstanceVariable]
     timestep: Timestep  # pyright: ignore[reportUninitializedInstanceVariable]
+    layer_norm: Module  # pyright: ignore[reportUninitializedInstanceVariable]
 
     @property
     def embeddings(self) -> TensorDict:
-        return self.input_embeddings + self.position_embeddings
+        return self.projected_embeddings + self.position_embeddings
 
     @property
     def embeddings_packed(self) -> Tensor:
@@ -232,8 +234,9 @@ class EpisodeBuilder(Module):
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
-        normalization: InstanceOf[ModuleDict],
+        projection: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
+        layer_norm: InstanceOf[Module],
         freeze: bool | None = None,
     ) -> None:
         super().__init__()
@@ -243,8 +246,9 @@ class EpisodeBuilder(Module):
         self.input_transform = input_transform
         self.tokenizers = tokenizers
         self.embeddings = embeddings
-        self.normalization = normalization
+        self.projection = projection
         self.position_encoding = position_encoding
+        self.layer_norm = layer_norm
 
         if freeze is not None:
             if freeze is False and (
@@ -274,10 +278,10 @@ class EpisodeBuilder(Module):
             for k, v in self.special_tokens.items()
         }
 
-        embeddings = self.embeddings(input_tokens)
-        input_embeddings = self.normalization(embeddings)
+        input_embeddings = self.embeddings(input_tokens)
+        projected_embeddings = self.projection(input_embeddings)
 
-        index = self._build_index(input_embeddings)
+        index = self._build_index(projected_embeddings)
         timestep_index = tree_map(itemgetter(0), index)
 
         timestep = unflatten_keys({
@@ -285,7 +289,7 @@ class EpisodeBuilder(Module):
         })
 
         position_embeddings = self._build_position_embeddings(
-            input_embeddings, timestep_index, timestep
+            projected_embeddings, timestep_index, timestep
         )
 
         return (
@@ -308,12 +312,16 @@ class EpisodeBuilder(Module):
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
+                projected_embeddings=TensorDict.from_dict(
+                    projected_embeddings, batch_dims=2
+                ).filter_non_tensor_data(),
                 position_embeddings=TensorDict.from_dict(
                     position_embeddings,  # pyright: ignore[reportArgumentType]
                     batch_dims=2,
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
+                layer_norm=self.layer_norm,
                 device=device,
             )
         )
