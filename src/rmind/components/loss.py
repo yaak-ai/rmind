@@ -103,6 +103,7 @@ class GramAnchoringObjective(Module):
         patches: int = 256,
         timestep: int = 6,
         gamma: int = 2,
+        tau: float = 0.1,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -110,6 +111,7 @@ class GramAnchoringObjective(Module):
         self.patches = patches
         self.timestep = timestep
         self.gamma = gamma
+        self.tau = tau
         self.mse_loss = torch.nn.MSELoss()
 
     @override
@@ -137,11 +139,16 @@ class GramAnchoringObjective(Module):
         gating_weight = (1.0 - similarity).pow(self.gamma)
 
         # B T P
-        diff = (cross_time_pred - cross_time_gt).pow(2).mean(dim=-1)
-        cross_time_gram_loss = (gating_weight * diff).sum() / (
-            gating_weight.sum() + 1e-6
-        )
+        gt_prob = torch.softmax(cross_time_gt / self.tau, dim=-1)
+        pred_prob = torch.softmax(cross_time_pred / self.tau, dim=-1)
+
+        kl = (gt_prob * (gt_prob.add(1e-8).log() - pred_prob.add(1e-8).log())).sum(
+            dim=-1
+        )  # [B,T-1,P]
+        loss_kl = (gating_weight * kl).sum() / (gating_weight.sum() + 1e-6)
 
         # B T P
-        sim_loss = 1.0 - (input[:, 1:] * target[:, 1:]).sum(dim=-1).mean()
-        return self.weight * (sim_loss + cross_time_gram_loss)
+        sim_loss = (
+            gating_weight * (1.0 - (input[:, 1:] * target[:, 1:]).sum(dim=-1))
+        ).sum() / (gating_weight.sum() + 1e-6)
+        return self.weight * (sim_loss + loss_kl)
