@@ -52,7 +52,7 @@ class Linear(nn.Linear):
     @override
     def reset_parameters(self) -> None:
         self.weight_init_fn(self.weight)
-        if self.bias:
+        if self.bias is not None:  # pyright: ignore[reportUnnecessaryComparison]
             self.bias_init_fn(self.bias)
 
 
