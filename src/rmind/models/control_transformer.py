@@ -37,7 +37,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.mask import WandbAttentionMaskLegend
-from rmind.components.objectives.base import PredictionResultKey
+from rmind.components.objectives.base import PredictionKey
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 
@@ -315,15 +315,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return TensorDict({
             name: objective.predict(  # pyright: ignore[reportCallIssue]
                 episode=episode,
-                result_keys=frozenset((
-                    PredictionResultKey.GROUND_TRUTH,
-                    PredictionResultKey.PREDICTION_VALUE,
-                    PredictionResultKey.PREDICTION_STD,
-                    PredictionResultKey.PREDICTION_PROBS,
-                    PredictionResultKey.SCORE_LOGPROB,
-                    PredictionResultKey.SCORE_L1,
-                    PredictionResultKey.SUMMARY_EMBEDDINGS,
-                )),
+                keys=set(PredictionKey),
                 tokenizers=self.episode_builder.tokenizers,
             )
             for name, objective in self.objectives.items()

@@ -1,4 +1,4 @@
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum, auto, unique
 from itertools import accumulate, pairwise
@@ -84,30 +84,17 @@ class Index(TensorClass["frozen"]):
     context: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
 
     def parse(self, src: Tensor, dim: int = 1) -> TensorDict:
-        # https://github.com/pytorch/pytorch/issues/30574
+        shape_left, shape_right = src.shape[:dim], src.shape[dim + 1 :]
+        batch_size = (*shape_left, *self.batch_size)
 
-        fn: Callable[[int], Tensor]
-        match dim:
-            case 0:
-                fn = lambda idx: src[idx]  # noqa: E731
-
-            case 1:
-                fn = lambda idx: src[:, idx]  # noqa: E731
-
-            case 2:
-                fn = lambda idx: src[:, :, idx]  # noqa: E731
-
-            case 3:
-                fn = lambda idx: src[:, :, :, idx]  # noqa: E731
-
-            case _:
-                raise NotImplementedError
-
-        batch_size = [*src.shape[:dim], *self.batch_size]
-
-        return self.to_tensordict(retain_none=False).apply(
-            fn, batch_size=batch_size, device=src.device, inplace=False
-        )  # pyright: ignore[reportReturnType]
+        return self.to_tensordict(retain_none=False).apply(  # pyright: ignore[reportReturnType]
+            lambda index: src.index_select(dim, index.flatten()).view(
+                *shape_left, *index.shape, *shape_right
+            ),
+            batch_size=batch_size,
+            device=src.device,
+            inplace=False,
+        )
 
     @override
     def __hash__(self) -> int:

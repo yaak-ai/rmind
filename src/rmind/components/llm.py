@@ -1,8 +1,15 @@
-from typing import Any, final, override
+from typing import TYPE_CHECKING, Any, Literal, final, override
 
+import torch
+from pydantic import InstanceOf, NonNegativeFloat, validate_call
 from torch import Tensor, nn
 from torch.nn.modules.module import Module
 from torch.utils.checkpoint import checkpoint
+
+from rmind.components.mask import AttentionMask
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class TransformerEncoderBlock(nn.Module):
@@ -44,17 +51,33 @@ class TransformerEncoderBlock(nn.Module):
         )
 
     @override
-    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+    def forward(
+        self,
+        x: Tensor,
+        mask: Tensor,
+        *,
+        need_weights: bool = False,
+        average_attn_weights: bool = True,
+    ) -> tuple[Tensor, Tensor | None] | Tensor:
         # f
         residual = x
         x_norm = self.pre_norm(x)
-        mha, _ = self.mha(x_norm, x_norm, x_norm, attn_mask=mask, need_weights=False)
+        mha, attn_weights = self.mha.forward(
+            x_norm,
+            x_norm,
+            x_norm,
+            attn_mask=mask,
+            need_weights=need_weights,
+            average_attn_weights=average_attn_weights,
+        )
         x = residual + self.resid_drop(mha)
 
         # g
         residual = x
         mlp = self.mlp(self.post_norm(x))
-        return residual + mlp
+        out = residual + mlp
+
+        return (out, attn_weights) if need_weights else out
 
 
 class TransformerEncoder(nn.Module):
@@ -105,6 +128,67 @@ class TransformerEncoder(nn.Module):
             x = run_layer(layer, x, mask)
 
         return self.layer_norm(x)
+
+    @validate_call
+    def compute_attention_rollout(
+        self,
+        *,
+        src: InstanceOf[Tensor],
+        mask: InstanceOf[AttentionMask],
+        head_fusion: Literal["mean", "max", "min"] = "mean",
+        discard_ratio: NonNegativeFloat | None = None,
+    ) -> Tensor:
+        fuse_heads: Callable[[Tensor], Tensor]
+        match head_fusion:
+            case "mean":
+                fuse_heads = lambda x: x.mean(axis=1)  # noqa: E731  # pyright: ignore[reportCallIssue]
+            case "max":
+                fuse_heads = lambda x: x.max(axis=1).values  # noqa: E731  # pyright: ignore[reportCallIssue]
+            case "min":
+                fuse_heads = lambda x: x.min(axis=1).values  # noqa: E731  # pyright: ignore[reportCallIssue]
+
+        _, s, _ = src.shape
+        identity = torch.eye(s, s, device=src.device)
+        attn_rollout = identity.clone()
+
+        x = src
+        for layer in self.layers:
+            x, attn = layer(x, mask.mask, need_weights=True, average_attn_weights=False)
+            attn_fused = fuse_heads(attn)
+            attn_discarded = self._discard_attention(attn_fused, mask, discard_ratio)
+            attn_residual = (attn_discarded + identity) * 0.5
+            attn_norm = attn_residual / attn_residual.sum(dim=-1, keepdim=True)
+            attn_rollout = attn_norm @ attn_rollout
+
+        return attn_rollout
+
+    @staticmethod
+    def _discard_attention(
+        attn: Tensor, mask: AttentionMask, discard_ratio: float | None
+    ) -> Tensor:
+        """Set `discard_ratio` of non-masked-out values (per-row) in `attn` to zero."""
+        if not discard_ratio:
+            return attn
+
+        attn_mask = mask.mask == mask.legend.DO_ATTEND.value
+        discard_counts = (attn_mask.count_nonzero(dim=1) * discard_ratio).int().tolist()
+
+        # NOTE: done per-row b/c masks and the k in topk may differ
+        # NOTE: could likely be optimized for blocky masks
+        for i, (row_mask, discard_count) in enumerate(
+            zip(attn_mask, discard_counts, strict=True)
+        ):
+            row = attn[:, i]
+            row_masked = row[:, row_mask]
+            discard_indices = row_masked.topk(
+                k=discard_count, dim=-1, largest=False
+            ).indices
+            row_masked_discarded = row_masked.scatter(
+                dim=1, index=discard_indices, value=0.0
+            )
+            attn[:, i] = row.masked_scatter(row_mask, row_masked_discarded)
+
+        return attn
 
 
 @final

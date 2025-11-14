@@ -31,17 +31,14 @@ from rmind.components.mask import (
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
-    PredictionResultKey,
+    Prediction,
+    PredictionKey,
     Targets,
 )
 from rmind.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from rmind.utils.functional import (
-    gauss_prob,
-    nan_padder,
-    non_zero_signal_with_threshold,
-)
+from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
 
 
 @final
@@ -193,27 +190,25 @@ class PolicyObjective(Objective):
 
     @override
     def predict(  # noqa: C901, PLR0915
-        self,
-        episode: Episode,
-        *,
-        result_keys: AbstractSet[PredictionResultKey],
-        **kwargs: Any,
+        self, episode: Episode, *, keys: AbstractSet[PredictionKey], **kwargs: Any
     ) -> TensorDict:
-        b, t = episode.input.batch_size
-        result = {}
+        predictions: dict[PredictionKey, Prediction] = {}
 
-        if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
-            result[result_key] = episode.input.select(*self.heads.tree_paths()).squeeze(
-                -1
+        b, _t = episode.input.batch_size
+
+        if (key := PredictionKey.GROUND_TRUTH) in keys:
+            predictions[key] = Prediction(
+                value=episode.input.select(*self.heads.tree_paths()).squeeze(-1),
+                timestep_indices=slice(None),
             )
 
-        if result_keys & {
-            PredictionResultKey.PREDICTION_VALUE,
-            PredictionResultKey.PREDICTION_STD,
-            PredictionResultKey.PREDICTION_PROBS,
-            PredictionResultKey.SCORE_LOGPROB,
-            PredictionResultKey.SCORE_L1,
-            PredictionResultKey.SUMMARY_EMBEDDINGS,
+        if keys & {
+            PredictionKey.PREDICTION_VALUE,
+            PredictionKey.PREDICTION_STD,
+            PredictionKey.PREDICTION_PROBS,
+            PredictionKey.SCORE_LOGPROB,
+            PredictionKey.SCORE_L1,
+            PredictionKey.SUMMARY_EMBEDDINGS,
         }:
             mask = self._build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
@@ -223,8 +218,8 @@ class PolicyObjective(Objective):
                 src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
             )  # pyright: ignore[reportOptionalCall]
 
-            if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
-                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+            if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
+                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
                     embedding
                 )
 
@@ -259,9 +254,9 @@ class PolicyObjective(Objective):
 
             logits = TensorDict(self.heads(features), batch_size=[b, 1])
 
-            timestep_padder = nan_padder(pad=(t - 1, 0), dim=1)
+            timestep_indices = slice(-1, None)
 
-            if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
+            if (key := PredictionKey.PREDICTION_VALUE) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -275,11 +270,12 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
-                    timestep_padder, batch_size=[b, t]
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.PREDICTION_STD) in result_keys:
+            if (key := PredictionKey.PREDICTION_STD) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -294,11 +290,12 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
-                    timestep_padder, batch_size=[b, t]
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
+            if (key := PredictionKey.PREDICTION_PROBS) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -316,11 +313,12 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
-                    timestep_padder, batch_size=[b, t]
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
+            if (key := PredictionKey.SCORE_LOGPROB) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -341,11 +339,12 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
-                    timestep_padder, batch_size=[b, t]
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
+            if (key := PredictionKey.SCORE_L1) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -366,11 +365,12 @@ class PolicyObjective(Objective):
                             msg = f"Invalid action type: {action_type}"
                             raise NotImplementedError(msg)
 
-                result[result_key] = logits.named_apply(fn, nested_keys=True).apply(  # pyright: ignore[reportOptionalMemberAccess]
-                    timestep_padder, batch_size=[b, t]
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
                 )
 
-        return TensorDict(result).auto_batch_size_(2)
+        return TensorDict(predictions).auto_batch_size_(2)
 
     @classmethod
     def build_attention_mask(

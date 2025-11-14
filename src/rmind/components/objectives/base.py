@@ -4,7 +4,7 @@ from collections.abc import Set as AbstractSet
 from enum import StrEnum, auto, unique
 from typing import Any, Never, TypedDict
 
-from tensordict import TensorDict
+from tensordict import MetaData, TensorClass, TensorDict
 from torch.nn import Module
 from torch.utils._pytree import Context, register_pytree_node  # noqa: PLC2701
 
@@ -16,7 +16,7 @@ type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 
 
 @unique
-class PredictionResultKey(StrEnum):
+class PredictionKey(StrEnum):
     PREDICTION_VALUE = auto()
     PREDICTION_STD = auto()
     PREDICTION_PROBS = auto()
@@ -24,6 +24,12 @@ class PredictionResultKey(StrEnum):
     SCORE_L1 = auto()
     GROUND_TRUTH = auto()
     SUMMARY_EMBEDDINGS = auto()
+    ATTENTION_ROLLOUT = auto()
+
+
+class Prediction(TensorClass["autocast"]):
+    value: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
+    timestep_indices: MetaData  # for timestep-wise sparse values # pyright: ignore[reportUninitializedInstanceVariable]
 
 
 class Metrics(TypedDict):
@@ -57,6 +63,6 @@ class Objective(Module, ABC):
         self,
         episode: Episode,
         *,
-        result_keys: AbstractSet[PredictionResultKey],
+        keys: AbstractSet[PredictionKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict: ...
