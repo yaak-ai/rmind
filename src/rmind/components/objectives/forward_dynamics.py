@@ -28,10 +28,10 @@ from rmind.components.mask import (
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
-    PredictionResultKey,
+    Prediction,
+    PredictionKey,
     Targets,
 )
-from rmind.utils.functional import nan_padder
 
 
 @final
@@ -118,23 +118,26 @@ class ForwardDynamicsPredictionObjective(Objective):
         self,
         episode: Episode,
         *,
-        result_keys: AbstractSet[PredictionResultKey],
+        keys: AbstractSet[PredictionKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
-        result = {}
+        predictions: dict[PredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
-        if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
-            result[result_key] = episode.input.select(*self.heads.tree_paths()).exclude(
-                Modality.IMAGE
+        if (key := PredictionKey.GROUND_TRUTH) in keys:
+            predictions[key] = Prediction(
+                value=episode.input.select(*self.heads.tree_paths()).exclude(
+                    Modality.IMAGE
+                ),
+                timestep_indices=slice(None),
             )
 
-        if result_keys & {
-            PredictionResultKey.PREDICTION_VALUE,
-            PredictionResultKey.PREDICTION_PROBS,
-            PredictionResultKey.SCORE_LOGPROB,
-            PredictionResultKey.SCORE_L1,
-            PredictionResultKey.SUMMARY_EMBEDDINGS,
+        if keys & {
+            PredictionKey.PREDICTION_VALUE,
+            PredictionKey.PREDICTION_PROBS,
+            PredictionKey.SCORE_LOGPROB,
+            PredictionKey.SCORE_L1,
+            PredictionKey.SUMMARY_EMBEDDINGS,
         }:
             mask = self._build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
@@ -179,62 +182,70 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             logits = TensorDict(self.heads(features.to_dict()), batch_size=[b, t - 1])  # pyright: ignore[reportOptionalMemberAccess]
 
-            timestep_padder = nan_padder(pad=(1, 0), dim=1)
+            # all but first
+            timestep_indices = slice(1, None)
 
-            if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
-                result[result_key] = (
-                    logits.exclude(Modality.IMAGE)
-                    .apply(lambda x: x.argmax(dim=-1))
-                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportOptionalMemberAccess]
-                    .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
-                        nested_keys=True,
-                    )
+            if (key := PredictionKey.PREDICTION_VALUE) in keys:
+                predictions[key] = Prediction(
+                    value=(
+                        logits.exclude(Modality.IMAGE)
+                        .apply(lambda x: x.argmax(dim=-1))
+                        .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
+                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                            nested_keys=True,
+                        )
+                    ),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = (
-                    logits.exclude(Modality.IMAGE)
-                    .apply(lambda x: x.softmax(dim=-1))
-                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportOptionalMemberAccess]
+            if (key := PredictionKey.PREDICTION_PROBS) in keys:
+                predictions[key] = Prediction(
+                    value=logits.exclude(Modality.IMAGE).apply(
+                        lambda x: x.softmax(dim=-1)
+                    ),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.SCORE_LOGPROB) in result_keys:
+            if (key := PredictionKey.SCORE_LOGPROB) in keys:
                 """Finds log prob of the correct token at each timestep."""
-                result[result_key] = (
-                    logits.exclude(Modality.IMAGE)
-                    .apply(lambda x: x.softmax(dim=-1))
-                    .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportOptionalMemberAccess]
-                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportOptionalMemberAccess]
-                    .apply(  # pyright: ignore[reportOptionalMemberAccess]
-                        lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                        episode.input_tokens,
-                    )
-                    .apply(lambda x: -torch.log(x))  # pyright: ignore[reportOptionalMemberAccess]
+                predictions[key] = Prediction(
+                    value=(
+                        logits.exclude(Modality.IMAGE)
+                        .apply(lambda x: x.softmax(dim=-1))
+                        .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportOptionalMemberAccess]
+                        .apply(  # pyright: ignore[reportOptionalMemberAccess]
+                            lambda probs, tokens: probs.gather(dim=-1, index=tokens),
+                            episode.input_tokens[:, timestep_indices],
+                        )
+                        .apply(lambda x: -torch.log(x))  # pyright: ignore[reportOptionalMemberAccess]
+                    ),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.SCORE_L1) in result_keys:
-                result[result_key] = (
-                    logits.exclude(Modality.IMAGE)
-                    .apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
-                        nested_keys=True,
-                    )
-                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportOptionalMemberAccess]
-                    .apply(  # pyright: ignore[reportOptionalMemberAccess]
-                        lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                        episode.input,
-                        nested_keys=True,
-                    )
+            if (key := PredictionKey.SCORE_L1) in keys:
+                predictions[key] = Prediction(
+                    value=(
+                        logits.exclude(Modality.IMAGE)
+                        .apply(lambda x: x.argmax(dim=-1))
+                        .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
+                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                            nested_keys=True,
+                        )
+                        .apply(  # pyright: ignore[reportOptionalMemberAccess]
+                            lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
+                            episode.input[:, timestep_indices],
+                            nested_keys=True,
+                        )
+                    ),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
-                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+            if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
+                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
                     embedding
                 )
 
-        return TensorDict(result).auto_batch_size_(2)
+        return TensorDict(predictions).auto_batch_size_(2)
 
     @classmethod
     def build_attention_mask(

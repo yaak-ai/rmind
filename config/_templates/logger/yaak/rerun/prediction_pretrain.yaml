@@ -1,34 +1,38 @@
 #@yaml/text-templated-strings
+# 
+#@ cameras = [
+#@     'cam_front_left'
+#@ ]
 ---
 _target_: rbyte.viz.loggers.RerunLogger
 _convert_: all
 _recursive_: false
 application_id: prediction_pretrain
 recording_name: [batch, meta, input_id]
-port: 9877
 schema:
-  batch/cam_front_left/time_stamp:
+  #@ for camera in cameras:
+  batch/(@=camera@)/time_stamp:
     _target_: rerun.TimeColumn
-    timestamp: [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+    timestamp: [batch, data, meta/ImageMetadata.(@=camera@)/time_stamp]
     dtype: datetime64[us]
 
-  batch/cam_front_left/frame_idx:
+  batch/(@=camera@)/frame_idx:
     _target_: rerun.TimeColumn
-    sequence: [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+    sequence: [batch, data, meta/ImageMetadata.(@=camera@)/frame_idx]
 
-  batch/cam_front_left:
+  batch/(@=camera@):
     - _target_: rerun.Image.columns
-      buffer: [batch, data, cam_front_left]
+      buffer: [batch, data, (@=camera@)]
 
     - static: true
-      entity:
-        _target_: rerun.Image.from_fields
-        format:
-          _target_: rerun.components.ImageFormat
-          height: 324
-          width: 576
-          color_model: RGB
-          channel_datatype: u8
+      _target_: rerun.Image.from_fields
+      format:
+        _target_: rerun.components.ImageFormat
+        height: 324
+        width: 576
+        color_model: RGB
+        channel_datatype: u8
+  #@ end
 
   #@ for key in [
   #@     "meta/VehicleMotion/brake_pedal_normalized",
@@ -41,18 +45,17 @@ schema:
       scalars: [batch, data, (@=key@)]
 
     - static: true
-      entity:
-        _target_: rerun.SeriesLines
+      _target_: rerun.SeriesLines
   #@ end
 
   #@ predictions = {
   #@     "forward_dynamics": {
-  #@         k: {"continuous": ["speed"], "discrete": ["turn_signal"]}
+  #@         k: {"continuous": ["speed"]}
   #@         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
   #@     },
   #@     "inverse_dynamics": {
   #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
-  #@         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
+  #@         for k in ["ground_truth" ,"prediction_value", "score_l1", "score_logprob"]
   #@     },
   #@     "memory_extraction": {
   #@         k: {"continuous": ["gas_pedal_diff", "brake_pedal_diff", "steering_angle_diff"]}
@@ -69,17 +72,14 @@ schema:
   #@      for key in keys:
   (@=key_objective@)/(@=key_prediction@)/(@=modality@)/(@=key@):
     - _target_: rerun.Scalars.columns
-      scalars:
-        - (@=key_objective@)
-        - (@=key_prediction@)
-        - (@=modality@)
-        - (@=key@)
+      scalars: [(@=key_objective@), (@=key_prediction@), value, (@=modality@), (@=key@)]
+      indices: [(@=key_objective@), (@=key_prediction@), timestep_indices]
 
     - static: true
-      entity:
-        _target_: rerun.SeriesLines
-        names: (@=key_prediction@)/(@=key@)
+      _target_: rerun.SeriesLines
+      names: (@=key_prediction@)/(@=key@)
   #@      end
   #@    end
   #@  end
   #@ end
+

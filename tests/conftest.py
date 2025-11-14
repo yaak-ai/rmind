@@ -75,43 +75,44 @@ def device(request) -> torch.device:  # pyright: ignore[reportUnknownParameterTy
 
 @pytest.fixture(scope="module")
 def batch(device: torch.device) -> Batch:
+    b, t = 2, 6
     return Batch(
         data=TensorDict(
             {
                 "cam_front_left": make_tensor(
-                    (1, 6, 324, 576, 3),
+                    (b, t, 324, 576, 3),
                     dtype=torch.uint8,
                     device=device,
                     low=0,
                     high=256,
                 ),
                 "meta/VehicleMotion/brake_pedal_normalized": make_tensor(
-                    (1, 6), dtype=torch.float32, device=device, low=0.0, high=1.0
+                    (b, t), dtype=torch.float32, device=device, low=0.0, high=1.0
                 ),
                 "meta/VehicleMotion/gas_pedal_normalized": make_tensor(
-                    (1, 6), dtype=torch.float32, device=device, low=0.0, high=1.0
+                    (b, t), dtype=torch.float32, device=device, low=0.0, high=1.0
                 ),
                 "meta/VehicleMotion/steering_angle_normalized": make_tensor(
-                    (1, 6), dtype=torch.float32, device=device, low=-1.0, high=1.0
+                    (b, t), dtype=torch.float32, device=device, low=-1.0, high=1.0
                 ),
                 "meta/VehicleMotion/speed": make_tensor(
-                    (1, 6), dtype=torch.float32, device=device, low=0.0, high=130.0
+                    (b, t), dtype=torch.float32, device=device, low=0.0, high=130.0
                 ),
                 "meta/VehicleState/turn_signal": make_tensor(
-                    (1, 6), dtype=torch.int64, device=device, low=0, high=3
+                    (b, t), dtype=torch.int64, device=device, low=0, high=3
                 ),
                 "waypoints/xy_normalized": make_tensor(
-                    (1, 6, 10, 2),
+                    (b, t, 10, 2),
                     dtype=torch.float32,
                     device=device,
                     low=0.0,
                     high=20.0,
                 ),
             },
-            batch_size=[1],
+            batch_size=[b],
             device=device,
         ),
-        batch_size=[1],
+        batch_size=[b],
         device=device,
     )
 
@@ -273,7 +274,7 @@ def encoder() -> Module:
     return TransformerEncoder(
         dim_model=EMBEDDING_DIM,
         num_heads=2,
-        num_layers=1,
+        num_layers=2,
         attn_dropout=0.1,
         resid_dropout=0.1,
         mlp_dropout=0.1,

@@ -5,7 +5,6 @@ _convert_: all
 _recursive_: false
 application_id: prediction_policy
 recording_name: [batch, meta, input_id]
-port: 9877
 schema:
   batch/cam_front_left/time_stamp:
     _target_: rerun.TimeColumn
@@ -21,14 +20,13 @@ schema:
       buffer: [batch, data, cam_front_left]
 
     - static: true
-      entity:
-        _target_: rerun.Image.from_fields
-        format:
-          _target_: rerun.components.ImageFormat
-          height: 324
-          width: 576
-          color_model: RGB
-          channel_datatype: u8
+      _target_: rerun.Image.from_fields
+      format:
+        _target_: rerun.components.ImageFormat
+        height: 324
+        width: 576
+        color_model: RGB
+        channel_datatype: u8
 
   #@ for key in [
   #@     "meta/VehicleMotion/brake_pedal_normalized",
@@ -41,8 +39,7 @@ schema:
       scalars: [batch, data, (@=key@)]
 
     - static: true
-      entity:
-        _target_: rerun.SeriesLines
+      _target_: rerun.SeriesLines
   #@ end
 
   #@ predictions = {
@@ -57,16 +54,12 @@ schema:
   #@      for key in keys:
   (@=key_objective@)/(@=key_prediction@)/(@=modality@)/(@=key@):
     - _target_: rerun.Scalars.columns
-      scalars:
-        - (@=key_objective@)
-        - (@=key_prediction@)
-        - (@=modality@)
-        - (@=key@)
+      scalars: [(@=key_objective@), (@=key_prediction@), value, (@=modality@), (@=key@)]
+      indices: [(@=key_objective@), (@=key_prediction@), timestep_indices]
 
     - static: true
-      entity:
-        _target_: rerun.SeriesLines
-        names: (@=key_prediction@)/(@=key@)
+      _target_: rerun.SeriesLines
+      names: (@=key_prediction@)/(@=key@)
   #@      end
   #@    end
   #@  end

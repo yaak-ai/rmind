@@ -22,16 +22,16 @@ just train experiment=yaak/control_transformer/pretrain [...]
 
 ## Inference
 
-```bash
-just predict inference=yaak/control_transformer/default model=yaak/control_transformer/pretrained model.artifact=yaak/rmind/model-{run_id}:v{version} [+model.map_location=cuda:0] [+model.strict=false]
-```
-
 > [!IMPORTANT]
 > if using the `RerunPredictionWriter` trainer callback, start `rerun` prior to running inference:
 >
 > ```bash
 > just rerun
 > ```
+
+```bash
+just predict inference=yaak/control_transformer/{config} model.artifact=yaak/rmind/model-{run_id}:v{version} [+model.map_location=cuda:0] [+model.strict=false]
+```
 
 ## Export
 
