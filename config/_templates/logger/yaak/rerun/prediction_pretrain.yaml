@@ -1,0 +1,152 @@
+#@yaml/text-templated-strings
+# 
+#@ cameras = [
+#@     'cam_front_left'
+#@ ]
+---
+_target_: rbyte.viz.loggers.RerunLogger
+_convert_: all
+_recursive_: false
+application_id: prediction_pretrain
+recording_name: [batch, meta, input_id]
+schema:
+  #@ for camera in cameras:
+  batch/(@=camera@)/time_stamp:
+    _target_: rerun.TimeColumn
+    timestamp: [batch, data, meta/ImageMetadata.(@=camera@)/time_stamp]
+    dtype: datetime64[us]
+
+  batch/(@=camera@)/frame_idx:
+    _target_: rerun.TimeColumn
+    sequence: [batch, data, meta/ImageMetadata.(@=camera@)/frame_idx]
+
+  batch/(@=camera@):
+    - _target_: rerun.Image.columns
+      buffer: [batch, data, (@=camera@)]
+
+    - _target_: rerun.Image.from_fields
+      static: true
+      format:
+        _target_: rerun.components.ImageFormat
+        height: 324
+        width: 576
+        color_model: RGB
+        channel_datatype: u8
+  #@ end
+
+  #@ for timestep in range(6):
+  #@     timestep = str(timestep)
+  #@     for/end camera in cameras:
+  inverse_dynamics/attention_rollout/(@=timestep@)/(@=camera@)/attention:
+    - _target_: rerun.DepthImage.columns
+      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), special, observation_summary, image, (@=camera@)]
+      index_mask: [inverse_dynamics, attention_rollout, mask]
+
+    - _target_: rerun.DepthImage.from_fields
+      static: true
+      colormap: turbo
+      depth_range: [0.0, 0.01]
+      format:
+        _target_: rerun.components.ImageFormat
+        height: 320
+        width: 576
+        color_model: L
+        channel_datatype: f32
+
+  inverse_dynamics/attention_rollout/(@=timestep@)/(@=camera@)/input:
+    - _target_: rerun.Image.columns
+      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), input, image, (@=camera@)]
+      index_mask: [inverse_dynamics, attention_rollout, mask]
+
+    - _target_: rerun.Image.from_fields
+      static: true
+      format:
+        _target_: rerun.components.ImageFormat
+        height: 320
+        width: 576
+        color_model: RGB
+        channel_datatype: f32
+
+  # inverse_dynamics/attention_rollout/speed/(@=timestep@):
+  #   - _target_: rerun.DepthImage.columns
+  #     index_mask: [0, 0, 0, 0, 0, 1]
+  #     buffer: [inverse_dynamics, attention_rollout, (@=timestep), special, observation_summary, continuous, speed]
+
+  #   - _target_: rerun.DepthImage.from_fields
+  #     static: true
+  #     colormap: turbo
+  #     depth_range: [0.0, 0.01]
+  #     format:
+  #       _target_: rerun.components.ImageFormat
+  #       height: 1
+  #       width: 1
+  #       color_model: L
+  #       channel_datatype: f32
+
+  # inverse_dynamics/attention_rollout/waypoints/(@=timestep@):
+  #   - _target_: rerun.DepthImage.columns
+  #     index_mask: [0, 0, 0, 0, 0, 1]
+  #     buffer: [inverse_dynamics, attention_rollout, (@=timestep@), special, observation_summary, context, waypoints]
+
+  #   - _target_: rerun.DepthImage.from_fields
+  #     static: true
+  #     colormap: turbo
+  #     depth_range: [0.0, 0.01]
+  #     format:
+  #       _target_: rerun.components.ImageFormat
+  #       height: 1
+  #       width: 10
+  #       color_model: L
+  #       channel_datatype: f32
+  #@ end
+
+  #@ for key in [
+  #@     "meta/VehicleMotion/brake_pedal_normalized",
+  #@     "meta/VehicleMotion/gas_pedal_normalized",
+  #@     "meta/VehicleMotion/steering_angle_normalized",
+  #@     "meta/VehicleState/turn_signal",
+  #@ ]:
+  batch/(@=key@):
+    - _target_: rerun.Scalars.columns
+      scalars: [batch, data, (@=key@)]
+
+    - _target_: rerun.SeriesLines
+      static: true
+  #@ end
+
+  #! TODO: update all wrt mask
+  #@ predictions = {
+  #!     "forward_dynamics": {
+  #!         k: {"continuous": ["speed"]}
+  #!         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
+  #!     },
+  #@     "inverse_dynamics": {
+  #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
+  #@         for k in ["prediction_value", "score_l1", "score_logprob"]
+  #@     },
+  #!     "memory_extraction": {
+  #!         k: {"continuous": ["gas_pedal_diff", "brake_pedal_diff", "steering_angle_diff"]}
+  #!         for k in ["ground_truth", "prediction_value"]
+  #!     },
+  #!     "random_masked_hindsight_control": {
+  #!         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
+  #!         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
+  #!     },
+  #@ }
+  #@ for key_objective, data_objective in predictions.items():
+  #@  for key_prediction, data_prediction in data_objective.items():
+  #@    for modality, keys in data_prediction.items():
+  #@      for key in keys:
+  (@=key_objective@)/(@=key_prediction@)/(@=modality@)/(@=key@):
+    - _target_: rerun.Scalars.columns
+      scalars: [(@=key_objective@), (@=key_prediction@), value, (@=modality@), (@=key@)]
+      index_mask: [(@=key_objective@), (@=key_prediction@), mask]
+
+    - _target_: rerun.SeriesLines
+      names: (@=key_prediction@)/(@=key@)
+      static: true
+  #@      end
+  #@    end
+  #@  end
+  #@ end
+

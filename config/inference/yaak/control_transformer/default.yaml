@@ -4,10 +4,8 @@ defaults:
   - /model: yaak/control_transformer/finetuned
   - /datamodule: yaak/predict
   - /paths: yaak/default
-  - /loggers/yaak/rerun/prediction_policy@rerun_logger
+  - /logger: yaak/rerun/prediction_policy
   - _self_
-
-rerun_logger: ???
 
 trainer:
   _target_: pytorch_lightning.Trainer
@@ -20,7 +18,8 @@ trainer:
   callbacks:
     - _target_: rmind.callbacks.RerunPredictionWriter
       write_interval: batch
-      logger: ${rerun_logger}
+      logger: ${logger}
+
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
       path: predictions/${model.artifact}/${now:%Y-%m-%d--%H-%M-%S}/{batch_idx:06}.parquet

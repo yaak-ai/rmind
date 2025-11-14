@@ -24,6 +24,7 @@ class PredictionResultKey(StrEnum):
     SCORE_L1 = auto()
     GROUND_TRUTH = auto()
     SUMMARY_EMBEDDINGS = auto()
+    ATTENTION_ROLLOUT = auto()
 
 
 class Metrics(TypedDict):
