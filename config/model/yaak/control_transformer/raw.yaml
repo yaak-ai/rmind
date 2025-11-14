@@ -407,12 +407,11 @@ objectives:
         modules:
           image:
             cam_front_left:
-              _target_: rmind.components.loss.GramAnchoringObjective
-              weight: 10
+              _target_: rmind.components.loss.FocalCLIPbjective
+              weight: 1
               patches: 256
               timestep: 5
               gamma: 2
-              tau: 0.1
           continuous:
             speed:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss

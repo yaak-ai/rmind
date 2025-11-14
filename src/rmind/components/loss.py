@@ -1,9 +1,10 @@
 from collections.abc import Callable
 from typing import Any, final, override
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-from einops import rearrange
+from einops import rearrange, repeat
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
@@ -152,3 +153,56 @@ class GramAnchoringObjective(Module):
             gating_weight * (1.0 - (input[:, 1:] * target[:, 1:]).sum(dim=-1))
         ).sum() / (gating_weight.sum() + 1e-6)
         return self.weight * (sim_loss + loss_kl)
+
+
+@final
+class FocalCLIPbjective(Module):  # ignore typos
+    def __init__(
+        self,
+        *args: Any,
+        weight: float = 1.0,
+        patches: int = 256,
+        timestep: int = 6,
+        gamma: int = 2,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.weight = weight
+        self.patches = patches
+        self.timestep = timestep
+        self.ce = torch.nn.CrossEntropyLoss(reduction="none")
+        self.gamma = gamma
+        # https://github.com/openai/CLIP/blob/main/clip/model.py#L295C14-L295C75
+        self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        # Trust but ~~verify~~ detach
+        target = target.detach()
+
+        input = rearrange(
+            input, "(b t p) d -> b t p d", t=self.timestep, p=self.patches
+        )
+        target = rearrange(
+            target, "(b t p) d -> b t p d", t=self.timestep, p=self.patches
+        )
+
+        # B T P D
+        input = F.normalize(input, dim=-1)
+        target = F.normalize(target, dim=-1)
+
+        # https://github.com/openai/CLIP/blob/main/clip/model.py#L366
+        logit_scale = self.logit_scale.exp()
+        # B T P P
+        logits = logit_scale * torch.matmul(input, target.transpose(-1, -2))
+
+        labels = torch.arange(self.patches, device=input.device)
+        labels = repeat(labels, "p -> b t p", b=logits.shape[0], t=self.timestep)
+
+        logits = rearrange(logits, "b t p0 p1 -> (b t p0) p1")
+        labels = rearrange(labels, "b t p -> (b t p)")
+
+        clip_loss = self.ce(logits, labels)
+        pt = torch.exp(-clip_loss)
+
+        return self.weight * ((1 - pt).pow(self.gamma) * clip_loss).mean()
