@@ -411,7 +411,7 @@ objectives:
               weight: 1
               patches: 256
               timestep: 5
-              gamma: 2
+              gamma: 1
           continuous:
             speed:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
