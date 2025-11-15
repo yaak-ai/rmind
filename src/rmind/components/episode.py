@@ -160,7 +160,6 @@ class Episode(TensorClass["frozen"]):
     position_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     index: Index  # pyright: ignore[reportUninitializedInstanceVariable]
     timestep: Timestep  # pyright: ignore[reportUninitializedInstanceVariable]
-    layer_norm: Module  # pyright: ignore[reportUninitializedInstanceVariable]
 
     @property
     def embeddings(self) -> TensorDict:
@@ -236,7 +235,6 @@ class EpisodeBuilder(Module):
         embeddings: InstanceOf[ModuleDict],
         projection: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
-        layer_norm: InstanceOf[Module],
         freeze: bool | None = None,
     ) -> None:
         super().__init__()
@@ -248,7 +246,6 @@ class EpisodeBuilder(Module):
         self.embeddings = embeddings
         self.projection = projection
         self.position_encoding = position_encoding
-        self.layer_norm = layer_norm
 
         if freeze is not None:
             if freeze is False and (
@@ -321,7 +318,6 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
-                layer_norm=self.layer_norm,
                 device=device,
             )
         )
@@ -356,7 +352,7 @@ class EpisodeBuilder(Module):
             timestep_index,
         )
 
-    def _build_position_embeddings(
+    def _build_position_embeddings(  # noqa: PLR0914, C901
         self,
         embeddings: TensorTree,
         timestep_index: TensorTree,
@@ -457,9 +453,19 @@ class EpisodeBuilder(Module):
                 embeddings,
             )
 
-        return tree_map(
+        pe = tree_map(
             lambda *xs: sum(leaves)
             if (leaves := [x for x in xs if x is not None])
             else None,
             *position_embeddings.values(),
         )
+
+        # HACK: fix me # noqa: FIX004
+        for k0, v0 in pe.items():
+            for k1, v1 in v0.items():
+                if v1 is None:
+                    continue
+                if embeddings[k0][k1].shape[2] != v1.shape[1]:  # pyright: ignore[reportAttributeAccessIssue]
+                    v = repeat(v1, "t 1 d -> t x d", x=embeddings[k0][k1].shape[2])  # pyright: ignore[reportAttributeAccessIssue]
+                    pe[k0][k1] = v
+        return pe

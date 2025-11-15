@@ -264,9 +264,6 @@ episode_builder:
       image:
         patch:
       observations:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 267 # 16 * 16 + 10 + 1
-        embedding_dim: ${embedding_dim}
 
       actions:
         _target_: rmind.components.nn.Embedding
@@ -282,10 +279,6 @@ episode_builder:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 24
         embedding_dim: ${embedding_dim}
-
-  layer_norm:
-    _target_: torch.nn.LayerNorm
-    normalized_shape: ${embedding_dim}
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
@@ -411,7 +404,7 @@ objectives:
               weight: 1
               patches: 256
               timestep: 5
-              gamma: 1
+              gamma: 2
           continuous:
             speed:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss

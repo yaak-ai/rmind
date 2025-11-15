@@ -29,7 +29,7 @@ callbacks:
       - [episode_builder, embeddings, continuous]
       - [episode_builder, embeddings, discrete]
       # - [episode_builder, position_encoding, image]
-      - [episode_builder, position_encoding, observations]
+      # - [episode_builder, position_encoding, observations]
       - [episode_builder, position_encoding, timestep]
     apply:
       _target_: torchmetrics.functional.pairwise_cosine_similarity

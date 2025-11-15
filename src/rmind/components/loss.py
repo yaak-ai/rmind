@@ -173,7 +173,7 @@ class FocalCLIPbjective(Module):  # ignore typos
         self.ce = torch.nn.CrossEntropyLoss(reduction="none")
         self.gamma = gamma
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L295C14-L295C75
-        self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(1 / 0.1))
+        self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
@@ -196,6 +196,7 @@ class FocalCLIPbjective(Module):  # ignore typos
         # B T P P
         logits = logit_scale * torch.matmul(input, target.transpose(-1, -2))
 
+        # B T P P
         labels = torch.arange(self.patches, device=input.device)
         labels = repeat(labels, "p -> b t p", b=logits.shape[0], t=self.timestep)
 
