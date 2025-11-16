@@ -207,3 +207,65 @@ class FocalCLIPbjective(Module):  # ignore typos
         pt = torch.exp(-clip_loss)
 
         return self.weight * ((1 - pt).pow(self.gamma) * clip_loss).mean()
+
+
+@final
+class SoftFocalCLIPObjective(Module):  # ignore typos
+    def __init__(
+        self,
+        *args: Any,
+        weight: float = 1.0,
+        patches: int = 256,
+        timestep: int = 6,
+        gamma: int = 2,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.weight = weight
+        self.patches = patches
+        self.timestep = timestep
+        self.gamma = gamma
+        # https://github.com/openai/CLIP/blob/main/clip/model.py#L295C14-L295C75
+        self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        # Trust but ~~verify~~ detach
+        target = target.detach()
+
+        input = rearrange(
+            input, "(b t p) d -> b t p d", t=self.timestep, p=self.patches
+        )
+        target = rearrange(
+            target, "(b t p) d -> b t p d", t=self.timestep, p=self.patches
+        )
+
+        # B T P D
+        input = F.normalize(input, dim=-1)
+        target = F.normalize(target, dim=-1)
+
+        # https://github.com/openai/CLIP/blob/main/clip/model.py#L366
+        logit_scale = self.logit_scale.exp()
+        # B T P P
+        logits = logit_scale * torch.matmul(input, target.transpose(-1, -2))
+
+        # B T P P
+        # Similarity as targets instead of 1-hot    targets
+        labels = torch.matmul(target, target.transpose(-1, -2)).clamp(0, 1)
+
+        logits = rearrange(logits, "b t p0 p1 -> (b t p0) p1")
+        labels = rearrange(labels, "b t p0 p1 -> (b t p0) p1")
+
+        # need to be sigmoid
+        # https://docs.pytorch.org/vision/stable/_modules/torchvision/ops/focal_loss.html
+        probs = torch.sigmoid(logits)
+
+        # Soft Negative Log-likelihood
+        soft_clip_loss = -(labels * torch.log(probs + 1e-12))
+
+        return (
+            self.weight
+            * ((labels - probs).abs().pow(self.gamma) * soft_clip_loss)
+            .sum(dim=-1)
+            .mean()
+        )
