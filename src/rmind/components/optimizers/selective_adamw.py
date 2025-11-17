@@ -46,6 +46,7 @@ class SelectiveAdamW(AdamW):
                     | "gamma_1"
                     | "gamma_2"
                     | "logit_scale"
+                    | "logit_bias"
                 ):
                     pass
 

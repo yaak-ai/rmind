@@ -400,7 +400,7 @@ objectives:
         modules:
           image:
             cam_front_left:
-              _target_: rmind.components.loss.SoftFocalCLIPObjective
+              _target_: rmind.components.loss.SoftFocalSigLIPObjective
               weight: 1
               patches: 256
               timestep: 5

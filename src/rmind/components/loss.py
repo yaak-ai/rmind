@@ -210,7 +210,7 @@ class FocalCLIPbjective(Module):  # ignore typos
 
 
 @final
-class SoftFocalCLIPObjective(Module):  # ignore typos
+class SoftFocalSigLIPObjective(Module):  # ignore typos
     def __init__(
         self,
         *args: Any,
@@ -225,8 +225,10 @@ class SoftFocalCLIPObjective(Module):  # ignore typos
         self.patches = patches
         self.timestep = timestep
         self.gamma = gamma
+        self.bce = torch.nn.BCEWithLogitsLoss(reduction="none")
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L295C14-L295C75
-        self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(1 / 0.1))
+        self.logit_bias = torch.nn.Parameter(torch.ones([]) * -10)
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
@@ -256,16 +258,14 @@ class SoftFocalCLIPObjective(Module):  # ignore typos
         logits = rearrange(logits, "b t p0 p1 -> (b t p0) p1")
         labels = rearrange(labels, "b t p0 p1 -> (b t p0) p1")
 
-        # need to be sigmoid
-        # https://docs.pytorch.org/vision/stable/_modules/torchvision/ops/focal_loss.html
-        probs = torch.sigmoid(logits)
+        # BCE is equivalent to sigmoid loss in SigLIP (we have soft targets)
+        pred = torch.sigmoid(logits)
+        soft_siglip_loss = self.bce(logits, labels)
 
-        # Soft Negative Log-likelihood
-        soft_clip_loss = -(labels * torch.log(probs + 1e-12))
-
-        return (
-            self.weight
-            * ((labels - probs).abs().pow(self.gamma) * soft_clip_loss)
+        focal_siglip_loss = (
+            ((labels - pred).abs().pow(self.gamma) * soft_siglip_loss)
             .sum(dim=-1)
             .mean()
         )
+
+        return self.weight * focal_siglip_loss
