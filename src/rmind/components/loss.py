@@ -247,25 +247,28 @@ class SoftFocalSigLIPObjective(Module):  # ignore typos
         target = F.normalize(target, dim=-1)
 
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L366
-        logit_scale = self.logit_scale.exp()
+        logit_scale = self.logit_scale.exp() + self.logit_bias
         # B T P P
         logits = logit_scale * torch.matmul(input, target.transpose(-1, -2))
 
         # B T P P
-        # Similarity as targets instead of 1-hot    targets
+        # Similarity as targets instead of 1-hot targets
         labels = torch.matmul(target, target.transpose(-1, -2)).clamp(0, 1)
 
         logits = rearrange(logits, "b t p0 p1 -> (b t p0) p1")
         labels = rearrange(labels, "b t p0 p1 -> (b t p0) p1")
 
         # BCE is equivalent to sigmoid loss in SigLIP (we have soft targets)
-        pred = torch.sigmoid(logits)
         soft_siglip_loss = self.bce(logits, labels)
+        eps = 1e-8
+        self_entropy = -(
+            labels * torch.log(labels.clamp(min=eps))
+            + (1 - labels) * torch.log((1 - labels).clamp(min=eps))
+        )
+        focal_weight = (soft_siglip_loss - self_entropy).clamp(0)
 
         focal_siglip_loss = (
-            ((labels - pred).abs().pow(self.gamma) * soft_siglip_loss)
-            .sum(dim=-1)
-            .mean()
+            (focal_weight.pow(self.gamma) * soft_siglip_loss).sum(dim=-1).mean()
         )
 
         return self.weight * focal_siglip_loss
