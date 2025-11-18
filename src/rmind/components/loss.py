@@ -227,8 +227,10 @@ class SoftFocalSigLIPObjective(Module):  # ignore typos
         self.gamma = gamma
         self.bce = torch.nn.BCEWithLogitsLoss(reduction="none")
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L295C14-L295C75
-        self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(1 / 0.1))
-        self.logit_bias = torch.nn.Parameter(torch.ones([]) * -10)
+        # Simoid loss sets to np.log(10) and -10 but thats for hard labels
+        # TODO : principled way to set this # noqa: FIX002
+        self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(0.1))
+        self.logit_bias = torch.nn.Parameter(torch.ones([]) * 0)
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
@@ -246,10 +248,13 @@ class SoftFocalSigLIPObjective(Module):  # ignore typos
         input = F.normalize(input, dim=-1)
         target = F.normalize(target, dim=-1)
 
-        # https://github.com/openai/CLIP/blob/main/clip/model.py#L366
-        logit_scale = self.logit_scale.exp() + self.logit_bias
         # B T P P
-        logits = logit_scale * torch.matmul(input, target.transpose(-1, -2))
+        # https://github.com/openai/CLIP/blob/main/clip/model.py#L366
+        # https://arxiv.org/pdf/2303.15343 Algorithm: 1
+        logits = (
+            self.logit_scale.exp() * torch.matmul(input, target.transpose(-1, -2))
+            + self.logit_bias
+        )
 
         # B T P P
         # Similarity as targets instead of 1-hot targets
@@ -261,12 +266,17 @@ class SoftFocalSigLIPObjective(Module):  # ignore typos
         # BCE is equivalent to sigmoid loss in SigLIP (we have soft targets)
         soft_siglip_loss = self.bce(logits, labels)
         eps = 1e-8
+
+        # best entropy we can get this is the lower bound
         self_entropy = -(
             labels * torch.log(labels.clamp(min=eps))
             + (1 - labels) * torch.log((1 - labels).clamp(min=eps))
         )
+
+        # downweight samples which are already close to lower bound
         focal_weight = (soft_siglip_loss - self_entropy).clamp(0)
 
+        # TBD: https://github.com/google-research/big_vision/blob/6d6c28a9/big_vision/trainers/proj/image_text/siglip.py#L302
         focal_siglip_loss = (
             (focal_weight.pow(self.gamma) * soft_siglip_loss).sum(dim=-1).mean()
         )
