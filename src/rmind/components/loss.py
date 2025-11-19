@@ -219,7 +219,7 @@ class SoftFocalSigLIPObjective(Module):
         timestep: int = 6,
         gamma: int = 2,
         logit_scale: float = 10,
-        logit_bias: float = 0,  # noqa: ARG002
+        logit_bias: float = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -229,14 +229,16 @@ class SoftFocalSigLIPObjective(Module):
         self.gamma = gamma
         self.bce = torch.nn.BCEWithLogitsLoss(reduction="none")
         self._logit_scale = logit_scale
-        # self._logit_bias = logit_bias #  noqa: ERA001
+        self._logit_bias = logit_bias
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L295C14-L295C75
         # Simoid loss sets to np.log(10) and -10 but thats for hard labels
         # TODO : principled way to set this # noqa: FIX002
         self.logit_scale = torch.nn.Parameter(
-            torch.ones([]) * np.log(self._logit_scale)
+            torch.ones([]) * np.log(self._logit_scale), requires_grad=False
         )
-        # self.logit_bias = torch.nn.Parameter(torch.ones([]) * self._logit_bias) #  noqa: ERA001
+        self.logit_bias = torch.nn.Parameter(
+            torch.ones([]) * self._logit_bias, requires_grad=False
+        )
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
@@ -257,16 +259,21 @@ class SoftFocalSigLIPObjective(Module):
         # B T P P
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L366
         # https://arxiv.org/pdf/2303.15343 Algorithm: 1
-        logit_scale = self.logit_scale.clamp(np.log(1), np.log(self._logit_scale))
-        # logit_bias = self.logit_bias.clamp(-5, self._logit_bias) #  noqa: ERA001
-        logits = logit_scale.exp() * torch.matmul(input, target.transpose(-1, -2))
+        logit_scale = self.logit_scale
+        logit_bias = self.logit_bias
+
+        similarity = torch.matmul(input, target.transpose(-1, -2))
+        # [-1, 1] -> [0, 1] to match soft assignment simoid labels
+        # similarity = (1 + similarity) / 2.0 # noqa:  ERA001
+        logits = logit_scale.exp() * similarity + logit_bias
 
         # B T P P
         # Similarity as targets instead of 1-hot targets
-        labels = torch.matmul(target, target.transpose(-1, -2)).clamp(0, 1)
+        # we should ? [-1, 1] -> [0, 1] to match soft assignment simoid labels
+        labels = torch.matmul(target, target.transpose(-1, -2))
 
         logits = rearrange(logits, "b t p0 p1 -> (b t p0) p1")
-        labels = rearrange(labels, "b t p0 p1 -> (b t p0) p1")
+        labels = rearrange(labels, "b t p0 p1 -> (b t p0) p1").clamp(0, 1)
 
         # BCE is equivalent to sigmoid loss in SigLIP (we have soft targets)
         soft_siglip_loss = self.bce(logits, labels)

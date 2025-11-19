@@ -405,7 +405,8 @@ objectives:
               patches: 256
               timestep: 5
               gamma: 1
-              logit_scale: 10
+              logit_scale: 6
+              logit_bias: -2
           continuous:
             speed:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
