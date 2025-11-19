@@ -210,14 +210,16 @@ class FocalCLIPbjective(Module):  # ignore typos
 
 
 @final
-class SoftFocalSigLIPObjective(Module):  # ignore typos
-    def __init__(
+class SoftFocalSigLIPObjective(Module):
+    def __init__(  # noqa: PLR0913
         self,
         *args: Any,
         weight: float = 1.0,
         patches: int = 256,
         timestep: int = 6,
         gamma: int = 2,
+        logit_scale: float = 10,
+        logit_bias: float = 0,  # noqa: ARG002
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -226,11 +228,15 @@ class SoftFocalSigLIPObjective(Module):  # ignore typos
         self.timestep = timestep
         self.gamma = gamma
         self.bce = torch.nn.BCEWithLogitsLoss(reduction="none")
+        self._logit_scale = logit_scale
+        # self._logit_bias = logit_bias #  noqa: ERA001
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L295C14-L295C75
         # Simoid loss sets to np.log(10) and -10 but thats for hard labels
         # TODO : principled way to set this # noqa: FIX002
-        self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(0.1))
-        self.logit_bias = torch.nn.Parameter(torch.ones([]) * 0)
+        self.logit_scale = torch.nn.Parameter(
+            torch.ones([]) * np.log(self._logit_scale)
+        )
+        # self.logit_bias = torch.nn.Parameter(torch.ones([]) * self._logit_bias) #  noqa: ERA001
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
@@ -251,10 +257,9 @@ class SoftFocalSigLIPObjective(Module):  # ignore typos
         # B T P P
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L366
         # https://arxiv.org/pdf/2303.15343 Algorithm: 1
-        logits = (
-            self.logit_scale.exp() * torch.matmul(input, target.transpose(-1, -2))
-            + self.logit_bias
-        )
+        logit_scale = self.logit_scale.clamp(np.log(1), np.log(self._logit_scale))
+        # logit_bias = self.logit_bias.clamp(-5, self._logit_bias) #  noqa: ERA001
+        logits = logit_scale.exp() * torch.matmul(input, target.transpose(-1, -2))
 
         # B T P P
         # Similarity as targets instead of 1-hot targets
