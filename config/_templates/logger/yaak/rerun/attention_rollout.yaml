@@ -1,0 +1,113 @@
+#@yaml/text-templated-strings
+# 
+#@ cameras = ['cam_front_left']
+#@ timesteps = [str(t) for t in range(6)]
+---
+_target_: rbyte.viz.loggers.RerunLogger
+_convert_: all
+_recursive_: false
+application_id: attention_rollout
+recording_name: [batch, meta, input_id]
+schema:
+  #@ for camera in cameras:
+  batch/(@=camera@)/time_stamp:
+    _target_: rerun.TimeColumn
+    timestamp: [batch, data, meta/ImageMetadata.(@=camera@)/time_stamp]
+    dtype: datetime64[us]
+
+  batch/(@=camera@)/frame_idx:
+    _target_: rerun.TimeColumn
+    sequence: [batch, data, meta/ImageMetadata.(@=camera@)/frame_idx]
+  #@ end
+
+  #@ for timestep in timesteps:
+  #@     for camera in cameras:
+  (@=camera@)/(@=timestep@)/attention:
+    - _target_: rerun.DepthImage.columns
+      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), special, observation_summary, image, (@=camera@)]
+      indices: [inverse_dynamics, attention_rollout, timestep_indices]
+
+    - static: true
+      _target_: rerun.DepthImage.from_fields
+      colormap: turbo
+      depth_range: [0.0, 0.05]
+      format:
+        _target_: rerun.components.ImageFormat
+        height: 320
+        width: 576
+        color_model: L
+        channel_datatype: f32
+
+  (@=camera@)/(@=timestep@)/input:
+    - _target_: rerun.Image.columns
+      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), input, image, (@=camera@)]
+      indices: [inverse_dynamics, attention_rollout, timestep_indices]
+
+    - static: true
+      _target_: rerun.Image.from_fields
+      opacity: 0.1
+      format:
+        _target_: rerun.components.ImageFormat
+        height: 320
+        width: 576
+        color_model: RGB
+        channel_datatype: f32
+  #@     end
+
+  speed/(@=timestep@):
+    - _target_: rerun.DepthImage.columns
+      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), special, observation_summary, continuous, speed]
+      indices: [inverse_dynamics, attention_rollout, timestep_indices]
+
+    - static: true
+      _target_: rerun.DepthImage.from_fields
+      colormap: turbo
+      depth_range: [0.0, 0.05]
+      format:
+        _target_: rerun.components.ImageFormat
+        height: 1
+        width: 1
+        color_model: L
+        channel_datatype: f32
+
+  waypoints/(@=timestep@):
+    - _target_: rerun.DepthImage.columns
+      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), special, observation_summary, context, waypoints]
+      indices: [inverse_dynamics, attention_rollout, timestep_indices]
+
+    - static: true
+      _target_: rerun.DepthImage.from_fields
+      colormap: turbo
+      depth_range: [0.0, 0.05]
+      format:
+        _target_: rerun.components.ImageFormat
+        height: 1
+        width: 10
+        color_model: L
+        channel_datatype: f32
+        #@ end
+
+blueprint:
+  _target_: rerun.blueprint.Horizontal
+  contents:
+    #@ for/end timestep in timesteps:
+    - _target_: rerun.blueprint.Vertical
+      name: t=(@=timestep@)
+      row_shares: [5, 1]
+      contents:
+        #@ for/end camera in cameras:
+        - _target_: rerun.blueprint.Spatial2DView
+          name: (@=camera@)
+          origin: (@=camera@)/(@=timestep@)
+
+        - _target_: rerun.blueprint.Horizontal
+          column_shares: [1, 10]
+          contents:
+            - _target_: rerun.blueprint.Spatial2DView
+              name: speed
+              origin: speed/(@=timestep@)
+
+            - _target_: rerun.blueprint.Spatial2DView
+              name: waypoints
+              origin: waypoints/(@=timestep@)
+

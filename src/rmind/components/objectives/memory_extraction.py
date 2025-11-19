@@ -25,13 +25,13 @@ from rmind.components.mask import (
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
-    PredictionResultKey,
+    Prediction,
+    PredictionKey,
     Targets,
 )
 from rmind.components.objectives.forward_dynamics import (
     ForwardDynamicsPredictionObjective,
 )
-from rmind.utils.functional import nan_padder
 
 
 @final
@@ -96,25 +96,26 @@ class MemoryExtractionObjective(Objective):
         self,
         episode: Episode,
         *,
-        result_keys: AbstractSet[PredictionResultKey],
+        keys: AbstractSet[PredictionKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
+        predictions: dict[PredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
-        result = {}
 
-        timestep_padder = nan_padder(pad=(1, 0), dim=1)
+        timestep_indices = slice(1, None)
 
-        if (result_key := PredictionResultKey.GROUND_TRUTH) in result_keys:
-            result[result_key] = (
-                episode.input.select(*self.heads.tree_paths())
-                .apply(lambda x: x.diff(dim=1), batch_size=[b, t - 1])
-                .apply(timestep_padder, batch_size=[b, t])
+        if (key := PredictionKey.GROUND_TRUTH) in keys:
+            predictions[key] = Prediction(
+                value=episode.input.select(*self.heads.tree_paths()).apply(
+                    lambda x: x.diff(dim=1), batch_size=[b, t - 1]
+                ),
+                timestep_indices=timestep_indices,
             )
 
-        if result_keys & {
-            PredictionResultKey.PREDICTION_VALUE,
-            PredictionResultKey.PREDICTION_PROBS,
-            PredictionResultKey.SUMMARY_EMBEDDINGS,
+        if keys & {
+            PredictionKey.PREDICTION_VALUE,
+            PredictionKey.PREDICTION_PROBS,
+            PredictionKey.SUMMARY_EMBEDDINGS,
         }:
             mask = self._build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
@@ -133,29 +134,27 @@ class MemoryExtractionObjective(Objective):
 
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
 
-            timestep_padder = nan_padder(pad=(1, 0), dim=1)
-
-            if (result_key := PredictionResultKey.PREDICTION_VALUE) in result_keys:
-                result[result_key] = (
-                    logits.apply(lambda x: x.argmax(dim=-1))
-                    .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
+            if (key := PredictionKey.PREDICTION_VALUE) in keys:
+                predictions[key] = Prediction(
+                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # pyright: ignore[reportOptionalMemberAccess]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
                         nested_keys=True,
-                    )
-                    .apply(timestep_padder, batch_size=[b, t])  # pyright: ignore[reportOptionalMemberAccess]
+                    ),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.PREDICTION_PROBS) in result_keys:
-                result[result_key] = logits.apply(lambda x: x.softmax(dim=-1)).apply(  # pyright: ignore[reportOptionalMemberAccess]
-                    timestep_padder, batch_size=[b, t]
+            if (key := PredictionKey.PREDICTION_PROBS) in keys:
+                predictions[key] = Prediction(
+                    value=logits.apply(lambda x: x.softmax(dim=-1)),
+                    timestep_indices=timestep_indices,
                 )
 
-            if (result_key := PredictionResultKey.SUMMARY_EMBEDDINGS) in result_keys:
-                result[result_key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+            if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
+                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
                     embedding
                 )
 
-        return TensorDict(result).auto_batch_size_(2)
+        return TensorDict(predictions).auto_batch_size_(2)
 
     @classmethod
     def build_attention_mask(

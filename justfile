@@ -1,5 +1,9 @@
-export HYDRA_FULL_ERROR := "1"
 export PYTHONOPTIMIZE := "1"
+export PYTHONBREAKPOINT := "patdb.debug"
+export PATDB_CODE_STYLE := "vim"
+export BETTER_EXCEPTIONS := "1"
+export LOVELY_TENSORS := "1"
+export HYDRA_FULL_ERROR := "1"
 export RERUN_STRICT := "1"
 
 _default:
