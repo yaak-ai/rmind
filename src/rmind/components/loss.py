@@ -214,34 +214,42 @@ class SoftFocalSigLIPObjective(Module):
     def __init__(  # noqa: PLR0913
         self,
         *args: Any,
-        weight: float = 1.0,
+        gram_weight: float = 1.0,
+        clip_weight: float = 1.0,
+        siglip_weight: float = 1.0,
         patches: int = 256,
         timestep: int = 6,
         gamma: int = 2,
-        logit_scale: float = 10,
-        logit_bias: float = 0,
+        siglip_logit_scale: float = 10,
+        siglip_logit_bias: float = 0,
+        clip_logit_scale: float = 10,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
-        self.weight = weight
+        self.gram_weight = gram_weight
+        self.clip_weight = clip_weight
+        self.siglip_weight = siglip_weight
         self.patches = patches
         self.timestep = timestep
         self.gamma = gamma
         self.bce = torch.nn.BCEWithLogitsLoss(reduction="none")
-        self._logit_scale = logit_scale
-        self._logit_bias = logit_bias
+        self.mse = torch.nn.MSELoss()
+        self.ce = torch.nn.CrossEntropyLoss(reduction="none")
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L295C14-L295C75
         # Simoid loss sets to np.log(10) and -10 but thats for hard labels
         # TODO : principled way to set this # noqa: FIX002
-        self.logit_scale = torch.nn.Parameter(
-            torch.ones([]) * np.log(self._logit_scale), requires_grad=False
+        self.siglip_logit_scale = torch.nn.Parameter(
+            torch.ones([]) * np.log(siglip_logit_scale), requires_grad=False
         )
-        self.logit_bias = torch.nn.Parameter(
-            torch.ones([]) * self._logit_bias, requires_grad=False
+        self.siglip_logit_bias = torch.nn.Parameter(
+            torch.ones([]) * siglip_logit_bias, requires_grad=False
+        )
+        self.clip_logit_scale = torch.nn.Parameter(
+            torch.ones([]) * np.log(clip_logit_scale), requires_grad=False
         )
 
     @override
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:  # noqa: PLR0914
         # Trust but ~~verify~~ detach
         target = target.detach()
 
@@ -259,18 +267,22 @@ class SoftFocalSigLIPObjective(Module):
         # B T P P
         # https://github.com/openai/CLIP/blob/main/clip/model.py#L366
         # https://arxiv.org/pdf/2303.15343 Algorithm: 1
-        logit_scale = self.logit_scale
-        logit_bias = self.logit_bias
+        logit_scale = self.siglip_logit_scale
+        logit_bias = self.siglip_logit_bias
 
-        similarity = torch.matmul(input, target.transpose(-1, -2))
+        cross_similarity = torch.matmul(input, target.transpose(-1, -2))
+        self_similarity = torch.matmul(input, input.transpose(-1, -2))
+
         # [-1, 1] -> [0, 1] to match soft assignment simoid labels
         # similarity = (1 + similarity) / 2.0 # noqa:  ERA001
-        logits = logit_scale.exp() * similarity + logit_bias
+        logits = logit_scale.exp() * cross_similarity + logit_bias
 
         # B T P P
         # Similarity as targets instead of 1-hot targets
         # we should ? [-1, 1] -> [0, 1] to match soft assignment simoid labels
         labels = torch.matmul(target, target.transpose(-1, -2))
+
+        gram_loss = self.mse(self_similarity, labels)
 
         logits = rearrange(logits, "b t p0 p1 -> (b t p0) p1")
         labels = rearrange(labels, "b t p0 p1 -> (b t p0) p1").clamp(0, 1)
@@ -293,4 +305,24 @@ class SoftFocalSigLIPObjective(Module):
             (focal_weight.pow(self.gamma) * soft_siglip_loss).sum(dim=-1).mean()
         )
 
-        return self.weight * focal_siglip_loss
+        patch_labels = torch.arange(self.patches, device=input.device)
+        patch_labels = repeat(
+            patch_labels, "p -> b t p", b=input.shape[0], t=input.shape[1]
+        )
+        patch_labels = rearrange(patch_labels, "b t p -> (b t p)")
+
+        logit_scale = self.clip_logit_scale.exp()
+        clip_logits = logit_scale * cross_similarity
+
+        clip_logits = rearrange(clip_logits, "b t p0 p1 -> (b t p0) p1")
+
+        clip_loss = self.ce(clip_logits, patch_labels)
+        pt = torch.exp(-clip_loss)
+
+        clip_loss = ((1 - pt).pow(self.gamma) * clip_loss).mean()
+
+        return (
+            self.siglip_weight * focal_siglip_loss
+            + self.gram_weight * gram_loss
+            + self.clip_weight * clip_loss
+        )

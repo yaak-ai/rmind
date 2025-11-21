@@ -401,12 +401,15 @@ objectives:
           image:
             cam_front_left:
               _target_: rmind.components.loss.SoftFocalSigLIPObjective
-              weight: 0.1
+              siglip_weight: 0.1
+              gram_weight: 50
+              clip_weight: 1.0
               patches: 256
               timestep: 5
-              gamma: 1
-              logit_scale: 6
-              logit_bias: -2
+              gamma: 2
+              siglip_logit_scale: 4.4
+              siglip_logit_bias: -2.2
+              clip_logit_scale: 14.0
           continuous:
             speed:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss

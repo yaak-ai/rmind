@@ -35,7 +35,13 @@ class SelectiveAdamW(AdamW):
                     ):
                         weight_decay_param_blacklist.add(param_name)
 
-                case "bias" | "in_proj_bias" | "logit_scale" | "logit_bias":
+                case (
+                    "bias"
+                    | "in_proj_bias"
+                    | "siglip_logit_scale"
+                    | "siglip_logit_bias"
+                    | "clip_logit_scale"
+                ):
                     weight_decay_param_blacklist.add(param_name)
 
                 # https://github.com/pytorch/pytorch/blob/v2.7.0/torch/nn/modules/activation.py#L1091
