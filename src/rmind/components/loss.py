@@ -302,8 +302,9 @@ class SoftFocalSigLIPObjective(Module):
 
         # TBD: https://github.com/google-research/big_vision/blob/6d6c28a9/big_vision/trainers/proj/image_text/siglip.py#L302
         focal_siglip_loss = (
-            (focal_weight.pow(self.gamma) * soft_siglip_loss).sum(dim=-1).mean()
-        )
+            (focal_weight.pow(self.gamma) * soft_siglip_loss).sum(dim=-1)
+            / (labels.sum(dim=-1))
+        ).mean()
 
         patch_labels = torch.arange(self.patches, device=input.device)
         patch_labels = repeat(

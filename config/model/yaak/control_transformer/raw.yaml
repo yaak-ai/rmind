@@ -401,9 +401,9 @@ objectives:
           image:
             cam_front_left:
               _target_: rmind.components.loss.SoftFocalSigLIPObjective
-              siglip_weight: 0.1
-              gram_weight: 50
-              clip_weight: 1.0
+              siglip_weight: 1.0
+              gram_weight: 10
+              clip_weight: 0.1
               patches: 256
               timestep: 5
               gamma: 2
