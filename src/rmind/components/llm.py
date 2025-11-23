@@ -108,6 +108,17 @@ class TransformerEncoder(nn.Module):
 
 
 @final
+class Transformer(nn.Module):
+    def __init__(self, transformer: TransformerEncoder) -> None:
+        super().__init__()
+        self.transformer = transformer
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.transformer(src=x, mask=None)
+
+
+@final
 class MLPGLU(nn.Module):
     def __init__(
         self,

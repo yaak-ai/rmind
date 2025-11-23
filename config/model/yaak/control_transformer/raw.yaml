@@ -10,6 +10,7 @@ episode_builder:
     - [observation, image, cam_front_left]
     - [observation, continuous, speed]
     - [observation, context, waypoints]
+    - [special, special, foresight]
     - [special, special, observation_summary]
     - [special, special, observation_history]
     - [action, continuous, gas_pedal]
@@ -18,10 +19,13 @@ episode_builder:
     - [action, discrete, turn_signal]
     - [special, special, action_summary]
 
+  # [index, repeat], repeat the token repeat times in each timestep
   special_tokens:
-    observation_summary: 0
-    observation_history: 1
-    action_summary: 2
+    observation_summary: [0, 1]
+    observation_history: [1, 1]
+    action_summary: [2, 1]
+    foresight: [3, 16]
+    mask: [4, 1]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -206,7 +210,7 @@ episode_builder:
 
       special:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 3
+        num_embeddings: 5
         embedding_dim: ${embedding_dim}
 
   projection:
@@ -369,31 +373,34 @@ objectives:
         modules:
           image:
             cam_front_left:
-              _target_: rmind.components.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 3
-                  - ${embedding_dim}
-              out_features: 384
-              bias: False
-
-          continuous:
-            speed:
-              _target_: rmind.components.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 3
-                  - ${embedding_dim}
-              out_features: ${speed_bins}
-              bias: False
+              _target_: torch.nn.Sequential
+              _args_:
+                - _target_: rmind.components.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${embedding_dim}
+                  out_features: ${embedding_dim}
+                - _target_: einops.layers.torch.Rearrange
+                  pattern: "b t s d -> (b t) s d"
+                - _target_: rmind.components.llm.Transformer
+                  transformer:
+                    _target_: rmind.components.llm.TransformerEncoder
+                    dim_model: ${embedding_dim}
+                    num_layers: 2
+                    num_heads: 4
+                    attn_dropout: 0.1
+                    resid_dropout: 0.1
+                    mlp_dropout: 0.1
+                    hidden_layer_multiplier: 1
+                - _target_: rmind.components.nn.Linear
+                  in_features: ${embedding_dim}
+                  out_features: ${embedding_dim}
 
       targets:
         image:
           cam_front_left: [input_embeddings, image, cam_front_left]
-        continuous:
-          speed: [input_tokens, continuous, speed]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
@@ -410,9 +417,6 @@ objectives:
               siglip_logit_scale: 4.4
               siglip_logit_bias: -2.2
               clip_logit_scale: 14.0
-          continuous:
-            speed:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
     random_masked_hindsight_control:
       _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective

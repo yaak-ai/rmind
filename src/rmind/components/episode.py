@@ -59,6 +59,8 @@ class SpecialToken(StrEnum):
     OBSERVATION_SUMMARY = auto()
     OBSERVATION_HISTORY = auto()
     ACTION_SUMMARY = auto()
+    FORESIGHT = auto()
+    MASK = auto()
 
 
 @unique
@@ -229,7 +231,7 @@ class EpisodeBuilder(Module):
         self,
         *,
         timestep: tuple[TokenMeta, ...],
-        special_tokens: Mapping[SpecialToken, int],
+        special_tokens: Mapping[SpecialToken, list[int]],
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
@@ -271,8 +273,14 @@ class EpisodeBuilder(Module):
         })
 
         input_tokens[Modality.SPECIAL.value] = {
-            k.value: torch.tensor(v, device=device).expand(*batch_size, 1)
-            for k, v in self.special_tokens.items()
+            k.value: repeat(
+                torch.tensor(value, device=device),
+                " -> b t n",
+                b=batch_size[0],
+                t=batch_size[1],
+                n=copy,
+            )
+            for k, (value, copy) in self.special_tokens.items()
         }
 
         input_embeddings = self.embeddings(input_tokens)
