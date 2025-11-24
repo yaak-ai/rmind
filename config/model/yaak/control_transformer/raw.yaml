@@ -21,11 +21,11 @@ episode_builder:
 
   # [index, repeat], repeat the token repeat times in each timestep
   special_tokens:
-    observation_summary: [0, 1]
-    observation_history: [1, 1]
-    action_summary: [2, 1]
-    foresight: [3, 16]
-    mask: [4, 1]
+    observation_summary: [0]
+    observation_history: [1]
+    action_summary: [2]
+    foresight: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    mask: [19]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -210,7 +210,7 @@ episode_builder:
 
       special:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 5
+        num_embeddings: 20
         embedding_dim: ${embedding_dim}
 
   projection:
@@ -371,8 +371,8 @@ objectives:
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          image:
-            cam_front_left:
+          special:
+            foresight:
               _target_: torch.nn.Sequential
               _args_:
                 - _target_: rmind.components.nn.Linear
@@ -399,21 +399,21 @@ objectives:
                   out_features: ${embedding_dim}
 
       targets:
-        image:
-          cam_front_left: [input_embeddings, image, cam_front_left]
+        special:
+          foresight: [input_embeddings, image, cam_front_left]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          image:
-            cam_front_left:
+          special:
+            foresight:
               _target_: rmind.components.loss.SoftFocalSigLIPObjective
-              siglip_weight: 1.0
-              gram_weight: 10
-              clip_weight: 0.1
+              siglip_weight: 0.1
+              gram_weight: 0
+              clip_weight: 0
               patches: 256
               timestep: 5
-              gamma: 2
+              gamma: 1
               siglip_logit_scale: 4.4
               siglip_logit_bias: -2.2
               clip_logit_scale: 14.0

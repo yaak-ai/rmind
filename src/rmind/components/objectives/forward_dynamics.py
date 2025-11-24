@@ -3,7 +3,7 @@ from functools import lru_cache
 from typing import final, override
 
 import torch
-from einops import pack, rearrange, repeat
+from einops import pack, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
@@ -68,16 +68,8 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         index = episode.index[:-1]  # all but last timestep
 
-        observations = index.select(
-            *episode.timestep.get(TokenType.OBSERVATION)
-            .exclude((Modality.CONTEXT, "waypoints"))
-            .exclude((Modality.CONTINUOUS, "speed"))
-            .keys(include_nested=True, leaves_only=True)
-        ).parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
-
         # get foresight embeddings from the encoder
         # add mask tokens to make up for missing image tokens
-        # replace foresight embeddings in observation tensor dict
         foresight = (
             index.select(k := (Modality.SPECIAL, SpecialToken.FORESIGHT))  # pyright: ignore[reportCallIssue]
             .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
@@ -87,16 +79,23 @@ class ForwardDynamicsPredictionObjective(Objective):
         foresight_tokens = foresight.shape[-2]
         batch_size = foresight.shape[0]
 
-        mask_embedding = episode.input_embeddings["special"]["mask"][:, 1:]
-        image_tokens = episode.input_embeddings["image"]["cam_front_left"].shape[-2]
+        mask_embedding = episode.input_embeddings.get((
+            Modality.SPECIAL,
+            SpecialToken.MASK,
+        ))[:, :-1]
+        image_tokens = episode.input_embeddings.get((
+            Modality.IMAGE,
+            "cam_front_left",
+        )).shape[-2]
 
         mask_embedding = repeat(
             mask_embedding, "b t 1 d -> b t n d", n=image_tokens - foresight_tokens
         )
         foresight_embeddings = torch.cat([foresight, mask_embedding], dim=2)
 
+        observations = TensorDict()
         observations = observations.set(
-            ("image", "cam_front_left"), foresight_embeddings
+            (Modality.SPECIAL, SpecialToken.FORESIGHT), foresight_embeddings
         )
 
         action_summary = (
@@ -113,12 +112,8 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         logits = self.heads(features.to_dict())  # pyright: ignore[reportOptionalMemberAccess]
-
-        logits["image"]["cam_front_left"] = rearrange(
-            logits["image"]["cam_front_left"],
-            "(b t) s d -> b t s d",
-            b=batch_size,
-            t=len(index),
+        logits = tree_map(
+            Rearrange("(b t) s d -> b t s d", b=batch_size, t=len(index)), logits
         )
 
         targets = tree_map(

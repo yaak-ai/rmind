@@ -275,12 +275,11 @@ class EpisodeBuilder(Module):
         input_tokens[Modality.SPECIAL.value] = {
             k.value: repeat(
                 torch.tensor(value, device=device),
-                " -> b t n",
+                "n -> b t n",
                 b=batch_size[0],
                 t=batch_size[1],
-                n=copy,
             )
-            for k, (value, copy) in self.special_tokens.items()
+            for k, value in self.special_tokens.items()
         }
 
         input_embeddings = self.embeddings(input_tokens)
