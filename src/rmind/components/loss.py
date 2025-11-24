@@ -218,7 +218,128 @@ class SoftFocalSigLIPObjective(Module):
         clip_weight: float = 1.0,
         siglip_weight: float = 1.0,
         patches: int = 256,
-        timestep: int = 6,
+        timestep: int = 5,
+        gamma: int = 2,
+        siglip_logit_scale: float = 10,
+        siglip_logit_bias: float = 0,
+        clip_logit_scale: float = 10,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.gram_weight = gram_weight
+        self.clip_weight = clip_weight
+        self.siglip_weight = siglip_weight
+        self.patches = patches
+        self.timestep = timestep
+        self.gamma = gamma
+        self.bce = torch.nn.BCEWithLogitsLoss(reduction="none")
+        self.mse = torch.nn.MSELoss()
+        # https://github.com/openai/CLIP/blob/main/clip/model.py#L295C14-L295C75
+        # Simoid loss sets to np.log(10) and -10 but thats for hard labels
+        # TODO : principled way to set this # noqa: FIX002
+        self.siglip_logit_scale = torch.nn.Parameter(
+            torch.ones([]) * np.log(siglip_logit_scale), requires_grad=False
+        )
+        self.siglip_logit_bias = torch.nn.Parameter(
+            torch.ones([]) * siglip_logit_bias, requires_grad=False
+        )
+        self.clip_logit_scale = torch.nn.Parameter(
+            torch.ones([]) * np.log(clip_logit_scale), requires_grad=False
+        )
+        self.register_buffer(
+            "patch_labels", torch.arange(patches, dtype=torch.long), persistent=False
+        )
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:  # noqa: PLR0914
+        # Trust but ~~verify~~ detach
+        target = target.detach()
+
+        # letz keep everything in (B T) since torch is better with big rather then nested tensors
+        # (B T P) D
+        input = F.normalize(input, dim=-1)
+        target = F.normalize(target, dim=-1)
+
+        input = rearrange(input, "(bt p) d -> bt p d", p=self.patches)
+        target = rearrange(target, "(bt p) d -> bt p d", p=self.patches)
+
+        # B T P P
+        # https://github.com/openai/CLIP/blob/main/clip/model.py#L366
+        # https://arxiv.org/pdf/2303.15343 Algorithm: 1
+
+        cross_similarity = torch.matmul(input, target.transpose(-1, -2))
+        # B T P P
+        # Similarity as targets instead of 1-hot targets
+        # we should ? [-1, 1] -> [0, 1] to match soft assignment simoid labels
+        labels_raw = torch.matmul(target, target.transpose(-1, -2))
+
+        # 1.Gram loss
+        self_similarity = torch.matmul(input, input.transpose(-1, -2))
+        gram_loss = self.mse(self_similarity, labels_raw)
+        del self_similarity
+
+        sig_logits = (
+            self.siglip_logit_scale.exp() * cross_similarity + self.siglip_logit_bias
+        )
+
+        # 2.Soft focal SigLIP loss
+        sig_logits = rearrange(sig_logits, "bt p0 p1 -> (bt p0) p1")
+        sig_labels = rearrange(labels_raw, "bt p0 p1 -> (bt p0) p1").clamp(0, 1)
+
+        # BCE is equivalent to sigmoid loss in SigLIP (we have soft targets)
+        soft_siglip_loss = self.bce(sig_logits, sig_labels)
+
+        # best entropy we can get this is the lower bound
+        self_entropy = torch.special.entr(sig_labels) + torch.special.entr(
+            1.0 - sig_labels
+        )
+
+        focal_weight = (soft_siglip_loss - self_entropy).clamp(0)
+
+        label_sum = sig_labels.sum(dim=-1)
+        # Avoid division by zero if a row has 0 sum (unlikely with soft labels but safer)
+        label_sum = label_sum.masked_fill(label_sum == 0, 1.0)
+
+        focal_siglip_loss = (
+            (focal_weight.pow(self.gamma) * soft_siglip_loss).sum(dim=-1) / label_sum
+        ).mean()
+
+        del sig_logits, sig_labels, focal_weight, soft_siglip_loss
+
+        # 3. Focal Clip loss
+
+        clip_scale = self.clip_logit_scale.exp()
+        clip_logits = clip_scale * cross_similarity
+
+        clip_logits = rearrange(clip_logits, "bt p0 p1 -> (bt p0) p1")
+        current_batch_size = clip_logits.shape[0]
+        targets = repeat(
+            self.patch_labels, "p -> (bt p)", bt=current_batch_size // self.patches
+        )
+
+        log_probs = F.log_softmax(clip_logits, dim=-1)
+        log_pt = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+        pt = log_pt.exp()
+
+        clip_loss = ((1 - pt).pow(self.gamma) * (-log_pt)).mean()
+
+        return (
+            self.siglip_weight * focal_siglip_loss
+            + self.gram_weight * gram_loss
+            + self.clip_weight * clip_loss
+        )
+
+
+@final
+class SoftFocalSigLIPObjectiveOG(Module):
+    def __init__(  # noqa: PLR0913
+        self,
+        *args: Any,
+        gram_weight: float = 1.0,
+        clip_weight: float = 1.0,
+        siglip_weight: float = 1.0,
+        patches: int = 256,
+        timestep: int = 5,
         gamma: int = 2,
         siglip_logit_scale: float = 10,
         siglip_logit_bias: float = 0,
@@ -326,3 +447,56 @@ class SoftFocalSigLIPObjective(Module):
             + self.gram_weight * gram_loss
             + self.clip_weight * clip_loss
         )
+
+
+if __name__ == "__main__":
+    import time
+
+    b, t, p, d = 128, 5, 256, 1024
+    import numpy as np
+
+    num_iterations = 10
+    original_times = []
+    optimized_times = []
+
+    for i in range(num_iterations):
+        print(f"Iteration {i+1}/{num_iterations}")
+        input = torch.randn(b * t * p, d)
+        target = torch.randn(b * t * p, d)
+        original_loss = SoftFocalSigLIPObjectiveOG()
+        optimized_loss = SoftFocalSigLIPObjective()
+
+        # Time original loss computation
+        start = time.time()
+        out1 = original_loss(input, target)
+        elapsed1 = time.time() - start
+        original_times.append(elapsed1)
+        print("Original loss:", out1)
+        print(f"Original loss time: {elapsed1:.6f} seconds")
+
+        # Time optimized loss computation
+        start = time.time()
+        out2 = optimized_loss(input, target)
+        elapsed2 = time.time() - start
+        optimized_times.append(elapsed2)
+        print("Optimized loss:", out2)
+        print(f"Optimized loss time: {elapsed2:.6f} seconds")
+        torch.testing.assert_close(out1, out2)
+        print("-" * 40)
+
+    orig_mean = np.mean(original_times)
+    orig_std = np.std(original_times)
+    opt_mean = np.mean(optimized_times)
+    opt_std = np.std(optimized_times)
+    percent_decrease = ((orig_mean - opt_mean) / orig_mean) * 100
+
+    print(f"\nOriginal loss mean time: {orig_mean:.6f}s ± {orig_std:.6f}s")
+    print(f"Optimized loss mean time: {opt_mean:.6f}s ± {opt_std:.6f}s")
+    print(f"Time decrease: {percent_decrease:.2f}%")
+
+    """
+    Original loss mean time: 1.651532s ± 0.334539s
+    Optimized loss mean time: 1.397571s ± 0.119567s
+    Time decrease: 15.38%
+    """
+
