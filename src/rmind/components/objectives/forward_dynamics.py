@@ -106,7 +106,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
         features: TensorDict = observations.apply(
-            # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
+            # pack: (obs[0], action_summary), (obs[1], action_summary), ...
             lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
                 0
             ]
@@ -276,6 +276,11 @@ class ForwardDynamicsPredictionObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
+            past_observations = past.select(
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
             current_observation_summary = current.select((  # pyright: ignore[reportCallIssue]
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
@@ -297,6 +302,15 @@ class ForwardDynamicsPredictionObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
+            past_actions = past.select(
+                *timestep.get(TokenType.ACTION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
+            past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
+                Modality.SPECIAL,
+                SpecialToken.ACTION_SUMMARY,
+            ))
 
             mask = (
                 mask.do_attend(current, current)  # pyright: ignore[reportArgumentType]
@@ -314,6 +328,18 @@ class ForwardDynamicsPredictionObjective(Objective):
                 .do_not_attend(current_foresight, current_observation_summary)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_foresight, current_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_foresight, current_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_foresight, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_foresight, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_summary, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_summary, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_history, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_history, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_summary, current_observations)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_history, current_observations)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_summary, past_observations)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observation_history, past_observations)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observations, past_action_summary)  # pyright: ignore[reportArgumentType]
             )
 
         return mask
