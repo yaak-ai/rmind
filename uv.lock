@@ -1854,7 +1854,7 @@ wheels = [
 [[package]]
 name = "rbyte"
 version = "0.33.0"
-source = { editable = "../rbyte" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cachetools" },
     { name = "checkedframe" },
@@ -1876,6 +1876,10 @@ dependencies = [
     { name = "tqdm" },
     { name = "xxhash" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/d2/8a/cd643c28815e8b53a4bb821fc362bd3511824620a404e8f5eb5ea0cb2365/rbyte-0.33.0.tar.gz", hash = "sha256:742ef02a5686527b64b590fea88641274d54e9bfda2b574255070f73792ae08e", size = 30735, upload-time = "2025-11-24T17:19:20.193Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/08/e8/17c2f72cee79f3076a4a07d90552e5aab6fce319b85c500dd7ac5dfe5c86/rbyte-0.33.0-py3-none-any.whl", hash = "sha256:a64b7d69e845fa4eb3266332b2563e4d71d719b756200a2c5578f3b8cb31d746", size = 48133, upload-time = "2025-11-24T17:19:18.711Z" },
+]
 
 [package.optional-dependencies]
 geo = [
@@ -1891,69 +1895,6 @@ visualize = [
 yaak = [
     { name = "protobuf" },
     { name = "ptars" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cachetools", specifier = ">=6.1.0" },
-    { name = "checkedframe", specifier = ">=0.1.0" },
-    { name = "duckdb", specifier = ">=1.4.1" },
-    { name = "einops", marker = "extra == 'visualize'", specifier = ">=0.8.1" },
-    { name = "grpcio-tools", marker = "extra == 'protos'", specifier = "==1.71.0" },
-    { name = "h5py", marker = "extra == 'hdf5'", specifier = ">=3.14.0" },
-    { name = "hatchling", marker = "extra == 'build'", specifier = ">=1.27.0" },
-    { name = "hydra-core", specifier = ">=1.3.2" },
-    { name = "makefun", specifier = ">=1.16.0" },
-    { name = "mcap", marker = "extra == 'mcap'", specifier = ">=1.3.0" },
-    { name = "mcap-protobuf-support", marker = "extra == 'mcap'", specifier = ">=0.5.3" },
-    { name = "more-itertools", specifier = ">=10.8.0" },
-    { name = "numpy" },
-    { name = "optree", specifier = ">=0.17.0" },
-    { name = "pipefunc", extras = ["autodoc"], specifier = ">=0.87.1" },
-    { name = "polars", specifier = ">=1.34.0" },
-    { name = "polars-st", marker = "extra == 'geo'", specifier = "==0.4.0" },
-    { name = "protobuf", marker = "extra == 'mcap'" },
-    { name = "protobuf", marker = "extra == 'yaak'" },
-    { name = "protoletariat", marker = "extra == 'protos'", specifier = ">=3.3.10" },
-    { name = "ptars", marker = "extra == 'yaak'", specifier = ">=0.0.5" },
-    { name = "pydantic", specifier = ">=2.12.4" },
-    { name = "rerun-sdk", extras = ["notebook"], marker = "extra == 'visualize'", specifier = ">=0.27.2" },
-    { name = "simplejpeg", marker = "extra == 'jpeg'", specifier = ">=1.8.2" },
-    { name = "structlog", specifier = ">=25.4.0" },
-    { name = "tensordict-nightly", specifier = "==2025.9.24" },
-    { name = "torch", marker = "sys_platform != 'linux'", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torch", marker = "sys_platform == 'linux'", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "torchcodec", marker = "sys_platform == 'linux' and extra == 'video'", specifier = ">=0.7.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "torchcodec", marker = "sys_platform != 'linux' and extra == 'video'", specifier = ">=0.7.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torchdata", specifier = ">=0.11.0" },
-    { name = "tqdm", specifier = ">=4.67.1" },
-    { name = "xxhash", specifier = ">=3.6.0" },
-]
-provides-extras = ["build", "geo", "hdf5", "jpeg", "mcap", "protos", "video", "visualize", "yaak"]
-
-[package.metadata.requires-dev]
-check = [
-    { name = "ruff", specifier = ">=0.14.5" },
-    { name = "ty", specifier = "==0.0.1a21" },
-]
-dev = [
-    { name = "better-exceptions", specifier = ">=0.3.3" },
-    { name = "graphviz-anywidget", specifier = ">=0.8.0" },
-    { name = "ipykernel", specifier = ">=6.29.5" },
-    { name = "ipython", specifier = ">=9.3.0" },
-    { name = "ipython-autoimport", specifier = ">=0.5.1" },
-    { name = "jupyterlab", specifier = ">=4.4.5" },
-    { name = "jupyterlab-vim", specifier = ">=4.1.4" },
-    { name = "lovely-tensors", specifier = ">=0.1.19" },
-    { name = "patdb", specifier = ">=0.1.1" },
-    { name = "pipefunc", extras = ["plotting"] },
-    { name = "wat-inspector", specifier = ">=0.4.3" },
-]
-test = [
-    { name = "dill", specifier = ">=0.4.0" },
-    { name = "pytest", specifier = ">=8.4.1" },
-    { name = "pytest-lazy-fixtures", specifier = ">=1.4.0" },
-    { name = "testbook", specifier = ">=0.4.2" },
 ]
 
 [[package]]
@@ -2108,8 +2049,8 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.4.1" },
     { name = "pytest-lazy-fixtures", marker = "extra == 'test'", specifier = ">=1.1.4" },
     { name = "pytorch-lightning", specifier = ">=2.5.2" },
-    { name = "rbyte", extras = ["geo", "jpeg", "yaak"], editable = "../rbyte" },
-    { name = "rbyte", extras = ["visualize"], marker = "extra == 'predict'", editable = "../rbyte" },
+    { name = "rbyte", extras = ["geo", "jpeg", "yaak"], specifier = "==0.33.0" },
+    { name = "rbyte", extras = ["visualize"], marker = "extra == 'predict'" },
     { name = "structlog", specifier = ">=25.2.0" },
     { name = "tensordict-nightly", specifier = "==2025.9.24" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu" },
