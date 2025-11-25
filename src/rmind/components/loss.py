@@ -138,7 +138,10 @@ class GramAnchoringObjective(Module):
         cross_time_gram = ((cross_time_pred - cross_time_gt) ** 2).mean()
 
         # B T P
-        sim_loss = (1.0 - (input * target).sum(dim=-1)).mean()
+        sim = (input * target).sum(dim=-1)
+
+        # B T P
+        sim_loss = (1.0 - sim).mean()
 
         return self.weight_sim * sim_loss + self.weight_cross * cross_time_gram
 

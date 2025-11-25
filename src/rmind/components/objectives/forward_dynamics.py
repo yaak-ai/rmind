@@ -98,20 +98,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             (Modality.SPECIAL, SpecialToken.FORESIGHT), foresight_embeddings
         )
 
-        action_summary = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))  # pyright: ignore[reportCallIssue]
-            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
-            .get(k)
-        )
-
-        features: TensorDict = observations.apply(
-            # pack: (obs[0], action_summary), (obs[1], action_summary), ...
-            lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
-                0
-            ]
-        )
-
-        logits = self.heads(features.to_dict())  # pyright: ignore[reportOptionalMemberAccess]
+        logits = self.heads(observations.to_dict())
         logits = tree_map(
             Rearrange("(b t) s d -> b t s d", b=batch_size, t=len(index)), logits
         )

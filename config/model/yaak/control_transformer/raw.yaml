@@ -26,6 +26,7 @@ episode_builder:
     action_summary: [2]
     foresight: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
     mask: [19]
+    decoding: [20]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -210,7 +211,7 @@ episode_builder:
 
       special:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 20
+        num_embeddings: 21
         embedding_dim: ${embedding_dim}
 
   projection:
@@ -220,9 +221,9 @@ episode_builder:
         _target_: torch.nn.Sequential
         _args_:
           - _target_: torch.nn.LayerNorm
-            normalized_shape: 384
+            normalized_shape: ${image_embedding_dim}
           - _target_: rmind.components.nn.Linear
-            in_features: 384
+            in_features: ${image_embedding_dim}
             out_features: ${embedding_dim}
       continuous:
         speed:
@@ -267,6 +268,10 @@ episode_builder:
     modules:
       image:
         patch:
+        decoding:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 256
+          embedding_dim: ${image_embedding_dim}
       observations:
 
       actions:
@@ -376,27 +381,23 @@ objectives:
               _target_: torch.nn.Sequential
               _args_:
                 - _target_: rmind.components.nn.Linear
-                  in_features:
-                    _target_: operator.mul
-                    _args_:
-                      - 2
-                      - ${embedding_dim}
-                  out_features: ${embedding_dim}
+                  in_features: ${embedding_dim}
+                  out_features: ${image_embedding_dim}
                 - _target_: einops.layers.torch.Rearrange
                   pattern: "b t s d -> (b t) s d"
                 - _target_: rmind.components.llm.Transformer
                   transformer:
                     _target_: rmind.components.llm.TransformerEncoder
-                    dim_model: ${embedding_dim}
-                    num_layers: 4
+                    dim_model: ${image_embedding_dim}
+                    num_layers: 2
                     num_heads: 4
                     attn_dropout: 0.1
                     resid_dropout: 0.1
                     mlp_dropout: 0.1
                     hidden_layer_multiplier: 1
                 - _target_: rmind.components.nn.Linear
-                  in_features: ${embedding_dim}
-                  out_features: ${embedding_dim}
+                  in_features: ${image_embedding_dim}
+                  out_features: ${image_embedding_dim}
 
       targets:
         special:
@@ -408,8 +409,8 @@ objectives:
           special:
             foresight:
               _target_: rmind.components.loss.GramAnchoringObjective
-              weight_sim: 1.0
-              weight_cross: 10.0
+              weight_sim: 100.0
+              weight_cross: 0.0
               patches: 256
               timestep: 5
 
