@@ -388,7 +388,7 @@ objectives:
                   transformer:
                     _target_: rmind.components.llm.TransformerEncoder
                     dim_model: ${embedding_dim}
-                    num_layers: 2
+                    num_layers: 4
                     num_heads: 4
                     attn_dropout: 0.1
                     resid_dropout: 0.1
@@ -407,16 +407,11 @@ objectives:
         modules:
           special:
             foresight:
-              _target_: rmind.components.loss.SoftFocalSigLIPObjective
-              siglip_weight: 0.1
-              gram_weight: 0
-              clip_weight: 0
+              _target_: rmind.components.loss.GramAnchoringObjective
+              weight_sim: 1.0
+              weight_cross: 10.0
               patches: 256
               timestep: 5
-              gamma: 1
-              siglip_logit_scale: 4.4
-              siglip_logit_bias: -2.2
-              clip_logit_scale: 14.0
 
     random_masked_hindsight_control:
       _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective

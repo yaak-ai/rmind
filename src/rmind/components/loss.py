@@ -103,17 +103,16 @@ class GramAnchoringObjective(Module):
         weight: float = 1.0,
         patches: int = 256,
         timestep: int = 6,
-        gamma: int = 2,
-        tau: float = 0.1,
+        weight_sim: float = 1.0,
+        weight_cross: float = 10.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.weight = weight
         self.patches = patches
         self.timestep = timestep
-        self.gamma = gamma
-        self.tau = tau
-        self.mse_loss = torch.nn.MSELoss()
+        self.weight_sim = weight_sim
+        self.weight_cross = weight_cross
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
@@ -132,27 +131,16 @@ class GramAnchoringObjective(Module):
         target = F.normalize(target, dim=-1)
 
         # B T P P
-        cross_time_pred = torch.matmul(input[:, 1:], target[:, :-1].transpose(-1, -2))
-        cross_time_gt = torch.matmul(target[:, 1:], target[:, :-1].transpose(-1, -2))
+        cross_time_pred = torch.matmul(input[:, :-1], target[:, 1:].transpose(-1, -2))
+        cross_time_gt = torch.matmul(target[:, :-1], target[:, 1:].transpose(-1, -2))
 
         # B T P
-        similarity = (target[:, 1:] * target[:, :-1]).sum(dim=-1)
-        gating_weight = (1.0 - similarity).pow(self.gamma)
+        cross_time_gram = ((cross_time_pred - cross_time_gt) ** 2).mean()
 
         # B T P
-        gt_prob = torch.softmax(cross_time_gt / self.tau, dim=-1)
-        pred_prob = torch.softmax(cross_time_pred / self.tau, dim=-1)
+        sim_loss = (1.0 - (input * target).sum(dim=-1)).mean()
 
-        kl = (gt_prob * (gt_prob.add(1e-8).log() - pred_prob.add(1e-8).log())).sum(
-            dim=-1
-        )  # [B,T-1,P]
-        loss_kl = (gating_weight * kl).sum() / (gating_weight.sum() + 1e-6)
-
-        # B T P
-        sim_loss = (
-            gating_weight * (1.0 - (input[:, 1:] * target[:, 1:]).sum(dim=-1))
-        ).sum() / (gating_weight.sum() + 1e-6)
-        return self.weight * (sim_loss + loss_kl)
+        return self.weight_sim * sim_loss + self.weight_cross * cross_time_gram
 
 
 @final
@@ -251,7 +239,7 @@ class SoftFocalSigLIPObjective(Module):
         )
 
     @override
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:  # noqa: PLR0914
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
         # Trust but ~~verify~~ detach
         target = target.detach()
 
@@ -296,12 +284,8 @@ class SoftFocalSigLIPObjective(Module):
 
         focal_weight = (soft_siglip_loss - self_entropy).clamp(0)
 
-        label_sum = sig_labels.sum(dim=-1)
-        # Avoid division by zero if a row has 0 sum (unlikely with soft labels but safer)
-        label_sum = label_sum.masked_fill(label_sum == 0, 1.0)
-
         focal_siglip_loss = (
-            (focal_weight.pow(self.gamma) * soft_siglip_loss).sum(dim=-1) / label_sum
+            (focal_weight.pow(self.gamma) * soft_siglip_loss).sum(dim=-1)
         ).mean()
 
         del sig_logits, sig_labels, focal_weight, soft_siglip_loss
@@ -318,7 +302,7 @@ class SoftFocalSigLIPObjective(Module):
         )
 
         log_probs = F.log_softmax(clip_logits, dim=-1)
-        log_pt = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+        log_pt = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)  # pyright: ignore[reportCallIssue]
         pt = log_pt.exp()
 
         clip_loss = ((1 - pt).pow(self.gamma) * (-log_pt)).mean()
@@ -459,8 +443,7 @@ if __name__ == "__main__":
     original_times = []
     optimized_times = []
 
-    for i in range(num_iterations):
-        print(f"Iteration {i+1}/{num_iterations}")
+    for _i in range(num_iterations):
         input = torch.randn(b * t * p, d)
         target = torch.randn(b * t * p, d)
         original_loss = SoftFocalSigLIPObjectiveOG()
@@ -471,18 +454,13 @@ if __name__ == "__main__":
         out1 = original_loss(input, target)
         elapsed1 = time.time() - start
         original_times.append(elapsed1)
-        print("Original loss:", out1)
-        print(f"Original loss time: {elapsed1:.6f} seconds")
 
         # Time optimized loss computation
         start = time.time()
         out2 = optimized_loss(input, target)
         elapsed2 = time.time() - start
         optimized_times.append(elapsed2)
-        print("Optimized loss:", out2)
-        print(f"Optimized loss time: {elapsed2:.6f} seconds")
         torch.testing.assert_close(out1, out2)
-        print("-" * 40)
 
     orig_mean = np.mean(original_times)
     orig_std = np.std(original_times)
@@ -490,13 +468,8 @@ if __name__ == "__main__":
     opt_std = np.std(optimized_times)
     percent_decrease = ((orig_mean - opt_mean) / orig_mean) * 100
 
-    print(f"\nOriginal loss mean time: {orig_mean:.6f}s ± {orig_std:.6f}s")
-    print(f"Optimized loss mean time: {opt_mean:.6f}s ± {opt_std:.6f}s")
-    print(f"Time decrease: {percent_decrease:.2f}%")
-
     """
     Original loss mean time: 1.651532s ± 0.334539s
     Optimized loss mean time: 1.397571s ± 0.119567s
     Time decrease: 15.38%
     """
-
