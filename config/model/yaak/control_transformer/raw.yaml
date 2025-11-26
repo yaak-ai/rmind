@@ -311,7 +311,7 @@ episode_builder:
         embedding_dim: ${embedding_dim}
 
 encoder:
-  _target_: rmind.components.llm.TransformerEncoder
+  _target_: rmind.components.transformer.TransformerEncoder
   dim_model: ${embedding_dim}
   num_layers: ${num_layers}
   num_heads: ${num_heads}
@@ -401,38 +401,30 @@ objectives:
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          special:
-            foresight:
-              _target_: torch.nn.Sequential
-              _args_:
-                - _target_: rmind.components.nn.Linear
-                  in_features: ${embedding_dim}
-                  out_features: ${image_embedding_dim}
-                - _target_: einops.layers.torch.Rearrange
-                  pattern: "b t s d -> (b t) s d"
-                - _target_: rmind.components.llm.Transformer
-                  transformer:
-                    _target_: rmind.components.llm.TransformerEncoder
-                    dim_model: ${image_embedding_dim}
-                    num_layers: 2
-                    num_heads: 4
-                    attn_dropout: 0.1
-                    resid_dropout: 0.1
-                    mlp_dropout: 0.1
-                    hidden_layer_multiplier: 1
-                - _target_: rmind.components.nn.Linear
-                  in_features: ${image_embedding_dim}
-                  out_features: ${image_embedding_dim}
+          image:
+            cam_front_left:
+              _target_: rmind.components.transformer.TransformerDecoderWithProjectors
+              img_embedding_dim: ${image_embedding_dim}
+              encoder_embedding_dim: ${embedding_dim}
+              decoder:
+                _target_: rmind.components.transformer.TransformerDecoder
+                dim_model: ${image_embedding_dim}
+                num_layers: 1 # its actally 2 layers since 1 decoder block is 2 layers
+                num_heads: 4 
+                attn_dropout: 0.1
+                resid_dropout: 0.1
+                mlp_dropout: 0.1
+                hidden_layer_multiplier: 1
 
       targets:
-        special:
-          foresight: [input_embeddings, image, cam_front_left]
+        image:
+          cam_front_left: [input_embeddings, image, cam_front_left]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          special:
-            foresight:
+          image:
+            cam_front_left:
               _target_: rmind.components.loss.GramAnchoringObjective
               weight_sim: 100.0
               weight_cross: 0.0

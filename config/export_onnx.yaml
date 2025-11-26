@@ -288,7 +288,7 @@ model:
           embedding_dim: ${embedding_dim}
 
   encoder:
-    _target_: rmind.components.llm.TransformerEncoder
+    _target_: rmind.components.transformer.TransformerEncoder
     dim_model: ${embedding_dim}
     num_layers: ${num_layers}
     num_heads: ${num_heads}

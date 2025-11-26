@@ -8,9 +8,9 @@ defaults:
   - /wandb: yaak/rmind
   - _self_
 
-num_heads: 4
-num_layers: 8
-embedding_dim: 384
+num_heads: 2
+num_layers: 4
+embedding_dim: 64
 image_embedding_dim: 384
 
 speed_bins: 512

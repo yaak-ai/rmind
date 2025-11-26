@@ -23,7 +23,6 @@ from rmind.components.episode import (
     TokenMeta,
     TokenType,
 )
-from rmind.components.llm import TransformerEncoder
 from rmind.components.loss import GaussianNLLLoss, LogitBiasCrossEntropyLoss
 from rmind.components.nn import (
     AtLeast3D,
@@ -43,6 +42,7 @@ from rmind.components.objectives import (
     RandomMaskedHindsightControlObjective,
 )
 from rmind.components.resnet import ResnetBackbone
+from rmind.components.transformer import TransformerEncoder
 
 EMBEDDING_DIM = 512
 SPEED_BINS = 512
