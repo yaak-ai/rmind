@@ -27,7 +27,7 @@ class TimmBackbone(nn.Module):
             self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
-    def forward(self, input: Tensor) -> Tensor:
+    def forward(self, input: Tensor, input2: Tensor) -> Tensor:
         *b, c, h, w = input.shape
         x = input.view(prod(b), c, h, w)
         x = self.model(x)[-1]

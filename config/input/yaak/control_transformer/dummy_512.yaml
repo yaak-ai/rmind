@@ -1,0 +1,11 @@
+---
+data:
+  cam_front_left:
+    _target_: torch.testing.make_tensor
+    _args_: [1, 6, 3, 512, 512]
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.float
+    device: cpu
+    low: 0
+    high: 1
