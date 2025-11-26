@@ -45,6 +45,7 @@ class TransformerEncoderBlock(nn.Module):
 
     @override
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+        # https://github.com/karpathy/nanoGPT/blob/master/model.py#L94
         # f
         residual = x
         x_norm = self.pre_norm(x)
@@ -103,6 +104,127 @@ class TransformerEncoder(nn.Module):
 
         for layer in self.layers:
             x = run_layer(layer, x, mask)
+
+        return self.layer_norm(x)
+
+
+# Note, query keys and values don't need to have same dimensions but keep this as default for now.
+# https://framerusercontent.com/images/Gi6IybLpxFg1hAU2TIJnoSQ.jpeg
+@final
+class TransformerDecoderBlock(nn.Module):
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        embedding_dim: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+    ) -> None:
+        super().__init__()
+
+        self.pre_norm_q = nn.LayerNorm(embedding_dim)
+        self.pre_norm_kv = nn.LayerNorm(embedding_dim)
+        self.post_norm_self_attn = nn.LayerNorm(embedding_dim)
+        self.post_norm = nn.LayerNorm(embedding_dim)
+
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
+
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
+
+        self.resid_drop = nn.Dropout(resid_dropout, inplace=False)
+
+        self.mlp = MLPGLU(
+            dim_model=embedding_dim,
+            dropout=mlp_dropout,
+            hidden_layer_multiplier=hidden_layer_multiplier,
+        )
+
+    @override
+    def forward(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor | None = None,
+        mask: Tensor | None = None,
+    ) -> Tensor:
+        value = key if value is None else value
+
+        residual = query
+
+        # self attention
+        query = self.pre_norm_q(query)
+        self_mha, _ = self.self_attn(
+            query, query, query, attn_mask=mask, need_weights=False
+        )
+        x = residual + self.resid_drop(self_mha)
+
+        residual = x
+
+        # cross attention
+        query = self.post_norm_self_attn(x)
+        key = self.pre_norm_kv(key)
+        value = self.pre_norm_kv(value)
+        cross_mha, _ = self.cross_attn(
+            query, key, value, attn_mask=mask, need_weights=False
+        )
+        x = residual + self.resid_drop(cross_mha)
+
+        residual = x
+        mlp = self.mlp(self.post_norm(x))
+
+        return residual + mlp
+
+
+@final
+class TransformerDecoder(nn.Module):
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        dim_model: int,
+        num_layers: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+        freeze: bool | None = None,  # noqa: FBT001
+    ) -> None:
+        super().__init__()
+
+        self.layers = nn.ModuleList([
+            TransformerDecoderBlock(
+                embedding_dim=dim_model,
+                num_heads=num_heads,
+                attn_dropout=attn_dropout,
+                resid_dropout=resid_dropout,
+                mlp_dropout=mlp_dropout,
+                hidden_layer_multiplier=hidden_layer_multiplier,
+            )
+            for _ in range(num_layers)
+        ])
+
+        self.layer_norm = nn.LayerNorm(dim_model)
+
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+
+    @override
+    def forward(
+        self, query: Tensor, key: Tensor, value: Tensor | None = None
+    ) -> Tensor:
+        x = query
+        for layer in self.layers:
+            x = layer(x, key, value)
 
         return self.layer_norm(x)
 
