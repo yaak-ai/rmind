@@ -40,6 +40,7 @@ class ForwardDynamicsPredictionObjective(Objective):
     def __init__(
         self,
         *,
+        position_embedding: InstanceOf[Module] | None = None,
         encoder: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
@@ -51,6 +52,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.heads = heads
         self.losses = losses
         self.targets = targets
+        self.position_embedding = position_embedding
 
         self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
             self.build_attention_mask
@@ -79,11 +81,11 @@ class ForwardDynamicsPredictionObjective(Objective):
         foresight_tokens = foresight.shape[-2]
         batch_size = foresight.shape[0]
 
-        mask_embedding = episode.input_embeddings.get((
+        mask_embedding = episode.projected_embeddings.get((
             Modality.SPECIAL,
             SpecialToken.MASK,
         ))[:, :-1]
-        image_tokens = episode.input_embeddings.get((
+        image_tokens = episode.projected_embeddings.get((
             Modality.IMAGE,
             "cam_front_left",
         )).shape[-2]
@@ -98,7 +100,15 @@ class ForwardDynamicsPredictionObjective(Objective):
             (Modality.SPECIAL, SpecialToken.FORESIGHT), foresight_embeddings
         )
 
-        logits = self.heads(observations.to_dict())
+        position_embedding = TensorDict()
+        position_embedding = position_embedding.set(
+            (Modality.SPECIAL, SpecialToken.FORESIGHT),
+            self.position_embedding.weight,  # pyright: ignore[reportOptionalMemberAccess]
+        )
+
+        features = observations + position_embedding
+
+        logits = self.heads(features.to_dict())
         logits = tree_map(
             Rearrange("(b t) s d -> b t s d", b=batch_size, t=len(index)), logits
         )
