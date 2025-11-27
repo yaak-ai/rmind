@@ -10,7 +10,7 @@ defaults:
 
 num_heads: 2
 num_layers: 4
-embedding_dim: 64
+embedding_dim: 384
 image_embedding_dim: 384
 
 speed_bins: 512

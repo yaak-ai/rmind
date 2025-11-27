@@ -24,8 +24,8 @@ episode_builder:
     observation_summary: [0]
     observation_history: [1]
     action_summary: [2]
-    foresight: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
-    mask: [19]
+    foresight: "${range:3, 67}"
+    mask: [67]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -210,7 +210,7 @@ episode_builder:
 
       special:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 20
+        num_embeddings: 68
         embedding_dim: ${embedding_dim}
 
   projection:
@@ -425,11 +425,16 @@ objectives:
         modules:
           image:
             cam_front_left:
-              _target_: rmind.components.loss.GramAnchoringObjective
-              weight_sim: 100.0
-              weight_cross: 0.0
+              _target_: rmind.components.loss.SoftFocalSigLIPObjective
+              siglip_weight: 0.1
+              gram_weight: 0
+              clip_weight: 0
               patches: 256
               timestep: 5
+              gamma: 1
+              siglip_logit_scale: 4.4
+              siglip_logit_bias: -2.2
+              clip_logit_scale: 14.0
 
     random_masked_hindsight_control:
       _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective
