@@ -15,19 +15,20 @@ class TimmBackbone(nn.Module):
         img_size: list[int] | None = None,
     ) -> None:
         super().__init__()
+        # Resnet timm model does not have the img_size parameter
         self.model: nn.Module = create_model(
             model_name,
             pretrained=True,
             features_only=True,
             out_indices=out_indices,
-            img_size=img_size,
+            **({"img_size": img_size} if img_size is not None else {}),  # pyright: ignore[reportArgumentType]
         )
 
         if freeze is not None:
             self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
 
     @override
-    def forward(self, input: Tensor, input2: Tensor) -> Tensor:
+    def forward(self, input: Tensor) -> Tensor:
         *b, c, h, w = input.shape
         x = input.view(prod(b), c, h, w)
         x = self.model(x)[-1]

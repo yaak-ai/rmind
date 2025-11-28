@@ -43,3 +43,31 @@ just predict inference=yaak/control_transformer/default model=yaak/control_trans
 > ```shell
 > just rerun
 > ```
+
+## Export
+
+### ONNX
+
+For the ViT model:
+
+```bash
+just export-onnx model=yaak/control_transformer/vit.yaml input=yaak/control_transformer/dummy
+```
+
+For the ResNet model:
+
+```bash
+just export-onnx model=yaak/control_transformer/resnet.yaml input=yaak/control_transformer/dummy_224
+```
+
+### ONNX with dynamic shaped supporting batches from size 1 - 6:
+
+```bash
+just export-onnx-dynamic model=yaak/control_transformer/vit.yaml input=yaak/control_transformer/dummy
+```
+
+ResNet:
+
+```bash
+just export-onnx-dynamic model=yaak/control_transformer/resnet.yaml input=yaak/control_transformer/dummy_224
+```

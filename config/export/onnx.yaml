@@ -6,18 +6,23 @@ defaults:
   # - /input: yaak/control_transformer/dummy_512
   - /model: yaak/control_transformer/vit
   - /input: yaak/control_transformer/dummy
+  # - /model: yaak/control_transformer/resnet
+  # - /input: yaak/control_transformer/dummy_224
   - _self_
 
-embedding_dim: 512
-num_heads: 4
-num_layers: 8
-speed_bins: 512
-gas_pedal_bins: 255
-brake_pedal_bins: 165
-steering_angle_bins: 961
+dynamo_kwargs:
+  _recursive_: true
+  _convert_: all
+  strict: true
 
-args:
-  - ${input}
-
-f: ${hydra:run.dir}/${model._target_}.onnx
-artifacts_dir: ${hydra:run.dir}
+onnx_kwargs:
+  _recursive_: true
+  _convert_: all
+  f: ${hydra:run.dir}/${model.model.model_name}.onnx
+  artifacts_dir: ${hydra:run.dir}
+  dynamo: true
+  external_data: false
+  optimize: true
+  verify: true
+  report: true
+  dump_exported_program: true

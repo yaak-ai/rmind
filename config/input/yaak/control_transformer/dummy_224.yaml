@@ -1,5 +1,5 @@
 _target_: torch.testing.make_tensor
-_args_: [6, 3, 256, 256]
+_args_: [6, 3, 224, 224]
 dtype:
   _target_: hydra.utils.get_object
   path: torch.float

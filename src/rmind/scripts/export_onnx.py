@@ -1,4 +1,3 @@
-import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -49,54 +48,17 @@ class Config:
 @torch.inference_mode()
 def main(cfg: DictConfig) -> None:
     model = instantiate(cfg.model, _recursive_=True, _convert_="all")
-    # model = torch.compile(model, mode="default", fullgraph=True)  # noqa: ERA001
-    logger.info("model", target=cfg.model.model_name)
-    args = instantiate(cfg.args, _recursive_=True, _convert_="all")
-    # batch 1
-    images = args[0]["data"]["cam_front_left"][0][0, ...]
-    # batch 6
-    # images = args[0]["data"]["cam_front_left"][0]  # noqa: ERA001
-    logger.info("resolution", resolution=images.shape)
-    # result = model(images, images)  # noqa: ERA001
-    exported_program = torch.export.export(
-        mod=model, args=(images, images), strict=True
-    )
+    print(model_summary(model))  # noqa: T201
+    logger.info("model", target=cfg.model.model.model_name)
+    images = instantiate(cfg.input, _recursive_=True, _convert_="all")
+    logger.info("required input", resolution=images.shape)
+    # result = model(images, None)  # noqa: ERA001
+    dynamo_kwargs = instantiate(cfg.dynamo_kwargs)
+    exported_program = torch.export.export(mod=model, args=(images,), **dynamo_kwargs)
+    onnx_kwargs = instantiate(cfg.onnx_kwargs)
+    model = torch.onnx.export(model=exported_program, **onnx_kwargs)
 
-    model = torch.onnx.export(
-        model=exported_program,
-        f=cfg.f,
-        artifacts_dir=cfg["artifacts_dir"],
-        dynamo=True,
-        external_data=False,
-        optimize=True,
-        verify=True,
-        report=True,
-        dump_exported_program=True,
-    )
-    sys.exit(0)
-
-    # config = Config(**OmegaConf.to_container(cfg, resolve=True))  # noqa: ERA001
-    # logger.debug("instantiating", target=config.model.target)  # noqa: ERA001
-    # args = instantiate(config.args, _recursive_=True, _convert_="all")  # noqa: ERA001
-    # model = config.model.instantiate().eval()  # noqa: ERA001
-    # logger.debug(f"instantiated\n{ModelSummary(model)}")  # noqa: ERA001
-
-    # model(*args)  # noqa: ERA001
-    # logger.debug("torch exporting")  # noqa: ERA001
-    # exported_program = torch.export.export(mod=model, args=tuple(args), strict=True)  # noqa: ERA001
-
-    # logger.debug("onnx exporting")  # noqa: ERA001
-    # model = torch.onnx.export(  # noqa: ERA001, RUF100
-    #     model=exported_program,  # noqa: ERA001
-    #     f=config.path,  # noqa: ERA001
-    #     artifacts_dir=cfg["artifacts_dir"],  # noqa: ERA001
-    #     dynamo=True,  # noqa: ERA001
-    #     external_data=False,  # noqa: ERA001
-    #     optimize=True,  # noqa: ERA001
-    #     verify=True,  # noqa: ERA001
-    # )  # noqa: ERA001, RUF100
-
-    # logger.debug("exported", path=config.path.resolve().as_posix())  # noqa: ERA001
+    logger.debug("exported", path=onnx_kwargs["f"])
 
 
 if __name__ == "__main__":

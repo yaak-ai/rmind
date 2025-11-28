@@ -64,7 +64,13 @@ test *ARGS: generate-config
 export-onnx *ARGS: generate-config
     uv run --group export rmind-export-onnx \
         --config-path {{ justfile_directory() }}/config \
-        --config-name export_onnx.yaml \
+        --config-name export/onnx.yaml \
+        {{ ARGS }}
+
+export-onnx-dynamic *ARGS: generate-config
+    uv run --group export rmind-export-onnx \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name export/onnx_dynamic.yaml \
         {{ ARGS }}
 
 # start rerun server and viewer

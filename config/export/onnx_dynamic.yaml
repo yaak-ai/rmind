@@ -1,0 +1,66 @@
+# @package _global_
+
+---
+defaults:
+  # - /model: yaak/control_transformer/vit_512
+  # - /input: yaak/control_transformer/dummy_512
+  - /model: yaak/control_transformer/vit
+  - /input: yaak/control_transformer/dummy
+  # - /model: yaak/control_transformer/resnet
+  # - /input: yaak/control_transformer/dummy_224
+  - _self_
+
+dynamo_kwargs:
+  _recursive_: true
+  _convert_: all
+  strict: true
+  dynamic_shapes:
+    args:
+      _target_: builtins.tuple
+      _args_:
+        - - _target_: builtins.tuple
+            _args_:
+              - - _target_: torch.export.dynamic_shapes.Dim
+                  name: batch_size
+                  min: 1
+                  max: 6
+                - _target_: torch.export.dynamic_shapes.Dim.STATIC
+                - _target_: torch.export.dynamic_shapes.Dim.STATIC
+                - _target_: torch.export.dynamic_shapes.Dim.STATIC
+
+onnx_kwargs:
+  _recursive_: true
+  _convert_: all
+  f: ${hydra:run.dir}/${model.model.model_name}.onnx
+  artifacts_dir: ${hydra:run.dir}
+  dynamo: true
+  external_data: false
+  optimize: true
+  verify: true
+  report: true
+  dump_exported_program: true
+  dynamic_shapes:
+    args_0:
+      _target_: builtins.tuple
+      _args_:
+        - - _target_: builtins.tuple
+            _args_:
+              - - _target_: torch.export.dynamic_shapes.Dim
+                  name: batch_size
+                  min: 1
+                  max: 6
+                - null
+                - null
+                - null
+    view_18:
+      _target_: builtins.tuple
+      _args_:
+        - - _target_: builtins.tuple
+            _args_:
+              - - _target_: torch.export.dynamic_shapes.Dim
+                  name: batch_size
+                  min: 1
+                  max: 6
+                - null
+                - null
+                - null
