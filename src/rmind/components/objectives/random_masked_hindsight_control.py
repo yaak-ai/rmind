@@ -17,7 +17,7 @@ from rmind.components.episode import (
     Episode,
     Index,
     Modality,
-    SpecialToken,
+    SummaryToken,
     Timestep,
     TokenType,
 )
@@ -182,7 +182,7 @@ class RandomMaskedHindsightControlObjective(Objective):
                 )
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+                predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
                     embedding
                 )
 
@@ -242,18 +242,18 @@ class RandomMaskedHindsightControlObjective(Objective):
             past, current, future = index[:step], index[step], index[step + 1 :]
             current_actions = current.select(*action_keys)
             current_action_summary = current.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
             past_actions = past.select(*action_keys)
             past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
             future_actions = future.select(*action_keys)
             future_action_summary = future.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
 
             mask = (

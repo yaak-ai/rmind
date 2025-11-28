@@ -19,7 +19,7 @@ from rmind.components.episode import (
     EpisodeExport,
     Index,
     Modality,
-    SpecialToken,
+    SummaryToken,
     Timestep,
     TokenType,
 )
@@ -126,21 +126,21 @@ class PolicyObjective(Objective):
                 episode
                 .index[-1]  # pyright: ignore[reportCallIssue]
                 .select(
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
                 )
                 .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
             )
 
             observation_history = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
             ))
 
             observation_summary = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
             ))
 
             waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
@@ -150,15 +150,15 @@ class PolicyObjective(Objective):
         else:
             observation_summary = embedding[
                 :,
-                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
-                    SpecialToken.OBSERVATION_SUMMARY.value
+                episode.index[Modality.SUMMARY.value][  # pyright: ignore[reportArgumentType]
+                    SummaryToken.OBSERVATION_SUMMARY.value
                 ][-1],
             ]
 
             observation_history = embedding[
                 :,
-                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
-                    SpecialToken.OBSERVATION_HISTORY.value
+                episode.index[Modality.SUMMARY.value][  # pyright: ignore[reportArgumentType]
+                    SummaryToken.OBSERVATION_HISTORY.value
                 ][-1],
             ]
 
@@ -220,7 +220,7 @@ class PolicyObjective(Objective):
             )  # pyright: ignore[reportOptionalCall]
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+                predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
                     embedding
                 )
 
@@ -228,21 +228,21 @@ class PolicyObjective(Objective):
                 episode
                 .index[-1]  # pyright: ignore[reportCallIssue]
                 .select(
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
                 )
                 .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
             )
 
             observation_history = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
             )).detach()  # NOTE: equivalent to stop gradient layer in paper
 
             observation_summary = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
             ))
 
             waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
@@ -391,12 +391,12 @@ class PolicyObjective(Objective):
                 )
             )
             current_observation_summary = current.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
             ))
             current_observation_history = current.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
             ))
             past_actions = past.select(
                 *timestep.get(TokenType.ACTION).keys(
@@ -404,8 +404,8 @@ class PolicyObjective(Objective):
                 )
             )
             past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
 
             mask = (

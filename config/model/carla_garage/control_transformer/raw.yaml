@@ -10,29 +10,18 @@ episode_builder:
     - [observation, image, cam_front_left]
     - [observation, continuous, speed]
     - [observation, context, waypoints]
-    - [special, summary, observation_summary]
-    - [special, summary, observation_history]
-    - [special, foresight, cam_front_left]
-    - [special, utility, mask]
+    - [special, special, observation_summary]
+    - [special, special, observation_history]
     - [action, continuous, gas_pedal]
     - [action, continuous, brake_pedal]
     - [action, continuous, steering_angle]
     - [action, discrete, turn_signal]
-    - [special, summary, action_summary]
-
+    - [special, special, action_summary]
   special_tokens:
-    summary:
-      observation_summary: [0]
-      observation_history: [1]
-      action_summary: [2]
-    foresight:
-      cam_front_left:
-        _target_: builtins.range
-        _args_:
-          - 64
-    utility:
-      mask: [0]
-  
+    observation_summary: 0
+    observation_history: 1
+    action_summary: 2
+
   input_transform:
     _target_: torch.nn.Sequential
     _convert_: all
@@ -40,23 +29,22 @@ episode_builder:
       - _target_: rmind.components.nn.Remapper
         paths:
           image:
-            cam_front_left: [data, cam_front_left]
+            cam_front_left: [data, rgb]
 
           continuous:
-            speed: [data, meta/VehicleMotion/speed]
-            gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
-            gas_pedal_diff: [data, meta/VehicleMotion/gas_pedal_normalized]
-            brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
-            brake_pedal_diff: [data, meta/VehicleMotion/brake_pedal_normalized]
-            steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
-            steering_angle_diff:
-              [data, meta/VehicleMotion/steering_angle_normalized]
+            speed: [data, meta/speed]
+            gas_pedal: [data, meta/throttle]
+            gas_pedal_diff: [data, meta/throttle]
+            brake_pedal: [data, meta/brake]
+            brake_pedal_diff: [data, meta/brake]
+            steering_angle: [data, meta/steer]
+            steering_angle_diff: [data, meta/steer]
 
           context:
             waypoints: [data, waypoints/xy_normalized]
 
           discrete:
-            turn_signal: [data, meta/VehicleState/turn_signal]
+            turn_signal: [data, meta/turn_signal]
 
       - _target_: rmind.components.containers.ModuleDict
         modules:
@@ -215,18 +203,9 @@ episode_builder:
           num_embeddings: 3
           embedding_dim: ${encoder_embedding_dim}
 
-      summary:        
+      special:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 3
-        embedding_dim: ${encoder_embedding_dim}
-
-      foresight:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: 64
-          embedding_dim: ${encoder_embedding_dim}
-      utility:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 1
         embedding_dim: ${encoder_embedding_dim}
 
   projections:
@@ -236,9 +215,9 @@ episode_builder:
         _target_: torch.nn.Sequential
         _args_:
           - _target_: torch.nn.LayerNorm
-            normalized_shape: ${img_embedding_dim}
+            normalized_shape: ${encoder_embedding_dim}
           - _target_: rmind.components.nn.Linear
-            in_features: ${img_embedding_dim}
+            in_features: ${encoder_embedding_dim}
             out_features: ${encoder_embedding_dim}
 
       continuous:
@@ -298,23 +277,7 @@ episode_builder:
               in_features: ${encoder_embedding_dim}
               out_features: ${encoder_embedding_dim}
 
-      summary:
-        _target_: torch.nn.Sequential
-        _args_:
-          - _target_: torch.nn.LayerNorm
-            normalized_shape: ${encoder_embedding_dim}
-          - _target_: rmind.components.nn.Linear
-            in_features: ${encoder_embedding_dim}
-            out_features: ${encoder_embedding_dim}
-      foresight:
-        _target_: torch.nn.Sequential
-        _args_:
-          - _target_: torch.nn.LayerNorm
-            normalized_shape: ${encoder_embedding_dim}
-          - _target_: rmind.components.nn.Linear
-            in_features: ${encoder_embedding_dim}
-            out_features: ${encoder_embedding_dim}
-      utility: # do we need it?
+      special:
         _target_: torch.nn.Sequential
         _args_:
           - _target_: torch.nn.LayerNorm
@@ -431,54 +394,47 @@ objectives:
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
       encoder: null
-      position_embedding:
-        _target_: timm.layers.pos_embed_sincos.RotaryEmbeddingDinoV3
-        dim: ${encoder_embedding_dim}
-        rotate_half: True
-        feat_shape: [16, 16]
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
           image:
             cam_front_left:
-              _target_: torch.nn.Sequential
-              _args_:
-                - _target_: rmind.components.nn.Linear
-                  in_features: 
-                    _target_: operator.mul
-                    _args_:
-                      - ${encoder_embedding_dim}
-                      - 2
-                  out_features: ${img_embedding_dim}
-                - _target_: einops.layers.torch.Rearrange
-                  pattern: "b t s d -> (b t) s d"
-                - _target_: rmind.components.llm.Transformer
-                  transformer:
-                    _target_: rmind.components.llm.TransformerEncoder
-                    dim_model: ${img_embedding_dim}
-                    num_layers: 2
-                    num_heads: 4
-                    attn_dropout: 0.1
-                    resid_dropout: 0.1
-                    mlp_dropout: 0.1
-                    hidden_layer_multiplier: 1
-                - _target_: rmind.components.nn.Linear
-                  in_features: ${img_embedding_dim}
-                  out_features: ${img_embedding_dim}
+              _target_: rmind.components.nn.Linear
+              in_features:
+                _target_: operator.mul
+                _args_:
+                  - 3
+                  - ${encoder_embedding_dim}
+              out_features: ${encoder_embedding_dim}
+              bias: False
+
+          continuous:
+            speed:
+              _target_: rmind.components.nn.Linear
+              in_features:
+                _target_: operator.mul
+                _args_:
+                  - 3
+                  - ${encoder_embedding_dim}
+              out_features: ${speed_bins}
+              bias: False
 
       targets:
         image:
           cam_front_left: [input_embeddings, image, cam_front_left]
+        continuous:
+          speed: [input_tokens, continuous, speed]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
         modules:
           image:
             cam_front_left:
-              _target_: rmind.components.loss.GramAnchoringObjective
-              weight_sim: 100.0
-              weight_gram: 100.0
-              patches: 256
+              _target_: torch.nn.MSELoss
+              reduction: mean
+          continuous:
+            speed:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
     random_masked_hindsight_control:
       _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective
@@ -591,7 +547,6 @@ optimizer:
       path: torch.nn.Embedding
     - _target_: hydra.utils.get_class
       path: torch.nn.LayerNorm
-
 lr_scheduler:
   interval: step
   scheduler:

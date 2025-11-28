@@ -13,7 +13,7 @@ from rmind.components.episode import (
     Episode,
     Index,
     Modality,
-    SpecialToken,
+    SummaryToken,
     Timestep,
     TokenType,
 )
@@ -71,7 +71,7 @@ class MemoryExtractionObjective(Objective):
         features = (
             episode
             .index[1:]  # pyright: ignore[reportCallIssue]
-            .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
+            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY))
             .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
             .get(k)
         )
@@ -129,7 +129,7 @@ class MemoryExtractionObjective(Objective):
             features = (
                 episode
                 .index[1:]  # pyright: ignore[reportCallIssue]
-                .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
+                .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY))
                 .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
                 .get(k)
             )
@@ -152,7 +152,7 @@ class MemoryExtractionObjective(Objective):
                 )
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+                predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
                     embedding
                 )
 
@@ -175,12 +175,12 @@ class MemoryExtractionObjective(Objective):
                 )
             )
             current_observation_summary = current.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
             ))
             current_observation_history = current.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
             ))
             past_actions = past.select(
                 *timestep.get(TokenType.ACTION).keys(
@@ -188,8 +188,8 @@ class MemoryExtractionObjective(Objective):
                 )
             )
             past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
 
             mask = (
