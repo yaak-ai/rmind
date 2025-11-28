@@ -1,5 +1,6 @@
 _target_: rmind.models.control_transformer.ControlTransformer
 _recursive_: false
+_convert_: all
 
 episode_builder:
   _target_: rmind.components.episode.EpisodeBuilder
@@ -14,6 +15,7 @@ episode_builder:
     - [action, continuous, gas_pedal]
     - [action, continuous, brake_pedal]
     - [action, continuous, steering_angle]
+    - [action, discrete, turn_signal]
     - [special, special, action_summary]
   special_tokens:
     observation_summary: 0
@@ -21,35 +23,40 @@ episode_builder:
     action_summary: 2
 
   input_transform:
-    _target_: rmind.components.input.InputBuilder
+    _target_: torch.nn.Sequential
     _convert_: all
-    keys:
-      image:
-        cam_front_left: [data, rgb]
+    _args_:
+      - _target_: rmind.components.nn.Remapper
+        paths:
+          image:
+            cam_front_left: [data, rgb]
 
-      continuous:
-        speed: [data, meta/speed]
-        gas_pedal: [data, meta/throttle]
-        gas_pedal_diff: [data, meta/throttle]
-        brake_pedal: [data, meta/brake]
-        brake_pedal_diff: [data, meta/brake]
-        steering_angle: [data, meta/steer]
-        steering_angle_diff: [data, meta/steer]
+          continuous:
+            speed: [data, meta/speed]
+            gas_pedal: [data, meta/throttle]
+            gas_pedal_diff: [data, meta/throttle]
+            brake_pedal: [data, meta/brake]
+            brake_pedal_diff: [data, meta/brake]
+            steering_angle: [data, meta/steer]
+            steering_angle_diff: [data, meta/steer]
 
-      context:
-        waypoints: [data, waypoints/xy_normalized]
+          context:
+            waypoints: [data, waypoints/xy_normalized]
 
-    transforms:
-      - select: [image]
-        apply:
-          _target_: torch.compile
-          model:
+          discrete:
+            turn_signal: [data, meta/turn_signal]
+
+      - _target_: rmind.components.containers.ModuleDict
+        modules:
+          image:
             _target_: torch.nn.Sequential
             _args_:
               - _target_: einops.layers.torch.Rearrange
                 pattern: "... h w c -> ... c h w"
-              - _target_: torchvision.transforms.v2.Resize
+              - _target_: torchvision.transforms.v2.CenterCrop
                 size: [320, 576]
+              - _target_: torchvision.transforms.v2.Resize
+                size: [256, 256]
               - _target_: torchvision.transforms.v2.ToDtype
                 scale: true
                 dtype:
@@ -59,21 +66,42 @@ episode_builder:
                 mean: [0.485, 0.456, 0.406]
                 std: [0.229, 0.224, 0.225]
 
-      - select:
-          - [continuous, gas_pedal_diff]
-          - [continuous, brake_pedal_diff]
-          - [continuous, steering_angle_diff]
-        apply:
-          _target_: rmind.utils.functional.diff_last
-          _partial_: true
-          append:
-            _target_: hydra.utils.get_object
-            path: math.nan
+          continuous:
+            speed:
+              _target_: rmind.components.nn.AtLeast3D
 
-      - select: [continuous, context]
-        apply:
-          _target_: torch.atleast_3d
-          _partial_: true
+            gas_pedal:
+              _target_: rmind.components.nn.AtLeast3D
+
+            gas_pedal_diff:
+              _target_: rmind.components.nn.DiffLast
+              append:
+                _target_: hydra.utils.get_object
+                path: math.nan
+
+            brake_pedal:
+              _target_: rmind.components.nn.AtLeast3D
+
+            brake_pedal_diff:
+              _target_: rmind.components.nn.DiffLast
+              append:
+                _target_: hydra.utils.get_object
+                path: math.nan
+
+            steering_angle:
+              _target_: rmind.components.nn.AtLeast3D
+
+            steering_angle_diff:
+              _target_: rmind.components.nn.DiffLast
+              append:
+                _target_: hydra.utils.get_object
+                path: math.nan
+
+          discrete:
+            _target_: rmind.components.nn.AtLeast3D
+
+          context:
+            _target_: torch.nn.Identity
 
   tokenizers:
     _target_: rmind.components.containers.ModuleDict
@@ -85,32 +113,32 @@ episode_builder:
         speed:
           _target_: rmind.components.norm.UniformBinner
           range: [0.0, 130.0]
-          bins: ${embedding_dim}
+          bins: ${speed_bins}
 
         gas_pedal:
           _target_: rmind.components.norm.UniformBinner
           range: [0.0, 1.0]
-          bins: ${embedding_dim}
+          bins: ${gas_pedal_bins}
 
         gas_pedal_diff:
           # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
           _target_: rmind.components.norm.MuLawEncoding
-          quantization_channels: ${embedding_dim}
+          quantization_channels: ${gas_pedal_bins}
 
         brake_pedal:
           _target_: rmind.components.norm.UniformBinner
           range: [0.0, 1.0]
-          bins: ${embedding_dim}
+          bins: ${brake_pedal_bins}
 
         brake_pedal_diff:
           # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
           _target_: rmind.components.norm.MuLawEncoding
-          quantization_channels: ${embedding_dim}
+          quantization_channels: ${brake_pedal_bins}
 
         steering_angle:
           _target_: rmind.components.norm.UniformBinner
           range: [-1.0, 1.0]
-          bins: ${embedding_dim}
+          bins: ${steering_angle_bins}
 
         steering_angle_diff:
           _target_: rmind.components.nn.Sequential
@@ -119,7 +147,10 @@ episode_builder:
               in_range: [-2.0, 2.0]
               out_range: [-1.0, 1.0]
             - _target_: rmind.components.norm.MuLawEncoding
-              quantization_channels: ${embedding_dim}
+              quantization_channels: ${steering_angle_bins}
+
+      discrete:
+        _target_: rmind.components.nn.Identity
 
       context:
         waypoints:
@@ -131,60 +162,112 @@ episode_builder:
       image:
         _target_: torch.nn.Sequential
         _args_:
-          - _target_: rmind.components.resnet.ResnetBackbone
-            resnet:
-              _target_: torchvision.models.resnet18
-              weights: IMAGENET1K_V1
+          - _target_: rmind.components.timm_backbone.TimmBackbone
+            model_name: vit_small_patch16_dinov3.lvd1689m
             freeze: True
+            out_indices: [10]
+            img_size: [256, 256]
           - _target_: einops.layers.torch.Rearrange
             pattern: "... c h w -> ... (h w) c"
+          - _target_: torch.nn.LayerNorm
+            normalized_shape: ${embedding_dim}
+          - _target_: rmind.components.nn.Linear
+            in_features: ${embedding_dim}
+            out_features: ${embedding_dim}
 
       continuous:
         speed:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${model.episode_builder.tokenizers.continuous.speed.bins}
-          embedding_dim: ${embedding_dim}
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Embedding
+              num_embeddings: ${speed_bins}
+              embedding_dim: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
+            - _target_: rmind.components.nn.Linear
+              in_features: ${embedding_dim}
+              out_features: ${embedding_dim}
         gas_pedal:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${model.episode_builder.tokenizers.continuous.gas_pedal.bins}
-          embedding_dim: ${embedding_dim}
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Embedding
+              num_embeddings: ${gas_pedal_bins}
+              embedding_dim: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
+            - _target_: rmind.components.nn.Linear
+              in_features: ${embedding_dim}
+              out_features: ${embedding_dim}
         brake_pedal:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${model.episode_builder.tokenizers.continuous.brake_pedal.bins}
-          embedding_dim: ${embedding_dim}
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Embedding
+              num_embeddings: ${brake_pedal_bins}
+              embedding_dim: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
+            - _target_: rmind.components.nn.Linear
+              in_features: ${embedding_dim}
+              out_features: ${embedding_dim}
         steering_angle:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
-          embedding_dim: ${embedding_dim}
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Embedding
+              num_embeddings: ${steering_angle_bins}
+              embedding_dim: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
+            - _target_: rmind.components.nn.Linear
+              in_features: ${embedding_dim}
+              out_features: ${embedding_dim}
+        gas_pedal_diff: null
+        brake_pedal_diff: null
+        steering_angle_diff: null
 
       context:
         waypoints:
-          _target_: torch.nn.Linear
-          in_features: 2
-          out_features: ${embedding_dim}
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Linear
+              in_features: 2
+              out_features: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
+            - _target_: rmind.components.nn.Linear
+              in_features: ${embedding_dim}
+              out_features: ${embedding_dim}
+
+      discrete:
+        turn_signal:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: rmind.components.nn.Embedding
+              num_embeddings: 3
+              embedding_dim: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${embedding_dim}
+            - _target_: rmind.components.nn.Linear
+              in_features: ${embedding_dim}
+              out_features: ${embedding_dim}
 
       special:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 3
-        embedding_dim: ${embedding_dim}
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: rmind.components.nn.Embedding
+            num_embeddings: 3
+            embedding_dim: ${embedding_dim}
+          - _target_: torch.nn.LayerNorm
+            normalized_shape: ${embedding_dim}
+          - _target_: rmind.components.nn.Linear
+            in_features: ${embedding_dim}
+            out_features: ${embedding_dim}
 
   position_encoding:
     _target_: rmind.components.containers.ModuleDict
     modules:
-      image:
-        patch:
-          row:
-            _target_: rmind.components.nn.Embedding
-            num_embeddings: 10
-            embedding_dim: ${embedding_dim}
-          col:
-            _target_: rmind.components.nn.Embedding
-            num_embeddings: 18
-            embedding_dim: ${embedding_dim}
-
-      observations:
+      context:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 191
+        num_embeddings: 10
         embedding_dim: ${embedding_dim}
 
       actions:
@@ -203,26 +286,14 @@ episode_builder:
         embedding_dim: ${embedding_dim}
 
 encoder:
-  _target_: rmind.components.llm.xFormerEncoder
-  config:
-    _target_: xformers.factory.xFormerEncoderConfig
-    reversible: True
-    num_layers: ${num_layers}
-    dim_model: ${embedding_dim}
-    residual_norm_style: pre
-    multi_head_config:
-      dim_model: ${embedding_dim}
-      num_heads: ${num_heads}
-      residual_dropout: 0.1
-      attention:
-        name: scaled_dot_product
-        dropout: 0.1
-        causal: False
-    feedforward_config:
-      name: MLPGLU
-      dropout: 0.1
-      activation: gelu
-      hidden_layer_multiplier: 1
+  _target_: rmind.components.llm.TransformerEncoder
+  dim_model: ${embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  attn_dropout: 0.1
+  resid_dropout: 0.1
+  mlp_dropout: 0.1
+  hidden_layer_multiplier: 1
 
 objectives:
   _target_: rmind.components.containers.ModuleDict
@@ -230,36 +301,47 @@ objectives:
   modules:
     inverse_dynamics:
       _target_: rmind.components.objectives.InverseDynamicsPredictionObjective
+      encoder: null
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
           continuous:
             gas_pedal:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features:
                 _target_: operator.mul
                 _args_:
                   - 2
                   - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal.bins}
+              out_features: ${gas_pedal_bins}
               bias: False
             brake_pedal:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features:
                 _target_: operator.mul
                 _args_:
                   - 2
                   - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal.bins}
+              out_features: ${brake_pedal_bins}
               bias: False
             steering_angle:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features:
                 _target_: operator.mul
                 _args_:
                   - 2
                   - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
+              out_features: ${steering_angle_bins}
+              bias: False
+          discrete:
+            turn_signal:
+              _target_: rmind.components.nn.Linear
+              in_features:
+                _target_: operator.mul
+                _args_:
+                  - 2
+                  - ${embedding_dim}
+              out_features: 3
               bias: False
 
       targets:
@@ -267,6 +349,8 @@ objectives:
           gas_pedal: [input_tokens, continuous, gas_pedal]
           brake_pedal: [input_tokens, continuous, brake_pedal]
           steering_angle: [input_tokens, continuous, steering_angle]
+        discrete:
+          turn_signal: [input_tokens, discrete, turn_signal]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
@@ -278,15 +362,19 @@ objectives:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
             steering_angle:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+          discrete:
+            turn_signal:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
+      encoder: null
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
           image:
             cam_front_left:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features:
                 _target_: operator.mul
                 _args_:
@@ -294,15 +382,16 @@ objectives:
                   - ${embedding_dim}
               out_features: ${embedding_dim}
               bias: False
+
           continuous:
             speed:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features:
                 _target_: operator.mul
                 _args_:
                   - 3
                   - ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.speed.bins}
+              out_features: ${speed_bins}
               bias: False
 
       targets:
@@ -324,24 +413,34 @@ objectives:
 
     random_masked_hindsight_control:
       _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective
+      encoder: null
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
           continuous:
             gas_pedal:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal.bins}
+              out_features: ${gas_pedal_bins}
               bias: False
+
             brake_pedal:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal.bins}
+              out_features: ${brake_pedal_bins}
               bias: False
+
             steering_angle:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.steering_angle.bins}
+              out_features: ${steering_angle_bins}
+              bias: False
+
+          discrete:
+            turn_signal:
+              _target_: rmind.components.nn.Linear
+              in_features: ${embedding_dim}
+              out_features: 3
               bias: False
 
       targets:
@@ -349,6 +448,9 @@ objectives:
           gas_pedal: [input_tokens, continuous, gas_pedal]
           brake_pedal: [input_tokens, continuous, brake_pedal]
           steering_angle: [input_tokens, continuous, steering_angle]
+
+        discrete:
+          turn_signal: [input_tokens, discrete, turn_signal]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
@@ -361,28 +463,33 @@ objectives:
             steering_angle:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
+          discrete:
+            turn_signal:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+
     memory_extraction:
       _target_: rmind.components.objectives.MemoryExtractionObjective
+      encoder: null
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
           continuous:
             gas_pedal_diff:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.gas_pedal_diff.quantization_channels}
+              out_features: ${gas_pedal_bins}
               bias: False
 
             brake_pedal_diff:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.brake_pedal_diff.quantization_channels}
+              out_features: ${brake_pedal_bins}
               bias: False
 
             steering_angle_diff:
-              _target_: torch.nn.Linear
+              _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
-              out_features: ${model.episode_builder.tokenizers.continuous.steering_angle_diff._args_[1].quantization_channels}
+              out_features: ${steering_angle_bins}
               bias: False
 
       targets:

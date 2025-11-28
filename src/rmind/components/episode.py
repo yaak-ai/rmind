@@ -63,8 +63,7 @@ class SpecialToken(StrEnum):
 
 @unique
 class PositionEncoding(StrEnum):
-    IMAGE = auto()
-    OBSERVATIONS = auto()
+    CONTEXT = auto()
     ACTIONS = auto()
     SPECIAL = auto()
     TIMESTEP = auto()
@@ -262,14 +261,13 @@ class EpisodeBuilder(Module):
         input_embeddings = self.embeddings(input_tokens)
 
         index = self._build_index(input_embeddings)
-        timestep_index = tree_map(itemgetter(0), index)
 
         timestep = unflatten_keys({
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
 
         position_embeddings = self._build_position_embeddings(
-            input_embeddings, timestep_index, timestep
+            input_embeddings, timestep
         )
 
         return (
@@ -333,10 +331,7 @@ class EpisodeBuilder(Module):
         )
 
     def _build_position_embeddings(
-        self,
-        embeddings: TensorTree,
-        timestep_index: TensorTree,
-        timestep: TimestepExport,
+        self, embeddings: TensorTree, timestep: TimestepExport
     ) -> TensorTree:
         position_embeddings = {}
 
@@ -348,38 +343,19 @@ class EpisodeBuilder(Module):
 
         if (
             mod_pe := self.position_encoding.get(
-                (k_pe := (PositionEncoding.IMAGE.value, "patch")), default=None
+                k_pe := PositionEncoding.CONTEXT.value, default=None
             )
         ) is not None:
-            num_rows = mod_pe.row.num_embeddings  # pyright: ignore[reportAttributeAccessIssue]
-            num_cols = mod_pe.col.num_embeddings  # pyright: ignore[reportAttributeAccessIssue]
-            row_pe = mod_pe.row(torch.arange(num_rows, device=device))  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue, reportArgumentType]
-            col_pe = mod_pe.col(torch.arange(num_cols, device=device))  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue, reportArgumentType]
-            row_pe = repeat(row_pe, "h d -> (h w) d", w=num_cols)
-            col_pe = repeat(col_pe, "w d -> (h w) d", h=num_rows)
-            position_embedding = row_pe + col_pe
-
+            position = torch.arange(mod_pe.num_embeddings, device=device)  # pyright: ignore[reportCallIssue, reportArgumentType, reportAttributeAccessIssue]
+            position_embedding = mod_pe(position)  # pyright: ignore[reportCallIssue]
             paths = tuple(
                 (modality, name)
                 for (_, modality, name) in tree_paths(timestep)
-                if modality.key == Modality.IMAGE.value  # pyright: ignore[reportAttributeAccessIssue]
+                if modality.key == Modality.CONTEXT.value  # pyright: ignore[reportAttributeAccessIssue]
             )
 
             position_embeddings[k_pe] = tree_map_with_path(
                 lambda path, _: position_embedding if path in paths else None,
-                embeddings,
-            )
-
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.OBSERVATIONS.value, default=None
-            )
-        ) is not None:
-            paths = tree_paths(timestep[TokenType.OBSERVATION.value])
-            position_embeddings[k_pe] = tree_map_with_path(
-                lambda path, _: mod_pe(key_get(timestep_index, path))  # pyright: ignore[reportCallIssue]
-                if path in paths
-                else None,
                 embeddings,
             )
 
@@ -433,9 +409,16 @@ class EpisodeBuilder(Module):
                 embeddings,
             )
 
-        return tree_map(
+        pe = tree_map(
             lambda *xs: sum(leaves)
             if (leaves := [x for x in xs if x is not None])
             else None,
             *position_embeddings.values(),
+        )
+        return tree_map(
+            lambda p, e: repeat(p, "... t 1 d -> ... t n d", n=e.shape[-2])
+            if (p is not None and e is not None and p.shape[-2] != e.shape[-2])
+            else p,
+            pe,
+            embeddings,
         )
