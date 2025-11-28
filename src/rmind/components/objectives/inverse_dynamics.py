@@ -19,7 +19,7 @@ from rmind.components.episode import (
     Episode,
     Index,
     Modality,
-    SpecialToken,
+    SummaryToken,
     Timestep,
     TokenType,
 )
@@ -74,7 +74,7 @@ class InverseDynamicsPredictionObjective(Objective):
 
         observation_summaries = (
             episode.index
-            .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
+            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
             .parse(embedding)
             .get(k)
         )
@@ -134,7 +134,7 @@ class InverseDynamicsPredictionObjective(Objective):
 
             observation_summaries = (
                 episode.index
-                .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
+                .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
                 .parse(embedding)
                 .get(k)
             )
@@ -199,7 +199,7 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
                     embedding
                 )
 
@@ -218,7 +218,7 @@ class InverseDynamicsPredictionObjective(Objective):
                 attention = (
                     episode.index
                     .parse(attention_rollout, dim=1)
-                    .select((Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))[:, -1]
+                    .select((Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))[:, -1]
                     .apply(
                         lambda x: (
                             episode.index
@@ -262,12 +262,12 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
             )
             current_observation_summary = current.select((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
             ))
             current_observation_history = current.select((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
             ))
             past_actions = past.select(
                 *timestep.get(TokenType.ACTION).keys(
@@ -275,8 +275,8 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
             )
             past_action_summary = past.select((
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
 
             mask = (
