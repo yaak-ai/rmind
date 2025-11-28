@@ -425,16 +425,14 @@ objectives:
         modules:
           image:
             cam_front_left:
-              _target_: rmind.components.loss.SoftFocalSigLIPObjective
-              siglip_weight: 0.1
-              gram_weight: 0
-              clip_weight: 0
+              _target_: rmind.components.loss.SoftFocalGramAnchoringObjective
+              weight_sim: 1.0
+              weight_gram: 10.0              
               patches: 256
               timestep: 5
               gamma: 1
-              siglip_logit_scale: 4.4
-              siglip_logit_bias: -2.2
-              clip_logit_scale: 14.0
+              gram_logit_scale: 4.4
+              gram_logit_bias: -2.2
 
     random_masked_hindsight_control:
       _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective

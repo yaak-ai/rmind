@@ -41,6 +41,8 @@ class SelectiveAdamW(AdamW):
                     | "siglip_logit_scale"
                     | "siglip_logit_bias"
                     | "clip_logit_scale"
+                    | "gram_logit_scale"
+                    | "gram_logit_bias"
                 ):
                     weight_decay_param_blacklist.add(param_name)
 

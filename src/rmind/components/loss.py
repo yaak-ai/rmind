@@ -8,6 +8,8 @@ from einops import rearrange, repeat
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
+# Its getting out of hand
+
 
 class FocalLoss(Module):
     """https://arxiv.org/pdf/1708.02002.pdf."""
@@ -198,6 +200,83 @@ class FocalCLIPbjective(Module):  # ignore typos
         pt = torch.exp(-clip_loss)
 
         return self.weight * ((1 - pt).pow(self.gamma) * clip_loss).mean()
+
+
+@final
+class SoftFocalGramAnchoringObjective(Module):
+    def __init__(  # noqa: PLR0913
+        self,
+        *args: Any,
+        weight_sim: float = 1.0,
+        weight_gram: float = 10.0,
+        patches: int = 256,
+        timestep: int = 6,
+        gamma: float = 2.0,
+        gram_logit_scale: float = 10.0,
+        gram_logit_bias: float = -10.0,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.patches = patches
+        self.timestep = timestep
+        self.weight_sim = weight_sim
+        self.weight_gram = weight_gram
+        self.gamma = gamma
+
+        self.gram_logit_scale = torch.nn.Parameter(
+            torch.ones([]) * torch.log(torch.tensor(gram_logit_scale))
+        )
+        self.gram_logit_bias = torch.nn.Parameter(torch.ones([]) * gram_logit_bias)
+
+        self.bce = torch.nn.BCEWithLogitsLoss(reduction="none")
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        # Trust but ~~verify~~ detach
+        target = target.detach()
+
+        input = rearrange(
+            input, "(b t p) d -> b t p d", t=self.timestep, p=self.patches
+        )
+        target = rearrange(
+            target, "(b t p) d -> b t p d", t=self.timestep, p=self.patches
+        )
+
+        # B T P D
+        input = F.normalize(input, dim=-1)
+        target = F.normalize(target, dim=-1)
+
+        # 1. Cosine sim loss
+        # B T P
+        sim = (input * target).sum(dim=-1)
+        loss_sim = (1.0 - sim).mean()
+
+        # 2.Focal Gram Anchoring
+
+        # B T P P
+        cross_time_pred = torch.matmul(input[:, :-1], target[:, 1:].transpose(-1, -2))
+        cross_time_pred = (cross_time_pred + 1.0) / 2.0
+        cross_time_gt = torch.matmul(target[:, :-1], target[:, 1:].transpose(-1, -2))
+        # [-1, 1] -> [0, 1]
+        cross_time_gt = (cross_time_gt + 1.0) / 2.0
+
+        cross_time_pred = (
+            cross_time_pred * self.gram_logit_scale.exp() + self.gram_logit_bias
+        )
+
+        gram_loss = self.bce(cross_time_pred, cross_time_gt)
+        # base entropy we can get this is the lower bound
+        self_entropy = torch.special.entr(cross_time_gt) + torch.special.entr(
+            1.0 - cross_time_gt
+        )
+
+        # B T P
+        focal_weight = (gram_loss - self_entropy).clamp(min=0).pow(self.gamma)
+
+        # B T P
+        focal_gram_loss = (focal_weight * gram_loss).sum(dim=-1).mean()
+
+        return self.weight_sim * loss_sim + self.weight_gram * focal_gram_loss
 
 
 @final
