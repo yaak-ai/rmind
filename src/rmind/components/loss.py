@@ -131,11 +131,11 @@ class GramAnchoringObjective(Module):
         target = F.normalize(target, dim=-1)
 
         # B T P P
-        cross_time_pred = torch.matmul(input[:, :-1], target[:, 1:].transpose(-1, -2))
-        cross_time_gt = torch.matmul(target[:, :-1], target[:, 1:].transpose(-1, -2))
+        gram_pred = torch.matmul(input, input.transpose(-1, -2))
+        gram_gt = torch.matmul(target, target.transpose(-1, -2))
 
         # B T P
-        cross_time_gram = ((cross_time_pred - cross_time_gt) ** 2).mean()
+        gram_loss = ((gram_pred - gram_gt) ** 2).mean()
 
         # B T P
         sim = (input * target).sum(dim=-1)
@@ -143,7 +143,7 @@ class GramAnchoringObjective(Module):
         # B T P
         sim_loss = (1.0 - sim).mean()
 
-        return self.weight_sim * sim_loss + self.weight_cross * cross_time_gram
+        return self.weight_sim * sim_loss + self.weight_cross * gram_loss
 
 
 @final

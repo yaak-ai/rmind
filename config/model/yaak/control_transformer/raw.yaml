@@ -435,7 +435,7 @@ objectives:
             foresight:
               _target_: rmind.components.loss.GramAnchoringObjective
               weight_sim: 100.0
-              weight_cross: 0.0
+              weight_cross: 100.0
               patches: 256
               timestep: 5
 

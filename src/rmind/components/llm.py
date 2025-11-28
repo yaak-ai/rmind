@@ -128,14 +128,14 @@ class TransformerDecoderBlock(nn.Module):
         self.post_norm_self_attn = nn.LayerNorm(embedding_dim)
         self.post_norm = nn.LayerNorm(embedding_dim)
 
-        self.cross_attn = nn.MultiheadAttention(
+        self.self_attn = nn.MultiheadAttention(
             embed_dim=embedding_dim,
             num_heads=num_heads,
             dropout=attn_dropout,
             batch_first=True,
         )
 
-        self.self_attn = nn.MultiheadAttention(
+        self.cross_attn = nn.MultiheadAttention(
             embed_dim=embedding_dim,
             num_heads=num_heads,
             dropout=attn_dropout,
