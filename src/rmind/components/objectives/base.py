@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from enum import StrEnum, auto, unique
-from typing import Any, Never, TypedDict
+from typing import Any, Never, NotRequired, TypedDict
 
 from tensordict import MetaData, TensorClass, TensorDict
 from torch.nn import Module
@@ -34,6 +34,7 @@ class Prediction(TensorClass["autocast"]):
 
 class Metrics(TypedDict):
     loss: TensorTree | None
+    _artifacts: NotRequired[TensorTree]
 
 
 def _not_implemented(*_args: Any, **_kwargs: Any) -> Never:

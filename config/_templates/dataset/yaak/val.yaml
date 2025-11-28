@@ -296,7 +296,7 @@ samples:
                 (
                   SELECT
                     list(
-                      [ST_X(p.point_struct.geom), ST_Y(p.point_struct.geom)]
+                      [ST_X(p.point_struct.geom) / 100, ST_Y(p.point_struct.geom) / 100]
                       ORDER BY
                         p.point_struct.path
                     )

@@ -29,7 +29,7 @@ from rmind.datamodules import GenericDataModule
 from rmind.models.control_transformer import ControlTransformer
 
 if TYPE_CHECKING:
-    from tests.conftest import NumBins
+    from tests.conftest import EmbeddingDims, NumBins
 
 CONFIG_PATH = "../config"
 
@@ -128,7 +128,7 @@ def control_transformer(
 def model_yaak_control_transformer_raw(
     request: pytest.FixtureRequest,
 ) -> ControlTransformer:
-    embedding_dim: int = request.getfixturevalue("embedding_dim")
+    embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
     num_bins: NumBins = request.getfixturevalue("num_bins")
 
     with initialize(version_base=None, config_path=CONFIG_PATH):
@@ -137,7 +137,8 @@ def model_yaak_control_transformer_raw(
             overrides=[
                 "+num_heads=1",
                 "+num_layers=1",
-                f"+embedding_dim={embedding_dim}",
+                f"+encoder_embedding_dim={embedding_dims.encoder}",
+                f"+image_embedding_dim={embedding_dims.image}",
                 f"+speed_bins={num_bins.speed}",
                 f"+gas_pedal_bins={num_bins.gas_pedal}",
                 f"+brake_pedal_bins={num_bins.brake_pedal}",

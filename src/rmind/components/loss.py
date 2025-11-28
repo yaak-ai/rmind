@@ -3,6 +3,7 @@ from typing import Any, Protocol, override, runtime_checkable
 
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
@@ -75,3 +76,61 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         var = self.var_pos_function(log_var)
 
         return super().forward(input=mean, target=target, var=var)
+
+
+# https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
+class GramAnchoringObjective(Module):
+    """
+    Gram-based anchoring loss for feature matching.
+
+    Combines two complementary objectives:
+    1. Cosine similarity loss: Ensures feature-level alignment between predictions and targets
+    2. Gram matrix loss: Preserves structural relationships and patterns within feature sets
+
+    The Gram matrix captures second-order statistics (feature correlations), which helps
+    maintain texture and structural properties during prediction. This is particularly
+    effective for image generation and reconstruction tasks.
+
+    Based on DINOv3 implementation:
+    https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        patches: int | None = None,
+        weight_sim: float = 1.0,
+        weight_gram: float = 10.0,
+        **kwargs: Any,
+    ) -> None:
+        if weight_gram > 0 and patches is None:
+            msg = "patches must be provided if weight_gram > 0"
+            raise ValueError(msg)
+        super().__init__(*args, **kwargs)
+        self.weight_sim: float = weight_sim
+        self.weight_gram: float = weight_gram
+        self.patches: int | None = patches
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        target = target.detach()
+
+        # (b t p) d
+        input = F.normalize(input, dim=-1)
+        target = F.normalize(target, dim=-1)
+
+        sim_loss = (1.0 - (input * target).sum(dim=-1)).mean()
+
+        if self.weight_gram <= 0:
+            return self.weight_sim * sim_loss
+
+        input_view = rearrange(input, "(bt p) d -> bt p d", p=self.patches)
+        target_view = rearrange(target, "(bt p) d -> bt p d", p=self.patches)
+
+        # (b t) p p
+        gram_pred = torch.einsum("bpd,bqd->bpq", input_view, input_view)
+        gram_gt = torch.einsum("bpd,bqd->bpq", target_view, target_view)
+
+        gram_loss = F.mse_loss(gram_pred, gram_gt)
+
+        return self.weight_sim * sim_loss + self.weight_gram * gram_loss

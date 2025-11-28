@@ -59,3 +59,44 @@ def test_moduledict(device: torch.device) -> None:
         transforms(x),
         {"image": {"cam_front_left": transform(x["image"]["cam_front_left"])}},
     )
+
+
+class OnLeafMultiplier(torch.nn.Module):
+    def __init__(self, alpha: float) -> None:
+        super().__init__()
+        self.alpha: float = alpha
+
+    @override
+    def forward(self, input: dict[str, Tensor]) -> Tensor:
+        return input["query"] * input["context"] * self.alpha
+
+
+def test_moduledict_is_leaf(device: torch.device) -> None:
+    on_is_leaf_transform = OnLeafMultiplier(alpha=3.0).to(device)
+    regular_transform = Multiplier(alpha=2.0).to(device)
+
+    modules = ModuleDict(
+        modules={"foresight": on_is_leaf_transform, "state": regular_transform}
+    ).to(device)
+
+    x = {
+        "foresight": {
+            "query": make_tensor(4, 8, dtype=torch.float, device=device),
+            "context": make_tensor(4, 8, dtype=torch.float, device=device),
+        },
+        "state": make_tensor(4, 8, dtype=torch.float, device=device),
+    }
+
+    tree_map_with_path(
+        assert_leaves_equal,
+        modules(
+            x,
+            is_leaf=lambda obj: (
+                isinstance(obj, dict) and "query" in obj and "context" in obj
+            ),
+        ),
+        {
+            "foresight": on_is_leaf_transform(x["foresight"]),
+            "state": regular_transform(x["state"]),
+        },
+    )
