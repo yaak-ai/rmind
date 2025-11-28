@@ -28,9 +28,9 @@ dependencies = [
   "rbyte[geo,jpeg,yaak]==0.34.2",
   "structlog>=25.2.0",
   "tensordict-nightly==2025.9.24",  # rbyte dep
+  "timm>=1.0.22",
   "torch>=2.8.0",
   "torchaudio==2.8.0",
-  "torchvision==0.23.0",
 ]
 
 [project.urls]

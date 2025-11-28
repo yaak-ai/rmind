@@ -6,11 +6,10 @@ import torch
 from einops.layers.torch import Rearrange
 from rbyte.types import Batch
 from tensordict import TensorDict
-from torch.nn import Linear, Module, MSELoss
+from torch.nn import LayerNorm, Linear, Module, MSELoss
 from torch.testing import make_tensor
-from torchvision.models import resnet18
 from torchvision.ops import MLP
-from torchvision.transforms.v2 import CenterCrop, Normalize, ToDtype
+from torchvision.transforms.v2 import CenterCrop, Normalize, Resize, ToDtype
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
@@ -34,7 +33,6 @@ from rmind.components.nn import (
     Sequential,
 )
 from rmind.components.norm import MuLawEncoding, Scaler, UniformBinner
-from rmind.components.norm import Normalize as _Normalize
 from rmind.components.objectives import (
     ForwardDynamicsPredictionObjective,
     InverseDynamicsPredictionObjective,
@@ -42,9 +40,9 @@ from rmind.components.objectives import (
     PolicyObjective,
     RandomMaskedHindsightControlObjective,
 )
-from rmind.components.resnet import ResnetBackbone
+from rmind.components.timm_backbone import TimmBackbone
 
-EMBEDDING_DIM = 512
+EMBEDDING_DIM = 384
 SPEED_BINS = 512
 GAS_PEDAL_BINS = 255
 BRAKE_PEDAL_BINS = 165
@@ -206,6 +204,7 @@ def episode_builder(tokenizers: ModuleDict, device: torch.device) -> Module:
                     Modality.IMAGE: Sequential(
                         Rearrange("... h w c -> ... c h w"),
                         CenterCrop([320, 576]),
+                        Resize([256, 256]),
                         ToDtype(dtype=torch.float32, scale=True),
                         Normalize(
                             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
@@ -228,35 +227,63 @@ def episode_builder(tokenizers: ModuleDict, device: torch.device) -> Module:
         tokenizers=tokenizers,
         embeddings=ModuleDict({
             Modality.IMAGE: Sequential(
-                ResnetBackbone(resnet18("IMAGENET1K_V1"), freeze=True),
+                TimmBackbone(
+                    "vit_small_patch16_dinov3.lvd1689m",
+                    freeze=True,
+                    out_indices=[10],
+                    img_size=[256, 256],
+                ),
                 Rearrange("... c h w -> ... (h w) c"),
-                _Normalize(p=2, dim=-1),
+                LayerNorm(EMBEDDING_DIM),
+                Linear(EMBEDDING_DIM, EMBEDDING_DIM),
             ),
             Modality.CONTINUOUS: {
-                "speed": Embedding(SPEED_BINS, EMBEDDING_DIM),
-                "gas_pedal": Embedding(GAS_PEDAL_BINS, EMBEDDING_DIM),
+                "speed": Sequential(
+                    Embedding(SPEED_BINS, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM),
+                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                ),
+                "gas_pedal": Sequential(
+                    Embedding(GAS_PEDAL_BINS, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM),
+                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                ),
                 "gas_pedal_diff": None,
-                "brake_pedal": Embedding(BRAKE_PEDAL_BINS, EMBEDDING_DIM),
+                "brake_pedal": Sequential(
+                    Embedding(BRAKE_PEDAL_BINS, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM),
+                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                ),
                 "brake_pedal_diff": None,
-                "steering_angle": Embedding(STEERING_ANGLE_BINS, EMBEDDING_DIM),
+                "steering_angle": Sequential(
+                    Embedding(STEERING_ANGLE_BINS, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM),
+                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                ),
                 "steering_angle_diff": None,
             },
             Modality.CONTEXT: {
                 "waypoints": Sequential(
-                    Linear(2, EMBEDDING_DIM), _Normalize(p=2, dim=-1)
+                    Linear(2, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM),
+                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
                 )
             },
-            Modality.DISCRETE: {"turn_signal": Embedding(3, EMBEDDING_DIM)},
-            Modality.SPECIAL: Embedding(3, EMBEDDING_DIM),
+            Modality.DISCRETE: {
+                "turn_signal": Sequential(
+                    Embedding(3, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM),
+                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                )
+            },
+            Modality.SPECIAL: Sequential(
+                Embedding(3, EMBEDDING_DIM),
+                LayerNorm(EMBEDDING_DIM),
+                Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+            ),
         }),
         position_encoding=ModuleDict({
-            PositionEncoding.IMAGE: {
-                "patch": {
-                    "row": Embedding(10, EMBEDDING_DIM),
-                    "col": Embedding(18, EMBEDDING_DIM),
-                }
-            },
-            PositionEncoding.OBSERVATIONS: Embedding(191, EMBEDDING_DIM),
+            PositionEncoding.CONTEXT: Embedding(10, EMBEDDING_DIM),
             PositionEncoding.ACTIONS: Embedding(1, EMBEDDING_DIM),
             PositionEncoding.SPECIAL: Embedding(1, EMBEDDING_DIM),
             PositionEncoding.TIMESTEP: Embedding(6, EMBEDDING_DIM),

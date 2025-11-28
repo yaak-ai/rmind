@@ -7,6 +7,7 @@ from torch.nn.modules.module import Module
 from torch.utils.checkpoint import checkpoint
 
 from rmind.components.mask import AttentionMask
+from rmind.components.nn import default_weight_init_fn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -49,6 +50,16 @@ class TransformerEncoderBlock(nn.Module):
             activation="gelu",
             hidden_layer_multiplier=hidden_layer_multiplier,
         )
+
+    @staticmethod
+    def _init_weights(module: Module) -> None:
+        match module:
+            case nn.Linear():
+                default_weight_init_fn(module.weight)  # pyright: ignore[reportUnusedCallResult]
+                if module.bias is not None:  # pyright: ignore[reportUnnecessaryComparison]
+                    nn.init.zeros_(module.bias)  # pyright: ignore[reportUnusedCallResult]
+            case _:
+                pass
 
     @override
     def forward(

@@ -20,6 +20,7 @@ from rmind.components.episode import Episode, EpisodeBuilder, EpisodeExport, Mod
 from rmind.components.mask import TorchAttentionMaskLegend
 from rmind.components.objectives.policy import PolicyObjective
 from rmind.models.control_transformer import ControlTransformer
+from tests.conftest import EMBEDDING_DIM
 
 
 @pytest.fixture
@@ -58,11 +59,19 @@ def policy_objective(
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(1536, [512, 2], bias=False),
-                    "brake_pedal": MLP(1536, [512, 2], bias=False),
-                    "steering_angle": MLP(1536, [512, 2], bias=False),
+                    "gas_pedal": MLP(3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False),
+                    "brake_pedal": MLP(
+                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
+                    ),
+                    "steering_angle": MLP(
+                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
+                    ),
                 },
-                Modality.DISCRETE: {"turn_signal": MLP(1536, [512, 3], bias=False)},
+                Modality.DISCRETE: {
+                    "turn_signal": MLP(
+                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 3], bias=False
+                    )
+                },
             }
         ),
     ).to(device)
