@@ -1,7 +1,14 @@
-from typing import TYPE_CHECKING, Any, Literal, final, override
+from typing import TYPE_CHECKING, Any, Literal, Self, final, override
 
 import torch
-from pydantic import InstanceOf, NonNegativeFloat, validate_call
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    InstanceOf,
+    NonNegativeFloat,
+    model_validator,
+    validate_call,
+)
 from torch import Tensor, nn
 from torch.nn.modules.module import Module
 from torch.utils.checkpoint import checkpoint
@@ -11,6 +18,15 @@ from rmind.components.nn import default_weight_init_fn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+__all__ = [
+    "MLPGLU",
+    "CrossAttentionDecoder",
+    "CrossAttentionDecoderBlock",
+    "CrossAttentionDecoderHead",
+    "TransformerEncoder",
+    "TransformerEncoderBlock",
+]
 
 
 class TransformerEncoderBlock(nn.Module):
@@ -92,6 +108,7 @@ class TransformerEncoderBlock(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
+    @validate_call
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         dim_model: int,
@@ -102,6 +119,7 @@ class TransformerEncoder(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
         freeze: bool | None = None,  # noqa: FBT001
+        emb_norm: InstanceOf[nn.Module] | None = None,
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
@@ -115,6 +133,7 @@ class TransformerEncoder(nn.Module):
             )
             for _ in range(num_layers)
         ])
+        self.emb_norm: nn.Module | None = emb_norm
         # https://github.com/karpathy/nanoGPT/blob/master/model.py#L182
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
 
@@ -123,7 +142,7 @@ class TransformerEncoder(nn.Module):
 
     @override
     def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
-        x = src
+        x = self.emb_norm(src) if self.emb_norm is not None else src
 
         if self.training:
 
@@ -227,3 +246,173 @@ class MLPGLU(nn.Module):
         xw, xv = x.chunk(2, dim=-1)
         geglu = self.a1(xw) * xv
         return self.l2(self.d1(geglu))
+
+
+class CrossAttentionDecoderBlock(nn.Module):
+    @validate_call
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        embedding_dim: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+    ) -> None:
+        super().__init__()
+
+        self.cross_attn_norm = nn.LayerNorm(embedding_dim)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
+        self.cross_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
+
+        self.self_attn_norm = nn.LayerNorm(embedding_dim)
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
+        self.self_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
+
+        self.mlp_norm = nn.LayerNorm(embedding_dim)
+        self.mlp = MLPGLU(
+            dim_model=embedding_dim,
+            dropout=mlp_dropout,
+            activation="gelu",
+            hidden_layer_multiplier=hidden_layer_multiplier,
+        )
+
+    @staticmethod
+    def _init_weights(module: Module) -> None:
+        match module:
+            case nn.Linear():
+                default_weight_init_fn(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            case _:
+                pass
+
+    @override
+    def forward(self, x: Tensor, context: Tensor) -> Tensor:
+        residual = x
+        x_norm = self.cross_attn_norm(x)
+        cross_attn_out, _ = self.cross_attn(
+            query=x_norm, key=context, value=context, need_weights=False
+        )
+        x = residual + self.cross_attn_resid_drop(cross_attn_out)
+
+        residual = x
+        x_norm = self.self_attn_norm(x)
+        self_attn_out, _ = self.self_attn(
+            query=x_norm, key=x_norm, value=x_norm, need_weights=False
+        )
+        x = residual + self.self_attn_resid_drop(self_attn_out)
+
+        residual = x
+        mlp_out = self.mlp(self.mlp_norm(x))
+        return residual + mlp_out
+
+
+class CrossAttentionDecoder(nn.Module):
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        dim_model: int,
+        num_layers: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+        freeze: bool | None = None,  # noqa: FBT001
+    ) -> None:
+        super().__init__()
+        self.layers = nn.ModuleList([
+            CrossAttentionDecoderBlock(
+                embedding_dim=dim_model,
+                num_heads=num_heads,
+                attn_dropout=attn_dropout,
+                mlp_dropout=mlp_dropout,
+                resid_dropout=resid_dropout,
+                hidden_layer_multiplier=hidden_layer_multiplier,
+            )
+            for _ in range(num_layers)
+        ])
+        self.layer_norm = nn.LayerNorm(dim_model)
+
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)
+
+    @override
+    def forward(self, x: Tensor, context: Tensor) -> Tensor:
+        if self.training:
+
+            def run_layer(
+                layer: Module, layer_input: Tensor, layer_context: Tensor
+            ) -> Any:
+                return checkpoint(
+                    layer, layer_input, layer_context, use_reentrant=False
+                )
+
+        else:
+
+            def run_layer(
+                layer: Module, layer_input: Tensor, layer_context: Tensor
+            ) -> Any:
+                return layer(layer_input, layer_context)
+
+        for layer in self.layers:
+            x = run_layer(layer, x, context)
+
+        return self.layer_norm(x)
+
+
+@final
+class CrossAttentionDecoderHead(nn.Module):
+    class Input(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+        query: Tensor
+        context: Tensor
+
+        @model_validator(mode="after")
+        def _validate_shapes(self) -> Self:
+            if self.query.ndim != self.context.ndim or self.query.ndim not in {3, 4}:
+                msg = (
+                    "query/context must both be 3D or 4D with matching ndim, "
+                    f"got query={self.query.ndim}D, context={self.context.ndim}D"
+                )
+                raise ValueError(msg)
+            return self
+
+    def __init__(
+        self, decoder: CrossAttentionDecoder, output_projection: nn.Linear
+    ) -> None:
+        super().__init__()
+        self.decoder = decoder
+        self.output_projection = output_projection
+
+    @validate_call
+    @override
+    def forward(self, input: Input) -> Tensor:
+        query = input.query
+        context = input.context
+
+        if query.ndim == 4:  # noqa: PLR2004
+            b, t, sq, d = query.shape
+            _, _, sc, _ = context.shape
+
+            query_flat = query.reshape(b * t, sq, d)
+            context_flat = context.reshape(b * t, sc, d)
+
+            decoded = self.decoder(query_flat, context_flat)
+            output = self.output_projection(decoded)
+
+            return output.reshape(b, t, sq, d)
+
+        decoded = self.decoder(query, context)
+        return self.output_projection(decoded)

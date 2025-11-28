@@ -50,7 +50,7 @@ train = [
   "contextily>=1.6.2",
   "matplotlib>=3.10.3",
   "torchmetrics>=1.4.1",
-  "wandb==0.23.0",
+  "wandb>=0.24.2",
 ]
 
 [dependency-groups]

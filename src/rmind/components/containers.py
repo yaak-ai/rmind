@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, overload, override
 
 from more_itertools import always_iterable
@@ -76,7 +76,12 @@ class ModuleDict(_ModuleDict):
         return obj
 
     @override
-    def forward(self, *args: PyTree, broadcast: bool | None = None) -> PyTree:
+    def forward(
+        self,
+        *args: PyTree,
+        broadcast: bool | None = None,
+        is_leaf: Callable[[Any], bool] | None = None,
+    ) -> PyTree:
         if broadcast is None and all(isinstance(arg, Mapping) for arg in args):
             broadcast = True
 
@@ -84,7 +89,7 @@ class ModuleDict(_ModuleDict):
 
         return (
             # should be roughly equivalent to
-            # `optree.tree_broadcast_map(operator.call, modules, *args, none_is_leaf=False)`
+            # `optree.tree_broadcast_map(operator.call, modules, *args, none_is_leaf=True, is_leaf=is_leaf)`
             tree_map(
                 lambda mod, *xs: (
                     tree_map(
@@ -92,15 +97,17 @@ class ModuleDict(_ModuleDict):
                             mod(*_xs) if all(x is not None for x in _xs) else None
                         ),
                         *xs,
+                        is_leaf=is_leaf,
                     )
                     if mod is not None
                     else None
                 ),
                 modules,
                 *args,
+                is_leaf=is_leaf,
             )
             if broadcast
-            else tree_map(lambda mod: mod(*args), modules)
+            else tree_map(lambda mod: mod(*args), modules, is_leaf=is_leaf)
         )
 
     def tree_paths(self) -> tuple[tuple[str, ...], ...]:
