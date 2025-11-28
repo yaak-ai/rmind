@@ -1,5 +1,5 @@
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import torch
@@ -20,6 +20,9 @@ from rmind.components.episode import Episode, EpisodeBuilder, EpisodeExport, Mod
 from rmind.components.mask import TorchAttentionMaskLegend
 from rmind.components.objectives.policy import PolicyObjective
 from rmind.models.control_transformer import ControlTransformer
+
+if TYPE_CHECKING:
+    from tests.conftest import EmbeddingDims
 
 
 @pytest.fixture
@@ -55,7 +58,7 @@ def policy_objective(
     device: torch.device,
     request: pytest.FixtureRequest,
 ) -> PolicyObjective:
-    embedding_dim: int = request.getfixturevalue("embedding_dim")
+    embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
 
     return PolicyObjective(
         encoder=encoder,
@@ -63,17 +66,27 @@ def policy_objective(
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(3 * embedding_dim, [embedding_dim, 2], bias=False),
+                    "gas_pedal": MLP(
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 2],
+                        bias=False,
+                    ),
                     "brake_pedal": MLP(
-                        3 * embedding_dim, [embedding_dim, 2], bias=False
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 2],
+                        bias=False,
                     ),
                     "steering_angle": MLP(
-                        3 * embedding_dim, [embedding_dim, 2], bias=False
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 2],
+                        bias=False,
                     ),
                 },
                 Modality.DISCRETE: {
                     "turn_signal": MLP(
-                        3 * embedding_dim, [embedding_dim, 3], bias=False
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 3],
+                        bias=False,
                     )
                 },
             }

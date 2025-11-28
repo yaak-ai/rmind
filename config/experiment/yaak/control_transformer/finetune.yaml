@@ -8,4 +8,4 @@ defaults:
   - /wandb: yaak/rmind
   - _self_
 
-embedding_dim: 384
+encoder_embedding_dim: 384
