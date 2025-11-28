@@ -4,7 +4,7 @@ from pytest_lazy_fixtures import lf
 
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
-from rmind.components.objectives.base import Objective, PredictionResultKey
+from rmind.components.objectives.base import Objective, PredictionKey
 
 
 @pytest.mark.parametrize(
@@ -35,8 +35,6 @@ def test_compute_metrics(objective: Objective, episode: Episode) -> None:
 def test_predict(
     objective: Objective, episode: Episode, tokenizers: ModuleDict
 ) -> None:
-    result_keys = set(PredictionResultKey)
-    predictions = objective.predict(
-        episode, result_keys=result_keys, tokenizers=tokenizers
-    )
-    assert set(predictions.keys()).issubset(result_keys)
+    keys = set(PredictionKey)
+    predictions = objective.predict(episode, keys=keys, tokenizers=tokenizers)
+    assert set(predictions.keys()).issubset(keys)

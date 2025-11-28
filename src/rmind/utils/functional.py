@@ -1,26 +1,9 @@
-from functools import partial
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
-import more_itertools as mit
 import torch
 from torch import Tensor
 from torch.distributions import Normal
 from torch.nn import functional as F
-
-
-def pad_dim(input: Tensor, *, pad: tuple[int, int], dim: int, **kwargs: Any) -> Tensor:
-    pad_ = [(0, 0) for _ in input.shape]
-    pad_[dim] = pad
-    pad_ = list(mit.flatten(reversed(pad_)))
-
-    if not torch.is_floating_point(input):
-        input = input.float()
-
-    return F.pad(input, pad_, **kwargs)
-
-
-def nan_padder(*, pad: tuple[int, int], dim: int) -> partial[Tensor]:
-    return partial(pad_dim, pad=pad, dim=dim, mode="constant", value=torch.nan)
 
 
 def gauss_prob(

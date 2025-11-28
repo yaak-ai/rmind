@@ -25,7 +25,7 @@ dependencies = [
   "polars>=1.32.2",
   "pydantic>=2.11.4",
   "pytorch-lightning>=2.5.2",
-  "rbyte[geo,jpeg,yaak]==0.31.0",
+  "rbyte[geo,jpeg,yaak]==0.33.0",
   "structlog>=25.2.0",
   "tensordict-nightly==2025.9.24",  # rbyte dep
   "torch>=2.8.0",
@@ -53,10 +53,11 @@ train = [
 
 [dependency-groups]
 dev = [
+  "better-exceptions>=0.3.3",
   "deptry>=0.23.1",
   "ipython",
   "lovely-tensors",
-  "pudb",
+  "patdb",
   "wat-inspector",
 ]
 export = [
@@ -142,3 +143,19 @@ split-on-trailing-comma = false
 [tool.ruff.format]
 preview = true
 skip-magic-trailing-comma = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
