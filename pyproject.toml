@@ -28,9 +28,10 @@ dependencies = [
   "rbyte[geo,jpeg,yaak]==0.34.2",
   "structlog>=25.2.0",
   "tensordict-nightly==2025.9.24",  # rbyte dep
+  "timm>=1.0.22",
   "torch>=2.8.0",
   "torchaudio==2.8.0",
-  "torchvision==0.23.0",
+  "torchvision>=0.23.0",
 ]
 
 [project.urls]
@@ -58,6 +59,7 @@ dev = [
   "ipython",
   "lovely-tensors",
   "patdb",
+  "pudb>=2025.1.5",
   "wat-inspector",
 ]
 export = [
@@ -97,6 +99,8 @@ DEP002 = [
   "torchmetrics",
   "pytest",
   "pytest-lazy-fixtures",
+  "torchmetrics",
+  "torchvision",
 ]
 DEP003 = ["rmind"]
 

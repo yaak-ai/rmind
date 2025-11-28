@@ -36,6 +36,6 @@ def main(cfg: DictConfig) -> None:
 if __name__ == "__main__":
     import multiprocessing as mp
 
-    mp.set_forkserver_preload(["rbyte", "polars", "duckdb"])
+    mp.set_forkserver_preload(["rbyte", "polars"])
 
     main()
