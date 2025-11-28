@@ -21,19 +21,6 @@ callbacks:
     save_on_train_epoch_end: True
   - _target_: pytorch_lightning.callbacks.LearningRateMonitor
     logging_interval: step
-  - _target_: rmind.callbacks.WandbImageParamLogger
-    when: on_train_batch_end
-    every_n_batch: 100
-    key: similarity
-    select:
-      - [episode_builder, embeddings, continuous]
-      - [episode_builder, embeddings, discrete]
-      - [episode_builder, position_encoding, image]
-      - [episode_builder, position_encoding, observations]
-      - [episode_builder, position_encoding, timestep]
-    apply:
-      _target_: torchmetrics.functional.pairwise_cosine_similarity
-      _partial_: true
   - _target_: rmind.callbacks.WandbWaypointsLogger
     when: on_validation_batch_end
     every_n_batch: 100
