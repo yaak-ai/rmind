@@ -123,7 +123,8 @@ class PolicyObjective(Objective):
             _b, _ = episode.input.batch_size
 
             embeddings = (
-                episode.index[-1]  # pyright: ignore[reportCallIssue]
+                episode
+                .index[-1]  # pyright: ignore[reportCallIssue]
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
@@ -224,7 +225,8 @@ class PolicyObjective(Objective):
                 )
 
             embeddings = (
-                episode.index[-1]  # pyright: ignore[reportCallIssue]
+                episode
+                .index[-1]  # pyright: ignore[reportCallIssue]
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
@@ -407,7 +409,8 @@ class PolicyObjective(Objective):
             ))
 
             mask = (
-                mask.do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
+                mask
+                .do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_observations, past_action_summary)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_observation_summary, past_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_observation_summary, past_action_summary)  # pyright: ignore[reportArgumentType]

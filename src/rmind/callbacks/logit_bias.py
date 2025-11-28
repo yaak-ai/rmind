@@ -77,11 +77,13 @@ class LogitBiasSetter(Callback):
                 batch.to(device=pl_module.device).to_dict()
             )
             input = tree_map(
-                lambda x: torch.flatten(
-                    x[~x.isnan()]  # `*_diff`s contain NaNs for last timestep
-                )
-                if x is not None
-                else None,
+                lambda x: (
+                    torch.flatten(
+                        x[~x.isnan()]  # `*_diff`s contain NaNs for last timestep
+                    )
+                    if x is not None
+                    else None
+                ),
                 input,
             )
             labels = pl_module.episode_builder.tokenizers(input)  # pyright: ignore[reportCallIssue]

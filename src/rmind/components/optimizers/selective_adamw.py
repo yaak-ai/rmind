@@ -39,11 +39,14 @@ class SelectiveAdamW(AdamW):
                     weight_decay_param_blacklist.add(param_name)
 
                 # https://github.com/pytorch/pytorch/blob/v2.7.0/torch/nn/modules/activation.py#L1091
-                case "in_proj_weight":
+                case (
+                    "in_proj_weight" | "cls_token" | "reg_token" | "gamma_1" | "gamma_2"
+                ):
                     pass
 
                 case _:
-                    raise NotImplementedError
+                    msg = f"Handling of param_type '{param_type}' is not implemented"
+                    raise NotImplementedError(msg)
 
         weight_decay_param_whitelist = params.keys() - weight_decay_param_blacklist
 

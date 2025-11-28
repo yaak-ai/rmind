@@ -31,7 +31,8 @@ class RerunPredictionWriter(BasePredictionWriter):
         dataloader_idx: int,
     ) -> None:
         data = (
-            prediction.to_tensordict(retain_none=True)
+            prediction
+            .to_tensordict(retain_none=True)
             .update({"batch": TensorDict(batch)})
             .auto_batch_size_(1)
             .lock_()
