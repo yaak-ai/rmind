@@ -23,9 +23,10 @@ dependencies = [
   "omegaconf>=2.3.0",
   "orjson>=3.10.12",
   "polars>=1.32.2",
+  "ptars==0.0.5",
   "pydantic>=2.11.4",
   "pytorch-lightning>=2.6.0",
-  "rbyte[geo,jpeg,yaak]==0.34.2",
+  "rbyte[geo,jpeg,yaak]==0.34.4",
   "structlog>=25.2.0",
   "tensordict-nightly==2025.9.24",  # rbyte dep
   "timm>=1.0.22",
@@ -87,6 +88,7 @@ DEP002 = [
   "torchmetrics",
   "pytest",
   "pytest-lazy-fixtures",
+  "ptars",
   "torchmetrics",
   "torchvision",
 ]

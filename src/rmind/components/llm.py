@@ -227,3 +227,14 @@ class MLPGLU(nn.Module):
         xw, xv = x.chunk(2, dim=-1)
         geglu = self.a1(xw) * xv
         return self.l2(self.d1(geglu))
+
+
+@final
+class Transformer(nn.Module):
+    def __init__(self, transformer: TransformerEncoder) -> None:
+        super().__init__()
+        self.transformer = transformer
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.transformer(src=x, mask=None)

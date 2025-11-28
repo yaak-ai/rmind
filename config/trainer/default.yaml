@@ -13,6 +13,7 @@ logger:
   _target_: pytorch_lightning.loggers.WandbLogger
   log_model: all
 callbacks:
+  - _target_: pytorch_lightning.callbacks.TQDMProgressBar
   - _target_: rmind.callbacks.LogitBiasSetter
   - _target_: pytorch_lightning.callbacks.ModelSummary
     max_depth: 5

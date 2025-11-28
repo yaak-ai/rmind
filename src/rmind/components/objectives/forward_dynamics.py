@@ -4,10 +4,12 @@ from functools import lru_cache
 from typing import final, override
 
 import torch
-from einops import pack
+from einops import pack, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
+from timm.layers.pos_embed_sincos import rope_rotate_half
+from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map  # noqa: PLC2701
@@ -17,7 +19,7 @@ from rmind.components.episode import (
     Episode,
     Index,
     Modality,
-    SpecialToken,
+    SummaryToken,
     Timestep,
     TokenType,
 )
@@ -34,6 +36,8 @@ from rmind.components.objectives.base import (
     Targets,
 )
 
+REFERENCE_CAMERA = "cam_front_left"
+
 
 @final
 class ForwardDynamicsPredictionObjective(Objective):
@@ -43,6 +47,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         *,
         encoder: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
+        position_embedding: InstanceOf[Module] | None = None,
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
@@ -57,6 +62,65 @@ class ForwardDynamicsPredictionObjective(Objective):
             maxsize=2, typed=True
         )(self.build_attention_mask)
 
+        # TODO: should it smh be initialized via .yaml?  # noqa: FIX002
+        # https://github.com/huggingface/pytorch-image-models/blob/af3732eebe8c1964e5ba5f2769f955e6e0deb980/timm/layers/pos_embed_sincos.py#L271
+        # https://github.com/huggingface/pytorch-image-models/blob/af3732eebe8c1964e5ba5f2769f955e6e0deb980/timm/layers/pos_embed_sincos.py#L1138
+        sin_emb, cos_emb = position_embedding.get_embed().tensor_split(2, -1)  # ty:ignore[possibly-missing-attribute, call-non-callable]
+        self.register_buffer("_sin_emb", sin_emb, persistent=False)
+        self.register_buffer("_cos_emb", cos_emb, persistent=False)
+
+    def _apply_position_embeddings(self, x: Tensor) -> Tensor:
+        """Apply rotary position embeddings to input tensor."""
+        return rope_rotate_half(x) * self._sin_emb + x * self._cos_emb  # type: ignore[operator]
+
+    @staticmethod
+    def _compute_num_mask_tokens(episode: Episode, foresight: TensorDict) -> int:
+        num_foresight_tokens = foresight[REFERENCE_CAMERA].shape[-2]
+        num_image_tokens = episode.projected_embeddings.get((
+            Modality.IMAGE,
+            REFERENCE_CAMERA,
+        )).shape[-2]
+        return num_image_tokens - num_foresight_tokens
+
+    def _extract_foresight_features(
+        self, episode: Episode, index: Index, embedding: Tensor
+    ) -> TensorDict:
+        action_summary = (
+            index
+            .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+
+        foresight = index.select(k := Modality.FORESIGHT).parse(embedding).get(k)
+
+        mask_token = episode.embeddings.get((Modality.UTILITY, "mask"))[:, :-1]
+
+        return (
+            foresight
+            .apply(
+                # cat mask tokens to foresight tokens
+                lambda x: torch.cat(
+                    [
+                        x,
+                        repeat(
+                            mask_token,
+                            "b t 1 d -> b t n d",
+                            n=self._compute_num_mask_tokens(episode, foresight),
+                        ),
+                    ],
+                    dim=-2,
+                )
+            )
+            .apply(self._apply_position_embeddings)
+            .apply(
+                # foresight, action_summary
+                lambda obs: pack(
+                    [obs, action_summary.broadcast_to(obs.shape)], "b t p *"
+                )[0]
+            )
+        )
+
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
         mask = self._build_attention_mask(
@@ -68,41 +132,10 @@ class ForwardDynamicsPredictionObjective(Objective):
         )  # ty:ignore[call-non-callable]
 
         index = episode.index[:-1]  # all but last timestep
+        features = self._extract_foresight_features(episode, index, embedding)
 
-        observations = index.select(
-            *episode.timestep
-            .get(TokenType.OBSERVATION)
-            .exclude((Modality.CONTEXT, "waypoints"))
-            .keys(include_nested=True, leaves_only=True)
-        ).parse(embedding)
-
-        observation_summary = (
-            index
-            .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
-
-        action_summary = (
-            index
-            .select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
-
-        features: TensorDict = observations.apply(
-            # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
-            lambda obs: pack(
-                [
-                    obs,
-                    observation_summary.broadcast_to(obs.shape),
-                    action_summary.broadcast_to(obs.shape),
-                ],
-                "b t p *",
-            )[0]
-        )
-
-        logits = self.heads(features.to_dict())
+        logits = self.heads({Modality.IMAGE: features.to_dict()})
+        logits = tree_map(Rearrange("(b t) s d -> b t s d", t=len(index)), logits)
 
         targets = tree_map(
             lambda k: episode.get(k)[:, 1:],
@@ -151,43 +184,12 @@ class ForwardDynamicsPredictionObjective(Objective):
                 src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
             )  # ty:ignore[call-non-callable]
 
-            # all but last timestep
-            index = episode.index[:-1]
+            index = episode.index[:-1]  # all but last timestep
+            features = self._extract_foresight_features(episode, index, embedding)
 
-            observations = index.select(
-                *episode.timestep
-                .get(TokenType.OBSERVATION)
-                .exclude((Modality.CONTEXT, "waypoints"))
-                .keys(include_nested=True, leaves_only=True)
-            ).parse(embedding)
-
-            observation_summary = (
-                index
-                .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
-                .parse(embedding)
-                .get(k)
-            )
-
-            action_summary = (
-                index
-                .select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))
-                .parse(embedding)
-                .get(k)
-            )
-
-            features: TensorDict = observations.apply(
-                # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
-                lambda obs: pack(
-                    [
-                        obs,
-                        observation_summary.broadcast_to(obs.shape),
-                        action_summary.broadcast_to(obs.shape),
-                    ],
-                    "b t p *",
-                )[0]
-            )
-
-            logits = TensorDict(self.heads(features.to_dict()), batch_size=[b, t - 1])
+            logits = self.heads({Modality.IMAGE: features.to_dict()})
+            logits = tree_map(Rearrange("(b t) s d -> b t s d", t=len(index)), logits)
+            logits = TensorDict(logits, batch_size=[b, t - 1])
 
             # all but first
             timestep_indices = slice(1, None)
@@ -251,7 +253,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 )
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
                     embedding
                 )
 
@@ -276,13 +278,19 @@ class ForwardDynamicsPredictionObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
+            past_observations = past.select(
+                *timestep.get(TokenType.OBSERVATION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
             current_observation_summary = current.select((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
             ))
+            current_foresight = current.select(Modality.FORESIGHT)
             current_observation_history = current.select((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
             ))
             current_actions = current.select(
                 *timestep.get(TokenType.ACTION).keys(
@@ -290,20 +298,48 @@ class ForwardDynamicsPredictionObjective(Objective):
                 )
             )
             current_action_summary = current.select((
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
+            ))
+            past_actions = past.select(
+                *timestep.get(TokenType.ACTION).keys(
+                    include_nested=True, leaves_only=True
+                )
+            )
+            past_action_summary = past.select((
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
 
             mask = (
                 mask
                 .do_attend(current, current)
                 .do_attend(current, past)
+                .do_not_attend(current_observations, current_foresight)
+                .do_not_attend(current_observations, current_observation_summary)
+                .do_not_attend(current_observations, current_observation_history)
                 .do_not_attend(current_observations, current_actions)
                 .do_not_attend(current_observations, current_action_summary)
                 .do_not_attend(current_observation_summary, current_actions)
                 .do_not_attend(current_observation_summary, current_action_summary)
                 .do_not_attend(current_observation_history, current_actions)
                 .do_not_attend(current_observation_history, current_action_summary)
+                .do_not_attend(current_foresight, current_observation_history)
+                .do_not_attend(current_foresight, current_observation_summary)
+                .do_not_attend(current_foresight, current_actions)
+                .do_not_attend(current_foresight, current_action_summary)
+                .do_not_attend(current_foresight, past_actions)
+                .do_not_attend(current_foresight, past_action_summary)
+                .do_not_attend(current_observation_summary, past_actions)
+                .do_not_attend(current_observation_summary, past_action_summary)
+                .do_not_attend(current_observation_history, past_actions)
+                .do_not_attend(current_observation_history, past_action_summary)
+                .do_not_attend(current_observation_summary, current_observations)
+                .do_not_attend(current_observation_history, current_observations)
+                .do_not_attend(current_observation_summary, past_observations)
+                .do_not_attend(current_observation_history, past_observations)
+                .do_not_attend(current_observations, past_actions)
+                .do_not_attend(current_observations, past_action_summary)
             )
 
         return mask
