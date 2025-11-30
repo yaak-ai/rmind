@@ -7,6 +7,7 @@ from einops import pack, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
+from timm.layers.pos_embed_sincos import rope_rotate_half
 from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map  # noqa: PLC2701
@@ -59,7 +60,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
+    def compute_metrics(self, episode: Episode) -> Metrics:  # noqa: PLR0914
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
@@ -100,13 +101,20 @@ class ForwardDynamicsPredictionObjective(Objective):
             (Modality.SPECIAL, SpecialToken.FORESIGHT), foresight_embeddings
         )
 
-        position_embedding = TensorDict()
-        position_embedding = position_embedding.set(
-            (Modality.SPECIAL, SpecialToken.FORESIGHT),
-            self.position_embedding.weight,  # pyright: ignore[reportOptionalMemberAccess]
-        )
+        pe_sin = TensorDict()
+        pe_cos = TensorDict()
 
-        features = observations + position_embedding
+        # https://github.com/huggingface/pytorch-image-models/blob/af3732eebe8c1964e5ba5f2769f955e6e0deb980/timm/layers/pos_embed_sincos.py#L271
+        rope = self.position_embedding.get_embed()  # pyright: ignore[reportCallIssue,reportOptionalMemberAccess]
+        sin_emb, cos_emb = rope.tensor_split(2, -1)
+
+        pe_sin = pe_sin.set((Modality.SPECIAL, SpecialToken.FORESIGHT), sin_emb)
+
+        pe_cos = pe_cos.set((Modality.SPECIAL, SpecialToken.FORESIGHT), cos_emb)
+
+        # https://github.com/huggingface/pytorch-image-models/blob/af3732eebe8c1964e5ba5f2769f955e6e0deb980/timm/layers/pos_embed_sincos.py#L1138
+
+        features = observations * pe_cos + observations.apply(rope_rotate_half) * pe_sin
 
         logits = self.heads(features.to_dict())
         logits = tree_map(
