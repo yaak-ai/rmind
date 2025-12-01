@@ -434,11 +434,12 @@ objectives:
         modules:
           special:
             foresight:
-              _target_: rmind.components.loss.GramAnchoringObjective
-              weight_sim: 100.0
-              weight_cross: 0.0
-              patches: 256
+              _target_: rmind.components.loss.SoftFocalSigLIPObjective
+              gram_weight: 0.0
+              clip_weight: 0.0
+              siglip_weight: 10.0
               timestep: 5
+              gamma: 0
 
     random_masked_hindsight_control:
       _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective

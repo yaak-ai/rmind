@@ -131,7 +131,7 @@ class GramAnchoringObjective(Module):
         target = F.normalize(target, dim=-1)
 
         # B T P P
-        gram_pred = torch.matmul(input, input.transpose(-1, -2))
+        gram_pred = torch.matmul(input, target.transpose(-1, -2))
         gram_gt = torch.matmul(target, target.transpose(-1, -2))
 
         # B T P
@@ -213,7 +213,7 @@ class SoftFocalSigLIPObjective(Module):
         gamma: int = 2,
         siglip_logit_scale: float = 10,
         siglip_logit_bias: float = 0,
-        clip_logit_scale: float = 10,
+        clip_logit_scale: float = 14,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -330,7 +330,7 @@ class SoftFocalSigLIPObjectiveOG(Module):
         gamma: int = 2,
         siglip_logit_scale: float = 10,
         siglip_logit_bias: float = 0,
-        clip_logit_scale: float = 10,
+        clip_logit_scale: float = 14,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
