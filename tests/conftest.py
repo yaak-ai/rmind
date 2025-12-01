@@ -234,52 +234,53 @@ def episode_builder(tokenizers: ModuleDict, device: torch.device) -> Module:
                     img_size=[256, 256],
                 ),
                 Rearrange("... c h w -> ... (h w) c"),
-                LayerNorm(EMBEDDING_DIM),
-                Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+            ),
+            Modality.CONTINUOUS: {
+                "speed": Embedding(SPEED_BINS, EMBEDDING_DIM),
+                "gas_pedal": Embedding(GAS_PEDAL_BINS, EMBEDDING_DIM),
+                "brake_pedal": Embedding(BRAKE_PEDAL_BINS, EMBEDDING_DIM),
+                "steering_angle": Embedding(STEERING_ANGLE_BINS, EMBEDDING_DIM),
+                "gas_pedal_diff": None,
+                "brake_pedal_diff": None,
+                "steering_angle_diff": None,
+            },
+            Modality.CONTEXT: {"waypoints": Linear(2, EMBEDDING_DIM)},
+            Modality.DISCRETE: {"turn_signal": Embedding(3, EMBEDDING_DIM)},
+            Modality.SPECIAL: Embedding(3, EMBEDDING_DIM),
+        }),
+        projections=ModuleDict({
+            Modality.IMAGE: Sequential(
+                LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
             ),
             Modality.CONTINUOUS: {
                 "speed": Sequential(
-                    Embedding(SPEED_BINS, EMBEDDING_DIM),
-                    LayerNorm(EMBEDDING_DIM),
-                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
                 ),
                 "gas_pedal": Sequential(
-                    Embedding(GAS_PEDAL_BINS, EMBEDDING_DIM),
-                    LayerNorm(EMBEDDING_DIM),
-                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                ),
+                "brake_pedal": Sequential(
+                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                ),
+                "steering_angle": Sequential(
+                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
                 ),
                 "gas_pedal_diff": None,
-                "brake_pedal": Sequential(
-                    Embedding(BRAKE_PEDAL_BINS, EMBEDDING_DIM),
-                    LayerNorm(EMBEDDING_DIM),
-                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
-                ),
                 "brake_pedal_diff": None,
-                "steering_angle": Sequential(
-                    Embedding(STEERING_ANGLE_BINS, EMBEDDING_DIM),
-                    LayerNorm(EMBEDDING_DIM),
-                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
-                ),
                 "steering_angle_diff": None,
             },
             Modality.CONTEXT: {
                 "waypoints": Sequential(
-                    Linear(2, EMBEDDING_DIM),
-                    LayerNorm(EMBEDDING_DIM),
-                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
                 )
             },
             Modality.DISCRETE: {
                 "turn_signal": Sequential(
-                    Embedding(3, EMBEDDING_DIM),
-                    LayerNorm(EMBEDDING_DIM),
-                    Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
                 )
             },
             Modality.SPECIAL: Sequential(
-                Embedding(3, EMBEDDING_DIM),
-                LayerNorm(EMBEDDING_DIM),
-                Linear(EMBEDDING_DIM, EMBEDDING_DIM),
+                LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
             ),
         }),
         position_encoding=ModuleDict({

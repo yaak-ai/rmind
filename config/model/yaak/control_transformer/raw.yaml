@@ -39,7 +39,8 @@ episode_builder:
             brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
             brake_pedal_diff: [data, meta/VehicleMotion/brake_pedal_normalized]
             steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
-            steering_angle_diff: [data, meta/VehicleMotion/steering_angle_normalized]
+            steering_angle_diff:
+              [data, meta/VehicleMotion/steering_angle_normalized]
 
           context:
             waypoints: [data, waypoints/xy_normalized]
@@ -170,6 +171,51 @@ episode_builder:
             img_size: [256, 256]
           - _target_: einops.layers.torch.Rearrange
             pattern: "... c h w -> ... (h w) c"
+
+      continuous:
+        speed:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${speed_bins}
+          embedding_dim: ${embedding_dim}
+        gas_pedal:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${gas_pedal_bins}
+          embedding_dim: ${embedding_dim}
+        brake_pedal:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${brake_pedal_bins}
+          embedding_dim: ${embedding_dim}
+        steering_angle:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: ${steering_angle_bins}
+          embedding_dim: ${embedding_dim}
+        gas_pedal_diff: null
+        brake_pedal_diff: null
+        steering_angle_diff: null
+
+      context:
+        waypoints:
+          _target_: rmind.components.nn.Linear
+          in_features: 2
+          out_features: ${embedding_dim}
+
+      discrete:
+        turn_signal:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 3
+          embedding_dim: ${embedding_dim}
+
+      special:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 3
+        embedding_dim: ${embedding_dim}
+
+  projections:
+    _target_: rmind.components.containers.ModuleDict
+    modules:
+      image:
+        _target_: torch.nn.Sequential
+        _args_:
           - _target_: torch.nn.LayerNorm
             normalized_shape: ${embedding_dim}
           - _target_: rmind.components.nn.Linear
@@ -180,9 +226,6 @@ episode_builder:
         speed:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: rmind.components.nn.Embedding
-              num_embeddings: ${speed_bins}
-              embedding_dim: ${embedding_dim}
             - _target_: torch.nn.LayerNorm
               normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
@@ -191,9 +234,6 @@ episode_builder:
         gas_pedal:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: rmind.components.nn.Embedding
-              num_embeddings: ${gas_pedal_bins}
-              embedding_dim: ${embedding_dim}
             - _target_: torch.nn.LayerNorm
               normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
@@ -202,9 +242,6 @@ episode_builder:
         brake_pedal:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: rmind.components.nn.Embedding
-              num_embeddings: ${brake_pedal_bins}
-              embedding_dim: ${embedding_dim}
             - _target_: torch.nn.LayerNorm
               normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
@@ -213,9 +250,6 @@ episode_builder:
         steering_angle:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: rmind.components.nn.Embedding
-              num_embeddings: ${steering_angle_bins}
-              embedding_dim: ${embedding_dim}
             - _target_: torch.nn.LayerNorm
               normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
@@ -229,34 +263,25 @@ episode_builder:
         waypoints:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: rmind.components.nn.Linear
-              in_features: 2
-              out_features: ${embedding_dim}
             - _target_: torch.nn.LayerNorm
               normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
- 
+
       discrete:
         turn_signal:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: rmind.components.nn.Embedding
-              num_embeddings: 3
-              embedding_dim: ${embedding_dim}
             - _target_: torch.nn.LayerNorm
               normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
-  
+
       special:
         _target_: torch.nn.Sequential
         _args_:
-          - _target_: rmind.components.nn.Embedding
-            num_embeddings: 3
-            embedding_dim: ${embedding_dim}
           - _target_: torch.nn.LayerNorm
             normalized_shape: ${embedding_dim}
           - _target_: rmind.components.nn.Linear
