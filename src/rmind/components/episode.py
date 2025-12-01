@@ -142,13 +142,14 @@ class Episode(TensorClass["frozen"]):
     input: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_tokens: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
+    projected_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     position_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     index: Index  # pyright: ignore[reportUninitializedInstanceVariable]
     timestep: Timestep  # pyright: ignore[reportUninitializedInstanceVariable]
 
     @property
     def embeddings(self) -> TensorDict:
-        return self.input_embeddings + self.position_embeddings
+        return self.projected_embeddings + self.position_embeddings
 
     @property
     def embeddings_packed(self) -> Tensor:
@@ -170,6 +171,7 @@ class EpisodeExport:
     input: TensorTree
     input_tokens: TensorTree
     input_embeddings: TensorTree
+    projected_embeddings: TensorTree
     position_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
@@ -180,7 +182,7 @@ class EpisodeExport:
             lambda left, right: left + right
             if left is not None and right is not None
             else None,
-            self.input_embeddings,
+            self.projected_embeddings,
             self.position_embeddings,
         )
 
@@ -218,6 +220,7 @@ class EpisodeBuilder(Module):
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
+        projections: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
     ) -> None:
@@ -228,6 +231,7 @@ class EpisodeBuilder(Module):
         self.input_transform = input_transform
         self.tokenizers = tokenizers
         self.embeddings = embeddings
+        self.projections = projections
         self.position_encoding = position_encoding
 
         if freeze is not None:
@@ -259,15 +263,16 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
+        projected_embeddings = self.projections(input_embeddings)
 
-        index = self._build_index(input_embeddings)
+        index = self._build_index(projected_embeddings)
 
         timestep = unflatten_keys({
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
 
         position_embeddings = self._build_position_embeddings(
-            input_embeddings, timestep
+            projected_embeddings, timestep
         )
 
         return (
@@ -275,6 +280,7 @@ class EpisodeBuilder(Module):
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
+                projected_embeddings=projected_embeddings,
                 position_embeddings=position_embeddings,
                 index=index,
                 timestep=timestep,
@@ -289,6 +295,9 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
+                ).filter_non_tensor_data(),
+                projected_embeddings=TensorDict.from_dict(
+                    projected_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
                 position_embeddings=TensorDict.from_dict(
                     position_embeddings,  # pyright: ignore[reportArgumentType]
