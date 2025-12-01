@@ -22,24 +22,24 @@ hparams_updaters:
               continuous:
                 gas_pedal:
                   _target_: torchvision.ops.MLP
-                  in_channels: 1536
-                  hidden_channels: [512, 2]
+                  in_channels: 1152
+                  hidden_channels: [384,2]
                   bias: False
                 brake_pedal:
                   _target_: torchvision.ops.MLP
-                  in_channels: 1536
-                  hidden_channels: [512, 2]
+                  in_channels: 1152
+                  hidden_channels: [384,2]
                   bias: False
                 steering_angle:
                   _target_: torchvision.ops.MLP
-                  in_channels: 1536
-                  hidden_channels: [512, 2]
+                  in_channels: 1152
+                  hidden_channels: [384,2]
                   bias: False
               discrete:
                 turn_signal:
                   _target_: torchvision.ops.MLP
-                  in_channels: 1536
-                  hidden_channels: [512, 3]
+                  in_channels: 1152
+                  hidden_channels: [384,3]
                   bias: False
 
           targets:

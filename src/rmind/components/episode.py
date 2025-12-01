@@ -63,8 +63,7 @@ class SpecialToken(StrEnum):
 
 @unique
 class PositionEncoding(StrEnum):
-    IMAGE = auto()
-    OBSERVATIONS = auto()
+    CONTEXT = auto()
     ACTIONS = auto()
     SPECIAL = auto()
     TIMESTEP = auto()
@@ -143,13 +142,14 @@ class Episode(TensorClass["frozen"]):
     input: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_tokens: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
+    projected_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     position_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     index: Index  # pyright: ignore[reportUninitializedInstanceVariable]
     timestep: Timestep  # pyright: ignore[reportUninitializedInstanceVariable]
 
     @property
     def embeddings(self) -> TensorDict:
-        return self.input_embeddings + self.position_embeddings
+        return self.projected_embeddings + self.position_embeddings
 
     @property
     def embeddings_packed(self) -> Tensor:
@@ -171,6 +171,7 @@ class EpisodeExport:
     input: TensorTree
     input_tokens: TensorTree
     input_embeddings: TensorTree
+    projected_embeddings: TensorTree
     position_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
@@ -181,7 +182,7 @@ class EpisodeExport:
             lambda left, right: left + right
             if left is not None and right is not None
             else None,
-            self.input_embeddings,
+            self.projected_embeddings,
             self.position_embeddings,
         )
 
@@ -219,6 +220,7 @@ class EpisodeBuilder(Module):
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
+        projections: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
     ) -> None:
@@ -229,6 +231,7 @@ class EpisodeBuilder(Module):
         self.input_transform = input_transform
         self.tokenizers = tokenizers
         self.embeddings = embeddings
+        self.projections = projections
         self.position_encoding = position_encoding
 
         if freeze is not None:
@@ -260,16 +263,16 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
+        projected_embeddings = self.projections(input_embeddings)
 
-        index = self._build_index(input_embeddings)
-        timestep_index = tree_map(itemgetter(0), index)
+        index = self._build_index(projected_embeddings)
 
         timestep = unflatten_keys({
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
 
         position_embeddings = self._build_position_embeddings(
-            input_embeddings, timestep_index, timestep
+            projected_embeddings, timestep
         )
 
         return (
@@ -277,6 +280,7 @@ class EpisodeBuilder(Module):
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
+                projected_embeddings=projected_embeddings,
                 position_embeddings=position_embeddings,
                 index=index,
                 timestep=timestep,
@@ -291,6 +295,9 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
+                ).filter_non_tensor_data(),
+                projected_embeddings=TensorDict.from_dict(
+                    projected_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
                 position_embeddings=TensorDict.from_dict(
                     position_embeddings,  # pyright: ignore[reportArgumentType]
@@ -333,10 +340,7 @@ class EpisodeBuilder(Module):
         )
 
     def _build_position_embeddings(
-        self,
-        embeddings: TensorTree,
-        timestep_index: TensorTree,
-        timestep: TimestepExport,
+        self, embeddings: TensorTree, timestep: TimestepExport
     ) -> TensorTree:
         position_embeddings = {}
 
@@ -348,38 +352,19 @@ class EpisodeBuilder(Module):
 
         if (
             mod_pe := self.position_encoding.get(
-                (k_pe := (PositionEncoding.IMAGE.value, "patch")), default=None
+                k_pe := PositionEncoding.CONTEXT.value, default=None
             )
         ) is not None:
-            num_rows = mod_pe.row.num_embeddings  # pyright: ignore[reportAttributeAccessIssue]
-            num_cols = mod_pe.col.num_embeddings  # pyright: ignore[reportAttributeAccessIssue]
-            row_pe = mod_pe.row(torch.arange(num_rows, device=device))  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue, reportArgumentType]
-            col_pe = mod_pe.col(torch.arange(num_cols, device=device))  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue, reportArgumentType]
-            row_pe = repeat(row_pe, "h d -> (h w) d", w=num_cols)
-            col_pe = repeat(col_pe, "w d -> (h w) d", h=num_rows)
-            position_embedding = row_pe + col_pe
-
+            position = torch.arange(mod_pe.num_embeddings, device=device)  # pyright: ignore[reportCallIssue, reportArgumentType, reportAttributeAccessIssue]
+            position_embedding = mod_pe(position)  # pyright: ignore[reportCallIssue]
             paths = tuple(
                 (modality, name)
                 for (_, modality, name) in tree_paths(timestep)
-                if modality.key == Modality.IMAGE.value  # pyright: ignore[reportAttributeAccessIssue]
+                if modality.key == Modality.CONTEXT.value  # pyright: ignore[reportAttributeAccessIssue]
             )
 
             position_embeddings[k_pe] = tree_map_with_path(
                 lambda path, _: position_embedding if path in paths else None,
-                embeddings,
-            )
-
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.OBSERVATIONS.value, default=None
-            )
-        ) is not None:
-            paths = tree_paths(timestep[TokenType.OBSERVATION.value])
-            position_embeddings[k_pe] = tree_map_with_path(
-                lambda path, _: mod_pe(key_get(timestep_index, path))  # pyright: ignore[reportCallIssue]
-                if path in paths
-                else None,
                 embeddings,
             )
 
@@ -433,9 +418,16 @@ class EpisodeBuilder(Module):
                 embeddings,
             )
 
-        return tree_map(
+        pe = tree_map(
             lambda *xs: sum(leaves)
             if (leaves := [x for x in xs if x is not None])
             else None,
             *position_embeddings.values(),
+        )
+        return tree_map(
+            lambda p, e: repeat(p, "... t 1 d -> ... t n d", n=e.shape[-2])
+            if (p is not None and e is not None and p.shape[-2] != e.shape[-2])
+            else p,
+            pe,
+            embeddings,
         )
