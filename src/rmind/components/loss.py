@@ -131,7 +131,7 @@ class GramAnchoringObjective(Module):
         target = F.normalize(target, dim=-1)
 
         # B T P P
-        gram_pred = torch.matmul(input, target.transpose(-1, -2))
+        gram_pred = torch.matmul(input, input.transpose(-1, -2))
         gram_gt = torch.matmul(target, target.transpose(-1, -2))
 
         # B T P
