@@ -21,20 +21,27 @@ class NoDownSampleBackbone(TimmBackbone):
             layer[0].conv1.stride = (1, 1)  # pyright: ignore[reportIndexIssue]
 
             for block in layer.modules():
-                if isinstance(block, nn.Conv2d):
-                    block.in_channels = no_channels
-                    block.out_channels = no_channels
-                    block.weight = nn.Parameter(
-                        block.weight[:no_channels, :no_channels, ...]
-                    )
-                    continue
-                if isinstance(block, nn.BatchNorm2d):
-                    block.num_features = no_channels
-                    block.weight = nn.Parameter(block.weight[:no_channels])
-                    block.bias = nn.Parameter(block.bias[:no_channels])
-                    block.running_mean = nn.Parameter(block.running_mean[:no_channels])  # pyright: ignore[reportOptionalSubscript]
-                    block.running_var = nn.Parameter(block.running_var[:no_channels])  # pyright: ignore[reportOptionalSubscript]
-                    continue
+                match block:
+                    case nn.Conv2d():
+                        block.in_channels = no_channels
+                        block.out_channels = no_channels
+                        block.weight = nn.Parameter(
+                            block.weight[:no_channels, :no_channels, ...]
+                        )
+                        if block.bias is not None:
+                            block.bias = nn.Parameter(block.bias[:no_channels])
+                    case nn.BatchNorm2d():
+                        block.num_features = no_channels
+                        block.weight = nn.Parameter(block.weight[:no_channels])
+                        block.bias = nn.Parameter(block.bias[:no_channels])
+                        block.running_mean = nn.Parameter(
+                            block.running_mean[:no_channels]  # pyright: ignore[reportOptionalSubscript]
+                        )
+                        block.running_var = nn.Parameter(
+                            block.running_var[:no_channels]  # pyright: ignore[reportOptionalSubscript]
+                        )
+                    case _:
+                        pass
 
             # Residual connection: remove downsampling of the input
             # Remove the (0): AvgPool2d(kernel_size=2, stride=2, padding=0)
