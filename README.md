@@ -71,3 +71,7 @@ ResNet:
 ```bash
 just export-onnx-dynamic model=yaak/control_transformer/resnet.yaml input=yaak/control_transformer/dummy_224
 ```
+
+## ONNX/TensorRT: layer flattening experiment
+
+For running ONNX/TensorRT layer non-flatening experiment, checkout [ONNX_Layer_flattening](docs/ONNX_Layer_flattening.md) for instructions.
