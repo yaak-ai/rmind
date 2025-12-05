@@ -25,7 +25,7 @@ dependencies = [
   "polars>=1.32.2",
   "pydantic>=2.11.4",
   "pytorch-lightning>=2.5.2",
-  "rbyte[geo,jpeg,yaak]==0.33.0",
+  "rbyte[geo,jpeg,yaak]==0.34.2",
   "structlog>=25.2.0",
   "tensordict-nightly==2025.9.24",  # rbyte dep
   "torch>=2.8.0",
