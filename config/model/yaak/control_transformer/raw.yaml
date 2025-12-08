@@ -292,9 +292,10 @@ episode_builder:
     _target_: rmind.components.containers.ModuleDict
     modules:
       context:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 10
-        embedding_dim: ${embedding_dim}
+        waypoints:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 10
+          embedding_dim: ${embedding_dim}
 
       actions:
         _target_: rmind.components.nn.Embedding

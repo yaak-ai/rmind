@@ -352,7 +352,7 @@ class EpisodeBuilder(Module):
 
         if (
             mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.CONTEXT.value, default=None
+                k_pe := (PositionEncoding.CONTEXT.value, "waypoints"), default=None
             )
         ) is not None:
             position = torch.arange(mod_pe.num_embeddings, device=device)  # pyright: ignore[reportCallIssue, reportArgumentType, reportAttributeAccessIssue]
