@@ -20,7 +20,6 @@ from rmind.components.episode import Episode, EpisodeBuilder, EpisodeExport, Mod
 from rmind.components.mask import TorchAttentionMaskLegend
 from rmind.components.objectives.policy import PolicyObjective
 from rmind.models.control_transformer import ControlTransformer
-from tests.conftest import EMBEDDING_DIM
 
 
 @pytest.fixture
@@ -51,25 +50,30 @@ def policy_mask(episode: Episode, device: torch.device) -> Tensor:
 
 @pytest.fixture
 def policy_objective(
-    encoder: Module, policy_mask: Tensor, device: torch.device
+    encoder: Module,
+    policy_mask: Tensor,
+    device: torch.device,
+    request: pytest.FixtureRequest,
 ) -> PolicyObjective:
+    embedding_dim: int = request.getfixturevalue("embedding_dim")
+
     return PolicyObjective(
         encoder=encoder,
         mask=policy_mask,
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False),
+                    "gas_pedal": MLP(3 * embedding_dim, [embedding_dim, 2], bias=False),
                     "brake_pedal": MLP(
-                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
+                        3 * embedding_dim, [embedding_dim, 2], bias=False
                     ),
                     "steering_angle": MLP(
-                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
+                        3 * embedding_dim, [embedding_dim, 2], bias=False
                     ),
                 },
                 Modality.DISCRETE: {
                     "turn_signal": MLP(
-                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 3], bias=False
+                        3 * embedding_dim, [embedding_dim, 3], bias=False
                     )
                 },
             }

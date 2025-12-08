@@ -97,6 +97,8 @@ DEP002 = [
   "torchmetrics",
   "pytest",
   "pytest-lazy-fixtures",
+  "torchmetrics",
+  "torchvision",
 ]
 DEP003 = ["rmind"]
 

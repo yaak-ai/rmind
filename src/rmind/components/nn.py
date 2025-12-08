@@ -16,18 +16,19 @@ from .base import Invertible
 default_weight_init_fn = partial(
     nn.init.trunc_normal_, mean=0.0, std=0.02, a=-0.04, b=0.04
 )
-default_linear_weight_init_fn = partial(nn.init.xavier_uniform_)
+default_linear_weight_init_fn = nn.init.xavier_uniform_
 default_linear_bias_init_fn = partial(nn.init.constant_, val=0.0)
 
 
+@final
 class Embedding(nn.Embedding):
     def __init__(
         self,
         *args: Any,
-        weight_init_fn: Callable[[Tensor], Any] = default_weight_init_fn,
+        weight_init_fn: Callable[[Tensor], None] = default_weight_init_fn,  # pyright: ignore[reportArgumentType]
         **kwargs: Any,
     ) -> None:
-        self.weight_init_fn: Callable[[Tensor], Any] = weight_init_fn
+        self.weight_init_fn: Callable[[Tensor], None] = weight_init_fn
 
         super().__init__(*args, **kwargs)
 
@@ -42,8 +43,8 @@ class Linear(nn.Linear):
     def __init__(
         self,
         *args: Any,
-        weight_init_fn: Callable[[Tensor], Any] = default_linear_weight_init_fn,
-        bias_init_fn: Callable[[Tensor], Any] = default_linear_bias_init_fn,
+        weight_init_fn: Callable[[Tensor], None] = default_linear_weight_init_fn,  # pyright: ignore[reportArgumentType]
+        bias_init_fn: Callable[[Tensor], None] = default_linear_bias_init_fn,  # pyright: ignore[reportArgumentType]
         **kwargs: Any,
     ) -> None:
         self.weight_init_fn = weight_init_fn

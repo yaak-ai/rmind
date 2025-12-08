@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -42,14 +43,25 @@ from rmind.components.objectives import (
 )
 from rmind.components.timm_backbone import TimmBackbone
 
-EMBEDDING_DIM = 384
-SPEED_BINS = 512
-GAS_PEDAL_BINS = 255
-BRAKE_PEDAL_BINS = 165
-STEERING_ANGLE_BINS = 961
+
+@dataclass
+class NumBins:
+    speed: int = 512
+    gas_pedal: int = 255
+    brake_pedal: int = 165
+    steering_angle: int = 961
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="module")
+def num_bins() -> NumBins:
+    return NumBins()
+
+
+@pytest.fixture(scope="module")
+def embedding_dim() -> int:
+    return 384
+
+
 def _set_float32_matmul_precision() -> Generator[None, Any, None]:  # pyright: ignore[reportUnusedFunction]
     prev = torch.get_float32_matmul_precision()
     torch.set_float32_matmul_precision("high")
@@ -121,21 +133,23 @@ def batch_dict(batch: Batch) -> TensorTree:
 
 
 @pytest.fixture(scope="module")
-def tokenizers(device: torch.device) -> ModuleDict:
+def tokenizers(device: torch.device, num_bins: NumBins) -> ModuleDict:
     return ModuleDict({
         Modality.IMAGE: Identity(),
         Modality.CONTINUOUS: {
-            "speed": UniformBinner(range=(0.0, 130.0), bins=SPEED_BINS),
-            "gas_pedal": UniformBinner(range=(0.0, 1.0), bins=GAS_PEDAL_BINS),
-            "gas_pedal_diff": MuLawEncoding(quantization_channels=GAS_PEDAL_BINS),
-            "brake_pedal": UniformBinner(range=(0.0, 1.0), bins=BRAKE_PEDAL_BINS),
-            "brake_pedal_diff": MuLawEncoding(quantization_channels=BRAKE_PEDAL_BINS),
+            "speed": UniformBinner(range=(0.0, 130.0), bins=num_bins.speed),
+            "gas_pedal": UniformBinner(range=(0.0, 1.0), bins=num_bins.gas_pedal),
+            "gas_pedal_diff": MuLawEncoding(quantization_channels=num_bins.gas_pedal),
+            "brake_pedal": UniformBinner(range=(0.0, 1.0), bins=num_bins.brake_pedal),
+            "brake_pedal_diff": MuLawEncoding(
+                quantization_channels=num_bins.brake_pedal
+            ),
             "steering_angle": UniformBinner(
-                range=(-1.0, 1.0), bins=STEERING_ANGLE_BINS
+                range=(-1.0, 1.0), bins=num_bins.steering_angle
             ),
             "steering_angle_diff": Sequential(
                 Scaler(in_range=(-2.0, 2.0), out_range=(-1.0, 1.0)),
-                MuLawEncoding(quantization_channels=STEERING_ANGLE_BINS),
+                MuLawEncoding(quantization_channels=num_bins.steering_angle),
             ),
         },
         Modality.DISCRETE: Identity(),
@@ -144,7 +158,9 @@ def tokenizers(device: torch.device) -> ModuleDict:
 
 
 @pytest.fixture(scope="module")
-def episode_builder(tokenizers: ModuleDict, device: torch.device) -> Module:
+def episode_builder(
+    tokenizers: ModuleDict, device: torch.device, num_bins: NumBins, embedding_dim: int
+) -> Module:
     return EpisodeBuilder(
         special_tokens={
             SpecialToken.OBSERVATION_SUMMARY: 0,
@@ -236,34 +252,34 @@ def episode_builder(tokenizers: ModuleDict, device: torch.device) -> Module:
                 Rearrange("... c h w -> ... (h w) c"),
             ),
             Modality.CONTINUOUS: {
-                "speed": Embedding(SPEED_BINS, EMBEDDING_DIM),
-                "gas_pedal": Embedding(GAS_PEDAL_BINS, EMBEDDING_DIM),
-                "brake_pedal": Embedding(BRAKE_PEDAL_BINS, EMBEDDING_DIM),
-                "steering_angle": Embedding(STEERING_ANGLE_BINS, EMBEDDING_DIM),
+                "speed": Embedding(num_bins.speed, embedding_dim),
+                "gas_pedal": Embedding(num_bins.gas_pedal, embedding_dim),
+                "brake_pedal": Embedding(num_bins.brake_pedal, embedding_dim),
+                "steering_angle": Embedding(num_bins.steering_angle, embedding_dim),
                 "gas_pedal_diff": None,
                 "brake_pedal_diff": None,
                 "steering_angle_diff": None,
             },
-            Modality.CONTEXT: {"waypoints": Linear(2, EMBEDDING_DIM)},
-            Modality.DISCRETE: {"turn_signal": Embedding(3, EMBEDDING_DIM)},
-            Modality.SPECIAL: Embedding(3, EMBEDDING_DIM),
+            Modality.CONTEXT: {"waypoints": Linear(2, embedding_dim)},
+            Modality.DISCRETE: {"turn_signal": Embedding(3, embedding_dim)},
+            Modality.SPECIAL: Embedding(3, embedding_dim),
         }),
         projections=ModuleDict({
             Modality.IMAGE: Sequential(
-                LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
             ),
             Modality.CONTINUOUS: {
                 "speed": Sequential(
-                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
                 ),
                 "gas_pedal": Sequential(
-                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
                 ),
                 "brake_pedal": Sequential(
-                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
                 ),
                 "steering_angle": Sequential(
-                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
                 ),
                 "gas_pedal_diff": None,
                 "brake_pedal_diff": None,
@@ -271,23 +287,23 @@ def episode_builder(tokenizers: ModuleDict, device: torch.device) -> Module:
             },
             Modality.CONTEXT: {
                 "waypoints": Sequential(
-                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
                 )
             },
             Modality.DISCRETE: {
                 "turn_signal": Sequential(
-                    LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
                 )
             },
             Modality.SPECIAL: Sequential(
-                LayerNorm(EMBEDDING_DIM), Linear(EMBEDDING_DIM, EMBEDDING_DIM)
+                LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
             ),
         }),
         position_encoding=ModuleDict({
-            PositionEncoding.CONTEXT: Embedding(10, EMBEDDING_DIM),
-            PositionEncoding.ACTIONS: Embedding(1, EMBEDDING_DIM),
-            PositionEncoding.SPECIAL: Embedding(1, EMBEDDING_DIM),
-            PositionEncoding.TIMESTEP: Embedding(6, EMBEDDING_DIM),
+            PositionEncoding.CONTEXT: {"waypoints": Embedding(10, embedding_dim)},
+            PositionEncoding.ACTIONS: Embedding(1, embedding_dim),
+            PositionEncoding.SPECIAL: Embedding(1, embedding_dim),
+            PositionEncoding.TIMESTEP: Embedding(6, embedding_dim),
         }),
     ).to(device)
 
@@ -298,9 +314,9 @@ def episode(episode_builder: EpisodeBuilder, batch_dict: TensorTree) -> Episode:
 
 
 @pytest.fixture(scope="module")
-def encoder() -> Module:
+def encoder(embedding_dim: int) -> Module:
     return TransformerEncoder(
-        dim_model=EMBEDDING_DIM,
+        dim_model=embedding_dim,
         num_heads=2,
         num_layers=2,
         attn_dropout=0.1,
@@ -312,7 +328,7 @@ def encoder() -> Module:
 
 @pytest.fixture(scope="module")
 def inverse_dynamics_prediction_objective(
-    encoder: Module, device: torch.device
+    encoder: Module, device: torch.device, embedding_dim: int, num_bins: NumBins
 ) -> InverseDynamicsPredictionObjective:
     logit_bias = torch.tensor(0)
 
@@ -321,16 +337,18 @@ def inverse_dynamics_prediction_objective(
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": Linear(2 * EMBEDDING_DIM, GAS_PEDAL_BINS, bias=False),
+                    "gas_pedal": Linear(
+                        2 * embedding_dim, num_bins.gas_pedal, bias=False
+                    ),
                     "brake_pedal": Linear(
-                        2 * EMBEDDING_DIM, BRAKE_PEDAL_BINS, bias=False
+                        2 * embedding_dim, num_bins.brake_pedal, bias=False
                     ),
                     "steering_angle": Linear(
-                        2 * EMBEDDING_DIM, STEERING_ANGLE_BINS, bias=False
+                        2 * embedding_dim, num_bins.steering_angle, bias=False
                     ),
                 },
                 Modality.DISCRETE: {
-                    "turn_signal": Linear(2 * EMBEDDING_DIM, 3, bias=False)
+                    "turn_signal": Linear(2 * embedding_dim, 3, bias=False)
                 },
             }
         ),
@@ -361,7 +379,7 @@ def inverse_dynamics_prediction_objective(
 
 @pytest.fixture(scope="module")
 def forward_dynamics_prediction_objective(
-    encoder: Module, device: torch.device
+    encoder: Module, device: torch.device, embedding_dim: int, num_bins: NumBins
 ) -> ForwardDynamicsPredictionObjective:
     logit_bias = torch.tensor(0)
 
@@ -371,11 +389,11 @@ def forward_dynamics_prediction_objective(
             modules={
                 Modality.IMAGE: {
                     "cam_front_left": Linear(
-                        3 * EMBEDDING_DIM, EMBEDDING_DIM, bias=False
+                        3 * embedding_dim, embedding_dim, bias=False
                     )
                 },
                 Modality.CONTINUOUS: {
-                    "speed": Linear(3 * EMBEDDING_DIM, SPEED_BINS, bias=False)
+                    "speed": Linear(3 * embedding_dim, num_bins.speed, bias=False)
                 },
             }
         ),
@@ -400,7 +418,7 @@ def forward_dynamics_prediction_objective(
 
 @pytest.fixture(scope="module")
 def random_masked_hindsight_control_objective(
-    encoder: Module, device: torch.device
+    encoder: Module, device: torch.device, embedding_dim: int, num_bins: NumBins
 ) -> RandomMaskedHindsightControlObjective:
     logit_bias = torch.tensor(0)
 
@@ -409,14 +427,16 @@ def random_masked_hindsight_control_objective(
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": Linear(EMBEDDING_DIM, GAS_PEDAL_BINS, bias=False),
-                    "brake_pedal": Linear(EMBEDDING_DIM, BRAKE_PEDAL_BINS, bias=False),
+                    "gas_pedal": Linear(embedding_dim, num_bins.gas_pedal, bias=False),
+                    "brake_pedal": Linear(
+                        embedding_dim, num_bins.brake_pedal, bias=False
+                    ),
                     "steering_angle": Linear(
-                        EMBEDDING_DIM, STEERING_ANGLE_BINS, bias=False
+                        embedding_dim, num_bins.steering_angle, bias=False
                     ),
                 },
                 Modality.DISCRETE: {
-                    "turn_signal": Linear(EMBEDDING_DIM, 3, bias=False)
+                    "turn_signal": Linear(embedding_dim, 3, bias=False)
                 },
             }
         ),
@@ -447,7 +467,7 @@ def random_masked_hindsight_control_objective(
 
 @pytest.fixture(scope="module")
 def memory_extraction_objective(
-    encoder: Module, device: torch.device
+    encoder: Module, device: torch.device, embedding_dim: int, num_bins: NumBins
 ) -> MemoryExtractionObjective:
     logit_bias = torch.tensor(0)
 
@@ -456,12 +476,14 @@ def memory_extraction_objective(
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal_diff": Linear(EMBEDDING_DIM, GAS_PEDAL_BINS, bias=False),
+                    "gas_pedal_diff": Linear(
+                        embedding_dim, num_bins.gas_pedal, bias=False
+                    ),
                     "brake_pedal_diff": Linear(
-                        EMBEDDING_DIM, BRAKE_PEDAL_BINS, bias=False
+                        embedding_dim, num_bins.brake_pedal, bias=False
                     ),
                     "steering_angle_diff": Linear(
-                        EMBEDDING_DIM, STEERING_ANGLE_BINS, bias=False
+                        embedding_dim, num_bins.steering_angle, bias=False
                     ),
                 }
             }
@@ -494,7 +516,9 @@ def memory_extraction_objective(
 
 
 @pytest.fixture(scope="module")
-def policy_objective(encoder: Module, device: torch.device) -> PolicyObjective:
+def policy_objective(
+    encoder: Module, device: torch.device, embedding_dim: int
+) -> PolicyObjective:
     logit_bias = torch.tensor(0)
 
     return PolicyObjective(
@@ -502,17 +526,17 @@ def policy_objective(encoder: Module, device: torch.device) -> PolicyObjective:
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False),
+                    "gas_pedal": MLP(3 * embedding_dim, [embedding_dim, 2], bias=False),
                     "brake_pedal": MLP(
-                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
+                        3 * embedding_dim, [embedding_dim, 2], bias=False
                     ),
                     "steering_angle": MLP(
-                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 2], bias=False
+                        3 * embedding_dim, [embedding_dim, 2], bias=False
                     ),
                 },
                 Modality.DISCRETE: {
                     "turn_signal": MLP(
-                        3 * EMBEDDING_DIM, [EMBEDDING_DIM, 3], bias=False
+                        3 * embedding_dim, [embedding_dim, 3], bias=False
                     )
                 },
             }
