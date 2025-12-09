@@ -202,7 +202,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         keys_action = episode.timestep.get(TokenType.ACTION).keys(
             include_nested=True, leaves_only=True
         )
-        episode.input_embeddings.select(*keys_action).masked_fill_(
+        episode.projected_embeddings.select(*keys_action).masked_fill_(
             mask_action, cls.MASKED_TOKEN_FILL_VALUE
         )
 
@@ -214,7 +214,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         keys_observation = episode.timestep.get(TokenType.OBSERVATION).keys(
             include_nested=True, leaves_only=True
         )
-        episode.input_embeddings.select(*keys_observation).masked_fill_(
+        episode.projected_embeddings.select(*keys_observation).masked_fill_(
             mask_observation, cls.MASKED_TOKEN_FILL_VALUE
         )
 

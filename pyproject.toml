@@ -31,6 +31,7 @@ dependencies = [
   "timm>=1.0.22",
   "torch>=2.8.0",
   "torchaudio==2.8.0",
+  "torchvision>=0.23.0",
 ]
 
 [project.urls]
@@ -42,13 +43,13 @@ rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 
 [project.optional-dependencies]
-predict = ["funcy>=2.0", "wandb>=0.21.0", "rbyte[visualize]"]
+predict = ["funcy>=2.0", "wandb==0.23.0", "rbyte[visualize]"]
 test = ["pytest>=8.4.1", "pytest-lazy-fixtures>=1.1.4"]
 train = [
   "contextily>=1.6.2",
   "matplotlib>=3.10.3",
   "torchmetrics>=1.4.1",
-  "wandb>=0.21.0",
+  "wandb==0.23.0",
 ]
 
 [dependency-groups]
@@ -58,6 +59,7 @@ dev = [
   "ipython",
   "lovely-tensors",
   "patdb",
+  "pudb>=2025.1.5",
   "wat-inspector",
 ]
 export = [

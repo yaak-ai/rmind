@@ -63,10 +63,11 @@ class SpecialToken(StrEnum):
 
 @unique
 class PositionEncoding(StrEnum):
-    CONTEXT = auto()
+    OBSERVATIONS = auto()
     ACTIONS = auto()
     SPECIAL = auto()
     TIMESTEP = auto()
+    CONTEXT = auto()
 
 
 class TokenMeta(NamedTuple):
@@ -266,15 +267,15 @@ class EpisodeBuilder(Module):
         projected_embeddings = self.projections(input_embeddings)
 
         index = self._build_index(projected_embeddings)
+        timestep_index = tree_map(itemgetter(0), index)
 
         timestep = unflatten_keys({
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
 
         position_embeddings = self._build_position_embeddings(
-            projected_embeddings, timestep
+            input_embeddings, timestep_index, timestep
         )
-
         return (
             EpisodeExport(
                 input=input,
@@ -340,7 +341,10 @@ class EpisodeBuilder(Module):
         )
 
     def _build_position_embeddings(
-        self, embeddings: TensorTree, timestep: TimestepExport
+        self,
+        embeddings: TensorTree,
+        timestep_index: TensorTree,
+        timestep: TimestepExport,
     ) -> TensorTree:
         position_embeddings = {}
 
@@ -349,6 +353,34 @@ class EpisodeBuilder(Module):
             for leaf in tree_leaves(embeddings)
             if leaf is not None
         })
+
+        if (
+            mod_pe := self.position_encoding.get(
+                k_pe := PositionEncoding.TIMESTEP.value, default=None
+            )
+        ) is not None:
+            if not torch.compiler.is_exporting():
+                # build a sequence starting from a random index (simplified [0])
+                # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
+                # ---
+                # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
+
+                low, high = 0, mod_pe.num_embeddings - t + 1  # pyright: ignore[reportAttributeAccessIssue]
+                start = torch.randint(low, high, (1,)).item()
+                position = torch.arange(start=start, end=start + t, device=device)
+            else:
+                position = torch.arange(t, device=device)
+
+            position_embeddings[k_pe] = tree_map(
+                lambda leaf: repeat(
+                    mod_pe(position),  # pyright: ignore[reportCallIssue]
+                    "... t d -> ... t n d",
+                    n=leaf.shape[-2],
+                )
+                if leaf is not None
+                else None,
+                embeddings,
+            )
 
         if (
             mod_pe := self.position_encoding.get(
@@ -365,6 +397,19 @@ class EpisodeBuilder(Module):
 
             position_embeddings[k_pe] = tree_map_with_path(
                 lambda path, _: position_embedding if path in paths else None,
+                embeddings,
+            )
+
+        if (
+            mod_pe := self.position_encoding.get(
+                k_pe := PositionEncoding.OBSERVATIONS.value, default=None
+            )
+        ) is not None:
+            paths = tree_paths(timestep[TokenType.OBSERVATION.value])
+            position_embeddings[k_pe] = tree_map_with_path(
+                lambda path, _: mod_pe(key_get(timestep_index, path))  # pyright: ignore[reportCallIssue]
+                if path in paths
+                else None,
                 embeddings,
             )
 
@@ -394,40 +439,9 @@ class EpisodeBuilder(Module):
                 embeddings,
             )
 
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.TIMESTEP.value, default=None
-            )
-        ) is not None:
-            if not torch.compiler.is_exporting():
-                # build a sequence starting from a random index (simplified [0])
-                # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
-                # ---
-                # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
-
-                low, high = 0, mod_pe.num_embeddings - t + 1  # pyright: ignore[reportAttributeAccessIssue]
-                start = torch.randint(low, high, (1,)).item()
-                position = torch.arange(start=start, end=start + t, device=device)
-            else:
-                position = torch.arange(t, device=device)
-
-            position_embedding = rearrange(mod_pe(position), "t d -> t 1 d")  # pyright: ignore[reportCallIssue]
-
-            position_embeddings[k_pe] = tree_map(
-                lambda leaf: position_embedding if leaf is not None else None,
-                embeddings,
-            )
-
-        pe = tree_map(
+        return tree_map(
             lambda *xs: sum(leaves)
             if (leaves := [x for x in xs if x is not None])
             else None,
             *position_embeddings.values(),
-        )
-        return tree_map(
-            lambda p, e: repeat(p, "... t 1 d -> ... t n d", n=e.shape[-2])
-            if (p is not None and e is not None and p.shape[-2] != e.shape[-2])
-            else p,
-            pe,
-            embeddings,
         )

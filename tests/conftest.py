@@ -304,6 +304,7 @@ def episode_builder(
             PositionEncoding.ACTIONS: Embedding(1, embedding_dim),
             PositionEncoding.SPECIAL: Embedding(1, embedding_dim),
             PositionEncoding.TIMESTEP: Embedding(6, embedding_dim),
+            PositionEncoding.OBSERVATIONS: None,
         }),
     ).to(device)
 
