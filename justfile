@@ -5,6 +5,7 @@ export BETTER_EXCEPTIONS := "1"
 export LOVELY_TENSORS := "1"
 export HYDRA_FULL_ERROR := "1"
 export RERUN_STRICT := "1"
+export WANDB_DIR := "wandb_logs"
 
 _default:
     @just --list --unsorted

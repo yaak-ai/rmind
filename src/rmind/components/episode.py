@@ -59,6 +59,8 @@ class SpecialToken(StrEnum):
     OBSERVATION_SUMMARY = auto()
     OBSERVATION_HISTORY = auto()
     ACTION_SUMMARY = auto()
+    FORESIGHT = auto()
+    MASK = auto()
 
 
 @unique
@@ -217,7 +219,7 @@ class EpisodeBuilder(Module):
         self,
         *,
         timestep: tuple[TokenMeta, ...],
-        special_tokens: Mapping[SpecialToken, int],
+        special_tokens: Mapping[SpecialToken, list[int]],
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
@@ -252,17 +254,18 @@ class EpisodeBuilder(Module):
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
-        batch_size, device = mit.one({
+        (b, t), device = mit.one({
             (leaf.shape[:2], leaf.device)
             for leaf in tree_leaves(input_tokens)
             if leaf is not None
         })
 
         input_tokens[Modality.SPECIAL.value] = {
-            k.value: torch.tensor(v, device=device).expand(*batch_size, 1)
-            for k, v in self.special_tokens.items()
+            token_name.value: repeat(
+                torch.tensor(token_value, device=device), "n -> b t n", b=b, t=t
+            )
+            for token_name, token_value in self.special_tokens.items()
         }
-
         input_embeddings = self.embeddings(input_tokens)
         projected_embeddings = self.projections(input_embeddings)
 

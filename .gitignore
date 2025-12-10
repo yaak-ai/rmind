@@ -131,8 +131,7 @@ dmypy.json
 
 # Experiments
 artifacts
-wandb
-./wandb/
+wandb_logs/
 outputs/
 predictions/
 lightning_logs/

@@ -3,10 +3,11 @@ from functools import lru_cache
 from typing import final, override
 
 import torch
-from einops import pack
+from einops import pack, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
+from timm.layers.pos_embed_sincos import rope_rotate_half
 from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map  # noqa: PLC2701
@@ -42,6 +43,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         *,
         encoder: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
+        position_embedding: InstanceOf[Module] | None = None,
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
@@ -50,6 +52,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.encoder = encoder
         self.heads = heads
         self.losses = losses
+        self.position_embedding = position_embedding
         self.targets = targets
 
         self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
@@ -57,7 +60,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
 
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
+    def compute_metrics(self, episode: Episode) -> Metrics:  # noqa: PLR0914
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
@@ -68,37 +71,54 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         index = episode.index[:-1]  # all but last timestep
 
-        observations = index.select(
-            *episode.timestep.get(TokenType.OBSERVATION)
-            .exclude((Modality.CONTEXT, "waypoints"))
-            .keys(include_nested=True, leaves_only=True)
-        ).parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
-
-        observation_summary = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))  # pyright: ignore[reportCallIssue]
+        # get foresight embeddings from the encoder
+        # add mask tokens to make up for missing image tokens
+        foresight = (
+            index.select(k := (Modality.SPECIAL, SpecialToken.FORESIGHT))  # pyright: ignore[reportCallIssue]
             .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
             .get(k)
         )
 
-        action_summary = (
-            index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))  # pyright: ignore[reportCallIssue]
-            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
-            .get(k)
+        foresight_tokens = foresight.shape[-2]
+        batch_size = foresight.shape[0]
+
+        mask_embedding = episode.projected_embeddings.get((
+            Modality.SPECIAL,
+            SpecialToken.MASK,
+        ))[:, :-1]
+        image_tokens = episode.projected_embeddings.get((
+            Modality.IMAGE,
+            "cam_front_left",
+        )).shape[-2]
+
+        mask_embedding = repeat(
+            mask_embedding, "b t 1 d -> b t n d", n=image_tokens - foresight_tokens
+        )
+        foresight_embeddings = torch.cat([foresight, mask_embedding], dim=2)
+
+        observations = TensorDict()
+        observations = observations.set(
+            (Modality.IMAGE, "cam_front_left"), foresight_embeddings
         )
 
-        features: TensorDict = observations.apply(
-            # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
-            lambda obs: pack(
-                [
-                    obs,
-                    observation_summary.broadcast_to(obs.shape),
-                    action_summary.broadcast_to(obs.shape),
-                ],
-                "b t p *",
-            )[0]
-        )
+        pe_sin = TensorDict()
+        pe_cos = TensorDict()
 
-        logits = self.heads(features.to_dict())  # pyright: ignore[reportOptionalMemberAccess]
+        # https://github.com/huggingface/pytorch-image-models/blob/af3732eebe8c1964e5ba5f2769f955e6e0deb980/timm/layers/pos_embed_sincos.py#L271
+        rope = self.position_embedding.get_embed()  # pyright: ignore[reportCallIssue,reportOptionalMemberAccess]
+        sin_emb, cos_emb = rope.tensor_split(2, -1)
+
+        pe_sin = pe_sin.set((Modality.IMAGE, "cam_front_left"), sin_emb)
+        pe_cos = pe_cos.set((Modality.IMAGE, "cam_front_left"), cos_emb)
+
+        # https://github.com/huggingface/pytorch-image-models/blob/af3732eebe8c1964e5ba5f2769f955e6e0deb980/timm/layers/pos_embed_sincos.py#L1138
+
+        features = observations * pe_cos + observations.apply(rope_rotate_half) * pe_sin
+
+        logits = self.heads(features.to_dict())
+        logits = tree_map(
+            Rearrange("(b t) s d -> b t s d", b=batch_size, t=len(index)), logits
+        )
 
         targets = tree_map(
             lambda k: episode.get(k)[:, 1:],
