@@ -416,7 +416,11 @@ objectives:
               _target_: torch.nn.Sequential
               _args_:
                 - _target_: rmind.components.nn.Linear
-                  in_features: ${embedding_dim}
+                  in_features: 
+                    _target_: operator.mul
+                    _args_:
+                      - ${embedding_dim}
+                      - 2
                   out_features: ${image_embedding_dim}
                 - _target_: einops.layers.torch.Rearrange
                   pattern: "b t s d -> (b t) s d"

@@ -113,9 +113,22 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         # https://github.com/huggingface/pytorch-image-models/blob/af3732eebe8c1964e5ba5f2769f955e6e0deb980/timm/layers/pos_embed_sincos.py#L1138
 
-        features = observations * pe_cos + observations.apply(rope_rotate_half) * pe_sin
+        observations = (
+            observations * pe_cos + observations.apply(rope_rotate_half) * pe_sin
+        )
+        action_summary = (
+            index.select(k := (Modality.SPECIAL, SpecialToken.ACTION_SUMMARY))  # pyright: ignore[reportCallIssue]
+            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+            .get(k)
+        )
+        features: TensorDict = observations.apply(
+            # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
+            lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
+                0
+            ]
+        )
 
-        logits = self.heads(features.to_dict())
+        logits = self.heads(features.to_dict())  # pyright: ignore[reportOptionalMemberAccess]
         logits = tree_map(
             Rearrange("(b t) s d -> b t s d", b=batch_size, t=len(index)), logits
         )
