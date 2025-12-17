@@ -216,6 +216,7 @@ episode_builder:
       image:
         _target_: torch.nn.Sequential
         _args_:
+          # https://github.com/InternRobotics/Seer/blob/main/models/perceiver_resampler.py#L128
           - _target_: torch.nn.LayerNorm
             normalized_shape: ${embedding_dim}
           - _target_: rmind.components.nn.Linear
@@ -226,32 +227,26 @@ episode_builder:
         speed:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
+
         gas_pedal:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
+
         brake_pedal:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
         steering_angle:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
@@ -263,8 +258,6 @@ episode_builder:
         waypoints:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
@@ -273,8 +266,6 @@ episode_builder:
         turn_signal:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
@@ -282,8 +273,6 @@ episode_builder:
       special:
         _target_: torch.nn.Sequential
         _args_:
-          - _target_: torch.nn.LayerNorm
-            normalized_shape: ${embedding_dim}
           - _target_: rmind.components.nn.Linear
             in_features: ${embedding_dim}
             out_features: ${embedding_dim}
