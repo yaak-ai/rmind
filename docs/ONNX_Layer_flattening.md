@@ -17,7 +17,7 @@ For dynamic shapes (it's analogous for the static ones):
 just export-onnx-dynamic model=yaak/control_transformer/resnet_nodown.yaml input=yaak/control_transformer/dummy_224
 ```
 
-Transfer the model to the delta kit and run: [proof_flatten_dynamic.sh](https://github.com/yaak-ai/drahve/blob/vit/whac-a-mole/proof_flatten_dynamic.sh) to convert the ONNX to TensorRT, run the TensorRT model and profile it. 
+Transfer the model to the delta kit and run: [proof_flatten_dynamic.sh](https://github.com/yaak-ai/drahve/blob/vit/whac-a-mole/scripts/proof_flatten_dynamic.sh) to convert the ONNX to TensorRT, run the TensorRT model and profile it. 
 
 ## Expected results
 The layers in the TensorRT model are not be flattened (`[6,64,56,56]` of shape) and the layency is increased 5.29x the same as with ViT -> hence flattening is not the culprit.
