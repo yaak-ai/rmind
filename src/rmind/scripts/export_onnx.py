@@ -52,7 +52,7 @@ def main(cfg: DictConfig) -> None:
     logger.info("model", target=cfg.model.model.model_name)
     images = instantiate(cfg.input, _recursive_=True, _convert_="all")
     logger.info("required input", resolution=images.shape)
-    # result = model(images, None)  # noqa: ERA001
+    # result = model(images)  # noqa: ERA001
     dynamo_kwargs = instantiate(cfg.dynamo_kwargs)
     exported_program = torch.export.export(mod=model, args=(images,), **dynamo_kwargs)
     onnx_kwargs = instantiate(cfg.onnx_kwargs)

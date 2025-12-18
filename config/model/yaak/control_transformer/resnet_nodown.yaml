@@ -1,0 +1,8 @@
+_target_: torch.compile
+mode: default
+fullgraph: true
+model:
+  _target_: rmind.components.nodown_backbone.NoDownSampleBackbone
+  model_name: resnet18d.ra2_in1k
+  freeze: True
+  out_indices: [4]
