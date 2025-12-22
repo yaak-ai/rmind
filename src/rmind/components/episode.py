@@ -63,11 +63,11 @@ class SpecialToken(StrEnum):
 
 @unique
 class PositionEncoding(StrEnum):
-    IMAGE = auto()
     OBSERVATIONS = auto()
     ACTIONS = auto()
     SPECIAL = auto()
     TIMESTEP = auto()
+    CONTEXT = auto()
 
 
 class TokenMeta(NamedTuple):
@@ -143,13 +143,14 @@ class Episode(TensorClass["frozen"]):
     input: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_tokens: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     input_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
+    projected_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     position_embeddings: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
     index: Index  # pyright: ignore[reportUninitializedInstanceVariable]
     timestep: Timestep  # pyright: ignore[reportUninitializedInstanceVariable]
 
     @property
     def embeddings(self) -> TensorDict:
-        return self.input_embeddings + self.position_embeddings
+        return self.projected_embeddings + self.position_embeddings
 
     @property
     def embeddings_packed(self) -> Tensor:
@@ -171,6 +172,7 @@ class EpisodeExport:
     input: TensorTree
     input_tokens: TensorTree
     input_embeddings: TensorTree
+    projected_embeddings: TensorTree
     position_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
@@ -178,10 +180,10 @@ class EpisodeExport:
     @property
     def embeddings(self) -> TensorTree:
         return tree_map(
-            lambda left, right: left + right
-            if left is not None and right is not None
-            else None,
-            self.input_embeddings,
+            lambda left, right: (
+                left + right if left is not None and right is not None else None
+            ),
+            self.projected_embeddings,
             self.position_embeddings,
         )
 
@@ -219,6 +221,7 @@ class EpisodeBuilder(Module):
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
+        projections: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
         freeze: bool | None = None,
     ) -> None:
@@ -229,6 +232,7 @@ class EpisodeBuilder(Module):
         self.input_transform = input_transform
         self.tokenizers = tokenizers
         self.embeddings = embeddings
+        self.projections = projections
         self.position_encoding = position_encoding
 
         if freeze is not None:
@@ -260,8 +264,9 @@ class EpisodeBuilder(Module):
         }
 
         input_embeddings = self.embeddings(input_tokens)
+        projected_embeddings = self.projections(input_embeddings)
 
-        index = self._build_index(input_embeddings)
+        index = self._build_index(projected_embeddings)
         timestep_index = tree_map(itemgetter(0), index)
 
         timestep = unflatten_keys({
@@ -271,12 +276,12 @@ class EpisodeBuilder(Module):
         position_embeddings = self._build_position_embeddings(
             input_embeddings, timestep_index, timestep
         )
-
         return (
             EpisodeExport(
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
+                projected_embeddings=projected_embeddings,
                 position_embeddings=position_embeddings,
                 index=index,
                 timestep=timestep,
@@ -291,6 +296,9 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
+                ).filter_non_tensor_data(),
+                projected_embeddings=TensorDict.from_dict(
+                    projected_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
                 position_embeddings=TensorDict.from_dict(
                     position_embeddings,  # pyright: ignore[reportArgumentType]
@@ -322,9 +330,9 @@ class EpisodeBuilder(Module):
 
         timestep_index = unflatten_keys({
             (token.modality.value, str(token.name)): torch.arange(
-                *_range, device=device
+                *range_, device=device
             )
-            for token, _range in zip(self.timestep, ranges, strict=True)
+            for token, range_ in zip(self.timestep, ranges, strict=True)
         })
 
         return tree_map(
@@ -348,21 +356,45 @@ class EpisodeBuilder(Module):
 
         if (
             mod_pe := self.position_encoding.get(
-                (k_pe := (PositionEncoding.IMAGE.value, "patch")), default=None
+                k_pe := PositionEncoding.TIMESTEP.value, default=None
             )
         ) is not None:
-            num_rows = mod_pe.row.num_embeddings  # pyright: ignore[reportAttributeAccessIssue]
-            num_cols = mod_pe.col.num_embeddings  # pyright: ignore[reportAttributeAccessIssue]
-            row_pe = mod_pe.row(torch.arange(num_rows, device=device))  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue, reportArgumentType]
-            col_pe = mod_pe.col(torch.arange(num_cols, device=device))  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue, reportArgumentType]
-            row_pe = repeat(row_pe, "h d -> (h w) d", w=num_cols)
-            col_pe = repeat(col_pe, "w d -> (h w) d", h=num_rows)
-            position_embedding = row_pe + col_pe
+            if not torch.compiler.is_exporting():
+                # build a sequence starting from a random index (simplified [0])
+                # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
+                # ---
+                # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
 
+                low, high = 0, mod_pe.num_embeddings - t + 1  # pyright: ignore[reportAttributeAccessIssue]
+                start = torch.randint(low, high, (1,)).item()
+                position = torch.arange(start=start, end=start + t, device=device)
+            else:
+                position = torch.arange(t, device=device)
+
+            position_embeddings[k_pe] = tree_map(
+                lambda leaf: (
+                    repeat(
+                        mod_pe(position),  # pyright: ignore[reportCallIssue]
+                        "... t d -> ... t n d",
+                        n=leaf.shape[-2],
+                    )
+                    if leaf is not None
+                    else None
+                ),
+                embeddings,
+            )
+
+        if (
+            mod_pe := self.position_encoding.get(
+                k_pe := (PositionEncoding.CONTEXT.value, "waypoints"), default=None
+            )
+        ) is not None:
+            position = torch.arange(mod_pe.num_embeddings, device=device)  # pyright: ignore[reportCallIssue, reportArgumentType, reportAttributeAccessIssue]
+            position_embedding = mod_pe(position)  # pyright: ignore[reportCallIssue]
             paths = tuple(
                 (modality, name)
                 for (_, modality, name) in tree_paths(timestep)
-                if modality.key == Modality.IMAGE.value  # pyright: ignore[reportAttributeAccessIssue]
+                if modality.key == Modality.CONTEXT.value  # pyright: ignore[reportAttributeAccessIssue]
             )
 
             position_embeddings[k_pe] = tree_map_with_path(
@@ -377,9 +409,11 @@ class EpisodeBuilder(Module):
         ) is not None:
             paths = tree_paths(timestep[TokenType.OBSERVATION.value])
             position_embeddings[k_pe] = tree_map_with_path(
-                lambda path, _: mod_pe(key_get(timestep_index, path))  # pyright: ignore[reportCallIssue]
-                if path in paths
-                else None,
+                lambda path, _: (
+                    mod_pe(key_get(timestep_index, path))  # pyright: ignore[reportCallIssue]
+                    if path in paths
+                    else None
+                ),
                 embeddings,
             )
 
@@ -409,33 +443,9 @@ class EpisodeBuilder(Module):
                 embeddings,
             )
 
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.TIMESTEP.value, default=None
-            )
-        ) is not None:
-            if not torch.compiler.is_exporting():
-                # build a sequence starting from a random index (simplified [0])
-                # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
-                # ---
-                # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
-
-                low, high = 0, mod_pe.num_embeddings - t + 1  # pyright: ignore[reportAttributeAccessIssue]
-                start = torch.randint(low, high, (1,)).item()
-                position = torch.arange(start=start, end=start + t, device=device)
-            else:
-                position = torch.arange(t, device=device)
-
-            position_embedding = rearrange(mod_pe(position), "t d -> t 1 d")  # pyright: ignore[reportCallIssue]
-
-            position_embeddings[k_pe] = tree_map(
-                lambda leaf: position_embedding if leaf is not None else None,
-                embeddings,
-            )
-
         return tree_map(
-            lambda *xs: sum(leaves)
-            if (leaves := [x for x in xs if x is not None])
-            else None,
+            lambda *xs: (
+                sum(leaves) if (leaves := [x for x in xs if x is not None]) else None
+            ),
             *position_embeddings.values(),
         )
