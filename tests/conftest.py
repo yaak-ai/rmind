@@ -269,35 +269,17 @@ def episode_builder(
                 LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
             ),
             Modality.CONTINUOUS: {
-                "speed": Sequential(
-                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
-                ),
-                "gas_pedal": Sequential(
-                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
-                ),
-                "brake_pedal": Sequential(
-                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
-                ),
-                "steering_angle": Sequential(
-                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
-                ),
+                "speed": Linear(embedding_dim, embedding_dim),
+                "gas_pedal": Linear(embedding_dim, embedding_dim),
+                "brake_pedal": Linear(embedding_dim, embedding_dim),
+                "steering_angle": Linear(embedding_dim, embedding_dim),
                 "gas_pedal_diff": None,
                 "brake_pedal_diff": None,
                 "steering_angle_diff": None,
             },
-            Modality.CONTEXT: {
-                "waypoints": Sequential(
-                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
-                )
-            },
-            Modality.DISCRETE: {
-                "turn_signal": Sequential(
-                    LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
-                )
-            },
-            Modality.SPECIAL: Sequential(
-                LayerNorm(embedding_dim), Linear(embedding_dim, embedding_dim)
-            ),
+            Modality.CONTEXT: {"waypoints": Linear(embedding_dim, embedding_dim)},
+            Modality.DISCRETE: {"turn_signal": Linear(embedding_dim, embedding_dim)},
+            Modality.SPECIAL: Linear(embedding_dim, embedding_dim),
         }),
         position_encoding=ModuleDict({
             PositionEncoding.CONTEXT: {"waypoints": Embedding(10, embedding_dim)},

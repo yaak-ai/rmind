@@ -224,69 +224,39 @@ episode_builder:
 
       continuous:
         speed:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+          _target_: rmind.components.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: ${embedding_dim}
         gas_pedal:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+          _target_: rmind.components.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: ${embedding_dim}
         brake_pedal:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+          _target_: rmind.components.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: ${embedding_dim}
         steering_angle:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+          _target_: rmind.components.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: ${embedding_dim}
         gas_pedal_diff: null
         brake_pedal_diff: null
         steering_angle_diff: null
 
       context:
-        waypoints:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+        _target_: rmind.components.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${embedding_dim}
 
       discrete:
-        turn_signal:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${embedding_dim}
-              out_features: ${embedding_dim}
+        _target_: rmind.components.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${embedding_dim}
 
       special:
-        _target_: torch.nn.Sequential
-        _args_:
-          - _target_: torch.nn.LayerNorm
-            normalized_shape: ${embedding_dim}
-          - _target_: rmind.components.nn.Linear
-            in_features: ${embedding_dim}
-            out_features: ${embedding_dim}
+        _target_: rmind.components.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${embedding_dim}
 
   position_encoding:
     _target_: rmind.components.containers.ModuleDict

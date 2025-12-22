@@ -12,7 +12,6 @@ train:
   collate_fn:
     _target_: rbyte.types.Batch.to_dict
     _partial_: true
-
   pin_memory: true
   num_workers: 2
   method: thread
@@ -24,7 +23,6 @@ val:
   collate_fn:
     _target_: rbyte.types.Batch.to_dict
     _partial_: true
-
   pin_memory: true
   num_workers: 2
   method: thread
