@@ -58,7 +58,8 @@ class DataFramePredictionWriter(BasePredictionWriter):
         dataloader_idx: int,
     ) -> None:
         data = (
-            prediction.clone(recurse=False)
+            prediction
+            .clone(recurse=False)
             .update({"batch": TensorDict(batch)})
             .auto_batch_size_(1)
             .lock_()
@@ -68,7 +69,8 @@ class DataFramePredictionWriter(BasePredictionWriter):
             data = data.select(*self._select)
 
         data = (
-            data.flatten_keys(self._separator)
+            data
+            .flatten_keys(self._separator)
             .cpu()
             .apply(lambda x: x.float() if x.is_floating_point() else x)
         )

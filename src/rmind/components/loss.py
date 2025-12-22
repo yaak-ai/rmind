@@ -3,6 +3,7 @@ from typing import Any, Protocol, override, runtime_checkable
 
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 from torch import Tensor
 from torch.nn import CrossEntropyLoss, Module
 
@@ -75,3 +76,46 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         var = self.var_pos_function(log_var)
 
         return super().forward(input=mean, target=target, var=var)
+
+
+# https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
+class GramAnchoringObjective(Module):
+    def __init__(
+        self,
+        *args: Any,
+        patches: int | None = None,
+        weight_sim: float = 1.0,
+        weight_gram: float = 10.0,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.weight_sim: float = weight_sim
+        self.weight_gram: float = weight_gram
+        if weight_gram > 0 and patches is None:
+            msg = "patches must be provided if weight_gram > 0"
+            raise ValueError(msg)
+        self.patches: int = patches  # pyright: ignore[reportAttributeAccessIssue]
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        target = target.detach()
+
+        # (b t p) d
+        input = F.normalize(input, dim=-1)
+        target = F.normalize(target, dim=-1)
+
+        sim_loss = (1.0 - (input * target).sum(dim=-1)).mean()
+
+        if self.weight_gram <= 0:
+            return self.weight_sim * sim_loss
+
+        input_view = rearrange(input, "(bt p) d -> bt p d", p=self.patches)
+        target_view = rearrange(target, "(bt p) d -> bt p d", p=self.patches)
+
+        # (b t) p p
+        gram_pred = torch.matmul(input_view, input_view.transpose(1, 2))
+        gram_gt = torch.matmul(target_view, target_view.transpose(1, 2))
+
+        gram_loss = F.mse_loss(gram_pred, gram_gt)
+
+        return self.weight_sim * sim_loss + self.weight_gram * gram_loss

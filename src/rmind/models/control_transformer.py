@@ -197,6 +197,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             | Callable[[Mapping[Any, Any]], None]
         ]
         | None = None,
+        weights_only: bool | None = False,
         **kwargs: Any,
     ) -> Self:
         match hparams_updaters:
@@ -205,13 +206,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     checkpoint_path=checkpoint_path,
                     map_location=map_location,
                     hparams_file=hparams_file,
+                    weights_only=weights_only,
                     strict=strict,
                     **kwargs,
                 )
 
             case _:
                 with pl_legacy_patch():
-                    checkpoint = pl_load(checkpoint_path, map_location=map_location)
+                    checkpoint = pl_load(
+                        checkpoint_path,
+                        map_location=map_location,
+                        weights_only=weights_only,
+                    )
 
                 # convert legacy checkpoints to the new format
                 checkpoint = _pl_migrate_checkpoint(

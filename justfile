@@ -1,10 +1,11 @@
 export PYTHONOPTIMIZE := "1"
-export PYTHONBREAKPOINT := "patdb.debug"
+export PYTHONBREAKPOINT := "pudb.set_trace"
 export PATDB_CODE_STYLE := "vim"
 export BETTER_EXCEPTIONS := "1"
 export LOVELY_TENSORS := "1"
 export HYDRA_FULL_ERROR := "1"
 export RERUN_STRICT := "1"
+export WANDB_DIR := "wandb_logs"
 
 _default:
     @just --list --unsorted
@@ -17,11 +18,8 @@ install-tools:
     uv tool install --force --upgrade ruff
     uv tool install --force --upgrade pre-commit --with pre-commit-uv
 
-setup: sync install-tools install-duckdb-extensions
+setup: sync install-tools
     uvx pre-commit install --install-hooks
-
-install-duckdb-extensions:
-    uv run python -c "import duckdb; duckdb.connect().install_extension('spatial')"
 
 format *ARGS:
     uvx --from ruff@latest ruff format {{ ARGS }}

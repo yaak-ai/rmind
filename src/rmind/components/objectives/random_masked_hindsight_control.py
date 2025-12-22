@@ -17,7 +17,7 @@ from rmind.components.episode import (
     Episode,
     Index,
     Modality,
-    SpecialToken,
+    SummaryToken,
     Timestep,
     TokenType,
 )
@@ -151,7 +151,8 @@ class RandomMaskedHindsightControlObjective(Objective):
             if (key := PredictionKey.SCORE_LOGPROB) in keys:
                 predictions[key] = Prediction(
                     value=(
-                        logits.apply(lambda x: x.softmax(dim=-1))
+                        logits
+                        .apply(lambda x: x.softmax(dim=-1))
                         .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportOptionalMemberAccess]
                         .apply(  # pyright: ignore[reportOptionalMemberAccess]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
@@ -165,7 +166,8 @@ class RandomMaskedHindsightControlObjective(Objective):
             if (key := PredictionKey.SCORE_L1) in keys:
                 predictions[key] = Prediction(
                     value=(
-                        logits.apply(lambda x: x.argmax(dim=-1))
+                        logits
+                        .apply(lambda x: x.argmax(dim=-1))
                         .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
                             lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
                             nested_keys=True,
@@ -180,7 +182,7 @@ class RandomMaskedHindsightControlObjective(Objective):
                 )
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+                predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
                     embedding
                 )
 
@@ -202,7 +204,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         keys_action = episode.timestep.get(TokenType.ACTION).keys(
             include_nested=True, leaves_only=True
         )
-        episode.input_embeddings.select(*keys_action).masked_fill_(
+        episode.projected_embeddings.select(*keys_action).masked_fill_(
             mask_action, cls.MASKED_TOKEN_FILL_VALUE
         )
 
@@ -214,7 +216,7 @@ class RandomMaskedHindsightControlObjective(Objective):
         keys_observation = episode.timestep.get(TokenType.OBSERVATION).keys(
             include_nested=True, leaves_only=True
         )
-        episode.input_embeddings.select(*keys_observation).masked_fill_(
+        episode.projected_embeddings.select(*keys_observation).masked_fill_(
             mask_observation, cls.MASKED_TOKEN_FILL_VALUE
         )
 
@@ -240,22 +242,23 @@ class RandomMaskedHindsightControlObjective(Objective):
             past, current, future = index[:step], index[step], index[step + 1 :]
             current_actions = current.select(*action_keys)
             current_action_summary = current.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
             past_actions = past.select(*action_keys)
             past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
             future_actions = future.select(*action_keys)
             future_action_summary = future.select((  # pyright: ignore[reportCallIssue]
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.ACTION_SUMMARY,
             ))
 
             mask = (
-                mask.do_not_attend(current_actions, past_actions)  # pyright: ignore[reportArgumentType]
+                mask
+                .do_not_attend(current_actions, past_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_actions, past_action_summary)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_actions, future_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_actions, future_action_summary)  # pyright: ignore[reportArgumentType]

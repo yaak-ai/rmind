@@ -1,5 +1,5 @@
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import torch
@@ -20,6 +20,9 @@ from rmind.components.episode import Episode, EpisodeBuilder, EpisodeExport, Mod
 from rmind.components.mask import TorchAttentionMaskLegend
 from rmind.components.objectives.policy import PolicyObjective
 from rmind.models.control_transformer import ControlTransformer
+
+if TYPE_CHECKING:
+    from tests.conftest import EmbeddingDims
 
 
 @pytest.fixture
@@ -50,19 +53,42 @@ def policy_mask(episode: Episode, device: torch.device) -> Tensor:
 
 @pytest.fixture
 def policy_objective(
-    encoder: Module, policy_mask: Tensor, device: torch.device
+    encoder: Module,
+    policy_mask: Tensor,
+    device: torch.device,
+    request: pytest.FixtureRequest,
 ) -> PolicyObjective:
+    embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
+
     return PolicyObjective(
         encoder=encoder,
         mask=policy_mask,
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(1536, [512, 2], bias=False),
-                    "brake_pedal": MLP(1536, [512, 2], bias=False),
-                    "steering_angle": MLP(1536, [512, 2], bias=False),
+                    "gas_pedal": MLP(
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 2],
+                        bias=False,
+                    ),
+                    "brake_pedal": MLP(
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 2],
+                        bias=False,
+                    ),
+                    "steering_angle": MLP(
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 2],
+                        bias=False,
+                    ),
                 },
-                Modality.DISCRETE: {"turn_signal": MLP(1536, [512, 3], bias=False)},
+                Modality.DISCRETE: {
+                    "turn_signal": MLP(
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 3],
+                        bias=False,
+                    )
+                },
             }
         ),
     ).to(device)
