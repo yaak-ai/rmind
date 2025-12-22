@@ -56,7 +56,8 @@ class TensorDictPredictionWriter(BasePredictionWriter):
         dataloader_idx: int,
     ) -> None:
         data = (
-            prediction.clone(recurse=False)
+            prediction
+            .clone(recurse=False)
             .update({"batch": batch.clone(recurse=False).to_tensordict()})
             .auto_batch_size_(1)
             .lock_()

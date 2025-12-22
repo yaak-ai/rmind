@@ -86,12 +86,16 @@ class ModuleDict(_ModuleDict):
             # should be roughly equivalent to
             # `optree.tree_broadcast_map(operator.call, modules, *args, none_is_leaf=False)`
             tree_map(
-                lambda mod, *xs: tree_map(
-                    lambda *_xs: mod(*_xs) if all(x is not None for x in _xs) else None,
-                    *xs,
-                )
-                if mod is not None
-                else None,
+                lambda mod, *xs: (
+                    tree_map(
+                        lambda *_xs: (
+                            mod(*_xs) if all(x is not None for x in _xs) else None
+                        ),
+                        *xs,
+                    )
+                    if mod is not None
+                    else None
+                ),
                 modules,
                 *args,
             )

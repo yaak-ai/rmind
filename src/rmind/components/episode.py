@@ -180,9 +180,9 @@ class EpisodeExport:
     @property
     def embeddings(self) -> TensorTree:
         return tree_map(
-            lambda left, right: left + right
-            if left is not None and right is not None
-            else None,
+            lambda left, right: (
+                left + right if left is not None and right is not None else None
+            ),
             self.projected_embeddings,
             self.position_embeddings,
         )
@@ -330,9 +330,9 @@ class EpisodeBuilder(Module):
 
         timestep_index = unflatten_keys({
             (token.modality.value, str(token.name)): torch.arange(
-                *_range, device=device
+                *range_, device=device
             )
-            for token, _range in zip(self.timestep, ranges, strict=True)
+            for token, range_ in zip(self.timestep, ranges, strict=True)
         })
 
         return tree_map(
@@ -372,13 +372,15 @@ class EpisodeBuilder(Module):
                 position = torch.arange(t, device=device)
 
             position_embeddings[k_pe] = tree_map(
-                lambda leaf: repeat(
-                    mod_pe(position),  # pyright: ignore[reportCallIssue]
-                    "... t d -> ... t n d",
-                    n=leaf.shape[-2],
-                )
-                if leaf is not None
-                else None,
+                lambda leaf: (
+                    repeat(
+                        mod_pe(position),  # pyright: ignore[reportCallIssue]
+                        "... t d -> ... t n d",
+                        n=leaf.shape[-2],
+                    )
+                    if leaf is not None
+                    else None
+                ),
                 embeddings,
             )
 
@@ -407,9 +409,11 @@ class EpisodeBuilder(Module):
         ) is not None:
             paths = tree_paths(timestep[TokenType.OBSERVATION.value])
             position_embeddings[k_pe] = tree_map_with_path(
-                lambda path, _: mod_pe(key_get(timestep_index, path))  # pyright: ignore[reportCallIssue]
-                if path in paths
-                else None,
+                lambda path, _: (
+                    mod_pe(key_get(timestep_index, path))  # pyright: ignore[reportCallIssue]
+                    if path in paths
+                    else None
+                ),
                 embeddings,
             )
 
@@ -440,8 +444,8 @@ class EpisodeBuilder(Module):
             )
 
         return tree_map(
-            lambda *xs: sum(leaves)
-            if (leaves := [x for x in xs if x is not None])
-            else None,
+            lambda *xs: (
+                sum(leaves) if (leaves := [x for x in xs if x is not None]) else None
+            ),
             *position_embeddings.values(),
         )

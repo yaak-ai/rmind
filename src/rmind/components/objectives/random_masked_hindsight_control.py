@@ -151,7 +151,8 @@ class RandomMaskedHindsightControlObjective(Objective):
             if (key := PredictionKey.SCORE_LOGPROB) in keys:
                 predictions[key] = Prediction(
                     value=(
-                        logits.apply(lambda x: x.softmax(dim=-1))
+                        logits
+                        .apply(lambda x: x.softmax(dim=-1))
                         .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportOptionalMemberAccess]
                         .apply(  # pyright: ignore[reportOptionalMemberAccess]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
@@ -165,7 +166,8 @@ class RandomMaskedHindsightControlObjective(Objective):
             if (key := PredictionKey.SCORE_L1) in keys:
                 predictions[key] = Prediction(
                     value=(
-                        logits.apply(lambda x: x.argmax(dim=-1))
+                        logits
+                        .apply(lambda x: x.argmax(dim=-1))
                         .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
                             lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
                             nested_keys=True,
@@ -255,7 +257,8 @@ class RandomMaskedHindsightControlObjective(Objective):
             ))
 
             mask = (
-                mask.do_not_attend(current_actions, past_actions)  # pyright: ignore[reportArgumentType]
+                mask
+                .do_not_attend(current_actions, past_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_actions, past_action_summary)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_actions, future_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_actions, future_action_summary)  # pyright: ignore[reportArgumentType]
