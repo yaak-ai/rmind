@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from functools import lru_cache, partial
 from math import sqrt
@@ -52,14 +53,14 @@ class InverseDynamicsPredictionObjective(Objective):
     ) -> None:
         super().__init__()
 
-        self.encoder = encoder
-        self.heads = heads
-        self.losses = losses
-        self.targets = targets
+        self.encoder: Module | None = encoder
+        self.heads: ModuleDict = heads
+        self.losses: ModuleDict | None = losses
+        self.targets: Targets | None = targets
 
-        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
-            self.build_attention_mask
-        )
+        self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
+            maxsize=2, typed=True
+        )(self.build_attention_mask)
 
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
@@ -69,7 +70,7 @@ class InverseDynamicsPredictionObjective(Objective):
 
         embedding = self.encoder(
             src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-        )  # pyright: ignore[reportOptionalCall]
+        )  # ty:ignore[call-non-callable]
 
         observation_summaries = (
             episode.index
@@ -92,10 +93,10 @@ class InverseDynamicsPredictionObjective(Objective):
             is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+        losses = self.losses(
             tree_map(Rearrange("b t 1 d -> (b t) d"), logits),
             tree_map(Rearrange("b t 1 -> (b t)"), targets),
-        )
+        )  # ty:ignore[call-non-callable]
 
         return {"loss": losses}
 
@@ -129,7 +130,7 @@ class InverseDynamicsPredictionObjective(Objective):
             ).to(episode.device)
 
             embeddings_packed = episode.embeddings_packed
-            embedding = self.encoder(src=embeddings_packed, mask=mask.mask)  # pyright: ignore[reportOptionalCall]
+            embedding = self.encoder(src=embeddings_packed, mask=mask.mask)  # ty:ignore[call-non-callable]
 
             observation_summaries = (
                 episode.index
@@ -151,8 +152,8 @@ class InverseDynamicsPredictionObjective(Objective):
 
             if (key := PredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
-                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # pyright: ignore[reportOptionalMemberAccess]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[possibly-missing-attribute]
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, possibly-missing-attribute]
                         nested_keys=True,
                     ),
                     timestep_indices=timestep_indices,
@@ -169,12 +170,12 @@ class InverseDynamicsPredictionObjective(Objective):
                     value=(
                         logits
                         .apply(lambda x: x.softmax(dim=-1))
-                        .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportOptionalMemberAccess]
-                        .apply(  # pyright: ignore[reportOptionalMemberAccess]
+                        .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[possibly-missing-attribute]
+                        .apply(  # ty:ignore[possibly-missing-attribute]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                            episode.input_tokens[:, timestep_indices],
+                            episode.input_tokens[:, timestep_indices],  # ty:ignore[invalid-argument-type]
                         )
-                        .apply(lambda x: -torch.log(x))  # pyright: ignore[reportOptionalMemberAccess]
+                        .apply(lambda x: -torch.log(x))  # ty:ignore[possibly-missing-attribute]
                     ),
                     timestep_indices=timestep_indices,
                 )
@@ -184,13 +185,13 @@ class InverseDynamicsPredictionObjective(Objective):
                     value=(
                         logits
                         .apply(lambda x: x.argmax(dim=-1))
-                        .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
-                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                        .named_apply(  # ty:ignore[possibly-missing-attribute]
+                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, possibly-missing-attribute]
                             nested_keys=True,
                         )
-                        .apply(  # pyright: ignore[reportOptionalMemberAccess]
+                        .apply(  # ty:ignore[possibly-missing-attribute]
                             lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                            episode.input[:, timestep_indices],
+                            episode.input[:, timestep_indices],  # ty:ignore[invalid-argument-type]
                             nested_keys=True,
                         )
                     ),
@@ -198,12 +199,12 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
                     embedding
                 )
 
             if (key := PredictionKey.ATTENTION_ROLLOUT) in keys:
-                attention_rollout = self.encoder.compute_attention_rollout(  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                attention_rollout = self.encoder.compute_attention_rollout(  # ty:ignore[possibly-missing-attribute, call-non-callable]
                     src=embeddings_packed,
                     mask=mask,
                     head_fusion="max",
@@ -218,7 +219,7 @@ class InverseDynamicsPredictionObjective(Objective):
                     episode.index
                     .parse(attention_rollout, dim=1)
                     .select((Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))[:, -1]
-                    .apply(  # pyright: ignore[reportAttributeAccessIssue]
+                    .apply(
                         lambda x: (
                             episode.index
                             .parse(x, dim=2)
@@ -226,10 +227,10 @@ class InverseDynamicsPredictionObjective(Objective):
                             .squeeze(dim=1)
                         )
                     )
-                    .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
+                    .named_apply(
                         partial(_expand_attn, input=episode.input), nested_keys=True
                     )
-                    .update({"input": episode.input.select(Modality.IMAGE)})  # pyright: ignore[reportOptionalMemberAccess]
+                    .update({"input": episode.input.select(Modality.IMAGE)})
                 )
 
                 predictions[key] = Prediction(
@@ -242,7 +243,7 @@ class InverseDynamicsPredictionObjective(Objective):
                     timestep_indices=slice(t - 1, None),
                 )
 
-        return TensorDict(predictions).auto_batch_size_(2)
+        return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
 
     @classmethod
     def build_attention_mask(
@@ -260,11 +261,11 @@ class InverseDynamicsPredictionObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            current_observation_summary = current.select((  # pyright: ignore[reportCallIssue]
+            current_observation_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
-            current_observation_history = current.select((  # pyright: ignore[reportCallIssue]
+            current_observation_history = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
@@ -273,19 +274,19 @@ class InverseDynamicsPredictionObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
+            past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
 
             mask = (
                 mask
-                .do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observations, past_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_summary, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_summary, past_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_history, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_history, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observations, past_actions)
+                .do_not_attend(current_observations, past_action_summary)
+                .do_not_attend(current_observation_summary, past_actions)
+                .do_not_attend(current_observation_summary, past_action_summary)
+                .do_not_attend(current_observation_history, past_actions)
+                .do_not_attend(current_observation_history, past_action_summary)
             )
 
         return mask

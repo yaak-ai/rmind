@@ -102,7 +102,7 @@ class WandbImageParamLogger(Callback):
         ):
             return
 
-        data = TensorDict.from_module(pl_module).select(*self._select)  # pyright: ignore[reportAttributeAccessIssue]
+        data = TensorDict.from_module(pl_module).select(*self._select)
 
         if self._apply is not None:
             data = data.apply(self._apply, inplace=False)
@@ -115,9 +115,9 @@ class WandbImageParamLogger(Callback):
                         ((v - v.min()) / (v.max() - v.min()) * 255)
                         .clamp(0, 255)
                         .unsqueeze(0),
-                        caption=".".join(k[:-1]),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                        caption=".".join(k[:-1]),
                     )
-                    for k, v in data.cpu().items(include_nested=True, leaves_only=True)  # pyright: ignore[reportOptionalMemberAccess]
+                    for k, v in data.cpu().items(include_nested=True, leaves_only=True)
                 ],
                 step=trainer.global_step,
             )
@@ -263,12 +263,12 @@ class WandbWaypointsLogger(Callback):
         fig = plt.figure(figsize=(8, 8), frameon=False)
         wpts_x = wpts_xy_normalized[:, 0]
         wpts_y = wpts_xy_normalized[:, 1]
-        plt.plot(wpts_x, wpts_y, "bo-", markersize=5)  # type: ignore[reportUnknownReturnType]
+        plt.plot(wpts_x, wpts_y, "bo-", markersize=5)
         for i, (x, y) in enumerate(zip(wpts_x, wpts_y, strict=True)):
-            plt.annotate(str(i), (x, y), xytext=(5, 5), textcoords="offset points")  # type: ignore[reportUnknownReturnType]
-        plt.plot(0, 0, "ro")  # type: ignore[reportUnknownReturnType]
+            plt.annotate(str(i), (x, y), xytext=(5, 5), textcoords="offset points")
+        plt.plot(0, 0, "ro")
         plt.grid(True)  # noqa: FBT003
-        plt.axis("equal")  # type: ignore[reportUnknownReturnType]
+        plt.axis("equal")
         return Image(fig, caption=caption)
 
     @staticmethod
@@ -291,7 +291,7 @@ class WandbWaypointsLogger(Callback):
             edgecolor="black",
             linewidth=1.5,
             zorder=10,
-        )  # type: ignore[reportUnknownReturnType]
+        )
 
         x_min, x_max = ax.get_xlim()
         y_min, y_max = ax.get_ylim()
@@ -304,11 +304,11 @@ class WandbWaypointsLogger(Callback):
 
         plot_range = max(x_range, y_range) * map_zoom_factor
 
-        ax.set_xlim(x_center - plot_range / 2, x_center + plot_range / 2)  # type: ignore[reportUnknownReturnType]
-        ax.set_ylim(y_center - plot_range / 2, y_center + plot_range / 2)  # type: ignore[reportUnknownReturnType]
+        ax.set_xlim(x_center - plot_range / 2, x_center + plot_range / 2)
+        ax.set_ylim(y_center - plot_range / 2, y_center + plot_range / 2)
 
         try:
-            ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=crs)  # type: ignore[reportUnknownReturnType]
+            ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=crs)  # ty:ignore[unresolved-attribute]
         except requests.exceptions.ConnectionError:
             logger.warning("Failed to load tiles for basemap")
 
@@ -324,6 +324,6 @@ class WandbWaypointsLogger(Callback):
                 edgecolor="black",
                 linewidth=1.5,
                 zorder=20,
-            )  # type: ignore[reportUnknownReturnType]
+            )
 
         return Image(fig, caption=caption)

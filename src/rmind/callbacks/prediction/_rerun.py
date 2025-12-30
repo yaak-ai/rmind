@@ -33,7 +33,7 @@ class RerunPredictionWriter(BasePredictionWriter):
         data = (
             prediction
             .to_tensordict(retain_none=True)
-            .update({"batch": TensorDict(batch)})
+            .update({"batch": TensorDict(batch)})  # ty:ignore[invalid-argument-type]
             .auto_batch_size_(1)
             .lock_()
         ).apply(lambda x: x.float() if x.is_floating_point() else x)

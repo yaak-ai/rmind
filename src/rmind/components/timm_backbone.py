@@ -24,7 +24,7 @@ class TimmBackbone(nn.Module):
         )
 
         if freeze is not None:
-            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+            self.requires_grad_(not freeze).train(not freeze)
 
     @override
     def forward(self, input: Tensor) -> Tensor:

@@ -25,9 +25,9 @@ logger = get_logger(__name__)
 class LogitBiasSetter(Callback):
     @override
     @validate_call
-    def on_fit_start(  # pyright: ignore[reportIncompatibleMethodOverride]
+    def on_fit_start(
         self, trainer: InstanceOf[pl.Trainer], pl_module: InstanceOf[ControlTransformer]
-    ) -> None:
+    ) -> None:  # ty:ignore[invalid-method-override]
         objectives = pl_module.objectives
         losses: list[tuple[str, KeyPath, HasLogitBias]] = []
 
@@ -44,7 +44,7 @@ class LogitBiasSetter(Callback):
             return
 
         keypaths, _ = tree_flatten_with_path(
-            pl_module.episode_builder.input_transform[0].paths,  # pyright: ignore[reportIndexIssue, reportAttributeAccessIssue]
+            pl_module.episode_builder.input_transform[0].paths,  # ty:ignore[not-subscriptable, possibly-missing-attribute]
             is_leaf=lambda x: isinstance(x, tuple),
         )
         loss_keypaths = {keypath for (_, keypath, _) in losses}
@@ -58,7 +58,7 @@ class LogitBiasSetter(Callback):
             trainer.fit_loop.setup_data()
 
         logger.debug("computing logit bias from dataset")
-        match dataset := trainer.train_dataloader.dataset:  # pyright: ignore[reportOptionalMemberAccess]
+        match dataset := trainer.train_dataloader.dataset:  # ty:ignore[possibly-missing-attribute]
             case rbyte.Dataset():
                 batch = dataset.get_batch(
                     slice(None), include_streams=False, include_meta=False
@@ -73,9 +73,9 @@ class LogitBiasSetter(Callback):
         batch = batch.select(*batch_keys).to_tensordict()
 
         with torch.inference_mode():
-            input = pl_module.episode_builder.input_transform(  # pyright: ignore[reportCallIssue]
+            input = pl_module.episode_builder.input_transform(
                 batch.to(device=pl_module.device).to_dict()
-            )
+            )  # ty:ignore[call-non-callable]
             input = tree_map(
                 lambda x: (
                     torch.flatten(
@@ -86,7 +86,7 @@ class LogitBiasSetter(Callback):
                 ),
                 input,
             )
-            labels = pl_module.episode_builder.tokenizers(input)  # pyright: ignore[reportCallIssue]
+            labels = pl_module.episode_builder.tokenizers(input)  # ty:ignore[call-non-callable]
 
         for objective_key, loss_keypath, loss in losses:
             logger.debug(

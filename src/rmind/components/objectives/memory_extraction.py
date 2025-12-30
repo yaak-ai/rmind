@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
 from typing import final, override
@@ -49,14 +50,14 @@ class MemoryExtractionObjective(Objective):
     ) -> None:
         super().__init__()
 
-        self.encoder = encoder
-        self.heads = heads
-        self.losses = losses
-        self.targets = targets
+        self.encoder: Module | None = encoder
+        self.heads: ModuleDict = heads
+        self.losses: ModuleDict | None = losses
+        self.targets: Targets | None = targets
 
-        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
-            self.build_attention_mask
-        )
+        self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
+            maxsize=2, typed=True
+        )(self.build_attention_mask)
 
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
@@ -66,13 +67,13 @@ class MemoryExtractionObjective(Objective):
 
         embedding = self.encoder(
             src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-        )  # pyright: ignore[reportOptionalCall]
+        )  # ty:ignore[call-non-callable]
 
         features = (
             episode
-            .index[1:]  # pyright: ignore[reportCallIssue]
+            .index[1:]
             .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
-            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+            .parse(embedding)
             .get(k)
         )
 
@@ -85,10 +86,10 @@ class MemoryExtractionObjective(Objective):
             is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+        losses = self.losses(
             tree_map(Rearrange("b t 1 d -> (b t) d"), logits),
             tree_map(Rearrange("b t -> (b t)"), targets),
-        )
+        )  # ty:ignore[call-non-callable]
 
         return {"loss": losses}
 
@@ -124,13 +125,13 @@ class MemoryExtractionObjective(Objective):
 
             embedding = self.encoder(
                 src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # pyright: ignore[reportOptionalCall]
+            )  # ty:ignore[call-non-callable]
 
             features = (
                 episode
-                .index[1:]  # pyright: ignore[reportCallIssue]
+                .index[1:]
                 .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY))
-                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+                .parse(embedding)
                 .get(k)
             )
 
@@ -138,8 +139,8 @@ class MemoryExtractionObjective(Objective):
 
             if (key := PredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
-                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # pyright: ignore[reportOptionalMemberAccess]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[possibly-missing-attribute]
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[possibly-missing-attribute, call-non-callable]
                         nested_keys=True,
                     ),
                     timestep_indices=timestep_indices,
@@ -152,11 +153,11 @@ class MemoryExtractionObjective(Objective):
                 )
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
                     embedding
                 )
 
-        return TensorDict(predictions).auto_batch_size_(2)
+        return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
 
     @classmethod
     def build_attention_mask(
@@ -174,11 +175,11 @@ class MemoryExtractionObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            current_observation_summary = current.select((  # pyright: ignore[reportCallIssue]
+            current_observation_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
-            current_observation_history = current.select((  # pyright: ignore[reportCallIssue]
+            current_observation_history = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
@@ -187,19 +188,19 @@ class MemoryExtractionObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
+            past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
 
             mask = (
                 mask
-                .do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observations, past_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_summary, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_summary, past_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_history, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_history, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observations, past_actions)
+                .do_not_attend(current_observations, past_action_summary)
+                .do_not_attend(current_observation_summary, past_actions)
+                .do_not_attend(current_observation_summary, past_action_summary)
+                .do_not_attend(current_observation_history, past_actions)
+                .do_not_attend(current_observation_history, past_action_summary)
             )
 
         return mask

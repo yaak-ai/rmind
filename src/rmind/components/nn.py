@@ -25,7 +25,7 @@ class Embedding(nn.Embedding):
     def __init__(
         self,
         *args: Any,
-        weight_init_fn: Callable[[Tensor], None] = default_weight_init_fn,  # pyright: ignore[reportArgumentType]
+        weight_init_fn: Callable[[Tensor], None] = default_weight_init_fn,  # ty:ignore[invalid-parameter-default]
         **kwargs: Any,
     ) -> None:
         self.weight_init_fn: Callable[[Tensor], None] = weight_init_fn
@@ -43,19 +43,19 @@ class Linear(nn.Linear):
     def __init__(
         self,
         *args: Any,
-        weight_init_fn: Callable[[Tensor], None] = default_linear_weight_init_fn,  # pyright: ignore[reportArgumentType]
-        bias_init_fn: Callable[[Tensor], None] = default_linear_bias_init_fn,  # pyright: ignore[reportArgumentType]
+        weight_init_fn: Callable[[Tensor], None] = default_linear_weight_init_fn,  # ty:ignore[invalid-parameter-default]
+        bias_init_fn: Callable[[Tensor], None] = default_linear_bias_init_fn,  # ty:ignore[invalid-parameter-default]
         **kwargs: Any,
     ) -> None:
-        self.weight_init_fn = weight_init_fn
-        self.bias_init_fn = bias_init_fn
+        self.weight_init_fn: Callable[[Tensor], None] = weight_init_fn
+        self.bias_init_fn: Callable[[Tensor], None] = bias_init_fn
 
         super().__init__(*args, **kwargs)
 
     @override
     def reset_parameters(self) -> None:
         self.weight_init_fn(self.weight)
-        if self.bias is not None:  # pyright: ignore[reportUnnecessaryComparison]
+        if self.bias is not None:
             self.bias_init_fn(self.bias)
 
 
@@ -63,7 +63,7 @@ class Sequential(nn.Sequential, Invertible):
     @override
     def invert(self, input: Tensor) -> Tensor:
         for module in reversed(self):
-            input = module.invert(input)  # pyright: ignore[reportCallIssue]
+            input = module.invert(input)
         return input
 
 
@@ -109,7 +109,7 @@ def _module_wrapper(
         def __init__(self, **kwargs: Any) -> None:
             super().__init__()
 
-            self._kwargs = kwargs
+            self._kwargs: Any = kwargs
 
         @override
         def forward(self, *args: Any, **kwargs: Any) -> Any:

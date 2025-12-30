@@ -76,22 +76,6 @@ test = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.basedpyright]
-typeCheckingMode = "all"
-enableTypeIgnoreComments = true
-reportMissingTypeStubs = "none"
-reportAny = "none"
-reportExplicitAny = "none"
-reportIgnoreCommentWithoutRule = "error"
-reportUnknownArgumentType = "none"
-reportUnknownLambdaType = "none"
-reportUnknownMemberType = "none"
-reportUnknownVariableType = "none"
-venvPath = "."
-venv = ".venv"
-include = ["src/"]
-pythonVersion = "3.12"
-
 [tool.deptry.per_rule_ignores]
 DEP001 = ["rmind"]
 DEP002 = [
@@ -147,6 +131,9 @@ split-on-trailing-comma = false
 [tool.ruff.format]
 preview = true
 skip-magic-trailing-comma = true
+
+[tool.ty.rules]
+unused-ignore-comment = "warn"
 
 [tool.uv.sources]
 torch = [

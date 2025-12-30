@@ -55,9 +55,9 @@ class TransformerEncoderBlock(nn.Module):
     def _init_weights(module: Module) -> None:
         match module:
             case nn.Linear():
-                default_weight_init_fn(module.weight)  # pyright: ignore[reportUnusedCallResult]
-                if module.bias is not None:  # pyright: ignore[reportUnnecessaryComparison]
-                    nn.init.zeros_(module.bias)  # pyright: ignore[reportUnusedCallResult]
+                default_weight_init_fn(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
             case _:
                 pass
 
@@ -104,7 +104,7 @@ class TransformerEncoder(nn.Module):
         freeze: bool | None = None,  # noqa: FBT001
     ) -> None:
         super().__init__()
-        self.layers = nn.ModuleList([  # pyright: ignore[reportUnannotatedClassAttribute]
+        self.layers = nn.ModuleList([
             TransformerEncoderBlock(
                 embedding_dim=dim_model,
                 num_heads=num_heads,
@@ -119,7 +119,7 @@ class TransformerEncoder(nn.Module):
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
 
         if freeze is not None:
-            self.requires_grad_(not freeze).train(not freeze)  # pyright: ignore[reportUnusedCallResult]
+            self.requires_grad_(not freeze).train(not freeze)
 
     @override
     def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
@@ -152,11 +152,11 @@ class TransformerEncoder(nn.Module):
         fuse_heads: Callable[[Tensor], Tensor]
         match head_fusion:
             case "mean":
-                fuse_heads = lambda x: x.mean(axis=1)  # noqa: E731  # pyright: ignore[reportCallIssue]
+                fuse_heads = lambda x: x.mean(axis=1)  # noqa: E731
             case "max":
-                fuse_heads = lambda x: x.max(axis=1).values  # noqa: E731  # pyright: ignore[reportCallIssue]
+                fuse_heads = lambda x: x.max(axis=1).values  # noqa: E731
             case "min":
-                fuse_heads = lambda x: x.min(axis=1).values  # noqa: E731  # pyright: ignore[reportCallIssue]
+                fuse_heads = lambda x: x.min(axis=1).values  # noqa: E731
 
         _, s, _ = src.shape
         identity = torch.eye(s, s, device=src.device)

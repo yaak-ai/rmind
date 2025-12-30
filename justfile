@@ -5,6 +5,7 @@ export BETTER_EXCEPTIONS := "1"
 export LOVELY_TENSORS := "1"
 export HYDRA_FULL_ERROR := "1"
 export RERUN_STRICT := "1"
+export WANDB_DIR := "wandb_logs"
 
 _default:
     @just --list --unsorted
@@ -13,7 +14,7 @@ sync:
     uv sync --all-extras --all-groups --locked
 
 install-tools:
-    uv tool install --force --upgrade basedpyright
+    uv tool install --force --upgrade ty
     uv tool install --force --upgrade ruff
     uv tool install --force --upgrade pre-commit --with pre-commit-uv
 
@@ -27,7 +28,7 @@ lint *ARGS:
     uvx --from ruff@latest ruff check {{ ARGS }}
 
 typecheck *ARGS:
-    uvx --from basedpyright@latest basedpyright {{ ARGS }}
+    uvx ty@latest check {{ ARGS }}
 
 # run pre-commit on all files
 pre-commit *ARGS:

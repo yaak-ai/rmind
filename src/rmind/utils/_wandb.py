@@ -19,4 +19,4 @@ class LoadableFromArtifact:
         artifact_dir = artifact_obj.download()
         ckpt_path = Path(artifact_dir) / filename
 
-        return cls.load_from_checkpoint(ckpt_path, **kwargs)  # pyright: ignore[reportAttributeAccessIssue]
+        return cls.load_from_checkpoint(ckpt_path, **kwargs)  # ty:ignore[unresolved-attribute]

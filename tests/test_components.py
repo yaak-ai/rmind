@@ -41,7 +41,7 @@ def test_uniform_binner(device: torch.device) -> None:
 def test_sequential(device: torch.device) -> None:
     module = Sequential(
         *(
-            Scaler(in_range=in_range, out_range=out_range)  # pyright: ignore[reportArgumentType]
+            Scaler(in_range=in_range, out_range=out_range)
             for in_range, out_range in pairwise([0.0, 10.0**x] for x in range(1, 6))
         )
     ).to(device)
@@ -50,8 +50,8 @@ def test_sequential(device: torch.device) -> None:
         1024,
         dtype=torch.float,
         device=device,
-        low=module[0].in_range[0].item(),  # pyright: ignore[reportIndexIssue]
-        high=module[0].in_range[1].item(),  # pyright: ignore[reportIndexIssue]
+        low=module[0].in_range[0].item(),  # ty:ignore[not-subscriptable]
+        high=module[0].in_range[1].item(),  # ty:ignore[not-subscriptable]
     )
 
     x_rt = module.invert(module(x))

@@ -27,11 +27,6 @@ repos:
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
-  - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-    rev: 1.36.1
-    hooks:
-      - id: basedpyright
-
   - repo: https://github.com/tombi-toml/tombi-pre-commit
     rev: v0.7.8
     hooks:
@@ -40,6 +35,14 @@ repos:
 
   - repo: local
     hooks:
+        # TODO: replace once available
+      - id: ty
+        name: ty check
+        entry: uv run ty check
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: just-format
         name: just-format
         language: system
