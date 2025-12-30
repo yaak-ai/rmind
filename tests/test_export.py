@@ -50,19 +50,32 @@ def policy_mask(episode: Episode, device: torch.device) -> Tensor:
 
 @pytest.fixture
 def policy_objective(
-    encoder: Module, policy_mask: Tensor, device: torch.device
+    encoder: Module,
+    policy_mask: Tensor,
+    device: torch.device,
+    request: pytest.FixtureRequest,
 ) -> PolicyObjective:
+    embedding_dim: int = request.getfixturevalue("embedding_dim")
+
     return PolicyObjective(
         encoder=encoder,
         mask=policy_mask,
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(1536, [512, 2], bias=False),
-                    "brake_pedal": MLP(1536, [512, 2], bias=False),
-                    "steering_angle": MLP(1536, [512, 2], bias=False),
+                    "gas_pedal": MLP(3 * embedding_dim, [embedding_dim, 2], bias=False),
+                    "brake_pedal": MLP(
+                        3 * embedding_dim, [embedding_dim, 2], bias=False
+                    ),
+                    "steering_angle": MLP(
+                        3 * embedding_dim, [embedding_dim, 2], bias=False
+                    ),
                 },
-                Modality.DISCRETE: {"turn_signal": MLP(1536, [512, 3], bias=False)},
+                Modality.DISCRETE: {
+                    "turn_signal": MLP(
+                        3 * embedding_dim, [embedding_dim, 3], bias=False
+                    )
+                },
             }
         ),
     ).to(device)

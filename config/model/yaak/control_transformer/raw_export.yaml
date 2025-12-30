@@ -24,7 +24,7 @@ episode_builder:
     observation_history: 1
     action_summary: 2
 
-  # TODO: need image normalization?
+  # TODO: need image normalization and/or resizing?
   input_transform:
     _target_: torch.nn.Sequential
     _convert_: all
@@ -84,18 +84,15 @@ episode_builder:
     _target_: rmind.components.containers.ModuleDict
     modules:
       image:
-        _target_: torch.nn.Sequential
-        _args_:
-          - _target_: rmind.components.resnet.ResnetBackbone
-            resnet:
-              _target_: torchvision.models.resnet18
-              weights: IMAGENET1K_V1
-            freeze: True
-          - _target_: einops.layers.torch.Rearrange
-            pattern: "... c h w -> ... (h w) c"
-          - _target_: rmind.components.norm.Normalize
-            p: 2
-            dim: -1
+      _target_: torch.nn.Sequential
+      _args_:
+        - _target_: rmind.components.timm_backbone.TimmBackbone
+          model_name: vit_small_patch16_dinov3.lvd1689m
+          freeze: True
+          out_indices: [10]
+          img_size: [256, 256]
+        - _target_: einops.layers.torch.Rearrange
+          pattern: "... c h w -> ... (h w) c"
 
       continuous:
         speed:
@@ -117,14 +114,9 @@ episode_builder:
 
       context:
         waypoints:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.Linear
-              in_features: 2
-              out_features: ${embedding_dim}
-            - _target_: rmind.components.norm.Normalize
-              p: 2
-              dim: -1
+          _target_: rmind.components.nn.Linear
+          in_features: 2
+          out_features: ${embedding_dim}
 
       discrete:
         turn_signal:
@@ -137,39 +129,77 @@ episode_builder:
         num_embeddings: 3
         embedding_dim: ${embedding_dim}
 
-  position_encoding:
+  projections:
     _target_: rmind.components.containers.ModuleDict
     modules:
       image:
-        patch:
-          row:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torch.nn.LayerNorm
+            normalized_shape: ${embedding_dim}
+          - _target_: rmind.components.nn.Linear
+            in_features: ${embedding_dim}
+            out_features: ${embedding_dim}
+
+      continuous:
+        speed:
+          _target_: rmind.components.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: ${embedding_dim}
+        gas_pedal:
+          _target_: rmind.components.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: ${embedding_dim}
+        brake_pedal:
+          _target_: rmind.components.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: ${embedding_dim}
+        steering_angle:
+          _target_: rmind.components.nn.Linear
+          in_features: ${embedding_dim}
+          out_features: ${embedding_dim}
+        gas_pedal_diff: null
+        brake_pedal_diff: null
+        steering_angle_diff: null
+
+      context:
+        _target_: rmind.components.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${embedding_dim}
+
+      discrete:
+        _target_: rmind.components.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${embedding_dim}
+
+      special:
+        _target_: rmind.components.nn.Linear
+        in_features: ${embedding_dim}
+        out_features: ${embedding_dim}
+
+    position_encoding:
+      _target_: rmind.components.containers.ModuleDict
+      modules:
+        context:
+          waypoints:
             _target_: rmind.components.nn.Embedding
             num_embeddings: 10
             embedding_dim: ${embedding_dim}
-          col:
-            _target_: rmind.components.nn.Embedding
-            num_embeddings: 18
-            embedding_dim: ${embedding_dim}
 
-      observations:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 191
-        embedding_dim: ${embedding_dim}
+        actions:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 1
+          embedding_dim: ${embedding_dim}
 
-      actions:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 1
-        embedding_dim: ${embedding_dim}
+        special:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 1
+          embedding_dim: ${embedding_dim}
 
-      special:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 1
-        embedding_dim: ${embedding_dim}
-
-      timestep:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 24
-        embedding_dim: ${embedding_dim}
+        timestep:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 24
+          embedding_dim: ${embedding_dim}
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
@@ -193,22 +223,22 @@ objectives:
           continuous:
             gas_pedal:
               _target_: torchvision.ops.MLP
-              in_channels: 1536
-              hidden_channels: [512, 2]
+              in_channels: 1152
+              hidden_channels: [384, 2]
               bias: False
             brake_pedal:
               _target_: torchvision.ops.MLP
-              in_channels: 1536
-              hidden_channels: [512, 2]
+              in_channels: 1152
+              hidden_channels: [384, 2]
               bias: False
             steering_angle:
               _target_: torchvision.ops.MLP
-              in_channels: 1536
-              hidden_channels: [512, 2]
+              in_channels: 1152
+              hidden_channels: [384, 2]
               bias: False
           discrete:
             turn_signal:
               _target_: torchvision.ops.MLP
-              in_channels: 1536
-              hidden_channels: [512, 3]
+              in_channels: 1152
+              hidden_channels: [384, 3]
               bias: False

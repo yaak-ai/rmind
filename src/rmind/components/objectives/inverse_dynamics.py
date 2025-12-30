@@ -72,9 +72,8 @@ class InverseDynamicsPredictionObjective(Objective):
         )  # pyright: ignore[reportOptionalCall]
 
         observation_summaries = (
-            episode.index.select(
-                k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
-            )
+            episode.index
+            .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
             .parse(embedding)
             .get(k)
         )
@@ -133,9 +132,8 @@ class InverseDynamicsPredictionObjective(Objective):
             embedding = self.encoder(src=embeddings_packed, mask=mask.mask)  # pyright: ignore[reportOptionalCall]
 
             observation_summaries = (
-                episode.index.select(
-                    k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY)
-                )
+                episode.index
+                .select(k := (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))
                 .parse(embedding)
                 .get(k)
             )
@@ -169,7 +167,8 @@ class InverseDynamicsPredictionObjective(Objective):
             if (key := PredictionKey.SCORE_LOGPROB) in keys:
                 predictions[key] = Prediction(
                     value=(
-                        logits.apply(lambda x: x.softmax(dim=-1))
+                        logits
+                        .apply(lambda x: x.softmax(dim=-1))
                         .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportOptionalMemberAccess]
                         .apply(  # pyright: ignore[reportOptionalMemberAccess]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
@@ -183,7 +182,8 @@ class InverseDynamicsPredictionObjective(Objective):
             if (key := PredictionKey.SCORE_L1) in keys:
                 predictions[key] = Prediction(
                     value=(
-                        logits.apply(lambda x: x.argmax(dim=-1))
+                        logits
+                        .apply(lambda x: x.argmax(dim=-1))
                         .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
                             lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
                             nested_keys=True,
@@ -215,12 +215,16 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
 
                 attention = (
-                    episode.index.parse(attention_rollout, dim=1)
+                    episode.index
+                    .parse(attention_rollout, dim=1)
                     .select((Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY))[:, -1]
                     .apply(  # pyright: ignore[reportAttributeAccessIssue]
-                        lambda x: episode.index.parse(x, dim=2)
-                        .select(*observation_keys)
-                        .squeeze(dim=1)
+                        lambda x: (
+                            episode.index
+                            .parse(x, dim=2)
+                            .select(*observation_keys)
+                            .squeeze(dim=1)
+                        )
                     )
                     .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
                         partial(_expand_attn, input=episode.input), nested_keys=True
@@ -275,7 +279,8 @@ class InverseDynamicsPredictionObjective(Objective):
             ))
 
             mask = (
-                mask.do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
+                mask
+                .do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_observations, past_action_summary)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_observation_summary, past_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_observation_summary, past_action_summary)  # pyright: ignore[reportArgumentType]
