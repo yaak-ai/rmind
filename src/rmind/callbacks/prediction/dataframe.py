@@ -60,7 +60,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
         data = (
             prediction
             .clone(recurse=False)
-            .update({"batch": TensorDict(batch)})
+            .update({"batch": TensorDict(batch)})  # ty:ignore[invalid-argument-type]
             .auto_batch_size_(1)
             .lock_()
         )
@@ -76,9 +76,9 @@ class DataFramePredictionWriter(BasePredictionWriter):
         )
 
         try:
-            df = plr.from_numpy(data.to_struct_array())  # pyright: ignore[reportOptionalMemberAccess]
+            df = plr.from_numpy(data.to_struct_array())
         except:  # noqa: E722
-            df = plr.from_dict(data.numpy())  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]
+            df = plr.from_dict(data.numpy())
 
         path = Path(
             self._path.format(batch_idx=batch_idx, dataloader_idx=dataloader_idx)

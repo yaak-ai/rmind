@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 
 
 def _train(cfg: DictConfig) -> None:
-    pl.seed_everything(cfg.seed, workers=True)  # pyright: ignore[reportUnusedCallResult]
+    pl.seed_everything(cfg.seed, workers=True)
     torch.set_float32_matmul_precision(cfg.matmul_precision)
 
     logger.debug("instantiating model", target=cfg.model._target_)
@@ -35,7 +35,7 @@ def _train(cfg: DictConfig) -> None:
 def main(cfg: DictConfig) -> None:
     if (
         run := rank_zero_only(wandb.init)(
-            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # pyright: ignore[reportArgumentType]
+            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # ty:ignore[invalid-argument-type]
             **cfg.wandb,
         )
     ) is not None:

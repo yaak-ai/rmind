@@ -8,9 +8,9 @@ from torch.nn import ModuleDict as _ModuleDict
 from torch.utils._pytree import (
     MappingKey,  # noqa: PLC2701
     PyTree,
-    _dict_flatten,  # pyright: ignore[reportPrivateUsage] # noqa: PLC2701
-    _dict_flatten_with_keys,  # pyright: ignore[reportPrivateUsage] # noqa: PLC2701
-    _dict_unflatten,  # pyright: ignore[reportPrivateUsage] # noqa: PLC2701
+    _dict_flatten,  # noqa: PLC2701
+    _dict_flatten_with_keys,  # noqa: PLC2701
+    _dict_unflatten,  # noqa: PLC2701
     key_get,  # noqa: PLC2701
     register_pytree_node,  # noqa: PLC2701
     tree_flatten_with_path,  # noqa: PLC2701
@@ -28,11 +28,11 @@ class ModuleDict(_ModuleDict):
     @validate_call
     def __init__(self, modules: Modules) -> None:
         modules_ = {
-            k: type(self)(v) if isinstance(v, Mapping) else v
+            k: type(self)(v) if isinstance(v, Mapping) else v  # ty:ignore[invalid-argument-type]
             for k, v in modules.items()
         }
 
-        super().__init__(modules=modules_)  # pyright: ignore[reportArgumentType]
+        super().__init__(modules=modules_)  # ty:ignore[invalid-argument-type]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,7 +54,7 @@ class ModuleDict(_ModuleDict):
         key_path = tuple(map(MappingKey, always_iterable(key)))
 
         try:
-            return key_get(self, key_path)  # pyright: ignore[reportArgumentType]
+            return key_get(self, key_path)
         except (KeyError, TypeError) as e:
             if default is self.__unspecified:
                 raise KeyError from e
@@ -107,7 +107,7 @@ class ModuleDict(_ModuleDict):
         items, _ = tree_flatten_with_path(self)
         key_paths = (item[0] for item in items)
 
-        return tuple(tuple(elem.key for elem in key_path) for key_path in key_paths)  # pyright: ignore[reportAttributeAccessIssue]
+        return tuple(tuple(elem.key for elem in key_path) for key_path in key_paths)  # ty:ignore[unresolved-attribute]
 
 
 register_pytree_node(

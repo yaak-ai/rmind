@@ -36,7 +36,7 @@ class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)  # pyright: ignore[reportOperatorIssue]
+        return super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
 
 
 class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
@@ -49,7 +49,7 @@ class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)  # pyright: ignore[reportOperatorIssue]
+        return super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
 
 
 class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
@@ -65,9 +65,9 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         self.var_pos_function: Callable[[Tensor], Tensor] = var_pos_function
 
     @override
-    def forward(  # pyright: ignore[reportIncompatibleMethodOverride]
+    def forward(
         self, input: Tensor, target: Tensor, var: Tensor | None = None
-    ) -> Tensor:
+    ) -> Tensor:  # ty:ignore[invalid-method-override]
         if var is not None:
             raise ValueError
 

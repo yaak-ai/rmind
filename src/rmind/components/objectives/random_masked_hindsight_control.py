@@ -50,12 +50,12 @@ class RandomMaskedHindsightControlObjective(Objective):
     ) -> None:
         super().__init__()
 
-        self.encoder = encoder
+        self.encoder = encoder  # ty:ignore[unresolved-attribute]
         self.heads = heads
-        self.losses = losses
-        self.targets = targets
+        self.losses = losses  # ty:ignore[unresolved-attribute]
+        self.targets = targets  # ty:ignore[unresolved-attribute]
 
-        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
+        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(  # ty:ignore[unresolved-attribute]
             self.build_attention_mask
         )
 
@@ -68,13 +68,13 @@ class RandomMaskedHindsightControlObjective(Objective):
 
         embedding = self.encoder(
             src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-        )  # pyright: ignore[reportOptionalCall]
+        )  # ty:ignore[call-non-callable]
 
         keys_action = episode.timestep.get(TokenType.ACTION).keys(
             include_nested=True, leaves_only=True
         )
         index_action = episode.index.select(*keys_action)
-        embeddings = index_action[mask_action_timestep].parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+        embeddings = index_action[mask_action_timestep].parse(embedding)
         logits = self.heads(embeddings.to_dict())
 
         targets = tree_map(
@@ -83,10 +83,10 @@ class RandomMaskedHindsightControlObjective(Objective):
             is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+        losses = self.losses(
             tree_map(Rearrange("b t 1 d -> (b t 1) d"), logits),
             tree_map(Rearrange("b t 1 -> (b t)"), targets),
-        )
+        )  # ty:ignore[call-non-callable]
 
         return {"loss": losses}
 
@@ -121,13 +121,13 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             embedding = self.encoder(
                 src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # pyright: ignore[reportOptionalCall]
+            )  # ty:ignore[call-non-callable]
 
             keys_action = episode.timestep.get(TokenType.ACTION).keys(
                 include_nested=True, leaves_only=True
             )
             index_action = episode.index.select(*keys_action)
-            embeddings = index_action[timestep_indices].parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+            embeddings = index_action[timestep_indices].parse(embedding)
 
             logits = TensorDict(
                 self.heads(embeddings.to_dict()), batch_size=[b, len(timestep_indices)]
@@ -135,8 +135,8 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             if (key := PredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
-                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # pyright: ignore[reportOptionalMemberAccess]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[possibly-missing-attribute]
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, possibly-missing-attribute]
                         nested_keys=True,
                     ),
                     timestep_indices=timestep_indices,
@@ -153,12 +153,12 @@ class RandomMaskedHindsightControlObjective(Objective):
                     value=(
                         logits
                         .apply(lambda x: x.softmax(dim=-1))
-                        .apply(Rearrange("b t 1 d -> b t d"))  # pyright: ignore[reportOptionalMemberAccess]
-                        .apply(  # pyright: ignore[reportOptionalMemberAccess]
+                        .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[possibly-missing-attribute]
+                        .apply(  # ty:ignore[possibly-missing-attribute]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                            episode.input_tokens[:, timestep_indices],
+                            episode.input_tokens[:, timestep_indices],  # ty:ignore[invalid-argument-type]
                         )
-                        .apply(lambda x: -torch.log(x))  # pyright: ignore[reportOptionalMemberAccess]
+                        .apply(lambda x: -torch.log(x))  # ty:ignore[possibly-missing-attribute]
                     ),
                     timestep_indices=timestep_indices,
                 )
@@ -168,13 +168,13 @@ class RandomMaskedHindsightControlObjective(Objective):
                     value=(
                         logits
                         .apply(lambda x: x.argmax(dim=-1))
-                        .named_apply(  # pyright: ignore[reportOptionalMemberAccess]
-                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # pyright: ignore[reportOptionalMemberAccess, reportCallIssue]
+                        .named_apply(  # ty:ignore[possibly-missing-attribute]
+                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[possibly-missing-attribute, call-non-callable]
                             nested_keys=True,
                         )
-                        .apply(  # pyright: ignore[reportOptionalMemberAccess]
+                        .apply(  # ty:ignore[possibly-missing-attribute]
                             lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                            episode.input[:, timestep_indices],
+                            episode.input[:, timestep_indices],  # ty:ignore[invalid-argument-type]
                             nested_keys=True,
                         )
                     ),
@@ -182,11 +182,11 @@ class RandomMaskedHindsightControlObjective(Objective):
                 )
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
                     embedding
                 )
 
-        return TensorDict(predictions).auto_batch_size_(2)
+        return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
 
     @classmethod
     def _mask_episode(cls, episode: Episode) -> tuple[Episode, Tensor]:
@@ -226,7 +226,7 @@ class RandomMaskedHindsightControlObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        length: int = index.max(reduce=True).item() + 1  # pyright: ignore[reportAttributeAccessIssue, reportAssignmentType]
+        length: int = index.max(reduce=True).item() + 1
         mask = AttentionMask(
             mask=torch.full((length, length), legend.DO_ATTEND.value),
             legend=legend,
@@ -241,31 +241,31 @@ class RandomMaskedHindsightControlObjective(Objective):
         for step in range(t):
             past, current, future = index[:step], index[step], index[step + 1 :]
             current_actions = current.select(*action_keys)
-            current_action_summary = current.select((  # pyright: ignore[reportCallIssue]
+            current_action_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
             past_actions = past.select(*action_keys)
-            past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
+            past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
             future_actions = future.select(*action_keys)
-            future_action_summary = future.select((  # pyright: ignore[reportCallIssue]
+            future_action_summary = future.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
 
             mask = (
                 mask
-                .do_not_attend(current_actions, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_actions, past_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_actions, future_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_actions, future_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_action_summary, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_action_summary, past_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_action_summary, future_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_action_summary, future_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_actions, past_actions)
+                .do_not_attend(current_actions, past_action_summary)
+                .do_not_attend(current_actions, future_actions)
+                .do_not_attend(current_actions, future_action_summary)
+                .do_not_attend(current_action_summary, past_actions)
+                .do_not_attend(current_action_summary, past_action_summary)
+                .do_not_attend(current_action_summary, future_actions)
+                .do_not_attend(current_action_summary, future_action_summary)
             )
 
         return mask

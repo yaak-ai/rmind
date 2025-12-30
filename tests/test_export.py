@@ -44,7 +44,7 @@ def policy_mask(episode: Episode, device: torch.device) -> Tensor:
     return PolicyObjective.build_attention_mask(
         episode.index,
         episode.timestep,
-        legend=TorchAttentionMaskLegend,  # pyright: ignore[reportArgumentType]
+        legend=TorchAttentionMaskLegend,  # ty:ignore[invalid-argument-type]
     ).mask.to(device)
 
 
@@ -180,7 +180,7 @@ def test_torch_export_fake(
 )
 @torch.inference_mode()
 def test_torch_export(module: Module, args: tuple[Any]) -> None:
-    torch.export.export(module.eval(), args=args, strict=True)  # pyright: ignore[reportUnusedCallResult]
+    torch.export.export(module.eval(), args=args, strict=True)
 
 
 @pytest.mark.parametrize(

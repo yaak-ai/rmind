@@ -11,8 +11,8 @@ from .base import Invertible
 
 
 class Clamp(Module):
-    min_value: Tensor  # pyright: ignore[reportUninitializedInstanceVariable]
-    max_value: Tensor  # pyright: ignore[reportUninitializedInstanceVariable]
+    min_value: Tensor
+    max_value: Tensor
 
     @validate_call
     def __init__(self, *, min_value: float, max_value: float) -> None:
@@ -47,7 +47,7 @@ class Scaler(Module, Invertible):
     def forward(self, input: Tensor) -> Tensor:
         input_min, input_max = self.in_range
 
-        if torch.compiler.is_exporting():
+        if torch.compiler.is_exporting():  # ty:ignore[possibly-missing-attribute]
             input = torch.clamp(input, input_min, input_max)
         elif input.min() < input_min or input.max() > input_max:
             msg = "input out of range"
@@ -90,7 +90,7 @@ class UniformBinner(Module, Invertible):
     def forward(self, input: Tensor) -> Tensor:
         input_min, input_max = self.range
 
-        if torch.compiler.is_exporting():
+        if torch.compiler.is_exporting():  # ty:ignore[possibly-missing-attribute]
             input = torch.clamp(input, input_min, input_max)
         elif input.min() < input_min or input.max() > input_max:
             msg = "input out of range"
@@ -128,8 +128,8 @@ class MuLawEncoding(_MuLawEncoding, Invertible):
 class Normalize(Module):
     def __init__(self, p: int = 2, dim: int = -1) -> None:
         super().__init__()
-        self.p = p
-        self.dim = dim
+        self.p = p  # ty:ignore[unresolved-attribute]
+        self.dim = dim  # ty:ignore[unresolved-attribute]
 
     @override
     def forward(self, input: Tensor) -> Tensor:

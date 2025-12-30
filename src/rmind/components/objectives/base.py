@@ -28,8 +28,8 @@ class PredictionKey(StrEnum):
 
 
 class Prediction(TensorClass["autocast"]):
-    value: TensorDict  # pyright: ignore[reportUninitializedInstanceVariable]
-    timestep_indices: MetaData  # for timestep-wise sparse values # pyright: ignore[reportUninitializedInstanceVariable]
+    value: TensorDict
+    timestep_indices: MetaData  # for timestep-wise sparse values
 
 
 class Metrics(TypedDict):
@@ -42,7 +42,7 @@ def _not_implemented(*_args: Any, **_kwargs: Any) -> Never:
 
 def objective_flatten(objective: Module) -> tuple[list[Module], Context]:
     keys, values = zip(*sorted(objective.named_children()), strict=True)
-    return values, keys  # pyright: ignore[reportReturnType]
+    return values, keys
 
 
 class Objective(Module, ABC):

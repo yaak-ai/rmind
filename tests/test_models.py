@@ -36,32 +36,32 @@ CONFIG_PATH = "../config"
 
 @pytest.fixture
 def train_dataset(batch: Batch) -> TensorDict:
-    return batch.to_tensordict()  # pyright: ignore[reportReturnType]
+    return batch.to_tensordict()  # ty:ignore[invalid-return-type]
 
 
 @pytest.fixture
 def val_dataset(batch: Batch) -> TensorDict:
-    return batch.to_tensordict()  # pyright: ignore[reportReturnType]
+    return batch.to_tensordict()  # ty:ignore[invalid-return-type]
 
 
 @pytest.fixture
 def predict_dataset(batch: Batch) -> TensorDict:
-    return batch.to_tensordict()  # pyright: ignore[reportReturnType]
+    return batch.to_tensordict()  # ty:ignore[invalid-return-type]
 
 
 @pytest.fixture
 def train_dataloader(train_dataset: TensorDict) -> DataLoader[Any]:
-    return DataLoader(train_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # pyright: ignore[reportArgumentType]
+    return DataLoader(train_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # ty:ignore[invalid-argument-type]
 
 
 @pytest.fixture
 def val_dataloader(val_dataset: TensorDict) -> DataLoader[Any]:
-    return DataLoader(val_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # pyright: ignore[reportArgumentType]
+    return DataLoader(val_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # ty:ignore[invalid-argument-type]
 
 
 @pytest.fixture
 def predict_dataloader(predict_dataset: TensorDict) -> DataLoader[Any]:
-    return DataLoader(predict_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # pyright: ignore[reportArgumentType]
+    return DataLoader(predict_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # ty:ignore[invalid-argument-type]
 
 
 @pytest.fixture
@@ -107,11 +107,11 @@ def objectives(
 @pytest.fixture
 def optimizer() -> HydraConfig[Optimizer]:
     return HydraConfig[Optimizer](
-        target="rmind.components.optimizers.SelectiveAdamW",
-        lr=1e-5,  # pyright: ignore[reportCallIssue]
-        betas=[0.9, 0.95],  # pyright: ignore[reportCallIssue]
-        weight_decay=0.1,  # pyright: ignore[reportCallIssue]
-        weight_decay_module_blacklist=[Embedding, LayerNorm],  # pyright: ignore[reportCallIssue]
+        target="rmind.components.optimizers.SelectiveAdamW",  # ty:ignore[invalid-argument-type]
+        lr=1e-5,  # ty:ignore[unknown-argument]
+        betas=[0.9, 0.95],  # ty:ignore[unknown-argument]
+        weight_decay=0.1,  # ty:ignore[unknown-argument]
+        weight_decay_module_blacklist=[Embedding, LayerNorm],  # ty:ignore[unknown-argument]
     )
 
 
@@ -159,7 +159,7 @@ def test_fit(
 def test_predict(
     trainer: pl.Trainer, model: pl.LightningModule, datamodule: pl.LightningDataModule
 ) -> None:
-    trainer.predict(model, datamodule=datamodule, return_predictions=False)  # pyright: ignore[reportUnusedCallResult]
+    trainer.predict(model, datamodule=datamodule, return_predictions=False)
 
 
 @pytest.mark.parametrize("model", [lf("model_yaak_control_transformer_raw")])
@@ -181,10 +181,10 @@ def test_shared_encoder_state_dict(model: pl.LightningModule) -> None:
     assert encoder_keys
     assert not objective_encoder_keys
 
-    state_dict_ref = tree_map(torch.Tensor.clone, state_dict)  # pyright: ignore[reportArgumentType]
-    model.load_state_dict(state_dict)  # pyright: ignore[reportUnusedCallResult]
+    state_dict_ref = tree_map(torch.Tensor.clone, state_dict)  # ty:ignore[invalid-argument-type]
+    model.load_state_dict(state_dict)
     state_dict_reload = model.state_dict()
-    assert tree_all(tree_map(torch.equal, state_dict_ref, state_dict_reload))  # pyright: ignore[reportArgumentType]
+    assert tree_all(tree_map(torch.equal, state_dict_ref, state_dict_reload))  # ty:ignore[invalid-argument-type]
 
 
 @pytest.mark.parametrize("model", [lf("model_yaak_control_transformer_raw")])

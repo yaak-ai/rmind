@@ -63,7 +63,7 @@ def embedding_dim() -> int:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _set_float32_matmul_precision() -> Generator[None, Any, None]:  # pyright: ignore[reportUnusedFunction]
+def _set_float32_matmul_precision() -> Generator[None, Any, None]:
     prev = torch.get_float32_matmul_precision()
     torch.set_float32_matmul_precision("high")
     yield
@@ -80,7 +80,7 @@ def _set_float32_matmul_precision() -> Generator[None, Any, None]:  # pyright: i
         )
     ],
 )
-def device(request) -> torch.device:  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]  # noqa: ANN001
+def device(request) -> torch.device:  # noqa: ANN001
     return torch.device(request.param)
 
 

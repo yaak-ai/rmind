@@ -55,20 +55,20 @@ class PolicyObjective(Objective):
     ) -> None:
         super().__init__()
 
-        self.encoder = encoder
+        self.encoder = encoder  # ty:ignore[unresolved-attribute]
 
         match mask:
             case Tensor():
                 self.register_buffer("_mask", mask, persistent=True)
 
             case None:
-                self._mask = None
+                self._mask = None  # ty:ignore[unresolved-attribute]
 
         self.heads = heads
-        self.losses = losses
-        self.targets = targets
+        self.losses = losses  # ty:ignore[unresolved-attribute]
+        self.targets = targets  # ty:ignore[unresolved-attribute]
 
-        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(
+        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(  # ty:ignore[unresolved-attribute]
             self.build_attention_mask
         )
 
@@ -88,7 +88,7 @@ class PolicyObjective(Objective):
 
         if isinstance(episode, Episode):
 
-            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:  # pyright: ignore[reportRedeclaration]
+            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:
                 match nk:
                     case (Modality.CONTINUOUS, _):
                         return x[..., 0]
@@ -97,7 +97,7 @@ class PolicyObjective(Objective):
                     case _:
                         raise NotImplementedError
 
-            return TensorDict(logits).named_apply(fn, nested_keys=True)
+            return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
 
         def fn(kp: tuple[Any, ...], v: Tensor) -> Tensor:
             if kp[0].key == Modality.CONTINUOUS.value:
@@ -117,20 +117,20 @@ class PolicyObjective(Objective):
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             ).mask.to(device=episode.device)
 
-        embedding = self.encoder(src=episode.embeddings_packed, mask=mask)  # pyright: ignore[reportOptionalCall]
+        embedding = self.encoder(src=episode.embeddings_packed, mask=mask)  # ty:ignore[call-non-callable]
 
         if isinstance(episode, Episode):
             _b, _ = episode.input.batch_size
 
             embeddings = (
                 episode
-                .index[-1]  # pyright: ignore[reportCallIssue]
+                .index[-1]
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
                 )
-                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+                .parse(embedding)
             )
 
             observation_history = embeddings.get((
@@ -150,20 +150,20 @@ class PolicyObjective(Objective):
         else:
             observation_summary = embedding[
                 :,
-                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
+                episode.index[Modality.SPECIAL.value][  # ty:ignore[invalid-argument-type]
                     SpecialToken.OBSERVATION_SUMMARY.value
                 ][-1],
             ]
 
             observation_history = embedding[
                 :,
-                episode.index[Modality.SPECIAL.value][  # pyright: ignore[reportArgumentType]
+                episode.index[Modality.SPECIAL.value][  # ty:ignore[invalid-argument-type]
                     SpecialToken.OBSERVATION_HISTORY.value
                 ][-1],
             ]
 
             waypoints = embedding[
-                :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # pyright: ignore[reportArgumentType]
+                :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # ty:ignore[invalid-argument-type]
             ].mean(dim=1, keepdim=True)
 
         features = rearrange(
@@ -182,10 +182,10 @@ class PolicyObjective(Objective):
             is_leaf=lambda x: isinstance(x, tuple),
         )
 
-        losses = self.losses(  # pyright: ignore[reportOptionalCall]
+        losses = self.losses(
             tree_map(Rearrange("b 1 d -> b d"), logits),
             tree_map(Rearrange("b 1 -> b"), targets),
-        )
+        )  # ty:ignore[call-non-callable]
 
         return {"loss": losses}
 
@@ -217,22 +217,22 @@ class PolicyObjective(Objective):
 
             embedding = self.encoder(
                 src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # pyright: ignore[reportOptionalCall]
+            )  # ty:ignore[call-non-callable]
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(  # pyright: ignore[reportAttributeAccessIssue]
+                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
                     embedding
                 )
 
             embeddings = (
                 episode
-                .index[-1]  # pyright: ignore[reportCallIssue]
+                .index[-1]
                 .select(
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
                     (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
                 )
-                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+                .parse(embedding)
             )
 
             observation_history = embeddings.get((
@@ -334,7 +334,9 @@ class PolicyObjective(Objective):
                         case (Modality.DISCRETE, "turn_signal"):
                             gt = episode.input[action_type][:, -1]
                             return F.cross_entropy(
-                                x.squeeze(1), gt.squeeze(1).long(), reduction="none"
+                                x.squeeze(1),
+                                gt.squeeze(1).long(),
+                                reduction="none",  # ty:ignore[possibly-missing-attribute]
                             ).unsqueeze(1)
 
                         case _:
@@ -354,7 +356,7 @@ class PolicyObjective(Objective):
                     gt = episode.input[action_type][:, -1]
                     match action_type:
                         case (Modality.CONTINUOUS, _):
-                            return F.l1_loss(x[..., 0], gt, reduction="none")
+                            return F.l1_loss(x[..., 0], gt, reduction="none")  # ty:ignore[invalid-argument-type]
 
                         case (Modality.DISCRETE, "turn_signal"):
                             return F.l1_loss(
@@ -372,7 +374,7 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-        return TensorDict(predictions).auto_batch_size_(2)
+        return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
 
     @classmethod
     def build_attention_mask(
@@ -390,11 +392,11 @@ class PolicyObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            current_observation_summary = current.select((  # pyright: ignore[reportCallIssue]
+            current_observation_summary = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_SUMMARY,
             ))
-            current_observation_history = current.select((  # pyright: ignore[reportCallIssue]
+            current_observation_history = current.select((
                 Modality.SPECIAL,
                 SpecialToken.OBSERVATION_HISTORY,
             ))
@@ -403,19 +405,19 @@ class PolicyObjective(Objective):
                     include_nested=True, leaves_only=True
                 )
             )
-            past_action_summary = past.select((  # pyright: ignore[reportCallIssue]
+            past_action_summary = past.select((
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
 
             mask = (
                 mask
-                .do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observations, past_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_summary, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_summary, past_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_history, past_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_history, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_observations, past_actions)
+                .do_not_attend(current_observations, past_action_summary)
+                .do_not_attend(current_observation_summary, past_actions)
+                .do_not_attend(current_observation_summary, past_action_summary)
+                .do_not_attend(current_observation_history, past_actions)
+                .do_not_attend(current_observation_history, past_action_summary)
             )
 
         return mask

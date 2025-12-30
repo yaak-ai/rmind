@@ -45,8 +45,8 @@ class WandbAttentionMaskLegend(Enum, metaclass=AttentionMaskLegendMeta):
 
 
 class AttentionMask(TensorClass):
-    mask: Tensor  # pyright: ignore[reportUninitializedInstanceVariable]
-    legend: AttentionMaskLegend  # pyright: ignore[reportUninitializedInstanceVariable]
+    mask: Tensor
+    legend: AttentionMaskLegend
 
     def _set(self, *, src: Index, dest: Index, val: Number) -> Self:
         i = src.cat_from_tensordict(dim=-1).flatten()

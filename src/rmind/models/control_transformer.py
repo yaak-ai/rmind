@@ -4,33 +4,25 @@ from typing import Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
 import torch
-from lightning_fabric.utilities.types import (
-    _MAP_LOCATION_TYPE,  # pyright: ignore[reportPrivateUsage]
-    _PATH,  # pyright: ignore[reportPrivateUsage]
-)
+from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from lightning_utilities.core.rank_zero import rank_zero_warn
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, InstanceOf, validate_call
-from pytorch_lightning.core.saving import (
-    _load_state,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
-    pl_load,  # pyright: ignore[reportPrivateImportUsage]
-)
+from pytorch_lightning.core.saving import _load_state, pl_load  # noqa: PLC2701
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.migration.utils import (
-    _pl_migrate_checkpoint,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+    _pl_migrate_checkpoint,  # noqa: PLC2701
     pl_legacy_patch,
 )
 from pytorch_lightning.utilities.model_helpers import (
-    _restricted_classmethod,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+    _restricted_classmethod,  # noqa: PLC2701
 )
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from structlog import get_logger
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
-from torch.nn.modules.module import (
-    _IncompatibleKeys,  # pyright: ignore[reportPrivateUsage]
-)
+from torch.nn.modules.module import _IncompatibleKeys
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -82,7 +74,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             hparams["encoder"] = encoder.model_dump()
             encoder = encoder.instantiate()
 
-        self.encoder = encoder
+        self.encoder = encoder  # ty:ignore[unresolved-attribute]
 
         if isinstance(objectives, HydraConfig):
             hparams["objectives"] = objectives.model_dump()
@@ -91,18 +83,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.objectives = objectives
         if self.encoder is not None:
             for objective in self.objectives.values():
-                if hasattr(objective, "encoder") and objective.encoder is None:  # pyright: ignore[reportUnnecessaryComparison]
+                if hasattr(objective, "encoder") and objective.encoder is None:
                     objective.encoder = self.encoder
 
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
 
-        self.optimizer = optimizer
+        self.optimizer = optimizer  # ty:ignore[unresolved-attribute]
 
         if lr_scheduler is not None:
             hparams["lr_scheduler"] = lr_scheduler.model_dump()
 
-        self.lr_scheduler = lr_scheduler
+        self.lr_scheduler = lr_scheduler  # ty:ignore[unresolved-attribute]
 
         self.save_hyperparameters(hparams)
 
@@ -185,7 +177,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     @_restricted_classmethod
-    def load_from_checkpoint(  # pyright: ignore[reportIncompatibleMethodOverride]
+    def load_from_checkpoint(
         cls,  # noqa: N805
         checkpoint_path: _PATH,
         *,
@@ -199,7 +191,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         | None = None,
         weights_only: bool | None = False,
         **kwargs: Any,
-    ) -> Self:
+    ) -> Self:  # ty:ignore[invalid-method-override]
         match hparams_updaters:
             case [] | None:
                 return super().load_from_checkpoint(
@@ -209,7 +201,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     weights_only=weights_only,
                     strict=strict,
                     **kwargs,
-                )
+                )  # ty:ignore[invalid-return-type]
 
             case _:
                 with pl_legacy_patch():
@@ -244,21 +236,21 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     rank_zero_warn(
                         f"The state dict in {checkpoint_path!r} contains no parameters."
                     )
-                    return model  # pyright: ignore[reportReturnType]
+                    return model  # ty:ignore[invalid-return-type]
 
                 device = next(
                     (t for t in state_dict.values() if isinstance(t, torch.Tensor)),
                     torch.tensor(0),
                 ).device
 
-                return model.to(device)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
+                return model.to(device)  # ty:ignore[invalid-return-type, possibly-missing-attribute]
 
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
         episode = self.episode_builder(batch)
 
         metrics = TensorDict({
-            name: objective.compute_metrics(episode)  # pyright: ignore[reportCallIssue]
+            name: objective.compute_metrics(episode)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -273,9 +265,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             from wandb import Image  # noqa: PLC0415
 
             for name, objective in self.objectives.items():
-                mask = objective.build_attention_mask(  # pyright: ignore[reportCallIssue]
+                mask = objective.build_attention_mask(
                     episode.index, episode.timestep, legend=WandbAttentionMaskLegend
-                )
+                )  # ty:ignore[call-non-callable]
                 img = Image(mask.mask.unsqueeze(0))
                 self.logger.log_image(f"masks/{name}", [img], step=step)
 
@@ -289,13 +281,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             sync_dist=True,
         )
 
-        return metrics["loss", "total"]
+        return metrics["loss", "total"]  # ty:ignore[invalid-return-type]
 
     @override
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
         episode = self.episode_builder(batch)
         metrics = TensorDict({
-            name: objective.compute_metrics(episode)  # pyright: ignore[reportCallIssue]
+            name: objective.compute_metrics(episode)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -308,22 +300,22 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 {
                     "/".join(["val", *k]): v
                     for k, v in metrics.items(include_nested=True, leaves_only=True)
-                },
+                },  # ty:ignore[invalid-argument-type]
                 sync_dist=True,
             )
 
-        return metrics["loss", "total"]
+        return metrics["loss", "total"]  # ty:ignore[invalid-return-type]
 
     @override
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
         episode = self.episode_builder(batch)
 
         return TensorDict({
-            name: objective.predict(  # pyright: ignore[reportCallIssue]
+            name: objective.predict(
                 episode=episode,
                 keys=set(PredictionKey),
                 tokenizers=self.episode_builder.tokenizers,
-            )
+            )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         }).auto_batch_size_(1)
 
@@ -335,7 +327,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             name: objective(episode) for name, objective in self.objectives.items()
         }
 
-        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs
+        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs  # ty:ignore[possibly-missing-attribute]
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
@@ -359,6 +351,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 exclude={"scheduler"}
             )
 
-            return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}  # pyright: ignore[reportReturnType]
+            return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}  # ty:ignore[invalid-return-type]
 
-        return {"optimizer": optimizer}
+        return {"optimizer": optimizer}  # ty:ignore[invalid-return-type]
