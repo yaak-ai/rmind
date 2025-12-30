@@ -62,6 +62,10 @@ dev = [
   "pudb>=2025.1.5",
   "wat-inspector",
 ]
+check = [
+  "ruff>=0.14.10",
+  "ty>=0.0.8",
+]
 export = [
   "onnx>=1.19.1",
   "onnxruntime>=1.23.1",

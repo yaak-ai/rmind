@@ -336,8 +336,8 @@ class PolicyObjective(Objective):
                             gt = episode.input[action_type][:, -1]
                             return F.cross_entropy(
                                 x.squeeze(1),
-                                gt.squeeze(1).long(),
-                                reduction="none",  # ty:ignore[possibly-missing-attribute]
+                                gt.squeeze(1).long(),  # ty:ignore[possibly-missing-attribute]
+                                reduction="none",
                             ).unsqueeze(1)
 
                         case _:

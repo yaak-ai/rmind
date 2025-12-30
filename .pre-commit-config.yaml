@@ -1,5 +1,11 @@
+---
 fail_fast: true
 repos:
+  - repo: builtin
+    hooks:
+      - id: trailing-whitespace
+      - id: check-added-large-files
+
   - repo: https://github.com/abravalheri/validate-pyproject
     rev: v0.24.1
     hooks:
@@ -11,7 +17,7 @@ repos:
       - id: pyupgrade
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1
+    rev: v1.40.1
     hooks:
       - id: typos
 
@@ -28,14 +34,14 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/tombi-toml/tombi-pre-commit
-    rev: v0.7.8
+    rev: v0.7.14
     hooks:
       - id: tombi-format
       - id: tombi-lint
 
   - repo: local
     hooks:
-        # TODO: replace once available
+      # TODO: replace once available
       - id: ty
         name: ty check
         entry: uv run ty check
