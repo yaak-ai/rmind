@@ -28,7 +28,7 @@ lint *ARGS:
     uvx --from ruff@latest ruff check {{ ARGS }}
 
 typecheck *ARGS:
-    uvx --from ty@latest ty check {{ ARGS }}
+    uvx ty@latest check {{ ARGS }}
 
 # run pre-commit on all files
 pre-commit *ARGS:

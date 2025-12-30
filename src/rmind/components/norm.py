@@ -128,8 +128,8 @@ class MuLawEncoding(_MuLawEncoding, Invertible):
 class Normalize(Module):
     def __init__(self, p: int = 2, dim: int = -1) -> None:
         super().__init__()
-        self.p = p  # ty:ignore[unresolved-attribute]
-        self.dim = dim  # ty:ignore[unresolved-attribute]
+        self.p: int = p
+        self.dim: int = dim
 
     @override
     def forward(self, input: Tensor) -> Tensor:

@@ -74,7 +74,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             hparams["encoder"] = encoder.model_dump()
             encoder = encoder.instantiate()
 
-        self.encoder = encoder  # ty:ignore[unresolved-attribute]
+        self.encoder: HydraConfig[Module] | InstanceOf[Module] | None = encoder
 
         if isinstance(objectives, HydraConfig):
             hparams["objectives"] = objectives.model_dump()
@@ -89,12 +89,12 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
 
-        self.optimizer = optimizer  # ty:ignore[unresolved-attribute]
+        self.optimizer: HydraConfig[Optimizer] | None = optimizer
 
         if lr_scheduler is not None:
             hparams["lr_scheduler"] = lr_scheduler.model_dump()
 
-        self.lr_scheduler = lr_scheduler  # ty:ignore[unresolved-attribute]
+        self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
 
         self.save_hyperparameters(hparams)
 

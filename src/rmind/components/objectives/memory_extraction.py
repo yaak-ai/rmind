@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
 from typing import final, override
@@ -49,14 +50,14 @@ class MemoryExtractionObjective(Objective):
     ) -> None:
         super().__init__()
 
-        self.encoder = encoder  # ty:ignore[unresolved-attribute]
-        self.heads = heads
-        self.losses = losses  # ty:ignore[unresolved-attribute]
-        self.targets = targets  # ty:ignore[unresolved-attribute]
+        self.encoder: Module | None = encoder
+        self.heads: ModuleDict = heads
+        self.losses: ModuleDict | None = losses
+        self.targets: Targets | None = targets
 
-        self._build_attention_mask = lru_cache(maxsize=2, typed=True)(  # ty:ignore[unresolved-attribute]
-            self.build_attention_mask
-        )
+        self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
+            maxsize=2, typed=True
+        )(self.build_attention_mask)
 
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:

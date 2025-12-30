@@ -47,8 +47,8 @@ class Linear(nn.Linear):
         bias_init_fn: Callable[[Tensor], None] = default_linear_bias_init_fn,  # ty:ignore[invalid-parameter-default]
         **kwargs: Any,
     ) -> None:
-        self.weight_init_fn = weight_init_fn  # ty:ignore[unresolved-attribute]
-        self.bias_init_fn = bias_init_fn  # ty:ignore[unresolved-attribute]
+        self.weight_init_fn: Callable[[Tensor], None] = weight_init_fn
+        self.bias_init_fn: Callable[[Tensor], None] = bias_init_fn
 
         super().__init__(*args, **kwargs)
 
@@ -109,7 +109,7 @@ def _module_wrapper(
         def __init__(self, **kwargs: Any) -> None:
             super().__init__()
 
-            self._kwargs = kwargs  # ty:ignore[unresolved-attribute]
+            self._kwargs: Any = kwargs
 
         @override
         def forward(self, *args: Any, **kwargs: Any) -> Any:

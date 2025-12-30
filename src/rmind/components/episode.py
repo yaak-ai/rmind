@@ -227,13 +227,13 @@ class EpisodeBuilder(Module):
     ) -> None:
         super().__init__()
 
-        self.special_tokens = special_tokens  # ty:ignore[unresolved-attribute]
-        self.timestep = timestep  # ty:ignore[unresolved-attribute]
-        self.input_transform = input_transform
-        self.tokenizers = tokenizers
-        self.embeddings = embeddings
-        self.projections = projections
-        self.position_encoding = position_encoding
+        self.special_tokens: Mapping[SpecialToken, int] = special_tokens
+        self.timestep: tuple[TokenMeta, ...] = timestep
+        self.input_transform: Module = input_transform
+        self.tokenizers: ModuleDict = tokenizers
+        self.embeddings: ModuleDict = embeddings
+        self.projections: ModuleDict = projections
+        self.position_encoding: ModuleDict = position_encoding
 
         if freeze is not None:
             if freeze is False and (
