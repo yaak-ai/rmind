@@ -13,26 +13,20 @@ _default:
 sync:
     uv sync --all-extras --all-groups --locked
 
-install-tools:
-    uv tool install --force --upgrade ty
-    uv tool install --force --upgrade ruff
-    uv tool install --force --upgrade pre-commit --with pre-commit-uv
-
-setup: sync install-tools
-    uvx pre-commit install --install-hooks
+setup: sync
+    uvx prek@latest install
 
 format *ARGS:
-    uvx --from ruff@latest ruff format {{ ARGS }}
+    uvx ruff@latest format {{ ARGS }}
 
 lint *ARGS:
-    uvx --from ruff@latest ruff check {{ ARGS }}
+    uvx ruff@latest check {{ ARGS }}
 
 typecheck *ARGS:
     uvx ty@latest check {{ ARGS }}
 
-# run pre-commit on all files
-pre-commit *ARGS:
-    uvx pre-commit run --all-files --color=always {{ ARGS }}
+prek *ARGS:
+    uvx prek@latest --all-files {{ ARGS }}
 
 # generate config files from templates with ytt
 generate-config:
