@@ -69,6 +69,9 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.register_buffer("_sin_emb", sin_emb, persistent=False)
         self.register_buffer("_cos_emb", cos_emb, persistent=False)
 
+        self._last_embeddings: Tensor | None = None
+        self._last_targets: Tensor | None = None
+
     def _apply_position_embeddings(self, x: Tensor) -> Tensor:
         """Apply rotary position embeddings to input tensor."""
         return rope_rotate_half(x) * self._sin_emb + x * self._cos_emb  # type: ignore[operator]
@@ -147,6 +150,9 @@ class ForwardDynamicsPredictionObjective(Objective):
             tree_map(Rearrange("b t s d -> (b t s) d"), logits),
             tree_map(Rearrange("b t s ... -> (b t s) ..."), targets),
         )  # ty:ignore[call-non-callable]
+
+        self._last_embeddings = logits
+        self._last_targets = targets
 
         return {"loss": losses}
 
