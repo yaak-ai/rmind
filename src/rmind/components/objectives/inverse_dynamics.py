@@ -227,6 +227,10 @@ class InverseDynamicsPredictionObjective(Objective):
                 Modality.SPECIAL,
                 SpecialToken.ACTION_SUMMARY,
             ))
+            current_foresight = current.select((  # pyright: ignore[reportCallIssue]
+                Modality.SPECIAL,
+                SpecialToken.FORESIGHT,
+            ))
 
             mask = (
                 mask.do_not_attend(current_observations, past_actions)  # pyright: ignore[reportArgumentType]
@@ -235,6 +239,8 @@ class InverseDynamicsPredictionObjective(Objective):
                 .do_not_attend(current_observation_summary, past_action_summary)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_observation_history, past_actions)  # pyright: ignore[reportArgumentType]
                 .do_not_attend(current_observation_history, past_action_summary)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_foresight, past_actions)  # pyright: ignore[reportArgumentType]
+                .do_not_attend(current_foresight, past_action_summary)  # pyright: ignore[reportArgumentType]
             )
 
         return mask

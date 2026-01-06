@@ -70,6 +70,7 @@ class PositionEncoding(StrEnum):
     ACTIONS = auto()
     SPECIAL = auto()
     TIMESTEP = auto()
+    CONTEXT = auto()
 
 
 class TokenMeta(NamedTuple):
@@ -359,7 +360,7 @@ class EpisodeBuilder(Module):
             timestep_index,
         )
 
-    def _build_position_embeddings(  # noqa: PLR0914, C901
+    def _build_position_embeddings(
         self,
         embeddings: TensorTree,
         timestep_index: TensorTree,
@@ -375,21 +376,45 @@ class EpisodeBuilder(Module):
 
         if (
             mod_pe := self.position_encoding.get(
-                (k_pe := (PositionEncoding.IMAGE.value, "patch")), default=None
+                k_pe := PositionEncoding.TIMESTEP.value, default=None
             )
         ) is not None:
-            num_rows = mod_pe.row.num_embeddings  # pyright: ignore[reportAttributeAccessIssue]
-            num_cols = mod_pe.col.num_embeddings  # pyright: ignore[reportAttributeAccessIssue]
-            row_pe = mod_pe.row(torch.arange(num_rows, device=device))  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue, reportArgumentType]
-            col_pe = mod_pe.col(torch.arange(num_cols, device=device))  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue, reportArgumentType]
-            row_pe = repeat(row_pe, "h d -> (h w) d", w=num_cols)
-            col_pe = repeat(col_pe, "w d -> (h w) d", h=num_rows)
-            position_embedding = row_pe + col_pe
+            if not torch.compiler.is_exporting():
+                # build a sequence starting from a random index (simplified [0])
+                # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
+                # ---
+                # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
 
+                low, high = 0, mod_pe.num_embeddings - t + 1  # pyright: ignore[reportAttributeAccessIssue]
+                start = torch.randint(low, high, (1,)).item()
+                position = torch.arange(start=start, end=start + t, device=device)
+            else:
+                position = torch.arange(t, device=device)
+
+            position_embeddings[k_pe] = tree_map(
+                lambda leaf: (
+                    repeat(
+                        mod_pe(position),  # pyright: ignore[reportCallIssue]
+                        "... t d -> ... t n d",
+                        n=leaf.shape[-2],
+                    )
+                    if leaf is not None
+                    else None
+                ),
+                embeddings,
+            )
+
+        if (
+            mod_pe := self.position_encoding.get(
+                k_pe := (PositionEncoding.CONTEXT.value, "waypoints"), default=None
+            )
+        ) is not None:
+            position = torch.arange(mod_pe.num_embeddings, device=device)  # pyright: ignore[reportCallIssue, reportArgumentType, reportAttributeAccessIssue]
+            position_embedding = mod_pe(position)  # pyright: ignore[reportCallIssue]
             paths = tuple(
                 (modality, name)
                 for (_, modality, name) in tree_paths(timestep)
-                if modality.key == Modality.IMAGE.value  # pyright: ignore[reportAttributeAccessIssue]
+                if modality.key == Modality.CONTEXT.value  # pyright: ignore[reportAttributeAccessIssue]
             )
 
             position_embeddings[k_pe] = tree_map_with_path(
@@ -404,9 +429,11 @@ class EpisodeBuilder(Module):
         ) is not None:
             paths = tree_paths(timestep[TokenType.OBSERVATION.value])
             position_embeddings[k_pe] = tree_map_with_path(
-                lambda path, _: mod_pe(key_get(timestep_index, path))  # pyright: ignore[reportCallIssue]
-                if path in paths
-                else None,
+                lambda path, _: (
+                    mod_pe(key_get(timestep_index, path))  # pyright: ignore[reportCallIssue]
+                    if path in paths
+                    else None
+                ),
                 embeddings,
             )
 
@@ -436,43 +463,9 @@ class EpisodeBuilder(Module):
                 embeddings,
             )
 
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.TIMESTEP.value, default=None
-            )
-        ) is not None:
-            if not torch.compiler.is_exporting():
-                # build a sequence starting from a random index (simplified [0])
-                # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
-                # ---
-                # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
-
-                low, high = 0, mod_pe.num_embeddings - t + 1  # pyright: ignore[reportAttributeAccessIssue]
-                start = torch.randint(low, high, (1,)).item()
-                position = torch.arange(start=start, end=start + t, device=device)
-            else:
-                position = torch.arange(t, device=device)
-
-            position_embedding = rearrange(mod_pe(position), "t d -> t 1 d")  # pyright: ignore[reportCallIssue]
-
-            position_embeddings[k_pe] = tree_map(
-                lambda leaf: position_embedding if leaf is not None else None,
-                embeddings,
-            )
-
-        pe = tree_map(
-            lambda *xs: sum(leaves)
-            if (leaves := [x for x in xs if x is not None])
-            else None,
+        return tree_map(
+            lambda *xs: (
+                sum(leaves) if (leaves := [x for x in xs if x is not None]) else None
+            ),
             *position_embeddings.values(),
         )
-
-        # HACK: fix me # noqa: FIX004
-        for k0, v0 in pe.items():
-            for k1, v1 in v0.items():
-                if v1 is None:
-                    continue
-                if embeddings[k0][k1].shape[2] != v1.shape[1]:  # pyright: ignore[reportAttributeAccessIssue]
-                    v = repeat(v1, "t 1 d -> t x d", x=embeddings[k0][k1].shape[2])  # pyright: ignore[reportAttributeAccessIssue]
-                    pe[k0][k1] = v
-        return pe

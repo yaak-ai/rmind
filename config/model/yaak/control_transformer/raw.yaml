@@ -24,8 +24,8 @@ episode_builder:
     observation_summary: [0]
     observation_history: [1]
     action_summary: [2]
-    foresight: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66]
-    mask: [67]
+    foresight: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    mask: [19]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -210,7 +210,7 @@ episode_builder:
 
       special:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 68
+        num_embeddings: 20
         embedding_dim: ${embedding_dim}
 
   projection:
@@ -219,44 +219,45 @@ episode_builder:
       image:
         _target_: torch.nn.Sequential
         _args_:
-          - _target_: torch.nn.LayerNorm
-            normalized_shape: ${image_embedding_dim}
+          # https://github.com/InternRobotics/Seer/blob/main/models/perceiver_resampler.py#L128
           - _target_: rmind.components.nn.Linear
             in_features: ${image_embedding_dim}
             out_features: ${embedding_dim}
+          - _target_: torch.nn.LayerNorm
+            normalized_shape: ${image_embedding_dim}
       continuous:
         speed:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${image_embedding_dim}
         gas_pedal:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${image_embedding_dim}
         brake_pedal:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${image_embedding_dim}
         steering_angle:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${image_embedding_dim}
         gas_pedal_diff: null
         brake_pedal_diff: null
         steering_angle_diff: null
@@ -265,36 +266,33 @@ episode_builder:
         waypoints:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${image_embedding_dim}
       discrete:
         turn_signal:
           _target_: torch.nn.Sequential
           _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${image_embedding_dim}
 
       special:
         _target_: torch.nn.Sequential
         _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${embedding_dim}
             - _target_: rmind.components.nn.Linear
               in_features: ${embedding_dim}
               out_features: ${embedding_dim}
+            - _target_: torch.nn.LayerNorm
+              normalized_shape: ${image_embedding_dim}
 
   position_encoding:
     _target_: rmind.components.containers.ModuleDict
     modules:
-      image:
-        patch:
-      observations:
       actions:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 1
@@ -309,6 +307,12 @@ episode_builder:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 24
         embedding_dim: ${embedding_dim}
+
+      context:
+        waypoints:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 10
+          embedding_dim: ${embedding_dim}
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
@@ -399,16 +403,44 @@ objectives:
         dim: ${embedding_dim}
         rotate_half: True
         feat_shape: [16, 16]
-      heads:
+      projections:
         _target_: rmind.components.containers.ModuleDict
         modules:
+          continuous:
+            speed:
+              _target_: torch.nn.Identity
+              in_features: ${embedding_dim}
+              out_features: ${embedding_dim}
           special:
             foresight:
               _target_: torch.nn.Sequential
               _args_:
                 - _target_: rmind.components.nn.Linear
-                  in_features: ${embedding_dim}
-                  out_features: ${image_embedding_dim}
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 3
+                      - ${embedding_dim}
+                  out_features: ${embedding_dim}
+                - _target_: torch.nn.LayerNorm
+                  normalized_shape: ${image_embedding_dim}
+      heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            speed:
+              _target_: rmind.components.nn.Linear
+              in_features:
+                _target_: operator.mul
+                _args_:
+                  - 3
+                  - ${embedding_dim}
+              out_features: ${speed_bins}
+              bias: False
+          special:
+            foresight:
+              _target_: torch.nn.Sequential
+              _args_:
                 - _target_: einops.layers.torch.Rearrange
                   pattern: "b t s d -> (b t) s d"
                 - _target_: rmind.components.llm.Transformer
@@ -428,6 +460,8 @@ objectives:
       targets:
         special:
           foresight: [input_embeddings, image, cam_front_left]
+        continuous:
+          speed: [input_tokens, continuous, speed]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
@@ -438,6 +472,9 @@ objectives:
               weight_sim: 100.0
               weight_cross: 100.0
               timestep: 5
+          continuous:
+            speed:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
     random_masked_hindsight_control:
       _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective
