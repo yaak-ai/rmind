@@ -41,6 +41,9 @@ def main(cfg: DictConfig) -> None:
     model = config.model.instantiate().eval()
     logger.debug(f"model summary:\n{ModelSummary(model)}")  # noqa: G004
 
+    logger.debug("model eager forward")
+    _ = model(*args)
+
     logger.debug("torch exporting")
     exported_program = torch.export.export(mod=model, args=tuple(args), strict=True)
 

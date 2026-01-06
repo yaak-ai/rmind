@@ -41,7 +41,7 @@ episode_builder:
             steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
 
           context:
-            waypoints: [data, waypoints/waypoints_normalized]
+            waypoints: [data, waypoints/xy_normalized]
 
           discrete:
             turn_signal: [data, meta/VehicleState/turn_signal]
@@ -84,15 +84,15 @@ episode_builder:
     _target_: rmind.components.containers.ModuleDict
     modules:
       image:
-      _target_: torch.nn.Sequential
-      _args_:
-        - _target_: rmind.components.timm_backbone.TimmBackbone
-          model_name: vit_small_patch16_dinov3.lvd1689m
-          freeze: True
-          out_indices: [10]
-          img_size: [256, 256]
-        - _target_: einops.layers.torch.Rearrange
-          pattern: "... c h w -> ... (h w) c"
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: rmind.components.timm_backbone.TimmBackbone
+            model_name: vit_small_patch16_dinov3.lvd1689m
+            freeze: True
+            out_indices: [10]
+            img_size: [256, 256]
+          - _target_: einops.layers.torch.Rearrange
+            pattern: "... c h w -> ... (h w) c"
 
       continuous:
         speed:
@@ -158,9 +158,6 @@ episode_builder:
           _target_: rmind.components.nn.Linear
           in_features: ${embedding_dim}
           out_features: ${embedding_dim}
-        gas_pedal_diff: null
-        brake_pedal_diff: null
-        steering_angle_diff: null
 
       context:
         _target_: rmind.components.nn.Linear
@@ -177,29 +174,31 @@ episode_builder:
         in_features: ${embedding_dim}
         out_features: ${embedding_dim}
 
-    position_encoding:
-      _target_: rmind.components.containers.ModuleDict
-      modules:
-        context:
-          waypoints:
-            _target_: rmind.components.nn.Embedding
-            num_embeddings: 10
-            embedding_dim: ${embedding_dim}
-
-        actions:
+  position_encoding:
+    _target_: rmind.components.containers.ModuleDict
+    modules:
+      context:
+        waypoints:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: 1
+          num_embeddings: 10
           embedding_dim: ${embedding_dim}
 
-        special:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: 1
-          embedding_dim: ${embedding_dim}
+      actions:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 1
+        embedding_dim: ${embedding_dim}
 
-        timestep:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: 24
-          embedding_dim: ${embedding_dim}
+      special:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 1
+        embedding_dim: ${embedding_dim}
+
+      timestep:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 24
+        embedding_dim: ${embedding_dim}
+
+      observations: null
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
