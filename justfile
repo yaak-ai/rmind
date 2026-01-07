@@ -6,6 +6,7 @@ export LOVELY_TENSORS := "1"
 export HYDRA_FULL_ERROR := "1"
 export RERUN_STRICT := "1"
 export WANDB_DIR := "wandb_logs"
+export TORCHDYNAMO_VERBOSE := "1"
 
 _default:
     @just --list --unsorted

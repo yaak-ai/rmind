@@ -2,7 +2,7 @@
 data:
   cam_front_left:
     _target_: torch.testing.make_tensor
-    _args_: [1, 6, 3, 320, 576]
+    _args_: [1, 6, 3, 256, 256]
     dtype:
       _target_: hydra.utils.get_object
       path: torch.float
@@ -60,7 +60,7 @@ data:
     low: 0
     high: 3
 
-  waypoints/waypoints_normalized:
+  waypoints/xy_normalized:
     _target_: torch.testing.make_tensor
     _args_: [1, 6, 10, 2]
     dtype:
