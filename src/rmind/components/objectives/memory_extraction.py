@@ -60,7 +60,9 @@ class MemoryExtractionObjective(Objective):
         )(self.build_attention_mask)
 
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
+    def compute_metrics(
+        self, episode: Episode, final_embedding_norm: InstanceOf[Module]
+    ) -> Metrics:
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
