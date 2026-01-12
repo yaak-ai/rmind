@@ -112,7 +112,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                     dim=-2,
                 )
             )
-            .apply(self._apply_position_embeddings)
+            # .apply(self._apply_position_embeddings)
             .apply(
                 # foresight, action_summary
                 lambda obs: pack(
