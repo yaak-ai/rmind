@@ -282,6 +282,10 @@ episode_builder:
         num_embeddings: 24
         embedding_dim: ${embedding_dim}
 
+  final_embedding_norm:
+    _target_: torch.nn.LayerNorm
+    normalized_shape: ${embedding_dim}
+
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
   dim_model: ${embedding_dim}

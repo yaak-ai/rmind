@@ -58,13 +58,13 @@ class ForwardDynamicsPredictionObjective(Objective):
         )(self.build_attention_mask)
 
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
+    def compute_metrics(self, episode: Episode, final_embedding_norm: InstanceOf[Module]) -> Metrics:
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
 
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            src=final_embedding_norm(episode.embeddings_packed), mask=mask.mask.to(episode.device)
         )  # ty:ignore[call-non-callable]
 
         index = episode.index[:-1]  # all but last timestep

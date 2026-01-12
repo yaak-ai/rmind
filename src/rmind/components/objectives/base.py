@@ -1,3 +1,4 @@
+from pydantic import InstanceOf
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
@@ -56,7 +57,7 @@ class Objective(Module, ABC):
         return getattr(self, name)
 
     @abstractmethod
-    def compute_metrics(self, episode: Episode) -> Metrics: ...
+    def compute_metrics(self, episode: Episode, final_embedding_norm: InstanceOf[Module]) -> Metrics: ...
 
     @abstractmethod
     def predict(
