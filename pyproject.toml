@@ -3,7 +3,7 @@ name = "rmind"
 version = "0.1.0"
 description = "Foundation models for spatial intelligence"
 readme = "README.md"
-requires-python = ">=3.10, <3.13"
+requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "ML yaak team", email = "ml@yaak.ai" }]
 classifiers = [
@@ -12,20 +12,20 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: Apache Software License",
   "Operating System :: POSIX :: Linux",
-  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.10",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
   "einops>=0.8.1",
   "hydra-core>=1.3.2",
   "more-itertools>=10.4.0",
-  "numpy>2.3.0",
+  "numpy>=2.0.0",
   "omegaconf>=2.3.0",
   "orjson>=3.10.12",
   "polars>=1.32.2",
   "pydantic>=2.11.4",
   "pytorch-lightning>=2.6.0",
-  "rbyte[geo,yaak]==0.34.2",
+  "rbyte[geo,jpeg,yaak] @ git+https://github.com/yaak-ai/rbyte.git@jetson-orin",
   "structlog>=25.2.0",
   "tensordict-nightly==2025.9.24",  # rbyte dep
   "timm>=1.0.22",
@@ -43,7 +43,7 @@ rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 
 [project.optional-dependencies]
-predict = ["funcy>=2.0", "wandb==0.23.0", "rbyte[visualize]"]
+predict = ["funcy>=2.0", "wandb==0.23.0"]
 test = ["pytest>=8.4.1", "pytest-lazy-fixtures>=1.1.4"]
 train = [
   "contextily>=1.6.2",
