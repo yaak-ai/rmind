@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Protocol, TypeAlias, runtime_checkable
 
 from torch import Tensor
@@ -8,4 +10,4 @@ class Invertible(Protocol):
     def invert(self, input: Tensor) -> Tensor: ...
 
 
-TensorTree: TypeAlias = dict[str, "Tensor | TensorTree"]
+TensorTree: TypeAlias = dict[str, Tensor | TensorTree]

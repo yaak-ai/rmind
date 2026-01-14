@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable, Mapping
 from functools import partial
 from typing import Any, TypeAlias, final
@@ -75,7 +77,7 @@ class Identity(nn.Identity, Invertible):
         return input
 
 
-Paths: TypeAlias = Mapping[str, "tuple[str, ...] | Paths"]
+Paths: TypeAlias = Mapping[str, tuple[str, ...] | Paths]
 
 
 @final

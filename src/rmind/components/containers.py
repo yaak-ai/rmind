@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Mapping
 from typing import Any, TypeAlias, overload
 
@@ -19,7 +21,7 @@ from torch.utils._pytree import (
     tree_map,  # noqa: PLC2701
 )
 
-Modules: TypeAlias = Mapping[str, "InstanceOf[Module] | Modules | None"]
+Modules: TypeAlias = Mapping[str, InstanceOf[Module] | Modules | None]
 
 
 class ModuleDict(_ModuleDict):
