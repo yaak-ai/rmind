@@ -1,4 +1,4 @@
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeAlias, runtime_checkable
 
 from torch import Tensor
 
@@ -8,4 +8,4 @@ class Invertible(Protocol):
     def invert(self, input: Tensor) -> Tensor: ...
 
 
-type TensorTree = dict[str, Tensor | TensorTree]
+TensorTree: TypeAlias = dict[str, "Tensor | TensorTree"]

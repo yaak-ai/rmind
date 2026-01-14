@@ -1,6 +1,6 @@
 from collections.abc import Callable, Mapping
 from functools import partial
-from typing import Any, final
+from typing import Any, TypeAlias, final
 
 from typing_extensions import override
 
@@ -75,7 +75,7 @@ class Identity(nn.Identity, Invertible):
         return input
 
 
-type Paths = Mapping[str, tuple[str, ...] | Paths]
+Paths: TypeAlias = Mapping[str, "tuple[str, ...] | Paths"]
 
 
 @final

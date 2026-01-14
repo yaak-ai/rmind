@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Any, overload
+from typing import Any, TypeAlias, overload
 
 from typing_extensions import override
 
@@ -19,7 +19,7 @@ from torch.utils._pytree import (
     tree_map,  # noqa: PLC2701
 )
 
-type Modules = Mapping[str, InstanceOf[Module] | Modules | None]
+Modules: TypeAlias = Mapping[str, "InstanceOf[Module] | Modules | None"]
 
 
 class ModuleDict(_ModuleDict):
