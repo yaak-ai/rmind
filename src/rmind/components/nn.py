@@ -1,6 +1,8 @@
 from collections.abc import Callable, Mapping
 from functools import partial
-from typing import Any, final, override
+from typing import Any, final
+
+from typing_extensions import override
 
 import torch
 from pydantic import validate_call

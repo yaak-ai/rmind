@@ -1,5 +1,7 @@
 from enum import Enum, EnumMeta
-from typing import Any, ClassVar, Protocol, Self, final, runtime_checkable
+from typing import Any, ClassVar, Protocol, final, runtime_checkable
+
+from typing_extensions import Self
 
 import torch
 from tensordict import TensorClass

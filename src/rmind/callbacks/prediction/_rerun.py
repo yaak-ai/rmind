@@ -1,5 +1,7 @@
 from collections.abc import Sequence
-from typing import Any, Literal, final, override
+from typing import Any, Literal, final
+
+from typing_extensions import override
 
 import pytorch_lightning as pl
 from pydantic import InstanceOf, validate_call

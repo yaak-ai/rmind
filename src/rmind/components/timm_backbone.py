@@ -1,5 +1,6 @@
 from math import prod
-from typing import override
+
+from typing_extensions import override
 
 from timm import create_model
 from torch import Tensor, nn

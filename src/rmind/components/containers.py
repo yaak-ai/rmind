@@ -1,5 +1,7 @@
 from collections.abc import Mapping
-from typing import Any, overload, override
+from typing import Any, overload
+
+from typing_extensions import override
 
 from more_itertools import always_iterable
 from pydantic import InstanceOf, validate_call

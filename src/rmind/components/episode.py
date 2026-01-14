@@ -3,7 +3,9 @@ from dataclasses import dataclass
 from enum import StrEnum, auto, unique
 from itertools import accumulate, pairwise
 from operator import itemgetter
-from typing import Any, NamedTuple, final, override
+from typing import Any, NamedTuple, final
+
+from typing_extensions import override
 
 import more_itertools as mit
 import torch

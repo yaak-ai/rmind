@@ -1,4 +1,4 @@
-from typing import override
+from typing_extensions import override
 
 import pytorch_lightning as pl
 import rbyte

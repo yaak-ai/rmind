@@ -1,4 +1,6 @@
-from typing import TYPE_CHECKING, Any, Literal, final, override
+from typing import TYPE_CHECKING, Any, Literal, final
+
+from typing_extensions import override
 
 import torch
 from pydantic import InstanceOf, NonNegativeFloat, validate_call

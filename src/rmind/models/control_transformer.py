@@ -1,6 +1,8 @@
 from collections.abc import Callable, Mapping, Sequence
 from itertools import product
-from typing import Any, ClassVar, Literal, Self, override
+from typing import Any, ClassVar, Literal
+
+from typing_extensions import Self, override
 
 import pytorch_lightning as pl
 import torch

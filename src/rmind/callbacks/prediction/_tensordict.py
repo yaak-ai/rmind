@@ -1,7 +1,9 @@
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
-from typing import Literal, final, override
+from typing import Literal, final
+
+from typing_extensions import override
 
 import orjson
 import pytorch_lightning as pl

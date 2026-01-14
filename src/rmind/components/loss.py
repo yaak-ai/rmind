@@ -1,5 +1,7 @@
 from collections.abc import Callable
-from typing import Any, Protocol, override, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+from typing_extensions import override
 
 import torch
 import torch.nn.functional as F

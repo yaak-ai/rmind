@@ -1,5 +1,7 @@
 from collections.abc import Iterator
-from typing import Protocol, override, runtime_checkable
+from typing import Protocol, runtime_checkable
+
+from typing_extensions import override
 
 import pytorch_lightning as pl
 from pydantic import InstanceOf, validate_call
