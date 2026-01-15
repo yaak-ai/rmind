@@ -94,7 +94,6 @@ DEP003 = ["rmind"]
 
 [tool.deptry.package_module_name_map]
 hydra-core = "hydra"
-tensordict-nightly = "tensordict"
 pytorch-lightning = [
   "pytorch_lightning",
   "lightning_fabric",
