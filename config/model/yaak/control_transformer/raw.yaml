@@ -435,15 +435,17 @@ objectives:
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
       encoder: null
-      position_embedding:
-        _target_: timm.layers.pos_embed_sincos.RotaryEmbeddingDinoV3
-        dim: ${encoder_embedding_dim}
-        rotate_half: True
-        feat_shape: [16, 16]
-      heads:
+      patch_grid_size: [16, 16]
+      patch_embed_dim: ${img_embedding_dim}
+      projections:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          image:
+          continuous:
+            speed:
+              _target_: torch.nn.Identity
+              in_features: ${encoder_embedding_dim}
+              out_features: ${encoder_embedding_dim}
+          foresight:
             cam_front_left:
               _target_: torch.nn.Sequential
               _args_:
@@ -451,9 +453,26 @@ objectives:
                   in_features:
                     _target_: operator.mul
                     _args_:
+                      - 3
                       - ${encoder_embedding_dim}
-                      - 2
-                  out_features: ${img_embedding_dim}
+                  out_features: ${encoder_embedding_dim}
+      heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            speed:
+              _target_: rmind.components.nn.Linear
+              in_features:
+                _target_: operator.mul
+                _args_:
+                  - 3
+                  - ${encoder_embedding_dim}
+              out_features: ${speed_bins}
+              bias: False
+          foresight:
+            cam_front_left:
+              _target_: torch.nn.Sequential
+              _args_:
                 - _target_: einops.layers.torch.Rearrange
                   pattern: "b t s d -> (b t) s d"
                 - _target_: rmind.components.llm.Transformer
@@ -471,13 +490,18 @@ objectives:
                   out_features: ${img_embedding_dim}
 
       targets:
-        image:
+        continuous:
+          speed: [input_tokens, continuous, speed]
+        foresight:
           cam_front_left: [input_embeddings, image, cam_front_left]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          image:
+          continuous:
+            speed:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+          foresight:
             cam_front_left:
               _target_: rmind.components.loss.GramAnchoringObjective
               weight_sim: 100.0
