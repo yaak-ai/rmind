@@ -27,7 +27,7 @@ dependencies = [
   "pytorch-lightning>=2.6.0",
   "rbyte[geo,jpeg,yaak] @ git+https://github.com/yaak-ai/rbyte.git@jetson-orin",
   "structlog>=25.2.0",
-  "tensordict-nightly==2025.9.24",  # rbyte dep
+  "tensordict==0.10.0",
   "timm>=1.0.22",
   "torch>=2.8.0",
   "torchaudio==2.8.0",
