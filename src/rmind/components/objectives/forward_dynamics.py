@@ -4,12 +4,10 @@ from functools import lru_cache
 from typing import final, override
 
 import torch
-from einops import pack, repeat
+from einops import pack, rearrange, repeat
 from einops.layers.torch import Rearrange
-from pydantic import InstanceOf, validate_call
+from pydantic import InstanceOf
 from tensordict import TensorDict
-from timm.layers.pos_embed_sincos import rope_rotate_half
-from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map  # noqa: PLC2701
@@ -28,6 +26,7 @@ from rmind.components.mask import (
     AttentionMaskLegend,
     TorchAttentionMaskLegend,
 )
+from rmind.components.nn import Embedding
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
@@ -41,15 +40,16 @@ REFERENCE_CAMERA = "cam_front_left"
 
 @final
 class ForwardDynamicsPredictionObjective(Objective):
-    @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         encoder: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
-        position_embedding: InstanceOf[Module] | None = None,
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
+        projections: ModuleDict | None = None,
+        patch_grid_size: tuple[int, int] = (16, 16),
+        patch_embed_dim: int = 384,
     ) -> None:
         super().__init__()
 
@@ -57,69 +57,24 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
+        self.projections: ModuleDict | None = projections
+
+        self.row_embed = Embedding(patch_grid_size[0], patch_embed_dim)
+        self.col_embed = Embedding(patch_grid_size[1], patch_embed_dim)
 
         self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
             maxsize=2, typed=True
         )(self.build_attention_mask)
+        self._last_embeddings: torch.Tensor | None = None
+        self._last_targets: torch.Tensor | None = None
 
-        # TODO: should it smh be initialized via .yaml?  # noqa: FIX002
-        # https://github.com/huggingface/pytorch-image-models/blob/af3732eebe8c1964e5ba5f2769f955e6e0deb980/timm/layers/pos_embed_sincos.py#L271
-        # https://github.com/huggingface/pytorch-image-models/blob/af3732eebe8c1964e5ba5f2769f955e6e0deb980/timm/layers/pos_embed_sincos.py#L1138
-        sin_emb, cos_emb = position_embedding.get_embed().tensor_split(2, -1)  # ty:ignore[possibly-missing-attribute, call-non-callable]
-        self.register_buffer("_sin_emb", sin_emb, persistent=False)
-        self.register_buffer("_cos_emb", cos_emb, persistent=False)
-
-    def _apply_position_embeddings(self, x: Tensor) -> Tensor:
-        """Apply rotary position embeddings to input tensor."""
-        return rope_rotate_half(x) * self._sin_emb + x * self._cos_emb  # type: ignore[operator]
-
-    @staticmethod
-    def _compute_num_mask_tokens(episode: Episode, foresight: TensorDict) -> int:
-        num_foresight_tokens = foresight[REFERENCE_CAMERA].shape[-2]
-        num_image_tokens = episode.projected_embeddings.get((
-            Modality.IMAGE,
-            REFERENCE_CAMERA,
-        )).shape[-2]
-        return num_image_tokens - num_foresight_tokens
-
-    def _extract_foresight_features(
-        self, episode: Episode, index: Index, embedding: Tensor
-    ) -> TensorDict:
-        action_summary = (
-            index
-            .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
-            .parse(embedding)
-            .get(k)
+    def get_patch_pos_embed(self) -> torch.Tensor:
+        row_pos = self.row_embed.weight  # (H, D)
+        col_pos = self.col_embed.weight  # (W, D)
+        pos_embed = rearrange(row_pos, "h d -> h 1 d") + rearrange(
+            col_pos, "w d -> 1 w d"
         )
-
-        foresight = index.select(k := Modality.FORESIGHT).parse(embedding).get(k)
-
-        mask_token = episode.embeddings.get((Modality.UTILITY, "mask"))[:, :-1]
-
-        return (
-            foresight
-            .apply(
-                # cat mask tokens to foresight tokens
-                lambda x: torch.cat(
-                    [
-                        x,
-                        repeat(
-                            mask_token,
-                            "b t 1 d -> b t n d",
-                            n=self._compute_num_mask_tokens(episode, foresight),
-                        ),
-                    ],
-                    dim=-2,
-                )
-            )
-            # .apply(self._apply_position_embeddings)
-            .apply(
-                # foresight, action_summary
-                lambda obs: pack(
-                    [obs, action_summary.broadcast_to(obs.shape)], "b t p *"
-                )[0]
-            )
-        )
+        return rearrange(pos_embed, "h w d -> (h w) d")
 
     @override
     def compute_metrics(
@@ -135,15 +90,74 @@ class ForwardDynamicsPredictionObjective(Objective):
         )  # ty:ignore[call-non-callable]
 
         index = episode.index[:-1]  # all but last timestep
-        features = self._extract_foresight_features(episode, index, embedding)
+        # TODO: make it generalizable to multiple cameras  # noqa: FIX002
 
-        logits = self.heads({Modality.IMAGE: features.to_dict()})
-        logits = tree_map(Rearrange("(b t) s d -> b t s d", t=len(index)), logits)
+        observations = TensorDict({
+            k: index.select(k).parse(embedding).get(k)
+            for k in [
+                (Modality.FORESIGHT, "cam_front_left"),
+                (Modality.CONTINUOUS, "speed"),
+            ]
+        })
+        action_summary = (
+            index
+            .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))  # pyright: ignore[reportCallIssue]
+            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+            .get(k)
+        )
+
+        obs_summary = (
+            index
+            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))  # pyright: ignore[reportCallIssue]
+            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+            .get(k)
+        )
+        features: TensorDict = observations.apply(
+            # pack: (obs[0], action_summary), (obs[1], action_summary), ...
+            lambda obs: pack(
+                [
+                    obs,
+                    obs_summary.broadcast_to(obs.shape),
+                    action_summary.broadcast_to(obs.shape),
+                ],
+                "b t p *",
+            )[0]
+        )  # ty:ignore[invalid-assignment]
+
+        features_projected = TensorDict(
+            self.projections(features.to_dict())  # pyright: ignore[reportOptionalCall, reportOptionalMemberAccess]  # ty:ignore[call-non-callable]
+        )
+        foresight = features_projected.get((Modality.FORESIGHT, "cam_front_left"))
+
+        num_img_tokens = episode.projected_embeddings.get((
+            Modality.IMAGE,
+            REFERENCE_CAMERA,
+        )).shape[-2]
+
+        mask_tokens = repeat(
+            episode.embeddings.get((Modality.UTILITY, "mask"))[:, :-1],
+            "b t 1 d -> b t n d",
+            n=num_img_tokens,
+        )
+        mask_tokens = mask_tokens + self.get_patch_pos_embed()  # noqa: PLR6104
+
+        features_projected.set(
+            (Modality.FORESIGHT, "cam_front_left"),
+            torch.cat([mask_tokens, foresight], dim=-2),
+        )
+
+        logits = self.heads(features_projected.to_dict())
+
+        logits[Modality.FORESIGHT]["cam_front_left"] = rearrange(
+            logits[Modality.FORESIGHT]["cam_front_left"],
+            "(b t) s d -> b t s d",
+            t=len(index),
+        )[:, :, :num_img_tokens]  # img embeddings are reconstructed in mask
 
         targets = tree_map(
-            lambda k: episode.get(k)[:, 1:],
+            lambda k: episode.get(tuple(k))[:, 1:],
             self.targets,
-            is_leaf=lambda x: isinstance(x, tuple),
+            is_leaf=lambda x: isinstance(x, list),
         )
 
         losses = self.losses(
@@ -151,6 +165,8 @@ class ForwardDynamicsPredictionObjective(Objective):
             tree_map(Rearrange("b t s ... -> (b t s) ..."), targets),
         )  # ty:ignore[call-non-callable]
 
+        self._last_embeddings = logits
+        self._last_targets = targets
         return {"loss": losses}
 
     @override
@@ -188,10 +204,68 @@ class ForwardDynamicsPredictionObjective(Objective):
             )  # ty:ignore[call-non-callable]
 
             index = episode.index[:-1]  # all but last timestep
-            features = self._extract_foresight_features(episode, index, embedding)
 
-            logits = self.heads({Modality.IMAGE: features.to_dict()})
-            logits = tree_map(Rearrange("(b t) s d -> b t s d", t=len(index)), logits)
+            observations = TensorDict({
+                k: index.select(k).parse(embedding).get(k)
+                for k in [
+                    (Modality.FORESIGHT, REFERENCE_CAMERA),
+                    (Modality.CONTINUOUS, "speed"),
+                ]
+            })
+            action_summary = (
+                index
+                .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))  # pyright: ignore[reportCallIssue]
+                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+                .get(k)
+            )
+            obs_summary = (
+                index
+                .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))  # pyright: ignore[reportCallIssue]
+                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+                .get(k)
+            )
+
+            features: TensorDict = observations.apply(
+                lambda obs: pack(
+                    [
+                        obs,
+                        obs_summary.broadcast_to(obs.shape),
+                        action_summary.broadcast_to(obs.shape),
+                    ],
+                    "b t p *",
+                )[0]
+            )  # ty:ignore[invalid-assignment]
+
+            features_projected = TensorDict(
+                self.projections(features.to_dict())  # pyright: ignore[reportOptionalCall, reportOptionalMemberAccess]  # ty:ignore[call-non-callable]
+            )
+            foresight = features_projected.get((Modality.FORESIGHT, REFERENCE_CAMERA))
+
+            num_img_tokens = episode.projected_embeddings.get((
+                Modality.IMAGE,
+                REFERENCE_CAMERA,
+            )).shape[-2]
+
+            mask_tokens = repeat(
+                episode.embeddings.get((Modality.UTILITY, "mask"))[:, :-1],
+                "b t 1 d -> b t n d",
+                n=num_img_tokens,
+            )
+            mask_tokens = mask_tokens + self.get_patch_pos_embed()  # noqa: PLR6104
+
+            features_projected.set(
+                (Modality.FORESIGHT, REFERENCE_CAMERA),
+                torch.cat([mask_tokens, foresight], dim=-2),
+            )
+
+            logits = self.heads(features_projected.to_dict())
+
+            logits[Modality.FORESIGHT][REFERENCE_CAMERA] = rearrange(
+                logits[Modality.FORESIGHT][REFERENCE_CAMERA],
+                "(b t) s d -> b t s d",
+                t=len(index),
+            )[:, :, :num_img_tokens]
+
             logits = TensorDict(logits, batch_size=[b, t - 1])
 
             # all but first
