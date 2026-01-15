@@ -79,16 +79,24 @@ class Identity(nn.Identity, Invertible):
 Paths: TypeAlias = "Mapping[str, tuple[str, ...] | Paths]"
 
 
+def _convert_paths(paths: Paths | tuple[str, ...] | list[Any]) -> Any:
+    """Recursively convert path tuples to MappingKey tuples."""
+    if isinstance(paths, tuple):
+        return tuple(MappingKey(elem) for elem in paths)
+    elif isinstance(paths, list):
+        return [_convert_paths(elem) for elem in paths]
+    elif isinstance(paths, Mapping):
+        return {k: _convert_paths(v) for k, v in paths.items()}
+    else:
+        return paths
+
+
 @final
 class Remapper(Module):
     def __init__(self, paths: Paths) -> None:
         super().__init__()
 
-        self._paths = tree_map(
-            lambda path: tuple(map(MappingKey, path)),
-            paths,
-            is_leaf=lambda x: isinstance(x, tuple),
-        )
+        self._paths = _convert_paths(paths)
 
     @property
     def paths(self) -> PyTree:
