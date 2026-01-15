@@ -91,6 +91,18 @@ def _convert_paths(paths: Paths | tuple[str, ...] | list[Any]) -> Any:
         return paths
 
 
+def _map_paths(fn: Callable[[Any], Any], paths: Any) -> Any:
+    """Apply fn to leaf tuples (MappingKey paths) in the structure."""
+    if isinstance(paths, tuple):
+        return fn(paths)
+    elif isinstance(paths, list):
+        return [_map_paths(fn, elem) for elem in paths]
+    elif isinstance(paths, dict):
+        return {k: _map_paths(fn, v) for k, v in paths.items()}
+    else:
+        return paths
+
+
 @final
 class Remapper(Module):
     def __init__(self, paths: Paths) -> None:
@@ -104,10 +116,9 @@ class Remapper(Module):
 
     @override
     def forward(self, input: PyTree) -> PyTree:
-        return tree_map(
+        return _map_paths(
             lambda path: key_get_default(input, path, None),
             self._paths,
-            is_leaf=lambda x: isinstance(x, tuple),
         )
 
 
