@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from enum import Enum, EnumMeta
 from typing import Any, ClassVar, Protocol, final, runtime_checkable
 

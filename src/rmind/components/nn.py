@@ -7,7 +7,6 @@ from typing import Any, TypeAlias, final
 from typing_extensions import override
 
 import torch
-from pydantic import validate_call
 from torch import Tensor, nn
 from torch.nn import Module
 from torch.utils._pytree import MappingKey, PyTree, tree_map  # noqa: PLC2701
@@ -77,12 +76,11 @@ class Identity(nn.Identity, Invertible):
         return input
 
 
-Paths: TypeAlias = Mapping[str, tuple[str, ...] | Paths]
+Paths: TypeAlias = "Mapping[str, tuple[str, ...] | Paths]"
 
 
 @final
 class Remapper(Module):
-    @validate_call
     def __init__(self, paths: Paths) -> None:
         super().__init__()
 

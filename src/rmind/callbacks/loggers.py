@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import inspect
 from collections.abc import Callable, Sequence
-from enum import StrEnum, auto
+from enum import Enum, auto
 from typing import Annotated, Any, final
 
 import contextily as ctx
@@ -21,6 +23,10 @@ from wandb import Image
 from rmind.utils.pytree import key_get_default
 
 logger = get_logger(__name__)
+
+
+class StrEnum(str, Enum):
+    pass
 
 
 def _validate_hook(value: str) -> str:

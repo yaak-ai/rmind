@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from collections.abc import Callable
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Generic, Literal, TypeVar
 
 from hydra.utils import instantiate
 from pydantic import (
@@ -11,8 +13,10 @@ from pydantic import (
     field_serializer,
 )
 
+T = TypeVar("T")
 
-class HydraConfig[T](BaseModel):
+
+class HydraConfig(BaseModel, Generic[T]):
     model_config: ClassVar[ConfigDict] = ConfigDict(
         frozen=True,
         extra="allow",

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable, Mapping, Sequence
 from itertools import product
 from typing import Any, ClassVar, Literal

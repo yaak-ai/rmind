@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing_extensions import override
 
 import pytorch_lightning as pl

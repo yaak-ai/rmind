@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
-from enum import StrEnum, auto, unique
+from enum import Enum, auto, unique
 from itertools import accumulate, pairwise
 from operator import itemgetter
 from typing import Any, NamedTuple, final
@@ -38,6 +40,10 @@ from rmind.components.containers import ModuleDict
 from rmind.utils.pytree import tree_paths, unflatten_keys
 
 logger = get_logger(__name__)
+
+
+class StrEnum(str, Enum):
+    pass
 
 
 @unique

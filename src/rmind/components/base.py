@@ -10,4 +10,4 @@ class Invertible(Protocol):
     def invert(self, input: Tensor) -> Tensor: ...
 
 
-TensorTree: TypeAlias = dict[str, Tensor | TensorTree]
+TensorTree: TypeAlias = "dict[str, Tensor | TensorTree]"

@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, TypeVar
 
 from torch.utils._pytree import (
     KeyPath,
@@ -19,7 +21,11 @@ def tree_paths(
     return key_paths
 
 
-def path_to_key[K, T](path: tuple[MappingKey[K, T], ...]) -> tuple[K, ...]:
+K = TypeVar("K")
+T = TypeVar("T")
+
+
+def path_to_key(path: tuple[MappingKey[K, T], ...]) -> tuple[K, ...]:
     return tuple(elem.key for elem in path)
 
 

@@ -3,8 +3,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
-from enum import StrEnum, auto, unique
-from typing import Any, Never, TypeAlias, TypedDict
+from enum import Enum, auto, unique
+from typing import Any, TypeAlias, TypedDict
+
+from typing_extensions import Never
 
 from tensordict import MetaData, TensorClass, TensorDict
 from torch.nn import Module
@@ -15,6 +17,10 @@ from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, Modality
 
 Targets: TypeAlias = Mapping[Modality, Mapping[str, tuple[str, ...]]]
+
+
+class StrEnum(str, Enum):
+    pass
 
 
 @unique

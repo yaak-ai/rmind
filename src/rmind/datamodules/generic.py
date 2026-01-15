@@ -1,19 +1,23 @@
+from __future__ import annotations
+
 from collections.abc import Iterator
-from typing import Protocol, runtime_checkable
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from typing_extensions import override
 
 import pytorch_lightning as pl
 from pydantic import InstanceOf, validate_call
 
+T = TypeVar("T")
+
 
 @runtime_checkable
-class DataLoader[T](Protocol):
+class DataLoader(Protocol[T]):
     def __iter__(self) -> Iterator[T]: ...
     def __len__(self) -> int: ...
 
 
-class GenericDataModule[T](pl.LightningDataModule):
+class GenericDataModule(pl.LightningDataModule, Generic[T]):
     @validate_call
     def __init__(
         self,
