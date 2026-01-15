@@ -170,7 +170,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         return {"loss": losses}
 
     @override
-    def predict(
+    def predict(  # noqa: PLR0914
         self,
         episode: Episode,
         *,

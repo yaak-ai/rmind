@@ -48,3 +48,11 @@ callbacks:
       input_id: [meta, input_id, 0]
       time_stamp: [data, meta/ImageMetadata.cam_front_left/time_stamp, 0, -1]
       frame_idx: [data, meta/ImageMetadata.cam_front_left/frame_idx, 0, -1]
+  - _target_: rmind.callbacks.WandbPatchSimilarityLogger
+    when: on_train_batch_end
+    every_n_batch: 10
+    key: patch_similarities
+    data:
+      cam_front_left: [foresight, cam_front_left, 0, -1]
+    patch_coords: random
+    patch_grid_size: 16
