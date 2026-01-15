@@ -26,7 +26,9 @@ logger = get_logger(__name__)
 
 
 class StrEnum(str, Enum):
-    pass
+    @staticmethod
+    def _generate_next_value_(name: str, start: int, count: int, last_values: list) -> str:
+        return name.lower()
 
 
 def _validate_hook(value: str) -> str:

@@ -20,7 +20,9 @@ Targets: TypeAlias = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 
 
 class StrEnum(str, Enum):
-    pass
+    @staticmethod
+    def _generate_next_value_(name: str, start: int, count: int, last_values: list) -> str:
+        return name.lower()
 
 
 @unique
