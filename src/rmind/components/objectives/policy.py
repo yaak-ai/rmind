@@ -84,8 +84,10 @@ class PolicyObjective(Objective):
     def forward(self, episode: EpisodeExport) -> TensorTree: ...
 
     @override
-    def forward(self, episode: Episode | EpisodeExport) -> TensorDict | TensorTree:
-        logits = self._compute_logits(episode)
+    def forward(
+        self, episode: Episode | EpisodeExport, final_embedding_norm: InstanceOf[Module]
+    ) -> TensorDict | TensorTree:
+        logits = self._compute_logits(episode, final_embedding_norm)
 
         if isinstance(episode, Episode):
 
@@ -111,14 +113,18 @@ class PolicyObjective(Objective):
 
         return tree_map_with_path(fn, logits)
 
-    def _compute_logits(self, episode: Episode | EpisodeExport) -> TensorTree:
+    def _compute_logits(
+        self, episode: Episode | EpisodeExport, final_embedding_norm: InstanceOf[Module]
+    ) -> TensorTree:
         mask = self.mask
         if mask is None and isinstance(episode, Episode):
             mask = self._build_attention_mask(
                 episode.index, episode.timestep, legend=TorchAttentionMaskLegend
             ).mask.to(device=episode.device)
 
-        embedding = self.encoder(src=episode.embeddings_packed, mask=mask)  # ty:ignore[call-non-callable]
+        embedding = self.encoder(
+            src=final_embedding_norm(episode.embeddings_packed), mask=mask
+        )  # ty:ignore[call-non-callable]
 
         if isinstance(episode, Episode):
             _b, _ = episode.input.batch_size
@@ -175,8 +181,10 @@ class PolicyObjective(Objective):
         return self.heads(features)
 
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
-        logits = self._compute_logits(episode)
+    def compute_metrics(
+        self, episode: Episode, final_embedding_norm: InstanceOf[Module]
+    ) -> Metrics:
+        logits = self._compute_logits(episode, final_embedding_norm)
         targets = tree_map(
             lambda k: episode.get(k)[:, -1],
             self.targets,
