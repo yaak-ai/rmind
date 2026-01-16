@@ -64,6 +64,9 @@ export-onnx *ARGS: generate-config
         --config-name export/onnx.yaml \
         {{ ARGS }}
 
+onnxvis *ARGS:
+    uvx --with=ai-edge-model-explorer --from=model-explorer-onnx onnxvis {{ ARGS }}
+
 # start rerun server and viewer
 rerun *ARGS:
     uvx --from rerun-sdk@latest rerun --serve-web {{ ARGS }}
