@@ -101,19 +101,19 @@ class ForwardDynamicsPredictionObjective(Objective):
         })
         action_summary = (
             index
-            .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))  # pyright: ignore[reportCallIssue]
-            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+            .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
+            .parse(embedding)
             .get(k)
         )
 
         obs_summary = (
             index
-            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))  # pyright: ignore[reportCallIssue]
-            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
+            .parse(embedding)
             .get(k)
         )
         features: TensorDict = observations.apply(
-            # pack: (obs[0], action_summary), (obs[1], action_summary), ...
+            # pack: (obs[0], obs_summary, action_summary), (obs[1], obs_summary, action_summary), ...
             lambda obs: pack(
                 [
                     obs,
@@ -125,9 +125,12 @@ class ForwardDynamicsPredictionObjective(Objective):
         )  # ty:ignore[invalid-assignment]
 
         features_projected = TensorDict(
-            self.projections(features.to_dict())  # pyright: ignore[reportOptionalCall, reportOptionalMemberAccess]  # ty:ignore[call-non-callable]
+            self.projections(features.to_dict())  # ty:ignore[call-non-callable]
         )
-        foresight = features_projected.get((Modality.FORESIGHT, "cam_front_left"))
+        foresight_projected = features_projected.get((
+            Modality.FORESIGHT,
+            "cam_front_left",
+        ))
 
         num_img_tokens = episode.projected_embeddings.get((
             Modality.IMAGE,
@@ -143,7 +146,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         features_projected.set(
             (Modality.FORESIGHT, "cam_front_left"),
-            torch.cat([mask_tokens, foresight], dim=-2),
+            torch.cat([mask_tokens, foresight_projected], dim=-2),
         )
 
         logits = self.heads(features_projected.to_dict())
@@ -167,6 +170,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         self._last_embeddings = logits
         self._last_targets = targets
+
         return {"loss": losses}
 
     @override

@@ -31,6 +31,9 @@ callbacks:
       - [episode_builder, embeddings, discrete]
       - [episode_builder, position_encoding, context]
       - [episode_builder, position_encoding, timestep]
+      - [objectives, forward_dynamics, row_embed]
+      - [objectives, forward_dynamics, col_embed]
+
     apply:
       _target_: torchmetrics.functional.pairwise_cosine_similarity
       _partial_: true
