@@ -214,6 +214,68 @@ class TransformerEncoderBlock(nn.Module):
 
         return out, new_cache
 
+    def forward_with_kv_tensor(
+        self,
+        x: Tensor,
+        mask: Tensor,
+        past_k: Tensor,
+        past_v: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Forward pass with KV cache as tensors (for ONNX export).
+
+        This method avoids None checks for torch.export compatibility.
+        Always concatenates past KV with new KV (works with empty past tensors).
+
+        Args:
+            x: Input tensor [B, S_new, D]
+            mask: Attention mask [S_new, S_total]
+            past_k: Cached keys [B, S_cached, D] (can be empty with S_cached=0)
+            past_v: Cached values [B, S_cached, D] (can be empty with S_cached=0)
+
+        Returns:
+            Tuple of (output [B, S_new, D], new_k [B, S_total, D], new_v [B, S_total, D])
+        """
+        residual = x
+        x_norm = self.pre_norm(x)
+
+        # Compute Q, K, V for new positions
+        q_new, k_new, v_new = self._compute_qkv(x_norm)
+
+        # Always concatenate (works with empty past tensors)
+        k = torch.cat([past_k, k_new], dim=1)
+        v = torch.cat([past_v, v_new], dim=1)
+
+        # Reshape for multi-head attention: [B, S, D] -> [B, num_heads, S, head_dim]
+        batch_size = q_new.shape[0]
+        q = q_new.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        k_mh = k.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        v_mh = v.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # Compute attention
+        dropout_p = self.mha.dropout if self.training else 0.0
+        attn_output, _ = self._scaled_dot_product_attention(
+            q, k_mh, v_mh, mask=mask, dropout_p=dropout_p
+        )
+
+        # Reshape back: [B, num_heads, S, head_dim] -> [B, S, D]
+        attn_output = (
+            attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.embedding_dim)
+        )
+
+        # Apply output projection
+        attn_output = F.linear(
+            attn_output, self.mha.out_proj.weight, self.mha.out_proj.bias
+        )
+
+        x = residual + self.resid_drop(attn_output)
+
+        # MLP block
+        residual = x
+        mlp = self.mlp(self.post_norm(x))
+        out = residual + mlp
+
+        return out, k, v
+
     @override
     def forward(
         self,
@@ -339,6 +401,45 @@ class TransformerEncoder(nn.Module):
         x = self.layer_norm(x)
 
         return x, new_key_values if use_cache else None
+
+    def forward_with_kv_tensor(
+        self,
+        src: Tensor,
+        mask: Tensor,
+        past_kv: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Forward pass with KV cache as tensor (for ONNX export).
+
+        This method avoids None checks for torch.export compatibility.
+        Always uses KV cache concatenation (works with empty past tensors).
+
+        Args:
+            src: Input embeddings [B, S_new, D]
+            mask: Attention mask [S_new, S_total]
+            past_kv: Cached KV tensor [L, 2, B, S_cached, D] (S_cached can be 0)
+
+        Returns:
+            Tuple of:
+            - Output tensor [B, S_new, D]
+            - Updated KV tensor [L, 2, B, S_total, D]
+        """
+        x = src
+        new_kv_list = []
+
+        for i, layer in enumerate(self.layers):
+            # Extract past K, V for this layer
+            past_k = past_kv[i, 0]  # [B, S_cached, D]
+            past_v = past_kv[i, 1]  # [B, S_cached, D]
+
+            x, new_k, new_v = layer.forward_with_kv_tensor(x, mask, past_k, past_v)
+            new_kv_list.append(torch.stack([new_k, new_v], dim=0))
+
+        x = self.layer_norm(x)
+
+        # Stack all layer KV: [L, 2, B, S_total, D]
+        kv_tensor = torch.stack(new_kv_list, dim=0)
+
+        return x, kv_tensor
 
     @override
     def forward(

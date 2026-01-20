@@ -37,6 +37,16 @@ just predict inference=yaak/control_transformer/{config} model.artifact=yaak/rmi
 
 ### ONNX
 
+Standard export:
+
 ```bash
-just export-onnx model=yaak/control_transformer/raw_export input=yaak/control_transformer/dummy +report=true
+just export-onnx model=yaak/control_transformer/raw_export input=yaak/control_transformer/dummy
 ```
+
+Cache-enabled export (for efficient sequential inference):
+
+```bash
+just export-onnx-cache
+```
+
+See [docs/ONNX_EXPORT.md](docs/ONNX_EXPORT.md) for detailed documentation on export options and cache usage.
