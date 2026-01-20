@@ -100,9 +100,9 @@ In sliding window mode, trim both `projected_embeddings` and `kv_cache` by remov
 
 #### First Inference (Full Forward)
 ```python
-# Initialize empty caches
-empty_proj_emb = zeros([batch_size, 0, embed_dim])
-empty_kv = zeros([num_layers, 2, batch_size, 0, embed_dim])
+# Initialize empty caches (sequence dimension is 0, meaning no cached data)
+empty_proj_emb = empty([batch_size, 0, embed_dim])
+empty_kv = empty([num_layers, 2, batch_size, 0, embed_dim])
 
 # Process all timesteps
 predictions, cached_proj_emb, cached_kv = model(full_batch, empty_proj_emb, empty_kv, full_mask)
@@ -201,9 +201,10 @@ def run_first_inference(session, batch: dict, num_timesteps: int):
 
     seq_len = num_timesteps * tokens_per_timestep
 
-    # Initialize empty caches
-    empty_proj_emb = np.zeros((batch_size, 0, embed_dim), dtype=np.float32)
-    empty_kv = np.zeros((num_layers, 2, batch_size, 0, embed_dim), dtype=np.float32)
+    # Initialize empty caches (sequence dimension is 0, meaning no cached data)
+    # Using np.empty since there are no elements to initialize
+    empty_proj_emb = np.empty((batch_size, 0, embed_dim), dtype=np.float32)
+    empty_kv = np.empty((num_layers, 2, batch_size, 0, embed_dim), dtype=np.float32)
 
     # Full causal mask [S, S]
     mask = build_causal_mask(seq_len, seq_len)
