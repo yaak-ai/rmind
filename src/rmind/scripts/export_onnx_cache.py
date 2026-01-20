@@ -62,6 +62,7 @@ def _get_tensor_leaves(tree: Any) -> Iterator[Tensor]:
             yield from _get_tensor_leaves(v)
 
 
+
 class CacheEnabledControlTransformer(nn.Module):
     """Cache-enabled ControlTransformer wrapper for ONNX export.
 
@@ -192,12 +193,13 @@ class Config(BaseModel):
     args: Annotated[Sequence[Any], AfterValidator(instantiate)]
     f: Path
     opset_version: int | None = None
-    dynamo: Literal[True] = True
+    dynamo: bool = True  # Use dynamo-based export (True) or legacy export (False)
     external_data: bool = False
     optimize: bool = True
     verify: bool = False
     report: bool = True
     artifacts_dir: Path = Path.cwd()
+    dynamic_shapes: bool = True  # Enable dynamic shapes for cache inputs
 
 
 @hydra.main(version_base=None)
@@ -247,15 +249,28 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Export with full forward args
-    logger.debug("exporting cache-enabled model")
+    logger.debug("exporting cache-enabled model", dynamic_shapes=config.dynamic_shapes)
     export_args = (batch, empty_proj_emb, empty_kv, mask)
 
     try:
+        # Export with torch.export first
         exported = torch.export.export(
             mod=cache_model,
             args=export_args,
             strict=True,
         )
+
+        # Build dynamic axes for cache inputs (dynamo export has limited support)
+        dynamic_axes = None
+        if config.dynamic_shapes:
+            dynamic_axes = {
+                # Cache inputs: sequence dimension is dynamic
+                "cached_projected_embeddings": {1: "s_cached"},
+                "cached_kv": {3: "s_cached"},
+                # Note: mask and batch inputs remain static with dynamo export
+                # For fully dynamic inference, use TensorRT with optimization profiles
+            }
+            logger.debug("using dynamic axes for cache inputs")
 
         torch.onnx.export(
             model=exported,
@@ -267,6 +282,7 @@ def main(cfg: DictConfig) -> None:
             verify=config.verify,
             report=config.report,
             artifacts_dir=config.artifacts_dir,
+            dynamic_axes=dynamic_axes,
         )
 
         logger.debug(

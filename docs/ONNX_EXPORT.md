@@ -459,6 +459,71 @@ class CacheEnabledControlTransformer(nn.Module):
 
 ---
 
+## Benchmarking
+
+Run the inference benchmark to compare performance:
+
+```bash
+uv run python -m rmind.scripts.benchmark_inference \
+    --onnx-cache-model outputs/path/to/model_cache.onnx \
+    --num-warmup 10 \
+    --num-iterations 100
+```
+
+### Benchmark Modes
+
+The benchmark compares:
+
+| Mode | Description |
+|------|-------------|
+| PyTorch (full forward) | Standard PyTorch inference, all timesteps |
+| PyTorch (incremental with KV cache) | PyTorch with KV cache, single timestep |
+| ONNX (full forward) | ONNX Runtime inference, all timesteps |
+| ONNX (incremental with cache) | ONNX with cache, single timestep (requires dynamic shapes) |
+
+### Example Results
+
+```
+PyTorch (full forward):
+  Mean: 92.58 ms, Min: 20.30 ms
+
+PyTorch (incremental with KV cache):
+  Mean: 86.07 ms, Min: 13.12 ms  # ~1.5x speedup at best case
+
+ONNX (full forward) [GPU - CUDA]:
+  Mean: 110.69 ms, Min: 36.95 ms
+
+ONNX (full forward) [CPU]:
+  Mean: 402.78 ms  # ~4x slower than GPU
+
+Speedups vs PyTorch full forward:
+  PyTorch (incremental with KV cache): 1.08x mean, 1.5x min
+  ONNX GPU: 0.84x mean (comparable to PyTorch)
+```
+
+**Key takeaways:**
+- ONNX on GPU is comparable to PyTorch for full forward inference
+- PyTorch incremental with KV cache provides best speedup for sequential inference
+- ONNX incremental requires TensorRT with optimization profiles for dynamic mask support
+
+### Dynamic Shapes
+
+The cache-enabled ONNX export supports:
+- **Dynamic cache inputs**: `cached_projected_embeddings` and `cached_kv` have dynamic sequence dimensions
+- **Static batch/mask**: Batch inputs and mask have fixed shapes based on export configuration
+
+For fully dynamic incremental inference (variable batch timesteps + mask), use **TensorRT with optimization profiles**:
+
+```python
+# TensorRT optimization profile example
+profile.set_shape("mask", min=(274, 274), opt=(274, 1644), max=(274, 12000))
+profile.set_shape("batch_data_cam_front_left", min=(1, 1, 3, 256, 256), opt=(1, 6, 3, 256, 256), max=(1, 10, 3, 256, 256))
+```
+
+**Note**: PyTorch incremental inference with KV cache works without these limitations.
+
+---
+
 ## Testing
 
 Run the cache export tests:

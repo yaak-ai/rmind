@@ -70,6 +70,10 @@ export-onnx-cache *ARGS: generate-config
         --config-name export/onnx_cache.yaml \
         {{ ARGS }}
 
+# benchmark inference speed (PyTorch vs ONNX, with/without cache)
+benchmark-inference *ARGS:
+    uv run python -m rmind.scripts.benchmark_inference {{ ARGS }}
+
 # start rerun server and viewer
 rerun *ARGS:
     uvx --from rerun-sdk@latest rerun --serve-web {{ ARGS }}
