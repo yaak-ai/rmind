@@ -9,7 +9,6 @@ from typing import Any, NamedTuple, final
 
 from typing_extensions import override
 
-import more_itertools as mit
 import torch
 from einops import pack, rearrange, repeat
 from pydantic import InstanceOf, validate_call
@@ -40,6 +39,37 @@ from rmind.components.containers import ModuleDict
 from rmind.utils.pytree import tree_paths, unflatten_keys
 
 logger = get_logger(__name__)
+
+
+def _get_batch_info_from_tree(tree: Any) -> tuple[tuple[int, int], torch.device]:
+    """Get batch_size (shape[:2]) and device from the first tensor leaf in a tree.
+
+    This is a trace-friendly replacement for mit.one() which fails during ONNX
+    export because set operations on traced tensor shapes don't work correctly.
+
+    Args:
+        tree: A nested structure containing tensors
+
+    Returns:
+        Tuple of (batch_size as (B, T), device)
+    """
+    for leaf in tree_leaves(tree):
+        if leaf is not None and isinstance(leaf, Tensor):
+            return leaf.shape[:2], leaf.device
+    msg = "No tensor leaves found in tree"
+    raise ValueError(msg)
+
+
+def _is_exporting() -> bool:
+    """Check if we're in an export context (torch.export or JIT tracing).
+
+    Returns True during:
+    - torch.export.export() (dynamo export) - detected by torch.compiler.is_exporting()
+    - torch.onnx.export() with dynamo=False (JIT tracing) - detected by torch.jit.is_tracing()
+
+    This is used to select EpisodeExport (plain tensors) vs Episode (TensorDict).
+    """
+    return torch.compiler.is_exporting() or torch.jit.is_tracing()  # ty:ignore[possibly-missing-attribute]
 
 
 class StrEnum(str, Enum):
@@ -336,11 +366,7 @@ class EpisodeBuilder(Module):
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
-        batch_size, device = mit.one({
-            (leaf.shape[:2], leaf.device)
-            for leaf in tree_leaves(input_tokens)
-            if leaf is not None
-        })
+        batch_size, device = _get_batch_info_from_tree(input_tokens)
 
         input_tokens[Modality.SPECIAL.value] = {
             k.value: torch.tensor(v, device=device).expand(*batch_size, 1)
@@ -404,7 +430,7 @@ class EpisodeBuilder(Module):
                 index=index,
                 timestep=timestep,
             )
-            if torch.compiler.is_exporting()  # ty:ignore[possibly-missing-attribute]
+            if _is_exporting()
             else Episode(
                 input=TensorDict.from_dict(
                     input, batch_dims=2
@@ -447,11 +473,7 @@ class EpisodeBuilder(Module):
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
-        batch_size, device = mit.one({
-            (leaf.shape[:2], leaf.device)
-            for leaf in tree_leaves(input_tokens)
-            if leaf is not None
-        })
+        batch_size, device = _get_batch_info_from_tree(input_tokens)
 
         input_tokens[Modality.SPECIAL.value] = {
             k.value: torch.tensor(v, device=device).expand(*batch_size, 1)
@@ -482,7 +504,7 @@ class EpisodeBuilder(Module):
                 index=index,
                 timestep=timestep,
             )
-            if torch.compiler.is_exporting()  # ty:ignore[possibly-missing-attribute]
+            if _is_exporting()
             else Episode(
                 input=TensorDict.from_dict(
                     input, batch_dims=2
@@ -507,11 +529,7 @@ class EpisodeBuilder(Module):
         )
 
     def _build_index(self, embeddings: TensorTree) -> TensorTree:
-        (_, t), device = mit.one({
-            (leaf.shape[:2], leaf.device)
-            for leaf in tree_leaves(embeddings)
-            if leaf is not None
-        })
+        (_, t), device = _get_batch_info_from_tree(embeddings)
 
         lengths = [
             key_get(
@@ -555,11 +573,7 @@ class EpisodeBuilder(Module):
         """
         position_embeddings = {}
 
-        (_, t), device = mit.one({
-            (leaf.shape[:2], leaf.device)
-            for leaf in tree_leaves(embeddings)
-            if leaf is not None
-        })
+        (_, t), device = _get_batch_info_from_tree(embeddings)
 
         if (
             mod_pe := self.position_encoding.get(

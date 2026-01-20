@@ -87,6 +87,8 @@ def _get_batch_input_names(
 
 
 
+
+
 class CacheEnabledControlTransformer(nn.Module):
     """Cache-enabled ControlTransformer wrapper for ONNX export.
 
@@ -204,10 +206,28 @@ class CacheEnabledControlTransformer(nn.Module):
         )
 
         # Get predictions from objectives
-        predictions = {name: obj(episode) for name, obj in self.objectives.items()}
+        predictions_dict = {name: obj(episode) for name, obj in self.objectives.items()}
+
+        # Flatten TensorDict outputs to plain tensors for ONNX compatibility
+        # Expected structure: policy -> continuous/discrete -> individual predictions
+        flat_predictions = {}
+        for obj_name, obj_output in predictions_dict.items():
+            if hasattr(obj_output, 'items'):  # TensorDict-like
+                for cat_name, cat_output in obj_output.items():
+                    if hasattr(cat_output, 'items'):  # Nested TensorDict
+                        for pred_name, pred_tensor in cat_output.items():
+                            flat_predictions[f"{obj_name}_{cat_name}_{pred_name}"] = pred_tensor
+                    elif isinstance(cat_output, Tensor):
+                        flat_predictions[f"{obj_name}_{cat_name}"] = cat_output
+            elif isinstance(obj_output, Tensor):
+                flat_predictions[obj_name] = obj_output
+
+        # Return as tuple: (gas_pedal, brake_pedal, steering_angle, turn_signal, proj_emb, kv)
+        # Sorted by key for consistent ordering
+        sorted_preds = [flat_predictions[k] for k in sorted(flat_predictions.keys())]
 
         # Return projected embeddings (without PE) for caching
-        return predictions, all_projected_embeddings, kv_cache
+        return (*sorted_preds, all_projected_embeddings, kv_cache)
 
 
 class Config(BaseModel):
@@ -317,9 +337,14 @@ def main(cfg: DictConfig) -> None:
 
     # Test forward pass
     logger.debug("testing forward pass", is_incremental=is_incremental)
-    preds, proj_emb_out, kv_out = cache_model(batch, cached_proj_emb, cached_kv, mask)
+    outputs = cache_model(batch, cached_proj_emb, cached_kv, mask)
+    # Outputs: (*predictions, proj_emb, kv_cache) - last two are cache outputs
+    proj_emb_out, kv_out = outputs[-2], outputs[-1]
     logger.debug(
-        "forward output", proj_emb_shape=proj_emb_out.shape, kv_shape=kv_out.shape
+        "forward output",
+        num_outputs=len(outputs),
+        proj_emb_shape=proj_emb_out.shape,
+        kv_shape=kv_out.shape,
     )
 
     # Export args
@@ -327,7 +352,7 @@ def main(cfg: DictConfig) -> None:
     export_args = (batch, cached_proj_emb, cached_kv, mask)
 
     try:
-        # Build dynamic axes for cache inputs
+        # Build dynamic axes for legacy ONNX export
         dynamic_axes = None
         if config.dynamic_shapes:
             dynamic_axes = {
@@ -358,8 +383,29 @@ def main(cfg: DictConfig) -> None:
 
         if config.dynamo:
             # Use dynamo-based export (torch.export -> torch.onnx.export)
-            # Note: dynamic_axes has limited support with dynamo export
+            # For dynamo export, we need to use torch.export.Dim() for dynamic shapes
+            # The dynamic_axes parameter is only used by torch.onnx.export for naming
             logger.debug("using dynamo-based export")
+
+            # Build dynamic_shapes for torch.export.export()
+            export_dynamic_shapes: dict[str, Any] | None = None
+
+            # NOTE: torch.export.Dim() dynamic shapes don't work with this model because:
+            # 1. Model code has operations that specialize dimensions (integer division, slicing)
+            # 2. Model code accesses .shape on dicts during non-strict tracing
+            # 3. The episode builder uses mit.one() which doesn't work with symbolic tracing
+            #
+            # The workaround is to use the dual-model approach:
+            # - export-onnx-cache: Full forward model (6 timesteps)
+            # - export-onnx-incremental: Incremental model (1 timestep)
+            #
+            # For TensorRT, use optimization profiles on the incremental model to handle
+            # different cache lengths by exporting with different num_cached_timesteps.
+            logger.debug(
+                "dynamo export does not support dynamic shapes for this model - "
+                "using static shapes. See docs/INCREMENTAL_INFERENCE_REQUEST.md for workarounds."
+            )
+
             exported = torch.export.export(
                 mod=cache_model,
                 args=export_args,
@@ -387,8 +433,20 @@ def main(cfg: DictConfig) -> None:
             input_names = [name for name, _ in input_names]
             input_names.extend(["cached_projected_embeddings", "cached_kv", "mask"])
 
-            output_names = ["predictions", "projected_embeddings", "kv_cache"]
+            # Output names match the flattened predictions + cache outputs
+            # Predictions are sorted alphabetically, then proj_emb and kv_cache
+            output_names = [
+                "policy_continuous_brake_pedal",
+                "policy_continuous_gas_pedal",
+                "policy_continuous_steering_angle",
+                "policy_discrete_turn_signal",
+                "projected_embeddings",
+                "kv_cache",
+            ]
 
+            # NOTE: Legacy export with dynamic_axes doesn't work due to unsupported
+            # operators (aten::_native_multi_head_attention from nn.MultiheadAttention).
+            # Use dynamo=True instead. This code path is kept for reference.
             torch.onnx.export(
                 model=cache_model,
                 args=export_args,
