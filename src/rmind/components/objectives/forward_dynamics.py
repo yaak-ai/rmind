@@ -7,6 +7,7 @@ import torch
 from einops import pack, rearrange, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf
+from rerun import Tensor
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
@@ -141,18 +142,21 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
         mask_tokens = mask_tokens + self.get_patch_pos_embed()  # noqa: PLR6104
 
-        features_projected.set(
-            (Modality.FORESIGHT, "cam_front_left"),
-            torch.cat([mask_tokens, foresight], dim=-2),
-        )
+        logits = {}
 
-        logits = self.heads(features_projected.to_dict())
+        if ("continuous" in self.heads) and ("speed" in self.heads["continuous"]):
+            logits["continuous"] = {}
+            logits["continuous"]["speed"] = self.heads["continuous"]["speed"](
+                features_projected["continuous"]["speed"]
+            )
 
-        logits[Modality.FORESIGHT]["cam_front_left"] = rearrange(
-            logits[Modality.FORESIGHT]["cam_front_left"],
-            "(b t) s d -> b t s d",
-            t=len(index),
-        )[:, :, :num_img_tokens]  # img embeddings are reconstructed in mask
+        if ("foresight" in self.heads) and (
+            "cam_front_left" in self.heads["foresight"]
+        ):
+            logits["foresight"] = {}
+            logits["foresight"]["cam_front_left"] = self.heads["foresight"][
+                "cam_front_left"
+            ](query=mask_tokens, context=foresight)
 
         targets = tree_map(
             lambda k: episode.get(tuple(k))[:, 1:],
@@ -253,18 +257,24 @@ class ForwardDynamicsPredictionObjective(Objective):
             )
             mask_tokens = mask_tokens + self.get_patch_pos_embed()  # noqa: PLR6104
 
-            features_projected.set(
-                (Modality.FORESIGHT, REFERENCE_CAMERA),
-                torch.cat([mask_tokens, foresight], dim=-2),
+            # Compute standard heads (e.g., speed) with single input
+            features_for_standard_heads = {
+                k: v
+                for k, v in features_projected.items()
+                if k != (Modality.FORESIGHT, REFERENCE_CAMERA)
+            }
+            logits = self.heads(features_for_standard_heads)
+
+            # Compute foresight head with cross-attention
+            # Head automatically handles 4D -> 3D flattening and unflattening
+            logits_cam = self.heads[(Modality.FORESIGHT, REFERENCE_CAMERA)](
+                query=mask_tokens, context=foresight
             )
 
-            logits = self.heads(features_projected.to_dict())
-
-            logits[Modality.FORESIGHT][REFERENCE_CAMERA] = rearrange(
-                logits[Modality.FORESIGHT][REFERENCE_CAMERA],
-                "(b t) s d -> b t s d",
-                t=len(index),
-            )[:, :, :num_img_tokens]
+            # Add foresight results to logits dict
+            if Modality.FORESIGHT not in logits:
+                logits[Modality.FORESIGHT] = {}
+            logits[Modality.FORESIGHT][REFERENCE_CAMERA] = logits_cam
 
             logits = TensorDict(logits, batch_size=[b, t - 1])
 

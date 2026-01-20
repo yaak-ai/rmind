@@ -12,6 +12,16 @@ from rmind.components.nn import default_weight_init_fn
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+__all__ = [
+    "MLPGLU",
+    "CrossAttentionDecoder",
+    "CrossAttentionDecoderBlock",
+    "CrossAttentionDecoderHead",
+    "Transformer",
+    "TransformerEncoder",
+    "TransformerEncoderBlock",
+]
+
 
 class TransformerEncoderBlock(nn.Module):
     def __init__(  # noqa: PLR0913, PLR0917
@@ -238,3 +248,216 @@ class Transformer(nn.Module):
     @override
     def forward(self, x: Tensor) -> Tensor:
         return self.transformer(src=x, mask=None)
+
+
+class CrossAttentionDecoderBlock(nn.Module):
+    """Decoder block with cross-attention followed by self-attention."""
+
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        embedding_dim: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+    ) -> None:
+        super().__init__()
+
+        # Cross-attention: query from decoder, key/value from encoder
+        self.cross_attn_norm = nn.LayerNorm(embedding_dim)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
+        self.cross_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
+
+        # Self-attention: decoder tokens attend to each other
+        self.self_attn_norm = nn.LayerNorm(embedding_dim)
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
+        self.self_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
+
+        # MLP
+        self.mlp_norm = nn.LayerNorm(embedding_dim)
+        self.mlp = MLPGLU(
+            dim_model=embedding_dim,
+            dropout=mlp_dropout,
+            activation="gelu",
+            hidden_layer_multiplier=hidden_layer_multiplier,
+        )
+
+    @staticmethod
+    def _init_weights(module: Module) -> None:
+        match module:
+            case nn.Linear():
+                default_weight_init_fn(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            case _:
+                pass
+
+    @override
+    def forward(self, x: Tensor, context: Tensor) -> Tensor:
+        """
+        Args:
+            x: Decoder tokens (e.g., mask tokens) [batch, seq_decoder, dim]
+            context: Encoder tokens (e.g., foresight) [batch, seq_encoder, dim]
+
+        Returns:
+            Updated decoder tokens [batch, seq_decoder, dim]
+        """
+        # Cross-attention with residual
+        residual = x
+        x_norm = self.cross_attn_norm(x)
+        cross_attn_out, _ = self.cross_attn(
+            query=x_norm, key=context, value=context, need_weights=False
+        )
+        x = residual + self.cross_attn_resid_drop(cross_attn_out)
+
+        # Self-attention with residual
+        residual = x
+        x_norm = self.self_attn_norm(x)
+        self_attn_out, _ = self.self_attn(
+            query=x_norm, key=x_norm, value=x_norm, need_weights=False
+        )
+        x = residual + self.self_attn_resid_drop(self_attn_out)
+
+        # MLP with residual
+        residual = x
+        mlp_out = self.mlp(self.mlp_norm(x))
+        x = residual + mlp_out
+
+        return x
+
+
+class CrossAttentionDecoder(nn.Module):
+    """Decoder using cross-attention to query encoder context."""
+
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        dim_model: int,
+        num_layers: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+        freeze: bool | None = None,  # noqa: FBT001
+    ) -> None:
+        super().__init__()
+        self.layers = nn.ModuleList([
+            CrossAttentionDecoderBlock(
+                embedding_dim=dim_model,
+                num_heads=num_heads,
+                attn_dropout=attn_dropout,
+                mlp_dropout=mlp_dropout,
+                resid_dropout=resid_dropout,
+                hidden_layer_multiplier=hidden_layer_multiplier,
+            )
+            for _ in range(num_layers)
+        ])
+        self.layer_norm = nn.LayerNorm(dim_model)
+
+        if freeze is not None:
+            self.requires_grad_(not freeze).train(not freeze)
+
+    @override
+    def forward(self, x: Tensor, context: Tensor) -> Tensor:
+        """
+        Args:
+            x: Decoder tokens [batch, seq_decoder, dim]
+            context: Encoder context [batch, seq_encoder, dim]
+
+        Returns:
+            Decoded tokens [batch, seq_decoder, dim]
+        """
+        if self.training:
+
+            def run_layer(
+                layer: Module, layer_input: Tensor, layer_context: Tensor
+            ) -> Any:
+                return checkpoint(
+                    layer, layer_input, layer_context, use_reentrant=False
+                )
+
+        else:
+
+            def run_layer(
+                layer: Module, layer_input: Tensor, layer_context: Tensor
+            ) -> Any:
+                return layer(layer_input, layer_context)
+
+        for layer in self.layers:
+            x = run_layer(layer, x, context)
+
+        return self.layer_norm(x)
+
+
+@final
+class CrossAttentionDecoderHead(nn.Module):
+    """Head that wraps CrossAttentionDecoder with output projection.
+
+    Automatically handles 4D inputs (batch, time, seq, dim) by flattening
+    to 3D for processing and unflattening the output.
+    """
+
+    def __init__(
+        self, decoder: CrossAttentionDecoder, output_projection: nn.Linear
+    ) -> None:
+        super().__init__()
+        self.decoder = decoder
+        self.output_projection = output_projection
+
+    @override
+    def forward(self, query: Tensor, context: Tensor) -> Tensor:
+        """
+        Args:
+            query: Decoder queries
+                - 3D: [batch, seq_query, dim]
+                - 4D: [batch, time, seq_query, dim] (auto-flattened)
+            context: Encoder context
+                - 3D: [batch, seq_context, dim]
+                - 4D: [batch, time, seq_context, dim] (auto-flattened)
+
+        Returns:
+            Output logits (same shape as query input)
+                - 3D: [batch, seq_query, dim]
+                - 4D: [batch, time, seq_query, dim]
+        """
+        # Check input dimensions
+        if query.ndim not in {3, 4}:
+            msg = f"query must be 3D or 4D, got {query.ndim}D"
+            raise ValueError(msg)
+        if context.ndim not in {3, 4}:
+            msg = f"context must be 3D or 4D, got {context.ndim}D"
+            raise ValueError(msg)
+        if query.ndim != context.ndim:
+            msg = f"query and context must have same ndim, got {query.ndim} and {context.ndim}"
+            raise ValueError(msg)
+
+        # Handle 4D inputs by flattening batch and time dimensions
+        if query.ndim == 4:  # noqa: PLR2004
+            b, t, sq, d = query.shape
+            _, _, sc, _ = context.shape
+
+            # Flatten: (b, t, s, d) -> (b*t, s, d)
+            query_flat = query.reshape(b * t, sq, d)
+            context_flat = context.reshape(b * t, sc, d)
+
+            # Process
+            decoded = self.decoder(query_flat, context_flat)
+            output = self.output_projection(decoded)
+
+            # Unflatten: (b*t, s, d) -> (b, t, s, d)
+            return output.reshape(b, t, sq, d)
+
+        # 3D inputs - process directly
+        decoded = self.decoder(query, context)
+        return self.output_projection(decoded)

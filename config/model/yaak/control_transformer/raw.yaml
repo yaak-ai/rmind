@@ -441,23 +441,20 @@ objectives:
               bias: False
           foresight:
             cam_front_left:
-              _target_: torch.nn.Sequential
-              _args_:
-                - _target_: einops.layers.torch.Rearrange
-                  pattern: "b t s d -> (b t) s d"
-                - _target_: rmind.components.llm.Transformer
-                  transformer:
-                    _target_: rmind.components.llm.TransformerEncoder
-                    dim_model: ${img_embedding_dim}
-                    num_layers: 2
-                    num_heads: 4
-                    attn_dropout: 0.1
-                    resid_dropout: 0.1
-                    mlp_dropout: 0.1
-                    hidden_layer_multiplier: 1
-                - _target_: rmind.components.nn.Linear
-                  in_features: ${img_embedding_dim}
-                  out_features: ${img_embedding_dim}
+              _target_: rmind.components.llm.CrossAttentionDecoderHead
+              decoder:
+                _target_: rmind.components.llm.CrossAttentionDecoder
+                dim_model: ${img_embedding_dim}
+                num_layers: 2
+                num_heads: 4
+                attn_dropout: 0.1
+                resid_dropout: 0.1
+                mlp_dropout: 0.1
+                hidden_layer_multiplier: 1
+              output_projection:
+                _target_: rmind.components.nn.Linear
+                in_features: ${img_embedding_dim}
+                out_features: ${img_embedding_dim}
 
       targets:
         continuous:
