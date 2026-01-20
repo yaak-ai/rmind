@@ -64,6 +64,12 @@ export-onnx *ARGS: generate-config
         --config-name export/onnx.yaml \
         {{ ARGS }}
 
+export-onnx-cache *ARGS: generate-config
+    uv run --group export rmind-export-onnx-cache \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name export/onnx_cache.yaml \
+        {{ ARGS }}
+
 # start rerun server and viewer
 rerun *ARGS:
     uvx --from rerun-sdk@latest rerun --serve-web {{ ARGS }}

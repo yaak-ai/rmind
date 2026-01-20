@@ -223,6 +223,26 @@ torch.export.register_dataclass(
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class TimestepEmbeddings:
+    """Intermediate representation of computed embeddings for a single or multiple timesteps.
+
+    Used for caching embeddings during inference to avoid recomputation.
+    """
+
+    input: TensorTree
+    input_tokens: TensorTree
+    input_embeddings: TensorTree
+    projected_embeddings: TensorTree
+    batch_size: tuple[int, int]
+    device: torch.device
+
+
+torch.export.register_dataclass(
+    (cls := TimestepEmbeddings), serialized_type_name=cls.__name__
+)
+
+
 @final
 class EpisodeBuilder(Module):
     @validate_call
@@ -260,8 +280,121 @@ class EpisodeBuilder(Module):
 
             self.requires_grad_(not freeze).train(not freeze)
 
+    def compute_embeddings(self, batch: TensorTree) -> TimestepEmbeddings:
+        """Compute embeddings for a batch without building the full episode.
+
+        This method performs the expensive embedding computation (input transform,
+        tokenization, embedding lookup, projection) but stops before building
+        position embeddings and the final Episode structure.
+
+        Useful for caching embeddings during inference.
+
+        Args:
+            batch: Input batch data
+
+        Returns:
+            TimestepEmbeddings containing computed embeddings and metadata
+        """
+        input = self.input_transform(batch)
+        input_tokens = self.tokenizers(input)
+
+        batch_size, device = mit.one({
+            (leaf.shape[:2], leaf.device)
+            for leaf in tree_leaves(input_tokens)
+            if leaf is not None
+        })
+
+        input_tokens[Modality.SPECIAL.value] = {
+            k.value: torch.tensor(v, device=device).expand(*batch_size, 1)
+            for k, v in self.special_tokens.items()
+        }
+
+        input_embeddings = self.embeddings(input_tokens)
+        projected_embeddings = self.projections(input_embeddings)
+
+        return TimestepEmbeddings(
+            input=input,
+            input_tokens=input_tokens,
+            input_embeddings=input_embeddings,
+            projected_embeddings=projected_embeddings,
+            batch_size=batch_size,
+            device=device,
+        )
+
+    def assemble_episode(
+        self, timestep_embeddings: TimestepEmbeddings
+    ) -> Episode | EpisodeExport:
+        """Assemble an Episode from pre-computed embeddings.
+
+        This method takes pre-computed embeddings and builds the final Episode
+        structure including position embeddings and index.
+
+        Args:
+            timestep_embeddings: Pre-computed embeddings from compute_embeddings()
+
+        Returns:
+            Episode or EpisodeExport depending on export context
+        """
+        input = timestep_embeddings.input
+        input_tokens = timestep_embeddings.input_tokens
+        input_embeddings = timestep_embeddings.input_embeddings
+        projected_embeddings = timestep_embeddings.projected_embeddings
+        batch_size = timestep_embeddings.batch_size
+        device = timestep_embeddings.device
+
+        index = self._build_index(projected_embeddings)
+        timestep_index = tree_map(itemgetter(0), index)
+
+        timestep = unflatten_keys({
+            tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
+        })
+
+        position_embeddings = self._build_position_embeddings(
+            input_embeddings, timestep_index, timestep
+        )
+
+        return (
+            EpisodeExport(
+                input=input,
+                input_tokens=input_tokens,
+                input_embeddings=input_embeddings,
+                projected_embeddings=projected_embeddings,
+                position_embeddings=position_embeddings,
+                index=index,
+                timestep=timestep,
+            )
+            if torch.compiler.is_exporting()  # ty:ignore[possibly-missing-attribute]
+            else Episode(
+                input=TensorDict.from_dict(
+                    input, batch_dims=2
+                ).filter_non_tensor_data(),
+                input_tokens=TensorDict.from_dict(
+                    input_tokens, batch_dims=2
+                ).filter_non_tensor_data(),
+                input_embeddings=TensorDict.from_dict(
+                    input_embeddings, batch_dims=2
+                ).filter_non_tensor_data(),
+                projected_embeddings=TensorDict.from_dict(
+                    projected_embeddings, batch_dims=2
+                ).filter_non_tensor_data(),
+                position_embeddings=TensorDict.from_dict(
+                    position_embeddings,  # ty:ignore[invalid-argument-type]
+                    batch_dims=2,
+                ).filter_non_tensor_data(),
+                index=Index.from_dict(index, batch_dims=1),
+                timestep=Timestep.from_dict(timestep),
+                device=device,
+            )
+        )
+
     @override
     def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
+        """Build an Episode from input batch.
+
+        This method has all logic inline for export compatibility.
+        For inference with caching, use compute_embeddings() and
+        assemble_episode() separately.
+        """
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
@@ -289,6 +422,7 @@ class EpisodeBuilder(Module):
         position_embeddings = self._build_position_embeddings(
             input_embeddings, timestep_index, timestep
         )
+
         return (
             EpisodeExport(
                 input=input,

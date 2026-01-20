@@ -39,6 +39,7 @@ repo = "https://github.com/yaak-ai/rmind"
 
 [project.scripts]
 rmind-export-onnx = "rmind.scripts.export_onnx:main"
+rmind-export-onnx-cache = "rmind.scripts.export_onnx_cache:main"
 rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 
