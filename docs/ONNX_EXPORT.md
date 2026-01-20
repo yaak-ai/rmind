@@ -46,8 +46,16 @@ Exports the model with additional outputs for efficient sequential inference usi
 ### Usage
 
 ```bash
+# Full forward model (6 timesteps, empty cache) - for first inference
 just export-onnx-cache
+
+# Incremental model (1 timestep, 5 cached) - for subsequent inferences
+just export-onnx-incremental
 ```
+
+For streaming inference on Jetson/TensorRT, export **both** models:
+1. `ControlTransformer_cache.onnx` - for cold start (first inference with 6 timesteps)
+2. `ControlTransformer_cache_incremental.onnx` - for warm inference (subsequent single timesteps)
 
 ### What It Does
 
@@ -530,9 +538,55 @@ just export-onnx-cache +dynamic_batch=true
 
 This attempts to export with dynamic shapes for batch inputs and mask. **Note**: Due to current PyTorch ONNX exporter limitations with complex models (dynamo export doesn't fully support dynamic_axes for batch inputs), this may not produce fully dynamic shapes. The recommended approach is to use TensorRT optimization profiles.
 
-#### TensorRT with Optimization Profiles (Recommended)
+#### Two-Model Workflow (Recommended for Jetson)
 
-For true incremental inference with variable batch sizes and masks, use **TensorRT with optimization profiles**:
+The simplest and most reliable approach is to export **two separate ONNX models**:
+
+```bash
+# Export both models
+just export-onnx-cache           # Full forward (6 timesteps)
+just export-onnx-incremental     # Incremental (1 timestep + 5 cached)
+```
+
+This produces:
+- `ControlTransformer_cache.onnx` - batch `[1, 6, ...]`, empty cache, mask `[1644, 1644]`
+- `ControlTransformer_cache_incremental.onnx` - batch `[1, 1, ...]`, cache `[1, 1370, 384]`, mask `[274, 1644]`
+
+**TensorRT deployment:**
+```python
+import tensorrt as trt
+
+# Build two TensorRT engines
+engine_full = build_engine("ControlTransformer_cache.onnx")
+engine_incr = build_engine("ControlTransformer_cache_incremental.onnx")
+
+# Streaming inference
+context_full = engine_full.create_execution_context()
+context_incr = engine_incr.create_execution_context()
+
+# First inference (cold start)
+predictions, proj_emb, kv_cache = run_inference(context_full, batch_6ts, empty_cache)
+
+# Streaming loop
+while streaming:
+    # Trim caches to 5 timesteps (remove oldest)
+    proj_emb = proj_emb[:, 274:]      # [1, 1370, 384]
+    kv_cache = kv_cache[:, :, :, 274:]  # [8, 2, 1, 1370, 384]
+
+    # Incremental inference with 1 new timestep
+    predictions, proj_emb, kv_cache = run_inference(
+        context_incr, batch_1ts, proj_emb, kv_cache
+    )
+```
+
+This approach:
+- Avoids dynamic shape complexity
+- Each engine is optimized for its specific input shapes
+- Provides predictable, consistent performance
+
+#### TensorRT with Optimization Profiles (Alternative)
+
+For more flexibility with variable cache lengths, use **TensorRT with optimization profiles**:
 
 ```python
 import tensorrt as trt

@@ -253,29 +253,78 @@ def main(cfg: DictConfig) -> None:
     batch_size, seq_len, _ = proj_embeddings.shape
     logger.debug("projected_embeddings shape", shape=proj_embeddings.shape)
 
-    # Get mask
-    from rmind.components.mask import TorchAttentionMaskLegend
-    from rmind.components.objectives.policy import PolicyObjective
-
-    mask = PolicyObjective.build_attention_mask(
-        episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-    ).mask.to(proj_embeddings.device)
-
-    # Test Mode 0: Full forward (no cache)
-    logger.debug("testing full forward (no cache)")
-    empty_proj_emb = torch.zeros(batch_size, 0, embed_dim, device=proj_embeddings.device)
-    empty_kv = torch.zeros(
-        num_layers, 2, batch_size, 0, embed_dim, device=proj_embeddings.device
+    # Compute tokens per timestep
+    proj_emb_struct = episode.projected_embeddings
+    first_leaf = next(
+        leaf for leaf in _get_tensor_leaves(proj_emb_struct)
+        if leaf is not None and leaf.dim() >= 2
     )
-
-    preds, proj_emb_out, kv_out = cache_model(batch, empty_proj_emb, empty_kv, mask)
+    num_timesteps = first_leaf.shape[1]
+    tokens_per_timestep = seq_len // num_timesteps
     logger.debug(
-        "full forward output", proj_emb_shape=proj_emb_out.shape, kv_shape=kv_out.shape
+        "sequence structure",
+        num_timesteps=num_timesteps,
+        tokens_per_timestep=tokens_per_timestep,
+        total_seq_len=seq_len,
     )
 
-    # Export with full forward args
+    # Determine if this is an incremental export (single timestep batch)
+    is_incremental = num_timesteps == 1
+    if is_incremental:
+        logger.info("incremental export mode detected (1 timestep batch)")
+        # For incremental export, use non-empty cache (5 timesteps worth)
+        # This creates an ONNX model with fixed 1-timestep batch shape
+        num_cached_timesteps = 5
+        cached_seq_len = num_cached_timesteps * tokens_per_timestep
+        total_seq_len = cached_seq_len + seq_len
+
+        # Create dummy cache tensors
+        cached_proj_emb = torch.randn(
+            batch_size, cached_seq_len, embed_dim, device=proj_embeddings.device
+        )
+        cached_kv = torch.randn(
+            num_layers, 2, batch_size, cached_seq_len, embed_dim,
+            device=proj_embeddings.device
+        )
+
+        # Build incremental mask: [S_new, S_total] - new positions attend to all cached + self
+        mask = torch.ones(seq_len, total_seq_len, dtype=torch.bool, device=proj_embeddings.device)
+        for i in range(seq_len):
+            # Position i (in new tokens) can attend to all cached + positions 0..i in new
+            mask[i, : cached_seq_len + i + 1] = False
+
+        logger.debug(
+            "incremental export config",
+            cached_seq_len=cached_seq_len,
+            new_seq_len=seq_len,
+            total_seq_len=total_seq_len,
+            mask_shape=mask.shape,
+        )
+    else:
+        # Full forward export (standard case)
+        from rmind.components.mask import TorchAttentionMaskLegend
+        from rmind.components.objectives.policy import PolicyObjective
+
+        mask = PolicyObjective.build_attention_mask(
+            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+        ).mask.to(proj_embeddings.device)
+
+        # Empty cache for full forward
+        cached_proj_emb = torch.zeros(batch_size, 0, embed_dim, device=proj_embeddings.device)
+        cached_kv = torch.zeros(
+            num_layers, 2, batch_size, 0, embed_dim, device=proj_embeddings.device
+        )
+
+    # Test forward pass
+    logger.debug("testing forward pass", is_incremental=is_incremental)
+    preds, proj_emb_out, kv_out = cache_model(batch, cached_proj_emb, cached_kv, mask)
+    logger.debug(
+        "forward output", proj_emb_shape=proj_emb_out.shape, kv_shape=kv_out.shape
+    )
+
+    # Export args
     logger.debug("exporting cache-enabled model", dynamic_shapes=config.dynamic_shapes)
-    export_args = (batch, empty_proj_emb, empty_kv, mask)
+    export_args = (batch, cached_proj_emb, cached_kv, mask)
 
     try:
         # Build dynamic axes for cache inputs
