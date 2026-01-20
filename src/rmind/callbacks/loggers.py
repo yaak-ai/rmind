@@ -11,6 +11,7 @@ import numpy as np
 import pytorch_lightning as pl
 from contextily.tile import requests
 from einops import rearrange
+from matplotlib import cm
 from pydantic import AfterValidator, validate_call
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.core.hooks import ModelHooks
@@ -132,8 +133,13 @@ class WandbImageParamLogger(Callback):
             logger_.log_image(
                 key=self._key,
                 images=[
-                    Image((v * 255).byte().cpu().numpy(), caption=".".join(k[:-1]))
-                    for k, v in data.items(include_nested=True, leaves_only=True)
+                    Image(
+                        ((v - v.min()) / (v.max() - v.min()) * 255)
+                        .clamp(0, 255)
+                        .unsqueeze(0),
+                        caption=".".join(k[:-1]),
+                    )
+                    for k, v in data.cpu().items(include_nested=True, leaves_only=True)
                 ],
                 step=trainer.global_step,
             )
