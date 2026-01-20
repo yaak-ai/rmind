@@ -62,6 +62,30 @@ def _get_tensor_leaves(tree: Any) -> Iterator[Tensor]:
             yield from _get_tensor_leaves(v)
 
 
+def _get_batch_input_names(
+    batch: dict[str, Any], prefix: str = "batch"
+) -> Iterator[tuple[str, int]]:
+    """Recursively yield (input_name, timestep_dim) for batch tensors.
+
+    ONNX flattens nested dicts into names like 'batch_data_cam_front_left'.
+    For tensors with shape [B, T, ...], the timestep dimension is 1.
+    """
+    def _recurse(obj: Any, current_prefix: str) -> Iterator[tuple[str, int]]:
+        if isinstance(obj, Tensor):
+            # Tensors with dim >= 2 have timestep at dim 1 (after batch)
+            if obj.dim() >= 2:
+                # ONNX uses lowercase and underscores for input names
+                name = current_prefix.lower().replace("/", "_")
+                yield (name, 1)
+        elif isinstance(obj, dict):
+            for key, value in obj.items():
+                # ONNX uses underscore to join nested keys
+                new_prefix = f"{current_prefix}_{key}"
+                yield from _recurse(value, new_prefix)
+
+    yield from _recurse(batch, prefix)
+
+
 
 class CacheEnabledControlTransformer(nn.Module):
     """Cache-enabled ControlTransformer wrapper for ONNX export.
@@ -200,6 +224,7 @@ class Config(BaseModel):
     report: bool = True
     artifacts_dir: Path = Path.cwd()
     dynamic_shapes: bool = True  # Enable dynamic shapes for cache inputs
+    dynamic_batch: bool = False  # Enable dynamic shapes for batch inputs and mask
 
 
 @hydra.main(version_base=None)
@@ -253,37 +278,78 @@ def main(cfg: DictConfig) -> None:
     export_args = (batch, empty_proj_emb, empty_kv, mask)
 
     try:
-        # Export with torch.export first
-        exported = torch.export.export(
-            mod=cache_model,
-            args=export_args,
-            strict=True,
-        )
-
-        # Build dynamic axes for cache inputs (dynamo export has limited support)
+        # Build dynamic axes for cache inputs
         dynamic_axes = None
         if config.dynamic_shapes:
             dynamic_axes = {
                 # Cache inputs: sequence dimension is dynamic
                 "cached_projected_embeddings": {1: "s_cached"},
                 "cached_kv": {3: "s_cached"},
-                # Note: mask and batch inputs remain static with dynamo export
-                # For fully dynamic inference, use TensorRT with optimization profiles
             }
             logger.debug("using dynamic axes for cache inputs")
 
-        torch.onnx.export(
-            model=exported,
-            f=config.f,
-            opset_version=config.opset_version,
-            dynamo=config.dynamo,
-            external_data=config.external_data,
-            optimize=config.optimize,
-            verify=config.verify,
-            report=config.report,
-            artifacts_dir=config.artifacts_dir,
-            dynamic_axes=dynamic_axes,
-        )
+        # Add dynamic axes for batch inputs and mask (enables incremental inference)
+        if config.dynamic_batch:
+            if dynamic_axes is None:
+                dynamic_axes = {}
+
+            # Add dynamic timestep dimension for all batch inputs
+            for input_name, timestep_dim in _get_batch_input_names(batch):
+                dynamic_axes[input_name] = {timestep_dim: "timesteps"}
+                logger.debug("adding dynamic axis", input=input_name, dim=timestep_dim)
+
+            # Add dynamic dimensions for mask [S_new, S_total]
+            dynamic_axes["mask"] = {0: "s_new", 1: "s_total"}
+            logger.debug("adding dynamic axes for mask")
+
+            logger.info(
+                "dynamic_batch enabled - batch inputs and mask have dynamic shapes",
+                num_batch_inputs=len([k for k in dynamic_axes if k.startswith("batch")]),
+            )
+
+        if config.dynamo:
+            # Use dynamo-based export (torch.export -> torch.onnx.export)
+            # Note: dynamic_axes has limited support with dynamo export
+            logger.debug("using dynamo-based export")
+            exported = torch.export.export(
+                mod=cache_model,
+                args=export_args,
+                strict=True,
+            )
+
+            torch.onnx.export(
+                model=exported,
+                f=config.f,
+                opset_version=config.opset_version,
+                dynamo=True,
+                external_data=config.external_data,
+                optimize=config.optimize,
+                verify=config.verify,
+                report=config.report,
+                artifacts_dir=config.artifacts_dir,
+                dynamic_axes=dynamic_axes,
+            )
+        else:
+            # Use legacy torch.onnx.export (better dynamic_axes support)
+            logger.debug("using legacy ONNX export")
+
+            # Build input names for legacy export
+            input_names = list(_get_batch_input_names(batch))
+            input_names = [name for name, _ in input_names]
+            input_names.extend(["cached_projected_embeddings", "cached_kv", "mask"])
+
+            output_names = ["predictions", "projected_embeddings", "kv_cache"]
+
+            torch.onnx.export(
+                model=cache_model,
+                args=export_args,
+                f=str(config.f),
+                opset_version=config.opset_version or 17,
+                input_names=input_names,
+                output_names=output_names,
+                dynamic_axes=dynamic_axes,
+                do_constant_folding=True,
+            )
 
         logger.debug(
             "exported",

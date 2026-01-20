@@ -508,19 +508,99 @@ Speedups vs PyTorch full forward:
 
 ### Dynamic Shapes
 
-The cache-enabled ONNX export supports:
+The cache-enabled ONNX export supports different levels of dynamism:
+
+#### Default Export (Cache Inputs Dynamic)
+
+```bash
+just export-onnx-cache
+```
+
+This exports with:
 - **Dynamic cache inputs**: `cached_projected_embeddings` and `cached_kv` have dynamic sequence dimensions
 - **Static batch/mask**: Batch inputs and mask have fixed shapes based on export configuration
 
-For fully dynamic incremental inference (variable batch timesteps + mask), use **TensorRT with optimization profiles**:
+This is sufficient for TensorRT with optimization profiles (see below).
 
-```python
-# TensorRT optimization profile example
-profile.set_shape("mask", min=(274, 274), opt=(274, 1644), max=(274, 12000))
-profile.set_shape("batch_data_cam_front_left", min=(1, 1, 3, 256, 256), opt=(1, 6, 3, 256, 256), max=(1, 10, 3, 256, 256))
+#### Experimental: Dynamic Batch Export
+
+```bash
+just export-onnx-cache +dynamic_batch=true
 ```
 
-**Note**: PyTorch incremental inference with KV cache works without these limitations.
+This attempts to export with dynamic shapes for batch inputs and mask. **Note**: Due to current PyTorch ONNX exporter limitations with complex models (dynamo export doesn't fully support dynamic_axes for batch inputs), this may not produce fully dynamic shapes. The recommended approach is to use TensorRT optimization profiles.
+
+#### TensorRT with Optimization Profiles (Recommended)
+
+For true incremental inference with variable batch sizes and masks, use **TensorRT with optimization profiles**:
+
+```python
+import tensorrt as trt
+
+# Create builder and network
+builder = trt.Builder(trt.Logger(trt.Logger.WARNING))
+network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+parser = trt.OnnxParser(network, trt.Logger(trt.Logger.WARNING))
+
+with open("model_cache.onnx", "rb") as f:
+    parser.parse(f.read())
+
+config = builder.create_builder_config()
+
+# Profile 0: Full forward (first inference)
+profile_full = builder.create_optimization_profile()
+profile_full.set_shape("batch_data_cam_front_left",
+    min=(1, 6, 3, 256, 256),
+    opt=(1, 6, 3, 256, 256),
+    max=(1, 6, 3, 256, 256))
+profile_full.set_shape("cached_projected_embeddings",
+    min=(1, 0, 384),
+    opt=(1, 0, 384),
+    max=(1, 0, 384))
+profile_full.set_shape("cached_kv",
+    min=(8, 2, 1, 0, 384),
+    opt=(8, 2, 1, 0, 384),
+    max=(8, 2, 1, 0, 384))
+profile_full.set_shape("mask",
+    min=(1644, 1644),
+    opt=(1644, 1644),
+    max=(1644, 1644))
+config.add_optimization_profile(profile_full)
+
+# Profile 1: Incremental (subsequent inferences)
+profile_incr = builder.create_optimization_profile()
+profile_incr.set_shape("batch_data_cam_front_left",
+    min=(1, 1, 3, 256, 256),
+    opt=(1, 1, 3, 256, 256),
+    max=(1, 1, 3, 256, 256))
+profile_incr.set_shape("cached_projected_embeddings",
+    min=(1, 274, 384),      # 1 cached timestep
+    opt=(1, 1370, 384),     # 5 cached timesteps
+    max=(1, 1370, 384))
+profile_incr.set_shape("cached_kv",
+    min=(8, 2, 1, 274, 384),
+    opt=(8, 2, 1, 1370, 384),
+    max=(8, 2, 1, 1370, 384))
+profile_incr.set_shape("mask",
+    min=(274, 548),         # 1 new + 1 cached
+    opt=(274, 1644),        # 1 new + 5 cached
+    max=(274, 1644))
+config.add_optimization_profile(profile_incr)
+
+# Build engine
+engine = builder.build_serialized_network(network, config)
+```
+
+At runtime, switch profiles based on inference mode:
+```python
+# First inference: use profile 0 (full forward)
+context.set_optimization_profile_async(0, stream)
+
+# Subsequent inferences: use profile 1 (incremental)
+context.set_optimization_profile_async(1, stream)
+```
+
+**Note**: PyTorch incremental inference with KV cache works without these limitations and is recommended for development/testing.
 
 ---
 
