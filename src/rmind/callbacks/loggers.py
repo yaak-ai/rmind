@@ -5,9 +5,11 @@ from typing import Annotated, Any, final
 
 import contextily as ctx
 import matplotlib.pyplot as plt
+import numpy as np
 import pytorch_lightning as pl
 from contextily.tile import requests
 from einops import rearrange
+from matplotlib import cm
 from pydantic import AfterValidator, validate_call
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.core.hooks import ModelHooks
@@ -108,19 +110,13 @@ class WandbImageParamLogger(Callback):
             data = data.apply(self._apply, inplace=False)
 
         for logger_ in loggers:
-            logger_.log_image(
-                key=self._key,
-                images=[
-                    Image(
-                        ((v - v.min()) / (v.max() - v.min()) * 255)
-                        .clamp(0, 255)
-                        .unsqueeze(0),
-                        caption=".".join(k[:-1]),
-                    )
-                    for k, v in data.cpu().items(include_nested=True, leaves_only=True)
-                ],
-                step=trainer.global_step,
-            )
+            images = []
+            for k, v in data.cpu().items(include_nested=True, leaves_only=True):
+                normalized = (v - v.min()) / (v.max() - v.min())
+                colored = cm.viridis(normalized.detach().numpy())  # ty:ignore[unresolved-attribute]
+                rgb = (colored[..., :3] * 255).astype(np.uint8)
+                images.append(Image(rgb, caption=".".join(k[:-1])))
+            logger_.log_image(key=self._key, images=images, step=trainer.global_step)
 
 
 NoneKey = (MappingKey(None),)
