@@ -34,6 +34,156 @@ All outputs match within tolerance between PyTorch and ONNX:
 | `projected_embeddings` | `(1, 1644, 384)` | ~1e-03 | ~2e-06 | 0.002 | ✓ MATCH |
 | `kv_cache` | `(8, 2, 1, 1644, 384)` | ~1e-03 | ~1e-06 | 0.002 | ✓ MATCH |
 
+## PyTorch Native vs ONNX Dual Model
+
+This section explains how the PyTorch native model and ONNX dual model differ in their inputs and usage.
+
+### Input Comparison
+
+| Aspect | PyTorch Native | ONNX Dual Model |
+|--------|----------------|-----------------|
+| **Input format** | Nested dict with TensorDict | Flat dict with numpy arrays |
+| **Batch structure** | `batch["data"]["cam_front_left"]` | `batch_data_cam_front_left` |
+| **Timesteps** | Always 6 timesteps | Full: 6ts, Incremental: 1ts |
+| **Cache inputs** | None (internal) | `cached_projected_embeddings`, `cached_kv` |
+| **Attention mask** | Built internally from episode | Baked into model at export |
+| **Position embeddings** | Applied per episode timestep | Applied with offset=0 always |
+
+### PyTorch Native Model
+
+The native PyTorch model takes a nested batch dict:
+
+```python
+batch = {
+    "data": {
+        "cam_front_left": Tensor[B, 6, 3, 256, 256],  # Camera images
+        "meta/VehicleMotion/brake_pedal_normalized": Tensor[B, 6, 1],
+        "meta/VehicleMotion/gas_pedal_normalized": Tensor[B, 6, 1],
+        "meta/VehicleMotion/steering_angle_normalized": Tensor[B, 6, 1],
+        "meta/VehicleMotion/speed": Tensor[B, 6, 1],
+        "meta/VehicleState/turn_signal": Tensor[B, 6, 1],
+        "waypoints/xy_normalized": Tensor[B, 6, 10, 2],
+    }
+}
+
+# Run inference
+outputs = model(batch)
+
+# Extract predictions
+policy = outputs["policy"]
+brake = policy["continuous", "brake_pedal"]      # Tensor[B, 1]
+gas = policy["continuous", "gas_pedal"]          # Tensor[B, 1]
+steering = policy["continuous", "steering_angle"] # Tensor[B, 1]
+turn_signal = policy["discrete", "turn_signal"]   # Tensor[B, 1]
+```
+
+**Characteristics:**
+- Always processes 6 timesteps
+- Builds attention mask internally based on episode structure
+- No explicit cache management
+- Returns TensorDict with nested prediction structure
+
+### ONNX Dual Model
+
+The ONNX model takes flattened inputs with explicit cache:
+
+```python
+import numpy as np
+import onnxruntime as ort
+
+# Load models
+full_session = ort.InferenceSession("ControlTransformer_cache.onnx")
+incr_session = ort.InferenceSession("ControlTransformer_cache_incremental.onnx")
+
+# Flattened input format (underscores replace nested structure)
+inputs = {
+    "batch_data_cam_front_left": np.ndarray[B, T, 3, 256, 256],
+    "batch_data_meta_vehiclemotion_brake_pedal_normalized": np.ndarray[B, T, 1],
+    "batch_data_meta_vehiclemotion_gas_pedal_normalized": np.ndarray[B, T, 1],
+    "batch_data_meta_vehiclemotion_steering_angle_normalized": np.ndarray[B, T, 1],
+    "batch_data_meta_vehiclemotion_speed": np.ndarray[B, T, 1],
+    "batch_data_meta_vehiclestate_turn_signal": np.ndarray[B, T, 1],
+    "batch_data_waypoints_xy_normalized": np.ndarray[B, T, 10, 2],
+    "cached_projected_embeddings": np.ndarray[B, S_cached, 384],
+    "cached_kv": np.ndarray[8, 2, B, S_cached, 384],
+}
+
+# Cold start (T=6, S_cached=0)
+outputs = full_session.run(None, inputs)
+brake, gas, steering, turn_signal, proj_emb, kv_cache = outputs
+
+# Streaming (T=1, S_cached=1370)
+outputs = incr_session.run(None, inputs)
+```
+
+**Characteristics:**
+- Full model: 6 timesteps, empty cache
+- Incremental model: 1 timestep, 5 timesteps cached (1370 tokens)
+- Attention mask baked in at export time
+- Explicit cache management required
+- Returns flat list of numpy arrays
+
+### Key Differences
+
+#### 1. Attention Mask Handling
+
+| Model | Mask Source | Mask Shape |
+|-------|-------------|------------|
+| PyTorch Native | Built from `PolicyObjective.build_attention_mask()` | Dynamic based on episode |
+| ONNX Full | Baked in during export | Fixed `[1644, 1644]` |
+| ONNX Incremental | Baked in during export | Fixed `[274, 1644]` |
+
+The ONNX models have masks baked in because `torch.export` doesn't support dynamic mask shapes for this model.
+
+#### 2. Position Embeddings
+
+| Model | Position Embedding Behavior |
+|-------|----------------------------|
+| PyTorch Native | Uses episode timestep indices |
+| ONNX (both) | Always starts from offset=0 |
+
+During ONNX export, `_is_exporting()` returns `True`, which makes position embeddings use a fixed offset. This is correct for the cache-enabled model because position embeddings are recomputed for the full concatenated sequence.
+
+#### 3. Cache Management
+
+```
+PyTorch Native:
+  Input: batch[B, 6, ...]
+  Output: predictions
+  (No cache exposed - internal only)
+
+ONNX Full Forward:
+  Input: batch[B, 6, ...] + empty_cache[B, 0, D]
+  Output: predictions + proj_emb[B, 1644, D] + kv[L, 2, B, 1644, D]
+
+ONNX Incremental:
+  Input: batch[B, 1, ...] + cache[B, 1370, D]
+  Output: predictions + proj_emb[B, 1644, D] + kv[L, 2, B, 1644, D]
+```
+
+### Benchmark Results
+
+| Model | Mean (ms) | Speedup |
+|-------|-----------|---------|
+| PyTorch Native (6ts) | 263 | 1.0x (baseline) |
+| PyTorch Cache-enabled (6ts) | 159 | 1.65x |
+| ONNX Full Forward (6ts) | 263 | 1.0x |
+| ONNX Incremental (1ts + 5 cached) | **68** | **3.9x** |
+
+The ONNX incremental model provides **~4x speedup** for streaming inference after the first frame.
+
+### Current Limitation: Static Input Data
+
+**Important**: Due to `torch.export` limitations, the ONNX models have **baked-in input data** from export time. The batch inputs are traced as constants, not dynamic variables.
+
+- The ONNX model "inputs" exist but don't affect computation
+- Predictions are computed from the data used during export
+- **Verification during export confirmed ONNX matches PyTorch** with the same input (diff ~1e-07)
+
+To enable true dynamic inputs, the model would need modifications to support symbolic tracing. See the export script comments (lines 608-624) for details.
+
+---
+
 ## Overview
 
 There are two export options available:
