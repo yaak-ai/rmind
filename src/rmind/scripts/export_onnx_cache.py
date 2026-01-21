@@ -142,6 +142,97 @@ class CacheEnabledControlTransformer(nn.Module):
             raise RuntimeError(msg)
         return self._tokens_per_timestep
 
+    def _compute_policy_predictions(
+        self,
+        encoder_output: Tensor,
+        episode: Any,
+    ) -> dict[str, Tensor]:
+        """Compute policy predictions directly from encoder output.
+
+        This uses the encoder output from the KV-cached forward path, ensuring
+        a single encoder pass is used for both cache updates and predictions.
+
+        Args:
+            encoder_output: [B, S_new, D] - encoder output for new tokens only
+            episode: Episode or EpisodeExport with token indices
+
+        Returns:
+            Dict mapping prediction names to tensors
+        """
+        from einops import rearrange
+        from rmind.components.episode import EpisodeExport, Modality, SpecialToken
+
+        # Get the policy objective
+        policy_obj = self.objectives.get("policy")
+        if policy_obj is None:
+            return {}
+
+        # Extract token embeddings using episode indices (same logic as PolicyObjective._compute_logits)
+        if isinstance(episode, EpisodeExport):
+            # EpisodeExport uses plain dict indices
+            observation_summary = encoder_output[
+                :,
+                episode.index[Modality.SPECIAL.value][
+                    SpecialToken.OBSERVATION_SUMMARY.value
+                ][-1],
+            ]
+
+            observation_history = encoder_output[
+                :,
+                episode.index[Modality.SPECIAL.value][
+                    SpecialToken.OBSERVATION_HISTORY.value
+                ][-1],
+            ]
+
+            waypoints = encoder_output[
+                :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]
+            ].mean(dim=1, keepdim=True)
+        else:
+            # Episode uses TensorDict indices
+            embeddings = (
+                episode
+                .index[-1]
+                .select(
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
+                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                    (Modality.CONTEXT, "waypoints"),
+                )
+                .parse(encoder_output)
+            )
+
+            observation_history = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_HISTORY,
+            ))
+
+            observation_summary = embeddings.get((
+                Modality.SPECIAL,
+                SpecialToken.OBSERVATION_SUMMARY,
+            ))
+
+            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
+                dim=1, keepdim=True
+            )
+
+        # Combine features (same as PolicyObjective._compute_logits)
+        features = rearrange(
+            [observation_summary, observation_history.detach(), waypoints],
+            "i b 1 d -> b 1 (i d)",
+        )
+
+        # Get predictions from policy heads
+        logits = policy_obj.heads(features)
+
+        # Convert logits to predictions (same as PolicyObjective.forward)
+        def to_prediction(path: tuple, logit: Tensor) -> Tensor:
+            if path[0] == "continuous":
+                return logit.sigmoid()
+            # discrete: argmax
+            return logit.argmax(dim=-1)
+
+        from torch.utils._pytree import tree_map_with_path  # noqa: PLC2701
+        return tree_map_with_path(to_prediction, logits)
+
     def forward(
         self,
         batch: dict,
@@ -205,24 +296,21 @@ class CacheEnabledControlTransformer(nn.Module):
             new_embeddings, mask, cached_kv
         )
 
-        # Get predictions from objectives
-        predictions_dict = {name: obj(episode) for name, obj in self.objectives.items()}
+        # Compute predictions directly from encoder output (single encoder path)
+        # This avoids running a second encoder call in PolicyObjective
+        predictions = self._compute_policy_predictions(encoder_output, episode)
 
-        # Flatten TensorDict outputs to plain tensors for ONNX compatibility
+        # Flatten TensorDict/dict outputs to plain tensors for ONNX compatibility
         # Expected structure: policy -> continuous/discrete -> individual predictions
         flat_predictions = {}
-        for obj_name, obj_output in predictions_dict.items():
-            if hasattr(obj_output, 'items'):  # TensorDict-like
-                for cat_name, cat_output in obj_output.items():
-                    if hasattr(cat_output, 'items'):  # Nested TensorDict
-                        for pred_name, pred_tensor in cat_output.items():
-                            flat_predictions[f"{obj_name}_{cat_name}_{pred_name}"] = pred_tensor
-                    elif isinstance(cat_output, Tensor):
-                        flat_predictions[f"{obj_name}_{cat_name}"] = cat_output
-            elif isinstance(obj_output, Tensor):
-                flat_predictions[obj_name] = obj_output
+        for cat_name, cat_output in predictions.items():
+            if hasattr(cat_output, 'items'):  # Nested dict/TensorDict
+                for pred_name, pred_tensor in cat_output.items():
+                    flat_predictions[f"policy_{cat_name}_{pred_name}"] = pred_tensor
+            elif isinstance(cat_output, Tensor):
+                flat_predictions[f"policy_{cat_name}"] = cat_output
 
-        # Return as tuple: (gas_pedal, brake_pedal, steering_angle, turn_signal, proj_emb, kv)
+        # Return as tuple: (brake_pedal, gas_pedal, steering_angle, turn_signal, proj_emb, kv)
         # Sorted by key for consistent ordering
         sorted_preds = [flat_predictions[k] for k in sorted(flat_predictions.keys())]
 
