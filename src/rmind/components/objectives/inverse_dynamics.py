@@ -280,7 +280,7 @@ class InverseDynamicsPredictionObjective(Objective):
                 Modality.SUMMARY,
                 SummaryToken.ACTION_SUMMARY,
             ))
-
+            current_foresight = current.select(Modality.FORESIGHT)
             mask = (
                 mask
                 .do_not_attend(current_observations, past_actions)
@@ -289,6 +289,8 @@ class InverseDynamicsPredictionObjective(Objective):
                 .do_not_attend(current_observation_summary, past_action_summary)
                 .do_not_attend(current_observation_history, past_actions)
                 .do_not_attend(current_observation_history, past_action_summary)
+                .do_not_attend(current_foresight, past_actions)
+                .do_not_attend(current_foresight, past_action_summary)
             )
 
         return mask

@@ -141,8 +141,8 @@ class Normalize(Module):
 class ScaleByVectorDimensionality(Module):
     def __init__(self, dim: int = 512, up: bool = False, down: bool = False) -> None:  # noqa: FBT001,FBT002
         super().__init__()
-        self.up = up  # ty:ignore[unresolved-attribute]
-        self.down = down  # ty:ignore[unresolved-attribute]
+        self.up = up
+        self.down = down
         self.factor = np.sqrt(dim)
 
     @override

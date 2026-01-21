@@ -332,9 +332,7 @@ class CrossAttentionDecoderBlock(nn.Module):
         # MLP with residual
         residual = x
         mlp_out = self.mlp(self.mlp_norm(x))
-        x = residual + mlp_out
-
-        return x
+        return residual + mlp_out
 
 
 class CrossAttentionDecoder(nn.Module):
@@ -417,21 +415,8 @@ class CrossAttentionDecoderHead(nn.Module):
 
     @override
     def forward(self, query: Tensor, context: Tensor) -> Tensor:
-        """
-        Args:
-            query: Decoder queries
-                - 3D: [batch, seq_query, dim]
-                - 4D: [batch, time, seq_query, dim] (auto-flattened)
-            context: Encoder context
-                - 3D: [batch, seq_context, dim]
-                - 4D: [batch, time, seq_context, dim] (auto-flattened)
-
-        Returns:
-            Output logits (same shape as query input)
-                - 3D: [batch, seq_query, dim]
-                - 4D: [batch, time, seq_query, dim]
-        """
         # Check input dimensions
+        # PROBABLY THIS WILL FAIL TORCH EXPORT
         if query.ndim not in {3, 4}:
             msg = f"query must be 3D or 4D, got {query.ndim}D"
             raise ValueError(msg)
