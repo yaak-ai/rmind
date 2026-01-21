@@ -245,12 +245,17 @@ class Config(BaseModel):
     artifacts_dir: Path = Path.cwd()
     dynamic_shapes: bool = True  # Enable dynamic shapes for cache inputs
     dynamic_batch: bool = False  # Enable dynamic shapes for batch inputs and mask
+    verify_outputs: bool = True  # Verify PyTorch vs ONNX outputs after export
 
 
 @hydra.main(version_base=None)
 @torch.inference_mode()
 def main(cfg: DictConfig) -> None:
     config = Config(**OmegaConf.to_container(cfg, resolve=True))  # ty:ignore[invalid-argument-type]
+
+    # Set seed BEFORE generating args for reproducible batch data
+    # This ensures standalone verification can use the same batch data
+    torch.manual_seed(42)
 
     logger.debug("instantiating", target=config.model.target)
     args = instantiate(config.args, _recursive_=True, _convert_="all")
@@ -335,9 +340,31 @@ def main(cfg: DictConfig) -> None:
             num_layers, 2, batch_size, 0, embed_dim, device=proj_embeddings.device
         )
 
-    # Test forward pass
+    # IMPORTANT: Set the mask on PolicyObjective before export
+    # This ensures the objective's encoder call uses the same mask as the
+    # CacheEnabledControlTransformer's encoder call. Without this, the objective
+    # would use mask=None during export (since episode is EpisodeExport, not Episode).
+    for obj_name, obj in cache_model.objectives.items():
+        if hasattr(obj, '_mask'):
+            logger.debug("setting mask on objective", objective=obj_name, mask_shape=mask.shape)
+            # Use setattr to update the buffer value (register_buffer fails if already exists)
+            obj._mask = mask
+
+    # Set deterministic mode for reproducible results
+    torch.manual_seed(42)
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
+    # Test forward pass - patch _is_exporting() to ensure deterministic position embeddings
+    # This makes PyTorch use the same PE positions (0-5) as will be traced into ONNX
+    import rmind.components.episode as episode_module
+    original_is_exporting = episode_module._is_exporting
+    episode_module._is_exporting = lambda: True
+
     logger.debug("testing forward pass", is_incremental=is_incremental)
     outputs = cache_model(batch, cached_proj_emb, cached_kv, mask)
+
+    # Restore original function before export (torch.export needs real is_exporting behavior)
+    episode_module._is_exporting = original_is_exporting
     # Outputs: (*predictions, proj_emb, kv_cache) - last two are cache outputs
     proj_emb_out, kv_out = outputs[-2], outputs[-1]
     logger.debug(
@@ -463,6 +490,96 @@ def main(cfg: DictConfig) -> None:
             model=config.f.resolve().as_posix(),
             artifacts=config.artifacts_dir.resolve().as_posix(),
         )
+
+        # Verify PyTorch vs ONNX outputs
+        if config.verify_outputs:
+            import numpy as np
+            import onnxruntime as ort
+
+            logger.info("verifying PyTorch vs ONNX outputs")
+
+            # Flatten batch to ONNX input format
+            def flatten_batch_to_onnx(batch_dict: dict[str, Any], prefix: str = "batch") -> dict[str, Any]:
+                result = {}
+                def _recurse(obj: Any, current_prefix: str) -> None:
+                    if isinstance(obj, Tensor):
+                        name = current_prefix.lower().replace("/", "_")
+                        result[name] = obj.numpy()
+                    elif isinstance(obj, dict):
+                        for key, value in obj.items():
+                            new_prefix = f"{current_prefix}_{key}"
+                            _recurse(value, new_prefix)
+                _recurse(batch_dict, prefix)
+                return result
+
+            # Load ONNX model
+            session = ort.InferenceSession(str(config.f), providers=["CPUExecutionProvider"])
+            onnx_input_names = {inp.name for inp in session.get_inputs()}
+
+            # Prepare ONNX inputs using the SAME inputs as export
+            onnx_inputs = flatten_batch_to_onnx(batch)
+            onnx_inputs["cached_projected_embeddings"] = cached_proj_emb.numpy()
+            onnx_inputs["cached_kv"] = cached_kv.numpy()
+            onnx_inputs["mask"] = mask.numpy()
+
+            # Match input names (case-insensitive)
+            onnx_inputs_matched = {}
+            for onnx_name in onnx_input_names:
+                onnx_name_lower = onnx_name.lower()
+                for our_name, value in onnx_inputs.items():
+                    if our_name.lower() == onnx_name_lower:
+                        onnx_inputs_matched[onnx_name] = value
+                        break
+
+            # Run ONNX model
+            onnx_outputs = session.run(None, onnx_inputs_matched)
+
+            # Run PyTorch model with the SAME inputs used during export tracing
+            # Note: We need to run in export context to match the traced behavior
+            pytorch_outputs = outputs  # Use the outputs from the test forward pass
+
+            # Compare outputs
+            prediction_names = [
+                "policy_continuous_brake_pedal",
+                "policy_continuous_gas_pedal",
+                "policy_continuous_steering_angle",
+                "policy_discrete_turn_signal",
+                "projected_embeddings",
+                "kv_cache",
+            ]
+
+            # With unified encoder path, differences should be minimal (FP epsilon level)
+            PREDICTION_TOL = 1e-5  # ~0.001% tolerance for scalar predictions
+            EMBEDDING_TOL = 0.002  # 0.2% tolerance for embeddings (larger due to more ops)
+
+            all_match = True
+            for i, (pytorch_out, onnx_out) in enumerate(zip(pytorch_outputs, onnx_outputs)):
+                name = prediction_names[i] if i < len(prediction_names) else f"output_{i}"
+                pytorch_np = pytorch_out.numpy() if isinstance(pytorch_out, Tensor) else pytorch_out
+                diff = np.abs(pytorch_np - onnx_out)
+                max_diff = float(diff.max())
+                mean_diff = float(diff.mean())
+
+                # Use appropriate tolerance based on output type
+                is_prediction = i < 4  # First 4 outputs are predictions
+                tol = PREDICTION_TOL if is_prediction else EMBEDDING_TOL
+                match_status = "MATCH" if max_diff < tol else "MISMATCH"
+                if max_diff >= tol:
+                    all_match = False
+
+                logger.info(
+                    f"output comparison: {name}",
+                    shape=pytorch_np.shape,
+                    max_diff=max_diff,
+                    mean_diff=mean_diff,
+                    tolerance=tol,
+                    status=match_status,
+                )
+
+            if all_match:
+                logger.info("SUCCESS: All outputs match within tolerance")
+            else:
+                logger.warning("WARNING: Some outputs differ beyond tolerance - this may indicate issues with the export")
 
     except Exception as e:
         logger.error("export failed", error=str(e))

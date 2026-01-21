@@ -133,11 +133,19 @@ class TransformerEncoderBlock(nn.Module):
             k: Key tensor [B, num_heads, S_kv, head_dim]
             v: Value tensor [B, num_heads, S_kv, head_dim]
             mask: Optional attention mask [S_q, S_kv] or [B, num_heads, S_q, S_kv]
+                  For boolean masks: True means DO NOT attend (masked out)
+                  For float masks: -inf means DO NOT attend
             dropout_p: Dropout probability
 
         Returns:
             Tuple of (attention output, attention weights if requested)
         """
+        # Convert boolean mask to float mask for consistent behavior with nn.MHA
+        # nn.MHA converts bool masks internally, but F.sdpa handles them differently
+        # For bool masks: True = DO NOT attend -> convert to -inf
+        if mask is not None and mask.dtype == torch.bool:
+            mask = torch.zeros_like(mask, dtype=q.dtype).masked_fill_(mask, float("-inf"))
+
         # Use PyTorch's optimized implementation
         attn_output = F.scaled_dot_product_attention(
             q, k, v,
