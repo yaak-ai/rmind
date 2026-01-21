@@ -2,6 +2,17 @@
 
 This guide explains how to export ControlTransformer models to ONNX format for deployment.
 
+## Latest Exported Models
+
+The most recent verified ONNX models are located at:
+
+| Model | Path | Description |
+|-------|------|-------------|
+| Full Forward (6 timesteps) | `outputs/2026-01-21/10-28-57/rmind.models.control_transformer.ControlTransformer_cache.onnx` | Initial inference with empty cache |
+| Incremental (1 timestep) | `outputs/2026-01-21/10-29-38/rmind.models.control_transformer.ControlTransformer_cache_incremental.onnx` | Subsequent inference with 5 cached timesteps |
+
+These models have been verified to produce **identical predictions** (0.0 difference) compared to native PyTorch inference.
+
 ## Overview
 
 There are two export options available:
@@ -658,6 +669,44 @@ context.set_optimization_profile_async(1, stream)
 
 ---
 
+## Verification Scripts
+
+### Single Model Verification
+
+Verify that a single ONNX model matches PyTorch outputs:
+
+```bash
+uv run python -m rmind.scripts.verify_onnx_cache \
+    --config-dir=config \
+    --config-name=export/verify_onnx_cache \
+    onnx_path=/path/to/model.onnx
+```
+
+This compares:
+- Policy predictions (brake, gas, steering, turn signal)
+- Projected embeddings cache
+- KV cache
+
+### Dual Model Verification
+
+Verify that the full forward + incremental ONNX model setup matches native PyTorch:
+
+```bash
+uv run python -m rmind.scripts.verify_dual_onnx \
+    --config-dir=config \
+    --config-name=export/verify_dual_onnx
+```
+
+This runs comprehensive comparisons:
+1. **PyTorch 6-timestep vs PyTorch dual (5+1)** - Verifies internal consistency
+2. **ONNX full (6) vs PyTorch full (6)** - Verifies full forward model
+3. **ONNX dual (5+1) vs PyTorch dual (5+1)** - Verifies incremental model with PyTorch cache
+4. **ONNX dual (5+1) vs PyTorch full (6)** - The ultimate test
+
+All comparisons should show `MATCH` with 0.0 difference for predictions.
+
+---
+
 ## Testing
 
 Run the cache export tests:
@@ -695,3 +744,36 @@ If ONNX Runtime verification fails, try disabling optimizations:
 ```bash
 just export-onnx +optimize=false +verify=true
 ```
+
+---
+
+## Recent Changes (2026-01-21)
+
+### Boolean Mask Fix
+
+Fixed numerical differences between PyTorch and ONNX by ensuring consistent boolean mask handling.
+
+**Problem**: The custom `_scaled_dot_product_attention` method in `llm.py` was passing boolean masks directly to `F.scaled_dot_product_attention`, which handles boolean masks differently than `nn.MultiheadAttention`.
+
+**Solution**: Convert boolean masks to float masks with `-inf` for masked positions before passing to `F.scaled_dot_product_attention`:
+
+```python
+# In _scaled_dot_product_attention (llm.py)
+if mask is not None and mask.dtype == torch.bool:
+    mask = torch.zeros_like(mask, dtype=q.dtype).masked_fill_(mask, float("-inf"))
+```
+
+**Result**: Reduced max diff from ~8.7 to 0.0 for projected embeddings, and from ~60% to 0.0% for predictions.
+
+### Unified Encoder Path
+
+Modified `CacheEnabledControlTransformer` to compute predictions directly from the KV-cached encoder output, rather than calling `obj(episode)` which runs a separate encoder call. This ensures:
+- Single encoder pass for both cache updates and predictions
+- Consistent behavior between PyTorch and ONNX
+- Support for incremental inference (which requires non-square attention masks)
+
+### Verification Improvements
+
+- Added `verify_onnx_cache.py` for single model verification
+- Added `verify_dual_onnx.py` for dual model setup verification
+- Set deterministic seed (`torch.manual_seed(42)`) before generating test batch data for reproducible verification
