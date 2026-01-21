@@ -17,4 +17,4 @@ steering_angle_bins: 961
 args:
   - ${input}
 
-onnx_path: /home/harsimrat/workspace/jetson/rmind/outputs/2026-01-21/10-17-25/rmind.models.control_transformer.ControlTransformer_cache.onnx
+onnx_path: /home/harsimrat/workspace/jetson/rmind/outputs/2026-01-21/11-42-42/rmind.models.control_transformer.ControlTransformer_cache.onnx

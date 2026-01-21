@@ -8,8 +8,8 @@ The most recent verified ONNX models are located at:
 
 | Model | Path | Description |
 |-------|------|-------------|
-| Full Forward (6 timesteps) | `outputs/2026-01-21/10-28-57/rmind.models.control_transformer.ControlTransformer_cache.onnx` | Initial inference with empty cache |
-| Incremental (1 timestep) | `outputs/2026-01-21/10-29-38/rmind.models.control_transformer.ControlTransformer_cache_incremental.onnx` | Subsequent inference with 5 cached timesteps |
+| Full Forward (6 timesteps) | `outputs/2026-01-21/11-42-42/rmind.models.control_transformer.ControlTransformer_cache.onnx` | Initial inference with empty cache |
+| Incremental (1 timestep) | `outputs/2026-01-21/11-43-30/rmind.models.control_transformer.ControlTransformer_cache_incremental.onnx` | Subsequent inference with 5 cached timesteps |
 
 These models have been verified to produce **identical predictions** (0.0 difference) compared to native PyTorch inference.
 

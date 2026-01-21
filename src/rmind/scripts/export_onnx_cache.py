@@ -224,11 +224,22 @@ class CacheEnabledControlTransformer(nn.Module):
         logits = policy_obj.heads(features)
 
         # Convert logits to predictions (same as PolicyObjective.forward)
+        from rmind.components.episode import Modality
+        from rmind.utils.functional import non_zero_signal_with_threshold
+
         def to_prediction(path: tuple, logit: Tensor) -> Tensor:
-            if path[0] == "continuous":
-                return logit.sigmoid()
-            # discrete: argmax
-            return logit.argmax(dim=-1)
+            # path elements are MappingKey objects, extract the key string
+            modality_str = path[0].key if hasattr(path[0], "key") else str(path[0])
+            action_name = path[1].key if hasattr(path[1], "key") else str(path[1])
+            action_type = (Modality(modality_str), action_name)
+            match action_type:
+                case (Modality.CONTINUOUS, _):
+                    return logit[..., 0]
+                case (Modality.DISCRETE, "turn_signal"):
+                    return non_zero_signal_with_threshold(logit).class_idx
+                case _:
+                    msg = f"Invalid action type: {action_type}"
+                    raise NotImplementedError(msg)
 
         from torch.utils._pytree import tree_map_with_path  # noqa: PLC2701
         return tree_map_with_path(to_prediction, logits)
