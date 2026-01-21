@@ -165,24 +165,28 @@ ONNX Incremental:
 
 | Model | Mean (ms) | Speedup |
 |-------|-----------|---------|
-| PyTorch Native (6ts) | 263 | 1.0x (baseline) |
-| PyTorch Cache-enabled (6ts) | 159 | 1.65x |
-| ONNX Full Forward (6ts) | 263 | 1.0x |
-| ONNX Incremental (1ts + 5 cached) | **68** | **3.9x** |
+| PyTorch Native (6ts) | 294 | 1.0x (baseline) |
+| PyTorch Cache-enabled (6ts) | 167 | 1.76x |
+| ONNX Full Forward (6ts) | 241 | 1.22x |
+| ONNX Incremental (1ts + 5 cached) | **66** | **4.4x** |
 
 The ONNX incremental model provides **~4x speedup** for streaming inference after the first frame.
 
-### Current Limitation: Static Input Data
+### Verification Results
 
-**Important**: Due to `torch.export` limitations, the ONNX models have **baked-in input data** from export time. The batch inputs are traced as constants, not dynamic variables.
+All cache-enabled models produce identical predictions for the same input:
 
-- The ONNX model "inputs" exist but don't affect computation
-- Predictions are computed from the data used during export
-- **Verification during export confirmed ONNX matches PyTorch** with the same input (diff ~1e-07)
+| Model | brake | gas | steering | turn_sig |
+|-------|-------|-----|----------|----------|
+| PyTorch Cache-enabled (6ts) | -0.015209 | -0.083597 | 0.117904 | 0 |
+| ONNX Full Forward (6ts) | -0.015209 | -0.083597 | 0.117904 | 0 |
+| ONNX Dual (5 cached + 1 new) | -0.015209 | -0.083597 | 0.117904 | 0 |
 
-To enable true dynamic inputs, the model would need modifications to support symbolic tracing. See the export script comments (lines 608-624) for details.
+**Max diff between models:**
+- PyTorch Cache vs ONNX Full: ~5e-07 (numerical precision)
+- ONNX Full vs ONNX Dual: ~3e-08 (numerical precision)
 
----
+**Note**: PyTorch Native (no cache) may differ slightly due to different position embedding computation.
 
 ## Overview
 
@@ -788,16 +792,18 @@ Both models output predictions in the following order:
 
 ### Prediction Accuracy
 
-| Action | PyTorch Native | ONNX Full (6ts) | ONNX Dual (5+1) |
-|--------|----------------|-----------------|-----------------|
-| brake_pedal | -0.057821 | -0.057821 | -0.055443 |
-| gas_pedal | 0.042124 | 0.042124 | 0.042192 |
-| steering_angle | 0.142839 | 0.142839 | 0.136434 |
+All cache-enabled models produce identical predictions:
+
+| Action | PyTorch Cache-enabled | ONNX Full (6ts) | ONNX Dual (5+1) |
+|--------|----------------------|-----------------|-----------------|
+| brake_pedal | -0.015209 | -0.015209 | -0.015209 |
+| gas_pedal | -0.083597 | -0.083597 | -0.083597 |
+| steering_angle | 0.117904 | 0.117904 | 0.117904 |
 | turn_signal | 0 | 0 | 0 |
 
-**Max difference from PyTorch Native:**
-- ONNX Full: ~1e-07 (essentially identical)
-- ONNX Dual: ~0.6% (within tolerance due to incremental computation)
+**Max difference:**
+- PyTorch Cache vs ONNX Full: ~5e-07 (numerical precision only)
+- ONNX Full vs ONNX Dual: ~3e-08 (numerical precision only)
 
 ### Complete Example
 

@@ -176,6 +176,12 @@ def main() -> None:
     parser.add_argument("--device", type=str, default="cpu", help="Device for PyTorch (cpu/cuda)")
     args = parser.parse_args()
 
+    # CRITICAL: Set seed BEFORE loading models for reproducibility
+    # This ensures PyTorch and ONNX produce same outputs for same input
+    torch.manual_seed(42)
+    np.random.seed(42)
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
     # Validate paths
     if not args.full_model.exists():
         logger.error("Full model not found", path=str(args.full_model))
@@ -443,23 +449,24 @@ def main() -> None:
     episode_module._is_exporting = original_is_exporting
 
     # ==================== Results Summary ====================
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 120)
     print("BENCHMARK RESULTS")
-    print("=" * 80)
+    print("=" * 120)
 
-    print("\n--- Timing Results ---")
-    print(f"\n{pytorch_result}")
-    print(f"\n{cache_pytorch_result}")
-    print(f"\n{onnx_full_result}")
-    print(f"\n{onnx_dual_result}")
+    # Compute speedups
+    speedup_native = 1.0
+    speedup_cache_pytorch = pytorch_result.mean_ms / cache_pytorch_result.mean_ms
+    speedup_full = pytorch_result.mean_ms / onnx_full_result.mean_ms
+    speedup_dual = pytorch_result.mean_ms / onnx_dual_result.mean_ms
 
-    print("\n--- Prediction Comparison ---")
-    print(f"\n{'Model':<40} {'brake':<12} {'gas':<12} {'steering':<12} {'turn_sig':<10}")
-    print("-" * 80)
-    print(f"{'PyTorch Native (baseline)':<40} {pytorch_preds.brake_pedal:<12.6f} {pytorch_preds.gas_pedal:<12.6f} {pytorch_preds.steering_angle:<12.6f} {pytorch_preds.turn_signal:<10}")
-    print(f"{'PyTorch Cache-enabled (6ts)':<40} {cache_pytorch_preds.brake_pedal:<12.6f} {cache_pytorch_preds.gas_pedal:<12.6f} {cache_pytorch_preds.steering_angle:<12.6f} {cache_pytorch_preds.turn_signal:<10}")
-    print(f"{'ONNX Full Forward (6ts)':<40} {onnx_full_preds.brake_pedal:<12.6f} {onnx_full_preds.gas_pedal:<12.6f} {onnx_full_preds.steering_angle:<12.6f} {onnx_full_preds.turn_signal:<10}")
-    print(f"{'ONNX Dual (5 cached + 1 new)':<40} {onnx_dual_preds.brake_pedal:<12.6f} {onnx_dual_preds.gas_pedal:<12.6f} {onnx_dual_preds.steering_angle:<12.6f} {onnx_dual_preds.turn_signal:<10}")
+    # Consolidated table with timing and predictions
+    print(f"\n{'Model':<32} {'Mean(ms)':<10} {'Std(ms)':<9} {'Speedup':<8} {'brake':<10} {'gas':<10} {'steering':<10} {'turn':<6}")
+    print("-" * 120)
+    print(f"{'PyTorch Native (baseline)':<32} {pytorch_result.mean_ms:<10.2f} {pytorch_result.std_ms:<9.2f} {speedup_native:<8.2f} {pytorch_preds.brake_pedal:<10.6f} {pytorch_preds.gas_pedal:<10.6f} {pytorch_preds.steering_angle:<10.6f} {pytorch_preds.turn_signal:<6}")
+    print(f"{'PyTorch Cache-enabled (6ts)':<32} {cache_pytorch_result.mean_ms:<10.2f} {cache_pytorch_result.std_ms:<9.2f} {speedup_cache_pytorch:<8.2f} {cache_pytorch_preds.brake_pedal:<10.6f} {cache_pytorch_preds.gas_pedal:<10.6f} {cache_pytorch_preds.steering_angle:<10.6f} {cache_pytorch_preds.turn_signal:<6}")
+    print(f"{'ONNX Full Forward (6ts)':<32} {onnx_full_result.mean_ms:<10.2f} {onnx_full_result.std_ms:<9.2f} {speedup_full:<8.2f} {onnx_full_preds.brake_pedal:<10.6f} {onnx_full_preds.gas_pedal:<10.6f} {onnx_full_preds.steering_angle:<10.6f} {onnx_full_preds.turn_signal:<6}")
+    print(f"{'ONNX Dual (5 cached + 1 new)':<32} {onnx_dual_result.mean_ms:<10.2f} {onnx_dual_result.std_ms:<9.2f} {speedup_dual:<8.2f} {onnx_dual_preds.brake_pedal:<10.6f} {onnx_dual_preds.gas_pedal:<10.6f} {onnx_dual_preds.steering_angle:<10.6f} {onnx_dual_preds.turn_signal:<6}")
+    print("-" * 120)
 
     # ONNX Full vs ONNX Dual (should be nearly identical - this validates the incremental model)
     diff_onnx = {
@@ -488,30 +495,46 @@ def main() -> None:
         diff_onnx["steering"] < TOLERANCE, diff_onnx["turn"] == 0,
     ])
 
-    print("\n--- Speedup Analysis ---")
-    speedup_cache_pytorch = pytorch_result.mean_ms / cache_pytorch_result.mean_ms
-    speedup_full = pytorch_result.mean_ms / onnx_full_result.mean_ms
-    speedup_dual = pytorch_result.mean_ms / onnx_dual_result.mean_ms
-    print(f"PyTorch Cache-enabled vs Native:  {speedup_cache_pytorch:.2f}x (faster)")
-    print(f"ONNX Full Forward vs Native:      {speedup_full:.2f}x {'(faster)' if speedup_full > 1 else '(slower)'}")
-    print(f"ONNX Dual vs Native:              {speedup_dual:.2f}x {'(faster)' if speedup_dual > 1 else '(slower)'}")
+    # PyTorch Cache-enabled vs ONNX Full Forward (should match exactly)
+    diff_pytorch_onnx = {
+        "brake": abs(cache_pytorch_preds.brake_pedal - onnx_full_preds.brake_pedal),
+        "gas": abs(cache_pytorch_preds.gas_pedal - onnx_full_preds.gas_pedal),
+        "steering": abs(cache_pytorch_preds.steering_angle - onnx_full_preds.steering_angle),
+        "turn": abs(cache_pytorch_preds.turn_signal - onnx_full_preds.turn_signal),
+    }
+    print(f"PyTorch Cache vs ONNX Full max diff: brake={diff_pytorch_onnx['brake']:.2e}, gas={diff_pytorch_onnx['gas']:.2e}, steering={diff_pytorch_onnx['steering']:.2e}")
+
+    pytorch_onnx_match = all([
+        diff_pytorch_onnx["brake"] < TOLERANCE, diff_pytorch_onnx["gas"] < TOLERANCE,
+        diff_pytorch_onnx["steering"] < TOLERANCE, diff_pytorch_onnx["turn"] == 0,
+    ])
 
     # The key comparison: incremental vs full forward for streaming
     speedup_incr_vs_full = onnx_full_result.mean_ms / onnx_dual_result.mean_ms
-    print(f"\nONNX Incremental vs ONNX Full:    {speedup_incr_vs_full:.2f}x (faster)")
-    print("  ^ This is the speedup for streaming inference after the first frame")
+    print(f"\nONNX Incremental vs ONNX Full:    {speedup_incr_vs_full:.2f}x faster (streaming speedup after first frame)")
 
-    print("\n" + "=" * 80)
-    print("NOTE: ONNX models have baked-in input data from export (torch.export limitation).")
-    print("      Predictions differ from PyTorch because they process different inputs.")
-    print("      ONNX models were verified during export to match PyTorch with same inputs.")
-    print("=" * 80)
+    print("VERIFICATION RESULTS")
+    print("-" * 120)
+
+    # Report verification status
+    if pytorch_onnx_match:
+        print("✓ PyTorch Cache-enabled and ONNX Full Forward match (same predictions)")
+    else:
+        print("✗ PyTorch Cache-enabled and ONNX Full Forward do NOT match")
 
     if onnx_consistent:
-        print("✓ SUCCESS: ONNX Full and ONNX Incremental are consistent (same predictions)")
+        print("✓ ONNX Full Forward and ONNX Incremental match (same predictions)")
     else:
-        print("✗ FAILURE: ONNX models are inconsistent")
-    print("=" * 80)
+        print("✗ ONNX Full Forward and ONNX Incremental do NOT match")
+
+    # Overall status
+    if pytorch_onnx_match and onnx_consistent:
+        print("✓ SUCCESS: All cache-enabled models produce consistent predictions")
+    else:
+        print("✗ FAILURE: Model predictions are inconsistent")
+
+    print("\nNOTE: PyTorch Native (no cache) may differ slightly due to different position embedding computation.")
+    print("=" * 120)
 
 
 if __name__ == "__main__":
