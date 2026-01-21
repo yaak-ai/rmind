@@ -49,6 +49,44 @@ from rmind.config import HydraConfig
 
 logger = get_logger(__name__)
 
+# ImageNet normalization constants (used by DINOv2/DINOv3 models)
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32)
+
+
+def normalize_images(batch: dict[str, Any]) -> dict[str, Any]:
+    """Apply ImageNet normalization to images in batch.
+
+    Normalizes images using ImageNet mean and std:
+        normalized = (image - mean) / std
+
+    Args:
+        batch: Batch dict containing 'data/cam_front_left' with shape [B, T, C, H, W]
+
+    Returns:
+        Batch with normalized images
+    """
+    result = {}
+    for key, value in batch.items():
+        if isinstance(value, dict):
+            result[key] = normalize_images(value)
+        elif isinstance(value, Tensor) and key == "cam_front_left":
+            # Image tensor: [B, T, C, H, W]
+            # Normalize along channel dimension
+            mean = IMAGENET_MEAN.view(1, 1, 3, 1, 1)
+            std = IMAGENET_STD.view(1, 1, 3, 1, 1)
+            result[key] = (value - mean) / std
+            logger.debug(
+                "applied ImageNet normalization",
+                key=key,
+                shape=value.shape,
+                input_range=(float(value.min()), float(value.max())),
+                output_range=(float(result[key].min()), float(result[key].max())),
+            )
+        else:
+            result[key] = value
+    return result
+
 
 def _get_tensor_leaves(tree: Any) -> Iterator[Tensor]:
     """Recursively yield all tensor leaves from a nested dict/TensorDict structure."""
@@ -372,6 +410,11 @@ def main(cfg: DictConfig) -> None:
     # Build episode to get shapes
     logger.debug("building episode for shape inference")
     batch = args[0]
+
+    # Apply ImageNet normalization to images
+    # This matches the preprocessing expected by DINOv2/DINOv3 backbone
+    batch = normalize_images(batch)
+
     episode = base_model.episode_builder(batch)
     proj_embeddings = episode.projected_embeddings_packed
     batch_size, seq_len, _ = proj_embeddings.shape
