@@ -595,6 +595,298 @@ This approach:
 - Each engine is optimized for its specific input shapes
 - Provides predictable, consistent performance
 
+---
+
+## Dual Model Inference with ONNX Runtime
+
+This section provides a complete example of using the dual ONNX model setup for streaming inference.
+
+### Model Outputs
+
+Both models output predictions in the following order:
+1. `policy_continuous_brake_pedal` - Brake pedal position [0, 1]
+2. `policy_continuous_gas_pedal` - Gas pedal position [0, 1]
+3. `policy_continuous_steering_angle` - Steering angle normalized [-1, 1]
+4. `policy_discrete_turn_signal` - Turn signal class index (0=none, 1=left, 2=right)
+5. `projected_embeddings` - Cache for next inference [B, S, D]
+6. `kv_cache` - KV cache for next inference [L, 2, B, S, D]
+
+### Prediction Accuracy
+
+| Action | PyTorch Native | ONNX Full (6ts) | ONNX Dual (5+1) |
+|--------|----------------|-----------------|-----------------|
+| brake_pedal | -0.057821 | -0.057821 | -0.055443 |
+| gas_pedal | 0.042124 | 0.042124 | 0.042192 |
+| steering_angle | 0.142839 | 0.142839 | 0.136434 |
+| turn_signal | 0 | 0 | 0 |
+
+**Max difference from PyTorch Native:**
+- ONNX Full: ~1e-07 (essentially identical)
+- ONNX Dual: ~0.6% (within tolerance due to incremental computation)
+
+### Complete Example
+
+```python
+import numpy as np
+import onnxruntime as ort
+
+# Model constants
+BATCH_SIZE = 1
+EMBED_DIM = 384
+NUM_LAYERS = 8
+TOKENS_PER_TIMESTEP = 274
+NUM_TIMESTEPS_FULL = 6
+NUM_TIMESTEPS_CACHED = 5
+
+# Sequence lengths
+SEQ_LEN_FULL = NUM_TIMESTEPS_FULL * TOKENS_PER_TIMESTEP  # 1644
+SEQ_LEN_CACHED = NUM_TIMESTEPS_CACHED * TOKENS_PER_TIMESTEP  # 1370
+SEQ_LEN_NEW = TOKENS_PER_TIMESTEP  # 274
+
+
+class DualONNXInference:
+    """Streaming inference using dual ONNX model setup."""
+
+    def __init__(self, full_model_path: str, incremental_model_path: str):
+        # Load both ONNX models
+        self.full_session = ort.InferenceSession(
+            full_model_path,
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        self.incr_session = ort.InferenceSession(
+            incremental_model_path,
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+
+        # Get input/output names
+        self.full_inputs = {inp.name for inp in self.full_session.get_inputs()}
+        self.incr_inputs = {inp.name for inp in self.incr_session.get_inputs()}
+
+        # Cache state
+        self.proj_emb_cache = None
+        self.kv_cache = None
+        self.is_initialized = False
+
+    def _flatten_batch(self, batch: dict, prefix: str = "batch") -> dict:
+        """Flatten nested batch dict for ONNX input."""
+        result = {}
+
+        def recurse(obj, current_prefix):
+            if isinstance(obj, np.ndarray):
+                name = current_prefix.lower().replace("/", "_")
+                result[name] = obj
+            elif isinstance(obj, dict):
+                for key, value in obj.items():
+                    recurse(value, f"{current_prefix}_{key}")
+
+        recurse(batch, prefix)
+        return result
+
+    def _match_inputs(self, input_names: set, inputs: dict) -> dict:
+        """Match input dict keys to ONNX input names (case-insensitive)."""
+        matched = {}
+        for onnx_name in input_names:
+            for our_name, value in inputs.items():
+                if our_name.lower() == onnx_name.lower():
+                    matched[onnx_name] = value
+                    break
+        return matched
+
+    def _build_causal_mask(self, seq_new: int, seq_total: int) -> np.ndarray:
+        """Build causal attention mask.
+
+        Args:
+            seq_new: Number of new tokens
+            seq_total: Total sequence length (cached + new)
+
+        Returns:
+            Boolean mask [seq_new, seq_total] where True = masked (cannot attend)
+        """
+        start_idx = seq_total - seq_new
+        mask = np.ones((seq_new, seq_total), dtype=bool)
+        for i in range(seq_new):
+            mask[i, :start_idx + i + 1] = False
+        return mask
+
+    def _parse_outputs(self, outputs: list) -> dict:
+        """Parse ONNX outputs into named dict."""
+        return {
+            "brake_pedal": float(outputs[0].flatten()[0]),
+            "gas_pedal": float(outputs[1].flatten()[0]),
+            "steering_angle": float(outputs[2].flatten()[0]),
+            "turn_signal": int(outputs[3].flatten()[0]),
+            "proj_emb": outputs[4],
+            "kv_cache": outputs[5],
+        }
+
+    def run_cold_start(self, batch_6ts: dict) -> dict:
+        """Run cold start inference with 6 timesteps.
+
+        Args:
+            batch_6ts: Input batch with 6 timesteps
+                - data/cam_front_left: [1, 6, 3, 256, 256]
+                - data/meta/VehicleMotion/brake_pedal_normalized: [1, 6, 1]
+                - data/meta/VehicleMotion/gas_pedal_normalized: [1, 6, 1]
+                - data/meta/VehicleMotion/steering_angle_normalized: [1, 6, 1]
+                - data/meta/VehicleMotion/speed: [1, 6, 1]
+                - data/meta/VehicleState/turn_signal: [1, 6, 1]
+                - data/waypoints/xy_normalized: [1, 6, 10, 2]
+
+        Returns:
+            Dict with predictions (brake_pedal, gas_pedal, steering_angle, turn_signal)
+        """
+        # Empty caches for cold start
+        empty_proj_emb = np.empty((BATCH_SIZE, 0, EMBED_DIM), dtype=np.float32)
+        empty_kv = np.empty((NUM_LAYERS, 2, BATCH_SIZE, 0, EMBED_DIM), dtype=np.float32)
+
+        # Full causal mask [1644, 1644]
+        mask = self._build_causal_mask(SEQ_LEN_FULL, SEQ_LEN_FULL)
+
+        # Prepare inputs
+        inputs = self._flatten_batch(batch_6ts)
+        inputs["cached_projected_embeddings"] = empty_proj_emb
+        inputs["cached_kv"] = empty_kv
+        inputs["mask"] = mask
+
+        # Run full forward model
+        matched_inputs = self._match_inputs(self.full_inputs, inputs)
+        outputs = self.full_session.run(None, matched_inputs)
+
+        # Parse and cache results
+        result = self._parse_outputs(outputs)
+        self.proj_emb_cache = result["proj_emb"]
+        self.kv_cache = result["kv_cache"]
+        self.is_initialized = True
+
+        return {
+            "brake_pedal": result["brake_pedal"],
+            "gas_pedal": result["gas_pedal"],
+            "steering_angle": result["steering_angle"],
+            "turn_signal": result["turn_signal"],
+        }
+
+    def run_incremental(self, batch_1ts: dict) -> dict:
+        """Run incremental inference with 1 new timestep.
+
+        Args:
+            batch_1ts: Input batch with 1 timestep
+                - data/cam_front_left: [1, 1, 3, 256, 256]
+                - data/meta/VehicleMotion/brake_pedal_normalized: [1, 1, 1]
+                - ... (same structure as cold_start but with 1 timestep)
+
+        Returns:
+            Dict with predictions
+
+        Raises:
+            RuntimeError: If called before run_cold_start()
+        """
+        if not self.is_initialized:
+            raise RuntimeError("Must call run_cold_start() before run_incremental()")
+
+        # Trim caches to 5 timesteps (remove oldest timestep)
+        self.proj_emb_cache = self.proj_emb_cache[:, TOKENS_PER_TIMESTEP:]  # [1, 1370, 384]
+        self.kv_cache = self.kv_cache[:, :, :, TOKENS_PER_TIMESTEP:]  # [8, 2, 1, 1370, 384]
+
+        # Incremental mask [274, 1644] - new tokens attend to all cached + self
+        mask = self._build_causal_mask(SEQ_LEN_NEW, SEQ_LEN_CACHED + SEQ_LEN_NEW)
+
+        # Prepare inputs
+        inputs = self._flatten_batch(batch_1ts)
+        inputs["cached_projected_embeddings"] = self.proj_emb_cache
+        inputs["cached_kv"] = self.kv_cache
+        inputs["mask"] = mask
+
+        # Run incremental model
+        matched_inputs = self._match_inputs(self.incr_inputs, inputs)
+        outputs = self.incr_session.run(None, matched_inputs)
+
+        # Parse and update cache
+        result = self._parse_outputs(outputs)
+        self.proj_emb_cache = result["proj_emb"]  # [1, 1644, 384]
+        self.kv_cache = result["kv_cache"]  # [8, 2, 1, 1644, 384]
+
+        return {
+            "brake_pedal": result["brake_pedal"],
+            "gas_pedal": result["gas_pedal"],
+            "steering_angle": result["steering_angle"],
+            "turn_signal": result["turn_signal"],
+        }
+
+    def reset(self):
+        """Reset cache state for new sequence."""
+        self.proj_emb_cache = None
+        self.kv_cache = None
+        self.is_initialized = False
+
+
+# Usage example
+if __name__ == "__main__":
+    # Initialize dual model inference
+    inference = DualONNXInference(
+        full_model_path="outputs/.../ControlTransformer_cache.onnx",
+        incremental_model_path="outputs/.../ControlTransformer_cache_incremental.onnx",
+    )
+
+    # Simulate streaming data
+    def get_batch(num_timesteps: int) -> dict:
+        """Create dummy batch for testing."""
+        return {
+            "data": {
+                "cam_front_left": np.random.rand(1, num_timesteps, 3, 256, 256).astype(np.float32),
+                "meta/VehicleMotion/brake_pedal_normalized": np.random.rand(1, num_timesteps, 1).astype(np.float32),
+                "meta/VehicleMotion/gas_pedal_normalized": np.random.rand(1, num_timesteps, 1).astype(np.float32),
+                "meta/VehicleMotion/steering_angle_normalized": np.random.rand(1, num_timesteps, 1).astype(np.float32) * 2 - 1,
+                "meta/VehicleMotion/speed": np.random.rand(1, num_timesteps, 1).astype(np.float32) * 130,
+                "meta/VehicleState/turn_signal": np.random.randint(0, 3, (1, num_timesteps, 1)).astype(np.int32),
+                "waypoints/xy_normalized": np.random.rand(1, num_timesteps, 10, 2).astype(np.float32) * 20,
+            }
+        }
+
+    # Cold start with 6 timesteps
+    batch_6 = get_batch(6)
+    predictions = inference.run_cold_start(batch_6)
+    print(f"Cold start: brake={predictions['brake_pedal']:.4f}, "
+          f"gas={predictions['gas_pedal']:.4f}, "
+          f"steering={predictions['steering_angle']:.4f}, "
+          f"turn_signal={predictions['turn_signal']}")
+
+    # Streaming loop - process 1 timestep at a time
+    for i in range(10):
+        batch_1 = get_batch(1)
+        predictions = inference.run_incremental(batch_1)
+        print(f"Step {i+1}: brake={predictions['brake_pedal']:.4f}, "
+              f"gas={predictions['gas_pedal']:.4f}, "
+              f"steering={predictions['steering_angle']:.4f}, "
+              f"turn_signal={predictions['turn_signal']}")
+```
+
+### Key Points
+
+1. **Cold Start**: Use the full forward model (`ControlTransformer_cache.onnx`) with 6 timesteps and empty caches
+2. **Cache Trimming**: Before each incremental call, trim caches to remove the oldest timestep (keep 5 timesteps = 1370 tokens)
+3. **Incremental**: Use the incremental model (`ControlTransformer_cache_incremental.onnx`) with 1 new timestep and the trimmed 5-timestep cache
+4. **Cache Update**: After each inference, update caches with the new outputs (back to 6 timesteps = 1644 tokens)
+
+### Cache Flow Diagram
+
+```
+Cold Start (Full Model):
+  Input:  batch[1,6,...] + empty_cache[1,0,384] + empty_kv[8,2,1,0,384]
+  Output: predictions + proj_emb[1,1644,384] + kv[8,2,1,1644,384]
+
+Trim (drop oldest timestep):
+  proj_emb[1,1644,384] → proj_emb[1,1370,384]
+  kv[8,2,1,1644,384]   → kv[8,2,1,1370,384]
+
+Incremental (Incremental Model):
+  Input:  batch[1,1,...] + proj_emb[1,1370,384] + kv[8,2,1,1370,384]
+  Output: predictions + proj_emb[1,1644,384] + kv[8,2,1,1644,384]
+
+Repeat: Trim → Incremental → Trim → Incremental → ...
+```
+
+---
+
 #### TensorRT with Optimization Profiles (Alternative)
 
 For more flexibility with variable cache lengths, use **TensorRT with optimization profiles**:
@@ -771,6 +1063,27 @@ Modified `CacheEnabledControlTransformer` to compute predictions directly from t
 - Single encoder pass for both cache updates and predictions
 - Consistent behavior between PyTorch and ONNX
 - Support for incremental inference (which requires non-square attention masks)
+
+### Prediction Logic Fix
+
+Fixed incorrect prediction computation in `_compute_policy_predictions`:
+
+**Problem**: Predictions were using incorrect transformations:
+- Continuous actions used `sigmoid()` (wrong)
+- Discrete actions used `argmax()` (wrong for turn signal)
+
+**Solution**: Match the logic from `PolicyObjective.forward`:
+```python
+# Continuous actions: just take first element (no sigmoid)
+case (Modality.CONTINUOUS, _):
+    return logit[..., 0]
+
+# Turn signal: softmax + threshold-based selection
+case (Modality.DISCRETE, "turn_signal"):
+    return non_zero_signal_with_threshold(logit).class_idx
+```
+
+**Result**: Predictions now match native PyTorch exactly.
 
 ### Verification Improvements
 
