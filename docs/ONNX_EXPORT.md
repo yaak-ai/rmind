@@ -4,14 +4,35 @@ This guide explains how to export ControlTransformer models to ONNX format for d
 
 ## Latest Exported Models
 
-The most recent verified ONNX models are located at:
+Export the models using:
 
-| Model | Path | Description |
-|-------|------|-------------|
-| Full Forward (6 timesteps) | `outputs/2026-01-21/11-42-42/rmind.models.control_transformer.ControlTransformer_cache.onnx` | Initial inference with empty cache |
-| Incremental (1 timestep) | `outputs/2026-01-21/11-43-30/rmind.models.control_transformer.ControlTransformer_cache_incremental.onnx` | Subsequent inference with 5 cached timesteps |
+```bash
+# Full forward model (6 timesteps, empty cache)
+just export-onnx-cache
 
-These models have been verified to produce **identical predictions** (0.0 difference) compared to native PyTorch inference.
+# Incremental model (1 timestep, 5 cached)
+just export-onnx-incremental
+```
+
+| Model | Description | Batch Shape | Cache Shape |
+|-------|-------------|-------------|-------------|
+| Full Forward | Initial inference with empty cache | `[1, 6, ...]` | `[1, 0, 384]` |
+| Incremental | Subsequent inference with 5 cached timesteps | `[1, 1, ...]` | `[1, 1370, 384]` |
+
+**Key feature**: Attention masks are **baked into the model** - no need to pass masks at inference time.
+
+### Verification Results
+
+All outputs match within tolerance between PyTorch and ONNX:
+
+| Output | Shape | Max Diff | Mean Diff | Tolerance | Status |
+|--------|-------|----------|-----------|-----------|--------|
+| `policy_continuous_brake_pedal` | `(1, 1)` | ~1e-07 | ~1e-07 | 1e-05 | ✓ MATCH |
+| `policy_continuous_gas_pedal` | `(1, 1)` | ~1e-07 | ~1e-07 | 1e-05 | ✓ MATCH |
+| `policy_continuous_steering_angle` | `(1, 1)` | ~1e-07 | ~1e-07 | 1e-05 | ✓ MATCH |
+| `policy_discrete_turn_signal` | `(1, 1)` | 0.0 | 0.0 | 1e-05 | ✓ MATCH |
+| `projected_embeddings` | `(1, 1644, 384)` | ~1e-03 | ~2e-06 | 0.002 | ✓ MATCH |
+| `kv_cache` | `(8, 2, 1, 1644, 384)` | ~1e-03 | ~1e-06 | 0.002 | ✓ MATCH |
 
 ## Overview
 
@@ -86,13 +107,25 @@ Where:
 
 ### Model Inputs
 
-```
-batch:                      dict - Input batch (full batch or single timestep)
-cached_projected_embeddings: [B, S_cached, D] - Cached projected embeddings WITHOUT position
-                             embeddings (zeros with S_cached=0 for first call)
-cached_kv:                  [L, 2, B, S_cached, D] - Cached KV (zeros with S_cached=0 for first call)
-mask:                       [S_new, S_total] - Attention mask where S_total = S_cached + S_new
-```
+The ONNX model has 9 inputs (no mask required):
+
+| Input | Shape | Description |
+|-------|-------|-------------|
+| `batch_data_cam_front_left` | `[B, T, 3, 256, 256]` | Camera image |
+| `batch_data_meta_vehiclemotion_brake_pedal_normalized` | `[B, T, 1]` | Brake pedal |
+| `batch_data_meta_vehiclemotion_gas_pedal_normalized` | `[B, T, 1]` | Gas pedal |
+| `batch_data_meta_vehiclemotion_steering_angle_normalized` | `[B, T, 1]` | Steering angle |
+| `batch_data_meta_vehiclemotion_speed` | `[B, T, 1]` | Vehicle speed |
+| `batch_data_meta_vehiclestate_turn_signal` | `[B, T, 1]` | Turn signal |
+| `batch_data_waypoints_xy_normalized` | `[B, T, 10, 2]` | Waypoints |
+| `cached_projected_embeddings` | `[B, S_cached, D]` | Cached embeddings (empty for first call) |
+| `cached_kv` | `[L, 2, B, S_cached, D]` | Cached KV (empty for first call) |
+
+Where `T` = timesteps (6 for full, 1 for incremental), `D` = 384 (embed dim), `L` = 8 (layers).
+
+**Note**: The attention mask is **baked into the model** at export time:
+- Full forward model: Uses full mask `[1644, 1644]`
+- Incremental model: Uses cropped mask `[274, 1644]`
 
 ### Model Outputs
 
@@ -123,19 +156,18 @@ In sliding window mode, trim both `projected_embeddings` and `kv_cache` by remov
 empty_proj_emb = empty([batch_size, 0, embed_dim])
 empty_kv = empty([num_layers, 2, batch_size, 0, embed_dim])
 
-# Process all timesteps
-predictions, cached_proj_emb, cached_kv = model(full_batch, empty_proj_emb, empty_kv, full_mask)
+# Process all timesteps (mask is baked in - uses full_mask for empty cache)
+predictions, cached_proj_emb, cached_kv = model(full_batch, empty_proj_emb, empty_kv)
 ```
 
 #### Subsequent Inferences (Incremental)
 ```python
 # Process single timestep with cached data
-# Mask should be [S_new, S_total] where new positions can attend to all past + self
+# Mask is baked in - uses incr_mask when cache has data
 predictions, cached_proj_emb, cached_kv = model(
     single_timestep_batch,
     cached_proj_emb,      # Previous projected embeddings (without PE)
     cached_kv,            # Previous KV cache
-    incremental_mask,     # [S_new, S_cached + S_new]
 )
 ```
 
@@ -185,32 +217,35 @@ num_layers = 8
 tokens_per_timestep = 274  # Varies by model config
 ```
 
-### Building Attention Masks
+### Attention Masks (Baked In)
 
-The attention mask controls which positions can attend to which. For causal (autoregressive) attention:
+**IMPORTANT**: As of 2026-01-21, attention masks are **baked into the ONNX model** and automatically selected based on cache state. You no longer need to build or pass masks during inference.
+
+The model uses policy-specific attention patterns (not simple causal masks):
+- Observations cannot attend to actions within the same timestep
+- Observations cannot attend to past actions/action_summary tokens
+
+**Mask selection logic:**
+- Empty cache (`cached_kv.shape[3] == 0`): Uses full forward mask `[1644, 1644]`
+- Non-empty cache: Uses incremental mask `[274, 1644]`
+
+**For reference/debugging**, you can still build masks manually using the standalone module:
 
 ```python
-def build_causal_mask(seq_new: int, seq_total: int) -> np.ndarray:
-    """Build causal attention mask for incremental inference.
+from rmind.scripts.build_onnx_mask import build_policy_mask, build_incremental_mask
 
-    Args:
-        seq_new: Number of new sequence positions (tokens in new timestep)
-        seq_total: Total sequence length (cached + new)
+# Full forward mask (6 timesteps)
+mask_full = build_policy_mask(num_timesteps=6)  # [1644, 1644]
 
-    Returns:
-        mask: [seq_new, seq_total] boolean mask where True = masked (cannot attend)
-    """
-    # New positions start at index (seq_total - seq_new)
-    start_idx = seq_total - seq_new
+# Incremental mask (1 new timestep, 5 cached)
+# This is derived by cropping the full mask to the last timestep's rows
+mask_incr = build_incremental_mask(num_cached_timesteps=5)  # [274, 1644]
 
-    # Create mask: each new position can attend to all previous + itself
-    mask = np.ones((seq_new, seq_total), dtype=bool)
-    for i in range(seq_new):
-        # Position i (in new tokens) can attend to all positions up to start_idx + i
-        mask[i, :start_idx + i + 1] = False
-
-    return mask
+# Or crop manually from the full mask:
+mask_incr = mask_full[-274:, :]  # Last 274 rows (1 timestep)
 ```
+
+The mask builder (`rmind/scripts/build_onnx_mask.py`) implements the same attention patterns as `PolicyObjective.build_attention_mask()` without requiring the full episode infrastructure.
 
 ### First Inference (Full Forward)
 
@@ -218,22 +253,16 @@ def build_causal_mask(seq_new: int, seq_total: int) -> np.ndarray:
 def run_first_inference(session, batch: dict, num_timesteps: int):
     """Run first inference with empty cache."""
 
-    seq_len = num_timesteps * tokens_per_timestep
-
     # Initialize empty caches (sequence dimension is 0, meaning no cached data)
     # Using np.empty since there are no elements to initialize
     empty_proj_emb = np.empty((batch_size, 0, embed_dim), dtype=np.float32)
     empty_kv = np.empty((num_layers, 2, batch_size, 0, embed_dim), dtype=np.float32)
 
-    # Full causal mask [S, S]
-    mask = build_causal_mask(seq_len, seq_len)
-
-    # Prepare inputs
+    # Prepare inputs (mask is baked into the model)
     inputs = {
         **flatten_batch(batch),  # Flatten nested batch dict for ONNX
         "cached_projected_embeddings": empty_proj_emb,
         "cached_kv": empty_kv,
-        "mask": mask,
     }
 
     # Run inference
@@ -258,20 +287,11 @@ def run_incremental_inference(
 ):
     """Run incremental inference with cached data."""
 
-    # Compute sequence lengths
-    seq_cached = cached_proj_emb.shape[1]
-    seq_new = tokens_per_timestep  # Single timestep
-    seq_total = seq_cached + seq_new
-
-    # Incremental mask: new positions attend to all cached + self
-    mask = build_causal_mask(seq_new, seq_total)
-
-    # Prepare inputs
+    # Prepare inputs (mask is baked into the model)
     inputs = {
         **flatten_batch(new_timestep_batch),
         "cached_projected_embeddings": cached_proj_emb,
         "cached_kv": cached_kv,
-        "mask": mask,
     }
 
     # Run inference
@@ -448,11 +468,16 @@ class CacheEnabledControlTransformer(nn.Module):
         batch: dict,
         cached_projected_embeddings: Tensor,
         cached_kv: Tensor,
-        mask: Tensor,
     ) -> tuple[dict, Tensor, Tensor]:
         # Build episode and get projected embeddings (WITHOUT position embeddings)
         episode = self.episode_builder(batch)
         new_proj_emb = episode.projected_embeddings_packed
+
+        # Select mask based on cache state (baked in)
+        if cached_kv.shape[3] == 0:  # Empty cache
+            mask = self.full_mask
+        else:
+            mask = self.incr_mask
 
         # Concatenate with cached projected embeddings (without PE)
         all_proj_emb = torch.cat([cached_projected_embeddings, new_proj_emb], dim=1)
@@ -471,7 +496,7 @@ class CacheEnabledControlTransformer(nn.Module):
         )
 
         # Get predictions
-        predictions = {name: obj(episode) for name, obj in self.objectives.items()}
+        predictions = self._compute_policy_predictions(output, episode)
 
         return predictions, all_proj_emb, kv_cache
 ```
@@ -692,22 +717,6 @@ class DualONNXInference:
                     break
         return matched
 
-    def _build_causal_mask(self, seq_new: int, seq_total: int) -> np.ndarray:
-        """Build causal attention mask.
-
-        Args:
-            seq_new: Number of new tokens
-            seq_total: Total sequence length (cached + new)
-
-        Returns:
-            Boolean mask [seq_new, seq_total] where True = masked (cannot attend)
-        """
-        start_idx = seq_total - seq_new
-        mask = np.ones((seq_new, seq_total), dtype=bool)
-        for i in range(seq_new):
-            mask[i, :start_idx + i + 1] = False
-        return mask
-
     def _parse_outputs(self, outputs: list) -> dict:
         """Parse ONNX outputs into named dict."""
         return {
@@ -739,14 +748,10 @@ class DualONNXInference:
         empty_proj_emb = np.empty((BATCH_SIZE, 0, EMBED_DIM), dtype=np.float32)
         empty_kv = np.empty((NUM_LAYERS, 2, BATCH_SIZE, 0, EMBED_DIM), dtype=np.float32)
 
-        # Full causal mask [1644, 1644]
-        mask = self._build_causal_mask(SEQ_LEN_FULL, SEQ_LEN_FULL)
-
-        # Prepare inputs
+        # Prepare inputs (mask is baked into the model)
         inputs = self._flatten_batch(batch_6ts)
         inputs["cached_projected_embeddings"] = empty_proj_emb
         inputs["cached_kv"] = empty_kv
-        inputs["mask"] = mask
 
         # Run full forward model
         matched_inputs = self._match_inputs(self.full_inputs, inputs)
@@ -787,14 +792,10 @@ class DualONNXInference:
         self.proj_emb_cache = self.proj_emb_cache[:, TOKENS_PER_TIMESTEP:]  # [1, 1370, 384]
         self.kv_cache = self.kv_cache[:, :, :, TOKENS_PER_TIMESTEP:]  # [8, 2, 1, 1370, 384]
 
-        # Incremental mask [274, 1644] - new tokens attend to all cached + self
-        mask = self._build_causal_mask(SEQ_LEN_NEW, SEQ_LEN_CACHED + SEQ_LEN_NEW)
-
-        # Prepare inputs
+        # Prepare inputs (mask is baked into the model)
         inputs = self._flatten_batch(batch_1ts)
         inputs["cached_projected_embeddings"] = self.proj_emb_cache
         inputs["cached_kv"] = self.kv_cache
-        inputs["mask"] = mask
 
         # Run incremental model
         matched_inputs = self._match_inputs(self.incr_inputs, inputs)
@@ -905,6 +906,7 @@ with open("model_cache.onnx", "rb") as f:
 config = builder.create_builder_config()
 
 # Profile 0: Full forward (first inference)
+# Note: mask is baked in, so no mask shape configuration needed
 profile_full = builder.create_optimization_profile()
 profile_full.set_shape("batch_data_cam_front_left",
     min=(1, 6, 3, 256, 256),
@@ -918,10 +920,6 @@ profile_full.set_shape("cached_kv",
     min=(8, 2, 1, 0, 384),
     opt=(8, 2, 1, 0, 384),
     max=(8, 2, 1, 0, 384))
-profile_full.set_shape("mask",
-    min=(1644, 1644),
-    opt=(1644, 1644),
-    max=(1644, 1644))
 config.add_optimization_profile(profile_full)
 
 # Profile 1: Incremental (subsequent inferences)
@@ -938,10 +936,6 @@ profile_incr.set_shape("cached_kv",
     min=(8, 2, 1, 274, 384),
     opt=(8, 2, 1, 1370, 384),
     max=(8, 2, 1, 1370, 384))
-profile_incr.set_shape("mask",
-    min=(274, 548),         # 1 new + 1 cached
-    opt=(274, 1644),        # 1 new + 5 cached
-    max=(274, 1644))
 config.add_optimization_profile(profile_incr)
 
 # Build engine
@@ -1090,3 +1084,27 @@ case (Modality.DISCRETE, "turn_signal"):
 - Added `verify_onnx_cache.py` for single model verification
 - Added `verify_dual_onnx.py` for dual model setup verification
 - Set deterministic seed (`torch.manual_seed(42)`) before generating test batch data for reproducible verification
+
+### Baked-In Attention Masks
+
+Attention masks are now **baked into the ONNX model** rather than passed as inputs:
+
+**Changes:**
+- Removed `mask` from model inputs
+- Added `full_mask` and `incr_mask` as registered buffers in `CacheEnabledControlTransformer`
+- Model automatically selects mask based on cache state:
+  - Empty cache (`cached_kv.shape[3] == 0`): Uses `full_mask`
+  - Non-empty cache: Uses `incr_mask`
+
+**Benefits:**
+- Simpler inference API (no need to build/pass masks)
+- Guaranteed correct mask patterns (cannot accidentally use wrong mask)
+- Reduced input count for ONNX model
+
+**Standalone mask builder** (`rmind/scripts/build_onnx_mask.py`) still available for reference/debugging:
+```python
+from rmind.scripts.build_onnx_mask import build_policy_mask, build_incremental_mask
+
+mask_full = build_policy_mask(num_timesteps=6)
+mask_incr = build_incremental_mask(num_cached_timesteps=5)
+```

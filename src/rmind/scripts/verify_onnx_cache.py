@@ -130,21 +130,7 @@ def main(cfg: DictConfig) -> None:
     # Set deterministic mode for reproducible forward passes
     torch.use_deterministic_algorithms(True, warn_only=True)
 
-    # Import here to avoid circular imports
-    from rmind.components.mask import TorchAttentionMaskLegend
-    from rmind.components.objectives.policy import PolicyObjective
-    from rmind.scripts.export_onnx_cache import CacheEnabledControlTransformer
-
-    # Create cache-enabled wrapper
-    cache_model = CacheEnabledControlTransformer(base_model).eval()
-
-    # Get model dimensions
-    num_layers = cache_model.num_layers
-    embed_dim = cache_model.embedding_dim
-    logger.info("model config", num_layers=num_layers, embedding_dim=embed_dim)
-
-    # Build episode BEFORE patching _is_exporting() to get the mask
-    # (Episode type has .index with .max() method, EpisodeExport doesn't)
+    # Build episode BEFORE creating the model wrapper to determine mask shape
     batch = args[0]
 
     # Apply ImageNet normalization to images
@@ -153,7 +139,7 @@ def main(cfg: DictConfig) -> None:
 
     episode = base_model.episode_builder(batch)
     proj_embeddings = episode.projected_embeddings_packed
-    batch_size, seq_len, _ = proj_embeddings.shape
+    batch_size, seq_len, embed_dim = proj_embeddings.shape
     logger.info("projected_embeddings shape", shape=proj_embeddings.shape)
 
     # Compute tokens per timestep
@@ -171,19 +157,30 @@ def main(cfg: DictConfig) -> None:
         total_seq_len=seq_len,
     )
 
-    # Build the mask using PolicyObjective.build_attention_mask
-    # This is the canonical mask for this episode
-    mask = PolicyObjective.build_attention_mask(
-        episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-    ).mask.to(proj_embeddings.device)
-    logger.info("mask shape", shape=mask.shape)
+    # Build the full mask for verification (this matches the exported model)
+    from rmind.scripts.build_onnx_mask import build_policy_mask
 
-    # CRITICAL: Set the mask on PolicyObjective before PyTorch forward
+    num_full_timesteps = 6  # Full forward always uses 6 timesteps
+    full_mask_np = build_policy_mask(num_timesteps=num_full_timesteps)
+    full_mask = torch.from_numpy(full_mask_np)
+    logger.info("built full mask", mask_shape=tuple(full_mask.shape))
+
+    # Import here to avoid circular imports
+    from rmind.scripts.export_onnx_cache import CacheEnabledControlTransformer
+
+    # Create cache-enabled wrapper with baked-in mask
+    cache_model = CacheEnabledControlTransformer(base_model, full_mask).eval()
+
+    # Get model dimensions
+    num_layers = cache_model.num_layers
+    logger.info("model config", num_layers=num_layers, embedding_dim=embed_dim)
+
+    # CRITICAL: Set the baked-in mask on PolicyObjective before PyTorch forward
     # This ensures the objective's encoder call uses the same mask
     for obj_name, obj in cache_model.objectives.items():
         if hasattr(obj, '_mask'):
-            logger.info("setting mask on objective", objective=obj_name)
-            obj._mask = mask
+            logger.info("setting baked mask on objective", objective=obj_name)
+            obj._mask = full_mask
 
     # Empty cache for full forward
     cached_proj_emb = torch.zeros(batch_size, 0, embed_dim, device=proj_embeddings.device)
@@ -202,10 +199,10 @@ def main(cfg: DictConfig) -> None:
     episode_module._is_exporting = patched_is_exporting
     logger.info("patched _is_exporting() to return True for deterministic position embeddings")
 
-    # Run PyTorch model
+    # Run PyTorch model (mask is baked in and selected based on cache state)
     logger.info("running PyTorch forward pass")
     try:
-        pytorch_outputs = cache_model(batch, cached_proj_emb, cached_kv, mask)
+        pytorch_outputs = cache_model(batch, cached_proj_emb, cached_kv)
     finally:
         # Restore original function
         episode_module._is_exporting = original_is_exporting
@@ -222,11 +219,10 @@ def main(cfg: DictConfig) -> None:
     onnx_input_names = {inp.name for inp in session.get_inputs()}
     logger.info("ONNX input names", names=sorted(onnx_input_names))
 
-    # Prepare ONNX inputs
+    # Prepare ONNX inputs (mask is baked into the model)
     onnx_inputs = flatten_batch_to_onnx(batch)
     onnx_inputs["cached_projected_embeddings"] = cached_proj_emb.numpy()
     onnx_inputs["cached_kv"] = cached_kv.numpy()
-    onnx_inputs["mask"] = mask.numpy()
 
     # Match input names (case-insensitive)
     onnx_inputs_matched = {}

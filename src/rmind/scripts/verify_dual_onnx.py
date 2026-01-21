@@ -138,12 +138,21 @@ def main(cfg: DictConfig) -> None:
     base_model = config.model.instantiate().eval()
 
     # Import here to avoid circular imports
-    from rmind.components.mask import TorchAttentionMaskLegend
-    from rmind.components.objectives.policy import PolicyObjective
     from rmind.scripts.export_onnx_cache import CacheEnabledControlTransformer
+    from rmind.scripts.build_onnx_mask import build_policy_mask
 
-    # Create cache-enabled wrapper
-    cache_model = CacheEnabledControlTransformer(base_model).eval()
+    # Pre-build masks for verification
+    # We'll create the model with full_mask and switch to incr_mask for incremental tests
+    num_full_timesteps = 6
+    tokens_per_timestep = 274  # Default for this model config
+
+    full_mask_np = build_policy_mask(num_timesteps=num_full_timesteps)
+    full_mask = torch.from_numpy(full_mask_np)
+    incr_mask = full_mask[-tokens_per_timestep:, :]
+    logger.info("built masks", full_mask_shape=tuple(full_mask.shape), incr_mask_shape=tuple(incr_mask.shape))
+
+    # Create cache-enabled wrapper with full_mask (for initial verification)
+    cache_model = CacheEnabledControlTransformer(base_model, full_mask).eval()
     num_layers = cache_model.num_layers
     embed_dim = cache_model.embedding_dim
     logger.info("model config", num_layers=num_layers, embedding_dim=embed_dim)
@@ -188,11 +197,9 @@ def main(cfg: DictConfig) -> None:
 
     logger.info("created test batches", batch_6_shape="6 timesteps", batch_5_shape="5 timesteps", batch_1_shape="1 timestep")
 
-    # Build episodes and masks BEFORE patching _is_exporting()
+    # Build episode to get tokens per timestep
     # (Episode type has .index with .max() method, EpisodeExport doesn't)
-
-    # === Build 6-timestep episode and mask (full PyTorch comparison) ===
-    logger.info("building 6-timestep episode and mask")
+    logger.info("building 6-timestep episode for shape inference")
     episode_6 = base_model.episode_builder(batch_6)
     proj_embeddings_6 = episode_6.projected_embeddings_packed
     batch_size, seq_len_6, _ = proj_embeddings_6.shape
@@ -207,32 +214,17 @@ def main(cfg: DictConfig) -> None:
     tokens_per_timestep = seq_len_6 // 6
     logger.info("tokens per timestep", tokens_per_timestep=tokens_per_timestep)
 
-    # Build mask for 6 timesteps
-    mask_6 = PolicyObjective.build_attention_mask(
-        episode_6.index, episode_6.timestep, legend=TorchAttentionMaskLegend
-    ).mask
-
-    # === Build 5-timestep episode and mask ===
-    logger.info("building 5-timestep episode and mask")
-    episode_5 = base_model.episode_builder(batch_5)
-    proj_embeddings_5 = episode_5.projected_embeddings_packed
-    seq_len_5 = proj_embeddings_5.shape[1]
-
-    mask_5 = PolicyObjective.build_attention_mask(
-        episode_5.index, episode_5.timestep, legend=TorchAttentionMaskLegend
-    ).mask
-
-    # Build incremental mask for timestep 6 (attending to all 5 cached + 1 new)
-    seq_len_1 = tokens_per_timestep
-    total_seq_len = seq_len_5 + seq_len_1
-
-    # Incremental mask: [S_new, S_total] - new positions attend to all previous + self
-    incr_mask = torch.ones(seq_len_1, total_seq_len, dtype=torch.bool)
-    for i in range(seq_len_1):
-        # Position i (in new tokens) can attend to all cached + positions 0..i in new
-        incr_mask[i, : seq_len_5 + i + 1] = False
-
-    logger.info("masks built", mask_6_shape=mask_6.shape, mask_5_shape=mask_5.shape, incr_mask_shape=incr_mask.shape)
+    # Verify tokens_per_timestep matches our precomputed value
+    computed_tokens_per_ts = seq_len_6 // 6
+    if computed_tokens_per_ts != tokens_per_timestep:
+        logger.warning(
+            "tokens_per_timestep mismatch - recomputing masks",
+            precomputed=tokens_per_timestep,
+            computed=computed_tokens_per_ts,
+        )
+        tokens_per_timestep = computed_tokens_per_ts
+        incr_mask = full_mask[-tokens_per_timestep:, :]
+    logger.info("verified tokens per timestep", tokens_per_timestep=tokens_per_timestep)
 
     # Patch _is_exporting() to return True for consistent behavior
     import rmind.components.episode as episode_module
@@ -266,41 +258,42 @@ def main(cfg: DictConfig) -> None:
         # === Step 1: Run cache-enabled PyTorch with full 6 timesteps ===
         logger.info("running cache-enabled PyTorch with 6 timesteps")
 
-        # Set mask on objectives
+        # Set baked-in full mask on objectives
         for obj in cache_model.objectives.values():
             if hasattr(obj, '_mask'):
-                obj._mask = mask_6
+                obj._mask = full_mask
 
-        # Empty cache for full forward
+        # Empty cache for full forward (model uses full_mask from construction)
         cached_proj_emb_empty = torch.zeros(batch_size, 0, embed_dim)
         cached_kv_empty = torch.zeros(num_layers, 2, batch_size, 0, embed_dim)
 
-        # Run full forward with 6 timesteps
-        pytorch_6_outputs = cache_model(batch_6, cached_proj_emb_empty, cached_kv_empty, mask_6)
+        # Run full forward with 6 timesteps (mask is baked in)
+        pytorch_6_outputs = cache_model(batch_6, cached_proj_emb_empty, cached_kv_empty)
         pytorch_6_preds = pytorch_6_outputs[:4]  # First 4 outputs are predictions
         logger.info("cache-enabled PyTorch 6-timestep predictions computed")
 
-        # === Step 2: Run PyTorch with dual model setup (5 + 1) ===
-        logger.info("running PyTorch dual model setup (5 + 1 timesteps)")
+        # === Step 2: Get 5ts cache from 6ts output for incremental tests ===
+        # The incremental ONNX model expects 5ts cache, so we crop the 6ts cache
+        # This simulates the real usage: process 6 frames, then add 1 more frame
+        # with cache containing only the first 5 frames' state
+        proj_emb_6 = pytorch_6_outputs[-2]  # Second to last is projected embeddings
+        kv_cache_6 = pytorch_6_outputs[-1]  # Last is KV cache
 
-        # Set mask on objectives for 5-timestep forward
-        for obj in cache_model.objectives.values():
-            if hasattr(obj, '_mask'):
-                obj._mask = mask_5
+        # Crop to first 5 timesteps
+        seq_len_5 = 5 * tokens_per_timestep
+        proj_emb_5 = proj_emb_6[:, :seq_len_5, :]
+        kv_cache_5 = kv_cache_6[:, :, :, :seq_len_5, :]
+        logger.info("cropped cache to 5 timesteps", proj_emb_5_shape=proj_emb_5.shape, kv_cache_5_shape=kv_cache_5.shape)
 
-        # Run full forward with 5 timesteps
-        pytorch_5_outputs = cache_model(batch_5, cached_proj_emb_empty, cached_kv_empty, mask_5)
-        proj_emb_5 = pytorch_5_outputs[-2]  # Second to last is projected embeddings
-        kv_cache_5 = pytorch_5_outputs[-1]  # Last is KV cache
-        logger.info("PyTorch 5-timestep forward done", proj_emb_shape=proj_emb_5.shape, kv_shape=kv_cache_5.shape)
-
-        # Set incremental mask on objectives
+        # Set incremental mask on model and objectives for PyTorch incremental forward
+        # Note: We swap the mask buffer since we're reusing the same model instance
+        cache_model.register_buffer("mask", incr_mask, persistent=False)
         for obj in cache_model.objectives.values():
             if hasattr(obj, '_mask'):
                 obj._mask = incr_mask
 
-        # Run incremental forward with 1 timestep
-        pytorch_incr_outputs = cache_model(batch_1, proj_emb_5, kv_cache_5, incr_mask)
+        # Run incremental forward with 1 timestep and 5ts cache
+        pytorch_incr_outputs = cache_model(batch_1, proj_emb_5, kv_cache_5)
         pytorch_incr_preds = pytorch_incr_outputs[:4]  # First 4 outputs are predictions
         logger.info("PyTorch incremental predictions computed")
 
@@ -321,11 +314,10 @@ def main(cfg: DictConfig) -> None:
         # 1. ONNX full (6) vs PyTorch full (6)
         # 2. ONNX incremental (using PyTorch-generated cache) vs PyTorch incremental
 
-        # === ONNX Full Model (6 timesteps) ===
+        # === ONNX Full Model (6 timesteps) - mask is baked in ===
         onnx_inputs_full = flatten_batch_to_onnx(batch_6)
         onnx_inputs_full["cached_projected_embeddings"] = cached_proj_emb_empty.numpy()
         onnx_inputs_full["cached_kv"] = cached_kv_empty.numpy()
-        onnx_inputs_full["mask"] = mask_6.numpy()
 
         # Match input names for full model
         onnx_inputs_full_matched = {}
@@ -344,12 +336,12 @@ def main(cfg: DictConfig) -> None:
         logger.info("ONNX 6-timestep forward done", proj_emb_shape=onnx_proj_emb_full.shape, kv_shape=onnx_kv_cache_full.shape)
 
         # === ONNX Incremental Model (1 timestep with PyTorch-generated 5-timestep cache) ===
-        # Use PyTorch-generated cache (from pytorch_5_outputs) for ONNX incremental
+        # Use PyTorch-generated cache (cropped from 6ts output) for ONNX incremental
         # This tests that ONNX incremental model produces correct results given a valid cache
+        # Mask is baked into the model
         onnx_inputs_1 = flatten_batch_to_onnx(batch_1)
         onnx_inputs_1["cached_projected_embeddings"] = proj_emb_5.numpy()  # Use PyTorch cache
         onnx_inputs_1["cached_kv"] = kv_cache_5.numpy()  # Use PyTorch cache
-        onnx_inputs_1["mask"] = incr_mask.numpy()
 
         # Match input names
         onnx_inputs_1_matched = {}
