@@ -1,0 +1,74 @@
+---
+# Dummy input for incremental inference (1 timestep)
+# Used with export-onnx-incremental for TensorRT incremental inference
+
+data:
+  cam_front_left:
+    _target_: torch.testing.make_tensor
+    _args_: [1, 1, 3, 256, 256]  # 1 timestep
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.float
+    device: cpu
+    low: 0
+    high: 1
+
+  meta/VehicleMotion/brake_pedal_normalized:
+    _target_: torch.testing.make_tensor
+    _args_: [1, 1, 1]  # 1 timestep
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.float32
+    device: cpu
+    low: 0
+    high: 1
+
+  meta/VehicleMotion/gas_pedal_normalized:
+    _target_: torch.testing.make_tensor
+    _args_: [1, 1, 1]  # 1 timestep
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.float32
+    device: cpu
+    low: 0
+    high: 1
+
+  meta/VehicleMotion/steering_angle_normalized:
+    _target_: torch.testing.make_tensor
+    _args_: [1, 1, 1]  # 1 timestep
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.float32
+    device: cpu
+    low: -1
+    high: 1
+
+  meta/VehicleMotion/speed:
+    _target_: torch.testing.make_tensor
+    _args_: [1, 1, 1]  # 1 timestep
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.float32
+    device: cpu
+    low: 0
+    high: 130
+
+  meta/VehicleState/turn_signal:
+    _target_: torch.testing.make_tensor
+    _args_: [1, 1, 1]  # 1 timestep
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.int
+    device: cpu
+    low: 0
+    high: 3
+
+  waypoints/xy_normalized:
+    _target_: torch.testing.make_tensor
+    _args_: [1, 1, 10, 2]  # 1 timestep
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.float32
+    device: cpu
+    low: 0
+    high: 20

@@ -1,0 +1,35 @@
+# @package _global_
+
+---
+# Export config for incremental inference (1 timestep batch)
+# Use this with TensorRT for subsequent inferences in streaming mode.
+#
+# Workflow:
+#   1. Export full forward model: just export-onnx-cache
+#   2. Export incremental model: just export-onnx-incremental
+#   3. Build TensorRT engines for both models
+#   4. At runtime: use full forward for first inference, incremental for subsequent
+
+defaults:
+  - /model: yaak/control_transformer/raw_export
+  - /input: yaak/control_transformer/dummy_incremental  # 1 timestep
+  - _self_
+
+embedding_dim: 384
+num_heads: 4
+num_layers: 8
+speed_bins: 512
+gas_pedal_bins: 255
+brake_pedal_bins: 165
+steering_angle_bins: 961
+
+args:
+  - ${input}
+
+f: ${hydra:run.dir}/${model._target_}_cache_incremental.onnx
+artifacts_dir: ${hydra:run.dir}
+
+# NOTE: dynamic_shapes does NOT work with dynamo export due to model code patterns.
+# The incremental model has fixed shapes optimized for single-timestep inference.
+# See docs/INCREMENTAL_INFERENCE_REQUEST.md for details.
+dynamic_shapes: false

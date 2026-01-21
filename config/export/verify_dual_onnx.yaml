@@ -1,0 +1,17 @@
+# @package _global_
+
+---
+defaults:
+  - /model: yaak/control_transformer/raw_export
+  - _self_
+
+embedding_dim: 384
+num_heads: 4
+num_layers: 8
+speed_bins: 512
+gas_pedal_bins: 255
+brake_pedal_bins: 165
+steering_angle_bins: 961
+
+full_model: /home/harsimrat/workspace/jetson/rmind/outputs/2026-01-21/10-28-57/rmind.models.control_transformer.ControlTransformer_cache.onnx
+incremental_model: /home/harsimrat/workspace/jetson/rmind/outputs/2026-01-21/10-29-38/rmind.models.control_transformer.ControlTransformer_cache_incremental.onnx
