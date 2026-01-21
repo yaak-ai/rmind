@@ -4,12 +4,11 @@ from enum import StrEnum, auto
 from typing import Annotated, Any, final
 
 import contextily as ctx
+import kornia.color as K
 import matplotlib.pyplot as plt
-import numpy as np
 import pytorch_lightning as pl
 from contextily.tile import requests
 from einops import rearrange
-from matplotlib import cm
 from pydantic import AfterValidator, validate_call
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.core.hooks import ModelHooks
@@ -47,7 +46,7 @@ BATCH_HOOKS = frozenset({
 @final
 class WandbImageParamLogger(Callback):
     @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         when: Annotated[str, AfterValidator(_validate_hook)],
@@ -55,10 +54,13 @@ class WandbImageParamLogger(Callback):
         select: Sequence[str | tuple[str, ...]],
         apply: Callable[[Tensor], Tensor] | None = None,
         every_n_batch: int | None = None,
+        cmap_type: K.ColorMapType = K.ColorMapType.viridis,
     ) -> None:
         self._key = key
         self._select = select
         self._apply = apply
+        self._cmap_type = cmap_type
+        self._cmap_apply: K.ApplyColorMap | None = None
         if every_n_batch is not None and when not in BATCH_HOOKS:
             msg = (
                 "`every_n_batch` is only supported for batch-based hooks: "
@@ -105,16 +107,23 @@ class WandbImageParamLogger(Callback):
             return
 
         data = TensorDict.from_module(pl_module).select(*self._select)
+        if self._cmap_apply is None:
+            self._cmap_apply = K.ApplyColorMap(
+                K.ColorMap(self._cmap_type, device=pl_module.device)
+            )
 
         if self._apply is not None:
             data = data.apply(self._apply, inplace=False)
 
         for logger_ in loggers:
             images = []
-            for k, v in data.cpu().items(include_nested=True, leaves_only=True):
-                normalized = (v - v.min()) / (v.max() - v.min())
-                colored = cm.viridis(normalized.detach().numpy())  # ty:ignore[unresolved-attribute]
-                rgb = (colored[..., :3] * 255).astype(np.uint8)
+            for k, v in data.items(include_nested=True, leaves_only=True):
+                normalized = (v - v.min()) / (v.max() - v.min() + 1e-8)
+                input_tensor = rearrange(normalized, "h w -> 1 1 h w")
+                colored = self._cmap_apply(input_tensor)
+                rgb = (
+                    (rearrange(colored, "1 c h w -> h w c") * 255).byte().cpu().numpy()
+                )
                 images.append(Image(rgb, caption=".".join(k[:-1])))
             logger_.log_image(key=self._key, images=images, step=trainer.global_step)
 
