@@ -240,8 +240,31 @@ def main(cfg: DictConfig) -> None:
     episode_module._is_exporting = lambda: True
 
     try:
-        # === Step 1: Run PyTorch with full 6 timesteps ===
-        logger.info("running PyTorch with 6 timesteps")
+        # === Step 0: Run NATIVE PyTorch model (without cache wrapper) ===
+        logger.info("running native PyTorch model (no cache wrapper)")
+
+        # The native model runs its own encoder internally via PolicyObjective
+        # We need to temporarily restore _is_exporting to False so it builds Episode (not EpisodeExport)
+        episode_module._is_exporting = original_is_exporting
+
+        native_outputs = base_model(batch_6)
+
+        # Extract predictions from native model output
+        # Native output is TensorDict with structure: {"policy": TensorDict with predictions}
+        native_policy = native_outputs["policy"]
+        native_preds = [
+            native_policy["continuous", "brake_pedal"].squeeze(),
+            native_policy["continuous", "gas_pedal"].squeeze(),
+            native_policy["continuous", "steering_angle"].squeeze(),
+            native_policy["discrete", "turn_signal"].squeeze(),
+        ]
+        logger.info("native PyTorch predictions computed")
+
+        # Restore patched _is_exporting for cache model comparisons
+        episode_module._is_exporting = lambda: True
+
+        # === Step 1: Run cache-enabled PyTorch with full 6 timesteps ===
+        logger.info("running cache-enabled PyTorch with 6 timesteps")
 
         # Set mask on objectives
         for obj in cache_model.objectives.values():
@@ -255,7 +278,7 @@ def main(cfg: DictConfig) -> None:
         # Run full forward with 6 timesteps
         pytorch_6_outputs = cache_model(batch_6, cached_proj_emb_empty, cached_kv_empty, mask_6)
         pytorch_6_preds = pytorch_6_outputs[:4]  # First 4 outputs are predictions
-        logger.info("PyTorch 6-timestep predictions computed")
+        logger.info("cache-enabled PyTorch 6-timestep predictions computed")
 
         # === Step 2: Run PyTorch with dual model setup (5 + 1) ===
         logger.info("running PyTorch dual model setup (5 + 1 timesteps)")
@@ -342,7 +365,7 @@ def main(cfg: DictConfig) -> None:
         onnx_incr_preds = onnx_incr_outputs[:4]
         logger.info("ONNX incremental predictions computed")
 
-        # === Step 4: Compare all predictions ===
+        # === Step 5: Compare all predictions ===
         logger.info("comparing predictions")
 
         prediction_names = [
@@ -357,8 +380,60 @@ def main(cfg: DictConfig) -> None:
 
         all_match = True
 
-        # Compare PyTorch 6-timestep vs dual model (5+1)
-        logger.info("=== PyTorch 6-timestep vs PyTorch dual (5+1) ===")
+        # Compare Native PyTorch vs Cache-enabled PyTorch
+        logger.info("=== Native PyTorch vs Cache-enabled PyTorch (6ts) ===")
+        for i, (native, cache_enabled) in enumerate(zip(native_preds, pytorch_6_preds)):
+            native_np = native.numpy() if isinstance(native, Tensor) else native
+            cache_np = cache_enabled.numpy() if isinstance(cache_enabled, Tensor) else cache_enabled
+            diff = np.abs(native_np - cache_np)
+            max_diff = float(diff.max()) if hasattr(diff, 'max') else float(diff)
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                native=float(native_np.flatten()[0]) if hasattr(native_np, 'flatten') else float(native_np),
+                cache_enabled=float(cache_np.flatten()[0]) if hasattr(cache_np, 'flatten') else float(cache_np),
+                max_diff=max_diff,
+                status=match_status,
+            )
+
+        # Compare Native PyTorch vs ONNX full
+        logger.info("=== Native PyTorch vs ONNX full (6ts) ===")
+        for i, (native, onnx_pred) in enumerate(zip(native_preds, onnx_full_preds)):
+            native_np = native.numpy() if isinstance(native, Tensor) else native
+            diff = np.abs(native_np - onnx_pred)
+            max_diff = float(diff.max()) if hasattr(diff, 'max') else float(diff)
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                native=float(native_np.flatten()[0]) if hasattr(native_np, 'flatten') else float(native_np),
+                onnx_full=float(onnx_pred.flatten()[0]),
+                max_diff=max_diff,
+                status=match_status,
+            )
+
+        # Compare Native PyTorch vs ONNX dual
+        logger.info("=== Native PyTorch vs ONNX dual (5+1) ===")
+        for i, (native, onnx_pred) in enumerate(zip(native_preds, onnx_incr_preds)):
+            native_np = native.numpy() if isinstance(native, Tensor) else native
+            diff = np.abs(native_np - onnx_pred)
+            max_diff = float(diff.max()) if hasattr(diff, 'max') else float(diff)
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                native=float(native_np.flatten()[0]) if hasattr(native_np, 'flatten') else float(native_np),
+                onnx_dual=float(onnx_pred.flatten()[0]),
+                max_diff=max_diff,
+                status=match_status,
+            )
+
+        # Compare Cache-enabled PyTorch 6-timestep vs dual model (5+1)
+        logger.info("=== Cache-enabled PyTorch (6ts) vs Cache-enabled PyTorch dual (5+1) ===")
         for i, (pt6, pt_incr) in enumerate(zip(pytorch_6_preds, pytorch_incr_preds)):
             pt6_np = pt6.numpy() if isinstance(pt6, Tensor) else pt6
             pt_incr_np = pt_incr.numpy() if isinstance(pt_incr, Tensor) else pt_incr
