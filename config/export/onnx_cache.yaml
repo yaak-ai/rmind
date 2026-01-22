@@ -14,8 +14,11 @@ gas_pedal_bins: 255
 brake_pedal_bins: 165
 steering_angle_bins: 961
 
+# Artifact to load weights from (optional, omit for random weights)
+artifact: null
+
 args:
   - ${input}
 
-f: ${hydra:run.dir}/${model._target_}_cache.onnx
+f: ${hydra:run.dir}/ControlTransformer_cache.onnx
 artifacts_dir: ${hydra:run.dir}

@@ -40,12 +40,10 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from pydantic import AfterValidator, BaseModel, ConfigDict
-from pytorch_lightning import LightningModule
 from pytorch_lightning.utilities.model_summary.model_summary import ModelSummary
 from structlog import get_logger
 from torch import Tensor, nn
 
-from rmind.config import HydraConfig
 
 logger = get_logger(__name__)
 
@@ -470,9 +468,10 @@ class CacheEnabledControlTransformer(nn.Module):
 class Config(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
 
-    model: HydraConfig[LightningModule]
+    model: dict[str, Any]  # Raw Hydra config dict (supports method _target_ like load_from_wandb_artifact)
     args: Annotated[Sequence[Any], AfterValidator(instantiate)]
     f: Path
+    artifact: str | None = None  # W&B artifact to load weights from (e.g., "yaak/cargpt/model-xxx:v1")
     opset_version: int | None = None
     dynamo: bool = True  # Use dynamo-based export (True) or legacy export (False)
     external_data: bool = False
@@ -485,6 +484,32 @@ class Config(BaseModel):
     verify_outputs: bool = True  # Verify PyTorch vs ONNX outputs after export
 
 
+def _load_weights_from_artifact(model: nn.Module, artifact: str) -> None:
+    """Load model weights from a W&B artifact checkpoint."""
+    import wandb
+
+    logger.info("loading weights from artifact", artifact=artifact)
+
+    # Download artifact
+    api = wandb.Api()
+    artifact_obj = api.artifact(artifact, type="model")
+    artifact_dir = artifact_obj.download()
+    ckpt_path = Path(artifact_dir) / "model.ckpt"
+
+    # Load checkpoint
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    state_dict = ckpt.get("state_dict", ckpt)
+
+    # Load weights into model
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        logger.warning("missing keys when loading weights", missing=missing)
+    if unexpected:
+        logger.debug("unexpected keys when loading weights", unexpected=unexpected)
+
+    logger.info("loaded weights from artifact", artifact=artifact)
+
+
 @hydra.main(version_base=None)
 @torch.inference_mode()
 def main(cfg: DictConfig) -> None:
@@ -494,9 +519,14 @@ def main(cfg: DictConfig) -> None:
     # This ensures standalone verification can use the same batch data
     torch.manual_seed(42)
 
-    logger.debug("instantiating", target=config.model.target)
+    logger.debug("instantiating", target=config.model.get("_target_"))
     args = instantiate(config.args, _recursive_=True, _convert_="all")
-    base_model = config.model.instantiate().eval()
+    base_model = instantiate(config.model).eval()
+
+    # Load weights from artifact if provided
+    if config.artifact:
+        _load_weights_from_artifact(base_model, config.artifact)
+
     logger.debug(f"model summary:\n{ModelSummary(base_model)}")  # noqa: G004
 
     # Create cache-enabled wrapper
@@ -504,10 +534,8 @@ def main(cfg: DictConfig) -> None:
     logger.debug("building episode for shape inference")
     batch = args[0]
 
-    # Apply ImageNet normalization to images
-    # This matches the preprocessing expected by DINOv2/DINOv3 backbone
-    batch = normalize_images(batch)
-
+    # Note: Trained models (loaded from artifact) have normalization built into input_transform
+    # Only apply manual normalization for raw_export models that lack it
     episode = base_model.episode_builder(batch)
     proj_embeddings = episode.projected_embeddings_packed
     batch_size, seq_len, embed_dim = proj_embeddings.shape

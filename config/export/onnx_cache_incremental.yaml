@@ -5,8 +5,8 @@
 # Use this with TensorRT for subsequent inferences in streaming mode.
 #
 # Workflow:
-#   1. Export full forward model: just export-onnx-cache
-#   2. Export incremental model: just export-onnx-incremental
+#   1. Export full forward model: just export-onnx-cache artifact=<wandb_artifact_path>
+#   2. Export incremental model: just export-onnx-incremental artifact=<wandb_artifact_path>
 #   3. Build TensorRT engines for both models
 #   4. At runtime: use full forward for first inference, incremental for subsequent
 
@@ -23,10 +23,13 @@ gas_pedal_bins: 255
 brake_pedal_bins: 165
 steering_angle_bins: 961
 
+# Artifact to load weights from (optional, omit for random weights)
+artifact: null
+
 args:
   - ${input}
 
-f: ${hydra:run.dir}/${model._target_}_cache_incremental.onnx
+f: ${hydra:run.dir}/ControlTransformer_cache_incremental.onnx
 artifacts_dir: ${hydra:run.dir}
 
 # NOTE: dynamic_shapes does NOT work with dynamo export due to model code patterns.

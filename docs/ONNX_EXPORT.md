@@ -8,11 +8,13 @@ Export the models using:
 
 ```bash
 # Full forward model (6 timesteps, empty cache)
-just export-onnx-cache
+just export-onnx-cache artifact=yaak/cargpt/model-3yotqf22:v18
 
 # Incremental model (1 timestep, 5 cached)
-just export-onnx-incremental
+just export-onnx-incremental artifact=yaak/cargpt/model-3yotqf22:v18
 ```
+
+**Note:** The `artifact` parameter is required to load trained model weights from W&B.
 
 | Model | Description | Batch Shape | Cache Shape |
 |-------|-------------|-------------|-------------|
@@ -165,14 +167,16 @@ ONNX Incremental:
 
 ### Benchmark Results
 
+Benchmarked with trained model weights (`artifact=yaak/cargpt/model-3yotqf22:v18`) on CPU:
+
 | Model | Mean (ms) | Speedup | brake | gas | steering | turn |
 |-------|-----------|---------|-------|-----|----------|------|
-| PyTorch Native (6ts) | 285 | 1.0x (baseline) | -0.014864 | -0.085068 | 0.129780 | 0 |
-| PyTorch Cache-enabled (6ts) | 140 | 2.0x | -0.014864 | -0.085068 | 0.129780 | 0 |
-| ONNX Full Forward (6ts) | 258 | 1.1x | -0.014863 | -0.085068 | 0.129780 | 0 |
-| ONNX Incremental (1ts + 5 cached) | **58** | **4.9x** | -0.014863 | -0.085068 | 0.129780 | 0 |
+| PyTorch Native (6ts) | 323 | 1.0x (baseline) | 0.367315 | 0.140308 | -0.107400 | 1 |
+| PyTorch Cache-enabled (6ts) | 180 | 1.8x | 0.367315 | 0.140308 | -0.107400 | 1 |
+| ONNX Full Forward (6ts) | 269 | 1.2x | 0.367315 | 0.140308 | -0.107400 | 1 |
+| ONNX Incremental (1ts + 5 cached) | **95** | **3.4x** | 0.367315 | 0.140308 | -0.107400 | 1 |
 
-The ONNX incremental model provides **~3x speedup** over ONNX full forward for streaming inference after the first frame.
+The ONNX incremental model provides **~2.8x speedup** over ONNX full forward for streaming inference after the first frame.
 
 ### Verification Results
 
@@ -180,9 +184,9 @@ The ONNX incremental model provides **~3x speedup** over ONNX full forward for s
 
 | Comparison | Max Diff | Status |
 |------------|----------|--------|
-| Native vs Cache-enabled | ~1e-07 | ✓ Match |
-| PyTorch Cache vs ONNX Full | ~7e-07 | ✓ Match |
-| ONNX Full vs ONNX Dual | ~3e-08 | ✓ Match |
+| Native vs Cache-enabled | ~3e-08 | ✓ Match |
+| PyTorch Cache vs ONNX Full | ~1.8e-07 | ✓ Match |
+| ONNX Full vs ONNX Dual | ~1.2e-07 | ✓ Match |
 
 All position encodings (timestep, waypoints, actions, special) are correctly applied by all models. In eval mode, all models use deterministic timestep position 0 for reproducible inference.
 
@@ -231,11 +235,13 @@ Exports the model with additional outputs for efficient sequential inference usi
 
 ```bash
 # Full forward model (6 timesteps, empty cache) - for first inference
-just export-onnx-cache
+just export-onnx-cache artifact=yaak/cargpt/model-3yotqf22:v18
 
 # Incremental model (1 timestep, 5 cached) - for subsequent inferences
-just export-onnx-incremental
+just export-onnx-incremental artifact=yaak/cargpt/model-3yotqf22:v18
 ```
+
+**Note:** The `artifact` parameter is required to load trained model weights.
 
 For streaming inference on Jetson/TensorRT, export **both** models:
 1. `ControlTransformer_cache.onnx` - for cold start (first inference with 6 timesteps)
@@ -731,9 +737,9 @@ This attempts to export with dynamic shapes for batch inputs and mask. **Note**:
 The simplest and most reliable approach is to export **two separate ONNX models**:
 
 ```bash
-# Export both models
-just export-onnx-cache           # Full forward (6 timesteps)
-just export-onnx-incremental     # Incremental (1 timestep + 5 cached)
+# Export both models (use the same artifact for both!)
+just export-onnx-cache artifact=yaak/cargpt/model-3yotqf22:v18
+just export-onnx-incremental artifact=yaak/cargpt/model-3yotqf22:v18
 ```
 
 This produces:
@@ -794,17 +800,17 @@ All cache-enabled models produce identical predictions with all position encodin
 
 | Action | PyTorch Native | PyTorch Cache-enabled | ONNX Full (6ts) | ONNX Dual (5+1) |
 |--------|----------------|----------------------|-----------------|-----------------|
-| brake_pedal | -0.014864 | -0.014864 | -0.014863 | -0.014863 |
-| gas_pedal | -0.085068 | -0.085068 | -0.085068 | -0.085068 |
-| steering_angle | 0.129780 | 0.129780 | 0.129780 | 0.129780 |
-| turn_signal | 0 | 0 | 0 | 0 |
+| brake_pedal | 0.367315 | 0.367315 | 0.367315 | 0.367315 |
+| gas_pedal | 0.140308 | 0.140308 | 0.140308 | 0.140308 |
+| steering_angle | -0.107400 | -0.107400 | -0.107400 | -0.107400 |
+| turn_signal | 1 | 1 | 1 | 1 |
 
 **Max difference:**
-- Native vs Cache-enabled: ~1e-07 (numerical precision only)
-- PyTorch Cache vs ONNX Full: ~7e-07 (numerical precision only)
-- ONNX Full vs ONNX Dual: ~3e-08 (numerical precision only)
+- Native vs Cache-enabled: ~3e-08 (numerical precision only)
+- PyTorch Cache vs ONNX Full: ~1.8e-07 (numerical precision only)
+- ONNX Full vs ONNX Dual: ~1.2e-07 (numerical precision only)
 
-**Note:** All models use deterministic timestep position 0 in eval mode, ensuring identical predictions across Native PyTorch, Cache-enabled, and ONNX models.
+**Note:** All models use deterministic timestep position 0 in eval mode, ensuring identical predictions across Native PyTorch, Cache-enabled, and ONNX models. Predictions shown are from trained model `yaak/cargpt/model-3yotqf22:v18`.
 
 ### Complete Example
 
@@ -1135,10 +1141,13 @@ This compares:
 Verify that the full forward + incremental ONNX model setup matches native PyTorch:
 
 ```bash
-uv run python -m rmind.scripts.verify_dual_onnx \
-    --config-dir=config \
-    --config-name=export/verify_dual_onnx
+python -m rmind.scripts.verify_dual_onnx \
+    full_model=/path/to/ControlTransformer_cache.onnx \
+    incremental_model=/path/to/ControlTransformer_cache_incremental.onnx \
+    artifact=yaak/cargpt/model-3yotqf22:v18
 ```
+
+**Note:** The `artifact` parameter is required. Use the same artifact that was used to export the ONNX models.
 
 This runs comprehensive comparisons:
 1. **PyTorch 6-timestep vs PyTorch dual (5+1)** - Verifies internal consistency
@@ -1217,10 +1226,10 @@ use_deterministic = (
 
 | Model | brake | gas | steering |
 |-------|-------|-----|----------|
-| PyTorch Native | -0.014864 | -0.085068 | 0.129780 |
-| PyTorch Cache-enabled | -0.014864 | -0.085068 | 0.129780 |
-| ONNX Full Forward | -0.014863 | -0.085068 | 0.129780 |
-| ONNX Dual | -0.014863 | -0.085068 | 0.129780 |
+| PyTorch Native | 0.367315 | 0.140308 | -0.107400 |
+| PyTorch Cache-enabled | 0.367315 | 0.140308 | -0.107400 |
+| ONNX Full Forward | 0.367315 | 0.140308 | -0.107400 |
+| ONNX Dual | 0.367315 | 0.140308 | -0.107400 |
 
 ### Position Embeddings Caching Strategy
 

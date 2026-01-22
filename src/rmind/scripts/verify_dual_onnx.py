@@ -27,12 +27,9 @@ import onnxruntime as ort
 import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
-from pydantic import AfterValidator, BaseModel, ConfigDict
-from pytorch_lightning import LightningModule
+from pydantic import BaseModel, ConfigDict
 from structlog import get_logger
 from torch import Tensor
-
-from rmind.config import HydraConfig
 
 logger = get_logger(__name__)
 
@@ -121,9 +118,10 @@ def slice_batch(batch: dict[str, Any], timestep_slice: slice) -> dict[str, Any]:
 class Config(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
 
-    model: HydraConfig[LightningModule]
+    model: dict[str, Any]  # Raw Hydra config dict (supports method _target_ like load_from_wandb_artifact)
     full_model: Path
     incremental_model: Path
+    artifact: str | None = None  # W&B artifact to load weights from
 
 
 @hydra.main(version_base=None)
@@ -135,7 +133,12 @@ def main(cfg: DictConfig) -> None:
     torch.manual_seed(42)
 
     logger.info("loading PyTorch model")
-    base_model = config.model.instantiate().eval()
+    base_model = instantiate(config.model).eval()
+
+    # Load weights from artifact if provided
+    if config.artifact:
+        from rmind.scripts.export_onnx_cache import _load_weights_from_artifact
+        _load_weights_from_artifact(base_model, config.artifact)
 
     # Import here to avoid circular imports
     from rmind.scripts.export_onnx_cache import CacheEnabledControlTransformer

@@ -171,6 +171,12 @@ def main() -> None:
         default=Path("outputs/2026-01-21/latest/ControlTransformer_cache_incremental.onnx"),
         help="Path to incremental ONNX model",
     )
+    parser.add_argument(
+        "--artifact",
+        type=str,
+        default=None,
+        help="W&B artifact to load weights from (e.g., yaak/cargpt/model-xxx:v1)",
+    )
     parser.add_argument("--num-warmup", type=int, default=5, help="Warmup iterations")
     parser.add_argument("--num-iterations", type=int, default=20, help="Benchmark iterations")
     parser.add_argument("--device", type=str, default="cpu", help="Device for PyTorch (cpu/cuda)")
@@ -197,18 +203,21 @@ def main() -> None:
     logger.info("loading PyTorch model via Hydra")
 
     from hydra import compose, initialize_config_dir
+    from hydra.utils import instantiate as hydra_instantiate_model
     from omegaconf import OmegaConf
-
-    from rmind.config import HydraConfig
-    from pytorch_lightning import LightningModule
 
     config_path = Path(__file__).parents[3] / "config"
     with initialize_config_dir(config_dir=str(config_path), version_base=None):
         cfg = compose(config_name="export/onnx_cache")
 
     model_cfg = OmegaConf.to_container(cfg.model, resolve=True)
-    model_hydra = HydraConfig[LightningModule](**model_cfg)
-    pytorch_model = model_hydra.instantiate().to(device).eval()
+    pytorch_model = hydra_instantiate_model(model_cfg).to(device).eval()
+
+    # Load weights from artifact if provided
+    if args.artifact:
+        from rmind.scripts.export_onnx_cache import _load_weights_from_artifact
+        _load_weights_from_artifact(pytorch_model, args.artifact)
+
     logger.info("PyTorch model loaded")
 
     # Create cache-enabled wrapper for fair ONNX comparison
