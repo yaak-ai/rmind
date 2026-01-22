@@ -171,10 +171,10 @@ Benchmarked with trained model weights (`artifact=yaak/cargpt/model-3yotqf22:v18
 
 | Model | Mean (ms) | Speedup | brake | gas | steering | turn |
 |-------|-----------|---------|-------|-----|----------|------|
-| PyTorch Native (6ts) | 323 | 1.0x (baseline) | 0.367315 | 0.140308 | -0.107400 | 1 |
-| PyTorch Cache-enabled (6ts) | 180 | 1.8x | 0.367315 | 0.140308 | -0.107400 | 1 |
-| ONNX Full Forward (6ts) | 269 | 1.2x | 0.367315 | 0.140308 | -0.107400 | 1 |
-| ONNX Incremental (1ts + 5 cached) | **95** | **3.4x** | 0.367315 | 0.140308 | -0.107400 | 1 |
+| PyTorch Native (6ts) | 294 | 1.0x (baseline) | -0.004584 | 0.100510 | 0.059446 | 0 |
+| PyTorch Cache-enabled (6ts) | 175 | 1.7x | -0.004584 | 0.100510 | 0.059446 | 0 |
+| ONNX Full Forward (6ts) | 268 | 1.1x | -0.004584 | 0.100510 | 0.059446 | 0 |
+| ONNX Incremental (1ts + 5 cached) | **95** | **3.1x** | -0.004584 | 0.100510 | 0.059446 | 0 |
 
 The ONNX incremental model provides **~2.8x speedup** over ONNX full forward for streaming inference after the first frame.
 
@@ -184,9 +184,9 @@ The ONNX incremental model provides **~2.8x speedup** over ONNX full forward for
 
 | Comparison | Max Diff | Status |
 |------------|----------|--------|
-| Native vs Cache-enabled | ~3e-08 | ✓ Match |
-| PyTorch Cache vs ONNX Full | ~1.8e-07 | ✓ Match |
-| ONNX Full vs ONNX Dual | ~1.2e-07 | ✓ Match |
+| Native vs Cache-enabled | ~8e-08 | ✓ Match |
+| PyTorch Cache vs ONNX Full | ~2.3e-07 | ✓ Match |
+| ONNX Full vs ONNX Dual | ~9e-08 | ✓ Match |
 
 All position encodings (timestep, waypoints, actions, special) are correctly applied by all models. In eval mode, all models use deterministic timestep position 0 for reproducible inference.
 
@@ -800,15 +800,15 @@ All cache-enabled models produce identical predictions with all position encodin
 
 | Action | PyTorch Native | PyTorch Cache-enabled | ONNX Full (6ts) | ONNX Dual (5+1) |
 |--------|----------------|----------------------|-----------------|-----------------|
-| brake_pedal | 0.367315 | 0.367315 | 0.367315 | 0.367315 |
-| gas_pedal | 0.140308 | 0.140308 | 0.140308 | 0.140308 |
-| steering_angle | -0.107400 | -0.107400 | -0.107400 | -0.107400 |
-| turn_signal | 1 | 1 | 1 | 1 |
+| brake_pedal | -0.004584 | -0.004584 | -0.004584 | -0.004584 |
+| gas_pedal | 0.100510 | 0.100510 | 0.100510 | 0.100510 |
+| steering_angle | 0.059446 | 0.059446 | 0.059446 | 0.059446 |
+| turn_signal | 0 | 0 | 0 | 0 |
 
 **Max difference:**
-- Native vs Cache-enabled: ~3e-08 (numerical precision only)
-- PyTorch Cache vs ONNX Full: ~1.8e-07 (numerical precision only)
-- ONNX Full vs ONNX Dual: ~1.2e-07 (numerical precision only)
+- Native vs Cache-enabled: ~8e-08 (numerical precision only)
+- PyTorch Cache vs ONNX Full: ~2.3e-07 (numerical precision only)
+- ONNX Full vs ONNX Dual: ~9e-08 (numerical precision only)
 
 **Note:** All models use deterministic timestep position 0 in eval mode, ensuring identical predictions across Native PyTorch, Cache-enabled, and ONNX models. Predictions shown are from trained model `yaak/cargpt/model-3yotqf22:v18`.
 
@@ -1226,10 +1226,10 @@ use_deterministic = (
 
 | Model | brake | gas | steering |
 |-------|-------|-----|----------|
-| PyTorch Native | 0.367315 | 0.140308 | -0.107400 |
-| PyTorch Cache-enabled | 0.367315 | 0.140308 | -0.107400 |
-| ONNX Full Forward | 0.367315 | 0.140308 | -0.107400 |
-| ONNX Dual | 0.367315 | 0.140308 | -0.107400 |
+| PyTorch Native | -0.004584 | 0.100510 | 0.059446 |
+| PyTorch Cache-enabled | -0.004584 | 0.100510 | 0.059446 |
+| ONNX Full Forward | -0.004584 | 0.100510 | 0.059446 |
+| ONNX Dual | -0.004584 | 0.100510 | 0.059446 |
 
 ### Position Embeddings Caching Strategy
 
