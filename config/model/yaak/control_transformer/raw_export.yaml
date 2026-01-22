@@ -73,6 +73,25 @@ episode_builder:
           range: [-1.0, 1.0]
           bins: ${steering_angle_bins}
 
+        steering_angle_diff:
+          _target_: rmind.components.nn.Sequential
+          _args_:
+            - _target_: rmind.components.norm.Scaler
+              in_range: [-2.0, 2.0]
+              out_range: [-1.0, 1.0]
+            - _target_: rmind.components.norm.MuLawEncoding
+              quantization_channels: ${steering_angle_bins}
+
+        brake_pedal_diff:
+          # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
+          _target_: rmind.components.norm.MuLawEncoding
+          quantization_channels: ${brake_pedal_bins}
+
+        gas_pedal_diff:
+          # NOTE: no pre-mulaw scaling since if x in [0.0, 1.0] then dx in [-1.0, 1.0]
+          _target_: rmind.components.norm.MuLawEncoding
+          quantization_channels: ${gas_pedal_bins}
+
       discrete:
         _target_: rmind.components.nn.Identity
 
