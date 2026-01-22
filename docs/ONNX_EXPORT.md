@@ -34,6 +34,8 @@ All outputs match within tolerance between PyTorch and ONNX:
 | `projected_embeddings` | `(1, 1644, 384)` | ~1e-03 | ~2e-06 | 0.002 | ✓ MATCH |
 | `kv_cache` | `(8, 2, 1, 1644, 384)` | ~1e-03 | ~1e-06 | 0.002 | ✓ MATCH |
 
+---
+
 ## PyTorch Native vs ONNX Dual Model
 
 This section explains how the PyTorch native model and ONNX dual model differ in their inputs and usage.
@@ -163,30 +165,26 @@ ONNX Incremental:
 
 ### Benchmark Results
 
-| Model | Mean (ms) | Speedup |
-|-------|-----------|---------|
-| PyTorch Native (6ts) | 294 | 1.0x (baseline) |
-| PyTorch Cache-enabled (6ts) | 167 | 1.76x |
-| ONNX Full Forward (6ts) | 241 | 1.22x |
-| ONNX Incremental (1ts + 5 cached) | **66** | **4.4x** |
+| Model | Mean (ms) | Speedup | brake | gas | steering | turn |
+|-------|-----------|---------|-------|-----|----------|------|
+| PyTorch Native (6ts) | 285 | 1.0x (baseline) | -0.014864 | -0.085068 | 0.129780 | 0 |
+| PyTorch Cache-enabled (6ts) | 140 | 2.0x | -0.014864 | -0.085068 | 0.129780 | 0 |
+| ONNX Full Forward (6ts) | 258 | 1.1x | -0.014863 | -0.085068 | 0.129780 | 0 |
+| ONNX Incremental (1ts + 5 cached) | **58** | **4.9x** | -0.014863 | -0.085068 | 0.129780 | 0 |
 
-The ONNX incremental model provides **~4x speedup** for streaming inference after the first frame.
+The ONNX incremental model provides **~3x speedup** over ONNX full forward for streaming inference after the first frame.
 
 ### Verification Results
 
-All cache-enabled models produce identical predictions for the same input:
+**All models produce identical predictions** (within numerical precision) when in eval mode:
 
-| Model | brake | gas | steering | turn_sig |
-|-------|-------|-----|----------|----------|
-| PyTorch Cache-enabled (6ts) | -0.015209 | -0.083597 | 0.117904 | 0 |
-| ONNX Full Forward (6ts) | -0.015209 | -0.083597 | 0.117904 | 0 |
-| ONNX Dual (5 cached + 1 new) | -0.015209 | -0.083597 | 0.117904 | 0 |
+| Comparison | Max Diff | Status |
+|------------|----------|--------|
+| Native vs Cache-enabled | ~1e-07 | ✓ Match |
+| PyTorch Cache vs ONNX Full | ~7e-07 | ✓ Match |
+| ONNX Full vs ONNX Dual | ~3e-08 | ✓ Match |
 
-**Max diff between models:**
-- PyTorch Cache vs ONNX Full: ~5e-07 (numerical precision)
-- ONNX Full vs ONNX Dual: ~3e-08 (numerical precision)
-
-**Note**: PyTorch Native (no cache) may differ slightly due to different position embedding computation.
+All position encodings (timestep, waypoints, actions, special) are correctly applied by all models. In eval mode, all models use deterministic timestep position 0 for reproducible inference.
 
 ## Overview
 
@@ -792,18 +790,21 @@ Both models output predictions in the following order:
 
 ### Prediction Accuracy
 
-All cache-enabled models produce identical predictions:
+All cache-enabled models produce identical predictions with all position encodings (timestep, waypoints, actions, special) correctly applied:
 
-| Action | PyTorch Cache-enabled | ONNX Full (6ts) | ONNX Dual (5+1) |
-|--------|----------------------|-----------------|-----------------|
-| brake_pedal | -0.015209 | -0.015209 | -0.015209 |
-| gas_pedal | -0.083597 | -0.083597 | -0.083597 |
-| steering_angle | 0.117904 | 0.117904 | 0.117904 |
-| turn_signal | 0 | 0 | 0 |
+| Action | PyTorch Native | PyTorch Cache-enabled | ONNX Full (6ts) | ONNX Dual (5+1) |
+|--------|----------------|----------------------|-----------------|-----------------|
+| brake_pedal | -0.014864 | -0.014864 | -0.014863 | -0.014863 |
+| gas_pedal | -0.085068 | -0.085068 | -0.085068 | -0.085068 |
+| steering_angle | 0.129780 | 0.129780 | 0.129780 | 0.129780 |
+| turn_signal | 0 | 0 | 0 | 0 |
 
 **Max difference:**
-- PyTorch Cache vs ONNX Full: ~5e-07 (numerical precision only)
+- Native vs Cache-enabled: ~1e-07 (numerical precision only)
+- PyTorch Cache vs ONNX Full: ~7e-07 (numerical precision only)
 - ONNX Full vs ONNX Dual: ~3e-08 (numerical precision only)
+
+**Note:** All models use deterministic timestep position 0 in eval mode, ensuring identical predictions across Native PyTorch, Cache-enabled, and ONNX models.
 
 ### Complete Example
 
@@ -1190,6 +1191,64 @@ just export-onnx +optimize=false +verify=true
 ---
 
 ## Recent Changes (2026-01-21)
+
+### Deterministic Position Embeddings in Eval Mode
+
+Modified `EpisodeBuilder._build_position_embeddings` to use deterministic timestep position 0 when the model is in eval mode.
+
+**Problem**: Native PyTorch model used random timestep positions (training augmentation) even during inference, causing predictions to differ from cache-enabled models by ~2x.
+
+**Solution**: Added `not self.training` check to use deterministic positions in eval mode:
+
+```python
+# In _build_position_embeddings (episode.py)
+use_deterministic = (
+    timestep_offset is not None
+    or torch.compiler.is_exporting()
+    or not self.training  # NEW: eval mode uses deterministic positions
+)
+```
+
+**Behavior**:
+- **Training mode**: Random timestep positions (position encoding augmentation per [Randomized Positional Encodings paper](https://arxiv.org/abs/2305.16843))
+- **Eval mode**: Deterministic position 0 for reproducible inference
+
+**Result**: All models (Native, Cache-enabled, ONNX) now produce identical predictions in eval mode:
+
+| Model | brake | gas | steering |
+|-------|-------|-----|----------|
+| PyTorch Native | -0.014864 | -0.085068 | 0.129780 |
+| PyTorch Cache-enabled | -0.014864 | -0.085068 | 0.129780 |
+| ONNX Full Forward | -0.014863 | -0.085068 | 0.129780 |
+| ONNX Dual | -0.014863 | -0.085068 | 0.129780 |
+
+### Position Embeddings Caching Strategy
+
+Fixed cache-enabled models to correctly apply all position encodings (timestep, waypoints, actions, special).
+
+**Problem**: Cache-enabled models only applied timestep position embeddings, missing waypoints PE, actions PE, and special tokens PE.
+
+**Solution**: Cache `projected_embeddings` (no PE), precompute `position_embeddings` for 6 timesteps (constant), and reuse:
+
+```python
+# In CacheEnabledControlTransformer
+# 1. Precompute position_embeddings for 6 timesteps (constant, done once)
+position_embeddings_packed = episode.embeddings_packed - episode.projected_embeddings_packed
+# Store as buffer for reuse
+
+# 2. In forward: cache projected_embeddings (no PE)
+new_projected_embeddings = episode.projected_embeddings_packed
+
+# 3. Concatenate projected embeddings (no PE)
+all_projected_embeddings = cat([cached_projected_embeddings, new_projected_embeddings])
+
+# 4. Add precomputed position_embeddings (always 6 timesteps = 1644 tokens)
+all_embeddings = all_projected_embeddings + position_embeddings_packed
+```
+
+**Key insight**: `position_embeddings` for 6 timesteps is **constant** - it doesn't depend on batch content. We precompute it once and reuse for all forward calls. The concatenated sequence is always 6 timesteps (1644 tokens), so we just add the same precomputed position_embeddings.
+
+**Result**: All position encodings are correctly applied, predictions match native PyTorch.
 
 ### Boolean Mask Fix
 

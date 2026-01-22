@@ -217,8 +217,11 @@ def main() -> None:
 
     full_mask_np = build_policy_mask(num_timesteps=6)
     full_mask = torch.from_numpy(full_mask_np).to(device)
-    cache_model = CacheEnabledControlTransformer(pytorch_model, full_mask).to(device).eval()
-    logger.info("cache-enabled PyTorch model created")
+
+    # Precompute position_embeddings for 6 timesteps (constant, reusable)
+    # We'll compute this after we have test data
+    cache_model = None  # Will be created after test data
+    logger.info("cache-enabled PyTorch model will be created after test data")
 
     # Load ONNX models
     import onnxruntime as ort
@@ -249,19 +252,25 @@ def main() -> None:
 
     batch_6_device = to_device(batch_6, device)
 
-    # Model dimensions
+    # Model dimensions and position embeddings
     with torch.inference_mode():
-        episode = pytorch_model.episode_builder(batch_6_device)
+        episode = pytorch_model.episode_builder(batch_6_device, timestep_offset=0)
         _, seq_len, embed_dim = episode.embeddings_packed.shape
         tokens_per_timestep = seq_len // 6
         num_layers = len(list(pytorch_model.encoder.layers))
 
+        # Compute position_embeddings for 6 timesteps (constant, reusable)
+        position_embeddings_packed = episode.embeddings_packed - episode.projected_embeddings_packed
+
     logger.info("model dimensions", seq_len=seq_len, embed_dim=embed_dim, tokens_per_timestep=tokens_per_timestep, num_layers=num_layers)
 
-    # Patch _is_exporting for consistent position embeddings with ONNX
-    import rmind.components.episode as episode_module
-    original_is_exporting = episode_module._is_exporting
-    episode_module._is_exporting = lambda: True
+    # Now create cache-enabled model with position_embeddings
+    cache_model = CacheEnabledControlTransformer(
+        pytorch_model,
+        mask=full_mask,
+        position_embeddings_packed=position_embeddings_packed,
+    ).to(device).eval()
+    logger.info("cache-enabled PyTorch model created")
 
     # Debug: check PyTorch batch sample values
     def get_nested(d, keys):
@@ -283,8 +292,12 @@ def main() -> None:
     pytorch_result = BenchmarkResult(name="PyTorch Native (6ts, no cache)", num_iterations=args.num_iterations)
     pytorch_preds = None
 
-    # Temporarily restore original for native model
-    episode_module._is_exporting = original_is_exporting
+    # Model is in eval mode, so it uses deterministic position embeddings (offset 0)
+    # Set the same mask on native model's objectives for fair comparison
+    # Without this, native model builds mask dynamically which may differ
+    for obj in pytorch_model.objectives.values():
+        if hasattr(obj, '_mask'):
+            obj._mask = full_mask
 
     with torch.inference_mode():
         # Warmup
@@ -320,9 +333,7 @@ def main() -> None:
     cache_pytorch_result = BenchmarkResult(name="PyTorch Cache-enabled (6ts)", num_iterations=args.num_iterations)
     cache_pytorch_preds = None
 
-    # Patch for cache model
-    episode_module._is_exporting = lambda: True
-
+    # Model is in eval mode, so it uses deterministic position embeddings (offset 0)
     # Set mask on objectives
     for obj in cache_model.objectives.values():
         if hasattr(obj, '_mask'):
@@ -445,9 +456,6 @@ def main() -> None:
 
     logger.info(str(onnx_dual_result))
 
-    # Restore original
-    episode_module._is_exporting = original_is_exporting
-
     # ==================== Results Summary ====================
     print("\n" + "=" * 120)
     print("BENCHMARK RESULTS")
@@ -509,6 +517,12 @@ def main() -> None:
         diff_pytorch_onnx["steering"] < TOLERANCE, diff_pytorch_onnx["turn"] == 0,
     ])
 
+    # Native vs Cache-enabled should now match (both use deterministic PE in eval mode)
+    native_cache_match = all([
+        diff_native_cache["brake"] < TOLERANCE, diff_native_cache["gas"] < TOLERANCE,
+        diff_native_cache["steering"] < TOLERANCE, diff_native_cache["turn"] == 0,
+    ])
+
     # The key comparison: incremental vs full forward for streaming
     speedup_incr_vs_full = onnx_full_result.mean_ms / onnx_dual_result.mean_ms
     print(f"\nONNX Incremental vs ONNX Full:    {speedup_incr_vs_full:.2f}x faster (streaming speedup after first frame)")
@@ -517,6 +531,11 @@ def main() -> None:
     print("-" * 120)
 
     # Report verification status
+    if native_cache_match:
+        print("✓ PyTorch Native and PyTorch Cache-enabled match (same predictions)")
+    else:
+        print("✗ PyTorch Native and PyTorch Cache-enabled do NOT match")
+
     if pytorch_onnx_match:
         print("✓ PyTorch Cache-enabled and ONNX Full Forward match (same predictions)")
     else:
@@ -528,12 +547,13 @@ def main() -> None:
         print("✗ ONNX Full Forward and ONNX Incremental do NOT match")
 
     # Overall status
-    if pytorch_onnx_match and onnx_consistent:
-        print("✓ SUCCESS: All cache-enabled models produce consistent predictions")
+    if native_cache_match and pytorch_onnx_match and onnx_consistent:
+        print("✓ SUCCESS: All models produce consistent predictions")
     else:
         print("✗ FAILURE: Model predictions are inconsistent")
 
-    print("\nNOTE: PyTorch Native (no cache) may differ slightly due to different position embedding computation.")
+    print("\nNote: All models use deterministic timestep position 0 in eval mode.")
+    print("All position encodings (timestep, waypoints, actions, special) are correctly applied.")
     print("=" * 120)
 
 

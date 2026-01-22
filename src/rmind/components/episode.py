@@ -560,6 +560,7 @@ class EpisodeBuilder(Module):
         timestep_index: TensorTree,
         timestep: TimestepExport,
         timestep_offset: int | None = None,
+        include_timestep: bool = True,
     ) -> TensorTree:
         """Build position embeddings for the episode.
 
@@ -570,24 +571,36 @@ class EpisodeBuilder(Module):
             timestep_offset: Offset for timestep position encoding (for incremental inference).
                              When processing timestep 5 alone, set offset=5 so it gets position 5.
                              When None, use random position during training or 0 during export.
+            include_timestep: Whether to include timestep PE. Set False to get only
+                             non-timestep PEs (waypoints, actions, special) for caching.
         """
         position_embeddings = {}
 
         (_, t), device = _get_batch_info_from_tree(embeddings)
 
-        if (
+        if include_timestep and (
             mod_pe := self.position_encoding.get(
                 k_pe := PositionEncoding.TIMESTEP.value, default=None
             )
         ) is not None:
-            if timestep_offset is not None or torch.compiler.is_exporting():  # ty:ignore[possibly-missing-attribute]
-                # Use explicit timestep_offset for incremental inference or export
+            # Use deterministic position (offset 0) when:
+            # - timestep_offset is explicitly provided
+            # - exporting (torch.export or JIT tracing)
+            # - model is in eval mode (for deterministic inference)
+            use_deterministic = (
+                timestep_offset is not None
+                or torch.compiler.is_exporting()  # ty:ignore[possibly-missing-attribute]
+                or not self.training
+            )
+
+            if use_deterministic:
+                # Use explicit timestep_offset for incremental inference, export, or eval
                 offset = timestep_offset if timestep_offset is not None else 0
                 position = torch.arange(
                     start=offset, end=offset + t, device=device
                 )
             else:
-                # build a sequence starting from a random index (simplified [0])
+                # Training mode: build a sequence starting from a random index (simplified [0])
                 # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
                 # ---
                 # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)

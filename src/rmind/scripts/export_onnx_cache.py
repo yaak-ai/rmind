@@ -124,6 +124,33 @@ def _get_batch_input_names(
     yield from _recurse(batch, prefix)
 
 
+def _repeat_batch_timesteps(batch: dict[str, Any], target_timesteps: int) -> dict[str, Any]:
+    """Repeat a batch to have target_timesteps by duplicating data along timestep dimension.
+
+    Args:
+        batch: Batch dict with tensors of shape [B, T, ...] where T is current timesteps
+        target_timesteps: Target number of timesteps
+
+    Returns:
+        Batch with tensors expanded to [B, target_timesteps, ...]
+    """
+    result = {}
+    for key, value in batch.items():
+        if isinstance(value, dict):
+            result[key] = _repeat_batch_timesteps(value, target_timesteps)
+        elif isinstance(value, Tensor) and value.dim() >= 2:
+            # Tensor with shape [B, T, ...] - repeat along timestep dimension
+            current_t = value.shape[1]
+            if current_t < target_timesteps:
+                repeats = (target_timesteps + current_t - 1) // current_t
+                # Repeat and slice to exact target
+                repeated = value.repeat(1, repeats, *([1] * (value.dim() - 2)))
+                result[key] = repeated[:, :target_timesteps]
+            else:
+                result[key] = value[:, :target_timesteps]
+        else:
+            result[key] = value
+    return result
 
 
 
@@ -131,27 +158,29 @@ class CacheEnabledControlTransformer(nn.Module):
     """Cache-enabled ControlTransformer wrapper for ONNX export.
 
     Supports efficient sequential inference by:
-    1. Computing projected embeddings (WITHOUT position embeddings) for the input batch
-    2. Concatenating with cached projected embeddings from previous calls
-    3. Applying position embeddings to the full concatenated sequence
+    1. Computing projected_embeddings (no PE) for the input batch
+    2. Concatenating with cached projected_embeddings from previous calls
+    3. Adding precomputed position_embeddings to the full sequence
     4. Running encoder with KV cache for efficient attention
 
-    IMPORTANT: This wrapper caches projected_embeddings (before position embedding),
-    not embeddings_packed (after position embedding). This ensures correct position
-    encoding when concatenating cached and new embeddings:
-    - Cached projected embeddings for timesteps 0-4 get PE positions 0-4
-    - New projected embeddings for timestep 5 get PE position 5
-    - Total sequence gets PE positions 0-5 (not 0-4, 5, 5 which would happen
-      if we cached embeddings with PE already applied)
+    Position embedding strategy:
+    - Cache `projected_embeddings` (no position embeddings at all)
+    - `position_embeddings_packed` for 6 timesteps is CONSTANT - precompute once and reuse
+    - After concatenation (always 6 timesteps = 1644 tokens), add precomputed position_embeddings
 
-    The model always takes cached_projected_embeddings and cached_kv as inputs.
+    The model takes cached_projected_embeddings and cached_kv as inputs.
     For the first call, pass zero-sized tensors (S_cached=0).
 
     The attention mask can optionally be baked into the model at construction time.
     Pass the mask to __init__ to bake it in, or omit it to pass mask as a forward() argument.
     """
 
-    def __init__(self, model: nn.Module, mask: Tensor | None = None) -> None:
+    def __init__(
+        self,
+        model: nn.Module,
+        mask: Tensor | None = None,
+        position_embeddings_packed: Tensor | None = None,
+    ) -> None:
         super().__init__()
         self.episode_builder = model.episode_builder
         self.objectives = model.objectives
@@ -179,6 +208,14 @@ class CacheEnabledControlTransformer(nn.Module):
         self._baked_mask = mask
         if mask is not None:
             logger.debug("baked-in mask set", mask_shape=tuple(mask.shape))
+
+        # Precomputed position embeddings for full sequence (6 timesteps)
+        # This is constant and can be reused for all forward calls
+        if position_embeddings_packed is not None:
+            self.register_buffer("_position_embeddings_packed", position_embeddings_packed)
+            logger.debug("position_embeddings_packed set", shape=tuple(position_embeddings_packed.shape))
+        else:
+            self._position_embeddings_packed: Tensor | None = None
 
     @property
     def tokens_per_timestep(self) -> int:
@@ -302,25 +339,24 @@ class CacheEnabledControlTransformer(nn.Module):
         Args:
             batch: Input batch dict (full batch or single timestep)
             cached_projected_embeddings: [B, S_cached, D] - cached projected embeddings
-                                         WITHOUT position embeddings (S_cached=0 for first call)
+                                         WITHOUT any position embeddings (S_cached=0 for first call)
             cached_kv: [L, 2, B, S_cached, D] - cached KV (S_cached=0 for first call)
             mask: Attention mask [S_new, S_total]
 
         Returns:
             predictions: Dict of prediction tensors
-            all_projected_embeddings: [B, S_total, D] - all projected embeddings for caching
+            all_projected_embeddings: [B, S_total, D] - projected embeddings for caching (no PE)
             kv_cache: [L, 2, B, S_total, D] - updated KV cache
         """
-        # Build episode and get projected embeddings (WITHOUT position embeddings)
-        episode = self.episode_builder(batch)
-        new_projected_embeddings = episode.projected_embeddings_packed
+        # Build episode with timestep_offset=0 for consistent position embeddings
+        episode = self.episode_builder(batch, timestep_offset=0)
 
-        # Compute and cache tokens_per_timestep
+        # Get projected embeddings (no PE)
+        new_projected_embeddings = episode.projected_embeddings_packed
         batch_size, new_seq_len, embed_dim = new_projected_embeddings.shape
-        # Get number of timesteps from episode's projected_embeddings structure
-        # The projected_embeddings has shape [B, T, ...] where T is num_timesteps
+
+        # Compute tokens_per_timestep
         proj_emb = episode.projected_embeddings
-        # Get first leaf tensor to find num_timesteps
         first_leaf = next(
             leaf for leaf in _get_tensor_leaves(proj_emb)
             if leaf is not None and leaf.dim() >= 2
@@ -328,19 +364,29 @@ class CacheEnabledControlTransformer(nn.Module):
         num_new_timesteps = first_leaf.shape[1]
         self._tokens_per_timestep = new_seq_len // num_new_timesteps
 
-        # Concatenate with cached projected embeddings (without PE)
+        # Get position embeddings for the new tokens
+        # position_embeddings = embeddings - projected_embeddings
+        new_position_embeddings = episode.embeddings_packed - new_projected_embeddings
+
+        # Concatenate projected embeddings (no PE)
         all_projected_embeddings = torch.cat(
             [cached_projected_embeddings, new_projected_embeddings], dim=1
         )
-
-        # Compute total number of timesteps
         total_seq_len = all_projected_embeddings.shape[1]
-        total_timesteps = total_seq_len // self._tokens_per_timestep
 
-        # Apply position embeddings to the full concatenated sequence
-        all_embeddings = self.episode_builder.apply_timestep_position_embeddings(
-            all_projected_embeddings, total_timesteps, timestep_offset=0
-        )
+        # Get position embeddings for full sequence
+        if self._position_embeddings_packed is not None:
+            # Use precomputed position embeddings (for incremental model)
+            # For incremental: cached has 5ts, new has 1ts -> total 6ts
+            # Position embeddings are for full 6 timesteps
+            position_embeddings = self._position_embeddings_packed
+        else:
+            # Compute from episode (for full model with 6 timesteps)
+            # Store for potential reuse
+            position_embeddings = new_position_embeddings
+
+        # Add position embeddings to get final embeddings
+        all_embeddings = all_projected_embeddings + position_embeddings
 
         # Get new embeddings (with PE) for encoder - only the new portion
         new_embeddings = all_embeddings[:, -new_seq_len:]
@@ -368,7 +414,7 @@ class CacheEnabledControlTransformer(nn.Module):
         # Sorted by key for consistent ordering
         sorted_preds = [flat_predictions[k] for k in sorted(flat_predictions.keys())]
 
-        # Return projected embeddings (without PE) for caching
+        # Return projected embeddings (no PE) for caching
         return (*sorted_preds, all_projected_embeddings, kv_cache)
 
     def forward(
@@ -384,11 +430,13 @@ class CacheEnabledControlTransformer(nn.Module):
 
         Args:
             batch: Input batch dict (full batch or single timestep)
-            cached_projected_embeddings: [B, S_cached, D] - cached projected embeddings
+            cached_projected_embeddings: [B, S_cached, D] - cached embeddings with non-timestep PEs
+                                         (waypoints, actions, special) but WITHOUT timestep PE.
+                                         Note: Parameter name kept for ONNX compatibility.
             cached_kv: [L, 2, B, S_cached, D] - cached KV
 
         Returns:
-            predictions + cache outputs
+            Tuple of (predictions..., all_embeddings_with_non_ts_pe, kv_cache)
         """
         if self._baked_mask is None:
             msg = "No baked-in mask set. Use forward_with_mask() or pass mask to __init__."
@@ -483,6 +531,20 @@ def main(cfg: DictConfig) -> None:
     # Determine if this is an incremental export (single timestep batch)
     is_incremental = num_timesteps == 1
 
+    # Precompute position_embeddings for 6 timesteps (constant, can be reused)
+    # position_embeddings = embeddings - projected_embeddings
+    if is_incremental:
+        # For incremental, we need 6-timestep position_embeddings
+        # Build a 6-timestep batch by repeating the 1-timestep data
+        batch_6ts = _repeat_batch_timesteps(batch, target_timesteps=6)
+        episode_6ts = base_model.episode_builder(batch_6ts, timestep_offset=0)
+        position_embeddings_packed = episode_6ts.embeddings_packed - episode_6ts.projected_embeddings_packed
+    else:
+        # For full forward, extract from the current episode
+        position_embeddings_packed = episode.embeddings_packed - proj_embeddings
+
+    logger.debug("position_embeddings_packed shape", shape=position_embeddings_packed.shape)
+
     # Build the mask BEFORE creating the model (so it can be baked in)
     if is_incremental:
         logger.info("incremental export mode detected (1 timestep batch)")
@@ -512,9 +574,13 @@ def main(cfg: DictConfig) -> None:
 
         logger.debug("full forward mask", mask_shape=tuple(mask.shape))
 
-    # Create cache-enabled wrapper with baked-in mask
-    logger.debug("creating cache-enabled model wrapper with baked-in mask")
-    cache_model = CacheEnabledControlTransformer(base_model, mask=mask).eval()
+    # Create cache-enabled wrapper with baked-in mask and position embeddings
+    logger.debug("creating cache-enabled model wrapper with baked-in mask and position_embeddings")
+    cache_model = CacheEnabledControlTransformer(
+        base_model,
+        mask=mask,
+        position_embeddings_packed=position_embeddings_packed,
+    ).eval()
 
     num_layers = cache_model.num_layers
     logger.debug("model config", num_layers=num_layers, embedding_dim=embed_dim)
