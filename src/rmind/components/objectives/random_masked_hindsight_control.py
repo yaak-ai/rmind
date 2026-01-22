@@ -61,17 +61,14 @@ class RandomMaskedHindsightControlObjective(Objective):
         )(self.build_attention_mask)
 
     @override
-    def compute_metrics(
-        self, episode: Episode, final_embedding_norm: InstanceOf[Module]
-    ) -> Metrics:
+    def compute_metrics(self, episode: Episode) -> Metrics:
         episode, mask_action_timestep = self._mask_episode(episode)
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
 
         embedding = self.encoder(
-            src=final_embedding_norm(episode.embeddings_packed),
-            mask=mask.mask.to(episode.device),
+            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
         )  # ty:ignore[call-non-callable]
 
         keys_action = episode.timestep.get(TokenType.ACTION).keys(
@@ -230,22 +227,6 @@ class RandomMaskedHindsightControlObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        """Build bidirectional attention mask with action isolation.
-
-        Unlike other objectives, this uses BIDIRECTIONAL attention (can see future),
-        which is appropriate for hindsight control where we mask some actions and
-        predict them from surrounding context (including future observations).
-
-        The only restriction is ACTION ISOLATION: actions at any timestep cannot
-        attend to actions at other timesteps. This prevents actions from copying
-        each other during the masked prediction task.
-
-        Attention pattern:
-        - Observations can attend to everything (past, current, future)
-        - Actions can only attend to observations and summaries, NOT other actions
-        - This enables learning action prediction from full trajectory context
-          while preventing trivial action-to-action copying
-        """
         length: int = index.max(reduce=True).item() + 1
         mask = AttentionMask(
             mask=torch.full((length, length), legend.DO_ATTEND.value),

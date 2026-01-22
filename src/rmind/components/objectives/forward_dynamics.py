@@ -77,16 +77,13 @@ class ForwardDynamicsPredictionObjective(Objective):
         return rearrange(pos_embed, "h w d -> (h w) d")
 
     @override
-    def compute_metrics(
-        self, episode: Episode, final_embedding_norm: InstanceOf[Module]
-    ) -> Metrics:
+    def compute_metrics(self, episode: Episode) -> Metrics:
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
 
         embedding = self.encoder(
-            src=final_embedding_norm(episode.embeddings_packed),
-            mask=mask.mask.to(episode.device),
+            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
         )  # ty:ignore[call-non-callable]
 
         index = episode.index[:-1]  # all but last timestep
@@ -101,15 +98,15 @@ class ForwardDynamicsPredictionObjective(Objective):
         })
         action_summary = (
             index
-            .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))  # pyright: ignore[reportCallIssue]
-            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+            .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
+            .parse(embedding)
             .get(k)
         )
 
         obs_summary = (
             index
-            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))  # pyright: ignore[reportCallIssue]
-            .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
+            .parse(embedding)
             .get(k)
         )
         features: TensorDict = observations.apply(
@@ -125,7 +122,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         )  # ty:ignore[invalid-assignment]
 
         features_projected = TensorDict(
-            self.projections(features.to_dict())  # pyright: ignore[reportOptionalCall, reportOptionalMemberAccess]  # ty:ignore[call-non-callable]
+            self.projections(features.to_dict())  # ty:ignore[call-non-callable]
         )
         foresight = features_projected.get((Modality.FORESIGHT, "cam_front_left"))
 
@@ -217,14 +214,14 @@ class ForwardDynamicsPredictionObjective(Objective):
             })
             action_summary = (
                 index
-                .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))  # pyright: ignore[reportCallIssue]
-                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+                .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
+                .parse(embedding)
                 .get(k)
             )
             obs_summary = (
                 index
-                .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))  # pyright: ignore[reportCallIssue]
-                .parse(embedding)  # pyright: ignore[reportAttributeAccessIssue]
+                .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
+                .parse(embedding)
                 .get(k)
             )
 
@@ -240,7 +237,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             )  # ty:ignore[invalid-assignment]
 
             features_projected = TensorDict(
-                self.projections(features.to_dict())  # pyright: ignore[reportOptionalCall, reportOptionalMemberAccess]  # ty:ignore[call-non-callable]
+                self.projections(features.to_dict())  # ty:ignore[call-non-callable]
             )
             foresight = features_projected.get((Modality.FORESIGHT, REFERENCE_CAMERA))
 
@@ -349,19 +346,6 @@ class ForwardDynamicsPredictionObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        """Build causal attention mask with intra-timestep restrictions.
-
-        Creates a mask where:
-        - Tokens can attend to all past timesteps (causal)
-        - Tokens can attend within the same timestep, except:
-          - Observations cannot attend to actions/action_summary (prevents action leakage)
-          - Foresight cannot attend to actions/action_summary
-          - Observation summaries cannot attend to actions/action_summary
-          - Observations cannot attend to foresight/observation_summary/observation_history
-            (enforces hierarchy: raw observations don't see derived summaries)
-          - Foresight cannot attend to observation_summary/observation_history
-            (but foresight CAN attend to raw observations, as it predicts future from current state)
-        """
         length: int = index.max(reduce=True).item() + 1
         mask = AttentionMask(
             mask=torch.full((length, length), legend.DO_NOT_ATTEND.value),
@@ -398,23 +382,21 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             mask = (
                 mask
-                .do_attend(current, current)  # pyright: ignore[reportArgumentType]
-                .do_attend(current, past)  # pyright: ignore[reportArgumentType]
-                # Observations must not see current actions (prevents action leakage)
-                .do_not_attend(current_observations, current_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observations, current_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_foresight, current_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_foresight, current_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_summary, current_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_summary, current_action_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_history, current_actions)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observation_history, current_action_summary)  # pyright: ignore[reportArgumentType]
-                # Hierarchy: raw observations don't attend to derived tokens
-                .do_not_attend(current_observations, current_foresight)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observations, current_observation_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_observations, current_observation_history)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_foresight, current_observation_summary)  # pyright: ignore[reportArgumentType]
-                .do_not_attend(current_foresight, current_observation_history)  # pyright: ignore[reportArgumentType]
+                .do_attend(current, current)
+                .do_attend(current, past)
+                .do_not_attend(current_observations, current_actions)
+                .do_not_attend(current_observations, current_action_summary)
+                .do_not_attend(current_foresight, current_actions)
+                .do_not_attend(current_foresight, current_action_summary)
+                .do_not_attend(current_observation_summary, current_actions)
+                .do_not_attend(current_observation_summary, current_action_summary)
+                .do_not_attend(current_observation_history, current_actions)
+                .do_not_attend(current_observation_history, current_action_summary)
+                .do_not_attend(current_observations, current_foresight)
+                .do_not_attend(current_observations, current_observation_summary)
+                .do_not_attend(current_observations, current_observation_history)
+                .do_not_attend(current_foresight, current_observation_summary)
+                .do_not_attend(current_foresight, current_observation_history)
             )
         return mask
 
@@ -427,19 +409,6 @@ class ForwardDynamicsPredictionObjective(Objective):
         *,
         include_foresight: bool = True,
     ) -> AttentionMask:
-        """Extend mask to block observation tokens from attending to past actions.
-
-        Used by objectives where observations must be completely action-blind
-        (e.g., inverse dynamics, policy, memory extraction).
-
-        Args:
-            mask: Base attention mask to extend (typically from build_attention_mask)
-            index: Episode index
-            timestep: Timestep configuration
-            include_foresight: If True, also blocks foresight from past actions.
-                Set to True for inverse dynamics (action prediction from state transitions).
-                Set to False if foresight is allowed to use past action context.
-        """
         (t,) = index.batch_size
         for step in range(t):
             past, current = index[:step], index[step]

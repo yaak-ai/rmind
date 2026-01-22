@@ -80,13 +80,15 @@ class TransformerEncoderBlock(nn.Module):
         need_weights: bool = False,
         average_attn_weights: bool = True,
     ) -> tuple[Tensor, Tensor | None] | Tensor:
+        # essentially linear norm of embeddings_packed
+        x = self.pre_norm(x)
+
         # f
         residual = x
-        x_norm = self.pre_norm(x)
         mha, attn_weights = self.mha.forward(
-            x_norm,
-            x_norm,
-            x_norm,
+            x,
+            x,
+            x,
             attn_mask=mask,
             need_weights=need_weights,
             average_attn_weights=average_attn_weights,

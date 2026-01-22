@@ -250,9 +250,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         episode = self.episode_builder(batch)
 
         metrics = TensorDict({
-            name: objective.compute_metrics(
-                episode, self.episode_builder.final_embedding_norm
-            )  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -289,9 +287,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
         episode = self.episode_builder(batch)
         metrics = TensorDict({
-            name: objective.compute_metrics(
-                episode, self.episode_builder.final_embedding_norm
-            )  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 

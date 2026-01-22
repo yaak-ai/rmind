@@ -227,7 +227,6 @@ class EpisodeBuilder(Module):
         embeddings: InstanceOf[ModuleDict],
         projections: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
-        final_embedding_norm: InstanceOf[Module],
         freeze: bool | None = None,
     ) -> None:
         super().__init__()
@@ -239,7 +238,6 @@ class EpisodeBuilder(Module):
         self.embeddings: ModuleDict = embeddings
         self.projections: ModuleDict = projections
         self.position_encoding: ModuleDict = position_encoding
-        self.final_embedding_norm: Module = final_embedding_norm
 
         if freeze is not None:
             if freeze is False and (

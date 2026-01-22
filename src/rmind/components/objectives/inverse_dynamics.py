@@ -63,16 +63,13 @@ class InverseDynamicsPredictionObjective(Objective):
         )(self.build_attention_mask)
 
     @override
-    def compute_metrics(
-        self, episode: Episode, final_embedding_norm: InstanceOf[Module]
-    ) -> Metrics:
+    def compute_metrics(self, episode: Episode) -> Metrics:
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
 
         embedding = self.encoder(
-            src=final_embedding_norm(episode.embeddings_packed),
-            mask=mask.mask.to(episode.device),
+            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
         )  # ty:ignore[call-non-callable]
 
         observation_summaries = (
@@ -252,12 +249,6 @@ class InverseDynamicsPredictionObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        """Build attention mask for inverse dynamics prediction.
-
-        Extends the forward dynamics mask to make observations completely action-blind.
-        This ensures the model predicts actions purely from state transitions (o_t, o_{t+1})
-        without any action information leakage.
-        """
         mask = ForwardDynamicsPredictionObjective.build_attention_mask(
             index, timestep, legend=legend
         ).clone(recurse=True)

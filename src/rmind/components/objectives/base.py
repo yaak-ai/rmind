@@ -4,7 +4,6 @@ from collections.abc import Set as AbstractSet
 from enum import StrEnum, auto, unique
 from typing import Any, Never, TypedDict
 
-from pydantic import InstanceOf
 from tensordict import MetaData, TensorClass, TensorDict
 from torch.nn import Module
 from torch.utils._pytree import Context, register_pytree_node  # noqa: PLC2701
@@ -57,9 +56,7 @@ class Objective(Module, ABC):
         return getattr(self, name)
 
     @abstractmethod
-    def compute_metrics(
-        self, episode: Episode, final_embedding_norm: InstanceOf[Module]
-    ) -> Metrics: ...
+    def compute_metrics(self, episode: Episode) -> Metrics: ...
 
     @abstractmethod
     def predict(
