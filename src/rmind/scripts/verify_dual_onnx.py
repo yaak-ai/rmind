@@ -151,12 +151,6 @@ def main(cfg: DictConfig) -> None:
     incr_mask = full_mask[-tokens_per_timestep:, :]
     logger.info("built masks", full_mask_shape=tuple(full_mask.shape), incr_mask_shape=tuple(incr_mask.shape))
 
-    # Create cache-enabled wrapper with full_mask (for initial verification)
-    cache_model = CacheEnabledControlTransformer(base_model, full_mask).eval()
-    num_layers = cache_model.num_layers
-    embed_dim = cache_model.embedding_dim
-    logger.info("model config", num_layers=num_layers, embedding_dim=embed_dim)
-
     # Create test data with 6 timesteps
     # The incremental ONNX model expects 5 cached timesteps + 1 new timestep
     # So we compare: PyTorch with 6 timesteps vs ONNX dual (5 + 1)
@@ -226,6 +220,22 @@ def main(cfg: DictConfig) -> None:
         incr_mask = full_mask[-tokens_per_timestep:, :]
     logger.info("verified tokens per timestep", tokens_per_timestep=tokens_per_timestep)
 
+    # Compute position_embeddings for 6 timesteps (constant, reusable)
+    # Build episode with timestep_offset=0 for consistent position embeddings
+    episode_6_for_pe = base_model.episode_builder(batch_6, timestep_offset=0)
+    position_embeddings_packed = episode_6_for_pe.embeddings_packed - episode_6_for_pe.projected_embeddings_packed
+    logger.info("computed position_embeddings_packed", shape=tuple(position_embeddings_packed.shape))
+
+    # Create cache-enabled wrapper with full_mask and position_embeddings
+    cache_model = CacheEnabledControlTransformer(
+        base_model,
+        mask=full_mask,
+        position_embeddings_packed=position_embeddings_packed,
+    ).eval()
+    num_layers = cache_model.num_layers
+    embed_dim = cache_model.embedding_dim
+    logger.info("model config", num_layers=num_layers, embedding_dim=embed_dim)
+
     # Patch _is_exporting() to return True for consistent behavior
     import rmind.components.episode as episode_module
     original_is_exporting = episode_module._is_exporting
@@ -286,8 +296,8 @@ def main(cfg: DictConfig) -> None:
         logger.info("cropped cache to 5 timesteps", proj_emb_5_shape=proj_emb_5.shape, kv_cache_5_shape=kv_cache_5.shape)
 
         # Set incremental mask on model and objectives for PyTorch incremental forward
-        # Note: We swap the mask buffer since we're reusing the same model instance
-        cache_model.register_buffer("mask", incr_mask, persistent=False)
+        # Update the baked-in mask for incremental inference
+        cache_model._baked_mask = incr_mask
         for obj in cache_model.objectives.values():
             if hasattr(obj, '_mask'):
                 obj._mask = incr_mask
