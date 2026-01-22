@@ -22,7 +22,6 @@ from rmind.components.episode import (
     Modality,
     SummaryToken,
     Timestep,
-    TokenType,
 )
 from rmind.components.mask import (
     AttentionMask,
@@ -389,44 +388,16 @@ class PolicyObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
+        """Build attention mask for policy prediction.
+
+        Extends the forward dynamics mask to make observations completely action-blind.
+        This ensures the policy predicts actions from observations without any action
+        information leakage, consistent with inverse dynamics masking.
+        """
         mask = ForwardDynamicsPredictionObjective.build_attention_mask(
             index, timestep, legend=legend
         ).clone(recurse=True)
 
-        (t,) = index.batch_size
-        for step in range(t):
-            past, current = index[:step], index[step]
-            current_observations = current.select(
-                *timestep.get(TokenType.OBSERVATION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            current_observation_summary = current.select((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_SUMMARY,
-            ))
-            current_observation_history = current.select((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_HISTORY,
-            ))
-            past_actions = past.select(
-                *timestep.get(TokenType.ACTION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            past_action_summary = past.select((
-                Modality.SUMMARY,
-                SummaryToken.ACTION_SUMMARY,
-            ))
-
-            mask = (
-                mask
-                .do_not_attend(current_observations, past_actions)
-                .do_not_attend(current_observations, past_action_summary)
-                .do_not_attend(current_observation_summary, past_actions)
-                .do_not_attend(current_observation_summary, past_action_summary)
-                .do_not_attend(current_observation_history, past_actions)
-                .do_not_attend(current_observation_history, past_action_summary)
-            )
-
-        return mask
+        return ForwardDynamicsPredictionObjective.mask_observations_from_past_actions(
+            mask, index, timestep, include_foresight=True
+        )
