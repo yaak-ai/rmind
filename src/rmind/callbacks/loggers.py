@@ -54,13 +54,13 @@ class WandbImageParamLogger(Callback):
         select: Sequence[str | tuple[str, ...]],
         apply: Callable[[Tensor], Tensor] | None = None,
         every_n_batch: int | None = None,
-        cmap_type: K.ColorMapType = K.ColorMapType.viridis,
+        cmap_type: K.ColorMapType | None = K.ColorMapType.viridis,
     ) -> None:
         self._key = key
         self._select = select
         self._apply = apply
         self._cmap_type = cmap_type
-        self._cmap_apply: K.ApplyColorMap | None = None
+        self._cmap: K.ApplyColorMap | None = None
         if every_n_batch is not None and when not in BATCH_HOOKS:
             msg = (
                 "`every_n_batch` is only supported for batch-based hooks: "
@@ -107,25 +107,33 @@ class WandbImageParamLogger(Callback):
             return
 
         data = TensorDict.from_module(pl_module).select(*self._select)
-        if self._cmap_apply is None:
-            self._cmap_apply = K.ApplyColorMap(
-                K.ColorMap(self._cmap_type, device=pl_module.device)
-            )
 
         if self._apply is not None:
             data = data.apply(self._apply, inplace=False)
 
-        for logger_ in loggers:
-            images = []
-            for k, v in data.items(include_nested=True, leaves_only=True):
-                normalized = (v - v.min()) / (v.max() - v.min() + 1e-8)
-                input_tensor = rearrange(normalized, "h w -> 1 1 h w")
-                colored = self._cmap_apply(input_tensor)
-                rgb = (
-                    (rearrange(colored, "1 c h w -> h w c") * 255).byte().cpu().numpy()
+        data = data.apply(lambda x: (x - x.min()) / (x.max() - x.min() + 1e-8))
+
+        if self._cmap_type is not None:
+            if self._cmap is None:
+                self._cmap = K.ApplyColorMap(
+                    K.ColorMap(self._cmap_type, device=pl_module.device)
                 )
-                images.append(Image(rgb, caption=".".join(k[:-1])))
-            logger_.log_image(key=self._key, images=images, step=trainer.global_step)
+            data = (
+                data
+                .apply(lambda x: rearrange(x, "h w -> 1 1 h w"))
+                .apply(self._cmap)
+                .apply(lambda x: rearrange(x, "1 c h w -> h w c"))
+            )
+
+        for logger_ in loggers:
+            logger_.log_image(
+                key=self._key,
+                images=[
+                    Image((v * 255).byte().cpu().numpy(), caption=".".join(k[:-1]))
+                    for k, v in data.items(include_nested=True, leaves_only=True)
+                ],
+                step=trainer.global_step,
+            )
 
 
 NoneKey = (MappingKey(None),)
