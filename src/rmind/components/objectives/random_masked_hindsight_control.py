@@ -70,7 +70,8 @@ class RandomMaskedHindsightControlObjective(Objective):
         )
 
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            src=final_embedding_norm(episode.embeddings_packed),
+            mask=mask.mask.to(episode.device),
         )  # ty:ignore[call-non-callable]
 
         keys_action = episode.timestep.get(TokenType.ACTION).keys(
