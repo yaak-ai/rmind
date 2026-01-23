@@ -1,5 +1,5 @@
 export PYTHONOPTIMIZE := "1"
-export PYTHONBREAKPOINT := "pudb.set_trace"
+export PYTHONBREAKPOINT := "patdb.debug"
 export PATDB_CODE_STYLE := "vim"
 export BETTER_EXCEPTIONS := "1"
 export LOVELY_TENSORS := "1"
