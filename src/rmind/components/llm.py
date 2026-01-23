@@ -80,15 +80,13 @@ class TransformerEncoderBlock(nn.Module):
         need_weights: bool = False,
         average_attn_weights: bool = True,
     ) -> tuple[Tensor, Tensor | None] | Tensor:
-        # essentially linear norm of embeddings_packed
-        x = self.pre_norm(x)
-
         # f
         residual = x
+        x_norm = self.pre_norm(x)
         mha, attn_weights = self.mha.forward(
-            x,
-            x,
-            x,
+            x_norm,
+            x_norm,
+            x_norm,
             attn_mask=mask,
             need_weights=need_weights,
             average_attn_weights=average_attn_weights,
@@ -114,6 +112,7 @@ class TransformerEncoder(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
         freeze: bool | None = None,  # noqa: FBT001
+        emb_norm: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
@@ -127,6 +126,7 @@ class TransformerEncoder(nn.Module):
             )
             for _ in range(num_layers)
         ])
+        self.emb_norm: nn.Module | None = emb_norm
         # https://github.com/karpathy/nanoGPT/blob/master/model.py#L182
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
 
@@ -135,7 +135,7 @@ class TransformerEncoder(nn.Module):
 
     @override
     def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
-        x = src
+        x = self.emb_norm(src) if self.emb_norm is not None else src
 
         if self.training:
 
