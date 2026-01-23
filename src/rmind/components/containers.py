@@ -82,23 +82,24 @@ class ModuleDict(_ModuleDict):
 
         modules = self.to_dict()
 
+        def _is_leaf_input(x: Any) -> bool:
+            """Check if input should be passed directly to module without tree descent."""
+            # Dicts with 'query'/'context' keys are leaf inputs for cross-attention heads
+            return isinstance(x, dict) and "query" in x and "context" in x
+
+        def _apply_module(mod: Module, *xs: Any) -> Any:
+            if mod is None:
+                return None
+            if len(xs) == 1 and _is_leaf_input(xs[0]):
+                return mod(xs[0])
+            return tree_map(
+                lambda *_xs: mod(*_xs) if all(x is not None for x in _xs) else None, *xs
+            )
+
         return (
             # should be roughly equivalent to
             # `optree.tree_broadcast_map(operator.call, modules, *args, none_is_leaf=False)`
-            tree_map(
-                lambda mod, *xs: (
-                    tree_map(
-                        lambda *_xs: (
-                            mod(*_xs) if all(x is not None for x in _xs) else None
-                        ),
-                        *xs,
-                    )
-                    if mod is not None
-                    else None
-                ),
-                modules,
-                *args,
-            )
+            tree_map(_apply_module, modules, *args)
             if broadcast
             else tree_map(lambda mod: mod(*args), modules)
         )

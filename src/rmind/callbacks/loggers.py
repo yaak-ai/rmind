@@ -439,20 +439,22 @@ class WandbPatchSimilarityLogger(Callback):
             return
 
         # Check if objective exists and has required attributes
-        objective = pl_module.objectives.get(self._objective_name)  # ty:ignore[call-non-callable, possibly-missing-attribute]
-        if objective is None:
+        if self._objective_name not in pl_module.objectives:  # ty:ignore[unsupported-operator]
             logger.warning(
-                "Objective not found in model, skipping patch similarity logging",
+                "Objective not found in model, removing logger",
                 objective_name=self._objective_name,
             )
+            trainer.callbacks.remove(self)  # ty:ignore[unresolved-attribute]
             return
 
+        objective = pl_module.objectives[self._objective_name]  # ty:ignore[not-subscriptable, invalid-argument-type]
         if not self._validate_objective(objective):
             logger.warning(
-                "Objective doesn't support patch similarity logging",
+                "Objective doesn't support patch similarity logging, removing logger",
                 objective_name=self._objective_name,
                 required_attrs=["_last_embeddings", "_last_targets"],
             )
+            trainer.callbacks.remove(self)  # ty:ignore[unresolved-attribute]
             return
 
         for camera_key in self.Cameras:

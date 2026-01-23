@@ -380,12 +380,6 @@ class PolicyObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        """Build attention mask for policy prediction.
-
-        Extends the forward dynamics mask to make observations completely action-blind.
-        This ensures the policy predicts actions from observations without any action
-        information leakage, consistent with inverse dynamics masking.
-        """
         mask = ForwardDynamicsPredictionObjective.build_attention_mask(
             index, timestep, legend=legend
         ).clone(recurse=True)

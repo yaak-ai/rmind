@@ -7,7 +7,6 @@ import torch
 from einops.layers.torch import Rearrange
 from rbyte.types import Batch
 from tensordict import TensorDict
-from timm.layers.pos_embed_sincos import RotaryEmbeddingDinoV3
 from torch.nn import LayerNorm, Linear, Module
 from torch.testing import make_tensor
 from torchvision.ops import MLP
@@ -427,50 +426,71 @@ def inverse_dynamics_prediction_objective(
 
 @pytest.fixture(scope="module")
 def forward_dynamics_prediction_objective(
-    encoder: Module, device: torch.device, embedding_dims: EmbeddingDims
+    encoder: Module,
+    device: torch.device,
+    embedding_dims: EmbeddingDims,
+    num_bins: NumBins,
 ) -> ForwardDynamicsPredictionObjective:
+    logit_bias = torch.tensor(0)
+
     return ForwardDynamicsPredictionObjective(
         encoder=encoder,
-        heads=ModuleDict(
+        patch_grid_size=(16, 16),
+        patch_embed_dim=embedding_dims.img,
+        projections=ModuleDict(
             modules={
-                Modality.IMAGE: {
+                Modality.CONTINUOUS: {"speed": Identity()},
+                Modality.FORESIGHT: {
                     "cam_front_left": Sequential(
-                        Linear(
-                            2 * embedding_dims.encoder, embedding_dims.img, bias=False
-                        ),
-                        Rearrange("b t s d -> (b t) s d"),
-                        llm.Transformer(
-                            transformer=TransformerEncoder(
-                                dim_model=embedding_dims.img,
-                                num_heads=4,
-                                num_layers=2,
-                                attn_dropout=0.1,
-                                resid_dropout=0.1,
-                                mlp_dropout=0.1,
-                                hidden_layer_multiplier=1,
-                            )
-                        ),
-                        Linear(embedding_dims.img, embedding_dims.img, bias=False),
+                        Linear(3 * embedding_dims.encoder, embedding_dims.encoder)
                     )
-                }
+                },
             }
         ),
-        position_embedding=RotaryEmbeddingDinoV3(
-            dim=embedding_dims.encoder, rotate_half=True, feat_shape=[16, 16]
+        heads=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "speed": Linear(
+                        3 * embedding_dims.encoder, num_bins.speed, bias=False
+                    )
+                },
+                Modality.FORESIGHT: {
+                    "cam_front_left": llm.CrossAttentionDecoderHead(
+                        decoder=llm.CrossAttentionDecoder(
+                            dim_model=embedding_dims.img,
+                            num_layers=2,
+                            num_heads=4,
+                            attn_dropout=0.1,
+                            resid_dropout=0.1,
+                            mlp_dropout=0.1,
+                            hidden_layer_multiplier=1,
+                        ),
+                        output_projection=Linear(
+                            embedding_dims.img, embedding_dims.img, bias=False
+                        ),
+                    )
+                },
+            }
         ),
         losses=ModuleDict(
             modules={
-                Modality.IMAGE: {
+                Modality.CONTINUOUS: {
+                    "speed": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
+                },
+                Modality.FORESIGHT: {
                     "cam_front_left": GramAnchoringObjective(
                         weight_sim=100.0, weight_gram=100.0, patches=256
                     )
-                }
+                },
             }
         ),
         targets={
-            (modality := Modality.IMAGE): {
-                "cam_front_left": ("input_embeddings", modality, "cam_front_left")
-            }
+            Modality.CONTINUOUS: {
+                "speed": ("input_tokens", Modality.CONTINUOUS, "speed")
+            },
+            Modality.FORESIGHT: {
+                "cam_front_left": ("input_embeddings", Modality.IMAGE, "cam_front_left")
+            },
         },
     ).to(device)
 

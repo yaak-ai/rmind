@@ -416,7 +416,14 @@ class CrossAttentionDecoderHead(nn.Module):
         self.output_projection = output_projection
 
     @override
-    def forward(self, query: Tensor, context: Tensor) -> Tensor:
+    def forward(
+        self, query: Tensor | dict[str, Tensor], context: Tensor | None = None
+    ) -> Tensor:
+        # Support dict input for uniform tree-mapping interface
+        if isinstance(query, dict):
+            context = query["context"]
+            query = query["query"]
+
         # Check input dimensions
         # PROBABLY THIS WILL FAIL TORCH EXPORT
         if query.ndim not in {3, 4}:

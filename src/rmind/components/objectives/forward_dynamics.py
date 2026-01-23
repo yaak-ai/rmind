@@ -35,8 +35,6 @@ from rmind.components.objectives.base import (
     Targets,
 )
 
-REFERENCE_CAMERA = "cam_front_left"
-
 
 @final
 class ForwardDynamicsPredictionObjective(Objective):
@@ -77,7 +75,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         return rearrange(pos_embed, "h w d -> (h w) d")
 
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
+    def compute_metrics(self, episode: Episode) -> Metrics:  # noqa: PLR0914
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
@@ -87,14 +85,26 @@ class ForwardDynamicsPredictionObjective(Objective):
         )  # ty:ignore[call-non-callable]
 
         index = episode.index[:-1]  # all but last timestep
-        # TODO: make it generalizable to multiple cameras  # noqa: FIX002
+
+        # Get all observation keys from heads (foresight cameras + other modalities)
+        foresight_cameras = (
+            tuple(self.heads[Modality.FORESIGHT].keys())  # ty:ignore[call-non-callable]
+            if Modality.FORESIGHT in self.heads
+            else ()
+        )
+
+        observation_keys = [
+            *((Modality.FORESIGHT, cam) for cam in foresight_cameras),
+            *(
+                k
+                for m in self.heads
+                if m != Modality.FORESIGHT
+                for k in ((m, name) for name in self.heads[m])
+            ),
+        ]
 
         observations = TensorDict({
-            k: index.select(k).parse(embedding).get(k)
-            for k in [
-                (Modality.FORESIGHT, "cam_front_left"),
-                (Modality.CONTINUOUS, "speed"),
-            ]
+            k: index.select(k).parse(embedding).get(k) for k in observation_keys
         })
         action_summary = (
             index
@@ -124,12 +134,8 @@ class ForwardDynamicsPredictionObjective(Objective):
         features_projected = TensorDict(
             self.projections(features.to_dict())  # ty:ignore[call-non-callable]
         )
-        foresight = features_projected.get((Modality.FORESIGHT, "cam_front_left"))
 
-        num_img_tokens = episode.projected_embeddings.get((
-            Modality.IMAGE,
-            REFERENCE_CAMERA,
-        )).shape[-2]
+        num_img_tokens = self.row_embed.num_embeddings * self.col_embed.num_embeddings
 
         mask_tokens = repeat(
             episode.embeddings.get((Modality.UTILITY, "mask"))[:, :-1],
@@ -138,26 +144,19 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
         mask_tokens = mask_tokens + self.get_patch_pos_embed()  # noqa: PLR6104
 
-        logits = {}
+        features_for_heads = features_projected.to_dict()
+        for cam in foresight_cameras:
+            features_for_heads[Modality.FORESIGHT][cam] = {
+                "query": mask_tokens,
+                "context": features_projected.get((Modality.FORESIGHT, cam)),
+            }
 
-        if ("continuous" in self.heads) and ("speed" in self.heads["continuous"]):
-            logits["continuous"] = {}
-            logits["continuous"]["speed"] = self.heads["continuous"]["speed"](
-                features_projected["continuous"]["speed"]
-            )
-
-        if ("foresight" in self.heads) and (
-            "cam_front_left" in self.heads["foresight"]
-        ):
-            logits["foresight"] = {}
-            logits["foresight"]["cam_front_left"] = self.heads["foresight"][
-                "cam_front_left"
-            ](query=mask_tokens, context=foresight)
+        logits = self.heads(features_for_heads)
 
         targets = tree_map(
             lambda k: episode.get(tuple(k))[:, 1:],
             self.targets,
-            is_leaf=lambda x: isinstance(x, list),
+            is_leaf=lambda x: isinstance(x, (list, tuple)),
         )
 
         losses = self.losses(
@@ -181,10 +180,12 @@ class ForwardDynamicsPredictionObjective(Objective):
         b, t = episode.input.batch_size
 
         if (key := PredictionKey.GROUND_TRUTH) in keys:
+            # Filter out foresight paths since they're not in episode.input
+            non_foresight_paths = [
+                p for p in self.heads.tree_paths() if p[0] != Modality.FORESIGHT
+            ]
             predictions[key] = Prediction(
-                value=episode.input.select(*self.heads.tree_paths()).exclude(
-                    Modality.IMAGE
-                ),
+                value=episode.input.select(*non_foresight_paths),
                 timestep_indices=slice(None),
             )
 
@@ -205,12 +206,24 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             index = episode.index[:-1]  # all but last timestep
 
+            # Get all observation keys from heads (foresight cameras + other modalities)
+            foresight_cameras = (
+                tuple(self.heads[Modality.FORESIGHT].keys())  # ty:ignore[call-non-callable]
+                if Modality.FORESIGHT in self.heads
+                else ()
+            )
+
+            observation_keys = [
+                *((Modality.FORESIGHT, cam) for cam in foresight_cameras),
+                *(
+                    k
+                    for m in self.heads
+                    if m != Modality.FORESIGHT
+                    for k in ((m, name) for name in self.heads[m])
+                ),
+            ]
             observations = TensorDict({
-                k: index.select(k).parse(embedding).get(k)
-                for k in [
-                    (Modality.FORESIGHT, REFERENCE_CAMERA),
-                    (Modality.CONTINUOUS, "speed"),
-                ]
+                k: index.select(k).parse(embedding).get(k) for k in observation_keys
             })
             action_summary = (
                 index
@@ -239,12 +252,10 @@ class ForwardDynamicsPredictionObjective(Objective):
             features_projected = TensorDict(
                 self.projections(features.to_dict())  # ty:ignore[call-non-callable]
             )
-            foresight = features_projected.get((Modality.FORESIGHT, REFERENCE_CAMERA))
 
-            num_img_tokens = episode.projected_embeddings.get((
-                Modality.IMAGE,
-                REFERENCE_CAMERA,
-            )).shape[-2]
+            num_img_tokens = (
+                self.row_embed.num_embeddings * self.col_embed.num_embeddings
+            )
 
             mask_tokens = repeat(
                 episode.embeddings.get((Modality.UTILITY, "mask"))[:, :-1],
@@ -253,26 +264,15 @@ class ForwardDynamicsPredictionObjective(Objective):
             )
             mask_tokens = mask_tokens + self.get_patch_pos_embed()  # noqa: PLR6104
 
-            # Compute standard heads (e.g., speed) with single input
-            features_for_standard_heads = {
-                k: v
-                for k, v in features_projected.items()
-                if k != (Modality.FORESIGHT, REFERENCE_CAMERA)
-            }
-            logits = self.heads(features_for_standard_heads)
+            # Build uniform input structure for heads (cross-attention heads receive dict)
+            features_for_heads = features_projected.to_dict()
+            for cam in foresight_cameras:
+                features_for_heads[Modality.FORESIGHT][cam] = {
+                    "query": mask_tokens,
+                    "context": features_projected.get((Modality.FORESIGHT, cam)),
+                }
 
-            # Compute foresight head with cross-attention
-            # Head automatically handles 4D -> 3D flattening and unflattening
-            logits_cam = self.heads[Modality.FORESIGHT, REFERENCE_CAMERA](
-                query=mask_tokens, context=foresight
-            )
-
-            # Add foresight results to logits dict
-            if Modality.FORESIGHT not in logits:
-                logits[Modality.FORESIGHT] = {}
-            logits[Modality.FORESIGHT][REFERENCE_CAMERA] = logits_cam
-
-            logits = TensorDict(logits, batch_size=[b, t - 1])
+            logits = TensorDict(self.heads(features_for_heads), batch_size=[b, t - 1])
 
             # all but first
             timestep_indices = slice(1, None)
@@ -281,7 +281,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 predictions[key] = Prediction(
                     value=(
                         logits
-                        .exclude(Modality.IMAGE)
+                        .exclude(Modality.FORESIGHT)
                         .apply(lambda x: x.argmax(dim=-1))
                         .named_apply(  # ty:ignore[possibly-missing-attribute]
                             lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, possibly-missing-attribute]
@@ -293,7 +293,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             if (key := PredictionKey.PREDICTION_PROBS) in keys:
                 predictions[key] = Prediction(
-                    value=logits.exclude(Modality.IMAGE).apply(
+                    value=logits.exclude(Modality.FORESIGHT).apply(
                         lambda x: x.softmax(dim=-1)
                     ),
                     timestep_indices=timestep_indices,
@@ -304,7 +304,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 predictions[key] = Prediction(
                     value=(
                         logits
-                        .exclude(Modality.IMAGE)
+                        .exclude(Modality.FORESIGHT)
                         .apply(lambda x: x.softmax(dim=-1))
                         .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[possibly-missing-attribute]
                         .apply(  # ty:ignore[possibly-missing-attribute]
@@ -320,7 +320,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 predictions[key] = Prediction(
                     value=(
                         logits
-                        .exclude(Modality.IMAGE)
+                        .exclude(Modality.FORESIGHT)
                         .apply(lambda x: x.argmax(dim=-1))
                         .named_apply(  # ty:ignore[possibly-missing-attribute]
                             lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[possibly-missing-attribute, call-non-callable]
