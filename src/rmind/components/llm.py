@@ -253,8 +253,6 @@ class Transformer(nn.Module):
 
 
 class CrossAttentionDecoderBlock(nn.Module):
-    """Decoder block with cross-attention followed by self-attention."""
-
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         embedding_dim: int,
@@ -266,7 +264,6 @@ class CrossAttentionDecoderBlock(nn.Module):
     ) -> None:
         super().__init__()
 
-        # Cross-attention: query from decoder, key/value from encoder
         self.cross_attn_norm = nn.LayerNorm(embedding_dim)
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=embedding_dim,
@@ -276,7 +273,6 @@ class CrossAttentionDecoderBlock(nn.Module):
         )
         self.cross_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
 
-        # Self-attention: decoder tokens attend to each other
         self.self_attn_norm = nn.LayerNorm(embedding_dim)
         self.self_attn = nn.MultiheadAttention(
             embed_dim=embedding_dim,
@@ -286,7 +282,6 @@ class CrossAttentionDecoderBlock(nn.Module):
         )
         self.self_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
 
-        # MLP
         self.mlp_norm = nn.LayerNorm(embedding_dim)
         self.mlp = MLPGLU(
             dim_model=embedding_dim,
@@ -307,15 +302,6 @@ class CrossAttentionDecoderBlock(nn.Module):
 
     @override
     def forward(self, x: Tensor, context: Tensor) -> Tensor:
-        """
-        Args:
-            x: Decoder tokens (e.g., mask tokens) [batch, seq_decoder, dim]
-            context: Encoder tokens (e.g., foresight) [batch, seq_encoder, dim]
-
-        Returns:
-            Updated decoder tokens [batch, seq_decoder, dim]
-        """
-        # Cross-attention with residual
         residual = x
         x_norm = self.cross_attn_norm(x)
         cross_attn_out, _ = self.cross_attn(
@@ -323,7 +309,6 @@ class CrossAttentionDecoderBlock(nn.Module):
         )
         x = residual + self.cross_attn_resid_drop(cross_attn_out)
 
-        # Self-attention with residual
         residual = x
         x_norm = self.self_attn_norm(x)
         self_attn_out, _ = self.self_attn(
@@ -331,15 +316,12 @@ class CrossAttentionDecoderBlock(nn.Module):
         )
         x = residual + self.self_attn_resid_drop(self_attn_out)
 
-        # MLP with residual
         residual = x
         mlp_out = self.mlp(self.mlp_norm(x))
         return residual + mlp_out
 
 
 class CrossAttentionDecoder(nn.Module):
-    """Decoder using cross-attention to query encoder context."""
-
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         dim_model: int,
@@ -370,14 +352,6 @@ class CrossAttentionDecoder(nn.Module):
 
     @override
     def forward(self, x: Tensor, context: Tensor) -> Tensor:
-        """
-        Args:
-            x: Decoder tokens [batch, seq_decoder, dim]
-            context: Encoder context [batch, seq_encoder, dim]
-
-        Returns:
-            Decoded tokens [batch, seq_decoder, dim]
-        """
         if self.training:
 
             def run_layer(
@@ -402,12 +376,6 @@ class CrossAttentionDecoder(nn.Module):
 
 @final
 class CrossAttentionDecoderHead(nn.Module):
-    """Head that wraps CrossAttentionDecoder with output projection.
-
-    Automatically handles 4D inputs (batch, time, seq, dim) by flattening
-    to 3D for processing and unflattening the output.
-    """
-
     def __init__(
         self, decoder: CrossAttentionDecoder, output_projection: nn.Linear
     ) -> None:
@@ -419,13 +387,10 @@ class CrossAttentionDecoderHead(nn.Module):
     def forward(
         self, query: Tensor | dict[str, Tensor], context: Tensor | None = None
     ) -> Tensor:
-        # Support dict input for uniform tree-mapping interface
         if isinstance(query, dict):
             context = query["context"]
             query = query["query"]
 
-        # Check input dimensions
-        # PROBABLY THIS WILL FAIL TORCH EXPORT
         if query.ndim not in {3, 4}:
             msg = f"query must be 3D or 4D, got {query.ndim}D"
             raise ValueError(msg)
@@ -436,22 +401,17 @@ class CrossAttentionDecoderHead(nn.Module):
             msg = f"query and context must have same ndim, got {query.ndim} and {context.ndim}"
             raise ValueError(msg)
 
-        # Handle 4D inputs by flattening batch and time dimensions
         if query.ndim == 4:  # noqa: PLR2004
             b, t, sq, d = query.shape
             _, _, sc, _ = context.shape
 
-            # Flatten: (b, t, s, d) -> (b*t, s, d)
             query_flat = query.reshape(b * t, sq, d)
             context_flat = context.reshape(b * t, sc, d)
 
-            # Process
             decoded = self.decoder(query_flat, context_flat)
             output = self.output_projection(decoded)
 
-            # Unflatten: (b*t, s, d) -> (b, t, s, d)
             return output.reshape(b, t, sq, d)
 
-        # 3D inputs - process directly
         decoded = self.decoder(query, context)
         return self.output_projection(decoded)

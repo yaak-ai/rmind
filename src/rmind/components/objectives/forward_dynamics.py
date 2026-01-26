@@ -151,7 +151,12 @@ class ForwardDynamicsPredictionObjective(Objective):
                 "context": features_projected.get((Modality.FORESIGHT, cam)),
             }
 
-        logits = self.heads(features_for_heads)
+        logits = self.heads(
+            features_for_heads,
+            is_leaf_input=lambda x: (
+                isinstance(x, dict) and "query" in x and "context" in x
+            ),
+        )
 
         targets = tree_map(
             lambda k: episode.get(tuple(k))[:, 1:],
@@ -272,7 +277,15 @@ class ForwardDynamicsPredictionObjective(Objective):
                     "context": features_projected.get((Modality.FORESIGHT, cam)),
                 }
 
-            logits = TensorDict(self.heads(features_for_heads), batch_size=[b, t - 1])
+            logits = TensorDict(
+                self.heads(
+                    features_for_heads,
+                    is_leaf_input=lambda x: (
+                        isinstance(x, dict) and "query" in x and "context" in x
+                    ),
+                ),
+                batch_size=[b, t - 1],
+            )
 
             # all but first
             timestep_indices = slice(1, None)

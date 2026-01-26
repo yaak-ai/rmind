@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, overload, override
 
 from more_itertools import always_iterable
@@ -76,21 +76,21 @@ class ModuleDict(_ModuleDict):
         return obj
 
     @override
-    def forward(self, *args: PyTree, broadcast: bool | None = None) -> PyTree:
+    def forward(
+        self,
+        *args: PyTree,
+        broadcast: bool | None = None,
+        is_leaf_input: Callable[[Any], bool] | None = None,
+    ) -> PyTree:
         if broadcast is None and all(isinstance(arg, Mapping) for arg in args):
             broadcast = True
 
         modules = self.to_dict()
 
-        def _is_leaf_input(x: Any) -> bool:
-            """Check if input should be passed directly to module without tree descent."""
-            # Dicts with 'query'/'context' keys are leaf inputs for cross-attention heads
-            return isinstance(x, dict) and "query" in x and "context" in x
-
         def _apply_module(mod: Module, *xs: Any) -> Any:
             if mod is None:
                 return None
-            if len(xs) == 1 and _is_leaf_input(xs[0]):
+            if is_leaf_input is not None and len(xs) == 1 and is_leaf_input(xs[0]):
                 return mod(xs[0])
             return tree_map(
                 lambda *_xs: mod(*_xs) if all(x is not None for x in _xs) else None, *xs
