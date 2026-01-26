@@ -1,4 +1,4 @@
-from collections.abc import Hashable, Mapping
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum, auto, unique
 from itertools import accumulate, pairwise
@@ -50,12 +50,14 @@ class Modality(StrEnum):
     IMAGE = auto()
     CONTINUOUS = auto()
     DISCRETE = auto()
-    SPECIAL = auto()
+    SUMMARY = auto()
     CONTEXT = auto()
+    FORESIGHT = auto()
+    UTILITY = auto()
 
 
 @unique
-class SpecialToken(StrEnum):
+class SummaryToken(StrEnum):
     OBSERVATION_SUMMARY = auto()
     OBSERVATION_HISTORY = auto()
     ACTION_SUMMARY = auto()
@@ -77,11 +79,13 @@ class TokenMeta(NamedTuple):
 
 
 class Index(TensorClass["frozen"]):
-    image: TensorDict
     continuous: TensorDict
-    discrete: TensorDict
-    special: TensorDict
     context: TensorDict
+    discrete: TensorDict
+    foresight: TensorDict
+    image: TensorDict
+    summary: TensorDict
+    utility: TensorDict
 
     def parse(self, src: Tensor, dim: int = 1) -> TensorDict:
         shape_left, shape_right = src.shape[:dim], src.shape[dim + 1 :]
@@ -217,7 +221,7 @@ class EpisodeBuilder(Module):
         self,
         *,
         timestep: tuple[TokenMeta, ...],
-        special_tokens: Mapping[SpecialToken, int],
+        special_tokens: Mapping[str, Mapping[str, Sequence[int]]],
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
@@ -227,7 +231,7 @@ class EpisodeBuilder(Module):
     ) -> None:
         super().__init__()
 
-        self.special_tokens: Mapping[SpecialToken, int] = special_tokens
+        self.special_tokens: Mapping[str, Mapping[str, Sequence[int]]] = special_tokens
         self.timestep: tuple[TokenMeta, ...] = timestep
         self.input_transform: Module = input_transform
         self.tokenizers: ModuleDict = tokenizers
@@ -252,17 +256,21 @@ class EpisodeBuilder(Module):
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
-        batch_size, device = mit.one({
+        (b, t), device = mit.one({
             (leaf.shape[:2], leaf.device)
             for leaf in tree_leaves(input_tokens)
             if leaf is not None
         })
 
-        input_tokens[Modality.SPECIAL.value] = {
-            k.value: torch.tensor(v, device=device).expand(*batch_size, 1)
-            for k, v in self.special_tokens.items()
-        }
-
+        input_tokens.update(
+            tree_map(
+                lambda x: repeat(
+                    torch.tensor(x, device=device), "n -> b t n", b=b, t=t
+                ),
+                self.special_tokens,
+                is_leaf=lambda x: isinstance(x, list),
+            )
+        )
         input_embeddings = self.embeddings(input_tokens)
         projected_embeddings = self.projections(input_embeddings)
 
@@ -434,10 +442,12 @@ class EpisodeBuilder(Module):
             mod_pe := self.position_encoding.get(
                 k_pe := PositionEncoding.SPECIAL.value, default=None
             )
+        ) is not None and (
+            special_tokens := timestep.get(TokenType.SPECIAL.value)
         ) is not None:
             position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
             position_embedding = mod_pe(position)
-            paths = tree_paths(timestep[TokenType.SPECIAL.value])
+            paths = tree_paths(special_tokens)
             position_embeddings[k_pe] = tree_map_with_path(
                 lambda path, _: position_embedding if path in paths else None,
                 embeddings,
