@@ -46,6 +46,7 @@ from rmind.components.objectives import (
     PolicyObjective,
     RandomMaskedHindsightControlObjective,
 )
+from rmind.components.position_encoding import PatchPositionEmbedding2D
 from rmind.components.timm_backbone import TimmBackbone
 
 
@@ -435,8 +436,9 @@ def forward_dynamics_prediction_objective(
 
     return ForwardDynamicsPredictionObjective(
         encoder=encoder,
-        patch_grid_size=(16, 16),
-        patch_embed_dim=embedding_dims.img,
+        patch_pos_embed=PatchPositionEmbedding2D(
+            grid_size=(16, 16), embedding_dim=embedding_dims.img
+        ),
         projections=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {"speed": Identity()},

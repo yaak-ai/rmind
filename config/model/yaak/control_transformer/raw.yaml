@@ -401,8 +401,10 @@ objectives:
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
       encoder: null
-      patch_grid_size: [16, 16]
-      patch_embed_dim: ${img_embedding_dim}
+      patch_pos_embed:
+        _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
+        grid_size: [16, 16]
+        embedding_dim: ${img_embedding_dim}
       projections:
         _target_: rmind.components.containers.ModuleDict
         modules:

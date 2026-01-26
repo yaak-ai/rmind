@@ -1,10 +1,10 @@
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import final, override
+from typing import TYPE_CHECKING, final, override
 
 import torch
-from einops import pack, rearrange, repeat
+from einops import pack, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf
 from tensordict import TensorDict
@@ -26,7 +26,6 @@ from rmind.components.mask import (
     AttentionMaskLegend,
     TorchAttentionMaskLegend,
 )
-from rmind.components.nn import Embedding
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
@@ -34,6 +33,9 @@ from rmind.components.objectives.base import (
     PredictionKey,
     Targets,
 )
+
+if TYPE_CHECKING:
+    from rmind.components.position_encoding import PatchPositionEmbedding2D
 
 
 @final
@@ -46,8 +48,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
         projections: ModuleDict | None = None,
-        patch_grid_size: tuple[int, int] = (16, 16),
-        patch_embed_dim: int = 384,
+        patch_pos_embed: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -56,9 +57,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
         self.projections: ModuleDict | None = projections
-
-        self.row_embed = Embedding(patch_grid_size[0], patch_embed_dim)
-        self.col_embed = Embedding(patch_grid_size[1], patch_embed_dim)
+        self.patch_pos_embed: PatchPositionEmbedding2D | None = patch_pos_embed
 
         self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
             maxsize=2, typed=True
@@ -66,16 +65,8 @@ class ForwardDynamicsPredictionObjective(Objective):
         self._last_embeddings: torch.Tensor | None = None
         self._last_targets: torch.Tensor | None = None
 
-    def get_patch_pos_embed(self) -> torch.Tensor:
-        row_pos = self.row_embed.weight  # (H, D)
-        col_pos = self.col_embed.weight  # (W, D)
-        pos_embed = rearrange(row_pos, "h d -> h 1 d") + rearrange(
-            col_pos, "w d -> 1 w d"
-        )
-        return rearrange(pos_embed, "h w d -> (h w) d")
-
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:  # noqa: PLR0914
+    def compute_metrics(self, episode: Episode) -> Metrics:
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
@@ -86,7 +77,6 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         index = episode.index[:-1]  # all but last timestep
 
-        # Get all observation keys from heads (foresight cameras + other modalities)
         foresight_cameras = (
             tuple(self.heads[Modality.FORESIGHT].keys())  # ty:ignore[call-non-callable]
             if Modality.FORESIGHT in self.heads
@@ -135,14 +125,13 @@ class ForwardDynamicsPredictionObjective(Objective):
             self.projections(features.to_dict())  # ty:ignore[call-non-callable]
         )
 
-        num_img_tokens = self.row_embed.num_embeddings * self.col_embed.num_embeddings
-
         mask_tokens = repeat(
             episode.embeddings.get((Modality.UTILITY, "mask"))[:, :-1],
             "b t 1 d -> b t n d",
-            n=num_img_tokens,
+            n=episode.embeddings.get((Modality.IMAGE, "cam_front_left")).shape[-2],
         )
-        mask_tokens = mask_tokens + self.get_patch_pos_embed()  # noqa: PLR6104
+        if self.patch_pos_embed is not None:
+            mask_tokens = mask_tokens + self.patch_pos_embed()  # noqa: PLR6104
 
         features_for_heads = features_projected.to_dict()
         for cam in foresight_cameras:
@@ -258,16 +247,13 @@ class ForwardDynamicsPredictionObjective(Objective):
                 self.projections(features.to_dict())  # ty:ignore[call-non-callable]
             )
 
-            num_img_tokens = (
-                self.row_embed.num_embeddings * self.col_embed.num_embeddings
-            )
-
             mask_tokens = repeat(
                 episode.embeddings.get((Modality.UTILITY, "mask"))[:, :-1],
                 "b t 1 d -> b t n d",
-                n=num_img_tokens,
+                n=episode.embeddings.get((Modality.IMAGE, "cam_front_left")).shape[-2],
             )
-            mask_tokens = mask_tokens + self.get_patch_pos_embed()  # noqa: PLR6104
+            if self.patch_pos_embed is not None:
+                mask_tokens = mask_tokens + self.patch_pos_embed()  # noqa: PLR6104
 
             # Build uniform input structure for heads (cross-attention heads receive dict)
             features_for_heads = features_projected.to_dict()
