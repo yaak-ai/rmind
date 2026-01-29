@@ -10,10 +10,9 @@ episode_builder:
     - [observation, image, cam_front_left]
     - [observation, continuous, speed]
     - [observation, context, waypoints]
+    - [special, foresight, cam_front_left]
     - [special, summary, observation_summary]
     - [special, summary, observation_history]
-    - [special, foresight, cam_front_left]
-    - [special, utility, mask]
     - [action, continuous, gas_pedal]
     - [action, continuous, brake_pedal]
     - [action, continuous, steering_angle]
@@ -21,15 +20,17 @@ episode_builder:
     - [special, summary, action_summary]
 
   special_tokens:
-    summary:
-      observation_summary: [0]
-      observation_history: [1]
-      action_summary: [2]
     foresight:
       cam_front_left:
         _target_: builtins.range
         _args_:
           - 64
+
+    summary:
+      observation_summary: [0]
+      observation_history: [1]
+      action_summary: [2]
+
     utility:
       mask: [0]
 
@@ -215,15 +216,16 @@ episode_builder:
           num_embeddings: 3
           embedding_dim: ${encoder_embedding_dim}
 
+      foresight:
+          _target_: rmind.components.nn.Embedding
+          num_embeddings: 64
+          embedding_dim: ${encoder_embedding_dim}
+
       summary:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 3
         embedding_dim: ${encoder_embedding_dim}
 
-      foresight:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: 64
-          embedding_dim: ${encoder_embedding_dim}
       utility:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 1
@@ -277,14 +279,16 @@ episode_builder:
           in_features: ${encoder_embedding_dim}
           out_features: ${encoder_embedding_dim}
 
-      summary:
-        _target_: rmind.components.nn.Linear
-        in_features: ${encoder_embedding_dim}
-        out_features: ${encoder_embedding_dim}
       foresight:
           _target_: rmind.components.nn.Linear
           in_features: ${encoder_embedding_dim}
           out_features: ${encoder_embedding_dim}
+
+      summary:
+        _target_: rmind.components.nn.Linear
+        in_features: ${encoder_embedding_dim}
+        out_features: ${encoder_embedding_dim}
+
       utility: # do we need it?
         _target_: rmind.components.nn.Linear
         in_features: ${encoder_embedding_dim}
