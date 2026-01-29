@@ -89,7 +89,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 k
                 for m in self.heads
                 if m != Modality.FORESIGHT
-                for k in ((m, name) for name in self.heads[m])
+                for k in ((m, name) for name in self.heads[m])  # ty:ignore[not-iterable]
             ),
         ]
 
@@ -213,7 +213,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                     k
                     for m in self.heads
                     if m != Modality.FORESIGHT
-                    for k in ((m, name) for name in self.heads[m])
+                    for k in ((m, name) for name in self.heads[m])  # ty:ignore[not-iterable]
                 ),
             ]
             observations = TensorDict({

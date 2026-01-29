@@ -388,8 +388,12 @@ class CrossAttentionDecoderHead(nn.Module):
         self, query: Tensor | dict[str, Tensor], context: Tensor | None = None
     ) -> Tensor:
         if isinstance(query, dict):
-            context = query["context"]
-            query = query["query"]
+            context = query["context"]  # ty:ignore[invalid-argument-type]
+            query = query["query"]  # ty:ignore[invalid-argument-type]
+
+        if context is None:
+            msg = "context must be provided either as a dict key or as a parameter"
+            raise ValueError(msg)
 
         if query.ndim not in {3, 4}:
             msg = f"query must be 3D or 4D, got {query.ndim}D"

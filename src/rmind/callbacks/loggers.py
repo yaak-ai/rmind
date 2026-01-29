@@ -464,11 +464,11 @@ class WandbPatchSimilarityLogger(Callback):
             try:
                 # Extract embeddings
                 pred_emb = key_get(
-                    objective._last_embeddings,  # noqa: SLF001
+                    objective._last_embeddings,  # ty:ignore[possibly-missing-attribute]  # noqa: SLF001
                     self._data_path.get(camera_key),
                 )
                 gt_emb = key_get(
-                    objective._last_targets,  # noqa: SLF001
+                    objective._last_targets,  # noqa: SLF001  # ty:ignore[possibly-missing-attribute]
                     self._data_path.get(camera_key),
                 )
                 orig_image = self._get_image_from_batch(batch, camera_key)
