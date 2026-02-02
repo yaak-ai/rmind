@@ -35,7 +35,6 @@ episode_builder:
     utility:
       mask: [0]
 
-  # TODO: need image normalization and/or resizing?
   input_transform:
     _target_: torch.nn.Sequential
     _convert_: all
@@ -136,9 +135,9 @@ episode_builder:
           embedding_dim: ${encoder_embedding_dim}
 
       foresight:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: 64
-          embedding_dim: ${encoder_embedding_dim}
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 64
+        embedding_dim: ${encoder_embedding_dim}
 
       summary:
         _target_: rmind.components.nn.Embedding

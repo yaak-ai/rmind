@@ -13,6 +13,7 @@ from structlog import get_logger
 from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
 
 from rmind.config import HydraConfig
+from rmind.utils.patch import monkeypatched
 
 logger = get_logger(__name__)
 
@@ -45,7 +46,8 @@ def main(cfg: DictConfig) -> None:
     logger.debug(f"model summary:\n{ModelSummary(model)}")  # noqa: G004
 
     logger.debug("model eager forward")
-    _ = model(*args)
+    with monkeypatched(obj=torch.compiler, name="_is_exporting_flag", patch=True):
+        _ = model(*args)
 
     logger.debug("torch exporting")
     exported_program = torch.export.export(mod=model, args=tuple(args), strict=True)

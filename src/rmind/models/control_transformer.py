@@ -20,10 +20,12 @@ from pytorch_lightning.utilities.model_helpers import (
 from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from structlog import get_logger
 from tensordict import TensorDict
+from torch import Tensor
 from torch.nn import Module
 from torch.nn.modules.module import _IncompatibleKeys
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
+from torch.utils._pytree import MappingKey, tree_map_with_path  # noqa: PLC2701
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
@@ -334,11 +336,46 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
-        episode = self.episode_builder(batch)
+
+        batch_tmp = {
+            "data": batch["data"]
+            | {
+                "meta/VehicleMotion/brake_pedal_normalized": torch.zeros(1, 6, 1),
+                "meta/VehicleMotion/gas_pedal_normalized": torch.zeros(1, 6, 1),
+                "meta/VehicleMotion/steering_angle_normalized": torch.zeros(1, 6, 1),
+                "meta/VehicleMotion/speed": torch.zeros(1, 6, 1),
+                "meta/VehicleState/turn_signal": torch.zeros(
+                    1, 6, 1, dtype=torch.int32
+                ),
+                "waypoints/xy_normalized": torch.zeros(1, 6, 10, 2),
+            }  # ty:ignore[unsupported-operator]
+        }
+
+        episode = self.episode_builder(batch_tmp)
 
         outputs = {
             name: objective(episode) for name, objective in self.objectives.items()
         }
+
+        def dummify(kp: tuple[MappingKey, ...], v: Tensor) -> Tensor:
+            keys = tuple(k.key for k in kp)
+            match keys:
+                case ("policy", "continuous", "brake_pedal"):
+                    return v * 1e-6 + 1.0
+
+                case ("policy", "continuous", "gas_pedal"):
+                    return v * 1e-6 + 2.0
+
+                case ("policy", "continuous", "steering_angle"):
+                    return v * 1e-6 + 3.0
+
+                case ("policy", "discrete", "turn_signal"):
+                    return (v * 1e-6 + 4.0).type(torch.int64)
+
+                case _:
+                    raise RuntimeError
+
+        outputs = tree_map_with_path(dummify, outputs)
 
         return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs
 
