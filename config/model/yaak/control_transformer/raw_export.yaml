@@ -24,7 +24,6 @@ episode_builder:
     observation_history: 1
     action_summary: 2
 
-  # TODO: need image normalization and/or resizing?
   input_transform:
     _target_: torch.nn.Sequential
     _convert_: all
@@ -45,6 +44,23 @@ episode_builder:
 
           discrete:
             turn_signal: [data, meta/VehicleState/turn_signal]
+
+      - _target_: rmind.components.containers.ModuleDict
+        modules:
+          image:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: einops.layers.torch.Rearrange
+                pattern: "b c s h w -> b s c h w"
+
+          continuous:
+            _target_: torch.nn.Identity
+
+          discrete:
+            _target_: torch.nn.Identity
+
+          context:
+            _target_: torch.nn.Identity
 
   tokenizers:
     _target_: rmind.components.containers.ModuleDict

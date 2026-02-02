@@ -321,12 +321,33 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
-        episode = self.episode_builder(batch)
+
+        batch_tmp = {
+            "data": batch["data"]
+            | {
+                "meta/VehicleMotion/brake_pedal_normalized": torch.zeros(1, 6, 1),
+                "meta/VehicleMotion/gas_pedal_normalized": torch.zeros(1, 6, 1),
+                "meta/VehicleMotion/steering_angle_normalized": torch.zeros(1, 6, 1),
+                "meta/VehicleMotion/speed": torch.zeros(1, 6, 1),
+                "meta/VehicleState/turn_signal": torch.zeros(
+                    1, 6, 1, dtype=torch.int32
+                ),
+                "waypoints/xy_normalized": torch.zeros(1, 6, 10, 2),
+            }  # ty:ignore[unsupported-operator]
+        }
+
+        episode = self.episode_builder(batch_tmp)
 
         outputs = {
             name: objective(episode) for name, objective in self.objectives.items()
         }
 
+        outputs["policy"]["continuous"]["brake_pedal"] = torch.tensor([[1.0]])
+        outputs["policy"]["continuous"]["gas_pedal"] = torch.tensor([[2.0]])
+        outputs["policy"]["continuous"]["steering_angle"] = torch.tensor([[3.0]])
+        outputs["policy"]["discrete"]["turn_signal"] = torch.tensor(
+            [[4]], dtype=torch.int64
+        )
         return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs  # ty:ignore[possibly-missing-attribute]
 
     @override
