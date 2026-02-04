@@ -160,7 +160,10 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         self._last_embeddings = logits
         self._last_targets = targets
-        return {"loss": losses}
+        return {
+            "loss": losses,
+            "_artifacts": {"last_embeddings": logits, "last_targets": targets},
+        }
 
     @override
     def predict(  # noqa: PLR0914

@@ -14,6 +14,7 @@ logger:
   log_model: all
 callbacks:
   - _target_: rmind.callbacks.LogitBiasSetter
+  - _target_: pytorch_lightning.callbacks.TQDMProgressBar
   - _target_: pytorch_lightning.callbacks.ModelSummary
     max_depth: 5
   - _target_: pytorch_lightning.callbacks.ModelCheckpoint
@@ -51,7 +52,8 @@ callbacks:
     when: on_train_batch_end
     every_n_batch: 100
     key: patch_similarities
-    data:
+    image_sources:
       cam_front_left: [foresight, cam_front_left, 0, -1]
-    patch_coords: random
+    embeddings_predict: [forward_dynamics, _artifacts, last_embeddings]
+    embeddings_target: [forward_dynamics, _artifacts, last_targets]
     patch_grid_size: 16
