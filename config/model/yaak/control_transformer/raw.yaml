@@ -241,7 +241,6 @@ episode_builder:
             normalized_shape: ${img_embedding_dim}
           - _target_: rmind.components.norm.ScaleByVectorDimensionality
             dim: ${img_embedding_dim}
-            down: true
           - _target_: rmind.components.nn.Linear
             in_features: ${img_embedding_dim}
             out_features: ${encoder_embedding_dim}
@@ -430,7 +429,6 @@ objectives:
                   out_features: ${encoder_embedding_dim}
                 - _target_: rmind.components.norm.ScaleByVectorDimensionality
                   dim: ${img_embedding_dim}
-                  down: true
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:

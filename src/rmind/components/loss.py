@@ -103,12 +103,12 @@ class GramAnchoringObjective(Module):
         weight_gram: float = 10.0,
         **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
-        self.weight_sim: float = weight_sim
-        self.weight_gram: float = weight_gram
         if weight_gram > 0 and patches is None:
             msg = "patches must be provided if weight_gram > 0"
             raise ValueError(msg)
+        super().__init__(*args, **kwargs)
+        self.weight_sim: float = weight_sim
+        self.weight_gram: float = weight_gram
         self.patches: int | None = patches
 
     @override
@@ -128,8 +128,8 @@ class GramAnchoringObjective(Module):
         target_view = rearrange(target, "(bt p) d -> bt p d", p=self.patches)
 
         # (b t) p p
-        gram_pred = torch.matmul(input_view, input_view.transpose(1, 2))
-        gram_gt = torch.matmul(target_view, target_view.transpose(1, 2))
+        gram_pred = torch.einsum("bpd,bqd->bpq", input_view, input_view)
+        gram_gt = torch.einsum("bpd,bqd->bpq", target_view, target_view)
 
         gram_loss = F.mse_loss(gram_pred, gram_gt)
 

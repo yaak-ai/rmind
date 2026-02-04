@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING, Any, Literal, final, override
 
 import torch
-from pydantic import InstanceOf, NonNegativeFloat, validate_call
+from pydantic import BaseModel, ConfigDict, InstanceOf, NonNegativeFloat, validate_call
 from torch import Tensor, nn
 from torch.nn.modules.module import Module
 from torch.utils.checkpoint import checkpoint
@@ -17,7 +17,6 @@ __all__ = [
     "CrossAttentionDecoder",
     "CrossAttentionDecoderBlock",
     "CrossAttentionDecoderHead",
-    "Transformer",
     "TransformerEncoder",
     "TransformerEncoderBlock",
 ]
@@ -102,6 +101,7 @@ class TransformerEncoderBlock(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
+    @validate_call
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         dim_model: int,
@@ -112,7 +112,7 @@ class TransformerEncoder(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
         freeze: bool | None = None,  # noqa: FBT001
-        emb_norm: nn.Module | None = None,
+        emb_norm: InstanceOf[nn.Module] | None = None,
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
@@ -241,18 +241,8 @@ class MLPGLU(nn.Module):
         return self.l2(self.d1(geglu))
 
 
-@final
-class Transformer(nn.Module):
-    def __init__(self, transformer: TransformerEncoder) -> None:
-        super().__init__()
-        self.transformer = transformer
-
-    @override
-    def forward(self, x: Tensor) -> Tensor:
-        return self.transformer(src=x, mask=None)
-
-
 class CrossAttentionDecoderBlock(nn.Module):
+    @validate_call
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         embedding_dim: int,
@@ -376,6 +366,12 @@ class CrossAttentionDecoder(nn.Module):
 
 @final
 class CrossAttentionDecoderHead(nn.Module):
+    class Input(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+        query: Tensor
+        context: Tensor
+
     def __init__(
         self, decoder: CrossAttentionDecoder, output_projection: nn.Linear
     ) -> None:
@@ -383,27 +379,22 @@ class CrossAttentionDecoderHead(nn.Module):
         self.decoder = decoder
         self.output_projection = output_projection
 
+    @staticmethod
+    def _validate_shapes(query: Tensor, context: Tensor) -> None:
+        if query.ndim != context.ndim or query.ndim not in {3, 4}:
+            msg = (
+                "query/context must both be 3D or 4D with matching ndim, "
+                f"got query={query.ndim}D, context={context.ndim}D"
+            )
+            raise ValueError(msg)
+
+    @validate_call
     @override
-    def forward(
-        self, query: Tensor | dict[str, Tensor], context: Tensor | None = None
-    ) -> Tensor:
-        if isinstance(query, dict):
-            context = query["context"]  # ty:ignore[invalid-argument-type]
-            query = query["query"]  # ty:ignore[invalid-argument-type]
+    def forward(self, input: Input) -> Tensor:
+        query = input.query
+        context = input.context
 
-        if context is None:
-            msg = "context must be provided either as a dict key or as a parameter"
-            raise ValueError(msg)
-
-        if query.ndim not in {3, 4}:
-            msg = f"query must be 3D or 4D, got {query.ndim}D"
-            raise ValueError(msg)
-        if context.ndim not in {3, 4}:
-            msg = f"context must be 3D or 4D, got {context.ndim}D"
-            raise ValueError(msg)
-        if query.ndim != context.ndim:
-            msg = f"query and context must have same ndim, got {query.ndim} and {context.ndim}"
-            raise ValueError(msg)
+        self._validate_shapes(query, context)
 
         if query.ndim == 4:  # noqa: PLR2004
             b, t, sq, d = query.shape

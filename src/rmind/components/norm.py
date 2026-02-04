@@ -1,6 +1,5 @@
 from typing import final, override
 
-import numpy as np
 import torch
 from pydantic import validate_call
 from torch import Tensor
@@ -139,14 +138,10 @@ class Normalize(Module):
 
 @final
 class ScaleByVectorDimensionality(Module):
-    def __init__(self, dim: int = 512, up: bool = False, down: bool = False) -> None:  # noqa: FBT001,FBT002
+    def __init__(self, dim: int = 384) -> None:
         super().__init__()
-        self.up = up
-        self.down = down
-        self.factor = np.sqrt(dim)
+        self.factor = dim ** (1 / 2)
 
     @override
     def forward(self, input: Tensor) -> Tensor:
-        if self.up:
-            return input * self.factor
         return input / self.factor
