@@ -1,12 +1,12 @@
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import TYPE_CHECKING, final, override
+from typing import final, override
 
 import torch
 from einops import pack, repeat
 from einops.layers.torch import Rearrange
-from pydantic import InstanceOf
+from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.nn import functional as F
@@ -34,12 +34,10 @@ from rmind.components.objectives.base import (
     Targets,
 )
 
-if TYPE_CHECKING:
-    from rmind.components.position_encoding import PatchPositionEmbedding2D
-
 
 @final
 class ForwardDynamicsPredictionObjective(Objective):
+    @validate_call
     def __init__(  # noqa: PLR0913
         self,
         *,
@@ -47,7 +45,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
-        projections: ModuleDict | None = None,
+        projections: InstanceOf[ModuleDict] | None = None,
         patch_pos_embed: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
@@ -57,7 +55,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
         self.projections: ModuleDict | None = projections
-        self.patch_pos_embed: PatchPositionEmbedding2D | None = patch_pos_embed
+        self.patch_pos_embed: Module | None = patch_pos_embed
 
         self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
             maxsize=2, typed=True
@@ -66,7 +64,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         self._last_targets: torch.Tensor | None = None
 
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
+    def compute_metrics(self, episode: Episode) -> Metrics:  # noqa: PLR0914
         mask = self._build_attention_mask(
             episode.index, episode.timestep, legend=TorchAttentionMaskLegend
         )
@@ -77,14 +75,14 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         index = episode.index[:-1]  # all but last timestep
 
-        foresight_cameras = (
+        foresight_keys = (
             tuple(self.heads[Modality.FORESIGHT].keys())  # ty:ignore[call-non-callable]
             if Modality.FORESIGHT in self.heads
             else ()
         )
 
         observation_keys = [
-            *((Modality.FORESIGHT, cam) for cam in foresight_cameras),
+            *((Modality.FORESIGHT, key) for key in foresight_keys),
             *(
                 k
                 for m in self.heads
@@ -93,9 +91,8 @@ class ForwardDynamicsPredictionObjective(Objective):
             ),
         ]
 
-        observations = TensorDict({
-            k: index.select(k).parse(embedding).get(k) for k in observation_keys
-        })
+        observations = index.select(*observation_keys).parse(embedding)
+
         action_summary = (
             index
             .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
@@ -119,38 +116,41 @@ class ForwardDynamicsPredictionObjective(Objective):
                 ],
                 "b t p *",
             )[0]
-        )  # ty:ignore[invalid-assignment]
+        )
 
         features_projected = TensorDict(
             self.projections(features.to_dict())  # ty:ignore[call-non-callable]
         )
 
+        _, _, n_patches, _ = episode.embeddings.get((
+            Modality.IMAGE,
+            "cam_front_left",
+        )).shape
+
         mask_tokens = repeat(
             episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:],
             "b t 1 d -> b t n d",
-            n=episode.embeddings.get((Modality.IMAGE, "cam_front_left")).shape[-2],
+            n=n_patches,
         )
         if self.patch_pos_embed is not None:
-            mask_tokens = mask_tokens + self.patch_pos_embed()  # noqa: PLR6104
+            mask_tokens = self.patch_pos_embed(mask_tokens)
 
         features_for_heads = features_projected.to_dict()
-        for cam in foresight_cameras:
-            features_for_heads[Modality.FORESIGHT][cam] = {
+        for key in foresight_keys:
+            features_for_heads[Modality.FORESIGHT][key] = {
                 "query": mask_tokens,
-                "context": features_projected.get((Modality.FORESIGHT, cam)),
+                "context": features_projected.get((Modality.FORESIGHT, key)),
             }
 
         logits = self.heads(
             features_for_heads,
-            is_leaf_input=lambda x: (
-                isinstance(x, dict) and "query" in x and "context" in x
-            ),
+            is_leaf=lambda x: isinstance(x, dict) and "query" in x and "context" in x,
         )
 
         targets = tree_map(
-            lambda k: episode.get(tuple(k))[:, 1:],
+            lambda k: episode.get(k)[:, 1:],
             self.targets,
-            is_leaf=lambda x: isinstance(x, (list, tuple)),
+            is_leaf=lambda x: isinstance(x, tuple),
         )
 
         losses = self.losses(
@@ -158,8 +158,6 @@ class ForwardDynamicsPredictionObjective(Objective):
             tree_map(Rearrange("b t s ... -> (b t s) ..."), targets),
         )  # ty:ignore[call-non-callable]
 
-        self._last_embeddings = logits
-        self._last_targets = targets
         return {
             "loss": losses,
             "_artifacts": {"last_embeddings": logits, "last_targets": targets},
@@ -204,14 +202,14 @@ class ForwardDynamicsPredictionObjective(Objective):
             index = episode.index[:-1]  # all but last timestep
 
             # Get all observation keys from heads (foresight cameras + other modalities)
-            foresight_cameras = (
+            foresight_keys = (
                 tuple(self.heads[Modality.FORESIGHT].keys())  # ty:ignore[call-non-callable]
                 if Modality.FORESIGHT in self.heads
                 else ()
             )
 
             observation_keys = [
-                *((Modality.FORESIGHT, cam) for cam in foresight_cameras),
+                *((Modality.FORESIGHT, key) for key in foresight_keys),
                 *(
                     k
                     for m in self.heads
@@ -219,9 +217,8 @@ class ForwardDynamicsPredictionObjective(Objective):
                     for k in ((m, name) for name in self.heads[m])  # ty:ignore[not-iterable]
                 ),
             ]
-            observations = TensorDict({
-                k: index.select(k).parse(embedding).get(k) for k in observation_keys
-            })
+            observations = index.select(*observation_keys).parse(embedding)
+
             action_summary = (
                 index
                 .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
@@ -244,32 +241,36 @@ class ForwardDynamicsPredictionObjective(Objective):
                     ],
                     "b t p *",
                 )[0]
-            )  # ty:ignore[invalid-assignment]
+            )
 
             features_projected = TensorDict(
                 self.projections(features.to_dict())  # ty:ignore[call-non-callable]
             )
+            _, _, n_patches, _ = episode.embeddings.get((
+                Modality.IMAGE,
+                "cam_front_left",
+            )).shape
 
             mask_tokens = repeat(
                 episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:],
                 "b t 1 d -> b t n d",
-                n=episode.embeddings.get((Modality.IMAGE, "cam_front_left")).shape[-2],
+                n=n_patches,
             )
             if self.patch_pos_embed is not None:
-                mask_tokens = mask_tokens + self.patch_pos_embed()  # noqa: PLR6104
+                mask_tokens = self.patch_pos_embed(mask_tokens)
 
             # Build uniform input structure for heads (cross-attention heads receive dict)
             features_for_heads = features_projected.to_dict()
-            for cam in foresight_cameras:
-                features_for_heads[Modality.FORESIGHT][cam] = {
+            for key in foresight_keys:
+                features_for_heads[Modality.FORESIGHT][key] = {
                     "query": mask_tokens,
-                    "context": features_projected.get((Modality.FORESIGHT, cam)),
+                    "context": features_projected.get((Modality.FORESIGHT, key)),
                 }
 
             logits = TensorDict(
                 self.heads(
                     features_for_heads,
-                    is_leaf_input=lambda x: (
+                    is_leaf=lambda x: (
                         isinstance(x, dict) and "query" in x and "context" in x
                     ),
                 ),

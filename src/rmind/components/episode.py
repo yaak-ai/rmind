@@ -264,11 +264,9 @@ class EpisodeBuilder(Module):
 
         input_tokens.update(
             tree_map(
-                lambda x: repeat(
-                    torch.tensor(x, device=device), "n -> b t n", b=b, t=t
-                ),
+                lambda x: torch.tensor(x, device=device).expand(b, t, -1),
                 self.special_tokens,
-                is_leaf=lambda x: isinstance(x, list),
+                is_leaf=lambda x: isinstance(x, Sequence),
             )
         )
         input_embeddings = self.embeddings(input_tokens)

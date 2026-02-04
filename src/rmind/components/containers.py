@@ -80,26 +80,31 @@ class ModuleDict(_ModuleDict):
         self,
         *args: PyTree,
         broadcast: bool | None = None,
-        is_leaf_input: Callable[[Any], bool] | None = None,
+        is_leaf: Callable[[Any], bool] | None = None,
     ) -> PyTree:
         if broadcast is None and all(isinstance(arg, Mapping) for arg in args):
             broadcast = True
 
         modules = self.to_dict()
 
-        def _apply_module(mod: Module, *xs: Any) -> Any:
-            if mod is None:
-                return None
-            if is_leaf_input is not None and len(xs) == 1 and is_leaf_input(xs[0]):
-                return mod(xs[0])
-            return tree_map(
-                lambda *_xs: mod(*_xs) if all(x is not None for x in _xs) else None, *xs
-            )
-
         return (
             # should be roughly equivalent to
-            # `optree.tree_broadcast_map(operator.call, modules, *args, none_is_leaf=False)`
-            tree_map(_apply_module, modules, *args)
+            # `optree.tree_broadcast_map(..., modules, *args, none_is_leaf=True, is_leaf=is_leaf)`
+            tree_map(
+                lambda mod, *xs: (
+                    tree_map(
+                        lambda *_xs: (
+                            mod(*_xs) if all(x is not None for x in _xs) else None
+                        ),
+                        *xs,
+                        is_leaf=is_leaf,
+                    )
+                    if mod is not None
+                    else None
+                ),
+                modules,
+                *args,
+            )
             if broadcast
             else tree_map(lambda mod: mod(*args), modules)
         )

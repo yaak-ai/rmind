@@ -14,13 +14,13 @@ class PatchPositionEmbedding2D(nn.Module):
         self.col_embed = Embedding(grid_size[1], embedding_dim)
 
     @override
-    def forward(self) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         row_pos = self.row_embed.weight
         col_pos = self.col_embed.weight
         pos_embed = rearrange(row_pos, "h d -> h 1 d") + rearrange(
             col_pos, "w d -> 1 w d"
         )
-        return rearrange(pos_embed, "h w d -> (h w) d")
+        return x + rearrange(pos_embed, "h w d -> (h w) d")
 
 
 class PointPositionalEncoder3D(nn.Module):
