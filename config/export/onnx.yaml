@@ -6,7 +6,8 @@ defaults:
   - /input: yaak/control_transformer/dummy
   - _self_
 
-embedding_dim: 384
+encoder_embedding_dim: 384
+img_embedding_dim: 384
 num_heads: 4
 num_layers: 8
 speed_bins: 512

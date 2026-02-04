@@ -6,24 +6,21 @@ from pydantic import InstanceOf, validate_call
 from torch.nn import Module
 from torch.nn import ModuleDict as _ModuleDict
 from torch.utils._pytree import (
-    MappingKey,  # noqa: PLC2701
     PyTree,
     _dict_flatten,  # noqa: PLC2701
     _dict_flatten_with_keys,  # noqa: PLC2701
     _dict_unflatten,  # noqa: PLC2701
-    key_get,  # noqa: PLC2701
     register_pytree_node,  # noqa: PLC2701
     tree_flatten_with_path,  # noqa: PLC2701
     tree_map,  # noqa: PLC2701
 )
 
 type Modules = Mapping[str, InstanceOf[Module] | Modules | None]
+_UNSPECIFIED = object()
 
 
 class ModuleDict(_ModuleDict):
     """A convenience wrapper around torch.nn.ModuleDict."""
-
-    __unspecified = object()
 
     @validate_call
     def __init__(self, modules: Modules) -> None:
@@ -49,17 +46,30 @@ class ModuleDict(_ModuleDict):
     ) -> Module | object: ...
 
     def get(
-        self, key: str | tuple[str, ...], *, default: object = __unspecified
+        self, key: str | tuple[str, ...], *, default: object = _UNSPECIFIED
     ) -> Module | object:
-        key_path = tuple(map(MappingKey, always_iterable(key)))
+        obj: Any = self
+        for k in always_iterable(key):
+            if isinstance(obj, _ModuleDict):
+                if k not in obj:
+                    if default is _UNSPECIFIED:
+                        raise KeyError(k)
+                    return default
+                obj = obj[k]
+                continue
 
-        try:
-            return key_get(self, key_path)
-        except (KeyError, TypeError) as e:
-            if default is self.__unspecified:
-                raise KeyError from e
+            if isinstance(obj, Mapping):
+                if k not in obj:
+                    if default is _UNSPECIFIED:
+                        raise KeyError(k)
+                    return default
+                obj = obj[k]
+                continue
 
+            if default is _UNSPECIFIED:
+                raise KeyError(k)
             return default
+        return obj
 
     def get_deepest(self, key: tuple[str, ...]) -> Module:
         obj = self

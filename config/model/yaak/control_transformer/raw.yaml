@@ -414,8 +414,6 @@ objectives:
           continuous:
             speed:
               _target_: torch.nn.Identity
-              in_features: ${encoder_embedding_dim}
-              out_features: ${encoder_embedding_dim}
           foresight:
             cam_front_left:
               _target_: torch.nn.Sequential

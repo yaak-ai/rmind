@@ -125,7 +125,7 @@ episode_builder:
 
       context:
         waypoints:
-          _target_: torch.nn.Linear
+          _target_: rmind.components.nn.Linear
           in_features: 2
           out_features: ${encoder_embedding_dim}
 
