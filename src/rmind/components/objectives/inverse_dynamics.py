@@ -249,13 +249,9 @@ class InverseDynamicsPredictionObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        mask = ForwardDynamicsPredictionObjective.build_attention_mask(
+        return ForwardDynamicsPredictionObjective.build_attention_mask(
             index, timestep, legend=legend
         ).clone(recurse=True)
-
-        return ForwardDynamicsPredictionObjective.mask_observations_from_past_actions(
-            mask, index, timestep, include_foresight=True
-        )
 
 
 def _expand_attn(path: tuple[str, ...], attn: Tensor, *, input: TensorDict) -> Tensor:

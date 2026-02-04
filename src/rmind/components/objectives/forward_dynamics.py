@@ -346,7 +346,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
 
     @classmethod
-    def build_attention_mask(
+    def build_attention_mask(  # noqa: PLR0914
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1
@@ -356,102 +356,59 @@ class ForwardDynamicsPredictionObjective(Objective):
             device="cpu",
         )
 
+        obs_keys = tuple(
+            timestep.get(TokenType.OBSERVATION).keys(
+                include_nested=True, leaves_only=True
+            )
+        )
+        action_keys = tuple(
+            timestep.get(TokenType.ACTION).keys(include_nested=True, leaves_only=True)
+        )
+
         (t,) = index.batch_size
         for step in range(t):
             past, current = index[:step], index[step]
-            current_observations = current.select(
-                *timestep.get(TokenType.OBSERVATION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            current_observation_summary = current.select((
+
+            # Current timestep tokens
+            cur_obs = current.select(*obs_keys)
+            cur_foresight = current.select(Modality.FORESIGHT)
+            cur_obs_summary = current.select((
                 Modality.SUMMARY,
                 SummaryToken.OBSERVATION_SUMMARY,
             ))
-            current_foresight = current.select(Modality.FORESIGHT)
-            current_observation_history = current.select((
+            cur_obs_history = current.select((
                 Modality.SUMMARY,
                 SummaryToken.OBSERVATION_HISTORY,
             ))
-            current_actions = current.select(
-                *timestep.get(TokenType.ACTION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            current_action_summary = current.select((
+            cur_actions = current.select(*action_keys)
+            cur_action_summary = current.select((
                 Modality.SUMMARY,
                 SummaryToken.ACTION_SUMMARY,
             ))
 
-            mask = (
-                mask
-                .do_attend(current, current)
-                .do_attend(current, past)
-                .do_not_attend(current_observations, current_actions)
-                .do_not_attend(current_observations, current_action_summary)
-                .do_not_attend(current_foresight, current_actions)
-                .do_not_attend(current_foresight, current_action_summary)
-                .do_not_attend(current_observation_summary, current_actions)
-                .do_not_attend(current_observation_summary, current_action_summary)
-                .do_not_attend(current_observation_history, current_actions)
-                .do_not_attend(current_observation_history, current_action_summary)
-                .do_not_attend(current_observations, current_foresight)
-                .do_not_attend(current_observations, current_observation_summary)
-                .do_not_attend(current_observations, current_observation_history)
-                .do_not_attend(current_foresight, current_observation_summary)
-                .do_not_attend(current_foresight, current_observation_history)
-            )
-        return mask
-
-    @classmethod
-    def mask_observations_from_past_actions(
-        cls,
-        mask: AttentionMask,
-        index: Index,
-        timestep: Timestep,
-        *,
-        include_foresight: bool = True,
-    ) -> AttentionMask:
-        (t,) = index.batch_size
-        for step in range(t):
-            past, current = index[:step], index[step]
-            current_observations = current.select(
-                *timestep.get(TokenType.OBSERVATION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            current_observation_summary = current.select((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_SUMMARY,
-            ))
-            current_observation_history = current.select((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_HISTORY,
-            ))
-            past_actions = past.select(
-                *timestep.get(TokenType.ACTION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            past_action_summary = past.select((
-                Modality.SUMMARY,
-                SummaryToken.ACTION_SUMMARY,
-            ))
+            # Past timestep tokens
+            past_obs = past.select(*obs_keys)
+            past_foresight = past.select(Modality.FORESIGHT)
+            past_actions = past.select(*action_keys)
 
             mask = (
                 mask
-                .do_not_attend(current_observations, past_actions)
-                .do_not_attend(current_observations, past_action_summary)
-                .do_not_attend(current_observation_summary, past_actions)
-                .do_not_attend(current_observation_summary, past_action_summary)
-                .do_not_attend(current_observation_history, past_actions)
-                .do_not_attend(current_observation_history, past_action_summary)
+                .do_attend(cur_obs, cur_obs)
+                .do_attend(cur_obs, past_obs)
+                .do_attend(cur_foresight, cur_obs)
+                .do_attend(cur_foresight, cur_foresight)
+                .do_attend(cur_foresight, past_obs)
+                .do_attend(cur_obs_summary, cur_foresight)
+                .do_attend(cur_obs_summary, cur_obs_summary)
+                .do_attend(cur_obs_summary, past_foresight)
+                .do_attend(cur_obs_history, cur_foresight)
+                .do_attend(cur_obs_history, cur_obs_history)
+                .do_attend(cur_obs_history, past_foresight)
+                .do_attend(cur_actions, cur_actions)
+                .do_attend(cur_actions, past_actions)
+                .do_attend(cur_action_summary, cur_actions)
+                .do_attend(cur_action_summary, cur_action_summary)
+                .do_attend(cur_action_summary, past_actions)
             )
-
-            if include_foresight:
-                current_foresight = current.select(Modality.FORESIGHT)
-                mask = mask.do_not_attend(
-                    current_foresight, past_actions
-                ).do_not_attend(current_foresight, past_action_summary)
 
         return mask
