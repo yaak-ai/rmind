@@ -20,9 +20,8 @@ from rmind.components.episode import (
     EpisodeExport,
     Index,
     Modality,
-    SpecialToken,
+    SummaryToken,
     Timestep,
-    TokenType,
 )
 from rmind.components.mask import (
     AttentionMask,
@@ -127,21 +126,21 @@ class PolicyObjective(Objective):
                 episode
                 .index[-1]
                 .select(
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
                 )
                 .parse(embedding)
             )
 
             observation_history = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
             ))
 
             observation_summary = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
             ))
 
             waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
@@ -151,15 +150,15 @@ class PolicyObjective(Objective):
         else:
             observation_summary = embedding[
                 :,
-                episode.index[Modality.SPECIAL.value][  # ty:ignore[invalid-argument-type]
-                    SpecialToken.OBSERVATION_SUMMARY.value
+                episode.index[Modality.SUMMARY.value][  # ty:ignore[invalid-argument-type]
+                    SummaryToken.OBSERVATION_SUMMARY.value
                 ][-1],
             ]
 
             observation_history = embedding[
                 :,
-                episode.index[Modality.SPECIAL.value][  # ty:ignore[invalid-argument-type]
-                    SpecialToken.OBSERVATION_HISTORY.value
+                episode.index[Modality.SUMMARY.value][  # ty:ignore[invalid-argument-type]
+                    SummaryToken.OBSERVATION_HISTORY.value
                 ][-1],
             ]
 
@@ -221,7 +220,7 @@ class PolicyObjective(Objective):
             )  # ty:ignore[call-non-callable]
 
             if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SPECIAL)[[-1]].parse(
+                predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
                     embedding
                 )
 
@@ -229,21 +228,21 @@ class PolicyObjective(Objective):
                 episode
                 .index[-1]
                 .select(
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
                 )
                 .parse(embedding)
             )
 
             observation_history = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
             )).detach()  # NOTE: equivalent to stop gradient layer in paper
 
             observation_summary = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
             ))
 
             waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
@@ -381,44 +380,6 @@ class PolicyObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        mask = ForwardDynamicsPredictionObjective.build_attention_mask(
+        return ForwardDynamicsPredictionObjective.build_attention_mask(
             index, timestep, legend=legend
         ).clone(recurse=True)
-
-        (t,) = index.batch_size
-        for step in range(t):
-            past, current = index[:step], index[step]
-            current_observations = current.select(
-                *timestep.get(TokenType.OBSERVATION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            current_observation_summary = current.select((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
-            ))
-            current_observation_history = current.select((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
-            ))
-            past_actions = past.select(
-                *timestep.get(TokenType.ACTION).keys(
-                    include_nested=True, leaves_only=True
-                )
-            )
-            past_action_summary = past.select((
-                Modality.SPECIAL,
-                SpecialToken.ACTION_SUMMARY,
-            ))
-
-            mask = (
-                mask
-                .do_not_attend(current_observations, past_actions)
-                .do_not_attend(current_observations, past_action_summary)
-                .do_not_attend(current_observation_summary, past_actions)
-                .do_not_attend(current_observation_summary, past_action_summary)
-                .do_not_attend(current_observation_history, past_actions)
-                .do_not_attend(current_observation_history, past_action_summary)
-            )
-
-        return mask

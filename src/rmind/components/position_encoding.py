@@ -4,6 +4,24 @@ import torch
 from einops import einsum, rearrange
 from torch import Tensor, nn
 
+from rmind.components.nn import Embedding
+
+
+class PatchPositionEmbedding2D(nn.Module):
+    def __init__(self, grid_size: tuple[int, int], embedding_dim: int) -> None:
+        super().__init__()
+        self.row_embed = Embedding(grid_size[0], embedding_dim)
+        self.col_embed = Embedding(grid_size[1], embedding_dim)
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        row_pos = self.row_embed.weight
+        col_pos = self.col_embed.weight
+        pos_embed = rearrange(row_pos, "h d -> h 1 d") + rearrange(
+            col_pos, "w d -> 1 w d"
+        )
+        return x + rearrange(pos_embed, "h w d -> (h w) d")
+
 
 class PointPositionalEncoder3D(nn.Module):
     """3D point positional encoder.
