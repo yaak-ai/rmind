@@ -238,11 +238,11 @@ episode_builder:
         _target_: torch.nn.Sequential
         _args_:
           - _target_: torch.nn.LayerNorm
-            normalized_shape: ${img_embedding_dim}
+            normalized_shape: ${image_embedding_dim}
           - _target_: rmind.components.norm.ScaleByVectorDimensionality
-            dim: ${img_embedding_dim}
+            dim: ${image_embedding_dim}
           - _target_: rmind.components.nn.Linear
-            in_features: ${img_embedding_dim}
+            in_features: ${image_embedding_dim}
             out_features: ${encoder_embedding_dim}
 
       continuous:
@@ -407,7 +407,7 @@ objectives:
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
-        embedding_dim: ${img_embedding_dim}
+        embedding_dim: ${image_embedding_dim}
       projections:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -426,7 +426,7 @@ objectives:
                       - ${encoder_embedding_dim}
                   out_features: ${encoder_embedding_dim}
                 - _target_: rmind.components.norm.ScaleByVectorDimensionality
-                  dim: ${img_embedding_dim}
+                  dim: ${image_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -445,7 +445,7 @@ objectives:
               _target_: rmind.components.llm.CrossAttentionDecoderHead
               decoder:
                 _target_: rmind.components.llm.CrossAttentionDecoder
-                dim_model: ${img_embedding_dim}
+                dim_model: ${image_embedding_dim}
                 num_layers: 2
                 num_heads: 4
                 attn_dropout: 0.1
@@ -454,8 +454,8 @@ objectives:
                 hidden_layer_multiplier: 1
               output_projection:
                 _target_: rmind.components.nn.Linear
-                in_features: ${img_embedding_dim}
-                out_features: ${img_embedding_dim}
+                in_features: ${image_embedding_dim}
+                out_features: ${image_embedding_dim}
 
       targets:
         continuous:

@@ -60,8 +60,6 @@ class ForwardDynamicsPredictionObjective(Objective):
         self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
             maxsize=2, typed=True
         )(self.build_attention_mask)
-        self._last_embeddings: torch.Tensor | None = None
-        self._last_targets: torch.Tensor | None = None
 
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:  # noqa: PLR0914
@@ -100,18 +98,18 @@ class ForwardDynamicsPredictionObjective(Objective):
             .get(k)
         )
 
-        obs_summary = (
+        observation_summary = (
             index
             .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
             .parse(embedding)
             .get(k)
         )
         features: TensorDict = observations.apply(
-            # pack: (obs[0], action_summary), (obs[1], action_summary), ...
+            # pack: (obs[0], observation_summary, action_summary), (obs[1], observation_summary, action_summary), ...
             lambda obs: pack(
                 [
                     obs,
-                    obs_summary.broadcast_to(obs.shape),
+                    observation_summary.broadcast_to(obs.shape),
                     action_summary.broadcast_to(obs.shape),
                 ],
                 "b t p *",
@@ -175,12 +173,8 @@ class ForwardDynamicsPredictionObjective(Objective):
         b, t = episode.input.batch_size
 
         if (key := PredictionKey.GROUND_TRUTH) in keys:
-            # Filter out foresight paths since they're not in episode.input
-            non_foresight_paths = [
-                p for p in self.heads.tree_paths() if p[0] != Modality.FORESIGHT
-            ]
             predictions[key] = Prediction(
-                value=episode.input.select(*non_foresight_paths),
+                value=episode.input.select(*self.heads.tree_paths(), strict=False),
                 timestep_indices=slice(None),
             )
 
@@ -225,7 +219,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 .parse(embedding)
                 .get(k)
             )
-            obs_summary = (
+            observation_summary = (
                 index
                 .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
                 .parse(embedding)
@@ -236,7 +230,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 lambda obs: pack(
                     [
                         obs,
-                        obs_summary.broadcast_to(obs.shape),
+                        observation_summary.broadcast_to(obs.shape),
                         action_summary.broadcast_to(obs.shape),
                     ],
                     "b t p *",

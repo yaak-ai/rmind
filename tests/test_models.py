@@ -138,7 +138,7 @@ def model_yaak_control_transformer_raw(
                 "+num_heads=1",
                 "+num_layers=1",
                 f"+encoder_embedding_dim={embedding_dims.encoder}",
-                f"+img_embedding_dim={embedding_dims.img}",
+                f"+image_embedding_dim={embedding_dims.image}",
                 f"+speed_bins={num_bins.speed}",
                 f"+gas_pedal_bins={num_bins.gas_pedal}",
                 f"+brake_pedal_bins={num_bins.brake_pedal}",

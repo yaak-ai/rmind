@@ -66,7 +66,7 @@ def num_bins() -> NumBins:
 @dataclass
 class EmbeddingDims:
     encoder: int = 384
-    img: int = 384
+    image: int = 384
 
 
 @pytest.fixture(scope="module")
@@ -180,12 +180,12 @@ def episode_builder(
     return EpisodeBuilder(
         special_tokens={
             Modality.SUMMARY.value: {
-                SummaryToken.OBSERVATION_SUMMARY.value: [0],
-                SummaryToken.OBSERVATION_HISTORY.value: [1],
-                SummaryToken.ACTION_SUMMARY.value: [2],
+                SummaryToken.OBSERVATION_SUMMARY.value: (0,),
+                SummaryToken.OBSERVATION_HISTORY.value: (1,),
+                SummaryToken.ACTION_SUMMARY.value: (2,),
             },
-            Modality.FORESIGHT.value: {"cam_front_left": list(range(64))},
-            Modality.UTILITY.value: {"mask": [0]},
+            Modality.FORESIGHT.value: {"cam_front_left": tuple(range(64))},
+            Modality.UTILITY.value: {"mask": (0,)},
         },
         timestep=(
             TokenMeta(TokenType.OBSERVATION, Modality.IMAGE, "cam_front_left"),
@@ -292,8 +292,8 @@ def episode_builder(
         }),
         projections=ModuleDict({
             Modality.IMAGE: Sequential(
-                LayerNorm(embedding_dims.img),
-                Linear(embedding_dims.img, embedding_dims.encoder),
+                LayerNorm(embedding_dims.image),
+                Linear(embedding_dims.image, embedding_dims.encoder),
             ),
             Modality.CONTINUOUS: {
                 "speed": Sequential(
@@ -437,7 +437,7 @@ def forward_dynamics_prediction_objective(
     return ForwardDynamicsPredictionObjective(
         encoder=encoder,
         patch_pos_embed=PatchPositionEmbedding2D(
-            grid_size=(16, 16), embedding_dim=embedding_dims.img
+            grid_size=(16, 16), embedding_dim=embedding_dims.image
         ),
         projections=ModuleDict(
             modules={
@@ -459,7 +459,7 @@ def forward_dynamics_prediction_objective(
                 Modality.FORESIGHT: {
                     "cam_front_left": llm.CrossAttentionDecoderHead(
                         decoder=llm.CrossAttentionDecoder(
-                            dim_model=embedding_dims.img,
+                            dim_model=embedding_dims.image,
                             num_layers=2,
                             num_heads=4,
                             attn_dropout=0.1,
@@ -468,7 +468,7 @@ def forward_dynamics_prediction_objective(
                             hidden_layer_multiplier=1,
                         ),
                         output_projection=Linear(
-                            embedding_dims.img, embedding_dims.img, bias=False
+                            embedding_dims.image, embedding_dims.image, bias=False
                         ),
                     )
                 },

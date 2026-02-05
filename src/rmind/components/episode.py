@@ -1,4 +1,4 @@
-from collections.abc import Hashable, Mapping, Sequence
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum, auto, unique
 from itertools import accumulate, pairwise
@@ -221,7 +221,7 @@ class EpisodeBuilder(Module):
         self,
         *,
         timestep: tuple[TokenMeta, ...],
-        special_tokens: Mapping[str, Mapping[str, Sequence[int]]],
+        special_tokens: Mapping[str, Mapping[str, tuple[int, ...]]],
         input_transform: InstanceOf[Module],
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
@@ -231,7 +231,9 @@ class EpisodeBuilder(Module):
     ) -> None:
         super().__init__()
 
-        self.special_tokens: Mapping[str, Mapping[str, Sequence[int]]] = special_tokens
+        self.special_tokens: Mapping[str, Mapping[str, tuple[int, ...]]] = (
+            special_tokens
+        )
         self.timestep: tuple[TokenMeta, ...] = timestep
         self.input_transform: Module = input_transform
         self.tokenizers: ModuleDict = tokenizers
@@ -266,7 +268,7 @@ class EpisodeBuilder(Module):
             tree_map(
                 lambda x: torch.tensor(x, device=device).expand(b, t, -1),
                 self.special_tokens,
-                is_leaf=lambda x: isinstance(x, Sequence),
+                is_leaf=lambda x: isinstance(x, tuple),
             )
         )
         input_embeddings = self.embeddings(input_tokens)

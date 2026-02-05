@@ -157,11 +157,11 @@ episode_builder:
         _target_: torch.nn.Sequential
         _args_:
           - _target_: torch.nn.LayerNorm
-            normalized_shape: ${img_embedding_dim}
+            normalized_shape: ${image_embedding_dim}
           - _target_: rmind.components.norm.ScaleByVectorDimensionality
-            dim: ${img_embedding_dim}
+            dim: ${image_embedding_dim}
           - _target_: rmind.components.nn.Linear
-            in_features: ${img_embedding_dim}
+            in_features: ${image_embedding_dim}
             out_features: ${encoder_embedding_dim}
 
       continuous:
@@ -232,6 +232,8 @@ episode_builder:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 24
         embedding_dim: ${encoder_embedding_dim}
+
+      observations: null
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder
