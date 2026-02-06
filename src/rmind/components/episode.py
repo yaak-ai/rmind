@@ -164,7 +164,7 @@ class Episode(TensorClass["frozen"]):
         )
         packed, _ = pack([embeddings[key] for key in keys], "b t * d")
 
-        return rearrange(packed, "b t s d -> b (t s) d")
+        return rearrange(packed, "b t s d -> b (t s) d")  # ty:ignore[invalid-return-type]
 
 
 @dataclass(frozen=True, kw_only=True)
