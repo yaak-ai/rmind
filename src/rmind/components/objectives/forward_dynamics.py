@@ -1,31 +1,18 @@
-from collections.abc import Callable
 from collections.abc import Set as AbstractSet
-from functools import lru_cache
-from typing import final, override
+from typing import Any, final, override
 
 import torch
 from einops import pack, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
+from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import (
-    Episode,
-    Index,
-    Modality,
-    SummaryToken,
-    Timestep,
-    TokenType,
-)
-from rmind.components.mask import (
-    AttentionMask,
-    AttentionMaskLegend,
-    TorchAttentionMaskLegend,
-)
+from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
@@ -33,15 +20,15 @@ from rmind.components.objectives.base import (
     PredictionKey,
     Targets,
 )
+from rmind.components.tokens import Modality, SummaryToken
 
 
 @final
 class ForwardDynamicsPredictionObjective(Objective):
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         *,
-        encoder: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
@@ -50,27 +37,14 @@ class ForwardDynamicsPredictionObjective(Objective):
     ) -> None:
         super().__init__()
 
-        self.encoder: Module | None = encoder
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
         self.projections: ModuleDict | None = projections
         self.patch_pos_embed: Module | None = patch_pos_embed
 
-        self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
-            maxsize=2, typed=True
-        )(self.build_attention_mask)
-
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
-        mask = self._build_attention_mask(
-            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-        )
-
-        embedding = self.encoder(
-            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-        )  # ty:ignore[call-non-callable]
-
+    def compute_metrics(self, episode: Episode, *, embedding: Tensor) -> Metrics:
         index = episode.index[:-1]  # all but last timestep
 
         observation_keys = self.heads.tree_paths()
@@ -136,12 +110,14 @@ class ForwardDynamicsPredictionObjective(Objective):
         }
 
     @override
-    def predict(  # noqa: PLR0914
+    def predict(
         self,
         episode: Episode,
         *,
+        embedding: Tensor,
         keys: AbstractSet[PredictionKey],
         tokenizers: ModuleDict | None = None,
+        **kwargs: Any,
     ) -> TensorDict:
         predictions: dict[PredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
@@ -159,14 +135,6 @@ class ForwardDynamicsPredictionObjective(Objective):
             PredictionKey.SCORE_L1,
             PredictionKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self._build_attention_mask(
-                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-            )
-
-            embedding = self.encoder(
-                src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # ty:ignore[call-non-callable]
-
             index = episode.index[:-1]  # all but last timestep
             observation_keys = self.heads.tree_paths()
             observations = index.select(*observation_keys).parse(embedding)
@@ -291,71 +259,3 @@ class ForwardDynamicsPredictionObjective(Objective):
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
-
-    @classmethod
-    def build_attention_mask(  # noqa: PLR0914
-        cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
-    ) -> AttentionMask:
-        length: int = index.max(reduce=True).item() + 1
-        mask = AttentionMask(
-            mask=torch.full((length, length), legend.DO_NOT_ATTEND.value),
-            legend=legend,
-            device="cpu",
-        )
-
-        obs_keys = tuple(
-            timestep.get(TokenType.OBSERVATION).keys(
-                include_nested=True, leaves_only=True
-            )
-        )
-        action_keys = tuple(
-            timestep.get(TokenType.ACTION).keys(include_nested=True, leaves_only=True)
-        )
-
-        (t,) = index.batch_size
-        for step in range(t):
-            past, current = index[:step], index[step]
-
-            # Current timestep tokens
-            cur_obs = current.select(*obs_keys)
-            cur_foresight = current.select(Modality.FORESIGHT)
-            cur_obs_summary = current.select((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_SUMMARY,
-            ))
-            cur_obs_history = current.select((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_HISTORY,
-            ))
-            cur_actions = current.select(*action_keys)
-            cur_action_summary = current.select((
-                Modality.SUMMARY,
-                SummaryToken.ACTION_SUMMARY,
-            ))
-
-            # Past timestep tokens
-            past_obs = past.select(*obs_keys)
-            past_foresight = past.select(Modality.FORESIGHT)
-            past_actions = past.select(*action_keys)
-
-            mask = (
-                mask
-                .do_attend(cur_obs, cur_obs)
-                .do_attend(cur_obs, past_obs)
-                .do_attend(cur_foresight, cur_obs)
-                .do_attend(cur_foresight, cur_foresight)
-                .do_attend(cur_foresight, past_obs)
-                .do_attend(cur_obs_summary, cur_foresight)
-                .do_attend(cur_obs_summary, cur_obs_summary)
-                .do_attend(cur_obs_summary, past_foresight)
-                .do_attend(cur_obs_history, cur_foresight)
-                .do_attend(cur_obs_history, cur_obs_history)
-                .do_attend(cur_obs_history, past_foresight)
-                .do_attend(cur_actions, cur_actions)
-                .do_attend(cur_actions, past_actions)
-                .do_attend(cur_action_summary, cur_actions)
-                .do_attend(cur_action_summary, cur_action_summary)
-                .do_attend(cur_action_summary, past_actions)
-            )
-
-        return mask
