@@ -336,7 +336,6 @@ objectives:
   modules:
     inverse_dynamics:
       _target_: rmind.components.objectives.InverseDynamicsPredictionObjective
-      encoder: null
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -403,7 +402,6 @@ objectives:
 
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
-      encoder: null
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
@@ -476,65 +474,8 @@ objectives:
               weight_gram: 100.0
               patches: 256
 
-    random_masked_hindsight_control:
-      _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective
-      encoder: null
-      heads:
-        _target_: rmind.components.containers.ModuleDict
-        modules:
-          continuous:
-            gas_pedal:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${gas_pedal_bins}
-              bias: False
-
-            brake_pedal:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${brake_pedal_bins}
-              bias: False
-
-            steering_angle:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${steering_angle_bins}
-              bias: False
-
-          discrete:
-            turn_signal:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: 3
-              bias: False
-
-      targets:
-        continuous:
-          gas_pedal: [input_tokens, continuous, gas_pedal]
-          brake_pedal: [input_tokens, continuous, brake_pedal]
-          steering_angle: [input_tokens, continuous, steering_angle]
-
-        discrete:
-          turn_signal: [input_tokens, discrete, turn_signal]
-
-      losses:
-        _target_: rmind.components.containers.ModuleDict
-        modules:
-          continuous:
-            gas_pedal:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-            brake_pedal:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-            steering_angle:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-
-          discrete:
-            turn_signal:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-
     memory_extraction:
       _target_: rmind.components.objectives.MemoryExtractionObjective
-      encoder: null
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:

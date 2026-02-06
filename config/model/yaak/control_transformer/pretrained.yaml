@@ -14,7 +14,4 @@ hparams_updaters:
     path: ["objectives", "forward_dynamics", "losses"]
   - _target_: funcy.del_in
     _partial_: true
-    path: ["objectives", "random_masked_hindsight_control", "losses"]
-  - _target_: funcy.del_in
-    _partial_: true
     path: ["objectives", "memory_extraction", "losses"]

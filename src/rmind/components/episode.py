@@ -1,6 +1,5 @@
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
-from enum import StrEnum, auto, unique
 from itertools import accumulate, pairwise
 from operator import itemgetter
 from typing import Any, NamedTuple, final, override
@@ -33,43 +32,11 @@ from torch.utils._pytree import (  # noqa: PLC2701
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
+from rmind.components.mask import AttentionMaskBuilder, TorchAttentionMaskLegend
+from rmind.components.tokens import Modality, PositionEncoding, TokenType
 from rmind.utils.pytree import tree_paths, unflatten_keys
 
 logger = get_logger(__name__)
-
-
-@unique
-class TokenType(StrEnum):
-    OBSERVATION = auto()
-    ACTION = auto()
-    SPECIAL = auto()
-
-
-@unique
-class Modality(StrEnum):
-    IMAGE = auto()
-    CONTINUOUS = auto()
-    DISCRETE = auto()
-    SUMMARY = auto()
-    CONTEXT = auto()
-    FORESIGHT = auto()
-    UTILITY = auto()
-
-
-@unique
-class SummaryToken(StrEnum):
-    OBSERVATION_SUMMARY = auto()
-    OBSERVATION_HISTORY = auto()
-    ACTION_SUMMARY = auto()
-
-
-@unique
-class PositionEncoding(StrEnum):
-    OBSERVATIONS = auto()
-    ACTIONS = auto()
-    SPECIAL = auto()
-    TIMESTEP = auto()
-    CONTEXT = auto()
 
 
 class TokenMeta(NamedTuple):
@@ -150,6 +117,7 @@ class Episode(TensorClass["frozen"]):
     position_embeddings: TensorDict
     index: Index
     timestep: Timestep
+    attention_mask: Tensor
 
     @property
     def embeddings(self) -> TensorDict:
@@ -179,6 +147,7 @@ class EpisodeExport:
     position_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
+    attention_mask: Tensor
 
     @property
     def embeddings(self) -> TensorTree:
@@ -239,7 +208,6 @@ class EpisodeBuilder(Module):
         self.embeddings: ModuleDict = embeddings
         self.projections: ModuleDict = projections
         self.position_encoding: ModuleDict = position_encoding
-
         if freeze is not None:
             if freeze is False and (
                 params_to_unfreeze := tuple(
@@ -279,6 +247,9 @@ class EpisodeBuilder(Module):
         timestep = unflatten_keys({
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
+        attention_mask = AttentionMaskBuilder.build(
+            index=index, timestep=timestep, legend=TorchAttentionMaskLegend
+        )
 
         position_embeddings = self._build_position_embeddings(
             input_embeddings, timestep_index, timestep
@@ -292,6 +263,7 @@ class EpisodeBuilder(Module):
                 position_embeddings=position_embeddings,
                 index=index,
                 timestep=timestep,
+                attention_mask=attention_mask,
             )
             if torch.compiler.is_exporting()
             else Episode(
@@ -313,6 +285,7 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
+                attention_mask=attention_mask,
                 device=device,
             )
         )
@@ -397,7 +370,7 @@ class EpisodeBuilder(Module):
             )
         ) is not None:
             position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
-            position_embedding = mod_pe(position)
+            position_embedding = mod_pe(position)  # ty:ignore[call-non-callable]
             paths = tuple(
                 (modality, name)
                 for (_, modality, name) in tree_paths(timestep)
@@ -430,7 +403,7 @@ class EpisodeBuilder(Module):
             )
         ) is not None:
             position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
-            position_embedding = mod_pe(position)
+            position_embedding = mod_pe(position)  # ty:ignore[call-non-callable]
             paths = tree_paths(timestep[TokenType.ACTION.value])
             position_embeddings[k_pe] = tree_map_with_path(
                 lambda path, _: position_embedding if path in paths else None,
@@ -445,7 +418,7 @@ class EpisodeBuilder(Module):
             special_tokens := timestep.get(TokenType.SPECIAL.value)
         ) is not None:
             position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
-            position_embedding = mod_pe(position)
+            position_embedding = mod_pe(position)  # ty:ignore[call-non-callable]
             paths = tree_paths(special_tokens)
             position_embeddings[k_pe] = tree_map_with_path(
                 lambda path, _: position_embedding if path in paths else None,

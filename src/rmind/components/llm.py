@@ -13,7 +13,7 @@ from torch import Tensor, nn
 from torch.nn.modules.module import Module
 from torch.utils.checkpoint import checkpoint
 
-from rmind.components.mask import AttentionMask
+from rmind.components.mask import TorchAttentionMaskLegend
 from rmind.components.nn import default_weight_init_fn
 
 if TYPE_CHECKING:
@@ -164,7 +164,7 @@ class TransformerEncoder(nn.Module):
         self,
         *,
         src: InstanceOf[Tensor],
-        mask: InstanceOf[AttentionMask],
+        mask: InstanceOf[Tensor],
         head_fusion: Literal["mean", "max", "min"] = "mean",
         discard_ratio: NonNegativeFloat | None = None,
     ) -> Tensor:
@@ -183,7 +183,7 @@ class TransformerEncoder(nn.Module):
 
         x = src
         for layer in self.layers:
-            x, attn = layer(x, mask.mask, need_weights=True, average_attn_weights=False)
+            x, attn = layer(x, mask, need_weights=True, average_attn_weights=False)
             attn_fused = fuse_heads(attn)
             attn_discarded = self._discard_attention(attn_fused, mask, discard_ratio)
             attn_residual = (attn_discarded + identity) * 0.5
@@ -194,13 +194,15 @@ class TransformerEncoder(nn.Module):
 
     @staticmethod
     def _discard_attention(
-        attn: Tensor, mask: AttentionMask, discard_ratio: float | None
+        attn: Tensor, mask: Tensor, discard_ratio: float | None
     ) -> Tensor:
         """Set `discard_ratio` of non-masked-out values (per-row) in `attn` to zero."""
         if not discard_ratio:
             return attn
 
-        attn_mask = mask.mask == mask.legend.DO_ATTEND.value
+        attn_mask = (
+            mask == TorchAttentionMaskLegend.DO_ATTEND.value
+        )  # assuming that Mask was created with torch legend
         discard_counts = (attn_mask.count_nonzero(dim=1) * discard_ratio).int().tolist()
 
         # NOTE: done per-row b/c masks and the k in topk may differ

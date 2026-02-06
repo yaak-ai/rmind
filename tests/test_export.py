@@ -12,9 +12,9 @@ from torchvision.ops import MLP
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import Episode, EpisodeBuilder, EpisodeExport, Modality
-from rmind.components.mask import TorchAttentionMaskLegend
+from rmind.components.episode import Episode, EpisodeBuilder, EpisodeExport
 from rmind.components.objectives.policy import PolicyObjective
+from rmind.components.tokens import Modality
 from rmind.models.control_transformer import ControlTransformer
 
 if TYPE_CHECKING:
@@ -39,26 +39,12 @@ def episode_export(
 
 
 @pytest.fixture
-def policy_mask(episode: Episode, device: torch.device) -> Tensor:
-    return PolicyObjective.build_attention_mask(
-        episode.index,
-        episode.timestep,
-        legend=TorchAttentionMaskLegend,  # ty:ignore[invalid-argument-type]
-    ).mask.to(device)
-
-
-@pytest.fixture
 def policy_objective(
-    encoder: Module,
-    policy_mask: Tensor,
-    device: torch.device,
-    request: pytest.FixtureRequest,
+    device: torch.device, request: pytest.FixtureRequest
 ) -> PolicyObjective:
     embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
 
     return PolicyObjective(
-        encoder=encoder,
-        mask=policy_mask,
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
@@ -86,8 +72,27 @@ def policy_objective(
                     )
                 },
             }
-        ),
+        )
     ).to(device)
+
+
+@pytest.fixture
+def encoder_eval(encoder: Module) -> Module:
+    return encoder.eval()
+
+
+@pytest.fixture
+def policy_embedding(encoder_eval: Module, episode: Episode) -> Tensor:
+    return encoder_eval(src=episode.embeddings_packed, mask=episode.attention_mask)
+
+
+@pytest.fixture
+def policy_embedding_export(
+    encoder_eval: Module, episode_export: EpisodeExport
+) -> Tensor:
+    return encoder_eval(
+        src=episode_export.embeddings_packed, mask=episode_export.attention_mask
+    )
 
 
 @pytest.fixture
@@ -97,10 +102,13 @@ def objectives(policy_objective: Module, device: torch.device) -> ModuleDict:
 
 @pytest.fixture
 def control_transformer(
-    episode_builder: Module, objectives: ModuleDict, device: torch.device
+    episode_builder: Module,
+    objectives: ModuleDict,
+    encoder: Module,
+    device: torch.device,
 ) -> ControlTransformer:
     return ControlTransformer(
-        episode_builder=episode_builder, objectives=objectives
+        episode_builder=episode_builder, encoder=encoder, objectives=objectives
     ).to(device)
 
 
@@ -137,7 +145,11 @@ def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
     ("module", "args", "args_export"),
     [
         (lf("episode_builder"), (lf("batch_dict"),), (lf("batch_dict"),)),
-        (lf("policy_objective"), (lf("episode"),), (lf("episode_export"),)),
+        (
+            lf("policy_objective"),
+            (lf("episode"), lf("policy_embedding")),
+            (lf("episode_export"), lf("policy_embedding_export")),
+        ),
         (lf("control_transformer"), (lf("batch_dict"),), (lf("batch_dict"),)),
     ],
     ids=["episode_builder", "policy_objective", "control_transformer"],
@@ -180,7 +192,7 @@ def test_torch_export_fake(
     ("module", "args"),
     [
         (lf("episode_builder"), (lf("batch_dict"),)),
-        (lf("policy_objective"), (lf("episode_export"),)),
+        (lf("policy_objective"), (lf("episode_export"), lf("policy_embedding_export"))),
         (lf("control_transformer"), (lf("batch_dict"),)),
     ],
     ids=["episode_builder", "policy_objective", "control_transformer"],

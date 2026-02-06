@@ -21,9 +21,6 @@ model:
       path: ["objectives", "forward_dynamics"]
     - _target_: funcy.del_in
       _partial_: true
-      path: ["objectives", "random_masked_hindsight_control"]
-    - _target_: funcy.del_in
-      _partial_: true
       path: ["objectives", "memory_extraction"]
     - _target_: funcy.del_in
       _partial_: true
