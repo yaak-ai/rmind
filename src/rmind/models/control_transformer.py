@@ -201,7 +201,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     weights_only=weights_only,
                     strict=strict,
                     **kwargs,
-                )  # ty:ignore[invalid-return-type]
+                )
 
             case _:
                 with pl_legacy_patch():
@@ -351,6 +351,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 exclude={"scheduler"}
             )
 
-            return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}  # ty:ignore[invalid-return-type]
+            return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
-        return {"optimizer": optimizer}  # ty:ignore[invalid-return-type]
+        return {"optimizer": optimizer}
