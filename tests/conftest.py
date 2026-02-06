@@ -44,7 +44,6 @@ from rmind.components.objectives import (
     InverseDynamicsPredictionObjective,
     MemoryExtractionObjective,
     PolicyObjective,
-    RandomMaskedHindsightControlObjective,
 )
 from rmind.components.position_encoding import PatchPositionEmbedding2D
 from rmind.components.timm_backbone import TimmBackbone
@@ -359,7 +358,7 @@ def episode(episode_builder: EpisodeBuilder, batch_dict: TensorTree) -> Episode:
 
 
 @pytest.fixture(scope="module")
-def encoder(embedding_dims: EmbeddingDims) -> Module:
+def encoder(embedding_dims: EmbeddingDims, device: torch.device) -> Module:
     return TransformerEncoder(
         dim_model=embedding_dims.encoder,
         num_heads=2,
@@ -368,20 +367,16 @@ def encoder(embedding_dims: EmbeddingDims) -> Module:
         resid_dropout=0.1,
         mlp_dropout=0.1,
         hidden_layer_multiplier=1,
-    )
+    ).to(device)
 
 
 @pytest.fixture(scope="module")
 def inverse_dynamics_prediction_objective(
-    encoder: Module,
-    device: torch.device,
-    embedding_dims: EmbeddingDims,
-    num_bins: NumBins,
+    device: torch.device, embedding_dims: EmbeddingDims, num_bins: NumBins
 ) -> InverseDynamicsPredictionObjective:
     logit_bias = torch.tensor(0)
 
     return InverseDynamicsPredictionObjective(
-        encoder=encoder,
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
@@ -427,15 +422,11 @@ def inverse_dynamics_prediction_objective(
 
 @pytest.fixture(scope="module")
 def forward_dynamics_prediction_objective(
-    encoder: Module,
-    device: torch.device,
-    embedding_dims: EmbeddingDims,
-    num_bins: NumBins,
+    device: torch.device, embedding_dims: EmbeddingDims, num_bins: NumBins
 ) -> ForwardDynamicsPredictionObjective:
     logit_bias = torch.tensor(0)
 
     return ForwardDynamicsPredictionObjective(
-        encoder=encoder,
         patch_pos_embed=PatchPositionEmbedding2D(
             grid_size=(16, 16), embedding_dim=embedding_dims.image
         ),
@@ -498,70 +489,12 @@ def forward_dynamics_prediction_objective(
 
 
 @pytest.fixture(scope="module")
-def random_masked_hindsight_control_objective(
-    encoder: Module,
-    device: torch.device,
-    embedding_dims: EmbeddingDims,
-    num_bins: NumBins,
-) -> RandomMaskedHindsightControlObjective:
-    logit_bias = torch.tensor(0)
-
-    return RandomMaskedHindsightControlObjective(
-        encoder=encoder,
-        heads=ModuleDict(
-            modules={
-                Modality.CONTINUOUS: {
-                    "gas_pedal": Linear(
-                        embedding_dims.encoder, num_bins.gas_pedal, bias=False
-                    ),
-                    "brake_pedal": Linear(
-                        embedding_dims.encoder, num_bins.brake_pedal, bias=False
-                    ),
-                    "steering_angle": Linear(
-                        embedding_dims.encoder, num_bins.steering_angle, bias=False
-                    ),
-                },
-                Modality.DISCRETE: {
-                    "turn_signal": Linear(embedding_dims.encoder, 3, bias=False)
-                },
-            }
-        ),
-        losses=ModuleDict(
-            modules={
-                Modality.CONTINUOUS: {
-                    "gas_pedal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias),
-                    "brake_pedal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias),
-                    "steering_angle": LogitBiasCrossEntropyLoss(logit_bias=logit_bias),
-                },
-                Modality.DISCRETE: {
-                    "turn_signal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
-                },
-            }
-        ),
-        targets={
-            (modality := Modality.CONTINUOUS): {
-                "gas_pedal": ("input_tokens", modality, "gas_pedal"),
-                "brake_pedal": ("input_tokens", modality, "brake_pedal"),
-                "steering_angle": ("input_tokens", modality, "steering_angle"),
-            },
-            (modality := Modality.DISCRETE): {
-                "turn_signal": ("input_tokens", modality, "turn_signal")
-            },
-        },
-    ).to(device)
-
-
-@pytest.fixture(scope="module")
 def memory_extraction_objective(
-    encoder: Module,
-    device: torch.device,
-    embedding_dims: EmbeddingDims,
-    num_bins: NumBins,
+    device: torch.device, embedding_dims: EmbeddingDims, num_bins: NumBins
 ) -> MemoryExtractionObjective:
     logit_bias = torch.tensor(0)
 
     return MemoryExtractionObjective(
-        encoder=encoder,
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
@@ -606,12 +539,11 @@ def memory_extraction_objective(
 
 @pytest.fixture(scope="module")
 def policy_objective(
-    encoder: Module, device: torch.device, embedding_dims: EmbeddingDims
+    device: torch.device, embedding_dims: EmbeddingDims
 ) -> PolicyObjective:
     logit_bias = torch.tensor(0)
 
     return PolicyObjective(
-        encoder=encoder,
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {

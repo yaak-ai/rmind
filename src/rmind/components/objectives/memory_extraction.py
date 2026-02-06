@@ -1,30 +1,20 @@
-from collections.abc import Callable
 from collections.abc import Set as AbstractSet
-from functools import lru_cache
 from typing import final, override
 
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
-from torch.nn import Module
+from torch import Tensor
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import Episode, Index, Modality, SummaryToken, Timestep
-from rmind.components.mask import (
-    AttentionMask,
-    AttentionMaskLegend,
-    TorchAttentionMaskLegend,
-)
+from rmind.components.episode import Episode, Modality, SummaryToken
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
     Prediction,
     PredictionKey,
     Targets,
-)
-from rmind.components.objectives.forward_dynamics import (
-    ForwardDynamicsPredictionObjective,
 )
 
 
@@ -36,32 +26,18 @@ class MemoryExtractionObjective(Objective):
     def __init__(
         self,
         *,
-        encoder: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
-        self.encoder: Module | None = encoder
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
-        self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
-            maxsize=2, typed=True
-        )(self.build_attention_mask)
-
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
-        mask = self._build_attention_mask(
-            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-        )
-
-        embedding = self.encoder(
-            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-        )  # ty:ignore[call-non-callable]
-
+    def compute_metrics(self, episode: Episode, *, embedding: Tensor) -> Metrics:
         features = (
             episode
             .index[1:]
@@ -93,7 +69,10 @@ class MemoryExtractionObjective(Objective):
         *,
         keys: AbstractSet[PredictionKey],
         tokenizers: ModuleDict | None = None,
+        embedding: Tensor,
+        attention_rollout: Tensor | None = None,
     ) -> TensorDict:
+        del attention_rollout
         predictions: dict[PredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
@@ -112,14 +91,6 @@ class MemoryExtractionObjective(Objective):
             PredictionKey.PREDICTION_PROBS,
             PredictionKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self._build_attention_mask(
-                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-            )
-
-            embedding = self.encoder(
-                src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # ty:ignore[call-non-callable]
-
             features = (
                 episode
                 .index[1:]
@@ -151,11 +122,3 @@ class MemoryExtractionObjective(Objective):
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
-
-    @classmethod
-    def build_attention_mask(
-        cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
-    ) -> AttentionMask:
-        return ForwardDynamicsPredictionObjective.build_attention_mask(
-            index, timestep, legend=legend
-        ).clone(recurse=True)

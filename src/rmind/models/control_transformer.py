@@ -1,5 +1,4 @@
 from collections.abc import Callable, Mapping, Sequence
-from itertools import product
 from typing import Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
@@ -20,14 +19,19 @@ from pytorch_lightning.utilities.model_helpers import (
 from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from structlog import get_logger
 from tensordict import TensorDict
+from torch import Tensor
 from torch.nn import Module
-from torch.nn.modules.module import _IncompatibleKeys
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
+from rmind.components.attention_mask import build_attention_mask_for_episode
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.mask import WandbAttentionMaskLegend
+from rmind.components.mask import (
+    AttentionMask,
+    TorchAttentionMaskLegend,
+    WandbAttentionMaskLegend,
+)
 from rmind.components.objectives.base import PredictionKey
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
@@ -44,7 +48,7 @@ class LRSchedulerHydraConfig(BaseModel):
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     episode_builder: Module
-    encoder: Module | None
+    encoder: Module
     objectives: ModuleDict
     optimizer: HydraConfig[Optimizer] | None = None
     lr_scheduler: LRSchedulerHydraConfig | None = None
@@ -54,7 +58,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self,
         *,
         episode_builder: HydraConfig[Module] | InstanceOf[Module],
-        encoder: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        encoder: HydraConfig[Module] | InstanceOf[Module],
         objectives: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
@@ -73,17 +77,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             hparams["encoder"] = encoder.model_dump()
             encoder = encoder.instantiate()
 
-        self.encoder: HydraConfig[Module] | InstanceOf[Module] | None = encoder
+        self.encoder = encoder
 
         if isinstance(objectives, HydraConfig):
             hparams["objectives"] = objectives.model_dump()
             objectives = objectives.instantiate()
 
         self.objectives = objectives
-        if self.encoder is not None:
-            for objective in self.objectives.values():
-                if hasattr(objective, "encoder") and objective.encoder is None:
-                    objective.encoder = self.encoder
 
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
@@ -96,83 +96,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
 
         self.save_hyperparameters(hparams)
-
-    @override
-    def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        shared_encoder_objectives = {
-            k
-            for k, v in self.objectives.items()
-            if getattr(v, "encoder", None) is self.encoder
-        }
-
-        shared_encoder_objective_keys = set()
-        state_dict = super().state_dict(*args, **kwargs)
-
-        for k in state_dict:
-            match k.split(".", maxsplit=3):
-                case ["objectives", objective, "encoder", *_] if (
-                    objective in shared_encoder_objectives
-                ):
-                    shared_encoder_objective_keys.add(k)
-
-                case _:
-                    pass
-
-        return {
-            k: v
-            for k, v in state_dict.items()
-            if k not in shared_encoder_objective_keys
-        }
-
-    @override
-    def load_state_dict(
-        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
-    ) -> _IncompatibleKeys:
-        incompatible_keys = super().load_state_dict(
-            state_dict, strict=False, assign=assign
-        )
-        if incompatible_keys.missing_keys:
-            encoder_keys = [k for k in state_dict if k.startswith("encoder.")]
-            shared_encoder_objectives = {
-                k
-                for k, v in self.objectives.items()
-                if getattr(v, "encoder", None) is self.encoder
-            }
-            shared_encoder_objective_keys = map(
-                ".".join,
-                product(("objectives",), shared_encoder_objectives, encoder_keys),
-            )
-            missing_keys = set(incompatible_keys.missing_keys) - set(
-                shared_encoder_objective_keys
-            )
-            incompatible_keys = incompatible_keys._replace(
-                missing_keys=list(missing_keys)
-            )
-
-        # mimic `super().load_state_dict` `strict` handling
-        error_msgs: list[str] = []
-        if strict:
-            if unexpected_keys := incompatible_keys.unexpected_keys:
-                error_msgs.append(
-                    "Unexpected key(s) in state_dict: {}. ".format(
-                        ", ".join(f'"{k}"' for k in unexpected_keys)
-                    )
-                )
-
-            if missing_keys := incompatible_keys.missing_keys:
-                error_msgs.append(
-                    "Missing key(s) in state_dict: {}. ".format(
-                        ", ".join(f'"{k}"' for k in missing_keys)
-                    )
-                )
-
-        if error_msgs:
-            msg = "Error(s) in loading state_dict for {}:\n\t{}".format(
-                self.__class__.__name__, "\n\t".join(error_msgs)
-            )
-            raise RuntimeError(msg)
-
-        return incompatible_keys
 
     @override
     @_restricted_classmethod
@@ -247,9 +170,16 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
+        mask = build_attention_mask_for_episode(
+            episode, legend=TorchAttentionMaskLegend
+        )
+        embedding = self.encoder(
+            src=episode.embeddings_packed,
+            mask=mask.mask.to(device=episode.embeddings_packed.device),
+        )
 
         metrics = TensorDict({
-            name: objective.compute_metrics(episode)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode, embedding=embedding)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -263,12 +193,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             from wandb import Image  # noqa: PLC0415
 
-            for name, objective in self.objectives.items():
-                mask = objective.build_attention_mask(
-                    episode.index, episode.timestep, legend=WandbAttentionMaskLegend
-                )  # ty:ignore[call-non-callable]
-                img = Image(mask.mask.unsqueeze(0))
-                self.logger.log_image(f"masks/{name}", [img], step=step)
+            shared_mask = build_attention_mask_for_episode(
+                episode, legend=WandbAttentionMaskLegend
+            )
+            img = Image(shared_mask.mask.unsqueeze(0))
+            self.logger.log_image("masks/shared", [img], step=step)
 
         self.log_dict(
             {
@@ -292,8 +221,15 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
+        mask = build_attention_mask_for_episode(
+            episode, legend=TorchAttentionMaskLegend
+        )
+        embedding = self.encoder(
+            src=episode.embeddings_packed,
+            mask=mask.mask.to(device=episode.embeddings_packed.device),
+        )
         metrics = TensorDict({
-            name: objective.compute_metrics(episode)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode, embedding=embedding)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -322,12 +258,43 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
         episode = self.episode_builder(batch)
+        mask = build_attention_mask_for_episode(
+            episode, legend=TorchAttentionMaskLegend
+        )
+        embedding = self.encoder(
+            src=episode.embeddings_packed,
+            mask=mask.mask.to(device=episode.embeddings_packed.device),
+        )
+        attention_rollout: Tensor | None = None
+        keys = set(PredictionKey)
+        if PredictionKey.ATTENTION_ROLLOUT in keys and any(
+            getattr(obj, "NEEDS_ATTENTION_ROLLOUT", False)
+            for obj in self.objectives.values()
+        ):
+            if not hasattr(self.encoder, "compute_attention_rollout"):
+                msg = "encoder does not support attention rollout"
+                raise ValueError(msg)
+            mask_tensor = mask.mask.to(device=episode.embeddings_packed.device)
+            attention_rollout = self.encoder.compute_attention_rollout(  # ty:ignore[call-non-callable]
+                src=episode.embeddings_packed,
+                mask=AttentionMask(
+                    mask=mask_tensor, legend=mask.legend, device=mask_tensor.device
+                ),
+                head_fusion="max",
+                discard_ratio=0.9,
+            )
 
         return TensorDict({
             name: objective.predict(
                 episode=episode,
-                keys=set(PredictionKey),
+                keys=keys,
                 tokenizers=self.episode_builder.tokenizers,
+                embedding=embedding,
+                attention_rollout=(
+                    attention_rollout
+                    if getattr(objective, "NEEDS_ATTENTION_ROLLOUT", False)
+                    else None
+                ),
             )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         }).auto_batch_size_(1)
@@ -335,9 +302,17 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
         episode = self.episode_builder(batch)
+        mask = build_attention_mask_for_episode(
+            episode, legend=TorchAttentionMaskLegend
+        )
+        embedding = self.encoder(
+            src=episode.embeddings_packed,
+            mask=mask.mask.to(device=episode.embeddings_packed.device),
+        )
 
         outputs = {
-            name: objective(episode) for name, objective in self.objectives.items()
+            name: objective(episode, embedding=embedding)
+            for name, objective in self.objectives.items()
         }
 
         return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs  # ty:ignore[possibly-missing-attribute]

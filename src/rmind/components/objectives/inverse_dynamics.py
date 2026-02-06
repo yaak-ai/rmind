@@ -1,6 +1,5 @@
-from collections.abc import Callable
 from collections.abc import Set as AbstractSet
-from functools import lru_cache, partial
+from functools import partial
 from math import sqrt
 from typing import final, override
 
@@ -11,23 +10,10 @@ from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Module
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import (
-    Episode,
-    Index,
-    Modality,
-    SummaryToken,
-    Timestep,
-    TokenType,
-)
-from rmind.components.mask import (
-    AttentionMask,
-    AttentionMaskLegend,
-    TorchAttentionMaskLegend,
-)
+from rmind.components.episode import Episode, Modality, SummaryToken, TokenType
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
@@ -35,43 +21,28 @@ from rmind.components.objectives.base import (
     PredictionKey,
     Targets,
 )
-from rmind.components.objectives.forward_dynamics import (
-    ForwardDynamicsPredictionObjective,
-)
 
 
 @final
 class InverseDynamicsPredictionObjective(Objective):
+    NEEDS_ATTENTION_ROLLOUT = True
+
     @validate_call
     def __init__(
         self,
         *,
-        encoder: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
-        self.encoder: Module | None = encoder
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
-        self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
-            maxsize=2, typed=True
-        )(self.build_attention_mask)
-
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
-        mask = self._build_attention_mask(
-            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-        )
-
-        embedding = self.encoder(
-            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-        )  # ty:ignore[call-non-callable]
-
+    def compute_metrics(self, episode: Episode, *, embedding: Tensor) -> Metrics:
         observation_summaries = (
             episode.index
             .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
@@ -107,6 +78,8 @@ class InverseDynamicsPredictionObjective(Objective):
         *,
         keys: AbstractSet[PredictionKey],
         tokenizers: ModuleDict | None = None,
+        embedding: Tensor,
+        attention_rollout: Tensor | None = None,
     ) -> TensorDict:
         predictions: dict[PredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
@@ -125,13 +98,6 @@ class InverseDynamicsPredictionObjective(Objective):
             PredictionKey.SUMMARY_EMBEDDINGS,
             PredictionKey.ATTENTION_ROLLOUT,
         }:
-            mask = self._build_attention_mask(
-                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-            ).to(episode.device)
-
-            embeddings_packed = episode.embeddings_packed
-            embedding = self.encoder(src=embeddings_packed, mask=mask.mask)  # ty:ignore[call-non-callable]
-
             observation_summaries = (
                 episode.index
                 .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
@@ -204,12 +170,9 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
 
             if (key := PredictionKey.ATTENTION_ROLLOUT) in keys:
-                attention_rollout = self.encoder.compute_attention_rollout(  # ty:ignore[possibly-missing-attribute, call-non-callable]
-                    src=embeddings_packed,
-                    mask=mask,
-                    head_fusion="max",
-                    discard_ratio=0.9,
-                )
+                if attention_rollout is None:
+                    msg = "attention_rollout is required when requesting ATTENTION_ROLLOUT"
+                    raise ValueError(msg)
 
                 observation_keys = episode.timestep.get(TokenType.OBSERVATION).keys(
                     include_nested=True, leaves_only=True
@@ -244,14 +207,6 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
-
-    @classmethod
-    def build_attention_mask(
-        cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
-    ) -> AttentionMask:
-        return ForwardDynamicsPredictionObjective.build_attention_mask(
-            index, timestep, legend=legend
-        ).clone(recurse=True)
 
 
 def _expand_attn(path: tuple[str, ...], attn: Tensor, *, input: TensorDict) -> Tensor:

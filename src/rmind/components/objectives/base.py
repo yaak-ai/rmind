@@ -5,6 +5,7 @@ from enum import StrEnum, auto, unique
 from typing import Any, Never, NotRequired, TypedDict
 
 from tensordict import MetaData, TensorClass, TensorDict
+from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import Context, register_pytree_node  # noqa: PLC2701
 
@@ -57,7 +58,7 @@ class Objective(Module, ABC):
         return getattr(self, name)
 
     @abstractmethod
-    def compute_metrics(self, episode: Episode) -> Metrics: ...
+    def compute_metrics(self, episode: Episode, *, embedding: Tensor) -> Metrics: ...
 
     @abstractmethod
     def predict(
@@ -66,4 +67,6 @@ class Objective(Module, ABC):
         *,
         keys: AbstractSet[PredictionKey],
         tokenizers: ModuleDict | None = None,
+        embedding: Tensor,
+        attention_rollout: Tensor | None = None,
     ) -> TensorDict: ...
