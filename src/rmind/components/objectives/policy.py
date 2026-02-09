@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 from functools import lru_cache
-from typing import Any, final, overload, override
+from typing import Any, final, overload
+
+from typing_extensions import override
 
 import torch
 from einops import rearrange

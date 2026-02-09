@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import shutil
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Literal, final, override
+from typing import Any, Literal, final
+
+from typing_extensions import override
 
 import polars as plr  # noqa: ICN001
 import pytorch_lightning as pl

@@ -1,4 +1,6 @@
-from typing import override
+from __future__ import annotations
+
+from typing_extensions import override
 
 import torch
 from einops import einsum, rearrange

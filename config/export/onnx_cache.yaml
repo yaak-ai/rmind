@@ -1,0 +1,24 @@
+# @package _global_
+
+---
+defaults:
+  - /model: yaak/control_transformer/raw_export
+  - /input: yaak/control_transformer/dummy
+  - _self_
+
+embedding_dim: 384
+num_heads: 4
+num_layers: 8
+speed_bins: 512
+gas_pedal_bins: 255
+brake_pedal_bins: 165
+steering_angle_bins: 961
+
+# Artifact to load weights from (optional, omit for random weights)
+artifact: null
+
+args:
+  - ${input}
+
+f: ${hydra:run.dir}/ControlTransformer_cache.onnx
+artifacts_dir: ${hydra:run.dir}

@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 from collections.abc import Callable, Mapping
-from typing import Any, overload, override
+from typing import Any, TypeAlias, overload
+
+from typing_extensions import override
 
 from more_itertools import always_iterable
-from pydantic import InstanceOf, validate_call
+from pydantic import InstanceOf
 from torch.nn import Module
 from torch.nn import ModuleDict as _ModuleDict
 from torch.utils._pytree import (
@@ -17,7 +21,7 @@ from torch.utils._pytree import (
     tree_map,  # noqa: PLC2701
 )
 
-type Modules = Mapping[str, InstanceOf[Module] | Modules | None]
+Modules: TypeAlias = "Mapping[str, InstanceOf[Module] | Modules | None]"
 
 
 class ModuleDict(_ModuleDict):
@@ -25,7 +29,6 @@ class ModuleDict(_ModuleDict):
 
     __unspecified = object()
 
-    @validate_call
     def __init__(self, modules: Modules) -> None:
         modules_ = {
             k: type(self)(v) if isinstance(v, Mapping) else v  # ty:ignore[invalid-argument-type]

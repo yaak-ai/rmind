@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import inspect
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from enum import StrEnum, auto
+from enum import Enum, auto
 from random import randint
 from typing import Annotated, Any, final
 
@@ -27,6 +29,12 @@ from wandb import Image
 from rmind.utils.pytree import key_get_default
 
 logger = get_logger(__name__)
+
+
+class StrEnum(str, Enum):
+    @staticmethod
+    def _generate_next_value_(name: str, start: int, count: int, last_values: list) -> str:
+        return name.lower()
 
 
 def _validate_hook(value: str) -> str:

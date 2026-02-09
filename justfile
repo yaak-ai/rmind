@@ -64,6 +64,23 @@ export-onnx *ARGS: generate-config
         --config-name export/onnx.yaml \
         {{ ARGS }}
 
+export-onnx-cache *ARGS: generate-config
+    uv run --group export rmind-export-onnx-cache \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name export/onnx_cache.yaml \
+        {{ ARGS }}
+
+# export ONNX model for incremental inference (1 timestep batch, dynamic cache)
+export-onnx-incremental *ARGS: generate-config
+    uv run --group export rmind-export-onnx-cache \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name export/onnx_cache_incremental.yaml \
+        {{ ARGS }}
+
+# benchmark inference speed (PyTorch vs ONNX, with/without cache)
+benchmark-inference *ARGS:
+    uv run python -m rmind.scripts.benchmark_inference {{ ARGS }}
+
 onnxvis *ARGS:
     uvx --with=ai-edge-model-explorer --from=model-explorer-onnx onnxvis {{ ARGS }}
 

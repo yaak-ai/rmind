@@ -1,8 +1,15 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
-from enum import StrEnum, auto, unique
-from typing import Any, Never, NotRequired, TypedDict
+from enum import Enum, auto, unique
+from typing import TYPE_CHECKING, Any, TypeAlias, TypedDict
+
+if TYPE_CHECKING:
+    from typing import Never, NotRequired
+else:
+    from typing_extensions import Never, NotRequired
 
 from tensordict import MetaData, TensorClass, TensorDict
 from torch.nn import Module
@@ -12,7 +19,13 @@ from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, Modality
 
-type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
+Targets: TypeAlias = Mapping[Modality, Mapping[str, tuple[str, ...]]]
+
+
+class StrEnum(str, Enum):
+    @staticmethod
+    def _generate_next_value_(name: str, start: int, count: int, last_values: list) -> str:
+        return name.lower()
 
 
 @unique

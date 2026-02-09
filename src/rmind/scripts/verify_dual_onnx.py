@@ -1,0 +1,520 @@
+"""Verify dual ONNX model setup matches native PyTorch predictions.
+
+This script:
+1. Loads both full forward and incremental ONNX models
+2. Creates test data with 7 timesteps
+3. Runs full forward model with first 6 timesteps → get cache
+4. Runs incremental model with 7th timestep using cache
+5. Runs native PyTorch CacheEnabledControlTransformer with same setup
+6. Compares predictions
+
+Usage:
+    python -m rmind.scripts.verify_dual_onnx \
+        full_model=<path_to_full_onnx> \
+        incremental_model=<path_to_incremental_onnx> \
+        model=<model_config>
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Annotated, Any, ClassVar, Iterator
+
+import hydra
+import numpy as np
+import onnxruntime as ort
+import torch
+from hydra.utils import instantiate
+from omegaconf import DictConfig, OmegaConf
+from pydantic import BaseModel, ConfigDict
+from structlog import get_logger
+from torch import Tensor
+
+logger = get_logger(__name__)
+
+# ImageNet normalization constants (used by DINOv2/DINOv3 models)
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32)
+
+
+def normalize_images(batch: dict[str, Any]) -> dict[str, Any]:
+    """Apply ImageNet normalization to images in batch.
+
+    Normalizes images using ImageNet mean and std:
+        normalized = (image - mean) / std
+
+    Args:
+        batch: Batch dict containing 'data/cam_front_left' with shape [B, T, C, H, W]
+
+    Returns:
+        Batch with normalized images
+    """
+    result = {}
+    for key, value in batch.items():
+        if isinstance(value, dict):
+            result[key] = normalize_images(value)
+        elif isinstance(value, Tensor) and key == "cam_front_left":
+            # Image tensor: [B, T, C, H, W]
+            # Normalize along channel dimension
+            mean = IMAGENET_MEAN.view(1, 1, 3, 1, 1)
+            std = IMAGENET_STD.view(1, 1, 3, 1, 1)
+            result[key] = (value - mean) / std
+            logger.info(
+                "applied ImageNet normalization",
+                key=key,
+                shape=value.shape,
+                input_range=(float(value.min()), float(value.max())),
+                output_range=(float(result[key].min()), float(result[key].max())),
+            )
+        else:
+            result[key] = value
+    return result
+
+
+def _get_tensor_leaves(tree: Any) -> Iterator[Tensor]:
+    """Recursively yield all tensor leaves from a nested dict/TensorDict structure."""
+    if isinstance(tree, Tensor):
+        yield tree
+    elif isinstance(tree, dict):
+        for v in tree.values():
+            yield from _get_tensor_leaves(v)
+    elif hasattr(tree, "values"):  # TensorDict-like
+        for v in tree.values():
+            yield from _get_tensor_leaves(v)
+
+
+def flatten_batch_to_onnx(batch: dict[str, Any], prefix: str = "batch") -> dict[str, np.ndarray]:
+    """Flatten a nested batch dict to ONNX input format."""
+    result = {}
+
+    def _recurse(obj: Any, current_prefix: str) -> None:
+        if isinstance(obj, Tensor):
+            name = current_prefix.lower().replace("/", "_")
+            result[name] = obj.numpy()
+        elif isinstance(obj, dict):
+            for key, value in obj.items():
+                new_prefix = f"{current_prefix}_{key}"
+                _recurse(value, new_prefix)
+
+    _recurse(batch, prefix)
+    return result
+
+
+def slice_batch(batch: dict[str, Any], timestep_slice: slice) -> dict[str, Any]:
+    """Slice batch tensors along the timestep dimension (dim 1)."""
+    result = {}
+    for key, value in batch.items():
+        if isinstance(value, Tensor):
+            # Slice along dim 1 (timestep dimension)
+            result[key] = value[:, timestep_slice]
+        elif isinstance(value, dict):
+            result[key] = slice_batch(value, timestep_slice)
+        else:
+            result[key] = value
+    return result
+
+
+class Config(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
+
+    model: dict[str, Any]  # Raw Hydra config dict (supports method _target_ like load_from_wandb_artifact)
+    full_model: Path
+    incremental_model: Path
+    artifact: str | None = None  # W&B artifact to load weights from
+
+
+@hydra.main(version_base=None)
+@torch.inference_mode()
+def main(cfg: DictConfig) -> None:
+    config = Config(**OmegaConf.to_container(cfg, resolve=True))
+
+    # Set seed for reproducible batch data
+    torch.manual_seed(42)
+
+    logger.info("loading PyTorch model")
+    base_model = instantiate(config.model).eval()
+
+    # Load weights from artifact if provided
+    if config.artifact:
+        from rmind.scripts.export_onnx_cache import _load_weights_from_artifact
+        _load_weights_from_artifact(base_model, config.artifact)
+
+    # Import here to avoid circular imports
+    from rmind.scripts.export_onnx_cache import CacheEnabledControlTransformer
+    from rmind.scripts.build_onnx_mask import build_policy_mask
+
+    # Pre-build masks for verification
+    # We'll create the model with full_mask and switch to incr_mask for incremental tests
+    num_full_timesteps = 6
+    tokens_per_timestep = 274  # Default for this model config
+
+    full_mask_np = build_policy_mask(num_timesteps=num_full_timesteps)
+    full_mask = torch.from_numpy(full_mask_np)
+    incr_mask = full_mask[-tokens_per_timestep:, :]
+    logger.info("built masks", full_mask_shape=tuple(full_mask.shape), incr_mask_shape=tuple(incr_mask.shape))
+
+    # Create test data with 6 timesteps
+    # The incremental ONNX model expects 5 cached timesteps + 1 new timestep
+    # So we compare: PyTorch with 6 timesteps vs ONNX dual (5 + 1)
+    batch_6 = {
+        "data": {
+            "cam_front_left": torch.testing.make_tensor(
+                (1, 6, 3, 256, 256), dtype=torch.float, device="cpu", low=0, high=1
+            ),
+            "meta/VehicleMotion/brake_pedal_normalized": torch.testing.make_tensor(
+                (1, 6, 1), dtype=torch.float32, device="cpu", low=0, high=1
+            ),
+            "meta/VehicleMotion/gas_pedal_normalized": torch.testing.make_tensor(
+                (1, 6, 1), dtype=torch.float32, device="cpu", low=0, high=1
+            ),
+            "meta/VehicleMotion/steering_angle_normalized": torch.testing.make_tensor(
+                (1, 6, 1), dtype=torch.float32, device="cpu", low=-1, high=1
+            ),
+            "meta/VehicleMotion/speed": torch.testing.make_tensor(
+                (1, 6, 1), dtype=torch.float32, device="cpu", low=0, high=130
+            ),
+            "meta/VehicleState/turn_signal": torch.testing.make_tensor(
+                (1, 6, 1), dtype=torch.int, device="cpu", low=0, high=3
+            ),
+            "waypoints/xy_normalized": torch.testing.make_tensor(
+                (1, 6, 10, 2), dtype=torch.float32, device="cpu", low=0, high=20
+            ),
+        }
+    }
+
+    # Apply ImageNet normalization to images
+    # This matches the preprocessing expected by DINOv2/DINOv3 backbone
+    batch_6 = normalize_images(batch_6)
+
+    # Split into 5-timestep batch and 1-timestep batch
+    # (incremental ONNX model expects 5 cached timesteps)
+    batch_5 = slice_batch(batch_6, slice(0, 5))
+    batch_1 = slice_batch(batch_6, slice(5, 6))
+
+    logger.info("created test batches", batch_6_shape="6 timesteps", batch_5_shape="5 timesteps", batch_1_shape="1 timestep")
+
+    # Build episode to get tokens per timestep
+    # (Episode type has .index with .max() method, EpisodeExport doesn't)
+    logger.info("building 6-timestep episode for shape inference")
+    episode_6 = base_model.episode_builder(batch_6)
+    proj_embeddings_6 = episode_6.projected_embeddings_packed
+    batch_size, seq_len_6, _ = proj_embeddings_6.shape
+    logger.info("6-timestep sequence", seq_len=seq_len_6)
+
+    # Get tokens per timestep
+    proj_emb_struct = episode_6.projected_embeddings
+    first_leaf = next(
+        leaf for leaf in _get_tensor_leaves(proj_emb_struct)
+        if leaf is not None and leaf.dim() >= 2
+    )
+    tokens_per_timestep = seq_len_6 // 6
+    logger.info("tokens per timestep", tokens_per_timestep=tokens_per_timestep)
+
+    # Verify tokens_per_timestep matches our precomputed value
+    computed_tokens_per_ts = seq_len_6 // 6
+    if computed_tokens_per_ts != tokens_per_timestep:
+        logger.warning(
+            "tokens_per_timestep mismatch - recomputing masks",
+            precomputed=tokens_per_timestep,
+            computed=computed_tokens_per_ts,
+        )
+        tokens_per_timestep = computed_tokens_per_ts
+        incr_mask = full_mask[-tokens_per_timestep:, :]
+    logger.info("verified tokens per timestep", tokens_per_timestep=tokens_per_timestep)
+
+    # Compute position_embeddings for 6 timesteps (constant, reusable)
+    # Build episode with timestep_offset=0 for consistent position embeddings
+    episode_6_for_pe = base_model.episode_builder(batch_6, timestep_offset=0)
+    position_embeddings_packed = episode_6_for_pe.embeddings_packed - episode_6_for_pe.projected_embeddings_packed
+    logger.info("computed position_embeddings_packed", shape=tuple(position_embeddings_packed.shape))
+
+    # Create cache-enabled wrapper with full_mask and position_embeddings
+    cache_model = CacheEnabledControlTransformer(
+        base_model,
+        mask=full_mask,
+        position_embeddings_packed=position_embeddings_packed,
+    ).eval()
+    num_layers = cache_model.num_layers
+    embed_dim = cache_model.embedding_dim
+    logger.info("model config", num_layers=num_layers, embedding_dim=embed_dim)
+
+    # Patch _is_exporting() to return True for consistent behavior
+    import rmind.components.episode as episode_module
+    original_is_exporting = episode_module._is_exporting
+    episode_module._is_exporting = lambda: True
+
+    try:
+        # === Step 0: Run NATIVE PyTorch model (without cache wrapper) ===
+        logger.info("running native PyTorch model (no cache wrapper)")
+
+        # The native model runs its own encoder internally via PolicyObjective
+        # We need to temporarily restore _is_exporting to False so it builds Episode (not EpisodeExport)
+        episode_module._is_exporting = original_is_exporting
+
+        native_outputs = base_model(batch_6)
+
+        # Extract predictions from native model output
+        # Native output is TensorDict with structure: {"policy": TensorDict with predictions}
+        native_policy = native_outputs["policy"]
+        native_preds = [
+            native_policy["continuous", "brake_pedal"].squeeze(),
+            native_policy["continuous", "gas_pedal"].squeeze(),
+            native_policy["continuous", "steering_angle"].squeeze(),
+            native_policy["discrete", "turn_signal"].squeeze(),
+        ]
+        logger.info("native PyTorch predictions computed")
+
+        # Restore patched _is_exporting for cache model comparisons
+        episode_module._is_exporting = lambda: True
+
+        # === Step 1: Run cache-enabled PyTorch with full 6 timesteps ===
+        logger.info("running cache-enabled PyTorch with 6 timesteps")
+
+        # Set baked-in full mask on objectives
+        for obj in cache_model.objectives.values():
+            if hasattr(obj, '_mask'):
+                obj._mask = full_mask
+
+        # Empty cache for full forward (model uses full_mask from construction)
+        cached_proj_emb_empty = torch.zeros(batch_size, 0, embed_dim)
+        cached_kv_empty = torch.zeros(num_layers, 2, batch_size, 0, embed_dim)
+
+        # Run full forward with 6 timesteps (mask is baked in)
+        pytorch_6_outputs = cache_model(batch_6, cached_proj_emb_empty, cached_kv_empty)
+        pytorch_6_preds = pytorch_6_outputs[:4]  # First 4 outputs are predictions
+        logger.info("cache-enabled PyTorch 6-timestep predictions computed")
+
+        # === Step 2: Get 5ts cache from 6ts output for incremental tests ===
+        # The incremental ONNX model expects 5ts cache, so we crop the 6ts cache
+        # This simulates the real usage: process 6 frames, then add 1 more frame
+        # with cache containing only the first 5 frames' state
+        proj_emb_6 = pytorch_6_outputs[-2]  # Second to last is projected embeddings
+        kv_cache_6 = pytorch_6_outputs[-1]  # Last is KV cache
+
+        # Crop to first 5 timesteps
+        seq_len_5 = 5 * tokens_per_timestep
+        proj_emb_5 = proj_emb_6[:, :seq_len_5, :]
+        kv_cache_5 = kv_cache_6[:, :, :, :seq_len_5, :]
+        logger.info("cropped cache to 5 timesteps", proj_emb_5_shape=proj_emb_5.shape, kv_cache_5_shape=kv_cache_5.shape)
+
+        # Set incremental mask on model and objectives for PyTorch incremental forward
+        # Update the baked-in mask for incremental inference
+        cache_model._baked_mask = incr_mask
+        for obj in cache_model.objectives.values():
+            if hasattr(obj, '_mask'):
+                obj._mask = incr_mask
+
+        # Run incremental forward with 1 timestep and 5ts cache
+        pytorch_incr_outputs = cache_model(batch_1, proj_emb_5, kv_cache_5)
+        pytorch_incr_preds = pytorch_incr_outputs[:4]  # First 4 outputs are predictions
+        logger.info("PyTorch incremental predictions computed")
+
+        # === Step 3: Load and run ONNX models ===
+        logger.info("loading ONNX models")
+
+        full_session = ort.InferenceSession(str(config.full_model), providers=["CPUExecutionProvider"])
+        incr_session = ort.InferenceSession(str(config.incremental_model), providers=["CPUExecutionProvider"])
+
+        # Get ONNX input names
+        full_input_names = {inp.name for inp in full_session.get_inputs()}
+        incr_input_names = {inp.name for inp in incr_session.get_inputs()}
+        logger.info("ONNX inputs", full_model=len(full_input_names), incremental=len(incr_input_names))
+
+        # The full ONNX model was exported with 6 timesteps (fixed shapes with dynamo)
+        # The incremental ONNX model was exported with 5 cached + 1 new = 1644 total
+        # These are incompatible, so we verify them separately:
+        # 1. ONNX full (6) vs PyTorch full (6)
+        # 2. ONNX incremental (using PyTorch-generated cache) vs PyTorch incremental
+
+        # === ONNX Full Model (6 timesteps) - mask is baked in ===
+        onnx_inputs_full = flatten_batch_to_onnx(batch_6)
+        onnx_inputs_full["cached_projected_embeddings"] = cached_proj_emb_empty.numpy()
+        onnx_inputs_full["cached_kv"] = cached_kv_empty.numpy()
+
+        # Match input names for full model
+        onnx_inputs_full_matched = {}
+        for onnx_name in full_input_names:
+            for our_name, value in onnx_inputs_full.items():
+                if our_name.lower() == onnx_name.lower():
+                    onnx_inputs_full_matched[onnx_name] = value
+                    break
+
+        # Run full forward ONNX with 6 timesteps
+        logger.info("running ONNX full forward (6 timesteps)")
+        onnx_full_outputs = full_session.run(None, onnx_inputs_full_matched)
+        onnx_full_preds = onnx_full_outputs[:4]  # First 4 are predictions
+        onnx_proj_emb_full = onnx_full_outputs[-2]
+        onnx_kv_cache_full = onnx_full_outputs[-1]
+        logger.info("ONNX 6-timestep forward done", proj_emb_shape=onnx_proj_emb_full.shape, kv_shape=onnx_kv_cache_full.shape)
+
+        # === ONNX Incremental Model (1 timestep with PyTorch-generated 5-timestep cache) ===
+        # Use PyTorch-generated cache (cropped from 6ts output) for ONNX incremental
+        # This tests that ONNX incremental model produces correct results given a valid cache
+        # Mask is baked into the model
+        onnx_inputs_1 = flatten_batch_to_onnx(batch_1)
+        onnx_inputs_1["cached_projected_embeddings"] = proj_emb_5.numpy()  # Use PyTorch cache
+        onnx_inputs_1["cached_kv"] = kv_cache_5.numpy()  # Use PyTorch cache
+
+        # Match input names
+        onnx_inputs_1_matched = {}
+        for onnx_name in incr_input_names:
+            for our_name, value in onnx_inputs_1.items():
+                if our_name.lower() == onnx_name.lower():
+                    onnx_inputs_1_matched[onnx_name] = value
+                    break
+
+        # Run incremental ONNX
+        logger.info("running ONNX incremental (1 timestep)")
+        onnx_incr_outputs = incr_session.run(None, onnx_inputs_1_matched)
+        onnx_incr_preds = onnx_incr_outputs[:4]
+        logger.info("ONNX incremental predictions computed")
+
+        # === Step 5: Compare all predictions ===
+        logger.info("comparing predictions")
+
+        prediction_names = [
+            "policy_continuous_brake_pedal",
+            "policy_continuous_gas_pedal",
+            "policy_continuous_steering_angle",
+            "policy_discrete_turn_signal",
+        ]
+
+        # Tolerances
+        PREDICTION_TOL = 0.01  # 1% tolerance for predictions
+
+        all_match = True
+
+        # Compare Native PyTorch vs Cache-enabled PyTorch
+        logger.info("=== Native PyTorch vs Cache-enabled PyTorch (6ts) ===")
+        for i, (native, cache_enabled) in enumerate(zip(native_preds, pytorch_6_preds)):
+            native_np = native.numpy() if isinstance(native, Tensor) else native
+            cache_np = cache_enabled.numpy() if isinstance(cache_enabled, Tensor) else cache_enabled
+            diff = np.abs(native_np - cache_np)
+            max_diff = float(diff.max()) if hasattr(diff, 'max') else float(diff)
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                native=float(native_np.flatten()[0]) if hasattr(native_np, 'flatten') else float(native_np),
+                cache_enabled=float(cache_np.flatten()[0]) if hasattr(cache_np, 'flatten') else float(cache_np),
+                max_diff=max_diff,
+                status=match_status,
+            )
+
+        # Compare Native PyTorch vs ONNX full
+        logger.info("=== Native PyTorch vs ONNX full (6ts) ===")
+        for i, (native, onnx_pred) in enumerate(zip(native_preds, onnx_full_preds)):
+            native_np = native.numpy() if isinstance(native, Tensor) else native
+            diff = np.abs(native_np - onnx_pred)
+            max_diff = float(diff.max()) if hasattr(diff, 'max') else float(diff)
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                native=float(native_np.flatten()[0]) if hasattr(native_np, 'flatten') else float(native_np),
+                onnx_full=float(onnx_pred.flatten()[0]),
+                max_diff=max_diff,
+                status=match_status,
+            )
+
+        # Compare Native PyTorch vs ONNX dual
+        logger.info("=== Native PyTorch vs ONNX dual (5+1) ===")
+        for i, (native, onnx_pred) in enumerate(zip(native_preds, onnx_incr_preds)):
+            native_np = native.numpy() if isinstance(native, Tensor) else native
+            diff = np.abs(native_np - onnx_pred)
+            max_diff = float(diff.max()) if hasattr(diff, 'max') else float(diff)
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                native=float(native_np.flatten()[0]) if hasattr(native_np, 'flatten') else float(native_np),
+                onnx_dual=float(onnx_pred.flatten()[0]),
+                max_diff=max_diff,
+                status=match_status,
+            )
+
+        # Compare Cache-enabled PyTorch 6-timestep vs dual model (5+1)
+        logger.info("=== Cache-enabled PyTorch (6ts) vs Cache-enabled PyTorch dual (5+1) ===")
+        for i, (pt6, pt_incr) in enumerate(zip(pytorch_6_preds, pytorch_incr_preds)):
+            pt6_np = pt6.numpy() if isinstance(pt6, Tensor) else pt6
+            pt_incr_np = pt_incr.numpy() if isinstance(pt_incr, Tensor) else pt_incr
+            diff = np.abs(pt6_np - pt_incr_np)
+            max_diff = diff.max()
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                pytorch_6=float(pt6_np.flatten()[0]),
+                pytorch_dual=float(pt_incr_np.flatten()[0]),
+                max_diff=float(max_diff),
+                status=match_status,
+            )
+
+        # Compare ONNX full 6-timestep vs PyTorch 6-timestep
+        logger.info("=== ONNX full (6) vs PyTorch full (6) ===")
+        for i, (onnx_pred, pt6) in enumerate(zip(onnx_full_preds, pytorch_6_preds)):
+            pt6_np = pt6.numpy() if isinstance(pt6, Tensor) else pt6
+            diff = np.abs(onnx_pred - pt6_np)
+            max_diff = diff.max()
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                onnx_full=float(onnx_pred.flatten()[0]),
+                pytorch_full=float(pt6_np.flatten()[0]),
+                max_diff=float(max_diff),
+                status=match_status,
+            )
+
+        # Compare ONNX dual model vs PyTorch dual model
+        logger.info("=== ONNX dual (5+1) vs PyTorch dual (5+1) ===")
+        for i, (onnx_pred, pt_incr) in enumerate(zip(onnx_incr_preds, pytorch_incr_preds)):
+            pt_incr_np = pt_incr.numpy() if isinstance(pt_incr, Tensor) else pt_incr
+            diff = np.abs(onnx_pred - pt_incr_np)
+            max_diff = diff.max()
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                onnx_dual=float(onnx_pred.flatten()[0]),
+                pytorch_dual=float(pt_incr_np.flatten()[0]),
+                max_diff=float(max_diff),
+                status=match_status,
+            )
+
+        # Compare ONNX dual model vs PyTorch 6-timestep (the ultimate test)
+        logger.info("=== ONNX dual (5+1) vs PyTorch full (6) ===")
+        for i, (onnx_pred, pt6) in enumerate(zip(onnx_incr_preds, pytorch_6_preds)):
+            pt6_np = pt6.numpy() if isinstance(pt6, Tensor) else pt6
+            diff = np.abs(onnx_pred - pt6_np)
+            max_diff = diff.max()
+            match_status = "MATCH" if max_diff < PREDICTION_TOL else "MISMATCH"
+            if max_diff >= PREDICTION_TOL:
+                all_match = False
+            logger.info(
+                f"{prediction_names[i]}",
+                onnx_dual=float(onnx_pred.flatten()[0]),
+                pytorch_full=float(pt6_np.flatten()[0]),
+                max_diff=float(max_diff),
+                status=match_status,
+            )
+
+        if all_match:
+            logger.info("SUCCESS: All predictions match within tolerance")
+        else:
+            logger.error("FAILURE: Some predictions differ beyond tolerance")
+
+    finally:
+        # Restore original function
+        episode_module._is_exporting = original_is_exporting
+
+
+if __name__ == "__main__":
+    main()
