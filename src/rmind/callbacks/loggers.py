@@ -48,6 +48,24 @@ BATCH_HOOKS = frozenset({
 })
 
 
+BATCH_END_HOOKS = frozenset(hook for hook in BATCH_HOOKS if hook.endswith("_batch_end"))
+
+
+def _validate_every_n_batch(
+    *, when: str, every_n_batch: int | None, allowed_hooks: frozenset[str]
+) -> None:
+    if every_n_batch is None:
+        return
+
+    if when not in allowed_hooks:
+        msg = (
+            "`every_n_batch` is only supported for hooks: "
+            + ", ".join(f"`{hook}`" for hook in sorted(allowed_hooks))
+            + f". Got `{when}`"
+        )
+        raise ValueError(msg)
+
+
 @final
 class WandbImageParamLogger(Callback):
     @validate_call
@@ -66,13 +84,9 @@ class WandbImageParamLogger(Callback):
         self._apply = apply
         self._cmap_type = cmap_type
         self._cmap: K.ApplyColorMap | None = None
-        if every_n_batch is not None and when not in BATCH_HOOKS:
-            msg = (
-                "`every_n_batch` is only supported for batch-based hooks: "
-                + ", ".join(f"`{hook}`" for hook in BATCH_HOOKS)
-                + f". Got `{when}`"
-            )
-            raise ValueError(msg)
+        _validate_every_n_batch(
+            when=when, every_n_batch=every_n_batch, allowed_hooks=BATCH_HOOKS
+        )
         self._every_n_batch = every_n_batch
         self._when = when
         setattr(self, when, self._call)
@@ -164,13 +178,9 @@ class WandbWaypointsLogger(Callback):
         crs: str | None = None,
     ) -> None:
         self._key = key
-        if every_n_batch is not None and when not in BATCH_HOOKS:
-            msg = (
-                "`every_n_batch` is only supported for batch-based hooks: "
-                + ", ".join(f"`{hook}`" for hook in BATCH_HOOKS)
-                + f". Got `{when}`"
-            )
-            raise ValueError(msg)
+        _validate_every_n_batch(
+            when=when, every_n_batch=every_n_batch, allowed_hooks=BATCH_HOOKS
+        )
         self._every_n_batch = every_n_batch
         self._when = when
         self._data_paths = tree_map(
@@ -394,20 +404,9 @@ class WandbPatchSimilarityLogger(Callback):
         self._patch_grid_size = patch_grid_size
         self._embeddings_predict_path = tuple(map(MappingKey, embeddings_predict))
         self._embeddings_target_path = tuple(map(MappingKey, embeddings_target))
-        if every_n_batch is not None and when not in BATCH_HOOKS:
-            msg = (
-                "`every_n_batch` is only supported for batch-based hooks: "
-                + ", ".join(f"`{hook}`" for hook in BATCH_HOOKS)
-                + f". Got `{when}`"
-            )
-            raise ValueError(msg)
-        if not when.endswith("_batch_end"):
-            msg = (
-                "WandbPatchSimilarityLogger requires a *_batch_end hook "
-                "(objective outputs are only available after batch processing). "
-                f"Got `{when}`"
-            )
-            raise ValueError(msg)
+        _validate_every_n_batch(
+            when=when, every_n_batch=every_n_batch, allowed_hooks=BATCH_END_HOOKS
+        )
         self._every_n_batch = every_n_batch
         self._when = when
         self._objective_valid: bool | None = None
