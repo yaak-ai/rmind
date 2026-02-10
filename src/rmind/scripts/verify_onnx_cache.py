@@ -112,6 +112,7 @@ class Config(BaseModel):
     model: HydraConfig[LightningModule]
     args: Annotated[Sequence[Any], AfterValidator(instantiate)]
     onnx_path: Path
+    artifact: str | None = None  # W&B artifact to load weights from (e.g., "yaak/cargpt/model-xxx:v1")
 
 
 @hydra.main(version_base=None)
@@ -127,15 +128,36 @@ def main(cfg: DictConfig) -> None:
     args = instantiate(config.args, _recursive_=True, _convert_="all")
     base_model = config.model.instantiate().eval()
 
+    # Load weights from artifact if provided
+    if config.artifact:
+        import wandb
+
+        logger.info("loading weights from artifact", artifact=config.artifact)
+
+        # Download artifact
+        api = wandb.Api()
+        artifact_obj = api.artifact(config.artifact, type="model")
+        artifact_dir = artifact_obj.download()
+        ckpt_path = Path(artifact_dir) / "model.ckpt"
+
+        # Load checkpoint
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        state_dict = ckpt.get("state_dict", ckpt)
+
+        # Load weights into model
+        missing, unexpected = base_model.load_state_dict(state_dict, strict=False)
+        if missing:
+            logger.warning("missing keys when loading weights", missing=missing)
+        if unexpected:
+            logger.debug("unexpected keys when loading weights", unexpected=unexpected)
+
+        logger.info("loaded weights from artifact", artifact=config.artifact)
+
     # Set deterministic mode for reproducible forward passes
     torch.use_deterministic_algorithms(True, warn_only=True)
 
     # Build episode BEFORE creating the model wrapper to determine mask shape
     batch = args[0]
-
-    # Apply ImageNet normalization to images
-    # This matches the preprocessing expected by DINOv2/DINOv3 backbone
-    batch = normalize_images(batch)
 
     episode = base_model.episode_builder(batch)
     proj_embeddings = episode.projected_embeddings_packed
@@ -157,19 +179,61 @@ def main(cfg: DictConfig) -> None:
         total_seq_len=seq_len,
     )
 
-    # Build the full mask for verification (this matches the exported model)
-    from rmind.scripts.build_onnx_mask import build_policy_mask
+    # Extract the mask from the ONNX model (it's baked in as a constant)
+    logger.info("extracting mask from ONNX model", onnx_path=config.onnx_path)
+    import onnx
+    onnx_model = onnx.load(str(config.onnx_path))
 
-    num_full_timesteps = 6  # Full forward always uses 6 timesteps
-    full_mask_np = build_policy_mask(num_timesteps=num_full_timesteps)
-    full_mask = torch.from_numpy(full_mask_np)
-    logger.info("built full mask", mask_shape=tuple(full_mask.shape))
+    # Find the mask initializer in the ONNX model
+    mask_tensor = None
+    for initializer in onnx_model.graph.initializer:
+        if 'mask' in initializer.name.lower() or '_baked_mask' in initializer.name:
+            # Convert ONNX tensor to numpy array
+            from onnx.numpy_helper import to_array
+            mask_np = to_array(initializer)
+            mask_tensor = torch.from_numpy(mask_np)
+            logger.info("found mask in ONNX model",
+                       name=initializer.name,
+                       mask_shape=tuple(mask_tensor.shape))
+            break
+
+    if mask_tensor is None:
+        msg = "Could not find mask in ONNX model initializers"
+        raise ValueError(msg)
+
+    full_mask = mask_tensor
+    logger.info("extracted mask from ONNX", mask_shape=tuple(full_mask.shape))
+
+    # Extract position embeddings from ONNX model
+    position_embeddings_tensor = None
+    for initializer in onnx_model.graph.initializer:
+        if '_position_embeddings_packed' in initializer.name:
+            from onnx.numpy_helper import to_array
+            pe_np = to_array(initializer)
+            position_embeddings_tensor = torch.from_numpy(pe_np)
+            logger.info("found position_embeddings_packed in ONNX model",
+                       name=initializer.name,
+                       shape=tuple(position_embeddings_tensor.shape))
+            break
+
+    if position_embeddings_tensor is None:
+        logger.warning("Could not find position_embeddings_packed in ONNX model initializers")
+    else:
+        logger.info("extracted position_embeddings from ONNX",
+                   shape=tuple(position_embeddings_tensor.shape),
+                   min=float(position_embeddings_tensor.min()),
+                   max=float(position_embeddings_tensor.max()),
+                   mean=float(position_embeddings_tensor.mean()))
 
     # Import here to avoid circular imports
     from rmind.scripts.export_onnx_cache import CacheEnabledControlTransformer
 
-    # Create cache-enabled wrapper with baked-in mask
-    cache_model = CacheEnabledControlTransformer(base_model, full_mask).eval()
+    # Create cache-enabled wrapper with baked-in mask and position embeddings from ONNX
+    cache_model = CacheEnabledControlTransformer(
+        base_model,
+        mask=full_mask,
+        position_embeddings_packed=position_embeddings_tensor
+    ).eval()
 
     # Get model dimensions
     num_layers = cache_model.num_layers

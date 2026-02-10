@@ -31,17 +31,18 @@ DEFAULT_TIMESTEP_STRUCTURE = [
     ("observation", "image", "cam_front_left", 256),  # 16x16 patches from ViT
     ("observation", "continuous", "speed", 1),
     ("observation", "context", "waypoints", 10),
-    ("special", "special", "observation_summary", 1),
-    ("special", "special", "observation_history", 1),
+    ("special", "foresight", "cam_front_left", 64),  # Foresight tokens
+    ("special", "summary", "observation_summary", 1),
+    ("special", "summary", "observation_history", 1),
     ("action", "continuous", "gas_pedal", 1),
     ("action", "continuous", "brake_pedal", 1),
     ("action", "continuous", "steering_angle", 1),
     ("action", "discrete", "turn_signal", 1),
-    ("special", "special", "action_summary", 1),
+    ("special", "summary", "action_summary", 1),
 ]
 
 # Token counts per category
-TOKENS_PER_TIMESTEP = sum(t[3] for t in DEFAULT_TIMESTEP_STRUCTURE)  # 274
+TOKENS_PER_TIMESTEP = sum(t[3] for t in DEFAULT_TIMESTEP_STRUCTURE)  # 338
 
 
 def get_token_indices(timestep_structure: list = DEFAULT_TIMESTEP_STRUCTURE) -> dict:

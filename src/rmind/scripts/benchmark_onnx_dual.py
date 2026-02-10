@@ -154,7 +154,7 @@ def create_test_batch_from_config(cfg) -> dict[str, Any]:
     input_cfg = cfg.args
     args = hydra_instantiate(input_cfg, _recursive_=True, _convert_="all")
     batch = args[0]
-    return normalize_images(batch)
+    return batch
 
 
 def main() -> None:
@@ -222,17 +222,8 @@ def main() -> None:
 
     # Create cache-enabled wrapper for fair ONNX comparison
     from rmind.scripts.export_onnx_cache import CacheEnabledControlTransformer
-    from rmind.scripts.build_onnx_mask import build_policy_mask
 
-    full_mask_np = build_policy_mask(num_timesteps=6)
-    full_mask = torch.from_numpy(full_mask_np).to(device)
-
-    # Precompute position_embeddings for 6 timesteps (constant, reusable)
-    # We'll compute this after we have test data
-    cache_model = None  # Will be created after test data
-    logger.info("cache-enabled PyTorch model will be created after test data")
-
-    # Load ONNX models
+    # Load ONNX models first so we can extract baked-in mask
     import onnxruntime as ort
 
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if args.device == "cuda" else ["CPUExecutionProvider"]
@@ -244,6 +235,25 @@ def main() -> None:
     full_input_names = {inp.name for inp in full_session.get_inputs()}
     incr_input_names = {inp.name for inp in incr_session.get_inputs()}
     logger.info("ONNX models loaded", full_inputs=len(full_input_names), incr_inputs=len(incr_input_names))
+
+    # Extract baked-in mask and position embeddings from ONNX model
+    import onnx
+    from onnx.numpy_helper import to_array
+
+    onnx_model = onnx.load(str(args.full_model))
+    full_mask = None
+    position_embeddings_packed = None
+    for initializer in onnx_model.graph.initializer:
+        if 'mask' in initializer.name.lower() or '_baked_mask' in initializer.name:
+            full_mask = torch.from_numpy(to_array(initializer).copy()).to(device)
+            logger.info("extracted mask from ONNX", name=initializer.name, shape=tuple(full_mask.shape))
+        if '_position_embeddings_packed' in initializer.name:
+            position_embeddings_packed = torch.from_numpy(to_array(initializer).copy()).to(device)
+            logger.info("extracted position_embeddings from ONNX", name=initializer.name, shape=tuple(position_embeddings_packed.shape))
+    del onnx_model
+
+    if full_mask is None:
+        raise ValueError("Could not find mask in ONNX model initializers")
 
     # ==================== Create Test Data ====================
     logger.info("creating test data from config (same as export)")
@@ -261,19 +271,15 @@ def main() -> None:
 
     batch_6_device = to_device(batch_6, device)
 
-    # Model dimensions and position embeddings
-    with torch.inference_mode():
-        episode = pytorch_model.episode_builder(batch_6_device, timestep_offset=0)
-        _, seq_len, embed_dim = episode.embeddings_packed.shape
-        tokens_per_timestep = seq_len // 6
-        num_layers = len(list(pytorch_model.encoder.layers))
-
-        # Compute position_embeddings for 6 timesteps (constant, reusable)
-        position_embeddings_packed = episode.embeddings_packed - episode.projected_embeddings_packed
+    # Model dimensions from ONNX-extracted position embeddings
+    seq_len = position_embeddings_packed.shape[1]
+    embed_dim = position_embeddings_packed.shape[2]
+    num_layers = len(list(pytorch_model.encoder.layers))
+    tokens_per_timestep = seq_len // 6
 
     logger.info("model dimensions", seq_len=seq_len, embed_dim=embed_dim, tokens_per_timestep=tokens_per_timestep, num_layers=num_layers)
 
-    # Now create cache-enabled model with position_embeddings
+    # Create cache-enabled model with mask and position_embeddings from ONNX
     cache_model = CacheEnabledControlTransformer(
         pytorch_model,
         mask=full_mask,

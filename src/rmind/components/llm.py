@@ -412,7 +412,7 @@ class TransformerEncoder(nn.Module):
             - Output tensor [B, S_new, D]
             - List of KVCache per layer if use_cache, else None
         """
-        x = src
+        x = self.emb_norm(src) if self.emb_norm is not None else src
         new_key_values: list[KVCache] = [] if use_cache else []
 
         for i, layer in enumerate(self.layers):
@@ -450,7 +450,7 @@ class TransformerEncoder(nn.Module):
             - Output tensor [B, S_new, D]
             - Updated KV tensor [L, 2, B, S_total, D]
         """
-        x = src
+        x = self.emb_norm(src) if self.emb_norm is not None else src
         new_kv_list = []
 
         for i, layer in enumerate(self.layers):

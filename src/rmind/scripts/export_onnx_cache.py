@@ -241,7 +241,7 @@ class CacheEnabledControlTransformer(nn.Module):
             Dict mapping prediction names to tensors
         """
         from einops import rearrange
-        from rmind.components.episode import EpisodeExport, Modality, SpecialToken
+        from rmind.components.episode import EpisodeExport, Modality, SummaryToken
 
         # Get the policy objective
         policy_obj = self.objectives.get("policy")
@@ -253,15 +253,15 @@ class CacheEnabledControlTransformer(nn.Module):
             # EpisodeExport uses plain dict indices
             observation_summary = encoder_output[
                 :,
-                episode.index[Modality.SPECIAL.value][
-                    SpecialToken.OBSERVATION_SUMMARY.value
+                episode.index[Modality.SUMMARY.value][
+                    SummaryToken.OBSERVATION_SUMMARY.value
                 ][-1],
             ]
 
             observation_history = encoder_output[
                 :,
-                episode.index[Modality.SPECIAL.value][
-                    SpecialToken.OBSERVATION_HISTORY.value
+                episode.index[Modality.SUMMARY.value][
+                    SummaryToken.OBSERVATION_HISTORY.value
                 ][-1],
             ]
 
@@ -274,21 +274,21 @@ class CacheEnabledControlTransformer(nn.Module):
                 episode
                 .index[-1]
                 .select(
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_HISTORY),
-                    (Modality.SPECIAL, SpecialToken.OBSERVATION_SUMMARY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
                 )
                 .parse(encoder_output)
             )
 
             observation_history = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_HISTORY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
             ))
 
             observation_summary = embeddings.get((
-                Modality.SPECIAL,
-                SpecialToken.OBSERVATION_SUMMARY,
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
             ))
 
             waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
@@ -534,8 +534,6 @@ def main(cfg: DictConfig) -> None:
     logger.debug("building episode for shape inference")
     batch = args[0]
 
-    # Note: Trained models (loaded from artifact) have normalization built into input_transform
-    # Only apply manual normalization for raw_export models that lack it
     episode = base_model.episode_builder(batch)
     proj_embeddings = episode.projected_embeddings_packed
     batch_size, seq_len, embed_dim = proj_embeddings.shape
@@ -574,6 +572,11 @@ def main(cfg: DictConfig) -> None:
     logger.debug("position_embeddings_packed shape", shape=position_embeddings_packed.shape)
 
     # Build the mask BEFORE creating the model (so it can be baked in)
+    # Use the model's own PolicyObjective.build_attention_mask() to ensure
+    # the mask matches the native forward path exactly.
+    from rmind.components.mask import TorchAttentionMaskLegend
+    from rmind.components.objectives.policy import PolicyObjective
+
     if is_incremental:
         logger.info("incremental export mode detected (1 timestep batch)")
         # For incremental export, use non-empty cache (5 timesteps worth)
@@ -581,10 +584,10 @@ def main(cfg: DictConfig) -> None:
         cached_seq_len = num_cached_timesteps * tokens_per_timestep
         total_seq_len_incr = cached_seq_len + seq_len
 
-        # Build incremental mask using build_onnx_mask (matches training exactly)
-        from rmind.scripts.build_onnx_mask import build_policy_mask
-        full_mask_np = build_policy_mask(num_timesteps=6)  # Full 6 timestep mask
-        full_mask = torch.from_numpy(full_mask_np).to(proj_embeddings.device)
+        # Build full 6-timestep mask from the model, then crop to incremental shape
+        full_mask = PolicyObjective.build_attention_mask(
+            episode_6ts.index, episode_6ts.timestep, legend=TorchAttentionMaskLegend
+        ).mask.to(proj_embeddings.device)
         mask = full_mask[-tokens_per_timestep:, :]  # Crop to incremental shape
 
         logger.debug(
@@ -595,10 +598,10 @@ def main(cfg: DictConfig) -> None:
             mask_shape=tuple(mask.shape),
         )
     else:
-        # Full forward export - use build_onnx_mask for consistency
-        from rmind.scripts.build_onnx_mask import build_policy_mask
-        mask_np = build_policy_mask(num_timesteps=num_timesteps)
-        mask = torch.from_numpy(mask_np).to(proj_embeddings.device)
+        # Full forward export - use model's own mask building
+        mask = PolicyObjective.build_attention_mask(
+            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+        ).mask.to(proj_embeddings.device)
 
         logger.debug("full forward mask", mask_shape=tuple(mask.shape))
 
