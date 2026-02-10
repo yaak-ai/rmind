@@ -1,0 +1,22 @@
+- _target_: rmind.callbacks.LogitBiasSetter
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 5
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
+- _target_: rmind.callbacks.WandbWaypointsLogger
+  when: on_validation_batch_end
+  every_n_batch: 100
+  key: waypoints
+  crs: "EPSG:25832"
+  data:
+    image: [data, cam_front_left, 0, -1]
+    waypoints_xy_normalized: [data, waypoints/xy_normalized, 0, -1]
+    waypoints_xy: [data, waypoints/xy, 0, -1]
+    ego_xy: [data, meta/Gnss/xy, 0, -1]
+  caption:
+    input_id: [meta, input_id, 0]
+    time_stamp: [data, meta/ImageMetadata.cam_front_left/time_stamp, 0, -1]
+    frame_idx: [data, meta/ImageMetadata.cam_front_left/frame_idx, 0, -1]

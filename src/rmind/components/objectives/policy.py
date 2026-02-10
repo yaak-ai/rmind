@@ -334,7 +334,9 @@ class PolicyObjective(Objective):
                         case (Modality.DISCRETE, "turn_signal"):
                             gt = episode.input[action_type][:, -1]
                             return F.cross_entropy(
-                                x.squeeze(1), gt.squeeze(1).long(), reduction="none"
+                                x.squeeze(1),
+                                gt.squeeze(1).long(),
+                                reduction="none",  # ty:ignore[possibly-missing-attribute]
                             ).unsqueeze(1)
 
                         case _:

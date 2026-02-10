@@ -132,7 +132,7 @@ class MemoryExtractionObjective(Objective):
 
             if (key := PredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
-                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(
+                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[possibly-missing-attribute]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[possibly-missing-attribute, call-non-callable]
                         nested_keys=True,
                     ),

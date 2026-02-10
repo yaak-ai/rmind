@@ -136,7 +136,7 @@ class RandomMaskedHindsightControlObjective(Objective):
 
             if (key := PredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
-                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(
+                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[possibly-missing-attribute]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, possibly-missing-attribute]
                         nested_keys=True,
                     ),
@@ -154,7 +154,7 @@ class RandomMaskedHindsightControlObjective(Objective):
                     value=(
                         logits
                         .apply(lambda x: x.softmax(dim=-1))
-                        .apply(Rearrange("b t 1 d -> b t d"))
+                        .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[possibly-missing-attribute]
                         .apply(  # ty:ignore[possibly-missing-attribute]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
                             episode.input_tokens[:, timestep_indices],  # ty:ignore[invalid-argument-type]

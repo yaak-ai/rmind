@@ -409,7 +409,6 @@ class WandbPatchSimilarityLogger(Callback):
         )
         self._every_n_batch = every_n_batch
         self._when = when
-        self._objective_valid: bool | None = None
 
         setattr(self, when, self._call)
 
@@ -447,23 +446,6 @@ class WandbPatchSimilarityLogger(Callback):
             and (batch_idx is not None)
             and (batch_idx % self._every_n_batch != 0)
         ):
-            return
-
-        if self._objective_valid is None:
-            if not self._validate_outputs(
-                outputs, self._embeddings_predict_path, self._embeddings_target_path
-            ):
-                logger.warning(
-                    "Outputs don't support patch similarity logging, logger will no-op",
-                    embeddings_predict_path=self._embeddings_predict_path,
-                    embeddings_target_path=self._embeddings_target_path,
-                )
-                self._objective_valid = False
-                return
-
-            self._objective_valid = True
-
-        if not self._objective_valid:
             return
 
         for image_source_key in self._image_sources_path:
@@ -511,20 +493,6 @@ class WandbPatchSimilarityLogger(Callback):
                     error=str(e),
                     exc_info=True,
                 )
-
-    @staticmethod
-    def _validate_outputs(
-        outputs: Any,
-        embeddings_predict_path: tuple[MappingKey, ...],
-        embeddings_target_path: tuple[MappingKey, ...],
-    ) -> bool:
-        try:
-            key_get(outputs, embeddings_predict_path)  # ty:ignore[invalid-argument-type]
-            key_get(outputs, embeddings_target_path)  # ty:ignore[invalid-argument-type]
-        except (TypeError, KeyError, AttributeError):
-            return False
-        else:
-            return True
 
     def _compute_similarities(
         self, gt_tensor: Tensor, pred_tensor: Tensor, patch_coords: PatchCoords

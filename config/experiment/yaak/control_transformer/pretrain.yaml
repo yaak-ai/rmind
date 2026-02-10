@@ -4,6 +4,7 @@ defaults:
   - /model: yaak/control_transformer/raw
   - /datamodule: yaak/train
   - /trainer: default
+  - /trainer/callbacks: pretrain
   - /paths: yaak/default
   - /wandb: yaak/rmind
   - _self_

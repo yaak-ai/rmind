@@ -296,7 +296,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                         logits
                         .exclude(Modality.FORESIGHT)
                         .apply(lambda x: x.softmax(dim=-1))
-                        .apply(Rearrange("b t 1 d -> b t d"))
+                        .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[possibly-missing-attribute]
                         .apply(  # ty:ignore[possibly-missing-attribute]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
                             episode.input_tokens[:, timestep_indices],  # ty:ignore[invalid-argument-type]
@@ -312,11 +312,11 @@ class ForwardDynamicsPredictionObjective(Objective):
                         logits
                         .exclude(Modality.FORESIGHT)
                         .apply(lambda x: x.argmax(dim=-1))
-                        .named_apply(
+                        .named_apply(  # ty:ignore[possibly-missing-attribute]
                             lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[possibly-missing-attribute, call-non-callable]
                             nested_keys=True,
                         )
-                        .apply(
+                        .apply(  # ty:ignore[possibly-missing-attribute]
                             lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
                             episode.input[:, timestep_indices],  # ty:ignore[invalid-argument-type]
                             nested_keys=True,

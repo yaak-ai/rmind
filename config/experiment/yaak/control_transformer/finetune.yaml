@@ -4,6 +4,7 @@ defaults:
   - /model: yaak/control_transformer/policy_finetune
   - /datamodule: yaak/train
   - /trainer: default
+  - /trainer/callbacks: finetune
   - /paths: yaak/default
   - /wandb: yaak/rmind
   - _self_
