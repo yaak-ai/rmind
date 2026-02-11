@@ -39,6 +39,7 @@ dependencies = [
 repo = "https://github.com/yaak-ai/rmind"
 
 [project.scripts]
+rmind-check-git = "rmind.scripts.check_git:main"
 rmind-export-onnx = "rmind.scripts.export_onnx:main"
 rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
