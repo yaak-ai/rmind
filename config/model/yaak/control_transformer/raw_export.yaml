@@ -259,23 +259,23 @@ objectives:
         modules:
           continuous:
             gas_pedal:
-              _target_: torchvision.ops.MLP
+              _target_: rmind.components.nn.MLP
               in_channels: 1152
               hidden_channels: [384, 2]
               bias: False
             brake_pedal:
-              _target_: torchvision.ops.MLP
+              _target_: rmind.components.nn.MLP
               in_channels: 1152
               hidden_channels: [384, 2]
               bias: False
             steering_angle:
-              _target_: torchvision.ops.MLP
+              _target_: rmind.components.nn.MLP
               in_channels: 1152
               hidden_channels: [384, 2]
               bias: False
           discrete:
             turn_signal:
-              _target_: torchvision.ops.MLP
+              _target_: rmind.components.nn.MLP
               in_channels: 1152
               hidden_channels: [384, 3]
               bias: False

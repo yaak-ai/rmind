@@ -3,7 +3,7 @@ from itertools import pairwise
 import torch
 from torch.testing import assert_close, make_tensor
 
-from rmind.components.nn import Sequential
+from rmind.components.nn import MLP, Linear, Sequential
 from rmind.components.norm import Scaler, UniformBinner
 
 
@@ -57,3 +57,10 @@ def test_sequential(device: torch.device) -> None:
     x_rt = module.invert(module(x))
 
     assert_close(x_rt, x)
+
+
+def test_mlp_uses_rmind_linear() -> None:
+    module = MLP(in_channels=16, hidden_channels=[8, 4], bias=False)
+    linear_layers = [layer for layer in module if isinstance(layer, Linear)]
+
+    assert len(linear_layers) == 2  # noqa: PLR2004

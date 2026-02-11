@@ -59,6 +59,39 @@ class Linear(nn.Linear):
             self.bias_init_fn(self.bias)
 
 
+@final
+class MLP(nn.Sequential):
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        in_channels: int,
+        hidden_channels: list[int],
+        norm_layer: Callable[..., nn.Module] | None = None,
+        activation_layer: Callable[..., nn.Module] | None = nn.ReLU,
+        inplace: bool | None = None,  # noqa: FBT001
+        bias: bool = True,  # noqa: FBT001, FBT002
+        dropout: float = 0.0,
+    ) -> None:
+        params = {} if inplace is None else {"inplace": inplace}
+
+        layers: list[nn.Module] = []
+        in_dim = in_channels
+        for hidden_dim in hidden_channels[:-1]:
+            layers.append(Linear(in_dim, hidden_dim, bias=bias))
+            if norm_layer is not None:
+                layers.append(norm_layer(hidden_dim))
+            if activation_layer is not None:
+                layers.append(activation_layer(**params))
+            layers.append(nn.Dropout(dropout, **params))
+            in_dim = hidden_dim
+
+        layers.extend((
+            Linear(in_dim, hidden_channels[-1], bias=bias),
+            nn.Dropout(dropout, **params),
+        ))
+
+        super().__init__(*layers)
+
+
 class Sequential(nn.Sequential, Invertible):
     @override
     def invert(self, input: Tensor) -> Tensor:
