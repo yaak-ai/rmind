@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING, Any, Literal, final, override
 
 import torch
+import torch.nn.functional as F
 from pydantic import BaseModel, ConfigDict, InstanceOf, NonNegativeFloat, validate_call
 from torch import Tensor, nn
 from torch.nn.modules.module import Module
@@ -20,6 +21,109 @@ __all__ = [
     "TransformerEncoder",
     "TransformerEncoderBlock",
 ]
+
+
+class LoRALinear(nn.Module):
+    def __init__(self, in_features: int, out_features: int, rank: int) -> None:
+        super().__init__()
+        self.A = nn.Linear(in_features, rank, bias=False)
+        self.B = nn.Linear(rank, out_features, bias=False)
+        nn.init.zeros_(self.B.weight)
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.B(self.A(x))
+
+
+class LoRAMultiheadAttention(nn.Module):
+    def __init__(
+        self, base_mha: nn.MultiheadAttention, rank: int, alpha: float | None = None
+    ) -> None:
+        super().__init__()
+        self.embed_dim = base_mha.embed_dim
+        self.num_heads = base_mha.num_heads
+        self.head_dim = self.embed_dim // self.num_heads
+        self.attn_dropout = base_mha.dropout
+        self.lora_scale = (alpha / rank) if alpha is not None else 1.0
+
+        self.in_proj_weight = base_mha.in_proj_weight
+        self.in_proj_bias = base_mha.in_proj_bias
+        self.out_proj = base_mha.out_proj
+
+        self.lora_q = LoRALinear(self.embed_dim, self.embed_dim, rank)
+        self.lora_v = LoRALinear(self.embed_dim, self.embed_dim, rank)
+
+    @override
+    def forward(  # noqa: PLR0914
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        attn_mask: Tensor | None = None,
+        need_weights: bool = False,
+        average_attn_weights: bool = True,
+        **_kwargs: Any,
+    ) -> tuple[Tensor, Tensor | None]:
+        E = self.embed_dim  # noqa: N806
+        w_q, w_k, w_v = (
+            self.in_proj_weight[:E],
+            self.in_proj_weight[E : 2 * E],
+            self.in_proj_weight[2 * E :],
+        )
+        if self.in_proj_bias is None:
+            b_q = b_k = b_v = None
+        else:
+            b_q, b_k, b_v = (
+                self.in_proj_bias[:E],
+                self.in_proj_bias[E : 2 * E],
+                self.in_proj_bias[2 * E :],
+            )
+
+        q = F.linear(query, w_q, b_q) + self.lora_q(query) * self.lora_scale
+        k = F.linear(key, w_k, b_k)
+        v = F.linear(value, w_v, b_v) + self.lora_v(value) * self.lora_scale
+
+        B, S_q, _ = q.shape  # noqa: N806
+        S_k = k.shape[1]  # noqa: N806
+
+        q = q.view(B, S_q, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, S_k, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, S_k, self.num_heads, self.head_dim).transpose(1, 2)
+
+        if attn_mask is not None and attn_mask.ndim == 3:  # noqa: PLR2004
+            attn_mask = attn_mask.view(B, self.num_heads, S_q, S_k)
+
+        if need_weights:
+            scale = self.head_dim**-0.5
+            attn_weights = (q @ k.transpose(-2, -1)) * scale
+            if attn_mask is not None:
+                if attn_mask.dtype == torch.bool:
+                    attn_weights = attn_weights.masked_fill(attn_mask, float("-inf"))
+                else:
+                    attn_weights = attn_weights + attn_mask  # noqa: PLR6104
+            attn_probs = F.softmax(attn_weights, dim=-1)
+            attn_probs = F.dropout(
+                attn_probs, p=self.attn_dropout, training=self.training
+            )
+            attn_output = attn_probs @ v
+            attn_output = attn_output.transpose(1, 2).contiguous().view(B, S_q, E)
+            attn_output = self.out_proj(attn_output)
+            if average_attn_weights:
+                attn_probs = attn_probs.mean(dim=1)
+            return attn_output, attn_probs
+
+        if attn_mask is not None and attn_mask.dtype == torch.bool:
+            attn_mask = ~attn_mask
+        attn_output = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=self.attn_dropout if self.training else 0.0,
+        )
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, S_q, E)
+        attn_output = self.out_proj(attn_output)
+        return attn_output, None
 
 
 class TransformerEncoderBlock(nn.Module):
@@ -112,6 +216,9 @@ class TransformerEncoder(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
         freeze: bool | None = None,  # noqa: FBT001
+        lora_rank: int | None = None,
+        lora_num_layers: int | None = None,
+        lora_alpha: float | None = None,
         emb_norm: InstanceOf[nn.Module] | None = None,
     ) -> None:
         super().__init__()
@@ -132,6 +239,15 @@ class TransformerEncoder(nn.Module):
 
         if freeze is not None:
             self.requires_grad_(not freeze).train(not freeze)
+
+        if lora_rank is not None and lora_num_layers is not None:
+            self._apply_lora(lora_rank, lora_num_layers, lora_alpha)
+
+    def _apply_lora(
+        self, rank: int, num_layers: int, alpha: float | None = None
+    ) -> None:
+        for block in self.layers[-num_layers:]:  # ty:ignore[not-iterable]
+            block.mha = LoRAMultiheadAttention(block.mha, rank, alpha)
 
     @override
     def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
