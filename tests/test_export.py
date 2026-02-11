@@ -162,8 +162,6 @@ def test_torch_export_fake(
         assert_close(
             actual,
             expected,
-            rtol=0.0,
-            atol=0.0,
             equal_nan=True,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
         )

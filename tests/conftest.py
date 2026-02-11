@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+import pytorch_lightning as pl
 import torch
 from einops.layers.torch import Rearrange
 from rbyte.types import Batch
@@ -44,6 +45,19 @@ from rmind.components.objectives import (
 from rmind.components.timm_backbone import TimmBackbone
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _seed_everything() -> None:
+    pl.seed_everything(42, workers=True, verbose=True)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _set_float32_matmul_precision() -> Generator[None, Any, None]:
+    prev = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("high")
+    yield
+    torch.set_float32_matmul_precision(prev)
+
+
 @dataclass
 class NumBins:
     speed: int = 512
@@ -62,22 +76,12 @@ def embedding_dim() -> int:
     return 384
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _set_float32_matmul_precision() -> Generator[None, Any, None]:
-    prev = torch.get_float32_matmul_precision()
-    torch.set_float32_matmul_precision("high")
-    yield
-    torch.set_float32_matmul_precision(prev)
-
-
 @pytest.fixture(
     scope="module",
     params=[
-        next(
-            device
-            for device in ("cuda", "mps", "cpu")
-            if getattr(torch, device).is_available()
-        )
+        device
+        for device in ("cuda", "mps", "cpu")
+        if getattr(torch, device).is_available()
     ],
 )
 def device(request) -> torch.device:  # noqa: ANN001

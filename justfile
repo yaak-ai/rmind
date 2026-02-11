@@ -1,4 +1,3 @@
-export PYTHONOPTIMIZE := "1"
 export PYTHONBREAKPOINT := "patdb.debug"
 export PATDB_CODE_STYLE := "vim"
 export BETTER_EXCEPTIONS := "1"
@@ -7,6 +6,8 @@ export HYDRA_FULL_ERROR := "1"
 export RERUN_STRICT := "1"
 export WANDB_DIR := "wandb_logs"
 export TORCHDYNAMO_VERBOSE := "1"
+
+# export PYTHONOPTIMIZE := "1" # incompatible w/ torch.export in 2.10
 
 _default:
     @just --list --unsorted
