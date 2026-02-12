@@ -294,7 +294,7 @@ class EpisodeBuilder(Module):
                 index=index,
                 timestep=timestep,
             )
-            if torch.compiler.is_exporting()  # ty:ignore[possibly-missing-attribute]
+            if torch.compiler.is_exporting()
             else Episode(
                 input=TensorDict.from_dict(
                     input, batch_dims=2
@@ -367,7 +367,7 @@ class EpisodeBuilder(Module):
                 k_pe := PositionEncoding.TIMESTEP.value, default=None
             )
         ) is not None:
-            if not torch.compiler.is_exporting():  # ty:ignore[possibly-missing-attribute]
+            if not torch.compiler.is_exporting():
                 # build a sequence starting from a random index (simplified [0])
                 # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
                 # ---
