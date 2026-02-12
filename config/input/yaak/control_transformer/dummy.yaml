@@ -5,10 +5,10 @@ data:
     _args_: [1, 6, 3, 324, 576]
     dtype:
       _target_: hydra.utils.get_object
-      path: torch.uint8
+      path: torch.float
     device: cpu
     low: 0
-    high: 255
+    high: 1
 
   meta/VehicleMotion/brake_pedal_normalized:
     _target_: torch.testing.make_tensor

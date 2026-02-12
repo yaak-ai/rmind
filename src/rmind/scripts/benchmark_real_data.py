@@ -350,7 +350,7 @@ def load_episode_data(
         # BGR -> RGB, resize to 324x576
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         frame_rgb = cv2.resize(frame_rgb, (576, 324))
-        frame_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1)
+        frame_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).float() / 255.0
         images.append(frame_tensor)
 
         # Look up metadata by timestamp
