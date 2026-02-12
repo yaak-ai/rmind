@@ -202,7 +202,6 @@ def episode_builder(
                 TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY
             ),
             TokenMeta(TokenType.SPECIAL, Modality.FORESIGHT, "cam_front_left"),
-            TokenMeta(TokenType.SPECIAL, Modality.UTILITY, "mask"),
             TokenMeta(TokenType.ACTION, Modality.CONTINUOUS, "gas_pedal"),
             TokenMeta(TokenType.ACTION, Modality.CONTINUOUS, "brake_pedal"),
             TokenMeta(TokenType.ACTION, Modality.CONTINUOUS, "steering_angle"),

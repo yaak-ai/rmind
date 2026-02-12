@@ -85,7 +85,6 @@ class Index(TensorClass["frozen"]):
     foresight: TensorDict
     image: TensorDict
     summary: TensorDict
-    utility: TensorDict
 
     def parse(self, src: Tensor, dim: int = 1) -> TensorDict:
         shape_left, shape_right = src.shape[:dim], src.shape[dim + 1 :]

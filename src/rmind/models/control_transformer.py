@@ -340,7 +340,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             name: objective(episode) for name, objective in self.objectives.items()
         }
 
-        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs  # ty:ignore[possibly-missing-attribute]
+        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
