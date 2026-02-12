@@ -496,7 +496,7 @@ def _load_weights_from_artifact(model: nn.Module, artifact: str) -> None:
     logger.info("loaded weights from artifact", artifact=artifact)
 
 
-@hydra.main(version_base=None)
+@hydra.main(version_base=None, config_path="../../../config", config_name="export/onnx_cache")
 @torch.inference_mode()
 def main(cfg: DictConfig) -> None:
     config = Config(**OmegaConf.to_container(cfg, resolve=True))  # ty:ignore[invalid-argument-type]
