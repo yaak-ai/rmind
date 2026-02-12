@@ -48,14 +48,74 @@ episode_builder:
           continuous:
             speed: [data, meta/VehicleMotion/speed]
             gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
+            gas_pedal_diff: [data, meta/VehicleMotion/gas_pedal_normalized]
             brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
+            brake_pedal_diff: [data, meta/VehicleMotion/brake_pedal_normalized]
             steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
+            steering_angle_diff: [data, meta/VehicleMotion/steering_angle_normalized]
 
           context:
             waypoints: [data, waypoints/xy_normalized]
 
           discrete:
             turn_signal: [data, meta/VehicleState/turn_signal]
+
+      - _target_: rmind.components.containers.ModuleDict
+        modules:
+          image:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: torchvision.transforms.v2.CenterCrop
+                size: [320, 576]
+              - _target_: torchvision.transforms.v2.Resize
+                size: [256, 256]
+              - _target_: torchvision.transforms.v2.ToDtype
+                scale: true
+                dtype:
+                  _target_: hydra.utils.get_object
+                  path: torch.float32
+              - _target_: torchvision.transforms.v2.Normalize
+                mean: [0.485, 0.456, 0.406]
+                std: [0.229, 0.224, 0.225]
+
+          continuous:
+            speed:
+              _target_: rmind.components.nn.AtLeast3D
+
+            gas_pedal:
+              _target_: rmind.components.nn.AtLeast3D
+
+            gas_pedal_diff:
+              _target_: rmind.components.nn.DiffLast
+              append:
+                _target_: hydra.utils.get_object
+                path: math.nan
+
+            brake_pedal:
+              _target_: rmind.components.nn.AtLeast3D
+
+            brake_pedal_diff:
+              _target_: rmind.components.nn.DiffLast
+              append:
+                _target_: hydra.utils.get_object
+                path: math.nan
+
+            steering_angle:
+              _target_: rmind.components.nn.AtLeast3D
+
+            steering_angle_diff:
+              _target_: rmind.components.nn.DiffLast
+              append:
+                _target_: hydra.utils.get_object
+                path: math.nan
+
+          discrete:
+            turn_signal:
+              _target_: rmind.components.nn.AtLeast3D
+
+          context:
+            waypoints:
+              _target_: torch.nn.Identity
 
   tokenizers:
     _target_: rmind.components.containers.ModuleDict
@@ -74,15 +134,32 @@ episode_builder:
           range: [0.0, 1.0]
           bins: ${gas_pedal_bins}
 
+        gas_pedal_diff:
+          _target_: rmind.components.norm.MuLawEncoding
+          quantization_channels: ${gas_pedal_bins}
+
         brake_pedal:
           _target_: rmind.components.norm.UniformBinner
           range: [0.0, 1.0]
           bins: ${brake_pedal_bins}
 
+        brake_pedal_diff:
+          _target_: rmind.components.norm.MuLawEncoding
+          quantization_channels: ${brake_pedal_bins}
+
         steering_angle:
           _target_: rmind.components.norm.UniformBinner
           range: [-1.0, 1.0]
           bins: ${steering_angle_bins}
+
+        steering_angle_diff:
+          _target_: rmind.components.nn.Sequential
+          _args_:
+            - _target_: rmind.components.norm.Scaler
+              in_range: [-2.0, 2.0]
+              out_range: [-1.0, 1.0]
+            - _target_: rmind.components.norm.MuLawEncoding
+              quantization_channels: ${steering_angle_bins}
 
       discrete:
         _target_: rmind.components.nn.Identity
@@ -114,14 +191,17 @@ episode_builder:
           _target_: rmind.components.nn.Embedding
           num_embeddings: ${gas_pedal_bins}
           embedding_dim: ${encoder_embedding_dim}
+        gas_pedal_diff: null
         brake_pedal:
           _target_: rmind.components.nn.Embedding
           num_embeddings: ${brake_pedal_bins}
           embedding_dim: ${encoder_embedding_dim}
+        brake_pedal_diff: null
         steering_angle:
           _target_: rmind.components.nn.Embedding
           num_embeddings: ${steering_angle_bins}
           embedding_dim: ${encoder_embedding_dim}
+        steering_angle_diff: null
 
       context:
         waypoints:
@@ -173,14 +253,17 @@ episode_builder:
           _target_: rmind.components.nn.Linear
           in_features: ${encoder_embedding_dim}
           out_features: ${encoder_embedding_dim}
+        gas_pedal_diff: null
         brake_pedal:
           _target_: rmind.components.nn.Linear
           in_features: ${encoder_embedding_dim}
           out_features: ${encoder_embedding_dim}
+        brake_pedal_diff: null
         steering_angle:
           _target_: rmind.components.nn.Linear
           in_features: ${encoder_embedding_dim}
           out_features: ${encoder_embedding_dim}
+        steering_angle_diff: null
 
       context:
         waypoints:

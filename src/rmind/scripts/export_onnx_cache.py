@@ -362,31 +362,17 @@ class CacheEnabledControlTransformer(nn.Module):
         num_new_timesteps = first_leaf.shape[1]
         self._tokens_per_timestep = new_seq_len // num_new_timesteps
 
-        # Get position embeddings for the new tokens
-        # position_embeddings = embeddings - projected_embeddings
-        new_position_embeddings = episode.embeddings_packed - new_projected_embeddings
-
         # Concatenate projected embeddings (no PE)
         all_projected_embeddings = torch.cat(
             [cached_projected_embeddings, new_projected_embeddings], dim=1
         )
-        total_seq_len = all_projected_embeddings.shape[1]
 
-        # Get position embeddings for full sequence
-        if self._position_embeddings_packed is not None:
-            # Use precomputed position embeddings (for incremental model)
-            # For incremental: cached has 5ts, new has 1ts -> total 6ts
-            # Position embeddings are for full 6 timesteps
-            position_embeddings = self._position_embeddings_packed
-        else:
-            # Compute from episode (for full model with 6 timesteps)
-            # Store for potential reuse
-            position_embeddings = new_position_embeddings
+        # Position embeddings are constant (depend only on position, not content).
+        # Use precomputed PE (always set — baked in at construction time).
+        position_embeddings = self._position_embeddings_packed
 
-        # Add position embeddings to get final embeddings
+        # Add position embeddings to get final embeddings, take only new portion for encoder
         all_embeddings = all_projected_embeddings + position_embeddings
-
-        # Get new embeddings (with PE) for encoder - only the new portion
         new_embeddings = all_embeddings[:, -new_seq_len:]
 
         # Run encoder with KV cache (uses tensor interface for export compatibility)
@@ -557,17 +543,16 @@ def main(cfg: DictConfig) -> None:
     # Determine if this is an incremental export (single timestep batch)
     is_incremental = num_timesteps == 1
 
-    # Precompute position_embeddings for 6 timesteps (constant, can be reused)
-    # position_embeddings = embeddings - projected_embeddings
+    # Precompute position_embeddings for 6 timesteps (constant for given structure + timestep_offset=0)
     if is_incremental:
         # For incremental, we need 6-timestep position_embeddings
         # Build a 6-timestep batch by repeating the 1-timestep data
         batch_6ts = _repeat_batch_timesteps(batch, target_timesteps=6)
         episode_6ts = base_model.episode_builder(batch_6ts, timestep_offset=0)
-        position_embeddings_packed = episode_6ts.embeddings_packed - episode_6ts.projected_embeddings_packed
+        position_embeddings_packed = episode_6ts.position_embeddings_packed
     else:
         # For full forward, extract from the current episode
-        position_embeddings_packed = episode.embeddings_packed - proj_embeddings
+        position_embeddings_packed = episode.position_embeddings_packed
 
     logger.debug("position_embeddings_packed shape", shape=position_embeddings_packed.shape)
 

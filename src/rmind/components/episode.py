@@ -218,6 +218,35 @@ class Episode(TensorClass["frozen"]):
         return rearrange(packed, "b t s d -> b (t s) d")
 
     @property
+    def position_embeddings_packed(self) -> Tensor:
+        """Packed position embeddings (constant for a given sequence structure and timestep_offset).
+
+        Use this for caching position embeddings in sliding window inference.
+        Position embeddings may have fewer dims than projected_embeddings
+        (e.g. [T,N,D] vs [B,T,N,D]), so we broadcast against projected_embeddings
+        to get consistent [B,T,N,D] shapes before packing.
+        """
+        keys = list(
+            (modality, name)
+            for (_token_type, modality, name), _pos in sorted(
+                self.timestep.items(include_nested=True, leaves_only=True),
+                key=itemgetter(1),
+            )
+        )
+        pe_tensors = []
+        for key in keys:
+            pe = self.position_embeddings[key]
+            proj = self.projected_embeddings[key]
+            # Broadcast PE to match projected_embeddings shape
+            while pe.dim() < proj.dim():
+                pe = pe.unsqueeze(0)
+            pe_tensors.append(pe.expand_as(proj))
+
+        packed, _ = pack(pe_tensors, "b t * d")
+
+        return rearrange(packed, "b t s d -> b (t s) d")
+
+    @property
     def embeddings_packed(self) -> Tensor:
         embeddings = self.embeddings
         keys = (
