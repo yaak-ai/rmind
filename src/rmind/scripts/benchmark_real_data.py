@@ -631,19 +631,21 @@ def main() -> None:
     # ==================== Load ONNX Models ====================
     import onnxruntime as ort
 
-    providers = (
-        ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        if "cuda" in args.device
-        else ["CPUExecutionProvider"]
-    )
+    # Use CPU for ONNX models (GPU onnxruntime has numerical precision issues with steering predictions)
+    # PyTorch models will still use the specified device (GPU or CPU)
+    providers = ["CPUExecutionProvider"]
 
-    logger.info("loading ONNX models")
+    logger.info("loading ONNX models", providers=providers, note="ONNX uses CPU regardless of PyTorch device")
     full_session = ort.InferenceSession(str(args.full_model), providers=providers)
     incr_session = ort.InferenceSession(str(args.incremental_model), providers=providers)
 
     full_input_names = {inp.name for inp in full_session.get_inputs()}
     incr_input_names = {inp.name for inp in incr_session.get_inputs()}
-    logger.info("ONNX models loaded", full_inputs=len(full_input_names), incr_inputs=len(incr_input_names))
+    logger.info("ONNX models loaded",
+                full_inputs=len(full_input_names),
+                incr_inputs=len(incr_input_names),
+                full_provider=full_session.get_providers()[0],
+                incr_provider=incr_session.get_providers()[0])
 
     # ==================== Extract ONNX Dimensions ====================
     # Get tokens_per_timestep from ONNX model for incremental inference slicing
