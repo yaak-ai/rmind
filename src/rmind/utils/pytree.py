@@ -1,12 +1,12 @@
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from torch.utils._pytree import (
+from torch.utils._pytree import (  # noqa: PLC2701
     KeyPath,
     MappingKey,
     PyTree,
-    key_get,  # noqa: PLC2701
-    tree_flatten_with_path,  # noqa: PLC2701
+    key_get,
+    tree_flatten_with_path,
 )
 
 

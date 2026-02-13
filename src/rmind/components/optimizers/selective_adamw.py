@@ -20,7 +20,7 @@ class SelectiveAdamW(AdamW):
         weight_decay_module_blacklist: tuple[type[Module], ...],
         **kwargs: Any,
     ) -> None:
-        if "params" in kwargs or weight_decay == 0.0:
+        if "params" in kwargs or weight_decay == 0.0:  # noqa: RUF069
             raise ValueError
 
         weight_decay_param_blacklist = set()
