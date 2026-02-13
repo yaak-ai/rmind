@@ -4,13 +4,15 @@ defaults:
   - /model: yaak/control_transformer/raw
   - /datamodule: yaak/train
   - /trainer: default
+  - /trainer/callbacks: pretrain
   - /paths: yaak/default
   - /wandb: yaak/rmind
   - _self_
 
 num_heads: 4
 num_layers: 8
-embedding_dim: 384
+encoder_embedding_dim: 384
+image_embedding_dim: 384
 
 speed_bins: 512
 gas_pedal_bins: 255

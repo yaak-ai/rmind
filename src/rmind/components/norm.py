@@ -47,7 +47,7 @@ class Scaler(Module, Invertible):
     def forward(self, input: Tensor) -> Tensor:
         input_min, input_max = self.in_range
 
-        if torch.compiler.is_exporting():  # ty:ignore[possibly-missing-attribute]
+        if torch.compiler.is_exporting():
             input = torch.clamp(input, input_min, input_max)
         elif input.min() < input_min or input.max() > input_max:
             msg = "input out of range"
@@ -90,7 +90,7 @@ class UniformBinner(Module, Invertible):
     def forward(self, input: Tensor) -> Tensor:
         input_min, input_max = self.range
 
-        if torch.compiler.is_exporting():  # ty:ignore[possibly-missing-attribute]
+        if torch.compiler.is_exporting():
             input = torch.clamp(input, input_min, input_max)
         elif input.min() < input_min or input.max() > input_max:
             msg = "input out of range"
@@ -134,3 +134,14 @@ class Normalize(Module):
     @override
     def forward(self, input: Tensor) -> Tensor:
         return torch.nn.functional.normalize(input, p=self.p, dim=self.dim)
+
+
+@final
+class ScaleByVectorDimensionality(Module):
+    def __init__(self, dim: int = 384) -> None:
+        super().__init__()
+        self.factor = dim ** (1 / 2)
+
+    @override
+    def forward(self, input: Tensor) -> Tensor:
+        return input / self.factor

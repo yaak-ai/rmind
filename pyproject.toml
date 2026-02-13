@@ -44,13 +44,13 @@ rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 
 [project.optional-dependencies]
-predict = ["funcy>=2.0", "wandb==0.23.0", "rbyte[visualize]"]
+predict = ["funcy>=2.0", "wandb>=0.24.2", "rbyte[visualize]"]
 test = ["pytest>=9.0.2", "pytest-lazy-fixtures>=1.4.0"]
 train = [
   "contextily>=1.6.2",
   "matplotlib>=3.10.3",
   "torchmetrics>=1.4.1",
-  "wandb==0.23.0",
+  "wandb>=0.24.2",
 ]
 
 [dependency-groups]
@@ -65,7 +65,7 @@ dev = [
 ]
 check = [
   "ruff>=0.15.0",
-  "ty>=0.0.15",
+  "ty>=0.0.16",
 ]
 export = [
   "onnx>=1.19.1",

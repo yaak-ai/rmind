@@ -17,10 +17,9 @@ from pytorch_lightning.utilities.migration.utils import (
 from pytorch_lightning.utilities.model_helpers import (
     _restricted_classmethod,  # noqa: PLC2701
 )
-from pytorch_lightning.utilities.types import OptimizerLRScheduler
+from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from structlog import get_logger
 from tensordict import TensorDict
-from torch import Tensor
 from torch.nn import Module
 from torch.nn.modules.module import _IncompatibleKeys
 from torch.optim import Optimizer
@@ -246,7 +245,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 return model.to(device)  # ty:ignore[invalid-return-type, possibly-missing-attribute]
 
     @override
-    def training_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
+    def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
 
         metrics = TensorDict({
@@ -277,14 +276,21 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 for k, v in metrics.detach().items(
                     include_nested=True, leaves_only=True
                 )
+                if not any(part.startswith("_") for part in k)
             },
             sync_dist=True,
         )
 
-        return metrics["loss", "total"]  # ty:ignore[invalid-return-type]
+        return {"loss": metrics["loss", "total"]} | metrics.select(
+            *(
+                (obj_name, "_artifacts")
+                for obj_name, metric in metrics.items()
+                if "_artifacts" in metric
+            )
+        ).to_dict()
 
     @override
-    def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> Tensor:
+    def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         metrics = TensorDict({
             name: objective.compute_metrics(episode)  # ty:ignore[call-non-callable]
@@ -300,11 +306,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 {
                     "/".join(["val", *k]): v
                     for k, v in metrics.items(include_nested=True, leaves_only=True)
+                    if not any(part.startswith("_") for part in k)
                 },  # ty:ignore[invalid-argument-type]
                 sync_dist=True,
             )
 
-        return metrics["loss", "total"]  # ty:ignore[invalid-return-type]
+        return {"loss": metrics["loss", "total"]} | metrics.select(
+            *(
+                (obj_name, "_artifacts")
+                for obj_name, metric in metrics.items()
+                if "_artifacts" in metric
+            )
+        ).to_dict()
 
     @override
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
@@ -327,7 +340,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             name: objective(episode) for name, objective in self.objectives.items()
         }
 
-        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs  # ty:ignore[possibly-missing-attribute]
+        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
