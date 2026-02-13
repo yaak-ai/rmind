@@ -7,11 +7,7 @@ from pytest_lazy_fixtures import lf
 from torch import Tensor
 from torch.nn import Module
 from torch.testing import assert_close
-from torch.utils._pytree import (
-    key_get,  # noqa: PLC2701
-    keystr,  # noqa: PLC2701
-    tree_flatten_with_path,  # noqa: PLC2701
-)
+from torch.utils._pytree import key_get, keystr, tree_flatten_with_path  # noqa: PLC2701
 from torchvision.ops import MLP
 
 from rmind.components.base import TensorTree

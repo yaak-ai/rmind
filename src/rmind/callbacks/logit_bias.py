@@ -7,12 +7,12 @@ from pydantic import InstanceOf, validate_call
 from pytorch_lightning.callbacks import Callback
 from structlog import get_logger
 from tensordict import TensorClass, TensorDict
-from torch.utils._pytree import (
+from torch.utils._pytree import (  # noqa: PLC2701
     KeyPath,
-    key_get,  # noqa: PLC2701
-    keystr,  # noqa: PLC2701
-    tree_flatten_with_path,  # noqa: PLC2701
-    tree_map,  # noqa: PLC2701
+    key_get,
+    keystr,
+    tree_flatten_with_path,
+    tree_map,
 )
 
 from rmind.components.loss import HasLogitBias

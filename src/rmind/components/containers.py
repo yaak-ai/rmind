@@ -5,16 +5,16 @@ from more_itertools import always_iterable
 from pydantic import InstanceOf, validate_call
 from torch.nn import Module
 from torch.nn import ModuleDict as _ModuleDict
-from torch.utils._pytree import (
-    MappingKey,  # noqa: PLC2701
+from torch.utils._pytree import (  # noqa: PLC2701
+    MappingKey,
     PyTree,
-    _dict_flatten,  # noqa: PLC2701
-    _dict_flatten_with_keys,  # noqa: PLC2701
-    _dict_unflatten,  # noqa: PLC2701
-    key_get,  # noqa: PLC2701
-    register_pytree_node,  # noqa: PLC2701
-    tree_flatten_with_path,  # noqa: PLC2701
-    tree_map,  # noqa: PLC2701
+    _dict_flatten,
+    _dict_flatten_with_keys,
+    _dict_unflatten,
+    key_get,
+    register_pytree_node,
+    tree_flatten_with_path,
+    tree_map,
 )
 
 type Modules = Mapping[str, InstanceOf[Module] | Modules | None]
