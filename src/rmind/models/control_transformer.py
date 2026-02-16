@@ -242,7 +242,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                     torch.tensor(0),
                 ).device
 
-                return model.to(device)  # ty:ignore[invalid-return-type, possibly-missing-attribute]
+                return model.to(device)  # ty:ignore[invalid-return-type, unresolved-attribute]
 
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:

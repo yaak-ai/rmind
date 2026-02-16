@@ -44,7 +44,7 @@ class LogitBiasSetter(Callback):
             return
 
         keypaths, _ = tree_flatten_with_path(
-            pl_module.episode_builder.input_transform[0].paths,  # ty:ignore[not-subscriptable, possibly-missing-attribute]
+            pl_module.episode_builder.input_transform[0].paths,  # ty:ignore[not-subscriptable, unresolved-attribute]
             is_leaf=lambda x: isinstance(x, tuple),
         )
         loss_keypaths = {keypath for (_, keypath, _) in losses}
@@ -58,7 +58,7 @@ class LogitBiasSetter(Callback):
             trainer.fit_loop.setup_data()
 
         logger.debug("computing logit bias from dataset")
-        match dataset := trainer.train_dataloader.dataset:  # ty:ignore[possibly-missing-attribute]
+        match dataset := trainer.train_dataloader.dataset:  # ty:ignore[unresolved-attribute]
             case rbyte.Dataset():
                 batch = dataset.get_batch(
                     slice(None), include_streams=False, include_meta=False

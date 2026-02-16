@@ -152,8 +152,8 @@ class InverseDynamicsPredictionObjective(Objective):
 
             if (key := PredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
-                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[possibly-missing-attribute]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, possibly-missing-attribute]
+                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[unresolved-attribute]
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
                         nested_keys=True,
                     ),
                     timestep_indices=timestep_indices,
@@ -170,12 +170,12 @@ class InverseDynamicsPredictionObjective(Objective):
                     value=(
                         logits
                         .apply(lambda x: x.softmax(dim=-1))
-                        .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[possibly-missing-attribute]
-                        .apply(  # ty:ignore[possibly-missing-attribute]
+                        .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[unresolved-attribute]
+                        .apply(  # ty:ignore[unresolved-attribute]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
                             episode.input_tokens[:, timestep_indices],  # ty:ignore[invalid-argument-type]
                         )
-                        .apply(lambda x: -torch.log(x))  # ty:ignore[possibly-missing-attribute]
+                        .apply(lambda x: -torch.log(x))  # ty:ignore[unresolved-attribute]
                     ),
                     timestep_indices=timestep_indices,
                 )
@@ -185,11 +185,11 @@ class InverseDynamicsPredictionObjective(Objective):
                     value=(
                         logits
                         .apply(lambda x: x.argmax(dim=-1))
-                        .named_apply(  # ty:ignore[possibly-missing-attribute]
-                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, possibly-missing-attribute]
+                        .named_apply(  # ty:ignore[unresolved-attribute]
+                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
                             nested_keys=True,
                         )
-                        .apply(  # ty:ignore[possibly-missing-attribute]
+                        .apply(  # ty:ignore[unresolved-attribute]
                             lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
                             episode.input[:, timestep_indices],  # ty:ignore[invalid-argument-type]
                             nested_keys=True,
@@ -204,7 +204,7 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
 
             if (key := PredictionKey.ATTENTION_ROLLOUT) in keys:
-                attention_rollout = self.encoder.compute_attention_rollout(  # ty:ignore[possibly-missing-attribute, call-non-callable]
+                attention_rollout = self.encoder.compute_attention_rollout(  # ty:ignore[unresolved-attribute, call-non-callable]
                     src=embeddings_packed,
                     mask=mask,
                     head_fusion="max",
