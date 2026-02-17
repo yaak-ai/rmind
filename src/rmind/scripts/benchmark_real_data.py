@@ -177,8 +177,13 @@ def get_nearest_waypoints(
         wp = waypoints[search_idx]
         wp_timestamp = wp.get("properties", {}).get("timestamp")
 
+        # Convert waypoint timestamp to seconds (float) for comparison
+        # Waypoints may have timestamps in different formats, normalize to seconds
+        if wp_timestamp is not None:
+            wp_timestamp_sec = float(wp_timestamp)
+
         # If current_timestamp provided, only select waypoints in the future
-        if current_timestamp is None or (wp_timestamp is not None and wp_timestamp > current_timestamp):
+        if current_timestamp is None or (wp_timestamp is not None and wp_timestamp_sec > current_timestamp / 1e9):
             coords = wp["geometry"]["coordinates"]
             selected.append(coords)
 
@@ -202,14 +207,17 @@ def get_nearest_waypoints(
     # Rotate to ego frame if heading is provided
     if heading is not None:
         # Convert heading from degrees to radians (heading is clockwise from North: 0=N, 90=E, 180=S, 270=W)
-        # Rotate by heading to align waypoints to vehicle's orientation
+        # For CW heading, the transformation to vehicle frame is:
+        # X_v = dx * cos(h) - dy * sin(h)  (lateral: positive = right)
+        # Y_v = dx * sin(h) + dy * cos(h)  (longitudinal: positive = forward)
         angle_rad = math.radians(heading)
         cos_h = math.cos(angle_rad)
         sin_h = math.sin(angle_rad)
 
+        before_rotation = result.copy()
         rotated = []
         for dx, dy in result:
-            # Standard 2D rotation: (x', y') = (x*cos(θ) - y*sin(θ), x*sin(θ) + y*cos(θ))
+            # Rotate map frame (dx=East, dy=North) to vehicle frame (X=right, Y=forward)
             rot_x = dx * cos_h - dy * sin_h
             rot_y = dx * sin_h + dy * cos_h
             rotated.append([rot_x, rot_y])  # already normalized by 100
@@ -1083,6 +1091,70 @@ def main() -> None:
                 onnx_full_ms=f"{onnx_full_ms:.1f}",
                 onnx_incr_ms=f"{onnx_incr_ms:.1f}",
             )
+
+            # Save waypoint visualization for last episode, last timestep
+            if ep_idx == args.num_episodes - 1:
+                try:
+                    import matplotlib.pyplot as plt
+
+                    # Get waypoints for last timestep of last episode (T=5)
+                    waypoints_last_t = batch_cpu["data"]["waypoints/xy_normalized"][0, -1, :, :].numpy()  # [10, 2]
+
+                    # Create visualization
+                    fig, ax = plt.subplots(figsize=(12, 10))
+
+                    # Plot normalized waypoints - color by index
+                    scatter = ax.scatter(waypoints_last_t[:, 0], waypoints_last_t[:, 1],
+                                        s=150, c=range(len(waypoints_last_t)), cmap='viridis',
+                                        marker='o', edgecolors='black', linewidth=1)
+
+                    # Add waypoint numbers and coordinates
+                    for i, (x, y) in enumerate(waypoints_last_t):
+                        ax.annotate(f'WP{i}\n({x:.2f},{y:.2f})', (x, y),
+                                   xytext=(8, 8), textcoords='offset points',
+                                   fontsize=8, bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.5))
+
+                    # Draw connecting lines (only if waypoints vary)
+                    if not np.allclose(waypoints_last_t[0], waypoints_last_t[-1]):
+                        ax.plot(waypoints_last_t[:, 0], waypoints_last_t[:, 1], 'b-', alpha=0.3, linewidth=1.5)
+                    else:
+                        ax.axhline(y=waypoints_last_t[0, 1], color='red', linestyle='--', alpha=0.5, label='All waypoints identical')
+                        ax.legend()
+
+                    # Add colorbar
+                    cbar = plt.colorbar(scatter, ax=ax)
+                    cbar.set_label('Waypoint Index', rotation=270, labelpad=15)
+
+                    ax.set_xlabel('X (normalized units)', fontsize=11, fontweight='bold')
+                    ax.set_ylabel('Y (normalized units)', fontsize=11, fontweight='bold')
+                    ax.set_title(f'Episode {ep_idx + 1} - Normalized Waypoints at Last Timestep (T=5)\n' +
+                                f'Episode frames: {ep_start}-{ep_end}',
+                                fontsize=12, fontweight='bold')
+                    ax.grid(True, alpha=0.3)
+                    ax.set_aspect('equal')
+
+                    # Add statistics text
+                    stats = f'Range X: [{waypoints_last_t[:, 0].min():.2f}, {waypoints_last_t[:, 0].max():.2f}]\n' + \
+                            f'Range Y: [{waypoints_last_t[:, 1].min():.2f}, {waypoints_last_t[:, 1].max():.2f}]\n' + \
+                            f'Num unique: {len(np.unique(waypoints_last_t, axis=0))}'
+                    ax.text(0.02, 0.98, stats, transform=ax.transAxes, fontsize=9,
+                           verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
+
+                    # Save
+                    output_dir = Path(args.data_dir).parent / "waypoint_visualization"
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    waypoint_path = output_dir / f"episode{ep_idx + 1}_waypoints_last_timestep.png"
+
+                    plt.savefig(str(waypoint_path), dpi=120, bbox_inches='tight')
+                    plt.close()
+
+                    logger.info("saved waypoint visualization", path=str(waypoint_path),
+                               exists=waypoint_path.exists(),
+                               size_mb=waypoint_path.stat().st_size / 1024 / 1024 if waypoint_path.exists() else 0)
+                except ImportError:
+                    logger.warning("matplotlib not available, skipping waypoint visualization")
+                except Exception as e:
+                    logger.error("failed to save waypoint visualization", error=str(e), exc_info=True)
 
     if episodes_run == 0:
         logger.error("no episodes completed")
