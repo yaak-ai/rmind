@@ -477,8 +477,12 @@ def run_pytorch_cache(
     cached_proj_emb: Tensor,
     cached_kv: Tensor,
     device: torch.device,
-) -> tuple[PredictionResult, float]:
-    """Run cache-enabled PyTorch model with KV cache and return predictions + time_ms."""
+) -> tuple[PredictionResult, float, Tensor, Tensor]:
+    """Run cache-enabled PyTorch model with KV cache and return predictions + time_ms + output cache.
+
+    Returns:
+        (predictions, time_ms, output_proj_emb, output_kv) where output caches are for reuse in next episode
+    """
     if device.type == "cuda":
         torch.cuda.synchronize()
     start = time.perf_counter()
@@ -491,6 +495,8 @@ def run_pytorch_cache(
 
     # Extract predictions (first 4 outputs are the predictions)
     brake_pedal, gas_pedal, steering_angle, turn_signal = outputs[:4]
+    # Extract output cache for next episode (last 2 outputs)
+    output_proj_emb, output_kv = outputs[-2], outputs[-1]
 
     preds = PredictionResult(
         brake_pedal=float(brake_pedal.squeeze().cpu()),
@@ -498,7 +504,7 @@ def run_pytorch_cache(
         steering_angle=float(steering_angle.squeeze().cpu()),
         turn_signal=int(turn_signal.squeeze().cpu()),
     )
-    return preds, elapsed_ms
+    return preds, elapsed_ms, output_proj_emb, output_kv
 
 
 def run_onnx_full(
@@ -507,11 +513,28 @@ def run_onnx_full(
     batch_cpu: dict[str, Any],
     embed_dim: int,
     num_layers: int,
+    cached_proj_emb: np.ndarray | None = None,
+    cached_kv: np.ndarray | None = None,
 ) -> tuple[PredictionResult, float, np.ndarray, np.ndarray]:
-    """Run ONNX full forward model. Returns predictions, time_ms, proj_emb, kv."""
+    """Run ONNX full forward model with optional cached embeddings.
+
+    Args:
+        cached_proj_emb: Optional cached projected embeddings from previous episode
+        cached_kv: Optional cached KV from previous episode
+
+    Returns:
+        (predictions, time_ms, output_proj_emb, output_kv) where outputs include new cache
+    """
     onnx_inputs = flatten_batch_to_onnx(batch_cpu)
-    onnx_inputs["cached_projected_embeddings"] = np.empty((1, 0, embed_dim), dtype=np.float32)
-    onnx_inputs["cached_kv"] = np.empty((num_layers, 2, 1, 0, embed_dim), dtype=np.float32)
+    # Use provided cache or empty for first episode
+    onnx_inputs["cached_projected_embeddings"] = (
+        cached_proj_emb if cached_proj_emb is not None
+        else np.empty((1, 0, embed_dim), dtype=np.float32)
+    )
+    onnx_inputs["cached_kv"] = (
+        cached_kv if cached_kv is not None
+        else np.empty((num_layers, 2, 1, 0, embed_dim), dtype=np.float32)
+    )
     matched = match_onnx_inputs(input_names, onnx_inputs)
 
     start = time.perf_counter()
@@ -991,16 +1014,22 @@ def main() -> None:
             timing_native.times_ms.append(native_ms)
 
             # 2. PyTorch Cache-enabled
-            cache_preds, cache_ms = run_pytorch_cache(cache_model, batch, empty_proj_emb, empty_kv, device)
+            # ✓ Cache IS USED within episode: processes ts 0-5 with internal incremental caching
+            cache_preds, cache_ms, _, _ = run_pytorch_cache(
+                cache_model, batch, empty_proj_emb, empty_kv, device
+            )
             timing_cache.times_ms.append(cache_ms)
 
             # 3. ONNX Full Forward
+            # Processes all 6 timesteps and outputs cache for use in ONNX Incremental
             onnx_full_preds, onnx_full_ms, proj_emb_out, kv_out = run_onnx_full(
                 full_session, full_input_names, batch_cpu, embed_dim, num_layers,
             )
             timing_onnx_full.times_ms.append(onnx_full_ms)
 
-            # 4. ONNX Incremental (5 cached + 1 new)
+            # 4. ONNX Incremental
+            # ✓ Cache IS USED: takes cache from ts 0-4 (output above) + processes only ts 5
+            # This demonstrates incremental inference within the episode
             proj_emb_5 = proj_emb_out[:, :5 * onnx_tokens_per_timestep, :]
             kv_cache_5 = kv_out[:, :, :, :5 * onnx_tokens_per_timestep, :]
             onnx_incr_preds, onnx_incr_ms = run_onnx_incremental(
