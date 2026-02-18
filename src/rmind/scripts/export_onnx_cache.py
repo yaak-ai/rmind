@@ -371,14 +371,26 @@ class CacheEnabledControlTransformer(nn.Module):
         # Use precomputed PE (always set — baked in at construction time).
         position_embeddings = self._position_embeddings_packed
 
-        # Add position embeddings to get final embeddings, take only new portion for encoder
+        # Cached embeddings are projected embeddings WITHOUT PE applied.
+        # Must add PE to all embeddings (both cached and new) since they're all just projected.
         all_embeddings = all_projected_embeddings + position_embeddings
-        new_embeddings = all_embeddings[:, -new_seq_len:]
+
+        # When KV cache is empty but proj_emb cache exists, pass ALL embeddings
+        # through encoder (KV can't be reused across position shifts due to baked-in PE).
+        if cached_kv.shape[3] == 0:
+            new_embeddings = all_embeddings
+        else:
+            new_embeddings = all_embeddings[:, -new_seq_len:]
 
         # Run encoder with KV cache (uses tensor interface for export compatibility)
         encoder_output, kv_cache = self.encoder.forward_with_kv_tensor(
             new_embeddings, mask, cached_kv
         )
+
+        # When encoder processed all embeddings (proj_emb cache + new, no KV cache),
+        # slice output back to new portion — episode.index is relative to new batch only
+        if cached_kv.shape[3] == 0 and cached_projected_embeddings.shape[1] > 0:
+            encoder_output = encoder_output[:, -new_seq_len:]
 
         # Compute predictions directly from encoder output (single encoder path)
         # This avoids running a second encoder call in PolicyObjective

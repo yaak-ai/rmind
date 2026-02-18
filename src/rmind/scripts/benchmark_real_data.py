@@ -477,8 +477,12 @@ def run_pytorch_cache(
     cached_proj_emb: Tensor,
     cached_kv: Tensor,
     device: torch.device,
+    mask: Tensor | None = None,
 ) -> tuple[PredictionResult, float, Tensor, Tensor]:
     """Run cache-enabled PyTorch model with KV cache and return predictions + time_ms + output cache.
+
+    Args:
+        mask: Optional attention mask for when using cache (cropped from full mask)
 
     Returns:
         (predictions, time_ms, output_proj_emb, output_kv) where output caches are for reuse in next episode
@@ -488,7 +492,10 @@ def run_pytorch_cache(
     start = time.perf_counter()
     # Call cache-enabled model with cached embeddings and KV
     # Returns: (brake, gas, steering, turn_signal, proj_emb, kv_cache)
-    outputs = cache_model(batch, cached_proj_emb, cached_kv)
+    if mask is not None:
+        outputs = cache_model.forward_with_mask(batch, cached_proj_emb, cached_kv, mask)
+    else:
+        outputs = cache_model(batch, cached_proj_emb, cached_kv)
     if device.type == "cuda":
         torch.cuda.synchronize()
     elapsed_ms = (time.perf_counter() - start) * 1000
@@ -556,11 +563,18 @@ def run_onnx_incremental(
     batch_1_cpu: dict[str, Any],
     proj_emb_5: np.ndarray,
     kv_cache_5: np.ndarray,
-) -> tuple[PredictionResult, float]:
-    """Run ONNX incremental model with cached context. Returns predictions, time_ms."""
+    mask: np.ndarray | None = None,
+) -> tuple[PredictionResult, float, np.ndarray, np.ndarray]:
+    """Run ONNX incremental model with cached context. Returns predictions, time_ms, proj_emb_out, kv_out.
+
+    Args:
+        mask: Optional cropped attention mask [338, 2028] when using cache
+    """
     onnx_inputs = flatten_batch_to_onnx(batch_1_cpu)
     onnx_inputs["cached_projected_embeddings"] = proj_emb_5
     onnx_inputs["cached_kv"] = kv_cache_5
+    if mask is not None:
+        onnx_inputs["attention_mask"] = mask
     matched = match_onnx_inputs(incr_input_names, onnx_inputs)
 
     start = time.perf_counter()
@@ -573,7 +587,8 @@ def run_onnx_incremental(
         steering_angle=float(outputs[2].flatten()[0]),
         turn_signal=int(outputs[3].flatten()[0]),
     )
-    return preds, elapsed_ms
+    # Return output embeddings and KV cache (outputs[4] and outputs[5])
+    return preds, elapsed_ms, outputs[4], outputs[5]
 
 
 def run_continuous_frame_inference(
@@ -1188,6 +1203,9 @@ def main() -> None:
     waypoint_idx_hint = None
     prev_randomized_inputs = None  # Store randomized inputs from previous episode
 
+    # Cross-episode cache: only cache projected embeddings (no KV — PE is baked into KV and can't be reused across position shifts)
+    cache_proj_emb_prev = empty_proj_emb.clone()
+
     with torch.inference_mode():
         for ep_idx in range(args.num_episodes):
             ep_start = start_frame + ep_idx * args.episode_spacing
@@ -1289,11 +1307,23 @@ def main() -> None:
             timing_native.times_ms.append(native_ms)
 
             # 2. PyTorch Cache-enabled
-            # ✓ Cache IS USED within episode: processes ts 0-5 with internal incremental caching
-            cache_preds, cache_ms, _, _ = run_pytorch_cache(
-                cache_model, batch, empty_proj_emb, empty_kv, device
-            )
+            # Only proj_emb is cached across episodes (KV has PE baked in, can't reuse across position shifts)
+            # Episode 0: full batch, empty cache
+            # Episodes 1+: batch_1 only, cached proj_emb for ts[0:5], empty KV, baked-in mask
+            if cache_proj_emb_prev.shape[1] == 0:
+                cache_preds, cache_ms, cache_proj_emb_out, _ = run_pytorch_cache(
+                    cache_model, batch, cache_proj_emb_prev, empty_kv, device, mask=None
+                )
+            else:
+                cache_preds, cache_ms, cache_proj_emb_out, _ = run_pytorch_cache(
+                    cache_model, batch_1, cache_proj_emb_prev, empty_kv, device, mask=None
+                )
             timing_cache.times_ms.append(cache_ms)
+
+            # Extract proj_emb cache for next episode (ts[1:6] = 1690 tokens)
+            ts_1_start = 1 * onnx_tokens_per_timestep
+            ts_6_end = 6 * onnx_tokens_per_timestep
+            cache_proj_emb_prev = cache_proj_emb_out[:, ts_1_start:ts_6_end, :]
 
             # 3. ONNX Full Forward
             # NOTE: Current ONNX export doesn't support pre-populated cache input (expects dimension 0)
@@ -1304,12 +1334,13 @@ def main() -> None:
             timing_onnx_full.times_ms.append(onnx_full_ms)
 
             # 4. ONNX Incremental
-            # ✓ Cache IS USED: takes cache from ts 0-4 (output above) + processes only ts 5
-            # This demonstrates incremental inference within the episode
+            # Always use proj_emb + KV from current episode's Full Forward (ts[0:5])
+            # ONNX model has baked-in mask expecting real KV, can't pass zeros
             proj_emb_5 = proj_emb_out[:, :5 * onnx_tokens_per_timestep, :]
             kv_cache_5 = kv_out[:, :, :, :5 * onnx_tokens_per_timestep, :]
-            onnx_incr_preds, onnx_incr_ms = run_onnx_incremental(
-                incr_session, incr_input_names, batch_1_cpu, proj_emb_5, kv_cache_5,
+
+            onnx_incr_preds, onnx_incr_ms, _, _ = run_onnx_incremental(
+                incr_session, incr_input_names, batch_1_cpu, proj_emb_5, kv_cache_5, mask=None,
             )
             timing_onnx_incr.times_ms.append(onnx_incr_ms)
 
