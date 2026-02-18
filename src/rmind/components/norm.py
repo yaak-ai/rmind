@@ -138,7 +138,7 @@ class Normalize(Module):
 
 @final
 class ScaleByVectorDimensionality(Module):
-    def __init__(self, dim: int = 384) -> None:
+    def __init__(self, dim: int = 384, down: bool=None) -> None:
         super().__init__()
         self.factor = dim ** (1 / 2)
 

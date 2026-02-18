@@ -1,6 +1,6 @@
 ---
 defaults:
-  - /dataset/yaak/predict@predict.dataset
+  - /dataset/yaak/tegel_val@predict.dataset
   - _self_
 
 _target_: rmind.datamodules.GenericDataModule

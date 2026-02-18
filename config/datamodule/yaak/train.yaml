@@ -1,7 +1,7 @@
 ---
 defaults:
-  - /dataset/yaak/train@train.dataset
-  - /dataset/yaak/val@val.dataset
+  - /dataset/yaak/tegel_train@train.dataset
+  - /dataset/yaak/tegel_val@val.dataset
   - _self_
 
 _target_: rmind.datamodules.GenericDataModule
