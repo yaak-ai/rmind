@@ -16,9 +16,9 @@ trainer:
   precision: "bf16-mixed"
   logger: false
   callbacks:
-    - _target_: rmind.callbacks.RerunPredictionWriter
-      write_interval: batch
-      logger: ${logger}
+    # - _target_: rmind.callbacks.RerunPredictionWriter
+    #   write_interval: batch
+    #   logger: ${logger}
 
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
