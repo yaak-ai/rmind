@@ -1,0 +1,34 @@
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+filename: model.ckpt
+strict: true
+hparams_updaters:
+  # wrap hparams in DictConfig
+  - _target_: omegaconf.DictConfig
+    _partial_: true
+  # freeze episode builder (embeddings etc)
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: true
+    key: episode_builder.freeze
+    value: true
+  # freeze encoder
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: true
+    key: encoder.freeze
+    value: true
+  # for some reason lr_scheduler.scheduler isn't checkpointed? re-add
+  - _target_: omegaconf.OmegaConf.update
+    _partial_: true
+    _recursive_: false
+    merge: false
+    key: lr_scheduler
+    value:
+      interval: step
+      scheduler:
+        _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+        num_warmup_steps: 25000
+        num_training_steps: 250000
