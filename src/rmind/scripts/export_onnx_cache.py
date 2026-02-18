@@ -1,31 +1,28 @@
 """Export cache-enabled ControlTransformer model to ONNX.
 
-This script exports a model that supports efficient sequential inference:
+This script exports a model that supports efficient sequential inference by caching
+projected embeddings (before position embedding addition) across calls.
+
+KV cache is NOT used because absolute position embeddings get baked into K/V values
+through LayerNorm + QKV projection, making them position-dependent and non-reusable
+when tokens shift positions across episodes.
 
 Inputs:
     batch: Input batch dict (full batch for initial call, single timestep for subsequent)
     cached_projected_embeddings: [B, S_cached, D] - cached projected embeddings WITHOUT position
                                  embeddings (zeros with S_cached=0 for first call)
-    cached_kv: [L, 2, B, S_cached, D] - cached KV (zeros with S_cached=0 for first call)
-    mask: Attention mask [S_new, S_total] where S_total = S_cached + S_new
 
 Outputs:
     predictions: Model predictions
     all_projected_embeddings: [B, S_total, D] - all projected embeddings WITHOUT position
                               embeddings (cache this for next call)
-    kv_cache: [L, 2, B, S_total, D] - updated KV cache (cache this for next call)
-
-IMPORTANT: This model caches projected_embeddings (before position embedding), not
-embeddings (after position embedding). Position embeddings are applied after
-concatenating cached and new projected embeddings. This ensures correct position
-encoding for the full sequence.
 
 Usage:
     # First call (process all timesteps)
-    preds, proj_emb, kv = model(full_batch, empty_emb, empty_kv, full_mask)
+    preds, proj_emb = model(full_batch, empty_emb)
 
-    # Subsequent calls (process single timestep)
-    preds, proj_emb, kv = model(single_timestep_batch, cached_proj_emb, cached_kv, incr_mask)
+    # Subsequent calls (process single timestep with cached proj_emb from previous)
+    preds, proj_emb = model(single_timestep_batch, cached_proj_emb)
 """
 
 from __future__ import annotations
@@ -159,15 +156,19 @@ class CacheEnabledControlTransformer(nn.Module):
     1. Computing projected_embeddings (no PE) for the input batch
     2. Concatenating with cached projected_embeddings from previous calls
     3. Adding precomputed position_embeddings to the full sequence
-    4. Running encoder with KV cache for efficient attention
+    4. Running encoder on all embeddings (no KV cache)
+
+    KV cache is NOT used because absolute position embeddings get baked into K/V
+    through LayerNorm + QKV projection, making them position-dependent. Only projected
+    embeddings (before PE) are cached and reused across calls.
 
     Position embedding strategy:
     - Cache `projected_embeddings` (no position embeddings at all)
     - `position_embeddings_packed` for 6 timesteps is CONSTANT - precompute once and reuse
-    - After concatenation (always 6 timesteps = 1644 tokens), add precomputed position_embeddings
+    - After concatenation (always 6 timesteps worth), add precomputed position_embeddings
 
-    The model takes cached_projected_embeddings and cached_kv as inputs.
-    For the first call, pass zero-sized tensors (S_cached=0).
+    The model takes cached_projected_embeddings as input.
+    For the first call, pass zero-sized tensor (S_cached=0).
 
     The attention mask can optionally be baked into the model at construction time.
     Pass the mask to __init__ to bake it in, or omit it to pass mask as a forward() argument.
@@ -329,22 +330,18 @@ class CacheEnabledControlTransformer(nn.Module):
         self,
         batch: dict,
         cached_projected_embeddings: Tensor,
-        cached_kv: Tensor,
         mask: Tensor,
-    ) -> tuple[dict, Tensor, Tensor]:
+    ) -> tuple:
         """Internal forward implementation.
 
         Args:
             batch: Input batch dict (full batch or single timestep)
             cached_projected_embeddings: [B, S_cached, D] - cached projected embeddings
                                          WITHOUT any position embeddings (S_cached=0 for first call)
-            cached_kv: [L, 2, B, S_cached, D] - cached KV (S_cached=0 for first call)
-            mask: Attention mask [S_new, S_total]
+            mask: Attention mask [S_total, S_total]
 
         Returns:
-            predictions: Dict of prediction tensors
-            all_projected_embeddings: [B, S_total, D] - projected embeddings for caching (no PE)
-            kv_cache: [L, 2, B, S_total, D] - updated KV cache
+            Tuple of (*prediction_tensors, all_projected_embeddings)
         """
         # Build episode with timestep_offset=0 for consistent position embeddings
         episode = self.episode_builder(batch, timestep_offset=0)
@@ -371,33 +368,21 @@ class CacheEnabledControlTransformer(nn.Module):
         # Use precomputed PE (always set — baked in at construction time).
         position_embeddings = self._position_embeddings_packed
 
-        # Cached embeddings are projected embeddings WITHOUT PE applied.
-        # Must add PE to all embeddings (both cached and new) since they're all just projected.
+        # Add PE to all embeddings (both cached and new are raw projections without PE)
         all_embeddings = all_projected_embeddings + position_embeddings
 
-        # When KV cache is empty but proj_emb cache exists, pass ALL embeddings
-        # through encoder (KV can't be reused across position shifts due to baked-in PE).
-        if cached_kv.shape[3] == 0:
-            new_embeddings = all_embeddings
-        else:
-            new_embeddings = all_embeddings[:, -new_seq_len:]
+        # Run encoder on ALL embeddings
+        encoder_output = self.encoder(src=all_embeddings, mask=mask)
 
-        # Run encoder with KV cache (uses tensor interface for export compatibility)
-        encoder_output, kv_cache = self.encoder.forward_with_kv_tensor(
-            new_embeddings, mask, cached_kv
-        )
-
-        # When encoder processed all embeddings (proj_emb cache + new, no KV cache),
-        # slice output back to new portion — episode.index is relative to new batch only
-        if cached_kv.shape[3] == 0 and cached_projected_embeddings.shape[1] > 0:
+        # Slice to new portion for prediction extraction — episode.index is relative
+        # to the new batch only (not the cached portion)
+        if cached_projected_embeddings.shape[1] > 0:
             encoder_output = encoder_output[:, -new_seq_len:]
 
         # Compute predictions directly from encoder output (single encoder path)
-        # This avoids running a second encoder call in PolicyObjective
         predictions = self._compute_policy_predictions(encoder_output, episode)
 
         # Flatten TensorDict/dict outputs to plain tensors for ONNX compatibility
-        # Expected structure: policy -> continuous/discrete -> individual predictions
         flat_predictions = {}
         for cat_name, cat_output in predictions.items():
             if hasattr(cat_output, 'items'):  # Nested dict/TensorDict
@@ -406,19 +391,17 @@ class CacheEnabledControlTransformer(nn.Module):
             elif isinstance(cat_output, Tensor):
                 flat_predictions[f"policy_{cat_name}"] = cat_output
 
-        # Return as tuple: (brake_pedal, gas_pedal, steering_angle, turn_signal, proj_emb, kv)
         # Sorted by key for consistent ordering
         sorted_preds = [flat_predictions[k] for k in sorted(flat_predictions.keys())]
 
         # Return projected embeddings (no PE) for caching
-        return (*sorted_preds, all_projected_embeddings, kv_cache)
+        return (*sorted_preds, all_projected_embeddings)
 
     def forward(
         self,
         batch: dict,
         cached_projected_embeddings: Tensor,
-        cached_kv: Tensor,
-    ) -> tuple[dict, Tensor, Tensor]:
+    ) -> tuple:
         """Forward pass using baked-in mask.
 
         This method uses the mask that was provided at construction time.
@@ -426,26 +409,23 @@ class CacheEnabledControlTransformer(nn.Module):
 
         Args:
             batch: Input batch dict (full batch or single timestep)
-            cached_projected_embeddings: [B, S_cached, D] - cached embeddings with non-timestep PEs
-                                         (waypoints, actions, special) but WITHOUT timestep PE.
-                                         Note: Parameter name kept for ONNX compatibility.
-            cached_kv: [L, 2, B, S_cached, D] - cached KV
+            cached_projected_embeddings: [B, S_cached, D] - cached projected embeddings
+                                         WITHOUT position embeddings (S_cached=0 for first call)
 
         Returns:
-            Tuple of (predictions..., all_embeddings_with_non_ts_pe, kv_cache)
+            Tuple of (*prediction_tensors, all_projected_embeddings)
         """
         if self._baked_mask is None:
             msg = "No baked-in mask set. Use forward_with_mask() or pass mask to __init__."
             raise RuntimeError(msg)
-        return self._forward_impl(batch, cached_projected_embeddings, cached_kv, self._baked_mask)
+        return self._forward_impl(batch, cached_projected_embeddings, self._baked_mask)
 
     def forward_with_mask(
         self,
         batch: dict,
         cached_projected_embeddings: Tensor,
-        cached_kv: Tensor,
         mask: Tensor,
-    ) -> tuple[dict, Tensor, Tensor]:
+    ) -> tuple:
         """Forward pass with explicit mask argument.
 
         Use this when you want to pass the mask at runtime (e.g., for testing
@@ -454,13 +434,12 @@ class CacheEnabledControlTransformer(nn.Module):
         Args:
             batch: Input batch dict (full batch or single timestep)
             cached_projected_embeddings: [B, S_cached, D] - cached projected embeddings
-            cached_kv: [L, 2, B, S_cached, D] - cached KV
-            mask: Attention mask [S_new, S_total]
+            mask: Attention mask [S_total, S_total]
 
         Returns:
-            predictions + cache outputs
+            Tuple of (*prediction_tensors, all_projected_embeddings)
         """
-        return self._forward_impl(batch, cached_projected_embeddings, cached_kv, mask)
+        return self._forward_impl(batch, cached_projected_embeddings, mask)
 
 
 class Config(BaseModel):
@@ -576,22 +555,22 @@ def main(cfg: DictConfig) -> None:
 
     if is_incremental:
         logger.info("incremental export mode detected (1 timestep batch)")
-        # For incremental export, use non-empty cache (5 timesteps worth)
+        # For incremental export, cache only projected embeddings (5 timesteps worth).
+        # KV cache is NOT reused — PE is baked into KV and can't be reused across position shifts.
+        # With empty KV, encoder processes all 2028 embeddings, so use full 6-timestep mask.
         num_cached_timesteps = 5
         cached_seq_len = num_cached_timesteps * tokens_per_timestep
-        total_seq_len_incr = cached_seq_len + seq_len
 
-        # Build full 6-timestep mask from the model, then crop to incremental shape
+        # Build full 6-timestep mask (not cropped — encoder sees all 2028 tokens)
         full_mask = PolicyObjective.build_attention_mask(
             episode_6ts.index, episode_6ts.timestep, legend=TorchAttentionMaskLegend
         ).mask.to(proj_embeddings.device)
-        mask = full_mask[-tokens_per_timestep:, :]  # Crop to incremental shape
+        mask = full_mask  # Full [2028, 2028] mask
 
         logger.debug(
             "incremental export config",
             cached_seq_len=cached_seq_len,
             new_seq_len=seq_len,
-            total_seq_len=total_seq_len_incr,
             mask_shape=tuple(mask.shape),
         )
     else:
@@ -610,24 +589,16 @@ def main(cfg: DictConfig) -> None:
         position_embeddings_packed=position_embeddings_packed,
     ).eval()
 
-    num_layers = cache_model.num_layers
-    logger.debug("model config", num_layers=num_layers, embedding_dim=embed_dim)
+    logger.debug("model config", embedding_dim=embed_dim)
 
-    # Create cache tensors
+    # Create cache tensors (no KV cache — only projected embeddings are cached)
     if is_incremental:
         cached_proj_emb = torch.randn(
             batch_size, cached_seq_len, embed_dim, device=proj_embeddings.device
         )
-        cached_kv = torch.randn(
-            num_layers, 2, batch_size, cached_seq_len, embed_dim,
-            device=proj_embeddings.device
-        )
     else:
         # Empty cache for full forward
         cached_proj_emb = torch.zeros(batch_size, 0, embed_dim, device=proj_embeddings.device)
-        cached_kv = torch.zeros(
-            num_layers, 2, batch_size, 0, embed_dim, device=proj_embeddings.device
-        )
 
     # IMPORTANT: Set the baked-in mask on PolicyObjective before export
     # This ensures the objective's encoder call uses the same mask as the
@@ -648,31 +619,29 @@ def main(cfg: DictConfig) -> None:
     episode_module._is_exporting = lambda: True
 
     logger.debug("testing forward pass (using baked-in mask)", is_incremental=is_incremental)
-    outputs = cache_model(batch, cached_proj_emb, cached_kv)  # No mask arg - uses baked-in
+    outputs = cache_model(batch, cached_proj_emb)  # No mask arg - uses baked-in
 
     # Restore original function before export (torch.export needs real is_exporting behavior)
     episode_module._is_exporting = original_is_exporting
-    # Outputs: (*predictions, proj_emb, kv_cache) - last two are cache outputs
-    proj_emb_out, kv_out = outputs[-2], outputs[-1]
+    # Outputs: (*predictions, proj_emb) - last element is cache output
+    proj_emb_out = outputs[-1]
     logger.debug(
         "forward output",
         num_outputs=len(outputs),
         proj_emb_shape=proj_emb_out.shape,
-        kv_shape=kv_out.shape,
     )
 
-    # Export args - mask is baked in, so no mask argument needed
+    # Export args - mask is baked in, no KV cache needed
     logger.debug("exporting cache-enabled model (mask baked in)", dynamic_shapes=config.dynamic_shapes)
-    export_args = (batch, cached_proj_emb, cached_kv)
+    export_args = (batch, cached_proj_emb)
 
     try:
         # Build dynamic axes for legacy ONNX export
         dynamic_axes = None
         if config.dynamic_shapes:
             dynamic_axes = {
-                # Cache inputs: sequence dimension is dynamic
+                # Cache input: sequence dimension is dynamic
                 "cached_projected_embeddings": {1: "s_cached"},
-                "cached_kv": {3: "s_cached"},
             }
             logger.debug("using dynamic axes for cache inputs")
 
@@ -726,9 +695,8 @@ def main(cfg: DictConfig) -> None:
                     # Register mask as a buffer so it gets serialized
                     self.register_buffer("_mask", baked_mask, persistent=False)
 
-                def forward(self, batch: dict, cached_projected_embeddings: Tensor, cached_kv: Tensor):
-                    # Use forward_with_mask with the baked-in mask buffer
-                    return self.model.forward_with_mask(batch, cached_projected_embeddings, cached_kv, self._mask)
+                def forward(self, batch: dict, cached_projected_embeddings: Tensor):
+                    return self.model.forward_with_mask(batch, cached_projected_embeddings, self._mask)
 
             wrapper = BakedMaskWrapper(cache_model, mask).eval()
 
@@ -757,17 +725,15 @@ def main(cfg: DictConfig) -> None:
             # Build input names for legacy export (mask is baked in)
             input_names = list(_get_batch_input_names(batch))
             input_names = [name for name, _ in input_names]
-            input_names.extend(["cached_projected_embeddings", "cached_kv"])
+            input_names.extend(["cached_projected_embeddings"])
 
-            # Output names match the flattened predictions + cache outputs
-            # Predictions are sorted alphabetically, then proj_emb and kv_cache
+            # Output names match the flattened predictions + proj_emb cache output
             output_names = [
                 "policy_continuous_brake_pedal",
                 "policy_continuous_gas_pedal",
                 "policy_continuous_steering_angle",
                 "policy_discrete_turn_signal",
                 "projected_embeddings",
-                "kv_cache",
             ]
 
             # NOTE: Legacy export with dynamic_axes doesn't work due to unsupported
@@ -818,7 +784,6 @@ def main(cfg: DictConfig) -> None:
             # Prepare ONNX inputs using the SAME inputs as export (mask is baked in)
             onnx_inputs = flatten_batch_to_onnx(batch)
             onnx_inputs["cached_projected_embeddings"] = cached_proj_emb.numpy()
-            onnx_inputs["cached_kv"] = cached_kv.numpy()
 
             # Match input names (case-insensitive)
             onnx_inputs_matched = {}
@@ -843,7 +808,6 @@ def main(cfg: DictConfig) -> None:
                 "policy_continuous_steering_angle",
                 "policy_discrete_turn_signal",
                 "projected_embeddings",
-                "kv_cache",
             ]
 
             # With unified encoder path, differences should be minimal (FP epsilon level)

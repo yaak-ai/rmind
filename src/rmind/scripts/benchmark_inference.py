@@ -188,11 +188,11 @@ def benchmark_pytorch_with_cache(
     device: torch.device,
     tokens_per_timestep: int,
 ) -> tuple[BenchmarkResult, BenchmarkResult, BenchmarkResult]:
-    """Benchmark PyTorch model with KV cache (incremental inference).
+    """Benchmark PyTorch model with embedding cache (incremental inference).
 
     Returns three results:
-    1. Encoder only with KV cache (pre-computed embeddings)
-    2. Full incremental pipeline (episode_builder + encoder with cache)
+    1. Encoder only (full forward, pre-computed embeddings)
+    2. Full pipeline (episode_builder + encoder)
     3. Episode builder only (single timestep)
     """
     model = model.to(device).eval()
@@ -209,41 +209,21 @@ def benchmark_pytorch_with_cache(
     embed_dim = encoder.layers[0].embedding_dim
 
     with torch.inference_mode():
-        # First, do a full forward to get initial cache
+        # Pre-compute full embeddings for encoder-only benchmark
         episode_full = model.episode_builder(batch_full)
-        _, kv_cache = encoder.forward_with_kv_tensor(
-            episode_full.embeddings_packed,
-            mask_full,
-            torch.empty(num_layers, 2, 1, 0, embed_dim, device=device),
-        )
+        full_embeddings = episode_full.embeddings_packed.clone()
 
-        # Trim cache to simulate sliding window (remove first timestep)
-        cached_seq_len = kv_cache.shape[3] - tokens_per_timestep
-        kv_cache_trimmed = kv_cache[:, :, :, -cached_seq_len:].contiguous()
-
-        # Pre-compute embeddings for encoder-only benchmark
-        episode_single = model.episode_builder(batch_single)
-        new_embeddings = model.episode_builder.apply_timestep_position_embeddings(
-            episode_single.projected_embeddings_packed,
-            num_timesteps=1,
-            timestep_offset=5,
-        ).clone()
-
-        # Warmup encoder only
+        # Warmup encoder only (full forward)
         for _ in range(num_warmup):
-            _ = encoder.forward_with_kv_tensor(
-                new_embeddings, mask_incremental, kv_cache_trimmed
-            )
+            _ = encoder(src=full_embeddings, mask=mask_full)
             torch.cuda.synchronize()
 
-        # Benchmark encoder only with KV cache
+        # Benchmark encoder only (full forward)
         encoder_times = []
         for _ in range(num_iterations):
             torch.cuda.synchronize()
             start = time.perf_counter()
-            _ = encoder.forward_with_kv_tensor(
-                new_embeddings, mask_incremental, kv_cache_trimmed
-            )
+            _ = encoder(src=full_embeddings, mask=mask_full)
             torch.cuda.synchronize()
             end = time.perf_counter()
             encoder_times.append((end - start) * 1000)
@@ -263,29 +243,19 @@ def benchmark_pytorch_with_cache(
             end = time.perf_counter()
             episode_builder_times.append((end - start) * 1000)
 
-        # Warmup full incremental pipeline
+        # Warmup full pipeline (episode builder + encoder)
         for _ in range(num_warmup):
-            episode_single = model.episode_builder(batch_single)
-            emb = model.episode_builder.apply_timestep_position_embeddings(
-                episode_single.projected_embeddings_packed,
-                num_timesteps=1,
-                timestep_offset=5,
-            )
-            _ = encoder.forward_with_kv_tensor(emb, mask_incremental, kv_cache_trimmed)
+            episode_full = model.episode_builder(batch_full)
+            _ = encoder(src=episode_full.embeddings_packed, mask=mask_full)
             torch.cuda.synchronize()
 
-        # Benchmark full incremental pipeline
+        # Benchmark full pipeline
         full_times = []
         for _ in range(num_iterations):
             torch.cuda.synchronize()
             start = time.perf_counter()
-            episode_single = model.episode_builder(batch_single)
-            emb = model.episode_builder.apply_timestep_position_embeddings(
-                episode_single.projected_embeddings_packed,
-                num_timesteps=1,
-                timestep_offset=5,
-            )
-            _ = encoder.forward_with_kv_tensor(emb, mask_incremental, kv_cache_trimmed)
+            episode_full = model.episode_builder(batch_full)
+            _ = encoder(src=episode_full.embeddings_packed, mask=mask_full)
             torch.cuda.synchronize()
             end = time.perf_counter()
             full_times.append((end - start) * 1000)
@@ -296,7 +266,7 @@ def benchmark_pytorch_with_cache(
 
     return (
         BenchmarkResult(
-            name="PyTorch encoder only (incremental + KV cache)",
+            name="PyTorch encoder only (full forward)",
             num_iterations=num_iterations,
             total_time_ms=encoder_times.sum(),
             mean_time_ms=encoder_times.mean(),
@@ -305,7 +275,7 @@ def benchmark_pytorch_with_cache(
             max_time_ms=encoder_times.max(),
         ),
         BenchmarkResult(
-            name="PyTorch full pipeline (incremental + KV cache)",
+            name="PyTorch full pipeline (episode builder + encoder)",
             num_iterations=num_iterations,
             total_time_ms=full_times.sum(),
             mean_time_ms=full_times.mean(),
@@ -544,7 +514,7 @@ def main() -> None:
     logger.info(str(pytorch_encoder_full))
     logger.info(str(pytorch_pipeline_full))
 
-    logger.info("Running PyTorch incremental (with KV cache) benchmark...")
+    logger.info("Running PyTorch encoder benchmark (pre-computed embeddings)...")
     pytorch_encoder_incr, pytorch_pipeline_incr, pytorch_episode_single = benchmark_pytorch_with_cache(
         model=model,
         batch_full=batch_full,
@@ -589,20 +559,16 @@ def main() -> None:
         # Get batch-related input names (exclude cache inputs)
         batch_input_names = [
             name for name in input_names
-            if name not in ("cached_projected_embeddings", "cached_kv", "mask")
+            if name not in ("cached_projected_embeddings", "mask")
         ]
 
-        # Prepare ONNX inputs for full forward
+        # Prepare ONNX inputs for full forward (no KV cache — only proj_emb cache)
         batch_np = flatten_batch_to_numpy(batch_full, onnx_input_names=batch_input_names)
         empty_proj_emb = np.empty((batch_size, 0, embed_dim), dtype=np.float32)
-        empty_kv = np.empty((num_layers, 2, batch_size, 0, embed_dim), dtype=np.float32)
-        mask_full_np = mask_full.cpu().numpy()
 
         onnx_inputs_full = {
             **batch_np,
             "cached_projected_embeddings": empty_proj_emb,
-            "cached_kv": empty_kv,
-            "mask": mask_full_np,
         }
 
         logger.info("Running ONNX full forward benchmark...")
@@ -620,37 +586,28 @@ def main() -> None:
         # Run one full forward to get cache for incremental benchmark
         outputs = session.run(output_names, onnx_inputs_full)
 
-        # Find the projected_embeddings and kv_cache outputs by shape
-        # projected_embeddings: [B, S, D] = [1, 1644, 384]
-        # kv_cache: [L, 2, B, S, D] = [8, 2, 1, 1644, 384]
+        # Find the projected_embeddings output by shape: [B, S, D]
         cached_proj_emb = None
-        cached_kv = None
         for i, (name, out) in enumerate(zip(output_names, outputs)):
             logger.debug(f"Output {i} ({name}): shape={out.shape}")
             if out.ndim == 3 and out.shape[2] == embed_dim:
                 cached_proj_emb = out
-            elif out.ndim == 5 and out.shape[0] == num_layers:
-                cached_kv = out
 
-        if cached_proj_emb is None or cached_kv is None:
-            logger.error("Could not find projected_embeddings or kv_cache in outputs")
+        if cached_proj_emb is None:
+            logger.error("Could not find projected_embeddings in outputs")
             logger.error(f"Output shapes: {[(name, out.shape) for name, out in zip(output_names, outputs)]}")
         else:
-            logger.info("Found cache outputs", proj_emb_shape=cached_proj_emb.shape, kv_shape=cached_kv.shape)
+            logger.info("Found cache output", proj_emb_shape=cached_proj_emb.shape)
 
             # Trim cache (remove first timestep for sliding window)
             cached_proj_emb_trimmed = cached_proj_emb[:, tokens_per_timestep:]
-            cached_kv_trimmed = cached_kv[:, :, :, tokens_per_timestep:]
 
             # Prepare inputs for incremental inference
             batch_single_np = flatten_batch_to_numpy(batch_single, onnx_input_names=batch_input_names)
-            mask_incremental_np = mask_incremental.cpu().numpy()
 
             onnx_inputs_incremental = {
                 **batch_single_np,
                 "cached_projected_embeddings": cached_proj_emb_trimmed,
-                "cached_kv": cached_kv_trimmed,
-                "mask": mask_incremental_np,
             }
 
             logger.info("Running ONNX incremental (with cache) benchmark...")

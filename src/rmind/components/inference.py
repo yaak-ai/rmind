@@ -17,7 +17,6 @@ from torch.utils._pytree import tree_leaves, tree_map  # noqa: PLC2701
 
 from rmind.components.base import TensorTree
 from rmind.components.episode import Episode, EpisodeBuilder, TimestepEmbeddings
-from rmind.components.llm import KVCache
 
 if TYPE_CHECKING:
     from rmind.components.llm import TransformerEncoder
@@ -242,8 +241,6 @@ class InferenceEngine(Module):
             max_cached_timesteps=max_cached_timesteps,
         )
 
-        # KV cache state (managed by encoder)
-        self._kv_cache: list[KVCache] | None = None
         self._cached_seq_len: int = 0
 
         # Track the timestep IDs currently in context
@@ -252,7 +249,6 @@ class InferenceEngine(Module):
     def reset(self) -> None:
         """Reset all caches. Call this at episode boundaries."""
         self.embedding_cache.clear()
-        self._kv_cache = None
         self._cached_seq_len = 0
         self._current_timestep_ids = []
 
@@ -292,12 +288,12 @@ class InferenceEngine(Module):
         batch: TensorTree,
         timestep_ids: list[int],
         mask: Tensor | None = None,
-    ) -> tuple[Tensor, list[KVCache] | None]:
-        """Process a batch with caching for efficient sequential inference.
+    ) -> Tensor:
+        """Process a batch with embedding caching for efficient sequential inference.
 
-        This method:
-        1. Uses embedding cache to avoid recomputing embeddings for cached timesteps
-        2. Uses KV cache to avoid recomputing attention for cached positions
+        Uses embedding cache to avoid recomputing projected embeddings for cached timesteps.
+        Encoder runs on all embeddings each call (no KV cache — absolute PE is baked into
+        K/V through LayerNorm + QKV projection, making KV non-reusable across position shifts).
 
         Args:
             batch: Input batch [B, T, ...]
@@ -305,61 +301,17 @@ class InferenceEngine(Module):
             mask: Optional attention mask
 
         Returns:
-            Tuple of (encoder output, updated KV cache)
+            Encoder output tensor [B, S, D]
         """
         # Get embeddings (cached where possible)
         episode = self.embedding_cache(batch, timestep_ids)
-
-        # Determine which positions are new vs cached in KV cache
-        num_new_positions = len(timestep_ids) - len(self._current_timestep_ids)
-
-        if num_new_positions <= 0 or self._kv_cache is None:
-            # Full recomputation needed
-            embeddings_packed = episode.embeddings_packed
-
-            output, new_kv_cache = self.encoder(
-                src=embeddings_packed,
-                mask=mask,
-                use_cache=True,
-                past_key_values=None,
-            )
-
-            self._kv_cache = new_kv_cache
-            self._current_timestep_ids = timestep_ids.copy()
-
-            return output, new_kv_cache
-
-        # Incremental update: only process new positions
-        # Get embeddings for just the new positions
         embeddings_packed = episode.embeddings_packed
 
-        # Calculate how many sequence positions are new
-        # (this depends on tokens per timestep)
-        tokens_per_timestep = embeddings_packed.shape[1] // len(timestep_ids)
-        new_seq_positions = num_new_positions * tokens_per_timestep
-
-        # Extract only new embeddings
-        new_embeddings = embeddings_packed[:, -new_seq_positions:]
-
-        # Build incremental mask if provided
-        if mask is not None:
-            # Extract rows for new positions attending to all positions
-            incremental_mask = mask[-new_seq_positions:]
-        else:
-            incremental_mask = None
-
-        # Run encoder with KV cache
-        output, new_kv_cache = self.encoder(
-            src=new_embeddings,
-            mask=incremental_mask,
-            use_cache=True,
-            past_key_values=self._kv_cache,
-        )
-
-        self._kv_cache = new_kv_cache
+        # Run encoder on all embeddings (no KV cache)
+        output = self.encoder(src=embeddings_packed, mask=mask)
         self._current_timestep_ids = timestep_ids.copy()
 
-        return output, new_kv_cache
+        return output
 
     def forward(
         self,

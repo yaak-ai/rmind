@@ -475,35 +475,31 @@ def run_pytorch_cache(
     cache_model: Any,
     batch: dict[str, Any],
     cached_proj_emb: Tensor,
-    cached_kv: Tensor,
     device: torch.device,
     mask: Tensor | None = None,
-) -> tuple[PredictionResult, float, Tensor, Tensor]:
-    """Run cache-enabled PyTorch model with KV cache and return predictions + time_ms + output cache.
+) -> tuple[PredictionResult, float, Tensor]:
+    """Run cache-enabled PyTorch model and return predictions + time_ms + output proj_emb.
 
     Args:
-        mask: Optional attention mask for when using cache (cropped from full mask)
+        mask: Optional attention mask (pass to forward_with_mask instead of forward)
 
     Returns:
-        (predictions, time_ms, output_proj_emb, output_kv) where output caches are for reuse in next episode
+        (predictions, time_ms, output_proj_emb) where output proj_emb is for reuse in next episode
     """
     if device.type == "cuda":
         torch.cuda.synchronize()
     start = time.perf_counter()
-    # Call cache-enabled model with cached embeddings and KV
-    # Returns: (brake, gas, steering, turn_signal, proj_emb, kv_cache)
     if mask is not None:
-        outputs = cache_model.forward_with_mask(batch, cached_proj_emb, cached_kv, mask)
+        outputs = cache_model.forward_with_mask(batch, cached_proj_emb, mask)
     else:
-        outputs = cache_model(batch, cached_proj_emb, cached_kv)
+        outputs = cache_model(batch, cached_proj_emb)
     if device.type == "cuda":
         torch.cuda.synchronize()
     elapsed_ms = (time.perf_counter() - start) * 1000
 
-    # Extract predictions (first 4 outputs are the predictions)
+    # Extract predictions (first 4 outputs) and proj_emb cache (last output)
     brake_pedal, gas_pedal, steering_angle, turn_signal = outputs[:4]
-    # Extract output cache for next episode (last 2 outputs)
-    output_proj_emb, output_kv = outputs[-2], outputs[-1]
+    output_proj_emb = outputs[-1]
 
     preds = PredictionResult(
         brake_pedal=float(brake_pedal.squeeze().cpu()),
@@ -511,7 +507,7 @@ def run_pytorch_cache(
         steering_angle=float(steering_angle.squeeze().cpu()),
         turn_signal=int(turn_signal.squeeze().cpu()),
     )
-    return preds, elapsed_ms, output_proj_emb, output_kv
+    return preds, elapsed_ms, output_proj_emb
 
 
 def run_onnx_full(
@@ -519,28 +515,20 @@ def run_onnx_full(
     input_names: set[str],
     batch_cpu: dict[str, Any],
     embed_dim: int,
-    num_layers: int,
     cached_proj_emb: np.ndarray | None = None,
-    cached_kv: np.ndarray | None = None,
-) -> tuple[PredictionResult, float, np.ndarray, np.ndarray]:
-    """Run ONNX full forward model with optional cached embeddings.
+) -> tuple[PredictionResult, float, np.ndarray]:
+    """Run ONNX full forward model with optional cached proj_emb.
 
     Args:
         cached_proj_emb: Optional cached projected embeddings from previous episode
-        cached_kv: Optional cached KV from previous episode
 
     Returns:
-        (predictions, time_ms, output_proj_emb, output_kv) where outputs include new cache
+        (predictions, time_ms, output_proj_emb)
     """
     onnx_inputs = flatten_batch_to_onnx(batch_cpu)
-    # Use provided cache or empty for first episode
     onnx_inputs["cached_projected_embeddings"] = (
         cached_proj_emb if cached_proj_emb is not None
         else np.empty((1, 0, embed_dim), dtype=np.float32)
-    )
-    onnx_inputs["cached_kv"] = (
-        cached_kv if cached_kv is not None
-        else np.empty((num_layers, 2, 1, 0, embed_dim), dtype=np.float32)
     )
     matched = match_onnx_inputs(input_names, onnx_inputs)
 
@@ -554,7 +542,7 @@ def run_onnx_full(
         steering_angle=float(outputs[2].flatten()[0]),
         turn_signal=int(outputs[3].flatten()[0]),
     )
-    return preds, elapsed_ms, outputs[-2], outputs[-1]
+    return preds, elapsed_ms, outputs[-1]
 
 
 def run_onnx_incremental(
@@ -562,19 +550,14 @@ def run_onnx_incremental(
     incr_input_names: set[str],
     batch_1_cpu: dict[str, Any],
     proj_emb_5: np.ndarray,
-    kv_cache_5: np.ndarray,
-    mask: np.ndarray | None = None,
-) -> tuple[PredictionResult, float, np.ndarray, np.ndarray]:
-    """Run ONNX incremental model with cached context. Returns predictions, time_ms, proj_emb_out, kv_out.
+) -> tuple[PredictionResult, float, np.ndarray]:
+    """Run ONNX incremental model with cached projected embeddings.
 
-    Args:
-        mask: Optional cropped attention mask [338, 2028] when using cache
+    Returns:
+        (predictions, time_ms, output_proj_emb)
     """
     onnx_inputs = flatten_batch_to_onnx(batch_1_cpu)
     onnx_inputs["cached_projected_embeddings"] = proj_emb_5
-    onnx_inputs["cached_kv"] = kv_cache_5
-    if mask is not None:
-        onnx_inputs["attention_mask"] = mask
     matched = match_onnx_inputs(incr_input_names, onnx_inputs)
 
     start = time.perf_counter()
@@ -587,180 +570,7 @@ def run_onnx_incremental(
         steering_angle=float(outputs[2].flatten()[0]),
         turn_signal=int(outputs[3].flatten()[0]),
     )
-    # Return output embeddings and KV cache (outputs[4] and outputs[5])
-    return preds, elapsed_ms, outputs[4], outputs[5]
-
-
-def run_continuous_frame_inference(
-    video_cap: cv2.VideoCapture,
-    motions: list[can_pb2.VehicleMotion],
-    states: list[can_pb2.VehicleState],
-    gnss_msgs: list[sensor_pb2.Gnss],
-    frame_to_ts: dict[int, int],
-    waypoints: list[dict],
-    start_frame: int,
-    frame_indices: list[int],
-    frame_step: int,
-    full_session: Any,
-    incr_session: Any,
-    full_input_names: set[str],
-    incr_input_names: set[str],
-    embed_dim: int,
-    num_layers: int,
-    onnx_tokens_per_timestep: int,
-    num_frames_to_process: int | None,
-    device: torch.device,
-) -> tuple[BenchmarkResult, BenchmarkResult, dict, dict]:
-    """Run continuous frame-by-frame inference with sliding window cache.
-
-    Maintains a 6-frame sliding window and uses cache for incremental inference.
-    - First window (frames 0-5): Run ONNX Full with empty cache
-    - Subsequent windows: Run ONNX Incremental with cached embeddings
-
-    Args:
-        All the standard parameters needed for episode loading and inference
-        num_frames_to_process: Max frames to process (None = all available)
-
-    Returns:
-        (timing_onnx_full, timing_onnx_incr, mae_dict, frame_predictions_dict)
-    """
-    logger.info("starting continuous frame-by-frame inference mode")
-
-    episode_length = 6
-    window_start = start_frame
-    max_frame_idx = frame_indices[-1]
-
-    # Determine how many frames to process
-    if num_frames_to_process is not None:
-        # Process num_frames_to_process frames with frame_step spacing
-        last_frame = window_start + (num_frames_to_process - 1) * frame_step
-        max_frame_idx = min(last_frame, max_frame_idx)
-
-    # Track how many complete windows we can form
-    num_complete_windows = 0
-    current_frame = window_start
-    while current_frame + (episode_length - 1) * frame_step <= max_frame_idx:
-        num_complete_windows += 1
-        current_frame += frame_step
-
-    logger.info(f"processing {num_complete_windows} sliding windows")
-
-    timing_onnx_full = BenchmarkResult(name="ONNX Full Forward (Continuous)")
-    timing_onnx_incr = BenchmarkResult(name="ONNX Incremental (Continuous)")
-
-    mae_onnx_full = {"brake": [], "gas": [], "steering": []}
-    mae_onnx_incr = {"brake": [], "gas": [], "steering": []}
-
-    frame_predictions = {
-        "full": [],  # List of (frame_idx, PredictionResult)
-        "incr": [],
-    }
-
-    # Cache state
-    cached_proj_emb = None
-    cached_kv = None
-
-    waypoint_hint_idx = None
-
-    with torch.inference_mode():
-        for window_idx in range(num_complete_windows):
-            # Compute frame index for this window
-            window_start_frame = start_frame + window_idx * frame_step
-            window_end_frame = window_start_frame + (episode_length - 1) * frame_step
-
-            # Load episode data for this window
-            episode_data = load_episode_data(
-                video_cap, motions, states, gnss_msgs, frame_to_ts, waypoints,
-                window_start_frame, episode_length, frame_step, device,
-                waypoint_hint_idx=waypoint_hint_idx,
-            )
-
-            if episode_data is None:
-                logger.warning(f"failed to load window at frame {window_start_frame}")
-                continue
-
-            batch, ground_truth, waypoint_hint_idx = episode_data
-            batch_cpu = to_cpu(batch)
-            batch_1 = slice_batch(batch, slice(episode_length - 1, episode_length))
-            batch_1_cpu = to_cpu(batch_1)
-
-            frame_idx = window_start_frame + (episode_length - 1) * frame_step
-
-            # First window: use ONNX Full with empty cache
-            if window_idx == 0:
-                logger.debug(f"window {window_idx}: running ONNX Full (first window)")
-                onnx_full_preds, onnx_full_ms, proj_emb_out, kv_out = run_onnx_full(
-                    full_session, full_input_names, batch_cpu, embed_dim, num_layers,
-                )
-                timing_onnx_full.times_ms.append(onnx_full_ms)
-
-                # Extract cache from output (frames 1-5 = tokens from 1*tokens_per_ts to 6*tokens_per_ts)
-                cached_proj_emb = proj_emb_out[:, 1*onnx_tokens_per_timestep:6*onnx_tokens_per_timestep, :]
-                cached_kv = kv_out[:, :, :, 1*onnx_tokens_per_timestep:6*onnx_tokens_per_timestep, :]
-
-                # Store prediction for last frame in window
-                frame_predictions["full"].append((frame_idx, onnx_full_preds))
-
-                # Also compute incremental prediction for comparison (use same cache)
-                onnx_incr_preds, onnx_incr_ms = run_onnx_incremental(
-                    incr_session, incr_input_names, batch_1_cpu, cached_proj_emb, cached_kv,
-                )
-                timing_onnx_incr.times_ms.append(onnx_incr_ms)
-                frame_predictions["incr"].append((frame_idx, onnx_incr_preds))
-
-                # Accumulate errors vs ground truth
-                mae_onnx_full["brake"].append(abs(ground_truth["brake_pedal"] - onnx_full_preds.brake_pedal))
-                mae_onnx_full["gas"].append(abs(ground_truth["gas_pedal"] - onnx_full_preds.gas_pedal))
-                mae_onnx_full["steering"].append(abs(ground_truth["steering_angle"] - onnx_full_preds.steering_angle))
-
-                mae_onnx_incr["brake"].append(abs(ground_truth["brake_pedal"] - onnx_incr_preds.brake_pedal))
-                mae_onnx_incr["gas"].append(abs(ground_truth["gas_pedal"] - onnx_incr_preds.gas_pedal))
-                mae_onnx_incr["steering"].append(abs(ground_truth["steering_angle"] - onnx_incr_preds.steering_angle))
-
-                logger.info(
-                    f"window {window_idx}: frame {frame_idx}",
-                    method="ONNX Full",
-                    onnx_full_ms=f"{onnx_full_ms:.1f}",
-                    onnx_incr_ms=f"{onnx_incr_ms:.1f}",
-                )
-            else:
-                # Subsequent windows: use ONNX Incremental with cache from previous window
-                logger.debug(f"window {window_idx}: running ONNX Incremental (frame {frame_idx})")
-                onnx_incr_preds, onnx_incr_ms = run_onnx_incremental(
-                    incr_session, incr_input_names, batch_1_cpu, cached_proj_emb, cached_kv,
-                )
-                timing_onnx_incr.times_ms.append(onnx_incr_ms)
-                frame_predictions["incr"].append((frame_idx, onnx_incr_preds))
-
-                # Accumulate errors vs ground truth
-                mae_onnx_incr["brake"].append(abs(ground_truth["brake_pedal"] - onnx_incr_preds.brake_pedal))
-                mae_onnx_incr["gas"].append(abs(ground_truth["gas_pedal"] - onnx_incr_preds.gas_pedal))
-                mae_onnx_incr["steering"].append(abs(ground_truth["steering_angle"] - onnx_incr_preds.steering_angle))
-
-                # Also run full forward to compare (for verification)
-                onnx_full_preds, onnx_full_ms, proj_emb_out, kv_out = run_onnx_full(
-                    full_session, full_input_names, batch_cpu, embed_dim, num_layers,
-                )
-                timing_onnx_full.times_ms.append(onnx_full_ms)
-                frame_predictions["full"].append((frame_idx, onnx_full_preds))
-
-                mae_onnx_full["brake"].append(abs(ground_truth["brake_pedal"] - onnx_full_preds.brake_pedal))
-                mae_onnx_full["gas"].append(abs(ground_truth["gas_pedal"] - onnx_full_preds.gas_pedal))
-                mae_onnx_full["steering"].append(abs(ground_truth["steering_angle"] - onnx_full_preds.steering_angle))
-
-                # Update cache for next window: extract frames (idx-4) to idx from full output
-                # which corresponds to tokens from 1*tokens_per_ts to 6*tokens_per_ts
-                cached_proj_emb = proj_emb_out[:, 1*onnx_tokens_per_timestep:6*onnx_tokens_per_timestep, :]
-                cached_kv = kv_out[:, :, :, 1*onnx_tokens_per_timestep:6*onnx_tokens_per_timestep, :]
-
-                logger.info(
-                    f"window {window_idx}: frame {frame_idx}",
-                    method="ONNX Incremental + Full",
-                    onnx_full_ms=f"{onnx_full_ms:.1f}",
-                    onnx_incr_ms=f"{onnx_incr_ms:.1f}",
-                )
-
-    return timing_onnx_full, timing_onnx_incr, {"full": mae_onnx_full, "incr": mae_onnx_incr}, frame_predictions
+    return preds, elapsed_ms, outputs[-1]
 
 
 def main() -> None:
@@ -782,22 +592,14 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    if args.continuous_frames:
-        logger.info(
-            "starting continuous frame-by-frame benchmark",
-            data_dir=str(args.data_dir),
-            device=str(device),
-            num_frames=args.num_frames if args.num_frames else "all",
-            frame_step=args.frame_step,
-        )
-    else:
-        logger.info(
-            "starting episode-based benchmark",
-            data_dir=str(args.data_dir),
-            device=str(device),
-            num_episodes=args.num_episodes,
-            episode_length=args.episode_length,
-        )
+
+    logger.info(
+        "starting episode-based benchmark",
+        data_dir=str(args.data_dir),
+        device=str(device),
+        num_episodes=args.num_episodes,
+        episode_length=args.episode_length,
+    )
 
     # Validate paths — try both video naming conventions
     video_path = args.data_dir / "cam_front_left.pii.mp4"
@@ -860,11 +662,13 @@ def main() -> None:
     # ==================== Load ONNX Models ====================
     import onnxruntime as ort
 
-    # Use CPU for ONNX models (GPU onnxruntime has numerical precision issues with steering predictions)
-    # PyTorch models will still use the specified device (GPU or CPU)
-    providers = ["CPUExecutionProvider"]
+    # Use same device as PyTorch for fair comparison
+    if device.type == "cuda":
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    else:
+        providers = ["CPUExecutionProvider"]
 
-    logger.info("loading ONNX models", providers=providers, note="ONNX uses CPU regardless of PyTorch device")
+    logger.info("loading ONNX models", providers=providers, pytorch_device=str(device))
     full_session = ort.InferenceSession(str(args.full_model), providers=providers)
     incr_session = ort.InferenceSession(str(args.incremental_model), providers=providers)
 
@@ -1020,9 +824,8 @@ def main() -> None:
         position_embeddings_packed=cache_pe,
     ).to(device).eval()
 
-    # Empty cache tensors for full forward
+    # Empty cache tensor for full forward
     empty_proj_emb = torch.zeros(1, 0, embed_dim, device=device)
-    empty_kv = torch.zeros(num_layers, 2, 1, 0, embed_dim, device=device)
 
     # ==================== Warmup ====================
     logger.info("running warmup", num_warmup=args.num_warmup)
@@ -1041,25 +844,22 @@ def main() -> None:
             with torch.inference_mode():
                 for _ in range(args.num_warmup):
                     pytorch_model(warmup_batch)
-                    cache_model(warmup_batch, empty_proj_emb, empty_kv)
+                    cache_model(warmup_batch, empty_proj_emb)
                     if device.type == "cuda":
                         torch.cuda.synchronize()
 
                 # ONNX warmup
                 warmup_onnx_inputs = flatten_batch_to_onnx(warmup_batch_cpu)
                 warmup_onnx_inputs["cached_projected_embeddings"] = np.empty((1, 0, embed_dim), dtype=np.float32)
-                warmup_onnx_inputs["cached_kv"] = np.empty((num_layers, 2, 1, 0, embed_dim), dtype=np.float32)
                 warmup_matched = match_onnx_inputs(full_input_names, warmup_onnx_inputs)
                 for _ in range(args.num_warmup):
                     full_session.run(None, warmup_matched)
 
                 # Incremental warmup
                 warmup_full_out = full_session.run(None, warmup_matched)
-                warmup_proj = warmup_full_out[-2][:, :5 * onnx_tokens_per_timestep, :]
-                warmup_kv = warmup_full_out[-1][:, :, :, :5 * onnx_tokens_per_timestep, :]
+                warmup_proj = warmup_full_out[-1][:, :5 * onnx_tokens_per_timestep, :]
                 warmup_incr_inputs = flatten_batch_to_onnx(warmup_batch_1_cpu)
                 warmup_incr_inputs["cached_projected_embeddings"] = warmup_proj
-                warmup_incr_inputs["cached_kv"] = warmup_kv
                 warmup_incr_matched = match_onnx_inputs(incr_input_names, warmup_incr_inputs)
                 for _ in range(args.num_warmup):
                     incr_session.run(None, warmup_incr_matched)
@@ -1067,98 +867,6 @@ def main() -> None:
             logger.info("warmup complete")
     else:
         logger.warning("not enough frames for warmup")
-
-    # ==================== Run Benchmark (Episode or Continuous Mode) ====================
-    if args.continuous_frames:
-        # Continuous frame-by-frame inference mode
-        logger.info("running continuous frame-by-frame inference")
-        timing_onnx_full_cont, timing_onnx_incr_cont, mae_continuous, frame_preds = run_continuous_frame_inference(
-            video_cap, motions, vehicle_states, gnss_msgs, frame_to_ts, waypoints,
-            start_frame, frame_indices, args.frame_step,
-            full_session, incr_session, full_input_names, incr_input_names,
-            embed_dim, num_layers, onnx_tokens_per_timestep,
-            args.num_frames, device
-        )
-
-        # Print results
-        print("\n" + "=" * 120)
-        print("CONTINUOUS FRAME-BY-FRAME INFERENCE RESULTS")
-        print("=" * 120)
-
-        # Timing summary
-        print("\n" + "=" * 120)
-        print("TIMING SUMMARY")
-        print("=" * 120)
-
-        timing_table = PrettyTable()
-        timing_table.field_names = ["Model", "Mean (ms)", "Std (ms)"]
-        timing_table.float_format = ".2"
-        timing_table.align = "r"
-        timing_table.align["Model"] = "l"
-
-        for result in [timing_onnx_full_cont, timing_onnx_incr_cont]:
-            timing_table.add_row([result.name, f"{result.mean_ms:.2f}", f"{result.std_ms:.2f}"])
-
-        print(timing_table)
-
-        # MAE results
-        print("\n" + "=" * 120)
-        print("MAE vs GROUND TRUTH (Continuous Mode)")
-        print("=" * 120)
-
-        mae_table = PrettyTable()
-        mae_table.field_names = ["Model", "Brake MAE", "Gas MAE", "Steering MAE"]
-        mae_table.float_format = ".6"
-        mae_table.align = "r"
-        mae_table.align["Model"] = "l"
-
-        for method_name, mae_dict in [("ONNX Full", mae_continuous["full"]), ("ONNX Incremental", mae_continuous["incr"])]:
-            mae_table.add_row([
-                method_name,
-                f"{np.mean(mae_dict['brake']):.6f}",
-                f"{np.mean(mae_dict['gas']):.6f}",
-                f"{np.mean(mae_dict['steering']):.6f}",
-            ])
-
-        print(mae_table)
-
-        # Frame-level consistency check
-        print("\n" + "=" * 120)
-        print("FRAME-LEVEL PREDICTION CONSISTENCY (Full vs Incremental)")
-        print("=" * 120)
-
-        full_frame_dict = {frame_idx: pred for frame_idx, pred in frame_preds["full"]}
-        incr_frame_dict = {frame_idx: pred for frame_idx, pred in frame_preds["incr"]}
-
-        max_brake_diff = 0.0
-        max_gas_diff = 0.0
-        max_steer_diff = 0.0
-
-        for frame_idx in sorted(set(full_frame_dict.keys()) & set(incr_frame_dict.keys())):
-            full_pred = full_frame_dict[frame_idx]
-            incr_pred = incr_frame_dict[frame_idx]
-
-            brake_diff = abs(full_pred.brake_pedal - incr_pred.brake_pedal)
-            gas_diff = abs(full_pred.gas_pedal - incr_pred.gas_pedal)
-            steer_diff = abs(full_pred.steering_angle - incr_pred.steering_angle)
-
-            max_brake_diff = max(max_brake_diff, brake_diff)
-            max_gas_diff = max(max_gas_diff, gas_diff)
-            max_steer_diff = max(max_steer_diff, steer_diff)
-
-        print(f"Max Brake diff: {max_brake_diff:.2e}")
-        print(f"Max Gas diff: {max_gas_diff:.2e}")
-        print(f"Max Steering diff: {max_steer_diff:.2e}")
-
-        # Verification verdict
-        TOLERANCE = 1e-4
-        max_diff = max(max_brake_diff, max_gas_diff, max_steer_diff)
-        status = "PASS" if max_diff < TOLERANCE else "WARN"
-        print(f"\n[{status}] Full vs Incremental consistency: max diff = {max_diff:.2e}")
-
-        print(f"\nFrames processed: {len(frame_preds['incr'])}")
-        print("=" * 120)
-        return
 
     # ==================== Run Episodes (Episode-Based Mode) ====================
     logger.info("running episodes", num_episodes=args.num_episodes)
@@ -1204,7 +912,10 @@ def main() -> None:
     prev_randomized_inputs = None  # Store randomized inputs from previous episode
 
     # Cross-episode cache: only cache projected embeddings (no KV — PE is baked into KV and can't be reused across position shifts)
+    # Episode 0: empty cache for both PyTorch and ONNX models
+    # Episodes 1+: reuse cached proj_emb from previous episode's ts[1:6]
     cache_proj_emb_prev = empty_proj_emb.clone()
+    cache_proj_emb_onnx_prev = empty_proj_emb.clone()
 
     with torch.inference_mode():
         for ep_idx in range(args.num_episodes):
@@ -1307,16 +1018,16 @@ def main() -> None:
             timing_native.times_ms.append(native_ms)
 
             # 2. PyTorch Cache-enabled
-            # Only proj_emb is cached across episodes (KV has PE baked in, can't reuse across position shifts)
+            # Only proj_emb is cached across episodes (no KV cache)
             # Episode 0: full batch, empty cache
-            # Episodes 1+: batch_1 only, cached proj_emb for ts[0:5], empty KV, baked-in mask
+            # Episodes 1+: batch_1 only, cached proj_emb for ts[0:5]
             if cache_proj_emb_prev.shape[1] == 0:
-                cache_preds, cache_ms, cache_proj_emb_out, _ = run_pytorch_cache(
-                    cache_model, batch, cache_proj_emb_prev, empty_kv, device, mask=None
+                cache_preds, cache_ms, cache_proj_emb_out = run_pytorch_cache(
+                    cache_model, batch, cache_proj_emb_prev, device, mask=None
                 )
             else:
-                cache_preds, cache_ms, cache_proj_emb_out, _ = run_pytorch_cache(
-                    cache_model, batch_1, cache_proj_emb_prev, empty_kv, device, mask=None
+                cache_preds, cache_ms, cache_proj_emb_out = run_pytorch_cache(
+                    cache_model, batch_1, cache_proj_emb_prev, device, mask=None
                 )
             timing_cache.times_ms.append(cache_ms)
 
@@ -1326,23 +1037,31 @@ def main() -> None:
             cache_proj_emb_prev = cache_proj_emb_out[:, ts_1_start:ts_6_end, :]
 
             # 3. ONNX Full Forward
-            # NOTE: Current ONNX export doesn't support pre-populated cache input (expects dimension 0)
-            # For true sliding window incremental inference, would need refactoring to continuous frame mode
-            onnx_full_preds, onnx_full_ms, proj_emb_out, kv_out = run_onnx_full(
-                full_session, full_input_names, batch_cpu, embed_dim, num_layers,
+            onnx_full_preds, onnx_full_ms, proj_emb_out = run_onnx_full(
+                full_session, full_input_names, batch_cpu, embed_dim,
             )
             timing_onnx_full.times_ms.append(onnx_full_ms)
 
             # 4. ONNX Incremental
-            # Always use proj_emb + KV from current episode's Full Forward (ts[0:5])
-            # ONNX model has baked-in mask expecting real KV, can't pass zeros
-            proj_emb_5 = proj_emb_out[:, :5 * onnx_tokens_per_timestep, :]
-            kv_cache_5 = kv_out[:, :, :, :5 * onnx_tokens_per_timestep, :]
+            # Incremental model has FIXED input shape [1, 1690, 384] for cache (5 timesteps)
+            # Episode 0: Use proj_emb cache from Full Forward (ts[0:5])
+            # Episodes 1+: Use proj_emb cache from previous episode's ts[1:6]
+            if cache_proj_emb_onnx_prev.shape[1] == 0:
+                # Episode 0: Use proj_emb from Full Forward as cache for incremental
+                proj_emb_cache_for_incr = proj_emb_out[:, :5*onnx_tokens_per_timestep, :]  # ts[0:5]
+            else:
+                # Episodes 1+: Use cached proj_emb from previous episode
+                proj_emb_cache_for_incr = cache_proj_emb_onnx_prev
 
-            onnx_incr_preds, onnx_incr_ms, _, _ = run_onnx_incremental(
-                incr_session, incr_input_names, batch_1_cpu, proj_emb_5, kv_cache_5, mask=None,
+            onnx_incr_preds, onnx_incr_ms, proj_emb_incr_out = run_onnx_incremental(
+                incr_session, incr_input_names, batch_1_cpu, proj_emb_cache_for_incr,
             )
             timing_onnx_incr.times_ms.append(onnx_incr_ms)
+
+            # Extract proj_emb cache for next episode (ts[1:6] from Full Forward)
+            # Use Full Forward's output to get fresh embeddings for next episode's incremental
+            # proj_emb_out is already numpy from ONNX
+            cache_proj_emb_onnx_prev = proj_emb_incr_out[:, ts_1_start:ts_6_end, :]
 
             # Store predictions for consistency check
             all_preds["native"].append(native_preds)
