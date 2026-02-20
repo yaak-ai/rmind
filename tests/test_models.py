@@ -22,7 +22,6 @@ from rmind.components.objectives import (
     InverseDynamicsPredictionObjective,
     MemoryExtractionObjective,
     PolicyObjective,
-    RandomMaskedHindsightControlObjective,
 )
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
@@ -91,14 +90,12 @@ def trainer(device: torch.device) -> pl.Trainer:
 def objectives(
     inverse_dynamics_prediction_objective: InverseDynamicsPredictionObjective,
     forward_dynamics_prediction_objective: ForwardDynamicsPredictionObjective,
-    random_masked_hindsight_control_objective: RandomMaskedHindsightControlObjective,
     memory_extraction_objective: MemoryExtractionObjective,
     policy_objective: PolicyObjective,
 ) -> ModuleDict:
     return ModuleDict({
         "inverse_dynamics": inverse_dynamics_prediction_objective,
         "forward_dynamics": forward_dynamics_prediction_objective,
-        "random_masked_hindsight_control": random_masked_hindsight_control_objective,
         "memory_extraction": memory_extraction_objective,
         "policy_objective": policy_objective,
     })
@@ -117,10 +114,16 @@ def optimizer() -> HydraConfig[Optimizer]:
 
 @pytest.fixture
 def control_transformer(
-    episode_builder: Module, objectives: ModuleDict, optimizer: HydraConfig[Optimizer]
+    episode_builder: Module,
+    objectives: ModuleDict,
+    optimizer: HydraConfig[Optimizer],
+    encoder: Module,
 ) -> ControlTransformer:
     return ControlTransformer(
-        episode_builder=episode_builder, objectives=objectives, optimizer=optimizer
+        episode_builder=episode_builder,
+        encoder=encoder,
+        objectives=objectives,
+        optimizer=optimizer,
     )
 
 
