@@ -11,16 +11,16 @@ from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
+from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
+    ObjectivePredictionKey,
     Prediction,
-    PredictionKey,
     Targets,
 )
-from rmind.components.tokens import Modality, SummaryToken
 
 
 @final
@@ -44,7 +44,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.patch_pos_embed: Module | None = patch_pos_embed
 
     @override
-    def compute_metrics(self, episode: Episode, *, embedding: Tensor) -> Metrics:
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         index = episode.index[:-1]  # all but last timestep
 
         observation_keys = self.heads.tree_paths()
@@ -112,28 +112,28 @@ class ForwardDynamicsPredictionObjective(Objective):
     @override
     def predict(
         self,
-        episode: Episode,
         *,
+        episode: Episode,
         embedding: Tensor,
-        keys: AbstractSet[PredictionKey],
+        keys: AbstractSet[ObjectivePredictionKey],
         tokenizers: ModuleDict | None = None,
         **kwargs: Any,
     ) -> TensorDict:
-        predictions: dict[PredictionKey, Prediction] = {}
+        predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
-        if (key := PredictionKey.GROUND_TRUTH) in keys:
+        if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
                 value=episode.input.select(*self.heads.tree_paths(), strict=False),
                 timestep_indices=slice(None),
             )
 
         if keys & {
-            PredictionKey.PREDICTION_VALUE,
-            PredictionKey.PREDICTION_PROBS,
-            PredictionKey.SCORE_LOGPROB,
-            PredictionKey.SCORE_L1,
-            PredictionKey.SUMMARY_EMBEDDINGS,
+            ObjectivePredictionKey.PREDICTION_VALUE,
+            ObjectivePredictionKey.PREDICTION_PROBS,
+            ObjectivePredictionKey.SCORE_LOGPROB,
+            ObjectivePredictionKey.SCORE_L1,
+            ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
             index = episode.index[:-1]  # all but last timestep
             observation_keys = self.heads.tree_paths()
@@ -195,7 +195,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             # all but first
             timestep_indices = slice(1, None)
 
-            if (key := PredictionKey.PREDICTION_VALUE) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
                     value=(
                         logits
@@ -209,7 +209,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.PREDICTION_PROBS) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
                 predictions[key] = Prediction(
                     value=logits.exclude(Modality.FORESIGHT).apply(
                         lambda x: x.softmax(dim=-1)
@@ -217,7 +217,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.SCORE_LOGPROB) in keys:
+            if (key := ObjectivePredictionKey.SCORE_LOGPROB) in keys:
                 """Finds log prob of the correct token at each timestep."""
                 predictions[key] = Prediction(
                     value=(
@@ -234,7 +234,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.SCORE_L1) in keys:
+            if (key := ObjectivePredictionKey.SCORE_L1) in keys:
                 predictions[key] = Prediction(
                     value=(
                         logits
@@ -253,7 +253,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
+            if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
                     embedding
                 )

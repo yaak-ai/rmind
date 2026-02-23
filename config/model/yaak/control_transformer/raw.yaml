@@ -316,6 +316,8 @@ episode_builder:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 24
         embedding_dim: ${encoder_embedding_dim}
+  attention_mask_builder:
+    _target_: rmind.components.mask.CausalAttentionMaskBuilder
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder

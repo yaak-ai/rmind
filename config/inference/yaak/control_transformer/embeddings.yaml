@@ -8,6 +8,11 @@ defaults:
 
 output_dir: ???
 
+model:
+  prediction_keys:
+    objectives:
+      - summary_embeddings
+
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu
@@ -23,6 +28,7 @@ trainer:
         _target_: tensordict.memmap
         _partial_: true
         copy_existing: true
+        robust_key: true
 
     - _target_: pytorch_lightning.callbacks.ModelSummary
       max_depth: 5

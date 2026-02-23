@@ -7,16 +7,16 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
+from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
+    ObjectivePredictionKey,
     Prediction,
-    PredictionKey,
     Targets,
 )
-from rmind.components.tokens import Modality, SummaryToken
 
 
 @final
@@ -38,7 +38,7 @@ class MemoryExtractionObjective(Objective):
         self.targets: Targets | None = targets
 
     @override
-    def compute_metrics(self, episode: Episode, *, embedding: Tensor) -> Metrics:
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         features = (
             episode
             .index[1:]
@@ -66,19 +66,19 @@ class MemoryExtractionObjective(Objective):
     @override
     def predict(
         self,
-        episode: Episode,
         *,
+        episode: Episode,
         embedding: Tensor,
-        keys: AbstractSet[PredictionKey],
+        keys: AbstractSet[ObjectivePredictionKey],
         tokenizers: ModuleDict | None = None,
         **kwargs: Any,
     ) -> TensorDict:
-        predictions: dict[PredictionKey, Prediction] = {}
+        predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
         timestep_indices = slice(1, None)
 
-        if (key := PredictionKey.GROUND_TRUTH) in keys:
+        if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
                 value=episode.input.select(*self.heads.tree_paths()).apply(
                     lambda x: x.diff(dim=1), batch_size=[b, t - 1]
@@ -87,9 +87,9 @@ class MemoryExtractionObjective(Objective):
             )
 
         if keys & {
-            PredictionKey.PREDICTION_VALUE,
-            PredictionKey.PREDICTION_PROBS,
-            PredictionKey.SUMMARY_EMBEDDINGS,
+            ObjectivePredictionKey.PREDICTION_VALUE,
+            ObjectivePredictionKey.PREDICTION_PROBS,
+            ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
             features = (
                 episode
@@ -101,7 +101,7 @@ class MemoryExtractionObjective(Objective):
 
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
 
-            if (key := PredictionKey.PREDICTION_VALUE) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
                     value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[unresolved-attribute]
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[unresolved-attribute, call-non-callable]
@@ -110,13 +110,13 @@ class MemoryExtractionObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.PREDICTION_PROBS) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
                 predictions[key] = Prediction(
                     value=logits.apply(lambda x: x.softmax(dim=-1)),
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
+            if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
                     embedding
                 )

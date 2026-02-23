@@ -10,11 +10,10 @@ from torch.testing import assert_close
 from torch.utils._pytree import key_get, keystr, tree_flatten_with_path  # noqa: PLC2701
 from torchvision.ops import MLP
 
-from rmind.components.base import TensorTree
+from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder, EpisodeExport
 from rmind.components.objectives.policy import PolicyObjective
-from rmind.components.tokens import Modality
 from rmind.models.control_transformer import ControlTransformer
 
 if TYPE_CHECKING:
@@ -83,7 +82,7 @@ def encoder_eval(encoder: Module) -> Module:
 
 @pytest.fixture
 def policy_embedding(encoder_eval: Module, episode: Episode) -> Tensor:
-    return encoder_eval(src=episode.embeddings_packed, mask=episode.attention_mask)
+    return encoder_eval(src=episode.embeddings_packed, mask=episode.attention_mask.mask)
 
 
 @pytest.fixture
@@ -91,7 +90,7 @@ def policy_embedding_export(
     encoder_eval: Module, episode_export: EpisodeExport
 ) -> Tensor:
     return encoder_eval(
-        src=episode_export.embeddings_packed, mask=episode_export.attention_mask
+        src=episode_export.embeddings_packed, mask=episode_export.attention_mask["mask"]
     )
 
 

@@ -5,7 +5,7 @@ from pytest_lazy_fixtures import lf
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.llm import TransformerEncoder
-from rmind.components.objectives.base import Objective, PredictionKey
+from rmind.components.objectives.base import Objective, ObjectivePredictionKey
 
 
 @pytest.mark.parametrize(
@@ -20,8 +20,8 @@ from rmind.components.objectives.base import Objective, PredictionKey
 def test_compute_metrics(
     objective: Objective, episode: Episode, encoder: TransformerEncoder
 ) -> None:
-    embedding = encoder(src=episode.embeddings_packed, mask=episode.attention_mask)
-    assert "loss" in objective.compute_metrics(episode, embedding=embedding)
+    embedding = encoder(src=episode.embeddings_packed, mask=episode.attention_mask.mask)
+    assert "loss" in objective.compute_metrics(episode=episode, embedding=embedding)
 
 
 @pytest.mark.parametrize(
@@ -33,31 +33,28 @@ def test_compute_metrics(
         lf("policy_objective"),
     ],
 )
+@pytest.mark.parametrize(
+    ("keys", "expect_empty"),
+    [(frozenset(), True), (frozenset(ObjectivePredictionKey), False)],
+    ids=["no_keys", "all_keys"],
+)
 @torch.inference_mode()
-def test_predict(
+def test_predict(  # noqa: PLR0913, PLR0917
     objective: Objective,
     episode: Episode,
     tokenizers: ModuleDict,
     encoder: TransformerEncoder,
+    keys: frozenset[ObjectivePredictionKey],
+    expect_empty: bool,  # noqa: FBT001
 ) -> None:
-    keys = set(PredictionKey)
-    attention_rollout = None
-    if PredictionKey.ATTENTION_ROLLOUT in keys and (
-        objective.supports_attention_rollout
-    ):
-        attention_rollout = encoder.compute_attention_rollout(
-            src=episode.embeddings_packed,
-            mask=episode.attention_mask,
-            head_fusion="max",
-            discard_ratio=0.9,
-        )
     predictions = objective.predict(
-        episode,
+        episode=episode,
         keys=keys,
-        embedding=encoder(src=episode.embeddings_packed, mask=episode.attention_mask),
+        embedding=encoder(
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask
+        ),
         tokenizers=tokenizers,
-        attention_rollout=attention_rollout
-        if objective.supports_attention_rollout
-        else None,
     )
-    assert set(predictions.keys()).issubset(keys)
+    prediction_keys = set(predictions.keys())
+    assert prediction_keys.issubset(keys)
+    assert (len(prediction_keys) == 0) is expect_empty

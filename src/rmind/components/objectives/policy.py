@@ -10,17 +10,16 @@ from torch import Tensor
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map, tree_map_with_path  # noqa: PLC2701
 
-from rmind.components.base import TensorTree
+from rmind.components.base import Modality, SummaryToken, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeExport
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
+    ObjectivePredictionKey,
     Prediction,
-    PredictionKey,
     Targets,
 )
-from rmind.components.tokens import Modality, SummaryToken
 from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
 
 
@@ -50,7 +49,7 @@ class PolicyObjective(Objective):
     def forward(
         self, episode: Episode | EpisodeExport, embedding: Tensor
     ) -> TensorDict | TensorTree:
-        logits = self._compute_logits(episode, embedding=embedding)
+        logits = self._compute_logits(episode=episode, embedding=embedding)
 
         if isinstance(episode, Episode):
 
@@ -77,7 +76,7 @@ class PolicyObjective(Objective):
         return tree_map_with_path(fn, logits)
 
     def _compute_logits(
-        self, episode: Episode | EpisodeExport, *, embedding: Tensor
+        self, *, episode: Episode | EpisodeExport, embedding: Tensor
     ) -> TensorTree:
         if isinstance(episode, Episode):
             _b, _ = episode.input.batch_size
@@ -134,8 +133,8 @@ class PolicyObjective(Objective):
         return self.heads(features)
 
     @override
-    def compute_metrics(self, episode: Episode, *, embedding: Tensor) -> Metrics:
-        logits = self._compute_logits(episode, embedding=embedding)
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+        logits = self._compute_logits(episode=episode, embedding=embedding)
         targets = tree_map(
             lambda k: episode.get(k)[:, -1],
             self.targets,
@@ -155,28 +154,28 @@ class PolicyObjective(Objective):
         episode: Episode,
         *,
         embedding: Tensor,
-        keys: AbstractSet[PredictionKey],
+        keys: AbstractSet[ObjectivePredictionKey],
         **kwargs: Any,
     ) -> TensorDict:
-        predictions: dict[PredictionKey, Prediction] = {}
+        predictions: dict[ObjectivePredictionKey, Prediction] = {}
 
         b, _t = episode.input.batch_size
 
-        if (key := PredictionKey.GROUND_TRUTH) in keys:
+        if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
                 value=episode.input.select(*self.heads.tree_paths()).squeeze(-1),
                 timestep_indices=slice(None),
             )
 
         if keys & {
-            PredictionKey.PREDICTION_VALUE,
-            PredictionKey.PREDICTION_STD,
-            PredictionKey.PREDICTION_PROBS,
-            PredictionKey.SCORE_LOGPROB,
-            PredictionKey.SCORE_L1,
-            PredictionKey.SUMMARY_EMBEDDINGS,
+            ObjectivePredictionKey.PREDICTION_VALUE,
+            ObjectivePredictionKey.PREDICTION_STD,
+            ObjectivePredictionKey.PREDICTION_PROBS,
+            ObjectivePredictionKey.SCORE_LOGPROB,
+            ObjectivePredictionKey.SCORE_L1,
+            ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
-            if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
+            if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
                     embedding
                 )
@@ -215,7 +214,7 @@ class PolicyObjective(Objective):
 
             timestep_indices = slice(-1, None)
 
-            if (key := PredictionKey.PREDICTION_VALUE) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -234,7 +233,7 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.PREDICTION_STD) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_STD) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -254,7 +253,7 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.PREDICTION_PROBS) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -277,7 +276,7 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.SCORE_LOGPROB) in keys:
+            if (key := ObjectivePredictionKey.SCORE_LOGPROB) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -305,7 +304,7 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.SCORE_L1) in keys:
+            if (key := ObjectivePredictionKey.SCORE_L1) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor

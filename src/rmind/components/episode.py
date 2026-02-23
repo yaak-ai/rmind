@@ -30,10 +30,14 @@ from torch.utils._pytree import (  # noqa: PLC2701
     tree_map_with_path,
 )
 
-from rmind.components.base import TensorTree
+from rmind.components.base import Modality, PositionEncoding, TensorTree, TokenType
 from rmind.components.containers import ModuleDict
-from rmind.components.mask import AttentionMaskBuilder, TorchAttentionMaskLegend
-from rmind.components.tokens import Modality, PositionEncoding, TokenType
+from rmind.components.mask import (
+    AttentionMask,
+    AttentionMaskBuilder,
+    AttentionMaskTree,
+    TorchAttentionMaskLegend,
+)
 from rmind.utils.pytree import tree_paths, unflatten_keys
 
 logger = get_logger(__name__)
@@ -117,7 +121,7 @@ class Episode(TensorClass["frozen"]):
     position_embeddings: TensorDict
     index: Index
     timestep: Timestep
-    attention_mask: Tensor
+    attention_mask: AttentionMask
 
     @property
     def embeddings(self) -> TensorDict:
@@ -147,7 +151,7 @@ class EpisodeExport:
     position_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
-    attention_mask: Tensor
+    attention_mask: AttentionMaskTree
 
     @property
     def embeddings(self) -> TensorTree:
@@ -195,6 +199,7 @@ class EpisodeBuilder(Module):
         embeddings: InstanceOf[ModuleDict],
         projections: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
+        attention_mask_builder: InstanceOf[AttentionMaskBuilder],
         freeze: bool | None = None,
     ) -> None:
         super().__init__()
@@ -208,6 +213,7 @@ class EpisodeBuilder(Module):
         self.embeddings: ModuleDict = embeddings
         self.projections: ModuleDict = projections
         self.position_encoding: ModuleDict = position_encoding
+        self.attention_mask_builder: AttentionMaskBuilder = attention_mask_builder
         if freeze is not None:
             if freeze is False and (
                 params_to_unfreeze := tuple(
@@ -247,7 +253,7 @@ class EpisodeBuilder(Module):
         timestep = unflatten_keys({
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
-        attention_mask = AttentionMaskBuilder.build(
+        attention_mask = self.attention_mask_builder(
             index=index, timestep=timestep, legend=TorchAttentionMaskLegend
         )
 
@@ -285,7 +291,7 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
-                attention_mask=attention_mask,
+                attention_mask=AttentionMask.from_tensortree(attention_mask),
                 device=device,
             )
         )

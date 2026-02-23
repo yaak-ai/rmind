@@ -14,7 +14,13 @@ from torchvision.ops import MLP
 from torchvision.transforms.v2 import CenterCrop, Normalize, Resize, ToDtype
 
 from rmind.components import llm
-from rmind.components.base import TensorTree
+from rmind.components.base import (
+    Modality,
+    PositionEncoding,
+    SummaryToken,
+    TensorTree,
+    TokenType,
+)
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
 from rmind.components.llm import TransformerEncoder
@@ -23,6 +29,7 @@ from rmind.components.loss import (
     GramAnchoringObjective,
     LogitBiasCrossEntropyLoss,
 )
+from rmind.components.mask import CausalAttentionMaskBuilder
 from rmind.components.nn import (
     AtLeast3D,
     DiffLast,
@@ -40,7 +47,6 @@ from rmind.components.objectives import (
 )
 from rmind.components.position_encoding import PatchPositionEmbedding2D
 from rmind.components.timm_backbone import TimmBackbone
-from rmind.components.tokens import Modality, PositionEncoding, SummaryToken, TokenType
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -345,6 +351,7 @@ def episode_builder(
             PositionEncoding.TIMESTEP: Embedding(6, embedding_dims.encoder),
             PositionEncoding.OBSERVATIONS: None,
         }),
+        attention_mask_builder=CausalAttentionMaskBuilder(),
     ).to(device)
 
 

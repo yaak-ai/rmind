@@ -25,8 +25,13 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.mask import AttentionMaskBuilder, WandbAttentionMaskLegend
-from rmind.components.objectives.base import PredictionKey
+from rmind.components.llm import EncoderPredictionKey
+from rmind.components.mask import (
+    AttentionMask,
+    AttentionMaskTree,
+    WandbAttentionMaskLegend,
+)
+from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 
@@ -40,15 +45,23 @@ class LRSchedulerHydraConfig(BaseModel):
     scheduler: HydraConfig[LRScheduler]
 
 
+class PredictionKeysHydraConfig(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    encoder: set[EncoderPredictionKey] | None = None
+    objectives: set[ObjectivePredictionKey] | None = None
+
+
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     episode_builder: Module
     encoder: Module
     objectives: ModuleDict
     optimizer: HydraConfig[Optimizer] | None = None
     lr_scheduler: LRSchedulerHydraConfig | None = None
+    prediction_keys: PredictionKeysHydraConfig | None = None
 
     @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         episode_builder: HydraConfig[Module] | InstanceOf[Module],
@@ -56,6 +69,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         objectives: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
+        prediction_keys: PredictionKeysHydraConfig | None = None,
     ) -> None:
         super().__init__()
 
@@ -88,6 +102,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             hparams["lr_scheduler"] = lr_scheduler.model_dump()
 
         self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
+
+        self.prediction_keys: PredictionKeysHydraConfig | None = prediction_keys
 
         self.save_hyperparameters(hparams)
 
@@ -165,11 +181,12 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=episode.attention_mask
+            src=episode.embeddings_packed,
+            mask=self._attention_mask_tensor(episode.attention_mask),
         )
 
         metrics = TensorDict({
-            name: objective.compute_metrics(episode, embedding=embedding)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -184,17 +201,17 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             from wandb import Image  # noqa: PLC0415
 
             img = Image(
-                AttentionMaskBuilder
-                .build(
+                self.episode_builder
+                .attention_mask_builder(
                     index=episode.index.to_dict(),
                     timestep=episode.timestep.to_dict(),
                     legend=WandbAttentionMaskLegend,
-                )
+                )["mask"]  # ty:ignore[call-non-callable]
                 .float()
                 .unsqueeze(0)
                 .cpu()
             )
-            self.logger.log_image("masks/shared", [img], step=step)
+            self.logger.log_image("attention_mask", [img], step=step)
 
         self.log_dict(
             {
@@ -219,10 +236,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=episode.attention_mask
+            src=episode.embeddings_packed,
+            mask=self._attention_mask_tensor(episode.attention_mask),
         )
         metrics = TensorDict({
-            name: objective.compute_metrics(episode, embedding=embedding)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -252,49 +270,76 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=episode.attention_mask
+            src=episode.embeddings_packed,
+            mask=self._attention_mask_tensor(episode.attention_mask),
         )
-        attention_rollout = None
-        if (
-            (
-                PredictionKey.ATTENTION_ROLLOUT in set(PredictionKey)
-                and obj.supports_attention_rollout
-            )
-            for obj in self.objectives.values()
-        ):
-            attention_rollout = self.encoder.compute_attention_rollout(  # ty:ignore[call-non-callable]
-                src=episode.embeddings_packed,
-                mask=episode.attention_mask,
-                head_fusion="max",
-                discard_ratio=0.9,
-            )
 
-        return TensorDict({
-            name: objective.predict(
-                episode=episode,
-                embedding=embedding,
-                keys=set(PredictionKey),
-                tokenizers=self.episode_builder.tokenizers,
-                attention_rollout=attention_rollout
-                if objective.supports_attention_rollout
-                else None,
-            )  # ty:ignore[call-non-callable]
-            for name, objective in self.objectives.items()
-        }).auto_batch_size_(1)
+        objectives_predictions_keys = (
+            frozenset(self.prediction_keys.objectives)
+            if self.prediction_keys is not None
+            and self.prediction_keys.objectives is not None
+            else frozenset()
+        )
+        objectives_predictions = (
+            {
+                name: objective.predict(
+                    episode=episode,
+                    embedding=embedding,
+                    keys=objectives_predictions_keys,
+                    tokenizers=self.episode_builder.tokenizers,
+                )  # ty:ignore[call-non-callable]
+                for name, objective in self.objectives.items()
+            }
+            if objectives_predictions_keys
+            else {}
+        )
+        encoder_predictions_keys = (
+            frozenset(self.prediction_keys.encoder)
+            if self.prediction_keys is not None
+            and self.prediction_keys.encoder is not None
+            else frozenset()
+        )
+        encoder_predictions = (
+            {
+                "encoder": self.encoder.predict(  # ty:ignore[call-non-callable]
+                    src=episode.embeddings_packed,
+                    mask=episode.attention_mask,
+                    keys=encoder_predictions_keys,
+                    episode=episode,
+                )
+            }
+            if encoder_predictions_keys
+            else {}
+        )
+
+        return TensorDict(
+            objectives_predictions | encoder_predictions
+        ).auto_batch_size_(1)
 
     @override
     def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=episode.attention_mask
+            src=episode.embeddings_packed,
+            mask=self._attention_mask_tensor(episode.attention_mask),
         )
 
         outputs = {
-            name: objective(episode, embedding=embedding)
+            name: objective(episode=episode, embedding=embedding)
             for name, objective in self.objectives.items()
         }
 
         return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs
+
+    @staticmethod
+    def _attention_mask_tensor(
+        attention_mask: AttentionMask | AttentionMaskTree,
+    ) -> torch.Tensor:
+        return (
+            attention_mask.mask
+            if isinstance(attention_mask, AttentionMask)
+            else attention_mask["mask"]
+        )
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:

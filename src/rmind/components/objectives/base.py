@@ -9,16 +9,15 @@ from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import Context, register_pytree_node  # noqa: PLC2701
 
-from rmind.components.base import TensorTree
+from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
-from rmind.components.tokens import Modality
 
 type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 
 
 @unique
-class PredictionKey(StrEnum):
+class ObjectivePredictionKey(StrEnum):
     PREDICTION_VALUE = auto()
     PREDICTION_STD = auto()
     PREDICTION_PROBS = auto()
@@ -26,7 +25,6 @@ class PredictionKey(StrEnum):
     SCORE_L1 = auto()
     GROUND_TRUTH = auto()
     SUMMARY_EMBEDDINGS = auto()
-    ATTENTION_ROLLOUT = auto()
 
 
 class Prediction(TensorClass["autocast"]):
@@ -49,8 +47,6 @@ def objective_flatten(objective: Module) -> tuple[list[Module], Context]:
 
 
 class Objective(Module, ABC):
-    supports_attention_rollout: bool = False
-
     def __init_subclass__(cls) -> None:
         register_pytree_node(
             cls, flatten_fn=objective_flatten, unflatten_fn=_not_implemented
@@ -61,15 +57,14 @@ class Objective(Module, ABC):
         return getattr(self, name)
 
     @abstractmethod
-    def compute_metrics(self, episode: Episode, *, embedding: Tensor) -> Metrics: ...
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics: ...
 
     @abstractmethod
     def predict(
         self,
-        episode: Episode,
         *,
+        episode: Episode,
         embedding: Tensor,
-        keys: AbstractSet[PredictionKey],
+        keys: AbstractSet[ObjectivePredictionKey],
         tokenizers: ModuleDict | None = None,
-        attention_rollout: Tensor | None = None,
     ) -> TensorDict: ...

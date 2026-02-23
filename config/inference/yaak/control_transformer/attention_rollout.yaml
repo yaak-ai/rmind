@@ -8,6 +8,13 @@ defaults:
   - _self_
 
 model:
+  prediction_keys:
+    encoder:
+      - attention_rollout
+    objectives:
+      - ground_truth
+      - prediction_value
+      - summary_embeddings
   hparams_updaters:
     # 1. wrap hparams in DictConfig
     - _target_: omegaconf.DictConfig
