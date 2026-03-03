@@ -95,6 +95,11 @@ def policy_embedding_export(
 
 
 @pytest.fixture
+def control_transformer_attention_mask_export(episode_export: EpisodeExport) -> Tensor:
+    return episode_export.attention_mask["mask"]
+
+
+@pytest.fixture
 def objectives(policy_objective: Module, device: torch.device) -> ModuleDict:
     return ModuleDict({"policy": policy_objective}).to(device)
 
@@ -149,7 +154,11 @@ def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
             (lf("episode"), lf("policy_embedding")),
             (lf("episode_export"), lf("policy_embedding_export")),
         ),
-        (lf("control_transformer"), (lf("batch_dict"),), (lf("batch_dict"),)),
+        (
+            lf("control_transformer"),
+            (lf("batch_dict"), lf("control_transformer_attention_mask_export")),
+            (lf("batch_dict"), lf("control_transformer_attention_mask_export")),
+        ),
     ],
     ids=["episode_builder", "policy_objective", "control_transformer"],
 )
@@ -192,7 +201,10 @@ def test_torch_export_fake(
     [
         (lf("episode_builder"), (lf("batch_dict"),)),
         (lf("policy_objective"), (lf("episode_export"), lf("policy_embedding_export"))),
-        (lf("control_transformer"), (lf("batch_dict"),)),
+        (
+            lf("control_transformer"),
+            (lf("batch_dict"), lf("control_transformer_attention_mask_export")),
+        ),
     ],
     ids=["episode_builder", "policy_objective", "control_transformer"],
 )
@@ -203,7 +215,12 @@ def test_torch_export(module: Module, args: tuple[Any]) -> None:
 
 @pytest.mark.parametrize(
     ("module", "args"),
-    [(lf("control_transformer"), (lf("batch_dict"),))],
+    [
+        (
+            lf("control_transformer"),
+            (lf("batch_dict"), lf("control_transformer_attention_mask_export")),
+        )
+    ],
     ids=["control_transformer"],
 )
 @torch.inference_mode()

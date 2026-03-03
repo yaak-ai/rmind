@@ -214,6 +214,7 @@ class EpisodeBuilder(Module):
         self.projections: ModuleDict = projections
         self.position_encoding: ModuleDict = position_encoding
         self.attention_mask_builder: AttentionMaskBuilder = attention_mask_builder
+        self.register_buffer("_attention_mask", None, persistent=False)
         if freeze is not None:
             if freeze is False and (
                 params_to_unfreeze := tuple(
@@ -253,8 +254,8 @@ class EpisodeBuilder(Module):
         timestep = unflatten_keys({
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
-        attention_mask = self.attention_mask_builder(
-            index=index, timestep=timestep, legend=TorchAttentionMaskLegend
+        attention_mask: AttentionMaskTree = self._build_attention_mask(
+            index=index, timestep=timestep
         )
 
         position_embeddings = self._build_position_embeddings(
@@ -295,6 +296,29 @@ class EpisodeBuilder(Module):
                 device=device,
             )
         )
+
+    def _build_attention_mask(
+        self, *, index: TensorTree, timestep: TimestepExport
+    ) -> AttentionMaskTree:
+        index_leaves = tree_leaves(index, lambda x: isinstance(x, Tensor))
+        sequence_length = index_leaves[0].shape[0] * sum(
+            leaf.shape[1] for leaf in index_leaves
+        )
+        should_use_cached_attention_mask = (
+            not torch.compiler.is_exporting()
+            and self._attention_mask is not None
+            and self._attention_mask.shape == (sequence_length, sequence_length)
+        )
+        if should_use_cached_attention_mask:
+            mask = self._attention_mask
+        else:
+            mask = self.attention_mask_builder(
+                index=index, timestep=timestep, legend=TorchAttentionMaskLegend
+            )
+            if not torch.compiler.is_exporting():
+                self._attention_mask = mask
+
+        return AttentionMask.to_tensortree(mask=mask, legend=TorchAttentionMaskLegend)
 
     def _build_index(self, embeddings: TensorTree) -> TensorTree:
         (_, t), device = mit.one({

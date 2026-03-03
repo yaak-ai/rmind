@@ -51,6 +51,22 @@ class AttentionMask:
     legend: AttentionMaskLegend
 
     @classmethod
+    def to_tensortree(
+        cls, *, mask: Tensor, legend: type[AttentionMaskLegendProvider]
+    ) -> AttentionMaskTree:
+        return {
+            "mask": mask,
+            "legend": {
+                "DO_ATTEND": torch.as_tensor(
+                    legend.DO_ATTEND, dtype=mask.dtype, device=mask.device
+                ),
+                "DO_NOT_ATTEND": torch.as_tensor(
+                    legend.DO_NOT_ATTEND, dtype=mask.dtype, device=mask.device
+                ),
+            },
+        }
+
+    @classmethod
     def from_tensortree(cls, tree: AttentionMaskTree) -> "AttentionMask":
         return cls(
             mask=torch.as_tensor(tree["mask"]),
@@ -69,7 +85,7 @@ class AttentionMaskBuilder(Module, ABC):
         index: TensorTree,
         timestep: dict[str, dict[str, Mapping[str, int]]],
         legend: type[AttentionMaskLegendProvider],
-    ) -> AttentionMaskTree: ...
+    ) -> Tensor: ...
 
     @staticmethod
     def _select_indices(
@@ -99,7 +115,7 @@ class CausalAttentionMaskBuilder(AttentionMaskBuilder):
         index: TensorTree,
         timestep: dict[str, dict[str, Mapping[str, int]]],
         legend: type[AttentionMaskLegendProvider],
-    ) -> AttentionMaskTree:
+    ) -> Tensor:
         leaves = tree_leaves(index, lambda x: isinstance(x, Tensor))
         t = leaves[0].shape[0]
         length = t * sum(leaf.shape[1] for leaf in leaves)
@@ -179,14 +195,4 @@ class CausalAttentionMaskBuilder(AttentionMaskBuilder):
             ):
                 self._set(mask, src, dest, legend.DO_ATTEND)
 
-        return {
-            "mask": mask,
-            "legend": {
-                "DO_ATTEND": torch.as_tensor(
-                    legend.DO_ATTEND, dtype=mask.dtype, device=mask.device
-                ),
-                "DO_NOT_ATTEND": torch.as_tensor(
-                    legend.DO_NOT_ATTEND, dtype=mask.dtype, device=mask.device
-                ),
-            },
-        }
+        return mask
