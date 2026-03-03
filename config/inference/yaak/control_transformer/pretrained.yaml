@@ -8,13 +8,6 @@ defaults:
   - _self_
 
 model:
-  prediction_keys:
-    objectives:
-      - ground_truth
-      - prediction_value
-      - score_l1
-      - score_logprob
-      - summary_embeddings
   hparams_updaters:
     # 1. wrap hparams in DictConfig
     - _target_: omegaconf.DictConfig
@@ -46,6 +39,15 @@ trainer:
   precision: "bf16-mixed"
   logger: false
   callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      objectives:
+        keys:
+          - ground_truth
+          - prediction_value
+          - score_l1
+          - score_logprob
+          - summary_embeddings
+
     - _target_: rmind.callbacks.RerunPredictionWriter
       write_interval: batch
       logger: ${logger}

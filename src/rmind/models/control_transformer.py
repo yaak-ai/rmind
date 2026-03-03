@@ -6,7 +6,7 @@ import torch
 from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from lightning_utilities.core.rank_zero import rank_zero_warn
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, InstanceOf, validate_call
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf, validate_call
 from pytorch_lightning.core.saving import _load_state, pl_load  # noqa: PLC2701
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.migration.utils import (
@@ -25,13 +25,13 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.llm import EncoderPredictionKey
+from rmind.components.llm import EncoderPredictionConfig
 from rmind.components.mask import (
     AttentionMask,
     AttentionMaskTree,
     WandbAttentionMaskLegend,
 )
-from rmind.components.objectives.base import ObjectivePredictionKey
+from rmind.components.objectives.base import ObjectivePredictionConfig
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 
@@ -45,11 +45,13 @@ class LRSchedulerHydraConfig(BaseModel):
     scheduler: HydraConfig[LRScheduler]
 
 
-class PredictionKeysHydraConfig(BaseModel):
+class PredictionConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
-    encoder: set[EncoderPredictionKey] | None = None
-    objectives: set[ObjectivePredictionKey] | None = None
+    encoder: EncoderPredictionConfig = Field(default_factory=EncoderPredictionConfig)
+    objectives: ObjectivePredictionConfig = Field(
+        default_factory=ObjectivePredictionConfig
+    )
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -58,7 +60,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     objectives: ModuleDict
     optimizer: HydraConfig[Optimizer] | None = None
     lr_scheduler: LRSchedulerHydraConfig | None = None
-    prediction_keys: PredictionKeysHydraConfig | None = None
+    prediction_config: PredictionConfig
 
     @validate_call
     def __init__(  # noqa: PLR0913
@@ -69,7 +71,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         objectives: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
-        prediction_keys: PredictionKeysHydraConfig | None = None,
+        prediction: PredictionConfig | None = None,
     ) -> None:
         super().__init__()
 
@@ -103,7 +105,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
 
-        self.prediction_keys: PredictionKeysHydraConfig | None = prediction_keys
+        self.prediction_config = prediction or PredictionConfig()
 
         self.save_hyperparameters(hparams)
 
@@ -273,44 +275,23 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             src=episode.embeddings_packed,
             mask=self._attention_mask_tensor(episode.attention_mask),
         )
-
-        objectives_predictions_keys = (
-            frozenset(self.prediction_keys.objectives)
-            if self.prediction_keys is not None
-            and self.prediction_keys.objectives is not None
-            else frozenset()
-        )
-        objectives_predictions = (
-            {
-                name: objective.predict(
-                    episode=episode,
-                    embedding=embedding,
-                    keys=objectives_predictions_keys,
-                    tokenizers=self.episode_builder.tokenizers,
-                )  # ty:ignore[call-non-callable]
-                for name, objective in self.objectives.items()
-            }
-            if objectives_predictions_keys
-            else {}
-        )
-        encoder_predictions_keys = (
-            frozenset(self.prediction_keys.encoder)
-            if self.prediction_keys is not None
-            and self.prediction_keys.encoder is not None
-            else frozenset()
-        )
-        encoder_predictions = (
-            {
-                "encoder": self.encoder.predict(  # ty:ignore[call-non-callable]
-                    src=episode.embeddings_packed,
-                    mask=episode.attention_mask,
-                    keys=encoder_predictions_keys,
-                    episode=episode,
-                )
-            }
-            if encoder_predictions_keys
-            else {}
-        )
+        objectives_predictions = {
+            name: objective.predict(
+                episode=episode,
+                embedding=embedding,
+                keys=frozenset(self.prediction_config.objectives.keys),
+                tokenizers=self.episode_builder.tokenizers,
+            )  # ty:ignore[call-non-callable]
+            for name, objective in self.objectives.items()
+        }
+        encoder_predictions = {
+            "encoder": self.encoder.predict(  # ty:ignore[call-non-callable]
+                src=episode.embeddings_packed,
+                mask=episode.attention_mask,
+                episode=episode,
+                config=self.prediction_config.encoder,
+            )
+        }
 
         return TensorDict(
             objectives_predictions | encoder_predictions

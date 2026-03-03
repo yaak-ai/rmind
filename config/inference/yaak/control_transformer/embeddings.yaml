@@ -8,11 +8,6 @@ defaults:
 
 output_dir: ???
 
-model:
-  prediction_keys:
-    objectives:
-      - summary_embeddings
-
 trainer:
   _target_: pytorch_lightning.Trainer
   accelerator: gpu
@@ -21,6 +16,11 @@ trainer:
   precision: "bf16-mixed"
   logger: false
   callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      objectives:
+        keys:
+          - summary_embeddings
+
     - _target_: rmind.callbacks.TensorDictPredictionWriter
       write_interval: batch
       path: ${hydra:run.dir}/predictions/{batch_idx:06}/

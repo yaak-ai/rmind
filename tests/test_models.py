@@ -16,6 +16,10 @@ from torch.utils.data import DataLoader
 
 from rmind.callbacks.logit_bias import LogitBiasSetter
 from rmind.components.containers import ModuleDict
+from rmind.components.llm import (
+    AttentionRolloutPredictionConfig,
+    EncoderPredictionConfig,
+)
 from rmind.components.nn import Embedding
 from rmind.components.objectives import (
     ForwardDynamicsPredictionObjective,
@@ -23,9 +27,13 @@ from rmind.components.objectives import (
     MemoryExtractionObjective,
     PolicyObjective,
 )
+from rmind.components.objectives.base import (
+    ObjectivePredictionConfig,
+    ObjectivePredictionKey,
+)
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
-from rmind.models.control_transformer import ControlTransformer
+from rmind.models.control_transformer import ControlTransformer, PredictionConfig
 
 if TYPE_CHECKING:
     from tests.conftest import EmbeddingDims, NumBins
@@ -163,7 +171,23 @@ def test_fit(
 def test_predict(
     trainer: pl.Trainer, model: pl.LightningModule, datamodule: pl.LightningDataModule
 ) -> None:
-    trainer.predict(model, datamodule=datamodule, return_predictions=False)
+    assert isinstance(model, ControlTransformer)
+    model.prediction_config = PredictionConfig(
+        objectives=ObjectivePredictionConfig(
+            keys={
+                ObjectivePredictionKey.GROUND_TRUTH,
+                ObjectivePredictionKey.PREDICTION_VALUE,
+            }
+        ),
+        encoder=EncoderPredictionConfig(
+            attention_rollout=AttentionRolloutPredictionConfig()
+        ),
+    )
+    predictions = trainer.predict(model, datamodule=datamodule, return_predictions=True)
+    assert predictions is not None
+    assert len(predictions) == 1
+    assert "policy_objective" in predictions[0]
+    assert "ground_truth" in predictions[0]["policy_objective"]  # ty:ignore[invalid-argument-type]
 
 
 @pytest.mark.parametrize("model", [lf("model_yaak_control_transformer_raw")])
