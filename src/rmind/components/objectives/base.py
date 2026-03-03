@@ -2,8 +2,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from enum import StrEnum, auto, unique
-from typing import Any, Never, NotRequired, TypedDict
+from typing import Any, ClassVar, Never, NotRequired, TypedDict
 
+from pydantic import BaseModel, ConfigDict, Field
 from tensordict import MetaData, TensorClass, TensorDict
 from torch import Tensor
 from torch.nn import Module
@@ -25,6 +26,12 @@ class ObjectivePredictionKey(StrEnum):
     SCORE_L1 = auto()
     GROUND_TRUTH = auto()
     SUMMARY_EMBEDDINGS = auto()
+
+
+class ObjectivePredictionConfig(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    keys: set[ObjectivePredictionKey] = Field(default_factory=set)
 
 
 class Prediction(TensorClass["autocast"]):

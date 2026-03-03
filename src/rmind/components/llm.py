@@ -1,8 +1,15 @@
-from collections.abc import Set as AbstractSet
-from enum import StrEnum, auto, unique
 from functools import partial
 from math import sqrt
-from typing import TYPE_CHECKING, Any, Literal, Self, final, override
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    Self,
+    final,
+    override,
+)
 
 import torch
 import torch.nn.functional as F
@@ -10,6 +17,7 @@ from einops import rearrange
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     InstanceOf,
     NonNegativeFloat,
     model_validator,
@@ -34,15 +42,22 @@ __all__ = [
     "CrossAttentionDecoder",
     "CrossAttentionDecoderBlock",
     "CrossAttentionDecoderHead",
-    "EncoderPredictionKey",
     "TransformerEncoder",
     "TransformerEncoderBlock",
 ]
 
 
-@unique
-class EncoderPredictionKey(StrEnum):
-    ATTENTION_ROLLOUT = auto()
+class AttentionRolloutPredictionConfig(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    head_fusion: Literal["mean", "max", "min"] = "max"
+    discard_ratio: Annotated[float, Field(ge=0.0, le=1.0)] | None = 0.9
+
+
+class EncoderPredictionConfig(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    attention_rollout: AttentionRolloutPredictionConfig | None = None
 
 
 class TransformerEncoderBlock(nn.Module):
@@ -209,28 +224,29 @@ class TransformerEncoder(nn.Module):
         return attn_rollout
 
     @validate_call
-    def predict(  # noqa: PLR0913
+    def predict(
         self,
         *,
         src: InstanceOf[Tensor],
         mask: InstanceOf[AttentionMask],
-        keys: AbstractSet[EncoderPredictionKey],
         episode: InstanceOf[Episode] | None = None,
-        head_fusion: Literal["mean", "max", "min"] = "max",
-        discard_ratio: NonNegativeFloat | None = 0.9,
+        config: EncoderPredictionConfig | None = None,
     ) -> TensorDict:
         predictions: dict[str, Prediction] = {}
 
-        if (key := EncoderPredictionKey.ATTENTION_ROLLOUT) in keys:
+        if config and (cfg := config.attention_rollout) is not None:
             if episode is None:
                 msg = "episode is required when requesting ATTENTION_ROLLOUT"
                 raise ValueError(msg)
 
             rollout = self.compute_attention_rollout(
-                src=src, mask=mask, head_fusion=head_fusion, discard_ratio=discard_ratio
+                src=src,
+                mask=mask,
+                head_fusion=cfg.head_fusion,
+                discard_ratio=cfg.discard_ratio,
             )
             _, t = episode.input.batch_size
-            predictions[key.value] = Prediction(
+            predictions["attention_rollout"] = Prediction(
                 value=self._attention_rollout_visualization(
                     episode=episode, attention_rollout=rollout
                 ),
