@@ -209,31 +209,10 @@ episode_builder:
         in_features: ${encoder_embedding_dim}
         out_features: ${encoder_embedding_dim}
 
-  position_encoding:
-    _target_: rmind.components.containers.ModuleDict
-    modules:
-      context:
-        waypoints:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: 10
-          embedding_dim: ${encoder_embedding_dim}
-
-      actions:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 1
-        embedding_dim: ${encoder_embedding_dim}
-
-      special:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 1
-        embedding_dim: ${encoder_embedding_dim}
-
-      timestep:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 24
-        embedding_dim: ${encoder_embedding_dim}
-
-      observations: null
+  role_encoding:
+    _target_: rmind.components.nn.Embedding
+    num_embeddings: 8
+    embedding_dim: ${encoder_embedding_dim}
   attention_mask_builder:
     _target_: rmind.components.mask.CausalAttentionMaskBuilder
 
