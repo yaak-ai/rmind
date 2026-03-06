@@ -20,7 +20,9 @@ from rmind.components.objectives.base import Objective, ObjectivePredictionKey
 def test_compute_metrics(
     objective: Objective, episode: Episode, encoder: TransformerEncoder
 ) -> None:
-    embedding = encoder(src=episode.embeddings_packed, mask=episode.attention_mask.mask)
+    embedding = encoder(
+        src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
+    )
     assert "loss" in objective.compute_metrics(episode=episode, embedding=embedding)
 
 
@@ -51,7 +53,7 @@ def test_predict(  # noqa: PLR0913, PLR0917
         episode=episode,
         keys=keys,
         embedding=encoder(
-            src=episode.embeddings_packed, mask=episode.attention_mask.mask
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
         ),
         tokenizers=tokenizers,
     )

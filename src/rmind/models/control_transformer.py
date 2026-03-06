@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, ClassVar, Literal, Self, override
+from typing import Annotated, Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
 import torch
@@ -27,12 +27,8 @@ from torch.optim.lr_scheduler import LRScheduler
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.llm import EncoderPredictionConfig
-from rmind.components.mask import (
-    AttentionMask,
-    AttentionMaskTree,
-    WandbAttentionMaskLegend,
-)
-from rmind.components.objectives.base import ObjectivePredictionConfig
+from rmind.components.mask import WandbAttentionMaskLegend
+from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 
@@ -50,9 +46,7 @@ class PredictionConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
     encoder: EncoderPredictionConfig = Field(default_factory=EncoderPredictionConfig)
-    objectives: ObjectivePredictionConfig = Field(
-        default_factory=ObjectivePredictionConfig
-    )
+    objectives: set[ObjectivePredictionKey] = Field(default_factory=set)
 
 
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
@@ -72,7 +66,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         objectives: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
-        prediction: PredictionConfig | None = None,
+        prediction_config: Annotated[
+            PredictionConfig, Field(default_factory=PredictionConfig)
+        ],
     ) -> None:
         super().__init__()
 
@@ -106,7 +102,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
 
-        self.prediction_config = prediction or PredictionConfig()
+        self.prediction_config = prediction_config
 
         self.save_hyperparameters(hparams)
 
@@ -184,8 +180,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.embeddings_packed,
-            mask=self._attention_mask_tensor(episode.attention_mask),
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
         )
 
         metrics = TensorDict({
@@ -239,8 +234,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.embeddings_packed,
-            mask=self._attention_mask_tensor(episode.attention_mask),
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
         )
         metrics = TensorDict({
             name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
@@ -273,14 +267,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.embeddings_packed,
-            mask=self._attention_mask_tensor(episode.attention_mask),
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
         )
         objectives_predictions = {
             name: objective.predict(
                 episode=episode,
                 embedding=embedding,
-                keys=frozenset(self.prediction_config.objectives.keys),
+                keys=frozenset(self.prediction_config.objectives),
                 tokenizers=self.episode_builder.tokenizers,
             )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
@@ -295,19 +288,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         }
 
         return TensorDict(
-            objectives_predictions | encoder_predictions
+            objectives_predictions | encoder_predictions  # ty:ignore[invalid-argument-type]
         ).auto_batch_size_(1)
 
     @override
     def forward(
         self, batch: TensorTree, attention_mask_tensor: Tensor | None = None
     ) -> TensorTree | TensorDict:
-        episode = self.episode_builder(batch)
+        episode = self.episode_builder(
+            batch, attention_mask_tensor=attention_mask_tensor
+        )
         embedding = self.encoder(
-            src=episode.embeddings_packed,
-            mask=self._attention_mask_tensor(episode.attention_mask)
-            if attention_mask_tensor is None
-            else attention_mask_tensor,
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
         )
 
         outputs = {
@@ -315,17 +307,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             for name, objective in self.objectives.items()
         }
 
-        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs
-
-    @staticmethod
-    def _attention_mask_tensor(
-        attention_mask: AttentionMask | AttentionMaskTree,
-    ) -> torch.Tensor:
-        return (
-            attention_mask.mask
-            if isinstance(attention_mask, AttentionMask)
-            else attention_mask["mask"]
-        )
+        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs  # ty:ignore[invalid-argument-type]
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:

@@ -35,7 +35,6 @@ from rmind.components.containers import ModuleDict
 from rmind.components.mask import (
     AttentionMask,
     AttentionMaskBuilder,
-    AttentionMaskTree,
     TorchAttentionMaskLegend,
 )
 from rmind.utils.pytree import tree_paths, unflatten_keys
@@ -151,7 +150,7 @@ class EpisodeExport:
     position_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
-    attention_mask: AttentionMaskTree
+    attention_mask: AttentionMask
 
     @property
     def embeddings(self) -> TensorTree:
@@ -228,7 +227,9 @@ class EpisodeBuilder(Module):
             self.requires_grad_(not freeze).train(not freeze)
 
     @override
-    def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
+    def forward(
+        self, batch: TensorTree, attention_mask_tensor: Tensor | None = None
+    ) -> Episode | EpisodeExport:
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
@@ -254,8 +255,13 @@ class EpisodeBuilder(Module):
         timestep = unflatten_keys({
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
-        attention_mask: AttentionMaskTree = self._build_attention_mask(
-            index=index, timestep=timestep
+
+        if attention_mask_tensor is None:
+            attention_mask_tensor = self._build_attention_mask_tensor(
+                index=index, timestep=timestep
+            )
+        attention_mask = AttentionMask.from_tensor(
+            mask_tensor=attention_mask_tensor, legend=TorchAttentionMaskLegend
         )
 
         position_embeddings = self._build_position_embeddings(
@@ -292,33 +298,32 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
-                attention_mask=AttentionMask.from_tensortree(attention_mask),
+                attention_mask=attention_mask,
                 device=device,
             )
         )
 
-    def _build_attention_mask(
+    def _build_attention_mask_tensor(
         self, *, index: TensorTree, timestep: TimestepExport
-    ) -> AttentionMaskTree:
+    ) -> Tensor:
         index_leaves = tree_leaves(index, lambda x: isinstance(x, Tensor))
         sequence_length = index_leaves[0].shape[0] * sum(
             leaf.shape[1] for leaf in index_leaves
         )
-        should_use_cached_attention_mask = (
+
+        if (
             not torch.compiler.is_exporting()
             and self._attention_mask is not None
             and self._attention_mask.shape == (sequence_length, sequence_length)
-        )
-        if should_use_cached_attention_mask:
-            mask = self._attention_mask
-        else:
-            mask = self.attention_mask_builder(
-                index=index, timestep=timestep, legend=TorchAttentionMaskLegend
-            )
-            if not torch.compiler.is_exporting():
-                self._attention_mask = mask
+        ):
+            return self._attention_mask
 
-        return AttentionMask.to_tensortree(mask=mask, legend=TorchAttentionMaskLegend)
+        attention_mask_tensor = self.attention_mask_builder(
+            index=index, timestep=timestep, legend=TorchAttentionMaskLegend
+        )
+        if not torch.compiler.is_exporting():
+            self._attention_mask = attention_mask_tensor
+        return attention_mask_tensor
 
     def _build_index(self, embeddings: TensorTree) -> TensorTree:
         (_, t), device = mit.one({

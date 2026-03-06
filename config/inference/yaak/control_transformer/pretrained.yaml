@@ -41,12 +41,11 @@ trainer:
   callbacks:
     - _target_: rmind.callbacks.PredictionConfigSetter
       objectives:
-        keys:
-          - ground_truth
-          - prediction_value
-          - score_l1
-          - score_logprob
-          - summary_embeddings
+        - ground_truth
+        - prediction_value
+        - score_l1
+        - score_logprob
+        - summary_embeddings
 
     - _target_: rmind.callbacks.RerunPredictionWriter
       write_interval: batch

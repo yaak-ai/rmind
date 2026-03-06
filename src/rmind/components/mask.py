@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-from typing import Protocol, TypedDict, final, override
+from typing import Protocol, final, override
 
 import torch
 from tensordict import tensorclass
@@ -10,16 +10,6 @@ from torch.types import Number
 from torch.utils._pytree import tree_leaves  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken, TensorTree, TokenType
-
-
-class AttentionMaskLegendTree(TypedDict):
-    DO_ATTEND: Tensor
-    DO_NOT_ATTEND: Tensor
-
-
-class AttentionMaskTree(TypedDict):
-    mask: Tensor
-    legend: AttentionMaskLegendTree
 
 
 class AttentionMaskLegendProvider(Protocol):
@@ -47,32 +37,24 @@ class WandbAttentionMaskLegend:
 
 @tensorclass
 class AttentionMask:
-    mask: Tensor
+    mask_tensor: Tensor
     legend: AttentionMaskLegend
 
     @classmethod
-    def to_tensortree(
-        cls, *, mask: Tensor, legend: type[AttentionMaskLegendProvider]
-    ) -> AttentionMaskTree:
-        return {
-            "mask": mask,
-            "legend": {
-                "DO_ATTEND": torch.as_tensor(
-                    legend.DO_ATTEND, dtype=mask.dtype, device=mask.device
-                ),
-                "DO_NOT_ATTEND": torch.as_tensor(
-                    legend.DO_NOT_ATTEND, dtype=mask.dtype, device=mask.device
-                ),
-            },
-        }
-
-    @classmethod
-    def from_tensortree(cls, tree: AttentionMaskTree) -> "AttentionMask":
+    def from_tensor(
+        cls, *, mask_tensor: Tensor, legend: type[AttentionMaskLegendProvider]
+    ) -> "AttentionMask":
         return cls(
-            mask=torch.as_tensor(tree["mask"]),
+            mask_tensor=torch.as_tensor(mask_tensor),
             legend=AttentionMaskLegend(
-                DO_ATTEND=torch.as_tensor(tree["legend"]["DO_ATTEND"]),
-                DO_NOT_ATTEND=torch.as_tensor(tree["legend"]["DO_NOT_ATTEND"]),
+                DO_ATTEND=torch.as_tensor(
+                    legend.DO_ATTEND, dtype=mask_tensor.dtype, device=mask_tensor.device
+                ),
+                DO_NOT_ATTEND=torch.as_tensor(
+                    legend.DO_NOT_ATTEND,
+                    dtype=mask_tensor.dtype,
+                    device=mask_tensor.device,
+                ),
             ),
         )
 

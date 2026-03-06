@@ -18,7 +18,6 @@ class PredictionConfigSetter(Callback):
     def on_predict_start(
         self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
-        del trainer
         if not isinstance(pl_module, ControlTransformer):
             return
         self._prev_prediction_config = pl_module.prediction_config
@@ -28,7 +27,6 @@ class PredictionConfigSetter(Callback):
     def on_predict_end(
         self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
-        del trainer
         if not isinstance(pl_module, ControlTransformer):
             return
         if self._prev_prediction_config is not None:

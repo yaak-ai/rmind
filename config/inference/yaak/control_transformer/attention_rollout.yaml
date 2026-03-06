@@ -41,10 +41,9 @@ trainer:
   callbacks:
     - _target_: rmind.callbacks.PredictionConfigSetter
       objectives:
-        keys:
-          - ground_truth
-          - prediction_value
-          - summary_embeddings
+        - ground_truth
+        - prediction_value
+        - summary_embeddings
       encoder:
         attention_rollout:
           head_fusion: max

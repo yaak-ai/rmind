@@ -97,21 +97,19 @@ class UniformBinner(Module, Invertible):
             raise ValueError(msg)
 
         x_norm = (input - input_min) / (input_max - input_min)
-        bins = int(self.bins.item())
 
-        return (x_norm * bins).to(torch.long).clamp(max=bins - 1)
+        return (x_norm * self.bins).to(torch.long).clamp(max=self.bins - 1)
 
     @override
     def invert(self, input: Tensor) -> Tensor:
-        bins = int(self.bins.item())
-        input_min, input_max = 0, bins - 1
+        input_min, input_max = 0, self.bins - 1
 
         if input.min() < input_min or input.max() > input_max:
             msg = "input out of range"
             raise ValueError(msg)
 
         start, end = self.range
-        width = (end - start) / bins
+        width = (end - start) / self.bins
 
         return start + (input + 0.5) * width
 

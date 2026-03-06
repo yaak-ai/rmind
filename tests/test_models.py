@@ -27,10 +27,7 @@ from rmind.components.objectives import (
     MemoryExtractionObjective,
     PolicyObjective,
 )
-from rmind.components.objectives.base import (
-    ObjectivePredictionConfig,
-    ObjectivePredictionKey,
-)
+from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
@@ -132,6 +129,7 @@ def control_transformer(
         encoder=encoder,
         objectives=objectives,
         optimizer=optimizer,
+        prediction_config=PredictionConfig(),
     )
 
 
@@ -173,21 +171,29 @@ def test_predict(
 ) -> None:
     assert isinstance(model, ControlTransformer)
     model.prediction_config = PredictionConfig(
-        objectives=ObjectivePredictionConfig(
-            keys={
-                ObjectivePredictionKey.GROUND_TRUTH,
-                ObjectivePredictionKey.PREDICTION_VALUE,
-            }
-        ),
+        objectives={
+            ObjectivePredictionKey.GROUND_TRUTH,
+            ObjectivePredictionKey.PREDICTION_VALUE,
+        },
         encoder=EncoderPredictionConfig(
             attention_rollout=AttentionRolloutPredictionConfig()
         ),
     )
-    predictions = trainer.predict(model, datamodule=datamodule, return_predictions=True)
-    assert predictions is not None
-    assert len(predictions) == 1
-    assert "policy_objective" in predictions[0]
-    assert "ground_truth" in predictions[0]["policy_objective"]  # ty:ignore[invalid-argument-type]
+    match trainer.predict(model, datamodule=datamodule, return_predictions=True):
+        case [TensorDict() as prediction]:
+            pass
+
+        case _:
+            msg = "expected exactly one prediction"
+            raise AssertionError(msg)
+
+    match prediction.to_dict():
+        case {"policy_objective": {"ground_truth": _}}:
+            pass
+
+        case _:
+            msg = "missing `policy_objective.ground_truth` in prediction output"
+            raise AssertionError(msg)
 
 
 @pytest.mark.parametrize("model", [lf("model_yaak_control_transformer_raw")])
