@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING, Any, Literal, Self, final, override
 
 import torch
+from einops import rearrange
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -107,6 +108,99 @@ class TransformerEncoderBlock(nn.Module):
         return (out, attn_weights) if need_weights else out
 
 
+class FactorizedTransformerEncoderBlock(nn.Module):
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        embedding_dim: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+    ) -> None:
+        super().__init__()
+
+        self.temporal_norm = nn.LayerNorm(embedding_dim)
+        self.spatial_norm = nn.LayerNorm(embedding_dim)
+        self.mlp_norm = nn.LayerNorm(embedding_dim)
+
+        self.temporal_mha = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
+        self.spatial_mha = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
+
+        self.resid_drop = nn.Dropout(resid_dropout, inplace=False)
+
+        self.mlp = MLPGLU(
+            dim_model=embedding_dim,
+            dropout=mlp_dropout,
+            activation="gelu",
+            hidden_layer_multiplier=hidden_layer_multiplier,
+        )
+
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            default_weight_init_fn(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    @override
+    def forward(
+        self,
+        x: Tensor,
+        spatial_mask: Tensor,
+        temporal_mask: Tensor,
+        *,
+        need_weights: bool = False,
+        average_attn_weights: bool = True,
+    ) -> tuple[Tensor, Tensor | None] | Tensor:
+        _, t, s, _ = x.shape
+
+        x = rearrange(x, "b t s d -> b s t d")
+        x = rearrange(x, "b s t d -> (b s) t d")
+
+        residual = x
+        x_norm = self.temporal_norm(x)
+        mha, _ = self.temporal_mha(
+            x_norm,
+            x_norm,
+            x_norm,
+            attn_mask=temporal_mask,
+            need_weights=need_weights,
+            average_attn_weights=average_attn_weights,
+        )
+        x = residual + self.resid_drop(mha)
+
+        x = rearrange(x, "(b s) t d -> b s t d", s=s)
+        x = rearrange(x, "b s t d -> b t s d")
+        x = rearrange(x, "b t s d -> (b t) s d")
+
+        residual = x
+        x_norm = self.spatial_norm(x)
+        mha, _ = self.spatial_mha(
+            x_norm,
+            x_norm,
+            x_norm,
+            attn_mask=spatial_mask,
+            need_weights=need_weights,
+            average_attn_weights=average_attn_weights,
+        )
+        x = residual + self.resid_drop(mha)
+        x = rearrange(x, "(b t) s d -> b t s d", t=t)
+
+        residual = x
+        return residual + self.mlp(self.mlp_norm(x))
+
+
 class TransformerEncoder(nn.Module):
     @validate_call
     def __init__(  # noqa: PLR0913, PLR0917
@@ -123,7 +217,7 @@ class TransformerEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
-            TransformerEncoderBlock(
+            FactorizedTransformerEncoderBlock(
                 embedding_dim=dim_model,
                 num_heads=num_heads,
                 attn_dropout=attn_dropout,
@@ -141,21 +235,35 @@ class TransformerEncoder(nn.Module):
             self.requires_grad_(not freeze).train(not freeze)
 
     @override
-    def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
+    def forward(
+        self, *, src: Tensor, spatial_mask: Tensor, temporal_mask: Tensor
+    ) -> Tensor:
         x = self.emb_norm(src) if self.emb_norm is not None else src
 
         if self.training:
 
-            def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
-                return checkpoint(layer, layer_input, mask, use_reentrant=False)
+            def run_layer(
+                layer: Module,
+                layer_input: Tensor,
+                spatial_mask: Tensor,
+                temporal_mask: Tensor,
+            ) -> Any:
+                return checkpoint(
+                    layer, layer_input, spatial_mask, temporal_mask, use_reentrant=False
+                )
 
         else:
 
-            def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
-                return layer(layer_input, mask)
+            def run_layer(
+                layer: Module,
+                layer_input: Tensor,
+                spatial_mask: Tensor,
+                temporal_mask: Tensor,
+            ) -> Any:
+                return layer(layer_input, spatial_mask, temporal_mask)
 
         for layer in self.layers:
-            x = run_layer(layer, x, mask)
+            x = run_layer(layer, x, spatial_mask, temporal_mask)
 
         return self.layer_norm(x)
 

@@ -5,6 +5,7 @@ from typing import final, override
 
 import numpy as np
 import torch
+from einops import rearrange
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
@@ -14,14 +15,7 @@ from torch.nn import functional as F
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import (
-    Episode,
-    Index,
-    Modality,
-    SummaryToken,
-    Timestep,
-    TokenType,
-)
+from rmind.components.episode import Episode, Index, Modality, Timestep, TokenType
 from rmind.components.mask import (
     AttentionMask,
     AttentionMaskLegend,
@@ -33,6 +27,9 @@ from rmind.components.objectives.base import (
     Prediction,
     PredictionKey,
     Targets,
+)
+from rmind.components.objectives.forward_dynamics import (
+    ForwardDynamicsPredictionObjective,
 )
 
 
@@ -63,13 +60,16 @@ class RandomMaskedHindsightControlObjective(Objective):
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
         episode, mask_action_timestep = self._mask_episode(episode)
-        mask = self._build_attention_mask(
-            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+        spatial_mask = self._build_attention_mask(
+            episode.index[:1], episode.timestep, legend=TorchAttentionMaskLegend
         )
-
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            src=episode.embeddings_packed,
+            spatial_mask=spatial_mask.mask.to(episode.device),
+            temporal_mask=None,
         )  # ty:ignore[call-non-callable]
+
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
 
         keys_action = episode.timestep.get(TokenType.ACTION).keys(
             include_nested=True, leaves_only=True
@@ -227,47 +227,6 @@ class RandomMaskedHindsightControlObjective(Objective):
     def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
-        length: int = index.max(reduce=True).item() + 1
-        mask = AttentionMask(
-            mask=torch.full((length, length), legend.DO_ATTEND.value),
-            legend=legend,
-            device="cpu",
-        )
-
-        (t,) = index.batch_size
-        action_keys = timestep.get(TokenType.ACTION).keys(
-            include_nested=True, leaves_only=True
-        )
-
-        for step in range(t):
-            past, current, future = index[:step], index[step], index[step + 1 :]
-            current_actions = current.select(*action_keys)
-            current_action_summary = current.select((
-                Modality.SUMMARY,
-                SummaryToken.ACTION_SUMMARY,
-            ))
-            past_actions = past.select(*action_keys)
-            past_action_summary = past.select((
-                Modality.SUMMARY,
-                SummaryToken.ACTION_SUMMARY,
-            ))
-            future_actions = future.select(*action_keys)
-            future_action_summary = future.select((
-                Modality.SUMMARY,
-                SummaryToken.ACTION_SUMMARY,
-            ))
-
-            # Action isolation: actions cannot see other actions across timesteps
-            mask = (
-                mask
-                .do_not_attend(current_actions, past_actions)
-                .do_not_attend(current_actions, past_action_summary)
-                .do_not_attend(current_actions, future_actions)
-                .do_not_attend(current_actions, future_action_summary)
-                .do_not_attend(current_action_summary, past_actions)
-                .do_not_attend(current_action_summary, past_action_summary)
-                .do_not_attend(current_action_summary, future_actions)
-                .do_not_attend(current_action_summary, future_action_summary)
-            )
-
-        return mask
+        return ForwardDynamicsPredictionObjective.build_attention_mask(
+            index, timestep, legend=legend
+        ).clone(recurse=True)

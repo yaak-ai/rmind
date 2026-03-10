@@ -3,10 +3,11 @@ from collections.abc import Set as AbstractSet
 from functools import lru_cache
 from typing import final, override
 
+from einops import rearrange
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
-from torch.nn import Module
+from torch.nn import Module, Transformer
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.containers import ModuleDict
@@ -54,13 +55,22 @@ class MemoryExtractionObjective(Objective):
 
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
-        mask = self._build_attention_mask(
-            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+        spatial_mask = self._build_attention_mask(
+            episode.index[:1], episode.timestep, legend=TorchAttentionMaskLegend
+        )
+
+        timestep = len(episode.index)
+        temporal_mask = Transformer.generate_square_subsequent_mask(timestep).to(
+            episode.embeddings_packed.device
         )
 
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            src=episode.embeddings_packed,
+            spatial_mask=spatial_mask.mask.to(episode.device),
+            temporal_mask=temporal_mask,
         )  # ty:ignore[call-non-callable]
+
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
 
         features = (
             episode

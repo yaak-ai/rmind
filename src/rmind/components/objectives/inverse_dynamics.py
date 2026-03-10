@@ -11,7 +11,7 @@ from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Module
+from torch.nn import Module, Transformer
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.containers import ModuleDict
@@ -64,13 +64,22 @@ class InverseDynamicsPredictionObjective(Objective):
 
     @override
     def compute_metrics(self, episode: Episode) -> Metrics:
-        mask = self._build_attention_mask(
-            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+        spatial_mask = self._build_attention_mask(
+            episode.index[:1], episode.timestep, legend=TorchAttentionMaskLegend
+        )
+
+        timestep = len(episode.index)
+        temporal_mask = Transformer.generate_square_subsequent_mask(timestep).to(
+            episode.embeddings_packed.device
         )
 
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            src=episode.embeddings_packed,
+            spatial_mask=spatial_mask.mask.to(episode.device),
+            temporal_mask=temporal_mask,
         )  # ty:ignore[call-non-callable]
+
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
 
         observation_summaries = (
             episode.index
@@ -79,11 +88,7 @@ class InverseDynamicsPredictionObjective(Objective):
             .get(k)
         )
 
-        # order: (o0, o1), (o1, o2), (o2, o3), ...
-        features = rearrange(
-            [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-            "i ... d -> ... (i d)",
-        )
+        features = observation_summaries[:, :-1]
 
         logits = self.heads(features)
 

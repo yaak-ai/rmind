@@ -114,12 +114,17 @@ class GramAnchoringObjective(Module):
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         target = target.detach()
+        eps = 1e-6
 
         # (b t p) d
         input = F.normalize(input, dim=-1)
         target = F.normalize(target, dim=-1)
 
-        sim_loss = (1.0 - (input * target).sum(dim=-1)).mean()
+        patch_similarity = (input * target).sum(dim=-1)
+        patch_loss = 1.0 - patch_similarity
+
+        patch_weight = patch_loss.detach()
+        sim_loss = (patch_weight * patch_loss).sum() / (patch_weight.sum() + eps)
 
         if self.weight_gram <= 0:
             return self.weight_sim * sim_loss
@@ -131,6 +136,11 @@ class GramAnchoringObjective(Module):
         gram_pred = torch.einsum("bpd,bqd->bpq", input_view, input_view)
         gram_gt = torch.einsum("bpd,bqd->bpq", target_view, target_view)
 
-        gram_loss = F.mse_loss(gram_pred, gram_gt)
+        gram_loss_patch = (gram_pred - gram_gt) ** 2
+        cross_patch_weight = (gram_pred - gram_gt).abs().detach()
+        gram_loss = (
+            (cross_patch_weight * gram_loss_patch).sum(dim=(1, 2))
+            / (cross_patch_weight.sum(dim=(1, 2)) + eps)
+        ).mean()
 
         return self.weight_sim * sim_loss + self.weight_gram * gram_loss

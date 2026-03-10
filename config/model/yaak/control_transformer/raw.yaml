@@ -346,7 +346,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 1
                   - ${encoder_embedding_dim}
               out_features: ${gas_pedal_bins}
               bias: False
@@ -355,7 +355,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 1
                   - ${encoder_embedding_dim}
               out_features: ${brake_pedal_bins}
               bias: False
@@ -364,7 +364,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 1
                   - ${encoder_embedding_dim}
               out_features: ${steering_angle_bins}
               bias: False
@@ -374,7 +374,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 1
                   - ${encoder_embedding_dim}
               out_features: 3
               bias: False
@@ -422,7 +422,7 @@ objectives:
                   in_features:
                     _target_: operator.mul
                     _args_:
-                      - 3
+                      - 2
                       - ${encoder_embedding_dim}
                   out_features: ${encoder_embedding_dim}
                 - _target_: rmind.components.norm.ScaleByVectorDimensionality
@@ -436,7 +436,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 3
+                  - 2
                   - ${encoder_embedding_dim}
               out_features: ${speed_bins}
               bias: False

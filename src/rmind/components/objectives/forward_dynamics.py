@@ -4,11 +4,11 @@ from functools import lru_cache
 from typing import final, override
 
 import torch
-from einops import pack, repeat
+from einops import pack, rearrange, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
-from torch.nn import Module
+from torch.nn import Module, Transformer
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
@@ -62,14 +62,23 @@ class ForwardDynamicsPredictionObjective(Objective):
         )(self.build_attention_mask)
 
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
-        mask = self._build_attention_mask(
-            episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+    def compute_metrics(self, episode: Episode) -> Metrics:  # noqa: PLR0914
+        spatial_mask = self._build_attention_mask(
+            episode.index[:1], episode.timestep, legend=TorchAttentionMaskLegend
+        )
+
+        timestep = len(episode.index)
+        temporal_mask = Transformer.generate_square_subsequent_mask(timestep).to(
+            episode.embeddings_packed.device
         )
 
         embedding = self.encoder(
-            src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
+            src=episode.embeddings_packed,
+            spatial_mask=spatial_mask.mask.to(episode.device),
+            temporal_mask=temporal_mask,
         )  # ty:ignore[call-non-callable]
+
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
 
         index = episode.index[:-1]  # all but last timestep
 
@@ -81,22 +90,11 @@ class ForwardDynamicsPredictionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
-        observation_summary = (
-            index
-            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
         features: TensorDict = observations.apply(
             # pack: (obs[0], observation_summary, action_summary), (obs[1], observation_summary, action_summary), ...
-            lambda obs: pack(
-                [
-                    obs,
-                    observation_summary.broadcast_to(obs.shape),
-                    action_summary.broadcast_to(obs.shape),
-                ],
-                "b t p *",
-            )[0]
+            lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
+                0
+            ]
         )
         features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]
         _, _, n_patches, _ = episode.embeddings.get((
@@ -160,7 +158,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             PredictionKey.SUMMARY_EMBEDDINGS,
         }:
             mask = self._build_attention_mask(
-                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
+                episode.index[:1], episode.timestep, legend=TorchAttentionMaskLegend
             )
 
             embedding = self.encoder(
@@ -293,7 +291,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
 
     @classmethod
-    def build_attention_mask(  # noqa: PLR0914
+    def build_attention_mask(
         cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
     ) -> AttentionMask:
         length: int = index.max(reduce=True).item() + 1
@@ -334,28 +332,22 @@ class ForwardDynamicsPredictionObjective(Objective):
             ))
 
             # Past timestep tokens
-            past_obs = past.select(*obs_keys)
-            past_foresight = past.select(Modality.FORESIGHT)
-            past_actions = past.select(*action_keys)
+            past.select(*obs_keys)
+            past.select(Modality.FORESIGHT)
+            past.select(*action_keys)
 
             mask = (
                 mask
                 .do_attend(cur_obs, cur_obs)
-                .do_attend(cur_obs, past_obs)
                 .do_attend(cur_foresight, cur_obs)
                 .do_attend(cur_foresight, cur_foresight)
-                .do_attend(cur_foresight, past_obs)
                 .do_attend(cur_obs_summary, cur_foresight)
                 .do_attend(cur_obs_summary, cur_obs_summary)
-                .do_attend(cur_obs_summary, past_foresight)
                 .do_attend(cur_obs_history, cur_foresight)
                 .do_attend(cur_obs_history, cur_obs_history)
-                .do_attend(cur_obs_history, past_foresight)
                 .do_attend(cur_actions, cur_actions)
-                .do_attend(cur_actions, past_actions)
                 .do_attend(cur_action_summary, cur_actions)
                 .do_attend(cur_action_summary, cur_action_summary)
-                .do_attend(cur_action_summary, past_actions)
             )
 
         return mask
