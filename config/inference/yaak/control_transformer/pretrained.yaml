@@ -40,12 +40,13 @@ trainer:
   logger: false
   callbacks:
     - _target_: rmind.callbacks.PredictionConfigSetter
-      objectives:
-        - ground_truth
-        - prediction_value
-        - score_l1
-        - score_logprob
-        - summary_embeddings
+      config:
+        objectives:
+          - ground_truth
+          - prediction_value
+          - score_l1
+          - score_logprob
+          - summary_embeddings
 
     - _target_: rmind.callbacks.RerunPredictionWriter
       write_interval: batch

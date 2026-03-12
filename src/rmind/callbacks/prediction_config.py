@@ -1,4 +1,4 @@
-from typing import Any, override
+from typing import override
 
 import pytorch_lightning as pl
 from pydantic import validate_call
@@ -9,9 +9,9 @@ from rmind.models.control_transformer import ControlTransformer, PredictionConfi
 
 class PredictionConfigSetter(Callback):
     @validate_call
-    def __init__(self, **prediction_kwargs: Any) -> None:
+    def __init__(self, config: PredictionConfig) -> None:
         super().__init__()
-        self.prediction_config = PredictionConfig.model_validate(prediction_kwargs)
+        self.prediction_config = config
         self._prev_prediction_config: PredictionConfig | None = None
 
     @override

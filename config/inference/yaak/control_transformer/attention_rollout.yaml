@@ -40,14 +40,15 @@ trainer:
   logger: false
   callbacks:
     - _target_: rmind.callbacks.PredictionConfigSetter
-      objectives:
-        - ground_truth
-        - prediction_value
-        - summary_embeddings
-      encoder:
-        attention_rollout:
-          head_fusion: max
-          discard_ratio: 0.9
+      config:
+        objectives:
+          - ground_truth
+          - prediction_value
+          - summary_embeddings
+        encoder:
+          attention_rollout:
+            head_fusion: max
+            discard_ratio: 0.9
 
     - _target_: rmind.callbacks.RerunPredictionWriter
       write_interval: batch

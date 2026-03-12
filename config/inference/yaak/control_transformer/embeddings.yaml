@@ -17,8 +17,9 @@ trainer:
   logger: false
   callbacks:
     - _target_: rmind.callbacks.PredictionConfigSetter
-      objectives:
-        - summary_embeddings
+      config:
+        objectives:
+          - summary_embeddings
 
     - _target_: rmind.callbacks.TensorDictPredictionWriter
       write_interval: batch

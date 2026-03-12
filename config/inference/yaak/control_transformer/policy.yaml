@@ -17,13 +17,14 @@ trainer:
   logger: false
   callbacks:
     - _target_: rmind.callbacks.PredictionConfigSetter
-      objectives:
-        - ground_truth
-        - prediction_value
-        - prediction_std
-        - prediction_probs
-        - score_l1
-        - score_logprob
+      config:
+        objectives:
+          - ground_truth
+          - prediction_value
+          - prediction_std
+          - prediction_probs
+          - score_l1
+          - score_logprob
 
     - _target_: rmind.callbacks.RerunPredictionWriter
       write_interval: batch
