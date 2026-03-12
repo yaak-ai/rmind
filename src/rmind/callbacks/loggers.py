@@ -1,8 +1,7 @@
+import hashlib
 import inspect
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from enum import StrEnum, auto
-from random import randint
 from typing import Annotated, Any, final
 
 import contextily as ctx
@@ -46,9 +45,6 @@ BATCH_HOOKS = frozenset({
     "on_predict_batch_start",
     "on_predict_batch_end",
 })
-
-
-BATCH_END_HOOKS = frozenset(hook for hook in BATCH_HOOKS if hook.endswith("_batch_end"))
 
 
 def _validate_every_n_batch(
@@ -360,29 +356,6 @@ class WandbWaypointsLogger(Callback):
 
 @final
 class WandbPatchSimilarityLogger(Callback):
-    """Logs cosine similarity heatmaps between a random reference patch and all patches in image embeddings.
-
-    Visualizes spatial representation quality by comparing ground truth vs predicted patch embeddings
-    from a specified objective's outputs. Random patch selection occurs per image_source per logging step.
-    """
-
-    @dataclass(frozen=True, slots=True)
-    class PatchCoords:
-        row: int
-        col: int
-
-    @dataclass(frozen=True, slots=True)
-    class VisualizationParams:
-        img_np: np.ndarray | None
-        h: int
-        w: int
-        h_patch: float
-        w_patch: float
-
-        @property
-        def has_image(self) -> bool:
-            return self.img_np is not None
-
     @validate_call
     def __init__(  # noqa: PLR0913
         self,
@@ -392,8 +365,9 @@ class WandbPatchSimilarityLogger(Callback):
         image_sources: dict[str, list[str | int]],
         embeddings_predict: list[str | int],
         embeddings_target: list[str | int],
+        sample_id_path: list[str | int],
+        every_n_sample: int,
         patch_grid_size: int = 16,
-        every_n_batch: int | None = None,
     ) -> None:
         self._key = key
         self._image_sources_path = tree_map(
@@ -402,15 +376,21 @@ class WandbPatchSimilarityLogger(Callback):
             is_leaf=lambda x: isinstance(x, list),
         )
         self._patch_grid_size = patch_grid_size
+        self._num_patches = patch_grid_size * patch_grid_size
         self._embeddings_predict_path = tuple(map(MappingKey, embeddings_predict))
         self._embeddings_target_path = tuple(map(MappingKey, embeddings_target))
-        _validate_every_n_batch(
-            when=when, every_n_batch=every_n_batch, allowed_hooks=BATCH_END_HOOKS
-        )
-        self._every_n_batch = every_n_batch
+        self._sample_id_path = tuple(map(MappingKey, sample_id_path))
+        self._every_n_sample = every_n_sample
         self._when = when
 
         setattr(self, when, self._call)
+
+    @staticmethod
+    def _stable_ref_patch_idx(
+        sample_id: int, image_source_key: str, num_patches: int
+    ) -> int:
+        digest = hashlib.sha256(f"{sample_id}:{image_source_key}".encode()).digest()
+        return int.from_bytes(digest[:4]) % num_patches
 
     def _call(  # noqa: PLR0914
         self,
@@ -437,162 +417,116 @@ class WandbPatchSimilarityLogger(Callback):
 
         bound_args = sig.bind(self, trainer, pl_module, *args, **kwargs)
         bound_args.apply_defaults()
-        batch_idx = bound_args.arguments.get("batch_idx")
         batch: dict = bound_args.arguments.get("batch")  # ty:ignore[invalid-assignment]
         outputs = bound_args.arguments.get("outputs")
 
-        if (
-            (self._every_n_batch is not None)
-            and (batch_idx is not None)
-            and (batch_idx % self._every_n_batch != 0)
-        ):
+        sample_ids = key_get(batch, self._sample_id_path)
+        mask = sample_ids % self._every_n_sample == 0
+        if not mask.any():
             return
 
-        for image_source_key in self._image_sources_path:
-            patch_coords = self.PatchCoords(
-                row=randint(0, self._patch_grid_size - 1),  # noqa: S311
-                col=randint(0, self._patch_grid_size - 1),  # noqa: S311
-            )
+        matching_indices = mask.nonzero(as_tuple=False).flatten()
+        pred_emb_full = key_get(outputs, self._embeddings_predict_path)
+        gt_emb_full = key_get(outputs, self._embeddings_target_path)
 
-            try:
-                pred_emb_full = key_get(outputs, self._embeddings_predict_path)
-                gt_emb_full = key_get(outputs, self._embeddings_target_path)
+        for local_idx in matching_indices:
+            sample_id = sample_ids[local_idx].item()
+            for image_source_key in self._image_sources_path:
+                ref_patch_idx = self._stable_ref_patch_idx(
+                    sample_id, image_source_key, self._num_patches
+                )
 
                 pred_emb = key_get(
                     pred_emb_full, self._image_sources_path[image_source_key]
-                )
+                )[local_idx, -1]
                 gt_emb = key_get(
                     gt_emb_full, self._image_sources_path[image_source_key]
-                )
+                )[local_idx, -1]
 
-                image_tensor = batch["data"][image_source_key][0, -1]
+                image_tensor = batch["data"][image_source_key][local_idx, -1]
                 if image_tensor.dtype != torch.uint8:
                     image_tensor = (image_tensor * 255).to(torch.uint8)
                 orig_image = image_tensor.cpu().numpy()
 
                 gt_sim, pred_sim = self._compute_similarities(
-                    gt_emb, pred_emb, patch_coords
+                    gt_emb, pred_emb, ref_patch_idx, self._patch_grid_size
                 )
-                fig = self._create_heatmap_figure(
-                    gt_sim, pred_sim, orig_image, patch_coords
+
+                gt_image = self._create_heatmap_image(
+                    gt_sim,
+                    orig_image,
+                    "Ground Truth",
+                    ref_patch_idx,
+                    self._patch_grid_size,
+                )
+                pred_image = self._create_heatmap_image(
+                    pred_sim,
+                    orig_image,
+                    "Predicted",
+                    ref_patch_idx,
+                    self._patch_grid_size,
                 )
 
                 for logger_ in loggers:
                     logger_.log_image(
-                        key=f"{self._key} | {image_source_key}",
-                        images=[Image(fig)],
+                        key=f"{self._key}/{image_source_key}/sample_{sample_id}",
+                        images=[Image(gt_image), Image(pred_image)],
                         step=trainer.global_step,
                     )
 
-                plt.close(fig)
-
-            except (KeyError, IndexError, AttributeError) as e:
-                logger.warning(
-                    "Failed to generate patch similarity visualization for image_source %s",
-                    image_source_key,
-                    error=str(e),
-                    exc_info=True,
-                )
-
+    @staticmethod
     def _compute_similarities(
-        self, gt_tensor: Tensor, pred_tensor: Tensor, patch_coords: PatchCoords
+        gt_tensor: Tensor, pred_tensor: Tensor, ref_patch_idx: int, grid_size: int
     ) -> tuple[np.ndarray, np.ndarray]:
         gt_tensor = gt_tensor.detach().float()
         pred_tensor = pred_tensor.detach().float()
-
-        ref_patch_idx = patch_coords.row * self._patch_grid_size + patch_coords.col
 
         return (
             cosine_similarity(gt_tensor[ref_patch_idx], gt_tensor, dim=-1)
             .cpu()
             .numpy()
-            .reshape(self._patch_grid_size, self._patch_grid_size)
+            .reshape(grid_size, grid_size)
         ), (
             cosine_similarity(pred_tensor[ref_patch_idx], pred_tensor, dim=-1)
             .cpu()
             .numpy()
-            .reshape(self._patch_grid_size, self._patch_grid_size)
+            .reshape(grid_size, grid_size)
         )
 
-    def _create_heatmap_figure(
-        self,
-        gt_sim: np.ndarray,
-        pred_sim: np.ndarray,
-        orig_image: np.ndarray | None,
-        patch_coords: PatchCoords,
-    ) -> plt.Figure:
-        if orig_image is not None:
-            img_np = orig_image
-            h, w = orig_image.shape[:2]
-        else:
-            img_np = None
-            h, w = 12 * self._patch_grid_size, 12 * self._patch_grid_size
-
-        h_patch, w_patch = (
-            (h / self._patch_grid_size, w / self._patch_grid_size)
-            if img_np is not None
-            else (1.0, 1.0)
-        )
-
-        params = self.VisualizationParams(
-            img_np=img_np, h=h, w=w, h_patch=h_patch, w_patch=w_patch
-        )
-
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 12))
-
-        im1 = self._plot_heatmap(ax1, gt_sim, params, "Ground Truth", patch_coords)
-        im2 = self._plot_heatmap(ax2, pred_sim, params, "Predicted", patch_coords)
-
-        for ax, similarity_grid in [(ax1, gt_sim), (ax2, pred_sim)]:
-            self._add_grid_annotations(ax, similarity_grid, params)
-            self._highlight_reference_patch(ax, params, patch_coords)
-            self._draw_patch_grid(ax, params)
-
-        # Add colorbars
-        plt.colorbar(im1, ax=ax1, label="Cosine Similarity")
-        plt.colorbar(im2, ax=ax2, label="Cosine Similarity")
-        plt.tight_layout()
-
-        return fig
-
-    def _plot_heatmap(
-        self,
-        ax: plt.Axes,
+    @staticmethod
+    def _create_heatmap_image(
         sim: np.ndarray,
-        params: VisualizationParams,
-        title_prefix: str,
-        patch_coords: PatchCoords,
-    ) -> Any:
-        if params.has_image:
-            ax.imshow(params.img_np, alpha=1.0)  # ty:ignore[invalid-argument-type]
+        orig_image: np.ndarray,
+        title: str,
+        ref_patch_idx: int,
+        patch_grid_size: int,
+    ) -> np.ndarray:
+        h, w = orig_image.shape[:2]
+        h_patch = h / patch_grid_size
+        w_patch = w / patch_grid_size
 
-        im = ax.imshow(
-            sim,
-            cmap="viridis",
-            alpha=0.55 if params.has_image else 0.7,
-            vmin=0,
-            vmax=1,
-            extent=(
-                (0, params.w, params.h, 0)
-                if params.has_image
-                else (0, self._patch_grid_size, self._patch_grid_size, 0)
-            ),
-            interpolation="nearest",
-        )
-        ax.set_title(
-            f"{title_prefix} Cosine Similarity - Patch [{patch_coords.row},{patch_coords.col}]"
-        )
-        return im
+        fig, ax = plt.subplots(figsize=(12, 12))
+        try:
+            fig.patch.set_alpha(0.0)
+            ax.patch.set_alpha(0.0)
 
-    def _add_grid_annotations(
-        self, ax: plt.Axes, similarity_grid: np.ndarray, params: VisualizationParams
-    ) -> None:
-        if params.has_image:
-            for col in range(self._patch_grid_size):
-                col_x = (col + 0.5) * params.w_patch
+            ax.imshow(orig_image, alpha=1.0)
+            ax.imshow(
+                sim,
+                cmap="viridis",
+                alpha=0.55,
+                vmin=0,
+                vmax=1,
+                extent=(0, w, h, 0),
+                interpolation="nearest",
+            )
+            ax.set_title(title, color="white")
+            ax.axis("off")
+
+            for col in range(patch_grid_size):
                 ax.text(
-                    col_x,
-                    params.h + 0.7 * params.h_patch,
+                    (col + 0.5) * w_patch,
+                    h + 0.7 * h_patch,
                     str(col),
                     ha="center",
                     va="center",
@@ -601,11 +535,10 @@ class WandbPatchSimilarityLogger(Callback):
                     fontweight="bold",
                     clip_on=False,
                 )
-            for row in range(self._patch_grid_size):
-                row_y = (row + 0.5) * params.h_patch
+            for row in range(patch_grid_size):
                 ax.text(
-                    -0.7 * params.w_patch,
-                    row_y,
+                    -0.7 * w_patch,
+                    (row + 0.5) * h_patch,
                     str(row),
                     ha="center",
                     va="center",
@@ -615,57 +548,46 @@ class WandbPatchSimilarityLogger(Callback):
                     clip_on=False,
                 )
 
-        for row in range(self._patch_grid_size):
-            for col in range(self._patch_grid_size):
-                val = similarity_grid[row, col]
-                text_color = "white" if val < 0.5 else "black"  # noqa: PLR2004
-                center_x = (col + 0.5) * params.w_patch if params.has_image else col
-                center_y = (row + 0.5) * params.h_patch if params.has_image else row
-                ax.text(
-                    center_x,
-                    center_y,
-                    f"{val:.2f}",
-                    ha="center",
-                    va="center",
-                    fontsize=7,
-                    color=text_color,
+            # Similarity values
+            for row in range(patch_grid_size):
+                for col in range(patch_grid_size):
+                    val = sim[row, col]
+                    ax.text(
+                        (col + 0.5) * w_patch,
+                        (row + 0.5) * h_patch,
+                        f"{val:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="white" if val < 0.5 else "black",  # noqa: PLR2004
+                    )
+
+            # Highlight reference patch
+            ref_row, ref_col = divmod(ref_patch_idx, patch_grid_size)
+            ax.add_patch(
+                plt.Rectangle(
+                    (ref_col * w_patch, ref_row * h_patch),
+                    w_patch,
+                    h_patch,
+                    fill=False,
+                    edgecolor="black",
+                    linewidth=3,
                 )
-
-    def _highlight_reference_patch(  # noqa: PLR6301
-        self, ax: plt.Axes, params: VisualizationParams, patch_coords: PatchCoords
-    ) -> None:
-        rect_x = (
-            patch_coords.col * params.w_patch
-            if params.has_image
-            else (patch_coords.col - 0.5)
-        )
-        rect_y = (
-            patch_coords.row * params.h_patch
-            if params.has_image
-            else (patch_coords.row - 0.5)
-        )
-        ax.add_patch(
-            plt.Rectangle(
-                (rect_x, rect_y),
-                params.w_patch,
-                params.h_patch,
-                fill=False,
-                edgecolor="black",
-                linewidth=3,
             )
-        )
 
-    def _draw_patch_grid(self, ax: plt.Axes, params: VisualizationParams) -> None:
-        if params.has_image:
-            for g in range(1, self._patch_grid_size):
-                ax.axhline(g * params.h_patch, color="gray", lw=0.7, alpha=0.3)
-                ax.axvline(g * params.w_patch, color="gray", lw=0.7, alpha=0.3)
-            ax.set_xlim((0, params.w))
-            ax.set_ylim((params.h, 0))
-        else:
-            ax.set_xlim((-0.5, self._patch_grid_size - 0.5))
-            ax.set_ylim((self._patch_grid_size - 0.5, -0.5))
+            # Patch grid lines
+            for g in range(1, patch_grid_size):
+                ax.axhline(g * h_patch, color="gray", lw=0.7, alpha=0.3)
+                ax.axvline(g * w_patch, color="gray", lw=0.7, alpha=0.3)
+            ax.set_xlim((0, w))
+            ax.set_ylim((h, 0))
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
 
-        # Remove tick labels
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
+            fig.tight_layout(pad=0)
+            fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+            fig.canvas.draw()
+
+            return np.asarray(fig.canvas.buffer_rgba()).copy()  # ty:ignore[unresolved-attribute]
+        finally:
+            plt.close(fig)
