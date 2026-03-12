@@ -227,9 +227,7 @@ class EpisodeBuilder(Module):
             self.requires_grad_(not freeze).train(not freeze)
 
     @override
-    def forward(
-        self, batch: TensorTree, attention_mask_tensor: Tensor | None = None
-    ) -> Episode | EpisodeExport:
+    def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
@@ -256,12 +254,11 @@ class EpisodeBuilder(Module):
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
 
-        if attention_mask_tensor is None:
-            attention_mask_tensor = self._build_attention_mask_tensor(
-                index=index, timestep=timestep
-            )
         attention_mask = AttentionMask.from_tensor(
-            mask_tensor=attention_mask_tensor, legend=TorchAttentionMaskLegend
+            mask_tensor=self._build_attention_mask_tensor(
+                index=index, timestep=timestep
+            ),
+            legend=TorchAttentionMaskLegend,
         )
 
         position_embeddings = self._build_position_embeddings(
@@ -311,10 +308,9 @@ class EpisodeBuilder(Module):
             leaf.shape[1] for leaf in index_leaves
         )
 
-        if (
-            not torch.compiler.is_exporting()
-            and self._attention_mask is not None
-            and self._attention_mask.shape == (sequence_length, sequence_length)
+        if self._attention_mask is not None and self._attention_mask.shape == (
+            sequence_length,
+            sequence_length,
         ):
             return self._attention_mask
 

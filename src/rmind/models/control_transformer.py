@@ -19,7 +19,6 @@ from pytorch_lightning.utilities.model_helpers import (
 from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from structlog import get_logger
 from tensordict import TensorDict
-from torch import Tensor
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -292,12 +291,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ).auto_batch_size_(1)
 
     @override
-    def forward(
-        self, batch: TensorTree, attention_mask_tensor: Tensor | None = None
-    ) -> TensorTree | TensorDict:
-        episode = self.episode_builder(
-            batch, attention_mask_tensor=attention_mask_tensor
-        )
+    def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
+        episode = self.episode_builder(batch)
         embedding = self.encoder(
             src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
         )
