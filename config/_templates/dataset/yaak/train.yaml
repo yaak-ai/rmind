@@ -1016,3 +1016,12 @@ samples:
         func:
           _target_: rbyte.io.DataFrameConcater
           key_column: input_id
+
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_with_id
+        renames:
+          self: samples_aggregated
+        func:
+          _target_: polars.DataFrame.with_row_index
+          _partial_: true
+          name: meta/sample_id
