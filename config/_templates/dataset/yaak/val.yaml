@@ -369,11 +369,9 @@ samples:
 
       - _target_: pipefunc.PipeFunc
         output_name: samples_with_id
+        renames:
+          self: samples_aggregated
         func:
-          _target_: makefun.create_function
-          func_signature: "add_sample_id(*, samples_aggregated)"
-          func_impl:
-            _target_: rbyte.io.DuckDBDataFrameQuery
-            query: |
-              SELECT *, ROW_NUMBER() OVER () AS "meta/sample_id"
-              FROM samples_aggregated
+          _target_: polars.DataFrame.with_row_index
+          _partial_: true
+          name: meta/sample_id
