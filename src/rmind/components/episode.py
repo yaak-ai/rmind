@@ -1,4 +1,4 @@
-from collections.abc import Hashable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import accumulate, pairwise
 from operator import itemgetter
@@ -14,9 +14,6 @@ from tensordict._pytree import (  # noqa: PLC2701
     _td_flatten_with_keys,
     _tensordict_flatten,
     _tensordict_unflatten,
-)
-from tensordict.tensorclass import (
-    _eq as tensorclass_eq,  # noqa: PLC2701  # ty:ignore[unresolved-import]
 )
 from torch import Tensor
 from torch.nn import Module
@@ -69,37 +66,9 @@ class Index(TensorClass["frozen"]):
             inplace=False,
         )
 
-    @override
-    def __hash__(self) -> int:
-        items = tuple(
-            (k, tuple(v.flatten().tolist()))
-            for k, v in sorted(
-                self.items(include_nested=True, leaves_only=True), key=itemgetter(0)
-            )
-        )
 
-        return hash(items)
-
-
-# HACK: need Index.__eq__ for @lru_cache but @tensorclass overrides it  # noqa: FIX004
-Index.__eq__ = lambda self, other: tensorclass_eq(self, other).all()  # ty:ignore[invalid-assignment]
-
-
-class Timestep(TensorDict, Hashable):
-    @override
-    def __eq__(self, other: object) -> bool:  # ty:ignore[invalid-method-override]
-        return super().__eq__(other).all()
-
-    @override
-    def __hash__(self) -> int:
-        return hash(
-            tuple(
-                k
-                for k, _ in sorted(
-                    self.items(include_nested=True, leaves_only=True), key=itemgetter(1)
-                )
-            )
-        )
+class Timestep(TensorDict):
+    pass
 
 
 register_pytree_node(
@@ -303,16 +272,20 @@ class EpisodeBuilder(Module):
     def _build_attention_mask_tensor(
         self, *, index: TensorTree, timestep: TimestepExport
     ) -> Tensor:
-        index_leaves = tree_leaves(index, lambda x: isinstance(x, Tensor))
-        sequence_length = index_leaves[0].shape[0] * sum(
-            leaf.shape[1] for leaf in index_leaves
-        )
+        """Build (or return cached) attention mask tensor.
 
-        if self._attention_mask is not None and self._attention_mask.shape == (
-            sequence_length,
-            sequence_length,
-        ):
+        WARNING: attention_mask_builder is not trace-friendly, so torch.export relies
+        on this cache being warm. An eager forward pass must run *before*
+        torch.export.export() — see export_onnx.py.
+        """
+        if self._attention_mask is not None:
             return self._attention_mask
+
+        if torch.compiler.is_exporting():
+            logger.warning(
+                "building attention mask during export; "
+                "run an eager forward pass first to populate the cache"
+            )
 
         attention_mask_tensor = self.attention_mask_builder(
             index=index, timestep=timestep, legend=TorchAttentionMaskLegend
