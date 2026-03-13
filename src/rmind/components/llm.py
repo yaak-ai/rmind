@@ -1,20 +1,37 @@
-from typing import TYPE_CHECKING, Any, Literal, Self, final, override
+from functools import partial
+from math import sqrt
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    Self,
+    final,
+    override,
+)
 
 import torch
+import torch.nn.functional as F
+from einops import rearrange
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     InstanceOf,
-    NonNegativeFloat,
     model_validator,
     validate_call,
 )
+from tensordict import TensorDict
 from torch import Tensor, nn
 from torch.nn.modules.module import Module
 from torch.utils.checkpoint import checkpoint
 
+from rmind.components.base import Modality, SummaryToken, TokenType
+from rmind.components.episode import Episode
 from rmind.components.mask import AttentionMask
 from rmind.components.nn import default_weight_init_fn
+from rmind.components.objectives.base import Prediction
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,6 +44,19 @@ __all__ = [
     "TransformerEncoder",
     "TransformerEncoderBlock",
 ]
+
+
+class AttentionRolloutPredictionConfig(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    head_fusion: Literal["mean", "max", "min"] = "max"
+    discard_ratio: Annotated[float, Field(ge=0.0, le=1.0)] | None = 0.9
+
+
+class EncoderPredictionConfig(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    attention_rollout: AttentionRolloutPredictionConfig | None = None
 
 
 class TransformerEncoderBlock(nn.Module):
@@ -165,11 +195,10 @@ class TransformerEncoder(nn.Module):
         *,
         src: InstanceOf[Tensor],
         mask: InstanceOf[AttentionMask],
-        head_fusion: Literal["mean", "max", "min"] = "mean",
-        discard_ratio: NonNegativeFloat | None = None,
+        config: AttentionRolloutPredictionConfig,
     ) -> Tensor:
         fuse_heads: Callable[[Tensor], Tensor]
-        match head_fusion:
+        match config.head_fusion:
             case "mean":
                 fuse_heads = lambda x: x.mean(axis=1)  # noqa: E731
             case "max":
@@ -183,14 +212,104 @@ class TransformerEncoder(nn.Module):
 
         x = src
         for layer in self.layers:
-            x, attn = layer(x, mask.mask, need_weights=True, average_attn_weights=False)
+            x, attn = layer(
+                x, mask.mask_tensor, need_weights=True, average_attn_weights=False
+            )
             attn_fused = fuse_heads(attn)
-            attn_discarded = self._discard_attention(attn_fused, mask, discard_ratio)
+            attn_discarded = self._discard_attention(
+                attn_fused, mask, config.discard_ratio
+            )
             attn_residual = (attn_discarded + identity) * 0.5
             attn_norm = attn_residual / attn_residual.sum(dim=-1, keepdim=True)
             attn_rollout = attn_norm @ attn_rollout
 
         return attn_rollout
+
+    @validate_call
+    def predict(
+        self,
+        *,
+        src: InstanceOf[Tensor],
+        mask: InstanceOf[AttentionMask],
+        episode: InstanceOf[Episode] | None = None,
+        config: EncoderPredictionConfig | None = None,
+    ) -> TensorDict:
+        predictions: dict[str, Prediction] = {}
+
+        if config and config.attention_rollout:
+            if episode is None:
+                msg = "episode is required when requesting ATTENTION_ROLLOUT"
+                raise ValueError(msg)
+
+            rollout = self.compute_attention_rollout(
+                src=src, mask=mask, config=config.attention_rollout
+            )
+            _, t = episode.input.batch_size
+            predictions["attention_rollout"] = Prediction(
+                value=self._attention_rollout_visualization(
+                    episode=episode, attention_rollout=rollout
+                ),
+                timestep_indices=slice(t - 1, None),
+            )
+
+        return TensorDict(predictions).auto_batch_size_(1)  # ty:ignore[invalid-argument-type]
+
+    @staticmethod
+    def _attention_rollout_visualization(
+        *, episode: Any, attention_rollout: Tensor
+    ) -> dict[str, Tensor]:
+        observation_keys = episode.timestep.get(TokenType.OBSERVATION).keys(
+            include_nested=True, leaves_only=True
+        )
+
+        attention = (
+            episode.index
+            .parse(attention_rollout, dim=1)
+            .select((Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))[:, -1]
+            .apply(
+                lambda x: (
+                    episode.index
+                    .parse(x, dim=2)
+                    .select(*observation_keys)
+                    .squeeze(dim=1)
+                )
+            )
+            .named_apply(
+                partial(
+                    TransformerEncoder._expand_attn_for_visualization,
+                    input=episode.input,
+                ),
+                nested_keys=True,
+            )
+            .update({"input": episode.input.select(Modality.IMAGE)})
+        )
+
+        return {
+            f"{k}": v
+            for (k, v) in enumerate(attention.auto_batch_size_(2).split(1, dim=1))
+        }
+
+    @staticmethod
+    def _expand_attn_for_visualization(
+        path: tuple[str, ...], attn: Tensor, *, input: TensorDict
+    ) -> Tensor:
+        match path:
+            case (*_, Modality.IMAGE, token_to):
+                (_b, _t, hw_attn) = attn.shape
+                (_b, _t, _c, h_img, w_img) = input.get_item_shape((
+                    Modality.IMAGE,
+                    token_to,
+                ))
+                attn = rearrange(
+                    attn,
+                    "... (h_attn w_attn) -> ... h_attn w_attn",
+                    h_attn=int(sqrt(hw_attn * h_img / w_img)),
+                )
+
+                return F.interpolate(attn, size=(h_img, w_img))
+
+            case _:
+                return rearrange(attn, "b t d -> b t 1 d")
 
     @staticmethod
     def _discard_attention(
@@ -200,7 +319,7 @@ class TransformerEncoder(nn.Module):
         if not discard_ratio:
             return attn
 
-        attn_mask = mask.mask == mask.legend.DO_ATTEND.value
+        attn_mask = mask.mask_tensor == mask.legend.DO_ATTEND
         discard_counts = (attn_mask.count_nonzero(dim=1) * discard_ratio).int().tolist()
 
         # NOTE: done per-row b/c masks and the k in topk may differ

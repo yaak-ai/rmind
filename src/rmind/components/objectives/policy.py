@@ -1,6 +1,4 @@
-from collections.abc import Callable
 from collections.abc import Set as AbstractSet
-from functools import lru_cache
 from typing import Any, final, overload, override
 
 import torch
@@ -9,34 +7,18 @@ from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map, tree_map_with_path  # noqa: PLC2701
 
-from rmind.components.base import TensorTree
+from rmind.components.base import Modality, SummaryToken, TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import (
-    Episode,
-    EpisodeExport,
-    Index,
-    Modality,
-    SummaryToken,
-    Timestep,
-)
-from rmind.components.mask import (
-    AttentionMask,
-    AttentionMaskLegend,
-    TorchAttentionMaskLegend,
-)
+from rmind.components.episode import Episode, EpisodeExport
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
+    ObjectivePredictionKey,
     Prediction,
-    PredictionKey,
     Targets,
-)
-from rmind.components.objectives.forward_dynamics import (
-    ForwardDynamicsPredictionObjective,
 )
 from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
 
@@ -47,44 +29,27 @@ class PolicyObjective(Objective):
     def __init__(
         self,
         *,
-        encoder: InstanceOf[Module] | None = None,
-        mask: InstanceOf[Tensor] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
-        self.encoder: Module | None = encoder
-
-        match mask:
-            case Tensor():
-                self.register_buffer("_mask", mask, persistent=True)
-
-            case None:
-                self._mask: Tensor | None = None
-
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
-        self._build_attention_mask: Callable[..., AttentionMask] = lru_cache(
-            maxsize=2, typed=True
-        )(self.build_attention_mask)
-
-    @property
-    def mask(self) -> Tensor | None:
-        return self._mask
+    @overload
+    def forward(self, episode: Episode, embedding: Tensor) -> TensorDict: ...
 
     @overload
-    def forward(self, episode: Episode) -> TensorDict: ...
-
-    @overload
-    def forward(self, episode: EpisodeExport) -> TensorTree: ...
+    def forward(self, episode: EpisodeExport, embedding: Tensor) -> TensorTree: ...
 
     @override
-    def forward(self, episode: Episode | EpisodeExport) -> TensorDict | TensorTree:
-        logits = self._compute_logits(episode)
+    def forward(
+        self, episode: Episode | EpisodeExport, embedding: Tensor
+    ) -> TensorDict | TensorTree:
+        logits = self._compute_logits(episode=episode, embedding=embedding)
 
         if isinstance(episode, Episode):
 
@@ -110,15 +75,9 @@ class PolicyObjective(Objective):
 
         return tree_map_with_path(fn, logits)
 
-    def _compute_logits(self, episode: Episode | EpisodeExport) -> TensorTree:
-        mask = self.mask
-        if mask is None and isinstance(episode, Episode):
-            mask = self._build_attention_mask(
-                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-            ).mask.to(device=episode.device)
-
-        embedding = self.encoder(src=episode.embeddings_packed, mask=mask)  # ty:ignore[call-non-callable]
-
+    def _compute_logits(
+        self, *, episode: Episode | EpisodeExport, embedding: Tensor
+    ) -> TensorTree:
         if isinstance(episode, Episode):
             _b, _ = episode.input.batch_size
 
@@ -174,8 +133,8 @@ class PolicyObjective(Objective):
         return self.heads(features)
 
     @override
-    def compute_metrics(self, episode: Episode) -> Metrics:
-        logits = self._compute_logits(episode)
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+        logits = self._compute_logits(episode=episode, embedding=embedding)
         targets = tree_map(
             lambda k: episode.get(k)[:, -1],
             self.targets,
@@ -191,35 +150,32 @@ class PolicyObjective(Objective):
 
     @override
     def predict(  # noqa: C901, PLR0915
-        self, episode: Episode, *, keys: AbstractSet[PredictionKey], **kwargs: Any
+        self,
+        episode: Episode,
+        *,
+        embedding: Tensor,
+        keys: AbstractSet[ObjectivePredictionKey],
+        **kwargs: Any,
     ) -> TensorDict:
-        predictions: dict[PredictionKey, Prediction] = {}
+        predictions: dict[ObjectivePredictionKey, Prediction] = {}
 
         b, _t = episode.input.batch_size
 
-        if (key := PredictionKey.GROUND_TRUTH) in keys:
+        if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
                 value=episode.input.select(*self.heads.tree_paths()).squeeze(-1),
                 timestep_indices=slice(None),
             )
 
         if keys & {
-            PredictionKey.PREDICTION_VALUE,
-            PredictionKey.PREDICTION_STD,
-            PredictionKey.PREDICTION_PROBS,
-            PredictionKey.SCORE_LOGPROB,
-            PredictionKey.SCORE_L1,
-            PredictionKey.SUMMARY_EMBEDDINGS,
+            ObjectivePredictionKey.PREDICTION_VALUE,
+            ObjectivePredictionKey.PREDICTION_STD,
+            ObjectivePredictionKey.PREDICTION_PROBS,
+            ObjectivePredictionKey.SCORE_LOGPROB,
+            ObjectivePredictionKey.SCORE_L1,
+            ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
-            mask = self._build_attention_mask(
-                episode.index, episode.timestep, legend=TorchAttentionMaskLegend
-            )
-
-            embedding = self.encoder(
-                src=episode.embeddings_packed, mask=mask.mask.to(episode.device)
-            )  # ty:ignore[call-non-callable]
-
-            if (key := PredictionKey.SUMMARY_EMBEDDINGS) in keys:
+            if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
                     embedding
                 )
@@ -258,7 +214,7 @@ class PolicyObjective(Objective):
 
             timestep_indices = slice(-1, None)
 
-            if (key := PredictionKey.PREDICTION_VALUE) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -277,7 +233,7 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.PREDICTION_STD) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_STD) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -297,7 +253,7 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.PREDICTION_PROBS) in keys:
+            if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -320,7 +276,7 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.SCORE_LOGPROB) in keys:
+            if (key := ObjectivePredictionKey.SCORE_LOGPROB) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -348,7 +304,7 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := PredictionKey.SCORE_L1) in keys:
+            if (key := ObjectivePredictionKey.SCORE_L1) in keys:
 
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
@@ -375,11 +331,3 @@ class PolicyObjective(Objective):
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
-
-    @classmethod
-    def build_attention_mask(
-        cls, index: Index, timestep: Timestep, *, legend: AttentionMaskLegend
-    ) -> AttentionMask:
-        return ForwardDynamicsPredictionObjective.build_attention_mask(
-            index, timestep, legend=legend
-        ).clone(recurse=True)

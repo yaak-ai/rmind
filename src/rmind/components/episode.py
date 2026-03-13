@@ -1,6 +1,5 @@
-from collections.abc import Hashable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum, auto, unique
 from itertools import accumulate, pairwise
 from operator import itemgetter
 from typing import Any, NamedTuple, final, override
@@ -16,9 +15,6 @@ from tensordict._pytree import (  # noqa: PLC2701
     _tensordict_flatten,
     _tensordict_unflatten,
 )
-from tensordict.tensorclass import (
-    _eq as tensorclass_eq,  # noqa: PLC2701  # ty:ignore[unresolved-import]
-)
 from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import (  # noqa: PLC2701
@@ -31,45 +27,16 @@ from torch.utils._pytree import (  # noqa: PLC2701
     tree_map_with_path,
 )
 
-from rmind.components.base import TensorTree
+from rmind.components.base import Modality, PositionEncoding, TensorTree, TokenType
 from rmind.components.containers import ModuleDict
+from rmind.components.mask import (
+    AttentionMask,
+    AttentionMaskBuilder,
+    TorchAttentionMaskLegend,
+)
 from rmind.utils.pytree import tree_paths, unflatten_keys
 
 logger = get_logger(__name__)
-
-
-@unique
-class TokenType(StrEnum):
-    OBSERVATION = auto()
-    ACTION = auto()
-    SPECIAL = auto()
-
-
-@unique
-class Modality(StrEnum):
-    IMAGE = auto()
-    CONTINUOUS = auto()
-    DISCRETE = auto()
-    SUMMARY = auto()
-    CONTEXT = auto()
-    FORESIGHT = auto()
-    UTILITY = auto()
-
-
-@unique
-class SummaryToken(StrEnum):
-    OBSERVATION_SUMMARY = auto()
-    OBSERVATION_HISTORY = auto()
-    ACTION_SUMMARY = auto()
-
-
-@unique
-class PositionEncoding(StrEnum):
-    OBSERVATIONS = auto()
-    ACTIONS = auto()
-    SPECIAL = auto()
-    TIMESTEP = auto()
-    CONTEXT = auto()
 
 
 class TokenMeta(NamedTuple):
@@ -99,37 +66,9 @@ class Index(TensorClass["frozen"]):
             inplace=False,
         )
 
-    @override
-    def __hash__(self) -> int:
-        items = tuple(
-            (k, tuple(v.flatten().tolist()))
-            for k, v in sorted(
-                self.items(include_nested=True, leaves_only=True), key=itemgetter(0)
-            )
-        )
 
-        return hash(items)
-
-
-# HACK: need Index.__eq__ for @lru_cache but @tensorclass overrides it  # noqa: FIX004
-Index.__eq__ = lambda self, other: tensorclass_eq(self, other).all()  # ty:ignore[invalid-assignment]
-
-
-class Timestep(TensorDict, Hashable):
-    @override
-    def __eq__(self, other: object) -> bool:  # ty:ignore[invalid-method-override]
-        return super().__eq__(other).all()
-
-    @override
-    def __hash__(self) -> int:
-        return hash(
-            tuple(
-                k
-                for k, _ in sorted(
-                    self.items(include_nested=True, leaves_only=True), key=itemgetter(1)
-                )
-            )
-        )
+class Timestep(TensorDict):
+    pass
 
 
 register_pytree_node(
@@ -150,6 +89,7 @@ class Episode(TensorClass["frozen"]):
     position_embeddings: TensorDict
     index: Index
     timestep: Timestep
+    attention_mask: AttentionMask
 
     @property
     def embeddings(self) -> TensorDict:
@@ -179,6 +119,7 @@ class EpisodeExport:
     position_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
+    attention_mask: AttentionMask
 
     @property
     def embeddings(self) -> TensorTree:
@@ -226,6 +167,7 @@ class EpisodeBuilder(Module):
         embeddings: InstanceOf[ModuleDict],
         projections: InstanceOf[ModuleDict],
         position_encoding: InstanceOf[ModuleDict],
+        attention_mask_builder: InstanceOf[AttentionMaskBuilder],
         freeze: bool | None = None,
     ) -> None:
         super().__init__()
@@ -239,7 +181,8 @@ class EpisodeBuilder(Module):
         self.embeddings: ModuleDict = embeddings
         self.projections: ModuleDict = projections
         self.position_encoding: ModuleDict = position_encoding
-
+        self.attention_mask_builder: AttentionMaskBuilder = attention_mask_builder
+        self.register_buffer("_attention_mask", None, persistent=False)
         if freeze is not None:
             if freeze is False and (
                 params_to_unfreeze := tuple(
@@ -280,6 +223,13 @@ class EpisodeBuilder(Module):
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
 
+        attention_mask = AttentionMask.from_tensor(
+            mask_tensor=self._build_attention_mask_tensor(
+                index=index, timestep=timestep
+            ),
+            legend=TorchAttentionMaskLegend,
+        )
+
         position_embeddings = self._build_position_embeddings(
             input_embeddings, timestep_index, timestep
         )
@@ -292,6 +242,7 @@ class EpisodeBuilder(Module):
                 position_embeddings=position_embeddings,
                 index=index,
                 timestep=timestep,
+                attention_mask=attention_mask,
             )
             if torch.compiler.is_exporting()
             else Episode(
@@ -313,9 +264,35 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
+                attention_mask=attention_mask,
                 device=device,
             )
         )
+
+    def _build_attention_mask_tensor(
+        self, *, index: TensorTree, timestep: TimestepExport
+    ) -> Tensor:
+        """Build (or return cached) attention mask tensor.
+
+        WARNING: attention_mask_builder is not trace-friendly, so torch.export relies
+        on this cache being warm. An eager forward pass must run *before*
+        torch.export.export() — see export_onnx.py.
+        """
+        if self._attention_mask is not None:
+            return self._attention_mask
+
+        if torch.compiler.is_exporting():
+            logger.warning(
+                "building attention mask during export; "
+                "run an eager forward pass first to populate the cache"
+            )
+
+        attention_mask_tensor = self.attention_mask_builder(
+            index=index, timestep=timestep, legend=TorchAttentionMaskLegend
+        )
+        if not torch.compiler.is_exporting():
+            self._attention_mask = attention_mask_tensor
+        return attention_mask_tensor
 
     def _build_index(self, embeddings: TensorTree) -> TensorTree:
         (_, t), device = mit.one({
@@ -397,7 +374,7 @@ class EpisodeBuilder(Module):
             )
         ) is not None:
             position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
-            position_embedding = mod_pe(position)
+            position_embedding = mod_pe(position)  # ty:ignore[call-non-callable]
             paths = tuple(
                 (modality, name)
                 for (_, modality, name) in tree_paths(timestep)
@@ -430,7 +407,7 @@ class EpisodeBuilder(Module):
             )
         ) is not None:
             position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
-            position_embedding = mod_pe(position)
+            position_embedding = mod_pe(position)  # ty:ignore[call-non-callable]
             paths = tree_paths(timestep[TokenType.ACTION.value])
             position_embeddings[k_pe] = tree_map_with_path(
                 lambda path, _: position_embedding if path in paths else None,
@@ -445,7 +422,7 @@ class EpisodeBuilder(Module):
             special_tokens := timestep.get(TokenType.SPECIAL.value)
         ) is not None:
             position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
-            position_embedding = mod_pe(position)
+            position_embedding = mod_pe(position)  # ty:ignore[call-non-callable]
             paths = tree_paths(special_tokens)
             position_embeddings[k_pe] = tree_map_with_path(
                 lambda path, _: position_embedding if path in paths else None,

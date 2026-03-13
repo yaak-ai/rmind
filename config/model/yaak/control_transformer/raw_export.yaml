@@ -234,6 +234,8 @@ episode_builder:
         embedding_dim: ${encoder_embedding_dim}
 
       observations: null
+  attention_mask_builder:
+    _target_: rmind.components.mask.CausalAttentionMaskBuilder
 
 encoder:
   _target_: rmind.components.llm.TransformerEncoder

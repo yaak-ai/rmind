@@ -44,6 +44,8 @@ def main(cfg: DictConfig) -> None:
     model = config.model.instantiate().eval()
     logger.debug(f"model summary:\n{ModelSummary(model)}")  # noqa: G004
 
+    # Eager forward populates cached buffers (e.g. attention mask) that are not
+    # trace-friendly. Must run before torch.export — see EpisodeBuilder._build_attention_mask_tensor.
     logger.debug("model eager forward")
     _ = model(*args)
 

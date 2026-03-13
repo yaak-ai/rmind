@@ -16,17 +16,21 @@ from torch.utils.data import DataLoader
 
 from rmind.callbacks.logit_bias import LogitBiasSetter
 from rmind.components.containers import ModuleDict
+from rmind.components.llm import (
+    AttentionRolloutPredictionConfig,
+    EncoderPredictionConfig,
+)
 from rmind.components.nn import Embedding
 from rmind.components.objectives import (
     ForwardDynamicsPredictionObjective,
     InverseDynamicsPredictionObjective,
     MemoryExtractionObjective,
     PolicyObjective,
-    RandomMaskedHindsightControlObjective,
 )
+from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
-from rmind.models.control_transformer import ControlTransformer
+from rmind.models.control_transformer import ControlTransformer, PredictionConfig
 
 if TYPE_CHECKING:
     from tests.conftest import EmbeddingDims, NumBins
@@ -91,14 +95,12 @@ def trainer(device: torch.device) -> pl.Trainer:
 def objectives(
     inverse_dynamics_prediction_objective: InverseDynamicsPredictionObjective,
     forward_dynamics_prediction_objective: ForwardDynamicsPredictionObjective,
-    random_masked_hindsight_control_objective: RandomMaskedHindsightControlObjective,
     memory_extraction_objective: MemoryExtractionObjective,
     policy_objective: PolicyObjective,
 ) -> ModuleDict:
     return ModuleDict({
         "inverse_dynamics": inverse_dynamics_prediction_objective,
         "forward_dynamics": forward_dynamics_prediction_objective,
-        "random_masked_hindsight_control": random_masked_hindsight_control_objective,
         "memory_extraction": memory_extraction_objective,
         "policy_objective": policy_objective,
     })
@@ -117,10 +119,17 @@ def optimizer() -> HydraConfig[Optimizer]:
 
 @pytest.fixture
 def control_transformer(
-    episode_builder: Module, objectives: ModuleDict, optimizer: HydraConfig[Optimizer]
+    episode_builder: Module,
+    objectives: ModuleDict,
+    optimizer: HydraConfig[Optimizer],
+    encoder: Module,
 ) -> ControlTransformer:
     return ControlTransformer(
-        episode_builder=episode_builder, objectives=objectives, optimizer=optimizer
+        episode_builder=episode_builder,
+        encoder=encoder,
+        objectives=objectives,
+        optimizer=optimizer,
+        prediction_config=PredictionConfig(),
     )
 
 
@@ -160,7 +169,31 @@ def test_fit(
 def test_predict(
     trainer: pl.Trainer, model: pl.LightningModule, datamodule: pl.LightningDataModule
 ) -> None:
-    trainer.predict(model, datamodule=datamodule, return_predictions=False)
+    assert isinstance(model, ControlTransformer)
+    model.prediction_config = PredictionConfig(
+        objectives={
+            ObjectivePredictionKey.GROUND_TRUTH,
+            ObjectivePredictionKey.PREDICTION_VALUE,
+        },
+        encoder=EncoderPredictionConfig(
+            attention_rollout=AttentionRolloutPredictionConfig()
+        ),
+    )
+    match trainer.predict(model, datamodule=datamodule, return_predictions=True):
+        case [TensorDict() as prediction]:
+            pass
+
+        case _:
+            msg = "expected exactly one prediction"
+            raise AssertionError(msg)
+
+    match prediction.to_dict():
+        case {"policy_objective": {"ground_truth": _}}:
+            pass
+
+        case _:
+            msg = "missing `policy_objective.ground_truth` in prediction output"
+            raise AssertionError(msg)
 
 
 @pytest.mark.parametrize("model", [lf("model_yaak_control_transformer_raw")])

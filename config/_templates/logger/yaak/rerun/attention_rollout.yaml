@@ -24,8 +24,8 @@ schema:
   #@     for camera in cameras:
   (@=camera@)/(@=timestep@)/attention:
     - _target_: rerun.DepthImage.columns
-      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), special, observation_summary, image, (@=camera@)]
-      indices: [inverse_dynamics, attention_rollout, timestep_indices]
+      buffer: [encoder, attention_rollout, value, (@=timestep@), summary, observation_summary, image, (@=camera@)]
+      indices: [encoder, attention_rollout, timestep_indices]
 
     - static: true
       _target_: rerun.DepthImage.from_fields
@@ -33,31 +33,31 @@ schema:
       depth_range: [0.0, 0.05]
       format:
         _target_: rerun.components.ImageFormat
-        height: 320
-        width: 576
+        height: 256
+        width: 256
         color_model: L
         channel_datatype: f32
 
   (@=camera@)/(@=timestep@)/input:
     - _target_: rerun.Image.columns
-      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), input, image, (@=camera@)]
-      indices: [inverse_dynamics, attention_rollout, timestep_indices]
+      buffer: [encoder, attention_rollout, value, (@=timestep@), input, image, (@=camera@)]
+      indices: [encoder, attention_rollout, timestep_indices]
 
     - static: true
       _target_: rerun.Image.from_fields
       opacity: 0.1
       format:
         _target_: rerun.components.ImageFormat
-        height: 320
-        width: 576
+        height: 256
+        width: 256
         color_model: RGB
         channel_datatype: f32
   #@     end
 
   speed/(@=timestep@):
     - _target_: rerun.DepthImage.columns
-      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), special, observation_summary, continuous, speed]
-      indices: [inverse_dynamics, attention_rollout, timestep_indices]
+      buffer: [encoder, attention_rollout, value, (@=timestep@), summary, observation_summary, continuous, speed]
+      indices: [encoder, attention_rollout, timestep_indices]
 
     - static: true
       _target_: rerun.DepthImage.from_fields
@@ -72,8 +72,8 @@ schema:
 
   waypoints/(@=timestep@):
     - _target_: rerun.DepthImage.columns
-      buffer: [inverse_dynamics, attention_rollout, value, (@=timestep@), special, observation_summary, context, waypoints]
-      indices: [inverse_dynamics, attention_rollout, timestep_indices]
+      buffer: [encoder, attention_rollout, value, (@=timestep@), summary, observation_summary, context, waypoints]
+      indices: [encoder, attention_rollout, timestep_indices]
 
     - static: true
       _target_: rerun.DepthImage.from_fields
@@ -110,4 +110,3 @@ blueprint:
             - _target_: rerun.blueprint.Spatial2DView
               name: waypoints
               origin: waypoints/(@=timestep@)
-

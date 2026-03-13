@@ -16,6 +16,11 @@ trainer:
   precision: "bf16-mixed"
   logger: false
   callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives:
+          - summary_embeddings
+
     - _target_: rmind.callbacks.TensorDictPredictionWriter
       write_interval: batch
       path: ${hydra:run.dir}/predictions/{batch_idx:06}/

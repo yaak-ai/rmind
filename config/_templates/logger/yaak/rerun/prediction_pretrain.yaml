@@ -61,10 +61,6 @@ schema:
   #@         k: {"continuous": ["gas_pedal_diff", "brake_pedal_diff", "steering_angle_diff"]}
   #@         for k in ["ground_truth", "prediction_value"]
   #@     },
-  #@     "random_masked_hindsight_control": {
-  #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
-  #@         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
-  #@     },
   #@ }
   #@ for key_objective, data_objective in predictions.items():
   #@  for key_prediction, data_prediction in data_objective.items():
@@ -82,4 +78,3 @@ schema:
   #@    end
   #@  end
   #@ end
-

@@ -9,10 +9,12 @@ from .prediction import (
     RerunPredictionWriter,
     TensorDictPredictionWriter,
 )
+from .prediction_config import PredictionConfigSetter
 
 __all__ = [
     "DataFramePredictionWriter",
     "LogitBiasSetter",
+    "PredictionConfigSetter",
     "RerunPredictionWriter",
     "TensorDictPredictionWriter",
     "WandbImageParamLogger",

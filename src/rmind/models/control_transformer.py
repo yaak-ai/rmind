@@ -1,13 +1,12 @@
 from collections.abc import Callable, Mapping, Sequence
-from itertools import product
-from typing import Any, ClassVar, Literal, Self, override
+from typing import Annotated, Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
 import torch
 from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from lightning_utilities.core.rank_zero import rank_zero_warn
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, InstanceOf, validate_call
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf, validate_call
 from pytorch_lightning.core.saving import _load_state, pl_load  # noqa: PLC2701
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.migration.utils import (
@@ -21,14 +20,14 @@ from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from structlog import get_logger
 from tensordict import TensorDict
 from torch.nn import Module
-from torch.nn.modules.module import _IncompatibleKeys
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
+from rmind.components.llm import EncoderPredictionConfig
 from rmind.components.mask import WandbAttentionMaskLegend
-from rmind.components.objectives.base import PredictionKey
+from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 
@@ -42,22 +41,33 @@ class LRSchedulerHydraConfig(BaseModel):
     scheduler: HydraConfig[LRScheduler]
 
 
+class PredictionConfig(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    encoder: EncoderPredictionConfig = Field(default_factory=EncoderPredictionConfig)
+    objectives: set[ObjectivePredictionKey] = Field(default_factory=set)
+
+
 class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     episode_builder: Module
-    encoder: Module | None
+    encoder: Module
     objectives: ModuleDict
     optimizer: HydraConfig[Optimizer] | None = None
     lr_scheduler: LRSchedulerHydraConfig | None = None
+    prediction_config: PredictionConfig
 
     @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         episode_builder: HydraConfig[Module] | InstanceOf[Module],
-        encoder: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        encoder: HydraConfig[Module] | InstanceOf[Module],
         objectives: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
+        prediction_config: Annotated[
+            PredictionConfig, Field(default_factory=PredictionConfig)
+        ],
     ) -> None:
         super().__init__()
 
@@ -73,17 +83,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             hparams["encoder"] = encoder.model_dump()
             encoder = encoder.instantiate()
 
-        self.encoder: HydraConfig[Module] | InstanceOf[Module] | None = encoder
+        self.encoder: HydraConfig[Module] | InstanceOf[Module] = encoder
 
         if isinstance(objectives, HydraConfig):
             hparams["objectives"] = objectives.model_dump()
             objectives = objectives.instantiate()
 
         self.objectives = objectives
-        if self.encoder is not None:
-            for objective in self.objectives.values():
-                if hasattr(objective, "encoder") and objective.encoder is None:
-                    objective.encoder = self.encoder
 
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
@@ -95,84 +101,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
 
+        self.prediction_config = prediction_config
+
         self.save_hyperparameters(hparams)
-
-    @override
-    def state_dict(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        shared_encoder_objectives = {
-            k
-            for k, v in self.objectives.items()
-            if getattr(v, "encoder", None) is self.encoder
-        }
-
-        shared_encoder_objective_keys = set()
-        state_dict = super().state_dict(*args, **kwargs)
-
-        for k in state_dict:
-            match k.split(".", maxsplit=3):
-                case ["objectives", objective, "encoder", *_] if (
-                    objective in shared_encoder_objectives
-                ):
-                    shared_encoder_objective_keys.add(k)
-
-                case _:
-                    pass
-
-        return {
-            k: v
-            for k, v in state_dict.items()
-            if k not in shared_encoder_objective_keys
-        }
-
-    @override
-    def load_state_dict(
-        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
-    ) -> _IncompatibleKeys:
-        incompatible_keys = super().load_state_dict(
-            state_dict, strict=False, assign=assign
-        )
-        if incompatible_keys.missing_keys:
-            encoder_keys = [k for k in state_dict if k.startswith("encoder.")]
-            shared_encoder_objectives = {
-                k
-                for k, v in self.objectives.items()
-                if getattr(v, "encoder", None) is self.encoder
-            }
-            shared_encoder_objective_keys = map(
-                ".".join,
-                product(("objectives",), shared_encoder_objectives, encoder_keys),
-            )
-            missing_keys = set(incompatible_keys.missing_keys) - set(
-                shared_encoder_objective_keys
-            )
-            incompatible_keys = incompatible_keys._replace(
-                missing_keys=list(missing_keys)
-            )
-
-        # mimic `super().load_state_dict` `strict` handling
-        error_msgs: list[str] = []
-        if strict:
-            if unexpected_keys := incompatible_keys.unexpected_keys:
-                error_msgs.append(
-                    "Unexpected key(s) in state_dict: {}. ".format(
-                        ", ".join(f'"{k}"' for k in unexpected_keys)
-                    )
-                )
-
-            if missing_keys := incompatible_keys.missing_keys:
-                error_msgs.append(
-                    "Missing key(s) in state_dict: {}. ".format(
-                        ", ".join(f'"{k}"' for k in missing_keys)
-                    )
-                )
-
-        if error_msgs:
-            msg = "Error(s) in loading state_dict for {}:\n\t{}".format(
-                self.__class__.__name__, "\n\t".join(error_msgs)
-            )
-            raise RuntimeError(msg)
-
-        return incompatible_keys
 
     @override
     @_restricted_classmethod
@@ -247,9 +178,12 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
+        embedding = self.encoder(
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
+        )
 
         metrics = TensorDict({
-            name: objective.compute_metrics(episode)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -263,12 +197,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             from wandb import Image  # noqa: PLC0415
 
-            for name, objective in self.objectives.items():
-                mask = objective.build_attention_mask(
-                    episode.index, episode.timestep, legend=WandbAttentionMaskLegend
+            img = Image(
+                self.episode_builder
+                .attention_mask_builder(
+                    index=episode.index.to_dict(),
+                    timestep=episode.timestep.to_dict(),
+                    legend=WandbAttentionMaskLegend,
                 )  # ty:ignore[call-non-callable]
-                img = Image(mask.mask.unsqueeze(0))
-                self.logger.log_image(f"masks/{name}", [img], step=step)
+                .float()
+                .unsqueeze(0)
+                .cpu()
+            )
+            self.logger.log_image("attention_mask", [img], step=step)
 
         self.log_dict(
             {
@@ -292,8 +232,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
+        embedding = self.encoder(
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
+        )
         metrics = TensorDict({
-            name: objective.compute_metrics(episode)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -322,25 +265,44 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
         episode = self.episode_builder(batch)
-
-        return TensorDict({
+        embedding = self.encoder(
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
+        )
+        objectives_predictions = {
             name: objective.predict(
                 episode=episode,
-                keys=set(PredictionKey),
+                embedding=embedding,
+                keys=frozenset(self.prediction_config.objectives),
                 tokenizers=self.episode_builder.tokenizers,
             )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
-        }).auto_batch_size_(1)
+        }
+        encoder_predictions = {
+            "encoder": self.encoder.predict(  # ty:ignore[call-non-callable]
+                src=episode.embeddings_packed,
+                mask=episode.attention_mask,
+                episode=episode,
+                config=self.prediction_config.encoder,
+            )
+        }
+
+        return TensorDict(
+            objectives_predictions | encoder_predictions  # ty:ignore[invalid-argument-type]
+        ).auto_batch_size_(1)
 
     @override
     def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
         episode = self.episode_builder(batch)
+        embedding = self.encoder(
+            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
+        )
 
         outputs = {
-            name: objective(episode) for name, objective in self.objectives.items()
+            name: objective(episode=episode, embedding=embedding)
+            for name, objective in self.objectives.items()
         }
 
-        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs
+        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs  # ty:ignore[invalid-argument-type]
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:

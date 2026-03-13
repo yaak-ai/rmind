@@ -1,7 +1,7 @@
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
-from typing import Literal, final, override
+from typing import Any, Literal, final, override
 
 import orjson
 import pytorch_lightning as pl
@@ -51,14 +51,20 @@ class TensorDictPredictionWriter(BasePredictionWriter):
         pl_module: pl.LightningModule,
         prediction: TensorDict,
         batch_indices: Sequence[int] | None,
-        batch: TensorDict | TensorClass,
+        batch: TensorDict | TensorClass | dict[str, Any],
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:
         data = (
             prediction
             .clone(recurse=False)
-            .update({"batch": batch.clone(recurse=False).to_tensordict()})
+            .update({
+                "batch": (
+                    batch.clone(recurse=False).to_tensordict()
+                    if isinstance(batch, (TensorDict, TensorClass))
+                    else TensorDict(batch)  # ty:ignore[invalid-argument-type]
+                )
+            })
             .auto_batch_size_(1)
             .lock_()
         )

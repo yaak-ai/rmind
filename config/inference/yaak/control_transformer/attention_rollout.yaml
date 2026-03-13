@@ -21,9 +21,6 @@ model:
       path: ["objectives", "forward_dynamics"]
     - _target_: funcy.del_in
       _partial_: true
-      path: ["objectives", "random_masked_hindsight_control"]
-    - _target_: funcy.del_in
-      _partial_: true
       path: ["objectives", "memory_extraction"]
     - _target_: funcy.del_in
       _partial_: true
@@ -42,6 +39,17 @@ trainer:
   precision: "bf16-mixed"
   logger: false
   callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives:
+          - ground_truth
+          - prediction_value
+          - summary_embeddings
+        encoder:
+          attention_rollout:
+            head_fusion: max
+            discard_ratio: 0.9
+
     - _target_: rmind.callbacks.RerunPredictionWriter
       write_interval: batch
       logger: ${logger}
