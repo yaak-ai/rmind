@@ -340,14 +340,14 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         batch_tmp = {
             "data": batch["data"]
             | {
-                # "meta/VehicleMotion/brake_pedal_normalized": torch.zeros(1, 6, 1),
-                # "meta/VehicleMotion/gas_pedal_normalized": torch.zeros(1, 6, 1),
-                # "meta/VehicleMotion/steering_angle_normalized": torch.zeros(1, 6, 1),
-                # "meta/VehicleMotion/speed": torch.zeros(1, 6, 1),
-                # "meta/VehicleState/turn_signal": torch.zeros(
-                #     1, 6, 1, dtype=torch.int32
-                # ),
-                "waypoints/xy_normalized": torch.zeros(1, 6, 10, 2)
+                "meta/VehicleMotion/brake_pedal_normalized": torch.zeros(1, 6, 1),
+                "meta/VehicleMotion/gas_pedal_normalized": torch.zeros(1, 6, 1),
+                "meta/VehicleMotion/steering_angle_normalized": torch.zeros(1, 6, 1),
+                "meta/VehicleMotion/speed": torch.zeros(1, 6, 1),
+                "meta/VehicleState/turn_signal": torch.zeros(
+                    1, 6, 1, dtype=torch.int32
+                ),
+                "waypoints/xy_normalized": torch.zeros(1, 6, 10, 2),
             }  # ty:ignore[unsupported-operator]
         }
 
