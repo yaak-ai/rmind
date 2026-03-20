@@ -232,7 +232,7 @@ samples:
                 columns:
                   xy:
                     method: asof
-                    strategy: nearest
+                    strategy: forward
 
               headings_denoised:
                 key: timestamp
