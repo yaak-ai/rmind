@@ -293,7 +293,7 @@ episode_builder:
         in_features: ${encoder_embedding_dim}
         out_features: ${encoder_embedding_dim}
 
-  role_encoding:
+  role_encoding: # (modality, type)
     _target_: rmind.components.nn.Embedding
     num_embeddings: 8
     embedding_dim: ${encoder_embedding_dim}
@@ -313,6 +313,13 @@ encoder:
   emb_norm:
     _target_: torch.nn.LayerNorm
     normalized_shape: ${encoder_embedding_dim}
+  rope:
+    _target_: rmind.components.position_encoding.RotaryPositionalEmbeddings
+    dim:
+      _target_: operator.floordiv
+      _args_:
+        - ${encoder_embedding_dim}
+        - ${num_heads}
 
 objectives:
   _target_: rmind.components.containers.ModuleDict

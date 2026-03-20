@@ -209,7 +209,7 @@ episode_builder:
         in_features: ${encoder_embedding_dim}
         out_features: ${encoder_embedding_dim}
 
-  role_encoding:
+  role_encoding: # (modality, type)
     _target_: rmind.components.nn.Embedding
     num_embeddings: 8
     embedding_dim: ${encoder_embedding_dim}

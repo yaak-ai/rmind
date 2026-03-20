@@ -39,7 +39,10 @@ from rmind.components.objectives import (
     MemoryExtractionObjective,
     PolicyObjective,
 )
-from rmind.components.position_encoding import PatchPositionEmbedding2D
+from rmind.components.position_encoding import (
+    PatchPositionEmbedding2D,
+    RotaryPositionalEmbeddings,
+)
 from rmind.components.timm_backbone import TimmBackbone
 
 
@@ -356,6 +359,7 @@ def encoder(embedding_dims: EmbeddingDims, device: torch.device) -> Module:
         resid_dropout=0.1,
         mlp_dropout=0.1,
         hidden_layer_multiplier=1,
+        rope=RotaryPositionalEmbeddings(dim=embedding_dims.encoder // 2),
     ).to(device)
 
 

@@ -32,7 +32,6 @@ from rmind.components.episode import Episode
 from rmind.components.mask import AttentionMask
 from rmind.components.nn import default_weight_init_fn
 from rmind.components.objectives.base import Prediction
-from rmind.components.position_encoding import RotaryPositionalEmbeddings
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -63,11 +62,7 @@ class EncoderPredictionConfig(BaseModel):
 
 class RotaryMultiheadAttention(nn.Module):
     def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        attn_dropout: float = 0.1,
-        rope: RotaryPositionalEmbeddings | None = None,
+        self, embed_dim: int, num_heads: int, rope: Module, attn_dropout: float = 0.1
     ) -> None:
         super().__init__()
         if embed_dim % num_heads != 0:
@@ -84,9 +79,7 @@ class RotaryMultiheadAttention(nn.Module):
 
         self.qkv: nn.Linear = nn.Linear(embed_dim, 3 * embed_dim, bias=True)
         self.out_proj: nn.Linear = nn.Linear(embed_dim, embed_dim, bias=True)
-        self.rope: RotaryPositionalEmbeddings = rope or RotaryPositionalEmbeddings(
-            dim=head_dim
-        )
+        self.rope: Module = rope
 
     def forward(
         self,
@@ -148,19 +141,27 @@ class TransformerEncoderBlock(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
-        rope: RotaryPositionalEmbeddings | None = None,
+        rope: Module | None = None,
     ) -> None:
         super().__init__()
 
         # self.pre_norm and self.mha mimic f in
         # https://github.com/facebookresearch/xformers/blob/v0.0.28.post2/xformers/components/reversible.py#L72
         self.pre_norm: nn.LayerNorm = nn.LayerNorm(embedding_dim)  # pre-norm
-        self.attn: RotaryMultiheadAttention = RotaryMultiheadAttention(
-            embed_dim=embedding_dim,
-            num_heads=num_heads,
-            attn_dropout=attn_dropout,
-            rope=rope,
-        )
+        if rope is not None:
+            self.attn: RotaryMultiheadAttention = RotaryMultiheadAttention(
+                embed_dim=embedding_dim,
+                num_heads=num_heads,
+                rope=rope,
+                attn_dropout=attn_dropout,
+            )
+        else:
+            self.attn: nn.MultiheadAttention = nn.MultiheadAttention(
+                embed_dim=embedding_dim,
+                num_heads=num_heads,
+                dropout=attn_dropout,
+                batch_first=True,
+            )
 
         # https://github.com/facebookresearch/xformers/blob/v0.0.28.post2/xformers/components/multi_head_dispatch.py#L258
         self.resid_drop: nn.Dropout = nn.Dropout(resid_dropout, inplace=False)
@@ -232,10 +233,9 @@ class TransformerEncoder(nn.Module):
         hidden_layer_multiplier: int = 1,
         freeze: bool | None = None,  # noqa: FBT001
         emb_norm: InstanceOf[nn.Module] | None = None,
+        rope: InstanceOf[nn.Module] | None = None,
     ) -> None:
         super().__init__()
-        head_dim = dim_model // num_heads
-        rope = RotaryPositionalEmbeddings(dim=head_dim)
         self.layers = nn.ModuleList([
             TransformerEncoderBlock(
                 embedding_dim=dim_model,
