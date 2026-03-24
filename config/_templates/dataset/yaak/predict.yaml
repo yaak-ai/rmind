@@ -51,6 +51,10 @@ samples:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/waypoints.json
 
+    headings_denoised_path:
+      #@ for/end drive_id in drives:
+      - ${paths.data}/(@=drive_id@)/headings_denoised.json
+
     cam_front_left_path:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324
@@ -146,7 +150,6 @@ samples:
               TimeZone: UTC
             query: |
               SELECT TO_TIMESTAMP(timestamp)::TIMESTAMP AS timestamp,
-                     heading,
                      ST_AsWKB(ST_Transform(geom, 'EPSG:4326', 'EPSG:25832', always_xy := true)) AS geometry
               FROM ST_Read($waypoints_path)
 
@@ -163,11 +166,24 @@ samples:
             output: xy
 
       - _target_: pipefunc.PipeFunc
-        output_name: aligned
-        mapspec: "meta[i], waypoints[i] -> aligned[i]"
+        output_name: headings_denoised
+        mapspec: "headings_denoised_path[i] -> headings_denoised[i]"
+        cache: true
         func:
           _target_: makefun.create_function
-          func_signature: "align(*, meta, waypoints)"
+          func_signature: "build_headings_denoised(*, headings_denoised_path)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            query: |
+              SELECT make_timestamp(h.timestamp_us) AS timestamp, h.heading
+              FROM (SELECT unnest(headings) AS h FROM read_json_auto($headings_denoised_path))
+
+      - _target_: pipefunc.PipeFunc
+        output_name: aligned
+        mapspec: "meta[i], waypoints[i], headings_denoised[i] -> aligned[i]"
+        func:
+          _target_: makefun.create_function
+          func_signature: "align(*, meta, waypoints, headings_denoised)"
           func_impl:
             _target_: rbyte.io.DataFrameAligner
             separator: /
@@ -214,10 +230,14 @@ samples:
               waypoints:
                 key: timestamp
                 columns:
-                  heading:
-                    method: asof
-                    strategy: nearest
                   xy:
+                    method: asof
+                    strategy: forward
+
+              headings_denoised:
+                key: timestamp
+                columns:
+                  heading:
                     method: asof
                     strategy: nearest
 
@@ -275,7 +295,7 @@ samples:
                         - ST_X(ego_geom),
                         - ST_Y(ego_geom)
                       ),
-                      radians("waypoints/heading")
+                      radians("headings_denoised/heading")
                     ) AS normalized_waypoints_geom
                   FROM
                     base_data
@@ -287,7 +307,7 @@ samples:
                   normalized_waypoints_geom,
                   ego_geom,
                   "waypoints/xy",
-                  "waypoints/heading"
+                  "headings_denoised/heading"
                 ),
                 [
                   ST_X(ego_geom),
@@ -296,7 +316,7 @@ samples:
                   (
                   SELECT
                     list(
-                      [ST_X(p.point_struct.geom) / 100, ST_Y(p.point_struct.geom) / 100]
+                      [ST_X(p.point_struct.geom), ST_Y(p.point_struct.geom)]
                       ORDER BY
                         p.point_struct.path
                     )
@@ -306,7 +326,7 @@ samples:
                 (
                   SELECT
                     list(
-                      [ST_X(p.point_struct.geom), ST_Y(p.point_struct.geom)]
+                      [ST_X(p.point_struct.geom) / 100, ST_Y(p.point_struct.geom) / 100]
                       ORDER BY
                         p.point_struct.path
                     )
