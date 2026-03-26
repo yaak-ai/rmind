@@ -30,9 +30,9 @@ dependencies = [
   "structlog>=25.2.0",
   "tensordict>=0.11.0",
   "timm>=1.0.22",
-  "torch>=2.10.0",
-  "torchaudio>=2.10.0",
-  "torchvision>=0.25.0",
+  "torch>=2.11.0",
+  "torchaudio>=2.11.0",
+  "torchvision>=0.26.0",
 ]
 
 [project.urls]
@@ -50,14 +50,14 @@ test = ["pytest>=9.0.2", "pytest-lazy-fixtures>=1.4.0"]
 train = [
   "contextily>=1.6.2",
   "matplotlib>=3.10.3",
-  "torchmetrics>=1.4.1",
+  "torchmetrics>=1.9",
   "wandb>=0.24.2",
 ]
 
 [dependency-groups]
 dev = [
   "better-exceptions>=0.3.3",
-  "deptry>=0.24.0",
+  "deptry>=0.25.1",
   "ipython",
   "lovely-tensors",
   "patdb",
@@ -65,8 +65,8 @@ dev = [
   "wat-inspector",
 ]
 check = [
-  "ruff>=0.15.6",
-  "ty>=0.0.24",
+  "ruff>=0.15.7",
+  "ty>=0.0.25",
 ]
 export = [
   "onnx>=1.19.1",
@@ -143,6 +143,16 @@ unused-ignore-comment = "warn"
 
 [tool.uv.sources]
 torch = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+
+torchvision = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+
+torchaudio = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
   { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
 ]

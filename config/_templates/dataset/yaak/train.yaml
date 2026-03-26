@@ -800,7 +800,7 @@ samples:
         mapspec: "waypoints_raw[i] -> waypoints[i]"
         func:
           _target_: rbyte.io.WaypointBuilder
-          length: 10
+          length: 91
           columns:
             points: geometry
             output: xy
@@ -962,6 +962,7 @@ samples:
                     )
                   FROM
                     UNNEST(ST_Dump(waypoints_geom)) AS p(point_struct)
+                  WHERE (p.point_struct.path[1] - 1) % 10 = 0
                 ) AS "waypoints/xy",
                 (
                   SELECT
@@ -972,6 +973,7 @@ samples:
                     )
                   FROM
                     UNNEST(ST_Dump(normalized_waypoints_geom)) AS p(point_struct)
+                  WHERE (p.point_struct.path[1] - 1) % 10 = 0
                 ) AS "waypoints/xy_normalized"
               FROM
                 normalized_geometries

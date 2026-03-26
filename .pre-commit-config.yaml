@@ -22,7 +22,7 @@ repos:
       - id: typos
 
   - repo: https://github.com/fpgmaas/deptry.git
-    rev: 0.24.0
+    rev: 0.25.1
     hooks:
       - id: deptry
 
