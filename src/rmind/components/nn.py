@@ -3,6 +3,7 @@ from functools import partial
 from typing import Any, final, override
 
 import torch
+from einops import rearrange, repeat
 from pydantic import validate_call
 from torch import Tensor, nn
 from torch.nn import Module
@@ -123,3 +124,50 @@ def _module_wrapper(
 
 AtLeast3D = _module_wrapper(torch.atleast_3d, name="AtLeast3D")
 DiffLast = _module_wrapper(diff_last, name="DiffLast")
+
+
+@final
+class WaypointStopTruncation(Module):
+    @validate_call
+    def __init__(self, *, p: float = 0.5) -> None:
+        super().__init__()
+        self.p = p
+
+    @override
+    @torch.no_grad()
+    def forward(self, input: PyTree) -> PyTree:
+        waypoints = input["context"]["waypoints"]  # (b, t, n, 2)
+        stop_xy = input["context"].get("stop_xy")  # (b, t, 2)
+
+        if not self.training or waypoints is None or stop_xy is None:
+            context = {k: v for k, v in input["context"].items() if k != "stop_xy"}
+            return {**input, "context": context}
+
+        n = waypoints.shape[2]
+
+        valid = ~stop_xy.isnan().any(dim=-1)  # (b, t)
+        if not valid.any():
+            context = {k: v for k, v in input["context"].items() if k != "stop_xy"}
+            return {**input, "context": context}
+
+        # find nearest waypoint to stop position
+        dist_to_stop = (waypoints - stop_xy[:, :, None, :]).norm(dim=-1)  # (b, t, n)
+        _, stop_idx = dist_to_stop.min(dim=-1)  # (b, t)
+
+        apply = valid & (torch.rand(stop_xy.shape[:2], device=stop_xy.device) < self.p)
+
+        if apply.any():
+            # approaching: replace waypoints after stop_idx with waypoint at stop_idx
+            pos = rearrange(torch.arange(n, device=waypoints.device), "n -> 1 1 n")
+            after_stop = pos > rearrange(stop_idx, "b t -> b t 1")  # (b, t, n)
+            approach_mask = after_stop & rearrange(apply, "b t -> b t 1")
+            gather_idx = repeat(stop_idx, "b t -> b t 1 d", d=2)
+            fill = repeat(waypoints.gather(2, gather_idx), "b t 1 d -> b t n d", n=n)
+            waypoints = torch.where(
+                rearrange(approach_mask, "b t n -> b t n 1"), fill, waypoints
+            )
+
+        context = {k: v for k, v in input["context"].items() if k != "stop_xy"} | {
+            "waypoints": waypoints
+        }
+        return {**input, "context": context}

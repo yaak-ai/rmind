@@ -241,13 +241,18 @@ class WandbWaypointsLogger(Callback):
             log_images.append(
                 Image(rearrange(image, "w h c -> c w h"), caption=caption)
             )
-        if (
-            wpts_xy_normalized := key_get_default(
+        last_input = getattr(
+            getattr(pl_module, "episode_builder", None), "_last_input", None
+        )
+        if last_input is not None:
+            wpts_xy_normalized = last_input["context"]["waypoints"][0, -1]
+        else:
+            wpts_xy_normalized = key_get_default(
                 batch,
                 self._data_paths.get(self.DataColumns.WAYPOINTS_XY_NORMALIZED, NoneKey),
                 None,
             )
-        ) is not None:
+        if wpts_xy_normalized is not None:
             log_images.append(
                 self._plot_waypoints_normalized(
                     wpts_xy_normalized=wpts_xy_normalized, caption=caption
@@ -286,15 +291,20 @@ class WandbWaypointsLogger(Callback):
         wpts_xy_normalized = wpts_xy_normalized.cpu()
 
         fig = plt.figure(figsize=(8, 8), frameon=False)
-        wpts_x = wpts_xy_normalized[:, 0]
-        wpts_y = wpts_xy_normalized[:, 1]
-        plt.plot(wpts_x, wpts_y, "bo-", markersize=5)
-        for i, (x, y) in enumerate(zip(wpts_x, wpts_y, strict=True)):
-            plt.annotate(str(i), (x, y), xytext=(5, 5), textcoords="offset points")
-        plt.plot(0, 0, "ro")
-        plt.grid(True)  # noqa: FBT003
-        plt.axis("equal")
-        return Image(fig, caption=caption)
+        try:
+            wpts_x = wpts_xy_normalized[:, 0]
+            wpts_y = wpts_xy_normalized[:, 1]
+            plt.plot(wpts_x, wpts_y, "bo-", markersize=5)
+            for i, (x, y) in enumerate(zip(wpts_x, wpts_y, strict=True)):
+                plt.annotate(str(i), (x, y), xytext=(5, 5), textcoords="offset points")
+            plt.plot(0, 0, "ro")
+            plt.grid(True)  # noqa: FBT003
+            plt.gca().set_aspect("equal", adjustable="box")
+            plt.xlim(-1, 1)
+            plt.ylim(-1, 1)
+            return Image(fig, caption=caption)
+        finally:
+            plt.close(fig)
 
     @staticmethod
     def _plot_waypoints_on_map(

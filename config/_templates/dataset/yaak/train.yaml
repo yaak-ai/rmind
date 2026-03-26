@@ -691,6 +691,10 @@ samples:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/waypoints.json
 
+    stops_path:
+      #@ for/end drive_id in drives:
+      - ${paths.data}/(@=drive_id@)/stops.json
+
     headings_denoised_path:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/headings_denoised.json
@@ -800,7 +804,7 @@ samples:
         mapspec: "waypoints_raw[i] -> waypoints[i]"
         func:
           _target_: rbyte.io.WaypointBuilder
-          length: 91
+          length: 91 # 10 1m-apart wpts with stride 10 [0, 10, 20, ..., 90]
           columns:
             points: geometry
             output: xy
@@ -819,11 +823,31 @@ samples:
               FROM (SELECT unnest(headings) AS h FROM read_json_auto($headings_denoised_path))
 
       - _target_: pipefunc.PipeFunc
-        output_name: aligned
-        mapspec: "meta[i], waypoints[i], headings_denoised[i] -> aligned[i]"
+        output_name: stops
+        mapspec: "stops_path[i] -> stops[i]"
+        cache: true
         func:
           _target_: makefun.create_function
-          func_signature: "align(*, meta, waypoints, headings_denoised)"
+          func_signature: "build_stops(*, stops_path)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            extensions: [spatial]
+            config:
+              TimeZone: UTC
+            query: |
+              SELECT make_timestamp(s.timestamp_us) AS timestamp,
+                     ST_AsWKB(ST_Transform(
+                       ST_Point(s.longitude, s.latitude),
+                       'EPSG:4326', 'EPSG:25832', always_xy := true
+                     )) AS geometry
+              FROM (SELECT unnest(stops) AS s FROM read_json_auto($stops_path))
+
+      - _target_: pipefunc.PipeFunc
+        output_name: aligned
+        mapspec: "meta[i], waypoints[i], headings_denoised[i], stops[i] -> aligned[i]"
+        func:
+          _target_: makefun.create_function
+          func_signature: "align(*, meta, waypoints, headings_denoised, stops)"
           func_impl:
             _target_: rbyte.io.DataFrameAligner
             separator: /
@@ -881,6 +905,14 @@ samples:
                     method: asof
                     strategy: nearest
 
+              stops:
+                key: timestamp
+                columns:
+                  geometry:
+                    method: asof
+                    strategy: forward
+                    tolerance: 1m
+
       - _target_: pipefunc.PipeFunc
         renames:
           path: cam_front_left_path
@@ -912,7 +944,8 @@ samples:
                       ST_Point("meta/Gnss/longitude", "meta/Gnss/latitude"),
                       'EPSG:4326', 'EPSG:25832', always_xy := true
                     ) AS ego_geom,
-                    ST_GeomFromWKB("waypoints/xy") AS waypoints_geom
+                    ST_GeomFromWKB("waypoints/xy") AS waypoints_geom,
+                    ST_GeomFromWKB("stops/geometry") AS stop_geom
                   FROM
                     aligned
                     SEMI JOIN cam_front_left_meta
@@ -924,7 +957,7 @@ samples:
                     AND aligned."meta/VehicleMotion/gas_pedal_normalized" BETWEEN 0.0 AND 1.0
                     AND aligned."meta/VehicleMotion/brake_pedal_normalized" BETWEEN 0.0 AND 1.0
                     AND aligned."meta/VehicleMotion/steering_angle_normalized" BETWEEN -1.0 AND 1.0
-                    AND COLUMNS(*) IS NOT NULL
+                    AND COLUMNS(* EXCLUDE ("stops/geometry")) IS NOT NULL
                 ),
                 normalized_geometries AS (
                   SELECT
@@ -936,7 +969,20 @@ samples:
                         - ST_Y(ego_geom)
                       ),
                       radians("headings_denoised/heading")
-                    ) AS normalized_waypoints_geom
+                    ) AS normalized_waypoints_geom,
+                    CASE
+                      WHEN stop_geom IS NOT NULL
+                        AND ST_Distance(ego_geom, stop_geom) <= 100
+                      THEN ST_Rotate(
+                        ST_Translate(
+                          stop_geom,
+                          - ST_X(ego_geom),
+                          - ST_Y(ego_geom)
+                        ),
+                        radians("headings_denoised/heading")
+                      )
+                      ELSE NULL
+                    END AS normalized_stop_geom
                   FROM
                     base_data
                 )
@@ -946,14 +992,17 @@ samples:
                   waypoints_geom,
                   normalized_waypoints_geom,
                   ego_geom,
+                  stop_geom,
+                  normalized_stop_geom,
                   "waypoints/xy",
+                  "stops/geometry",
                   "headings_denoised/heading"
                 ),
                 [
                   ST_X(ego_geom),
                   ST_Y(ego_geom)
                 ] AS "meta/Gnss/xy",
-                  (
+                (
                   SELECT
                     list(
                       [ST_X(p.point_struct.geom), ST_Y(p.point_struct.geom)]
@@ -974,7 +1023,17 @@ samples:
                   FROM
                     UNNEST(ST_Dump(normalized_waypoints_geom)) AS p(point_struct)
                   WHERE (p.point_struct.path[1] - 1) % 10 = 0
-                ) AS "waypoints/xy_normalized"
+                ) AS "waypoints/xy_normalized",
+                [
+                  CASE WHEN normalized_stop_geom IS NOT NULL
+                    THEN ST_X(normalized_stop_geom) / 100
+                    ELSE 'NaN'::FLOAT
+                  END,
+                  CASE WHEN normalized_stop_geom IS NOT NULL
+                    THEN ST_Y(normalized_stop_geom) / 100
+                    ELSE 'NaN'::FLOAT
+                  END
+                ]::FLOAT[2] AS "stops/xy_normalized"
               FROM
                 normalized_geometries
               WHERE
@@ -1018,6 +1077,7 @@ samples:
                   "meta/Gnss/xy"::FLOAT[2][6] AS "meta/Gnss/xy",
                   "waypoints/xy_normalized"::FLOAT[2][10][6] AS "waypoints/xy_normalized",
                   "waypoints/xy"::FLOAT[2][10][6] AS "waypoints/xy",
+                  "stops/xy_normalized"::FLOAT[2][6] AS "stops/xy_normalized",
               FROM
                   samples
               WHERE

@@ -55,6 +55,7 @@ episode_builder:
 
           context:
             waypoints: [data, waypoints/xy_normalized]
+            stop_xy: [data, stops/xy_normalized]
 
           discrete:
             turn_signal: [data, meta/VehicleState/turn_signal]
@@ -115,6 +116,9 @@ episode_builder:
 
           context:
             _target_: torch.nn.Identity
+
+      - _target_: rmind.components.nn.StopWaypointAugmentation
+        p: 0.5
 
   tokenizers:
     _target_: rmind.components.containers.ModuleDict

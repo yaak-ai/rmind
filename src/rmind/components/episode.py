@@ -210,6 +210,7 @@ class EpisodeBuilder(Module):
     @override
     def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
         input = self.input_transform(batch)
+        self._last_input = input
         input_tokens = self.tokenizers(input)
 
         (b, t), device = mit.one({
