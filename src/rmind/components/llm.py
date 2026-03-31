@@ -450,7 +450,6 @@ class CrossAttentionDecoder(nn.Module):
             )
             for _ in range(num_layers)
         ])
-        self.layer_norm = nn.LayerNorm(dim_model)
 
         if freeze is not None:
             self.requires_grad_(not freeze).train(not freeze)
@@ -476,7 +475,7 @@ class CrossAttentionDecoder(nn.Module):
         for layer in self.layers:
             x = run_layer(layer, x, context)
 
-        return self.layer_norm(x)
+        return x
 
 
 @final

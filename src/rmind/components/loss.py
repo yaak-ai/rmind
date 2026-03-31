@@ -82,15 +82,6 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
 class GramAnchoringObjective(Module):
     """
     Gram-based anchoring loss for feature matching.
-
-    Combines two complementary objectives:
-    1. Cosine similarity loss: Ensures feature-level alignment between predictions and targets
-    2. Gram matrix loss: Preserves structural relationships and patterns within feature sets
-
-    The Gram matrix captures second-order statistics (feature correlations), which helps
-    maintain texture and structural properties during prediction. This is particularly
-    effective for image generation and reconstruction tasks.
-
     Based on DINOv3 implementation:
     https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
     """
@@ -112,35 +103,42 @@ class GramAnchoringObjective(Module):
         self.patches: int | None = patches
 
     @override
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:  # noqa: PLR0914
         target = target.detach()
         eps = 1e-6
 
-        # (b t p) d
-        input = F.normalize(input, dim=-1)
-        target = F.normalize(target, dim=-1)
+        input_n = F.normalize(input, dim=-1)
+        target_n = F.normalize(target, dim=-1)
 
-        patch_similarity = (input * target).sum(dim=-1)
-        patch_loss = 1.0 - patch_similarity
+        input_view = rearrange(input, "(bt p) d -> bt p d", p=self.patches)
+        input_n = rearrange(input_n, "(bt p) d -> bt p d", p=self.patches)
+        target_view = rearrange(target, "(bt p) d -> bt p d", p=self.patches)
+        target_n = rearrange(target_n, "(bt p) d -> bt p d", p=self.patches)
 
-        patch_weight = patch_loss.detach()
-        sim_loss = (patch_weight * patch_loss).sum() / (patch_weight.sum() + eps)
+        # TF-IDF patch uniqueness weights from GT
+        # TF: within-frame — patches similar to many others in the same frame are downweighted
+        within_sim = torch.einsum("bpd,bqd->bpq", target_n, target_n)
+        tf = 1.0 / (within_sim.mean(dim=-1) + eps)
+
+        # IDF: cross-frame — patches common across frames in the batch are downweighted
+        bt, p, d = target_n.shape
+        all_patches = target_n.reshape(bt * p, d)
+        cross_sim = torch.einsum("pd,qd->pq", all_patches, all_patches)
+        idf = 1.0 / (cross_sim.mean(dim=-1).reshape(bt, p) + eps)
+
+        weights = tf * idf
+        weights /= weights.sum(dim=1, keepdim=True) + eps
+
+        patch_loss = F.mse_loss(input_view, target_view, reduction="none").mean(dim=-1)
+        sim_loss = (weights * patch_loss).sum(dim=1).mean()
 
         if self.weight_gram <= 0:
             return self.weight_sim * sim_loss
 
-        input_view = rearrange(input, "(bt p) d -> bt p d", p=self.patches)
-        target_view = rearrange(target, "(bt p) d -> bt p d", p=self.patches)
-
-        # (b t) p p
-        gram_pred = torch.einsum("bpd,bqd->bpq", input_view, input_view)
-        gram_gt = torch.einsum("bpd,bqd->bpq", target_view, target_view)
-
-        gram_loss_patch = (gram_pred - gram_gt) ** 2
-        cross_patch_weight = (gram_pred - gram_gt).abs().detach()
-        gram_loss = (
-            (cross_patch_weight * gram_loss_patch).sum(dim=(1, 2))
-            / (cross_patch_weight.sum(dim=(1, 2)) + eps)
-        ).mean()
+        # Gram on L2-normed features weighted by TF-IDF pair uniqueness
+        gram_pred = torch.einsum("bpd,bqd->bpq", input_n, input_n)
+        gram_gt = torch.einsum("bpd,bqd->bpq", target_n, target_n)
+        pair_weights = torch.einsum("bp,bq->bpq", weights, weights)  # (bt, p, p)
+        gram_loss = (pair_weights * (gram_pred - gram_gt).pow(2)).sum(dim=(1, 2)).mean()
 
         return self.weight_sim * sim_loss + self.weight_gram * gram_loss
