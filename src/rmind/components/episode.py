@@ -27,14 +27,14 @@ from torch.utils._pytree import (  # noqa: PLC2701
     tree_map_with_path,
 )
 
-from rmind.components.base import Modality, PositionEncoding, TensorTree, TokenType
+from rmind.components.base import Modality, TensorTree, TokenType
 from rmind.components.containers import ModuleDict
 from rmind.components.mask import (
     AttentionMask,
     AttentionMaskBuilder,
     TorchAttentionMaskLegend,
 )
-from rmind.utils.pytree import tree_paths, unflatten_keys
+from rmind.utils.pytree import unflatten_keys
 
 logger = get_logger(__name__)
 
@@ -86,14 +86,14 @@ class Episode(TensorClass["frozen"]):
     input_tokens: TensorDict
     input_embeddings: TensorDict
     projected_embeddings: TensorDict
-    position_embeddings: TensorDict
+    role_embeddings: TensorDict
     index: Index
     timestep: Timestep
     attention_mask: AttentionMask
 
     @property
     def embeddings(self) -> TensorDict:
-        return self.projected_embeddings + self.position_embeddings
+        return self.projected_embeddings + self.role_embeddings
 
     @property
     def embeddings_packed(self) -> Tensor:
@@ -116,7 +116,7 @@ class EpisodeExport:
     input_tokens: TensorTree
     input_embeddings: TensorTree
     projected_embeddings: TensorTree
-    position_embeddings: TensorTree
+    role_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
     attention_mask: AttentionMask
@@ -128,7 +128,7 @@ class EpisodeExport:
                 left + right if left is not None and right is not None else None
             ),
             self.projected_embeddings,
-            self.position_embeddings,
+            self.role_embeddings,
         )
 
     @property
@@ -166,7 +166,7 @@ class EpisodeBuilder(Module):
         tokenizers: InstanceOf[ModuleDict],
         embeddings: InstanceOf[ModuleDict],
         projections: InstanceOf[ModuleDict],
-        position_encoding: InstanceOf[ModuleDict],
+        role_encoding: InstanceOf[Module],
         attention_mask_builder: InstanceOf[AttentionMaskBuilder],
         freeze: bool | None = None,
     ) -> None:
@@ -180,9 +180,21 @@ class EpisodeBuilder(Module):
         self.tokenizers: ModuleDict = tokenizers
         self.embeddings: ModuleDict = embeddings
         self.projections: ModuleDict = projections
-        self.position_encoding: ModuleDict = position_encoding
+        self.role_encoding: Module = role_encoding
         self.attention_mask_builder: AttentionMaskBuilder = attention_mask_builder
         self.register_buffer("_attention_mask", None, persistent=False)
+        role_idx_by_type_modality: dict[tuple[str, str], int] = {}
+        self._role_idx_by_path: dict[tuple[MappingKey, MappingKey], int] = {
+            (
+                MappingKey(token.modality.value),
+                MappingKey(
+                    str(token.name)
+                ),  # https://github.com/yaak-ai/rmind/issues/204
+            ): role_idx_by_type_modality.setdefault(
+                (token.type.value, token.modality.value), len(role_idx_by_type_modality)
+            )
+            for token in timestep
+        }
         if freeze is not None:
             if freeze is False and (
                 params_to_unfreeze := tuple(
@@ -217,7 +229,6 @@ class EpisodeBuilder(Module):
         projected_embeddings = self.projections(input_embeddings)
 
         index = self._build_index(projected_embeddings)
-        timestep_index = tree_map(itemgetter(0), index)
 
         timestep = unflatten_keys({
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
@@ -230,16 +241,14 @@ class EpisodeBuilder(Module):
             legend=TorchAttentionMaskLegend,
         )
 
-        position_embeddings = self._build_position_embeddings(
-            input_embeddings, timestep_index, timestep
-        )
+        role_embeddings = self._build_role_embeddings(projected_embeddings)
         return (
             EpisodeExport(
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
                 projected_embeddings=projected_embeddings,
-                position_embeddings=position_embeddings,
+                role_embeddings=role_embeddings,
                 index=index,
                 timestep=timestep,
                 attention_mask=attention_mask,
@@ -258,8 +267,8 @@ class EpisodeBuilder(Module):
                 projected_embeddings=TensorDict.from_dict(
                     projected_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
-                position_embeddings=TensorDict.from_dict(
-                    position_embeddings,  # ty:ignore[invalid-argument-type]
+                role_embeddings=TensorDict.from_dict(
+                    role_embeddings,  # ty:ignore[invalid-argument-type]
                     batch_dims=2,
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
@@ -324,114 +333,29 @@ class EpisodeBuilder(Module):
             timestep_index,
         )
 
-    def _build_position_embeddings(
-        self,
-        embeddings: TensorTree,
-        timestep_index: TensorTree,
-        timestep: TimestepExport,
-    ) -> TensorTree:
-        position_embeddings = {}
-
+    def _build_role_embeddings(self, embeddings: TensorTree) -> TensorTree:
         (_, t), device = mit.one({
             (leaf.shape[:2], leaf.device)
             for leaf in tree_leaves(embeddings)
             if leaf is not None
         })
 
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.TIMESTEP.value, default=None
-            )
-        ) is not None:
-            if not torch.compiler.is_exporting():
-                # build a sequence starting from a random index (simplified [0])
-                # e.g. given num_embeddings=20 and t=6, sample from ([0, 5], [1, 6], ..., [14, 19])
-                # ---
-                # [0] Randomized Positional Encodings Boost Length Generalization of Transformers (https://arxiv.org/abs/2305.16843)
+        roles = torch.arange(self.role_encoding.num_embeddings, device=device)  # ty:ignore[no-matching-overload]
+        role_embeddings = self.role_encoding(roles)
 
-                low, high = 0, mod_pe.num_embeddings - t + 1  # ty:ignore[unresolved-attribute]
-                start = torch.randint(low, high, (1,)).item()
-                position = torch.arange(start=start, end=start + t, device=device)
-            else:
-                position = torch.arange(t, device=device)
-
-            position_embeddings[k_pe] = tree_map(
-                lambda leaf: (
-                    repeat(
-                        mod_pe(position),  # ty:ignore[call-non-callable]
-                        "... t d -> ... t n d",
-                        n=leaf.shape[-2],
-                    )
-                    if leaf is not None
-                    else None
-                ),
-                embeddings,
-            )
-
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := (PositionEncoding.CONTEXT.value, "waypoints"), default=None
-            )
-        ) is not None:
-            position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
-            position_embedding = mod_pe(position)  # ty:ignore[call-non-callable]
-            paths = tuple(
-                (modality, name)
-                for (_, modality, name) in tree_paths(timestep)
-                if modality.key == Modality.CONTEXT.value  # ty:ignore[unresolved-attribute]
-            )
-
-            position_embeddings[k_pe] = tree_map_with_path(
-                lambda path, _: position_embedding if path in paths else None,
-                embeddings,
-            )
-
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.OBSERVATIONS.value, default=None
-            )
-        ) is not None:
-            paths = tree_paths(timestep[TokenType.OBSERVATION.value])
-            position_embeddings[k_pe] = tree_map_with_path(
-                lambda path, _: (
-                    mod_pe(key_get(timestep_index, path))  # ty:ignore[call-non-callable]
-                    if path in paths
-                    else None
-                ),
-                embeddings,
-            )
-
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.ACTIONS.value, default=None
-            )
-        ) is not None:
-            position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
-            position_embedding = mod_pe(position)  # ty:ignore[call-non-callable]
-            paths = tree_paths(timestep[TokenType.ACTION.value])
-            position_embeddings[k_pe] = tree_map_with_path(
-                lambda path, _: position_embedding if path in paths else None,
-                embeddings,
-            )
-
-        if (
-            mod_pe := self.position_encoding.get(
-                k_pe := PositionEncoding.SPECIAL.value, default=None
-            )
-        ) is not None and (
-            special_tokens := timestep.get(TokenType.SPECIAL.value)
-        ) is not None:
-            position = torch.arange(mod_pe.num_embeddings, device=device)  # ty:ignore[unresolved-attribute]
-            position_embedding = mod_pe(position)  # ty:ignore[call-non-callable]
-            paths = tree_paths(special_tokens)
-            position_embeddings[k_pe] = tree_map_with_path(
-                lambda path, _: position_embedding if path in paths else None,
-                embeddings,
-            )
-
-        return tree_map(
-            lambda *xs: (
-                sum(leaves) if (leaves := [x for x in xs if x is not None]) else None
+        return tree_map_with_path(
+            lambda path, leaf: (
+                repeat(
+                    role_embeddings[self._role_idx_by_path[path]],
+                    "d -> b t n d",
+                    b=leaf.shape[0],
+                    t=t,
+                    n=leaf.shape[-2],
+                )
+                if leaf is not None
+                and path is not None
+                and path in self._role_idx_by_path
+                else (torch.zeros_like(leaf) if leaf is not None else None)
             ),
-            *position_embeddings.values(),
+            embeddings,
         )

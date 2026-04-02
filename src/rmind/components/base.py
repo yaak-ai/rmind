@@ -35,12 +35,3 @@ class SummaryToken(StrEnum):
     OBSERVATION_SUMMARY = auto()
     OBSERVATION_HISTORY = auto()
     ACTION_SUMMARY = auto()
-
-
-@unique
-class PositionEncoding(StrEnum):
-    OBSERVATIONS = auto()
-    ACTIONS = auto()
-    SPECIAL = auto()
-    TIMESTEP = auto()
-    CONTEXT = auto()

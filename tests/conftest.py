@@ -14,13 +14,7 @@ from torchvision.ops import MLP
 from torchvision.transforms.v2 import CenterCrop, Normalize, Resize, ToDtype
 
 from rmind.components import llm
-from rmind.components.base import (
-    Modality,
-    PositionEncoding,
-    SummaryToken,
-    TensorTree,
-    TokenType,
-)
+from rmind.components.base import Modality, SummaryToken, TensorTree, TokenType
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
 from rmind.components.llm import TransformerEncoder
@@ -45,7 +39,10 @@ from rmind.components.objectives import (
     MemoryExtractionObjective,
     PolicyObjective,
 )
-from rmind.components.position_encoding import PatchPositionEmbedding2D
+from rmind.components.position_encoding import (
+    PatchPositionEmbedding2D,
+    RotaryPositionalEmbeddings,
+)
 from rmind.components.timm_backbone import TimmBackbone
 
 
@@ -342,15 +339,7 @@ def episode_builder(
                 Linear(embedding_dims.encoder, embedding_dims.encoder),
             ),
         }),
-        position_encoding=ModuleDict({
-            PositionEncoding.CONTEXT: {
-                "waypoints": Embedding(10, embedding_dims.encoder)
-            },
-            PositionEncoding.ACTIONS: Embedding(1, embedding_dims.encoder),
-            PositionEncoding.SPECIAL: Embedding(1, embedding_dims.encoder),
-            PositionEncoding.TIMESTEP: Embedding(6, embedding_dims.encoder),
-            PositionEncoding.OBSERVATIONS: None,
-        }),
+        role_encoding=Embedding(8, embedding_dims.encoder),
         attention_mask_builder=CausalAttentionMaskBuilder(),
     ).to(device)
 
@@ -370,6 +359,7 @@ def encoder(embedding_dims: EmbeddingDims, device: torch.device) -> Module:
         resid_dropout=0.1,
         mlp_dropout=0.1,
         hidden_layer_multiplier=1,
+        rope=RotaryPositionalEmbeddings(dim=embedding_dims.encoder // 2),
     ).to(device)
 
 

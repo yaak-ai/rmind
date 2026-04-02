@@ -165,7 +165,6 @@ def test_torch_export_fake(
     args: tuple[Any],
     args_export: tuple[Any],
     monkeypatch: pytest.MonkeyPatch,
-    device: torch.device,
 ) -> None:
     module = module.eval()
 
@@ -190,20 +189,12 @@ def test_torch_export_fake(
             case _:
                 pass
 
-        try:
-            assert_close(
-                actual,
-                expected,
-                equal_nan=True,
-                msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
-            )
-        except AssertionError:
-            if isinstance(module, ControlTransformer) and device.type == "cuda":
-                pytest.xfail(
-                    "Known CUDA numerical drift between eager and fake-export "
-                    "paths for ControlTransformer."
-                )
-            raise
+        assert_close(
+            actual,
+            expected,
+            equal_nan=True,
+            msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
+        )
 
 
 @pytest.mark.parametrize(

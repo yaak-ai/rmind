@@ -65,8 +65,8 @@ dev = [
   "wat-inspector",
 ]
 check = [
-  "ruff>=0.15.7",
-  "ty>=0.0.25",
+  "ruff>=0.15.8",
+  "ty>=0.0.27",
 ]
 export = [
   "onnx>=1.19.1",
