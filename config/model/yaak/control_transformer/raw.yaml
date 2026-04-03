@@ -1,3 +1,4 @@
+---
 _target_: rmind.models.control_transformer.ControlTransformer
 _recursive_: false
 _convert_: all
@@ -50,8 +51,7 @@ episode_builder:
             brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
             brake_pedal_diff: [data, meta/VehicleMotion/brake_pedal_normalized]
             steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
-            steering_angle_diff:
-              [data, meta/VehicleMotion/steering_angle_normalized]
+            steering_angle_diff: [data, meta/VehicleMotion/steering_angle_normalized]
 
           context:
             waypoints: [data, waypoints/xy_normalized]
@@ -117,7 +117,7 @@ episode_builder:
           context:
             _target_: torch.nn.Identity
 
-      - _target_: rmind.components.nn.StopWaypointAugmentation
+      - _target_: rmind.components.nn.WaypointStopTruncation
         p: 0.5
 
   tokenizers:
@@ -221,9 +221,9 @@ episode_builder:
           embedding_dim: ${encoder_embedding_dim}
 
       foresight:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: 64
-          embedding_dim: ${encoder_embedding_dim}
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: 64
+        embedding_dim: ${encoder_embedding_dim}
 
       summary:
         _target_: rmind.components.nn.Embedding
@@ -283,9 +283,9 @@ episode_builder:
           out_features: ${encoder_embedding_dim}
 
       foresight:
-          _target_: rmind.components.nn.Linear
-          in_features: ${encoder_embedding_dim}
-          out_features: ${encoder_embedding_dim}
+        _target_: rmind.components.nn.Linear
+        in_features: ${encoder_embedding_dim}
+        out_features: ${encoder_embedding_dim}
 
       summary:
         _target_: rmind.components.nn.Linear
