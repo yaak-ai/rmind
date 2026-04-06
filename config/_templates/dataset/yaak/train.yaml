@@ -840,7 +840,17 @@ samples:
                        ST_Point(s.longitude, s.latitude),
                        'EPSG:4326', 'EPSG:25832', always_xy := true
                      )) AS geometry
-              FROM (SELECT unnest(stops) AS s FROM read_json_auto($stops_path))
+              FROM (
+                SELECT
+                  unnest(stops) AS s
+                FROM
+                  read_json_auto(
+                    $stops_path,
+                    columns = {
+                      stops: 'STRUCT(timestamp_us BIGINT, latitude DOUBLE, longitude DOUBLE)[]'
+                    }
+                  )
+              )
 
       - _target_: pipefunc.PipeFunc
         output_name: aligned
