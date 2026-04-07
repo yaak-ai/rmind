@@ -236,8 +236,21 @@ class EpisodeBuilder(Module):
         })
 
         # Build spatial and temporal masks for factorized encoder
-        attention_mask_spatial = self.attention_mask_builder(
+        full_mask = self.attention_mask_builder(
             index=index, timestep=timestep, legend=TorchAttentionMaskLegend
+        )
+        # Extract spatial mask for first timestep only
+        lengths = [
+            key_get(
+                projected_embeddings,
+                (MappingKey(token.modality.value), MappingKey(str(token.name))),  # ty:ignore[invalid-argument-type]
+            ).shape[2]
+            for token in self.timestep
+        ]
+        spatial_length = sum(lengths)
+        attention_mask_spatial = AttentionMask.from_tensor(
+            mask_tensor=full_mask[:spatial_length, :spatial_length],
+            legend=TorchAttentionMaskLegend,
         )
         attention_mask_temporal = torch.nn.Transformer.generate_square_subsequent_mask(
             t, device=device
