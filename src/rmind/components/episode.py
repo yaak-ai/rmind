@@ -184,6 +184,8 @@ class EpisodeBuilder(Module):
         self.projections: ModuleDict = projections
         self.role_encoding: Module = role_encoding
         self.attention_mask_builder: AttentionMaskBuilder = attention_mask_builder
+        self.register_buffer("_attention_mask_spatial", None, persistent=False)
+        self.register_buffer("_attention_mask_temporal", None, persistent=False)
         role_idx_by_type_modality: dict[tuple[str, str], int] = {}
         self._role_idx_by_path: dict[tuple[MappingKey, MappingKey], int] = {
             (
@@ -288,6 +290,18 @@ class EpisodeBuilder(Module):
         on this cache being warm. An eager forward pass must run *before*
         torch.export.export() — see export_onnx.py.
         """
+        if (
+            self._attention_mask_spatial is not None
+            and self._attention_mask_temporal is not None
+        ):
+            return self._attention_mask_spatial, self._attention_mask_temporal
+
+        if torch.compiler.is_exporting():
+            logger.warning(
+                "building attention mask during export; "
+                "run an eager forward pass first to populate the cache"
+            )
+
         # Build spatial mask for single timestep
         index_spatial = tree_map(itemgetter(slice(1)), index)
         spatial_mask_tensor = self.attention_mask_builder(
@@ -301,6 +315,9 @@ class EpisodeBuilder(Module):
         attention_mask_temporal = torch.nn.Transformer.generate_square_subsequent_mask(
             t, device=device
         )
+
+        self._attention_mask_spatial = attention_mask_spatial
+        self._attention_mask_temporal = attention_mask_temporal
 
         return attention_mask_spatial, attention_mask_temporal
 
