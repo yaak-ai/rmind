@@ -132,9 +132,6 @@ class GramAnchoringObjective(Module):
         patch_loss = F.mse_loss(input_view, target_view, reduction="none").mean(dim=-1)
         sim_loss = (weights * patch_loss).sum(dim=1).mean()
 
-        if self.weight_gram <= 0:
-            return self.weight_sim * sim_loss
-
         # Gram on L2-normed features weighted by TF-IDF pair uniqueness
         gram_pred = torch.einsum("bpd,bqd->bpq", input_n, input_n)
         gram_gt = torch.einsum("bpd,bqd->bpq", target_n, target_n)
