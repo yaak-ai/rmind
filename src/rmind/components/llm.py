@@ -458,7 +458,7 @@ class TransformerEncoder(nn.Module):
         self,
         *,
         src: InstanceOf[Tensor],
-        mask: InstanceOf[AttentionMask],
+        spatial_mask: InstanceOf[AttentionMask],
         episode: InstanceOf[Episode] | None = None,
         config: EncoderPredictionConfig | None = None,
     ) -> TensorDict:
@@ -470,7 +470,7 @@ class TransformerEncoder(nn.Module):
                 raise ValueError(msg)
 
             rollout = self.compute_attention_rollout(
-                src=src, mask=mask, config=config.attention_rollout
+                src=src, mask=spatial_mask, config=config.attention_rollout
             )
             _, t = episode.input.batch_size
             predictions["attention_rollout"] = Prediction(

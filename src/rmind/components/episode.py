@@ -89,7 +89,8 @@ class Episode(TensorClass["frozen"]):
     role_embeddings: TensorDict
     index: Index
     timestep: Timestep
-    attention_mask: AttentionMask
+    attention_mask_spatial: AttentionMask
+    attention_mask_temporal: Tensor
 
     @property
     def embeddings(self) -> TensorDict:
@@ -119,7 +120,8 @@ class EpisodeExport:
     role_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
-    attention_mask: AttentionMask
+    attention_mask_spatial: AttentionMask
+    attention_mask_temporal: Tensor
 
     @property
     def embeddings(self) -> TensorTree:
@@ -182,7 +184,6 @@ class EpisodeBuilder(Module):
         self.projections: ModuleDict = projections
         self.role_encoding: Module = role_encoding
         self.attention_mask_builder: AttentionMaskBuilder = attention_mask_builder
-        self.register_buffer("_attention_mask", None, persistent=False)
         role_idx_by_type_modality: dict[tuple[str, str], int] = {}
         self._role_idx_by_path: dict[tuple[MappingKey, MappingKey], int] = {
             (
@@ -234,11 +235,12 @@ class EpisodeBuilder(Module):
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
 
-        attention_mask = AttentionMask.from_tensor(
-            mask_tensor=self._build_attention_mask_tensor(
-                index=index, timestep=timestep
-            ),
-            legend=TorchAttentionMaskLegend,
+        # Build spatial and temporal masks for factorized encoder
+        attention_mask_spatial = self.attention_mask_builder(
+            index=index, timestep=timestep, legend=TorchAttentionMaskLegend
+        )
+        attention_mask_temporal = torch.nn.Transformer.generate_square_subsequent_mask(
+            t, device=device
         )
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
@@ -251,7 +253,8 @@ class EpisodeBuilder(Module):
                 role_embeddings=role_embeddings,
                 index=index,
                 timestep=timestep,
-                attention_mask=attention_mask,
+                attention_mask_spatial=attention_mask_spatial,
+                attention_mask_temporal=attention_mask_temporal,
             )
             if torch.compiler.is_exporting()
             else Episode(
@@ -273,35 +276,11 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
-                attention_mask=attention_mask,
+                attention_mask_spatial=attention_mask_spatial,
+                attention_mask_temporal=attention_mask_temporal,
                 device=device,
             )
         )
-
-    def _build_attention_mask_tensor(
-        self, *, index: TensorTree, timestep: TimestepExport
-    ) -> Tensor:
-        """Build (or return cached) attention mask tensor.
-
-        WARNING: attention_mask_builder is not trace-friendly, so torch.export relies
-        on this cache being warm. An eager forward pass must run *before*
-        torch.export.export() — see export_onnx.py.
-        """
-        if self._attention_mask is not None:
-            return self._attention_mask
-
-        if torch.compiler.is_exporting():
-            logger.warning(
-                "building attention mask during export; "
-                "run an eager forward pass first to populate the cache"
-            )
-
-        attention_mask_tensor = self.attention_mask_builder(
-            index=index, timestep=timestep, legend=TorchAttentionMaskLegend
-        )
-        if not torch.compiler.is_exporting():
-            self._attention_mask = attention_mask_tensor
-        return attention_mask_tensor
 
     def _build_index(self, embeddings: TensorTree) -> TensorTree:
         (_, t), device = mit.one({

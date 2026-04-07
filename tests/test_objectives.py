@@ -21,7 +21,9 @@ def test_compute_metrics(
     objective: Objective, episode: Episode, encoder: TransformerEncoder
 ) -> None:
     embedding = encoder(
-        src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
+        src=episode.embeddings_packed,
+        spatial_mask=episode.attention_mask_spatial.mask_tensor,
+        temporal_mask=episode.attention_mask_temporal,
     )
     assert "loss" in objective.compute_metrics(episode=episode, embedding=embedding)
 
