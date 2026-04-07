@@ -2,7 +2,7 @@ from collections.abc import Set as AbstractSet
 from typing import Any, final, override
 
 import torch
-from einops import pack, repeat
+from einops import pack, rearrange, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
@@ -29,6 +29,7 @@ class ForwardDynamicsPredictionObjective(Objective):
     def __init__(
         self,
         *,
+        norm: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
@@ -37,6 +38,7 @@ class ForwardDynamicsPredictionObjective(Objective):
     ) -> None:
         super().__init__()
 
+        self.norm: Module | None = norm
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
@@ -45,6 +47,10 @@ class ForwardDynamicsPredictionObjective(Objective):
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+        # Apply per-objective normalization if configured
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+
         index = episode.index[:-1]  # all but last timestep
 
         observation_keys = self.heads.tree_paths()
@@ -55,22 +61,11 @@ class ForwardDynamicsPredictionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
-        observation_summary = (
-            index
-            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
-            .parse(embedding)
-            .get(k)
-        )
         features: TensorDict = observations.apply(
             # pack: (obs[0], observation_summary, action_summary), (obs[1], observation_summary, action_summary), ...
-            lambda obs: pack(
-                [
-                    obs,
-                    observation_summary.broadcast_to(obs.shape),
-                    action_summary.broadcast_to(obs.shape),
-                ],
-                "b t p *",
-            )[0]
+            lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
+                0
+            ]
         )
         features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]
         _, _, n_patches, _ = episode.embeddings.get((
@@ -135,6 +130,10 @@ class ForwardDynamicsPredictionObjective(Objective):
             ObjectivePredictionKey.SCORE_L1,
             ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
+            # Apply per-objective normalization if configured
+            if self.norm is not None:
+                embedding = self.norm(embedding)
+
             index = episode.index[:-1]  # all but last timestep
             observation_keys = self.heads.tree_paths()
             observations = index.select(*observation_keys).parse(embedding)

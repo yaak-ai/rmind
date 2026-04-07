@@ -8,6 +8,7 @@ from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
+from torch.nn import Module
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken
@@ -28,18 +29,24 @@ class InverseDynamicsPredictionObjective(Objective):
     def __init__(
         self,
         *,
+        norm: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
+        self.norm: Module | None = norm
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+        # Apply per-objective normalization if configured
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+
         observation_summaries = (
             episode.index
             .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
@@ -47,11 +54,7 @@ class InverseDynamicsPredictionObjective(Objective):
             .get(k)
         )
 
-        # order: (o0, o1), (o1, o2), (o2, o3), ...
-        features = rearrange(
-            [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-            "i ... d -> ... (i d)",
-        )
+        features = observation_summaries[:, :-1]
 
         logits = self.heads(features)
 

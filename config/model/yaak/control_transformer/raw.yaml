@@ -24,7 +24,7 @@ episode_builder:
       cam_front_left:
         _target_: builtins.range
         _args_:
-          - 64
+          - 256
 
     summary:
       observation_summary: [0]
@@ -218,7 +218,7 @@ episode_builder:
 
       foresight:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: 64
+          num_embeddings: 256
           embedding_dim: ${encoder_embedding_dim}
 
       summary:
@@ -327,6 +327,9 @@ objectives:
   modules:
     inverse_dynamics:
       _target_: rmind.components.objectives.InverseDynamicsPredictionObjective
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -336,7 +339,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 1
                   - ${encoder_embedding_dim}
               out_features: ${gas_pedal_bins}
               bias: False
@@ -345,7 +348,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 1
                   - ${encoder_embedding_dim}
               out_features: ${brake_pedal_bins}
               bias: False
@@ -354,7 +357,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 1
                   - ${encoder_embedding_dim}
               out_features: ${steering_angle_bins}
               bias: False
@@ -364,7 +367,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 2
+                  - 1
                   - ${encoder_embedding_dim}
               out_features: 3
               bias: False
@@ -393,6 +396,7 @@ objectives:
 
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
+      norm: null
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
@@ -402,7 +406,12 @@ objectives:
         modules:
           continuous:
             speed:
-              _target_: torch.nn.Identity
+              _target_: torch.nn.LayerNorm
+              normalized_shape:
+                _target_: operator.mul
+                _args_:
+                  - 2
+                  - ${encoder_embedding_dim}
           foresight:
             cam_front_left:
               _target_: torch.nn.Sequential
@@ -411,11 +420,10 @@ objectives:
                   in_features:
                     _target_: operator.mul
                     _args_:
-                      - 3
+                      - 2
                       - ${encoder_embedding_dim}
                   out_features: ${encoder_embedding_dim}
-                - _target_: rmind.components.norm.ScaleByVectorDimensionality
-                  dim: ${image_embedding_dim}
+
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -425,7 +433,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 3
+                  - 2
                   - ${encoder_embedding_dim}
               out_features: ${speed_bins}
               bias: False
@@ -461,12 +469,15 @@ objectives:
           foresight:
             cam_front_left:
               _target_: rmind.components.loss.GramAnchoringObjective
-              weight_sim: 100.0
+              weight_sim: 1.0
               weight_gram: 100.0
               patches: 256
 
     memory_extraction:
       _target_: rmind.components.objectives.MemoryExtractionObjective
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
