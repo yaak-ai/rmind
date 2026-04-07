@@ -284,19 +284,19 @@ class EpisodeBuilder(Module):
     def _build_attention_mask_tensor(
         self, index: TensorTree, timestep: TimestepExport, t: int, device: torch.device
     ) -> tuple[AttentionMask, Tensor]:
-        """Build spatial and temporal attention mask tensors.
+        """Build (or return cached) spatial and temporal attention mask tensors.
 
         WARNING: attention_mask_builder is not trace-friendly, so torch.export relies
         on this cache being warm. An eager forward pass must run *before*
         torch.export.export() — see export_onnx.py.
         """
-        if torch.compiler.is_exporting():
-            if (
-                self._attention_mask_spatial is not None
-                and self._attention_mask_temporal is not None
-            ):
-                return self._attention_mask_spatial, self._attention_mask_temporal
+        if (
+            self._attention_mask_spatial is not None
+            and self._attention_mask_temporal is not None
+        ):
+            return self._attention_mask_spatial, self._attention_mask_temporal
 
+        if torch.compiler.is_exporting():
             logger.warning(
                 "building attention mask during export; "
                 "run an eager forward pass first to populate the cache"
