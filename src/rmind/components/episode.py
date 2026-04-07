@@ -237,8 +237,11 @@ class EpisodeBuilder(Module):
 
         # Build spatial and temporal masks for factorized encoder
         index_spatial = tree_map(itemgetter(slice(1)), index)
-        attention_mask_spatial = self.attention_mask_builder(
+        spatial_mask_tensor = self.attention_mask_builder(
             index=index_spatial, timestep=timestep, legend=TorchAttentionMaskLegend
+        )
+        attention_mask_spatial = AttentionMask.from_tensor(
+            mask_tensor=spatial_mask_tensor, legend=TorchAttentionMaskLegend
         )
         attention_mask_temporal = torch.nn.Transformer.generate_square_subsequent_mask(
             t, device=device

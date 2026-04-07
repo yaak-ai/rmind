@@ -147,33 +147,21 @@ class CausalAttentionMaskBuilder(AttentionMaskBuilder):
                 index, step=step, keys=action_summary_key
             )
 
-            past_obs = self._select_indices(
-                index, step=slice(None, step), keys=obs_keys
-            )
-            past_foresight = self._select_indices(
-                index, step=slice(None, step), keys=foresight_keys
-            )
-            past_actions = self._select_indices(
-                index, step=slice(None, step), keys=action_keys
-            )
+            self._select_indices(index, step=slice(None, step), keys=obs_keys)
+            self._select_indices(index, step=slice(None, step), keys=foresight_keys)
+            self._select_indices(index, step=slice(None, step), keys=action_keys)
 
             for src, dest in (
                 (cur_obs, cur_obs),
-                (cur_obs, past_obs),
                 (cur_foresight, cur_obs),
                 (cur_foresight, cur_foresight),
-                (cur_foresight, past_obs),
                 (cur_obs_summary, cur_foresight),
                 (cur_obs_summary, cur_obs_summary),
-                (cur_obs_summary, past_foresight),
                 (cur_obs_history, cur_foresight),
                 (cur_obs_history, cur_obs_history),
-                (cur_obs_history, past_foresight),
                 (cur_actions, cur_actions),
-                (cur_actions, past_actions),
                 (cur_action_summary, cur_actions),
                 (cur_action_summary, cur_action_summary),
-                (cur_action_summary, past_actions),
             ):
                 self._set(mask, src, dest, legend.DO_ATTEND)
 
