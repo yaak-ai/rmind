@@ -279,6 +279,31 @@ class EpisodeBuilder(Module):
             )
         )
 
+    def _build_attention_mask_tensor(
+        self, index: TensorTree, timestep: TimestepExport, t: int, device: torch.device
+    ) -> tuple[AttentionMask, Tensor]:
+        """Build spatial and temporal attention mask tensors.
+
+        WARNING: attention_mask_builder is not trace-friendly, so torch.export relies
+        on this cache being warm. An eager forward pass must run *before*
+        torch.export.export() — see export_onnx.py.
+        """
+        # Build spatial mask for single timestep
+        index_spatial = tree_map(itemgetter(slice(1)), index)
+        spatial_mask_tensor = self.attention_mask_builder(
+            index=index_spatial, timestep=timestep, legend=TorchAttentionMaskLegend
+        )
+        attention_mask_spatial = AttentionMask.from_tensor(
+            mask_tensor=spatial_mask_tensor, legend=TorchAttentionMaskLegend
+        )
+
+        # Build temporal mask
+        attention_mask_temporal = torch.nn.Transformer.generate_square_subsequent_mask(
+            t, device=device
+        )
+
+        return attention_mask_spatial, attention_mask_temporal
+
     def _build_index(self, embeddings: TensorTree) -> TensorTree:
         (_, t), device = mit.one({
             (leaf.shape[:2], leaf.device)
@@ -335,28 +360,3 @@ class EpisodeBuilder(Module):
             ),
             embeddings,
         )
-
-    def _build_attention_mask_tensor(
-        self, index: TensorTree, timestep: TimestepExport, t: int, device: torch.device
-    ) -> tuple[AttentionMask, Tensor]:
-        """Build spatial and temporal attention mask tensors.
-
-        WARNING: attention_mask_builder is not trace-friendly, so torch.export relies
-        on this cache being warm. An eager forward pass must run *before*
-        torch.export.export() — see export_onnx.py.
-        """
-        # Build spatial mask for single timestep
-        index_spatial = tree_map(itemgetter(slice(1)), index)
-        spatial_mask_tensor = self.attention_mask_builder(
-            index=index_spatial, timestep=timestep, legend=TorchAttentionMaskLegend
-        )
-        attention_mask_spatial = AttentionMask.from_tensor(
-            mask_tensor=spatial_mask_tensor, legend=TorchAttentionMaskLegend
-        )
-
-        # Build temporal mask
-        attention_mask_temporal = torch.nn.Transformer.generate_square_subsequent_mask(
-            t, device=device
-        )
-
-        return attention_mask_spatial, attention_mask_temporal
