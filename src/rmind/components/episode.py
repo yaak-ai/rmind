@@ -290,13 +290,13 @@ class EpisodeBuilder(Module):
         on this cache being warm. An eager forward pass must run *before*
         torch.export.export() — see export_onnx.py.
         """
-        if (
-            self._attention_mask_spatial is not None
-            and self._attention_mask_temporal is not None
-        ):
-            return self._attention_mask_spatial, self._attention_mask_temporal
-
         if torch.compiler.is_exporting():
+            if (
+                self._attention_mask_spatial is not None
+                and self._attention_mask_temporal is not None
+            ):
+                return self._attention_mask_spatial, self._attention_mask_temporal
+
             logger.warning(
                 "building attention mask during export; "
                 "run an eager forward pass first to populate the cache"
@@ -316,8 +316,9 @@ class EpisodeBuilder(Module):
             t, device=device
         )
 
-        self._attention_mask_spatial = attention_mask_spatial
-        self._attention_mask_temporal = attention_mask_temporal
+        if torch.compiler.is_exporting():
+            self._attention_mask_spatial = attention_mask_spatial
+            self._attention_mask_temporal = attention_mask_temporal
 
         return attention_mask_spatial, attention_mask_temporal
 
