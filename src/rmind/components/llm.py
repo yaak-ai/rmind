@@ -365,100 +365,55 @@ class TransformerEncoder(nn.Module):
         freeze: bool | None = None,  # noqa: FBT001
         emb_norm: InstanceOf[nn.Module] | None = None,
         rope: InstanceOf[nn.Module] | None = None,
-        factorized: bool = True,  # noqa: FBT001, FBT002
     ) -> None:
         super().__init__()
-        self.factorized = factorized
-        if factorized:
-            self.layers = nn.ModuleList([
-                FactorizedTransformerEncoderBlock(
-                    embedding_dim=dim_model,
-                    num_heads=num_heads,
-                    attn_dropout=attn_dropout,
-                    mlp_dropout=mlp_dropout,
-                    resid_dropout=resid_dropout,
-                    hidden_layer_multiplier=hidden_layer_multiplier,
-                    rope=rope,
-                )
-                for _ in range(num_layers)
-            ])
-        else:
-            self.layers = nn.ModuleList([
-                TransformerEncoderBlock(
-                    embedding_dim=dim_model,
-                    num_heads=num_heads,
-                    attn_dropout=attn_dropout,
-                    mlp_dropout=mlp_dropout,
-                    resid_dropout=resid_dropout,
-                    hidden_layer_multiplier=hidden_layer_multiplier,
-                    rope=rope,
-                )
-                for _ in range(num_layers)
-            ])
+        self.layers = nn.ModuleList([
+            FactorizedTransformerEncoderBlock(
+                embedding_dim=dim_model,
+                num_heads=num_heads,
+                attn_dropout=attn_dropout,
+                mlp_dropout=mlp_dropout,
+                resid_dropout=resid_dropout,
+                hidden_layer_multiplier=hidden_layer_multiplier,
+                rope=rope,
+            )
+            for _ in range(num_layers)
+        ])
         self.emb_norm: nn.Module | None = emb_norm
 
         if freeze is not None:
             self.requires_grad_(not freeze).train(not freeze)
 
     @override
-    def forward(  # noqa: C901
-        self,
-        *,
-        src: Tensor,
-        spatial_mask: Tensor | None = None,
-        temporal_mask: Tensor | None = None,
-        mask: Tensor | None = None,
+    def forward(
+        self, *, src: Tensor, spatial_mask: Tensor, temporal_mask: Tensor
     ) -> Tensor:
         x = self.emb_norm(src) if self.emb_norm is not None else src
 
-        if self.factorized:
-            if spatial_mask is None or temporal_mask is None:
-                msg = "spatial_mask and temporal_mask required for factorized encoder"
-                raise ValueError(msg)
-            if self.training:
+        if self.training:
 
-                def run_layer(
-                    layer: Module,
-                    layer_input: Tensor,
-                    spatial_mask: Tensor,
-                    temporal_mask: Tensor,
-                ) -> Any:
-                    return checkpoint(
-                        layer,
-                        layer_input,
-                        spatial_mask,
-                        temporal_mask,
-                        use_reentrant=False,
-                    )
+            def run_layer(
+                layer: Module,
+                layer_input: Tensor,
+                spatial_mask: Tensor,
+                temporal_mask: Tensor,
+            ) -> Any:
+                return checkpoint(
+                    layer, layer_input, spatial_mask, temporal_mask, use_reentrant=False
+                )
 
-            else:
-
-                def run_layer(
-                    layer: Module,
-                    layer_input: Tensor,
-                    spatial_mask: Tensor,
-                    temporal_mask: Tensor,
-                ) -> Any:
-                    return layer(layer_input, spatial_mask, temporal_mask)
-
-            for layer in self.layers:
-                x = run_layer(layer, x, spatial_mask, temporal_mask)
         else:
-            if mask is None:
-                msg = "mask required for non-factorized encoder"
-                raise ValueError(msg)
-            if self.training:
 
-                def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
-                    return checkpoint(layer, layer_input, mask, use_reentrant=False)
+            def run_layer(
+                layer: Module,
+                layer_input: Tensor,
+                spatial_mask: Tensor,
+                temporal_mask: Tensor,
+            ) -> Any:
+                return layer(layer_input, spatial_mask, temporal_mask)
 
-            else:
-
-                def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
-                    return layer(layer_input, mask)
-
-            for layer in self.layers:
-                x = run_layer(layer, x, mask)
+        for layer in self.layers:
+            x = run_layer(layer, x, spatial_mask, temporal_mask)
 
         return x
 
@@ -734,7 +689,6 @@ class CrossAttentionDecoder(nn.Module):
             )
             for _ in range(num_layers)
         ])
-        self.layer_norm = nn.LayerNorm(dim_model)
 
         if freeze is not None:
             self.requires_grad_(not freeze).train(not freeze)
@@ -760,7 +714,7 @@ class CrossAttentionDecoder(nn.Module):
         for layer in self.layers:
             x = run_layer(layer, x, context)
 
-        return self.layer_norm(x)
+        return x
 
 
 @final
