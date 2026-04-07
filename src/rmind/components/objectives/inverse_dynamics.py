@@ -43,6 +43,11 @@ class InverseDynamicsPredictionObjective(Objective):
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
+
         # Apply per-objective normalization if configured
         if self.norm is not None:
             embedding = self.norm(embedding)
@@ -80,6 +85,12 @@ class InverseDynamicsPredictionObjective(Objective):
         keys: AbstractSet[ObjectivePredictionKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
+
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
+
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 

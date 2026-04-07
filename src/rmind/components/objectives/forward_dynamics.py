@@ -26,7 +26,7 @@ from rmind.components.objectives.base import (
 @final
 class ForwardDynamicsPredictionObjective(Objective):
     @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         norm: InstanceOf[Module] | None = None,
@@ -50,6 +50,8 @@ class ForwardDynamicsPredictionObjective(Objective):
         # Apply per-objective normalization if configured
         if self.norm is not None:
             embedding = self.norm(embedding)
+
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
 
         index = episode.index[:-1]  # all but last timestep
 
@@ -105,7 +107,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         }
 
     @override
-    def predict(
+    def predict(  # noqa: PLR0914, C901
         self,
         *,
         episode: Episode,
@@ -114,6 +116,11 @@ class ForwardDynamicsPredictionObjective(Objective):
         tokenizers: ModuleDict | None = None,
         **kwargs: Any,
     ) -> TensorDict:
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
+
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
