@@ -236,15 +236,8 @@ class EpisodeBuilder(Module):
         })
 
         # Build spatial and temporal masks for factorized encoder
-        index_spatial = tree_map(itemgetter(slice(1)), index)
-        spatial_mask_tensor = self.attention_mask_builder(
-            index=index_spatial, timestep=timestep, legend=TorchAttentionMaskLegend
-        )
-        attention_mask_spatial = AttentionMask.from_tensor(
-            mask_tensor=spatial_mask_tensor, legend=TorchAttentionMaskLegend
-        )
-        attention_mask_temporal = torch.nn.Transformer.generate_square_subsequent_mask(
-            t, device=device
+        attention_mask_spatial, attention_mask_temporal = (
+            self._build_attention_mask_tensor(index, timestep, t, device)
         )
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
@@ -342,3 +335,22 @@ class EpisodeBuilder(Module):
             ),
             embeddings,
         )
+
+    def _build_attention_mask_tensor(
+        self, index: TensorTree, timestep: TimestepExport, t: int, device: torch.device
+    ) -> tuple[AttentionMask, Tensor]:
+        # Build spatial mask for single timestep
+        index_spatial = tree_map(itemgetter(slice(1)), index)
+        spatial_mask_tensor = self.attention_mask_builder(
+            index=index_spatial, timestep=timestep, legend=TorchAttentionMaskLegend
+        )
+        attention_mask_spatial = AttentionMask.from_tensor(
+            mask_tensor=spatial_mask_tensor, legend=TorchAttentionMaskLegend
+        )
+
+        # Build temporal mask
+        attention_mask_temporal = torch.nn.Transformer.generate_square_subsequent_mask(
+            t, device=device
+        )
+
+        return attention_mask_spatial, attention_mask_temporal
