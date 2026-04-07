@@ -41,6 +41,7 @@ __all__ = [
     "CrossAttentionDecoder",
     "CrossAttentionDecoderBlock",
     "CrossAttentionDecoderHead",
+    "FactorizedTransformerEncoderBlock",
     "RotaryMultiheadAttention",
     "TransformerEncoder",
     "TransformerEncoderBlock",
@@ -220,6 +221,136 @@ class TransformerEncoderBlock(nn.Module):
         return (out, attn_weights) if need_weights else out
 
 
+class FactorizedTransformerEncoderBlock(nn.Module):
+    def __init__(  # noqa: PLR0913, PLR0917
+        self,
+        embedding_dim: int,
+        num_heads: int,
+        attn_dropout: float = 0.1,
+        resid_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+        hidden_layer_multiplier: int = 1,
+        rope: Module | None = None,
+    ) -> None:
+        super().__init__()
+
+        self.temporal_norm = nn.LayerNorm(embedding_dim)
+        self.spatial_norm = nn.LayerNorm(embedding_dim)
+        self.mlp_norm = nn.LayerNorm(embedding_dim)
+
+        if rope is not None:
+            self.temporal_mha: RotaryMultiheadAttention | nn.MultiheadAttention = (
+                RotaryMultiheadAttention(
+                    embed_dim=embedding_dim,
+                    num_heads=num_heads,
+                    rope=rope,
+                    attn_dropout=attn_dropout,
+                )
+            )
+            self.spatial_mha: RotaryMultiheadAttention | nn.MultiheadAttention = (
+                RotaryMultiheadAttention(
+                    embed_dim=embedding_dim,
+                    num_heads=num_heads,
+                    rope=rope,
+                    attn_dropout=attn_dropout,
+                )
+            )
+        else:
+            self.temporal_mha = nn.MultiheadAttention(
+                embed_dim=embedding_dim,
+                num_heads=num_heads,
+                dropout=attn_dropout,
+                batch_first=True,
+            )
+            self.spatial_mha = nn.MultiheadAttention(
+                embed_dim=embedding_dim,
+                num_heads=num_heads,
+                dropout=attn_dropout,
+                batch_first=True,
+            )
+
+        self.resid_drop = nn.Dropout(resid_dropout, inplace=False)
+
+        self.mlp = MLPGLU(
+            dim_model=embedding_dim,
+            dropout=mlp_dropout,
+            activation="gelu",
+            hidden_layer_multiplier=hidden_layer_multiplier,
+        )
+
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            default_weight_init_fn(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    @override
+    def forward(
+        self,
+        x: Tensor,
+        spatial_mask: Tensor,
+        temporal_mask: Tensor,
+        *,
+        need_weights: bool = False,
+        average_attn_weights: bool = True,
+    ) -> tuple[Tensor, Tensor | None] | Tensor:
+        _, t, s, _ = x.shape
+
+        x = rearrange(x, "b t s d -> b s t d")
+        x = rearrange(x, "b s t d -> (b s) t d")
+
+        residual = x
+        x_norm = self.temporal_norm(x)
+        if isinstance(self.temporal_mha, RotaryMultiheadAttention):
+            mha = self.temporal_mha(
+                x_norm,
+                temporal_mask,
+                need_weights=need_weights,
+                average_attn_weights=average_attn_weights,
+            )
+            mha = mha[0] if isinstance(mha, tuple) else mha
+        else:
+            mha, _ = self.temporal_mha(
+                x_norm,
+                x_norm,
+                x_norm,
+                attn_mask=temporal_mask,
+                need_weights=need_weights,
+                average_attn_weights=average_attn_weights,
+            )
+        x = residual + self.resid_drop(mha)
+
+        x = rearrange(x, "(b s) t d -> b s t d", s=s)
+        x = rearrange(x, "b s t d -> b t s d")
+        x = rearrange(x, "b t s d -> (b t) s d")
+
+        residual = x
+        x_norm = self.spatial_norm(x)
+        if isinstance(self.spatial_mha, RotaryMultiheadAttention):
+            mha = self.spatial_mha(
+                x_norm,
+                spatial_mask,
+                need_weights=need_weights,
+                average_attn_weights=average_attn_weights,
+            )
+            mha = mha[0] if isinstance(mha, tuple) else mha
+        else:
+            mha, _ = self.spatial_mha(
+                x_norm,
+                x_norm,
+                x_norm,
+                attn_mask=spatial_mask,
+                need_weights=need_weights,
+                average_attn_weights=average_attn_weights,
+            )
+        x = residual + self.resid_drop(mha)
+        x = rearrange(x, "(b t) s d -> b t s d", t=t)
+
+        residual = x
+        return residual + self.mlp(self.mlp_norm(x))
+
+
 class TransformerEncoder(nn.Module):
     @validate_call
     def __init__(  # noqa: PLR0913, PLR0917
@@ -234,20 +365,36 @@ class TransformerEncoder(nn.Module):
         freeze: bool | None = None,  # noqa: FBT001
         emb_norm: InstanceOf[nn.Module] | None = None,
         rope: InstanceOf[nn.Module] | None = None,
+        factorized: bool = True,  # noqa: FBT001, FBT002
     ) -> None:
         super().__init__()
-        self.layers = nn.ModuleList([
-            TransformerEncoderBlock(
-                embedding_dim=dim_model,
-                num_heads=num_heads,
-                attn_dropout=attn_dropout,
-                mlp_dropout=mlp_dropout,
-                resid_dropout=resid_dropout,
-                hidden_layer_multiplier=hidden_layer_multiplier,
-                rope=rope,
-            )
-            for _ in range(num_layers)
-        ])
+        self.factorized = factorized
+        if factorized:
+            self.layers = nn.ModuleList([
+                FactorizedTransformerEncoderBlock(
+                    embedding_dim=dim_model,
+                    num_heads=num_heads,
+                    attn_dropout=attn_dropout,
+                    mlp_dropout=mlp_dropout,
+                    resid_dropout=resid_dropout,
+                    hidden_layer_multiplier=hidden_layer_multiplier,
+                    rope=rope,
+                )
+                for _ in range(num_layers)
+            ])
+        else:
+            self.layers = nn.ModuleList([
+                TransformerEncoderBlock(
+                    embedding_dim=dim_model,
+                    num_heads=num_heads,
+                    attn_dropout=attn_dropout,
+                    mlp_dropout=mlp_dropout,
+                    resid_dropout=resid_dropout,
+                    hidden_layer_multiplier=hidden_layer_multiplier,
+                    rope=rope,
+                )
+                for _ in range(num_layers)
+            ])
         self.emb_norm: nn.Module | None = emb_norm
         # https://github.com/karpathy/nanoGPT/blob/master/model.py#L182
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
@@ -256,21 +403,64 @@ class TransformerEncoder(nn.Module):
             self.requires_grad_(not freeze).train(not freeze)
 
     @override
-    def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
+    def forward(  # noqa: C901
+        self,
+        *,
+        src: Tensor,
+        spatial_mask: Tensor | None = None,
+        temporal_mask: Tensor | None = None,
+        mask: Tensor | None = None,
+    ) -> Tensor:
         x = self.emb_norm(src) if self.emb_norm is not None else src
 
-        if self.training:
+        if self.factorized:
+            if spatial_mask is None or temporal_mask is None:
+                msg = "spatial_mask and temporal_mask required for factorized encoder"
+                raise ValueError(msg)
+            if self.training:
 
-            def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
-                return checkpoint(layer, layer_input, mask, use_reentrant=False)
+                def run_layer(
+                    layer: Module,
+                    layer_input: Tensor,
+                    spatial_mask: Tensor,
+                    temporal_mask: Tensor,
+                ) -> Any:
+                    return checkpoint(
+                        layer,
+                        layer_input,
+                        spatial_mask,
+                        temporal_mask,
+                        use_reentrant=False,
+                    )
 
+            else:
+
+                def run_layer(
+                    layer: Module,
+                    layer_input: Tensor,
+                    spatial_mask: Tensor,
+                    temporal_mask: Tensor,
+                ) -> Any:
+                    return layer(layer_input, spatial_mask, temporal_mask)
+
+            for layer in self.layers:
+                x = run_layer(layer, x, spatial_mask, temporal_mask)
         else:
+            if mask is None:
+                msg = "mask required for non-factorized encoder"
+                raise ValueError(msg)
+            if self.training:
 
-            def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
-                return layer(layer_input, mask)
+                def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
+                    return checkpoint(layer, layer_input, mask, use_reentrant=False)
 
-        for layer in self.layers:
-            x = run_layer(layer, x, mask)
+            else:
+
+                def run_layer(layer: Module, layer_input: Tensor, mask: Tensor) -> Any:
+                    return layer(layer_input, mask)
+
+            for layer in self.layers:
+                x = run_layer(layer, x, mask)
 
         return self.layer_norm(x)
 
