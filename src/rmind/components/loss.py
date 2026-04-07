@@ -84,6 +84,7 @@ class GramAnchoringObjective(Module):
     Gram-based anchoring loss for feature matching.
     Based on DINOv3 implementation:
     https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
+    TD-IDF: https://en.wikipedia.org/wiki/Tf%E2%80%93idf
     """
 
     def __init__(
