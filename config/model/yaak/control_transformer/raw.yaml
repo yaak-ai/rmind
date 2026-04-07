@@ -337,6 +337,9 @@ objectives:
     inverse_dynamics:
       _target_: rmind.components.objectives.InverseDynamicsPredictionObjective
       encoder: null
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -404,6 +407,7 @@ objectives:
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
       encoder: null
+      norm:
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
@@ -413,7 +417,12 @@ objectives:
         modules:
           continuous:
             speed:
-              _target_: torch.nn.Identity
+              _target_: torch.nn.LayerNorm
+              normalized_shape:
+                _target_: operator.mul
+                _args_:
+                  - 2
+                  - ${encoder_embedding_dim}
           foresight:
             cam_front_left:
               _target_: torch.nn.Sequential
@@ -425,8 +434,7 @@ objectives:
                       - 2
                       - ${encoder_embedding_dim}
                   out_features: ${encoder_embedding_dim}
-                - _target_: rmind.components.norm.ScaleByVectorDimensionality
-                  dim: ${image_embedding_dim}
+
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -479,6 +487,9 @@ objectives:
     random_masked_hindsight_control:
       _target_: rmind.components.objectives.RandomMaskedHindsightControlObjective
       encoder: null
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -535,6 +546,9 @@ objectives:
     memory_extraction:
       _target_: rmind.components.objectives.MemoryExtractionObjective
       encoder: null
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:

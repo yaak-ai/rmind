@@ -42,6 +42,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         self,
         *,
         encoder: InstanceOf[Module] | None = None,
+        norm: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
@@ -51,6 +52,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         super().__init__()
 
         self.encoder: Module | None = encoder
+        self.norm: Module | None = norm
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
@@ -79,6 +81,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         )  # ty:ignore[call-non-callable]
 
         embedding = rearrange(embedding, "b t s d -> b (t s) d")
+        embedding = self.norm(embedding) if self.norm is not None else embedding
 
         index = episode.index[:-1]  # all but last timestep
 
