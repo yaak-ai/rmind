@@ -41,7 +41,7 @@ generate-config:
         --ignore-unknown-comments \
         --strict
 
-train *ARGS: generate-config
+train *ARGS: generate-config check-git
     uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml \
