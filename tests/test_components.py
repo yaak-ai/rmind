@@ -42,7 +42,7 @@ def test_sequential(device: torch.device) -> None:
     module = Sequential(
         *(
             Scaler(in_range=in_range, out_range=out_range)
-            for in_range, out_range in pairwise([0.0, 10.0**x] for x in range(1, 6))
+            for in_range, out_range in pairwise((0.0, 10.0**x) for x in range(1, 6))
         )
     ).to(device)
 
