@@ -13,11 +13,9 @@ from torch.testing import make_tensor
 from torchvision.ops import MLP
 from torchvision.transforms.v2 import CenterCrop, Normalize, Resize, ToDtype
 
-from rmind.components import llm
 from rmind.components.base import Modality, SummaryToken, TensorTree, TokenType
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
-from rmind.components.llm import TransformerEncoder
 from rmind.components.loss import (
     GaussianNLLLoss,
     GramAnchoringObjective,
@@ -44,6 +42,11 @@ from rmind.components.position_encoding import (
     RotaryPositionalEmbeddings,
 )
 from rmind.components.timm_backbone import TimmBackbone
+from rmind.components.transformer import (
+    CrossAttentionDecoder,
+    CrossAttentionDecoderHead,
+    TransformerEncoder,
+)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -441,8 +444,8 @@ def forward_dynamics_prediction_objective(
                     )
                 },
                 Modality.FORESIGHT: {
-                    "cam_front_left": llm.CrossAttentionDecoderHead(
-                        decoder=llm.CrossAttentionDecoder(
+                    "cam_front_left": CrossAttentionDecoderHead(
+                        decoder=CrossAttentionDecoder(
                             dim_model=embedding_dims.image,
                             num_layers=2,
                             num_heads=4,

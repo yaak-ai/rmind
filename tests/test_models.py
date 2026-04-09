@@ -16,10 +16,6 @@ from torch.utils.data import DataLoader
 
 from rmind.callbacks.logit_bias import LogitBiasSetter
 from rmind.components.containers import ModuleDict
-from rmind.components.llm import (
-    AttentionRolloutPredictionConfig,
-    EncoderPredictionConfig,
-)
 from rmind.components.nn import Embedding
 from rmind.components.objectives import (
     ForwardDynamicsPredictionObjective,
@@ -28,6 +24,10 @@ from rmind.components.objectives import (
     PolicyObjective,
 )
 from rmind.components.objectives.base import ObjectivePredictionKey
+from rmind.components.transformer import (
+    AttentionRolloutPredictionConfig,
+    EncoderPredictionConfig,
+)
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig

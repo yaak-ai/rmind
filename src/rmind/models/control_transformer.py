@@ -25,9 +25,9 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.llm import EncoderPredictionConfig
 from rmind.components.mask import WandbAttentionMaskLegend
 from rmind.components.objectives.base import ObjectivePredictionKey
+from rmind.components.transformer import EncoderPredictionConfig
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 

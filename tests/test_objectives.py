@@ -4,8 +4,8 @@ from pytest_lazy_fixtures import lf
 
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
-from rmind.components.llm import TransformerEncoder
 from rmind.components.objectives.base import Objective, ObjectivePredictionKey
+from rmind.components.transformer import TransformerEncoder
 
 
 @pytest.mark.parametrize(
