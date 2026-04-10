@@ -247,14 +247,6 @@ class FactorizedTransformerEncoderBlock(nn.Module):
                     attn_dropout=attn_dropout,
                 )
             )
-            self.spatial_mha: RotaryMultiheadAttention | nn.MultiheadAttention = (
-                RotaryMultiheadAttention(
-                    embed_dim=embedding_dim,
-                    num_heads=num_heads,
-                    rope=rope,
-                    attn_dropout=attn_dropout,
-                )
-            )
         else:
             self.temporal_mha = nn.MultiheadAttention(
                 embed_dim=embedding_dim,
@@ -262,12 +254,13 @@ class FactorizedTransformerEncoderBlock(nn.Module):
                 dropout=attn_dropout,
                 batch_first=True,
             )
-            self.spatial_mha = nn.MultiheadAttention(
-                embed_dim=embedding_dim,
-                num_heads=num_heads,
-                dropout=attn_dropout,
-                batch_first=True,
-            )
+
+        self.spatial_mha = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
 
         self.resid_drop = nn.Dropout(resid_dropout, inplace=False)
 

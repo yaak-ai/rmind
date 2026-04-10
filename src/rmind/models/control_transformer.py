@@ -1,4 +1,5 @@
 from collections.abc import Callable, Mapping, Sequence
+from operator import itemgetter
 from typing import Annotated, Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
@@ -22,6 +23,7 @@ from tensordict import TensorDict
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
+from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
@@ -199,10 +201,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ):
             from wandb import Image  # noqa: PLC0415
 
+            index_spatial = tree_map(itemgetter(slice(1)), episode.index)
             img = Image(
                 self.episode_builder
                 .attention_mask_builder(
-                    index=episode.index.to_dict(),
+                    index=index_spatial.to_dict(),
                     timestep=episode.timestep.to_dict(),
                     legend=WandbAttentionMaskLegend,
                 )  # ty:ignore[call-non-callable]

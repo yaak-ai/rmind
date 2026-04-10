@@ -147,10 +147,6 @@ class CausalAttentionMaskBuilder(AttentionMaskBuilder):
                 index, step=step, keys=action_summary_key
             )
 
-            self._select_indices(index, step=slice(None, step), keys=obs_keys)
-            self._select_indices(index, step=slice(None, step), keys=foresight_keys)
-            self._select_indices(index, step=slice(None, step), keys=action_keys)
-
             for src, dest in (
                 (cur_obs, cur_obs),
                 (cur_foresight, cur_obs),

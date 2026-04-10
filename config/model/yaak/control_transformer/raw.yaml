@@ -320,6 +320,8 @@ encoder:
       _args_:
         - ${encoder_embedding_dim}
         - ${num_heads}
+    max_seq_len: 256
+    base: 10
 
 objectives:
   _target_: rmind.components.containers.ModuleDict

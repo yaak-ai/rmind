@@ -64,7 +64,7 @@ class InverseDynamicsPredictionObjective(Objective):
         logits = self.heads(features)
 
         targets = tree_map(
-            lambda k: episode.get(k)[:, :-1],
+            lambda k: episode.get(k)[:, 1:],
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
