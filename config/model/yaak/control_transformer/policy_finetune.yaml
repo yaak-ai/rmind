@@ -64,20 +64,6 @@ hparams_updaters:
                 turn_signal:
                   _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
-  # freeze episode builder (embeddings etc)
-  - _target_: omegaconf.OmegaConf.update
-    _partial_: true
-    _recursive_: false
-    merge: true
-    key: episode_builder.freeze
-    value: true
-  # freeze encoder
-  - _target_: omegaconf.OmegaConf.update
-    _partial_: true
-    _recursive_: false
-    merge: true
-    key: encoder.freeze
-    value: true
   # for some reason lr_scheduler.scheduler isn't checkpointed? re-add
   - _target_: omegaconf.OmegaConf.update
     _partial_: true

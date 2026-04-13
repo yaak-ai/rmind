@@ -14,13 +14,13 @@ from rmind.components.base import Modality, SummaryToken, TokenType
 from rmind.components.episode import Episode
 from rmind.components.mask import AttentionMask
 from rmind.components.objectives.base import Prediction
-from rmind.components.transformer._runtime import freeze_module, run_layer_stack
 from rmind.components.transformer.attention import MaskedSelfAttention
 from rmind.components.transformer.config import (
     AttentionRolloutPredictionConfig,
     EncoderPredictionConfig,
 )
 from rmind.components.transformer.feed_forward import MLPGLU
+from rmind.components.transformer.utils import run_layer_stack
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -106,7 +106,6 @@ class TransformerEncoder(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
-        freeze: bool | None = None,  # noqa: FBT001
         emb_norm: InstanceOf[nn.Module] | None = None,
         rope: InstanceOf[nn.Module] | None = None,
     ) -> None:
@@ -126,7 +125,6 @@ class TransformerEncoder(nn.Module):
         self.emb_norm: nn.Module | None = emb_norm
         # https://github.com/karpathy/nanoGPT/blob/master/model.py#L182
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(dim_model)
-        freeze_module(self, freeze=freeze)
 
     @override
     def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:

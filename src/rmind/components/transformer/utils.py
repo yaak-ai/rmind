@@ -5,11 +5,6 @@ from torch.nn.modules.module import Module
 from torch.utils.checkpoint import checkpoint
 
 
-def freeze_module(module: Module, *, freeze: bool | None) -> None:
-    if freeze is not None:
-        module.requires_grad_(not freeze).train(not freeze)
-
-
 def run_layer_stack(
     layers: Iterable[Module], x: Tensor, *extra_args: Tensor, training: bool
 ) -> Tensor:

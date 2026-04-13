@@ -3,8 +3,8 @@ from typing import Self, final, override
 from pydantic import BaseModel, ConfigDict, model_validator, validate_call
 from torch import Tensor, nn
 
-from rmind.components.transformer._runtime import freeze_module, run_layer_stack
 from rmind.components.transformer.feed_forward import MLPGLU
+from rmind.components.transformer.utils import run_layer_stack
 
 
 class CrossAttentionDecoderBlock(nn.Module):
@@ -76,7 +76,6 @@ class CrossAttentionDecoder(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
-        freeze: bool | None = None,  # noqa: FBT001
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
@@ -91,7 +90,6 @@ class CrossAttentionDecoder(nn.Module):
             for _ in range(num_layers)
         ])
         self.layer_norm = nn.LayerNorm(dim_model)
-        freeze_module(self, freeze=freeze)
 
     @override
     def forward(self, x: Tensor, context: Tensor) -> Tensor:

@@ -268,7 +268,6 @@ def episode_builder(
             Modality.IMAGE: Sequential(
                 TimmBackbone(
                     "vit_small_patch16_dinov3.lvd1689m",
-                    freeze=True,
                     out_indices=[10],
                     img_size=[256, 256],
                 ),

@@ -99,7 +99,6 @@ episode_builder:
         _args_:
           - _target_: rmind.components.timm_backbone.TimmBackbone
             model_name: vit_small_patch16_dinov3.lvd1689m
-            freeze: True
             out_indices: [10]
             img_size: [256, 256]
           - _target_: einops.layers.torch.Rearrange
