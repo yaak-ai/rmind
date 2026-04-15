@@ -2,9 +2,7 @@ from typing import override
 
 import pytest
 import pytorch_lightning as pl
-import structlog
 import torch
-from structlog.testing import capture_logs
 from torch import nn
 
 from rmind.callbacks.freeze import FreezeModules
@@ -33,13 +31,8 @@ def trainer() -> pl.Trainer:
     )
 
 
-@pytest.fixture(autouse=True)
-def _reset_structlog() -> None:
-    structlog.reset_defaults()
-
-
 def test_freeze_by_path(trainer: pl.Trainer, module: ToyModule) -> None:
-    FreezeModules(paths=["encoder"]).setup(trainer, module, "fit")
+    FreezeModules(paths={"encoder"}).setup(trainer, module, "fit")
 
     assert not any(p.requires_grad for p in module.encoder.parameters())
     assert not module.encoder.training
@@ -48,7 +41,7 @@ def test_freeze_by_path(trainer: pl.Trainer, module: ToyModule) -> None:
 
 
 def test_freeze_by_type(trainer: pl.Trainer, module: ToyModule) -> None:
-    FreezeModules(types=["torch.nn.Linear"]).setup(trainer, module, "fit")
+    FreezeModules(types={"torch.nn.Linear"}).setup(trainer, module, "fit")  # ty:ignore[invalid-argument-type]
 
     for m in module.modules():
         if isinstance(m, nn.Linear):
@@ -56,12 +49,7 @@ def test_freeze_by_type(trainer: pl.Trainer, module: ToyModule) -> None:
             assert not m.training
 
 
-def test_missing_path_logs_error_and_skips(
-    trainer: pl.Trainer, module: ToyModule
-) -> None:
-    cb = FreezeModules(paths=["does_not_exist", "encoder"])
-    with capture_logs() as logs:
+def test_missing_path_raises(trainer: pl.Trainer, module: ToyModule) -> None:
+    cb = FreezeModules(paths={"does_not_exist"})
+    with pytest.raises(AttributeError):
         cb.setup(trainer, module, "fit")
-
-    assert any(e.get("log_level") == "error" for e in logs)
-    assert not any(p.requires_grad for p in module.encoder.parameters())

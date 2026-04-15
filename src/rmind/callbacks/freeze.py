@@ -2,8 +2,7 @@ from operator import attrgetter
 from typing import override
 
 import pytorch_lightning as pl
-from hydra.utils import get_class
-from pydantic import InstanceOf, validate_call
+from pydantic import ImportString, InstanceOf, validate_call
 from pytorch_lightning.callbacks import Callback
 from structlog import get_logger
 from torch import nn
@@ -14,32 +13,24 @@ logger = get_logger(__name__)
 class FreezeModules(Callback):
     @validate_call
     def __init__(
-        self, paths: list[str] | None = None, types: list[str] | None = None
+        self,
+        paths: set[str] | None = None,
+        types: set[ImportString[type[nn.Module]]] | None = None,
     ) -> None:
-        self.paths = paths or []
-        resolved_types: tuple[type, ...] = tuple(get_class(t) for t in types or [])
-        if non_modules := tuple(
-            t for t in resolved_types if not issubclass(t, nn.Module)
-        ):
-            msg = f"types must be nn.Module subclasses, got: {non_modules}"
-            raise TypeError(msg)
-        self.types = resolved_types
+        self.paths = paths or set()
+        self.types = tuple(types or set())
 
     def _resolve(self, pl_module: pl.LightningModule) -> list[tuple[str, nn.Module]]:
-        resolved: list[tuple[str, nn.Module]] = []
-
-        for path in self.paths:
-            try:
-                module = attrgetter(path)(pl_module)
-            except AttributeError:
-                logger.exception("freeze path not found on pl_module", path=path)
-                continue
-            resolved.append((path, module))
+        resolved: list[tuple[str, nn.Module]] = [
+            (path, attrgetter(path)(pl_module)) for path in self.paths
+        ]
 
         if self.types:
-            for name, module in pl_module.named_modules():
-                if isinstance(module, self.types):
-                    resolved.append((name, module))
+            resolved.extend(
+                (name, module)
+                for name, module in pl_module.named_modules()
+                if isinstance(module, self.types)
+            )
 
         return resolved
 
