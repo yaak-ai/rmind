@@ -10,7 +10,7 @@ from torch import nn
 logger = get_logger(__name__)
 
 
-class FreezeModules(Callback):
+class ModuleFreezer(Callback):
     @validate_call
     def __init__(
         self,

@@ -1,5 +1,5 @@
 - _target_: rmind.callbacks.LogitBiasSetter
-- _target_: rmind.callbacks.FreezeModules
+- _target_: rmind.callbacks.ModuleFreezer
   types:
     - rmind.components.timm_backbone.TimmBackbone
 - _target_: pytorch_lightning.callbacks.TQDMProgressBar

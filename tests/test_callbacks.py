@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 import torch
 from torch import nn
 
-from rmind.callbacks.freeze import FreezeModules
+from rmind.callbacks.freeze import ModuleFreezer
 
 
 class ToyModule(pl.LightningModule):
@@ -32,7 +32,7 @@ def trainer() -> pl.Trainer:
 
 
 def test_freeze_by_path(trainer: pl.Trainer, module: ToyModule) -> None:
-    FreezeModules(paths={"encoder"}).setup(trainer, module, "fit")
+    ModuleFreezer(paths={"encoder"}).setup(trainer, module, "fit")
 
     assert not any(p.requires_grad for p in module.encoder.parameters())
     assert not module.encoder.training
@@ -41,7 +41,7 @@ def test_freeze_by_path(trainer: pl.Trainer, module: ToyModule) -> None:
 
 
 def test_freeze_by_type(trainer: pl.Trainer, module: ToyModule) -> None:
-    FreezeModules(types={"torch.nn.Linear"}).setup(trainer, module, "fit")  # ty:ignore[invalid-argument-type]
+    ModuleFreezer(types={"torch.nn.Linear"}).setup(trainer, module, "fit")  # ty:ignore[invalid-argument-type]
 
     for m in module.modules():
         if isinstance(m, nn.Linear):
@@ -50,6 +50,6 @@ def test_freeze_by_type(trainer: pl.Trainer, module: ToyModule) -> None:
 
 
 def test_missing_path_raises(trainer: pl.Trainer, module: ToyModule) -> None:
-    cb = FreezeModules(paths={"does_not_exist"})
+    cb = ModuleFreezer(paths={"does_not_exist"})
     with pytest.raises(AttributeError):
         cb.setup(trainer, module, "fit")
