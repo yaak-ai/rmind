@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from operator import attrgetter
 from typing import override
 
@@ -20,19 +21,17 @@ class ModuleFreezer(Callback):
         self.paths = paths or set()
         self.types = tuple(types or set())
 
-    def _resolve(self, pl_module: pl.LightningModule) -> list[tuple[str, nn.Module]]:
-        resolved: list[tuple[str, nn.Module]] = [
-            (path, attrgetter(path)(pl_module)) for path in self.paths
-        ]
+    def _resolve(
+        self, pl_module: pl.LightningModule
+    ) -> Iterator[tuple[str, nn.Module]]:
+        yield from ((path, attrgetter(path)(pl_module)) for path in self.paths)
 
         if self.types:
-            resolved.extend(
+            yield from (
                 (name, module)
                 for name, module in pl_module.named_modules()
                 if isinstance(module, self.types)
             )
-
-        return resolved
 
     @override
     @validate_call
