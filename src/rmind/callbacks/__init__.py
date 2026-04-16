@@ -1,3 +1,4 @@
+from .freeze import ModuleFreezer
 from .loggers import (
     WandbImageParamLogger,
     WandbPatchSimilarityLogger,
@@ -14,6 +15,7 @@ from .prediction_config import PredictionConfigSetter
 __all__ = [
     "DataFramePredictionWriter",
     "LogitBiasSetter",
+    "ModuleFreezer",
     "PredictionConfigSetter",
     "RerunPredictionWriter",
     "TensorDictPredictionWriter",

@@ -1,4 +1,8 @@
 - _target_: rmind.callbacks.LogitBiasSetter
+- _target_: rmind.callbacks.ModuleFreezer
+  paths:
+    - episode_builder
+    - encoder
 - _target_: pytorch_lightning.callbacks.ModelSummary
   max_depth: 5
 - _target_: pytorch_lightning.callbacks.ModelCheckpoint
