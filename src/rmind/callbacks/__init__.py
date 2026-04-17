@@ -1,5 +1,6 @@
 from .freeze import ModuleFreezer
 from .loggers import (
+    WandbAttentionMaskLogger,
     WandbImageParamLogger,
     WandbPatchSimilarityLogger,
     WandbWaypointsLogger,
@@ -19,6 +20,7 @@ __all__ = [
     "PredictionConfigSetter",
     "RerunPredictionWriter",
     "TensorDictPredictionWriter",
+    "WandbAttentionMaskLogger",
     "WandbImageParamLogger",
     "WandbPatchSimilarityLogger",
     "WandbWaypointsLogger",

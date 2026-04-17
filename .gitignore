@@ -157,6 +157,3 @@ inference_results/
 .direnv
 .envrc
 
-# agents
-*.md
-!README.md
