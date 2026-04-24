@@ -136,6 +136,7 @@ outputs/
 predictions/
 lightning_logs/
 .hydra
+multirun/
 
 # env
 .cenv
@@ -157,6 +158,3 @@ inference_results/
 .direnv
 .envrc
 
-# agents
-*.md
-!README.md

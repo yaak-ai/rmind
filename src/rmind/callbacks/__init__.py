@@ -1,4 +1,7 @@
+from .feature_permutation import FeaturePermutator
+from .freeze import ModuleFreezer
 from .loggers import (
+    WandbAttentionMaskLogger,
     WandbImageParamLogger,
     WandbPatchSimilarityLogger,
     WandbWaypointsLogger,
@@ -13,10 +16,13 @@ from .prediction_config import PredictionConfigSetter
 
 __all__ = [
     "DataFramePredictionWriter",
+    "FeaturePermutator",
     "LogitBiasSetter",
+    "ModuleFreezer",
     "PredictionConfigSetter",
     "RerunPredictionWriter",
     "TensorDictPredictionWriter",
+    "WandbAttentionMaskLogger",
     "WandbImageParamLogger",
     "WandbPatchSimilarityLogger",
     "WandbWaypointsLogger",

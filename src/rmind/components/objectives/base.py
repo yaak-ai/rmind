@@ -43,7 +43,7 @@ def _not_implemented(*_args: Any, **_kwargs: Any) -> Never:
 
 def objective_flatten(objective: Module) -> tuple[list[Module], Context]:
     keys, values = zip(*sorted(objective.named_children()), strict=True)
-    return values, keys
+    return list(values), keys
 
 
 class Objective(Module, ABC):

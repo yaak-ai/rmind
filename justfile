@@ -59,6 +59,15 @@ predict +ARGS: generate-config
         --config-name predict.yaml \
         {{ ARGS }}
 
+predict-policy-with-permutations +ARGS: generate-config
+    uv run rmind-predict \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        --multirun \
+        inference=yaak/control_transformer/policy_with_features_permutation \
+        permutation=baseline,speed,cam_front_left,waypoints,all_observations \
+        {{ ARGS }}
+
 test *ARGS: generate-config
     uv run pytest --capture=no -v {{ ARGS }}
 

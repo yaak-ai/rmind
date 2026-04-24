@@ -7,7 +7,10 @@ import polars as plr  # noqa: ICN001
 import pytorch_lightning as pl
 from pydantic import validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
+from structlog import get_logger
 from tensordict import TensorDict
+
+logger = get_logger(__name__)
 
 
 @final
@@ -97,7 +100,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
             return
 
         parent_dir = Path(self._written_paths[0]).parent
-        plr.scan_parquet(self._written_paths).sink_parquet(
-            parent_dir.with_suffix(".parquet")
-        )
+        output_path = parent_dir.with_suffix(".parquet")
+        plr.scan_parquet(self._written_paths).sink_parquet(output_path)
         shutil.rmtree(parent_dir)
+        logger.info("wrote predictions", path=output_path.as_posix())

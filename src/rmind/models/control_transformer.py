@@ -1,5 +1,4 @@
 from collections.abc import Callable, Mapping, Sequence
-from operator import itemgetter
 from typing import Annotated, Any, ClassVar, Literal, Self, override
 
 import pytorch_lightning as pl
@@ -9,7 +8,6 @@ from lightning_utilities.core.rank_zero import rank_zero_warn
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field, InstanceOf, validate_call
 from pytorch_lightning.core.saving import _load_state, pl_load  # noqa: PLC2701
-from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.utilities.migration.utils import (
     _pl_migrate_checkpoint,  # noqa: PLC2701
     pl_legacy_patch,
@@ -23,17 +21,17 @@ from tensordict import TensorDict
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
-from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.llm import EncoderPredictionConfig
-from rmind.components.mask import WandbAttentionMaskLegend
 from rmind.components.objectives.base import ObjectivePredictionKey
+from rmind.components.transformer import EncoderPredictionConfig
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 
 logger = get_logger(__name__)
+
+INTERNAL_STEP_OUTPUT_KEY = "_internal"
 
 
 class LRSchedulerHydraConfig(BaseModel):
@@ -178,7 +176,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 return model.to(device)  # ty:ignore[invalid-return-type, unresolved-attribute]
 
     @override
-    def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
+    def training_step(self, batch: dict[str, Any], batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
             src=episode.embeddings_packed,
@@ -195,26 +193,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         loss_total = losses.sum(reduce=True)
         metrics["loss", "total"] = loss_total
 
-        if (
-            isinstance(self.logger, WandbLogger)
-            and (step := self.trainer.global_step) == 0
-        ):
-            from wandb import Image  # noqa: PLC0415
-
-            index_spatial = tree_map(itemgetter(slice(1)), episode.index)
-            img = Image(
-                self.episode_builder
-                .attention_mask_builder(
-                    index=index_spatial.to_dict(),
-                    timestep=episode.timestep.to_dict(),
-                    legend=WandbAttentionMaskLegend,
-                )  # ty:ignore[call-non-callable]
-                .float()
-                .unsqueeze(0)
-                .cpu()
-            )
-            self.logger.log_image("attention_mask", [img], step=step)
-
         self.log_dict(
             {
                 "/".join(["train", *k]): v
@@ -226,13 +204,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             sync_dist=True,
         )
 
-        return {"loss": metrics["loss", "total"]} | metrics.select(
+        outputs = {"loss": metrics["loss", "total"]} | metrics.select(
             *(
                 (obj_name, "_artifacts")
                 for obj_name, metric in metrics.items()
                 if "_artifacts" in metric
             )
         ).to_dict()
+
+        if self.current_epoch == 0 and batch_idx == 0:
+            outputs[INTERNAL_STEP_OUTPUT_KEY] = {"episode": episode.detach()}
+
+        return outputs
 
     @override
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:

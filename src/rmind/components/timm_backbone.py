@@ -10,7 +10,6 @@ class TimmBackbone(nn.Module):
         self,
         model_name: str = "vit_small_patch16_dinov3.lvd1689m",
         *,
-        freeze: bool | None = None,
         out_indices: list[int] | None = None,
         img_size: list[int] | None = None,
     ) -> None:
@@ -22,9 +21,6 @@ class TimmBackbone(nn.Module):
             out_indices=out_indices,
             img_size=img_size,
         )
-
-        if freeze is not None:
-            self.requires_grad_(not freeze).train(not freeze)
 
     @override
     def forward(self, input: Tensor) -> Tensor:

@@ -1,4 +1,7 @@
 - _target_: rmind.callbacks.LogitBiasSetter
+- _target_: rmind.callbacks.ModuleFreezer
+  types:
+    - rmind.components.timm_backbone.TimmBackbone
 - _target_: pytorch_lightning.callbacks.TQDMProgressBar
 - _target_: pytorch_lightning.callbacks.ModelSummary
   max_depth: 5
@@ -7,6 +10,7 @@
   save_on_train_epoch_end: True
 - _target_: pytorch_lightning.callbacks.LearningRateMonitor
   logging_interval: step
+- _target_: rmind.callbacks.WandbAttentionMaskLogger
 - _target_: rmind.callbacks.WandbImageParamLogger
   when: on_train_batch_end
   every_n_batch: 100

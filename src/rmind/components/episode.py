@@ -170,7 +170,6 @@ class EpisodeBuilder(Module):
         projections: InstanceOf[ModuleDict],
         role_encoding: InstanceOf[Module],
         attention_mask_builder: InstanceOf[AttentionMaskBuilder],
-        freeze: bool | None = None,
     ) -> None:
         super().__init__()
 
@@ -198,17 +197,6 @@ class EpisodeBuilder(Module):
             )
             for token in timestep
         }
-        if freeze is not None:
-            if freeze is False and (
-                params_to_unfreeze := tuple(
-                    k
-                    for (k, v) in self.named_parameters(recurse=True)
-                    if not v.requires_grad
-                )
-            ):
-                logger.warning("unfreezing", params=params_to_unfreeze)
-
-            self.requires_grad_(not freeze).train(not freeze)
 
     @override
     def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
