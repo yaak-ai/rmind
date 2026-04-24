@@ -1,0 +1,69 @@
+# @package _global_
+---
+defaults:
+  - /model: yaak/control_transformer/finetuned
+  - /datamodule: yaak/predict
+  - /paths: yaak/default
+  - _self_
+
+permutations:
+  baseline: []
+  speed:
+    - [data, meta/VehicleMotion/speed]
+  cam_front_left:
+    - [data, cam_front_left]
+  waypoints:
+    - [data, waypoints/xy_normalized]
+  all_observations:
+    - [data, meta/VehicleMotion/speed]
+    - [data, cam_front_left]
+    - [data, waypoints/xy_normalized]
+
+permutation: baseline
+
+hydra:
+  sweep:
+    subdir: ${permutation}
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  _convert_: all
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  precision: "bf16-mixed"
+  logger: false
+  callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives:
+          - ground_truth
+          - prediction_value
+          - prediction_std
+          - prediction_probs
+          - score_l1
+          - score_logprob
+
+    - _target_: rmind.callbacks.FeaturePermutator
+      features: ${permutations.${permutation}}
+      seed: 42
+
+    - _target_: rmind.callbacks.DataFramePredictionWriter
+      write_interval: batch
+      path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}-${permutation}/{batch_idx:06}.parquet
+      select:
+        - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+        - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+        - [batch, meta, input_id]
+        - [policy, ground_truth, value]
+        - [policy, prediction_value, value]
+        - [policy, prediction_std, value]
+        - [policy, prediction_probs, value]
+        - [policy, score_l1, value]
+        - [policy, score_logprob, value]
+      writer:
+        _target_: polars.DataFrame.write_parquet
+        _partial_: true
+
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 5
