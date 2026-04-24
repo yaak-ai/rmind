@@ -23,17 +23,23 @@ hparams_updaters:
                 gas_pedal:
                   _target_: torchvision.ops.MLP
                   in_channels: 1152
-                  hidden_channels: [384,2]
+                  hidden_channels:
+                    - 384
+                    - ${gas_pedal_bins}
                   bias: False
                 brake_pedal:
                   _target_: torchvision.ops.MLP
                   in_channels: 1152
-                  hidden_channels: [384,2]
+                  hidden_channels:
+                    - 384
+                    - ${brake_pedal_bins}
                   bias: False
                 steering_angle:
                   _target_: torchvision.ops.MLP
                   in_channels: 1152
-                  hidden_channels: [384,2]
+                  hidden_channels:
+                    - 384
+                    - ${steering_angle_bins}
                   bias: False
               discrete:
                 turn_signal:
@@ -42,24 +48,43 @@ hparams_updaters:
                   hidden_channels: [384,3]
                   bias: False
 
+          output_tokenizers:
+            _target_: rmind.components.containers.ModuleDict
+            modules:
+              continuous:
+                gas_pedal:
+                  _target_: rmind.components.norm.UniformBinner
+                  range: [0.0, 1.0]
+                  bins: ${gas_pedal_bins}
+                brake_pedal:
+                  _target_: rmind.components.norm.UniformBinner
+                  range: [0.0, 1.0]
+                  bins: ${brake_pedal_bins}
+                steering_angle:
+                  _target_: rmind.components.norm.UniformBinner
+                  range: [-1.0, 1.0]
+                  bins: ${steering_angle_bins}
+              discrete:
+                _target_: rmind.components.nn.Identity
+
           targets:
             continuous:
-              gas_pedal: [input, continuous, gas_pedal]
-              brake_pedal: [input, continuous, brake_pedal]
-              steering_angle: [input, continuous, steering_angle]
+              gas_pedal: [input_tokens, continuous, gas_pedal]
+              brake_pedal: [input_tokens, continuous, brake_pedal]
+              steering_angle: [input_tokens, continuous, steering_angle]
             discrete:
-              turn_signal: [input, discrete, turn_signal]
+              turn_signal: [input_tokens, discrete, turn_signal]
 
           losses:
             _target_: rmind.components.containers.ModuleDict
             modules:
               continuous:
                 gas_pedal:
-                  _target_: rmind.components.loss.GaussianNLLLoss
+                  _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
                 brake_pedal:
-                  _target_: rmind.components.loss.GaussianNLLLoss
+                  _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
                 steering_angle:
-                  _target_: rmind.components.loss.GaussianNLLLoss
+                  _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
               discrete:
                 turn_signal:
                   _target_: rmind.components.loss.LogitBiasCrossEntropyLoss

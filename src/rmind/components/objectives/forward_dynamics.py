@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import Any, final, override
+from typing import final, override
 
 import torch
 from einops import pack, repeat
@@ -116,8 +116,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         episode: Episode,
         embedding: Tensor,
         keys: AbstractSet[ObjectivePredictionKey],
-        tokenizers: ModuleDict | None = None,
-        **kwargs: Any,
+        tokenizers: ModuleDict,
     ) -> TensorDict:
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
@@ -202,7 +201,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                         .exclude(Modality.FORESIGHT)
                         .apply(lambda x: x.argmax(dim=-1))
                         .named_apply(  # ty:ignore[unresolved-attribute]
-                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
+                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable]
                             nested_keys=True,
                         )
                     ),
@@ -241,7 +240,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                         .exclude(Modality.FORESIGHT)
                         .apply(lambda x: x.argmax(dim=-1))
                         .named_apply(  # ty:ignore[unresolved-attribute]
-                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
+                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable]
                             nested_keys=True,
                         )
                         .apply(  # ty:ignore[unresolved-attribute]

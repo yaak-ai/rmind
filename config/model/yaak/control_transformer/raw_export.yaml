@@ -241,17 +241,23 @@ objectives:
             gas_pedal:
               _target_: torchvision.ops.MLP
               in_channels: 1152
-              hidden_channels: [384, 2]
+              hidden_channels:
+                - 384
+                - ${gas_pedal_bins}
               bias: False
             brake_pedal:
               _target_: torchvision.ops.MLP
               in_channels: 1152
-              hidden_channels: [384, 2]
+              hidden_channels:
+                - 384
+                - ${brake_pedal_bins}
               bias: False
             steering_angle:
               _target_: torchvision.ops.MLP
               in_channels: 1152
-              hidden_channels: [384, 2]
+              hidden_channels:
+                - 384
+                - ${steering_angle_bins}
               bias: False
           discrete:
             turn_signal:
@@ -259,3 +265,21 @@ objectives:
               in_channels: 1152
               hidden_channels: [384, 3]
               bias: False
+      output_tokenizers:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            gas_pedal:
+              _target_: rmind.components.norm.UniformBinner
+              range: [0.0, 1.0]
+              bins: ${gas_pedal_bins}
+            brake_pedal:
+              _target_: rmind.components.norm.UniformBinner
+              range: [0.0, 1.0]
+              bins: ${brake_pedal_bins}
+            steering_angle:
+              _target_: rmind.components.norm.UniformBinner
+              range: [-1.0, 1.0]
+              bins: ${steering_angle_bins}
+          discrete:
+            _target_: rmind.components.nn.Identity

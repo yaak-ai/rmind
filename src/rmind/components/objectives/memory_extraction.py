@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import Any, final, override
+from typing import final, override
 
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
@@ -70,8 +70,7 @@ class MemoryExtractionObjective(Objective):
         episode: Episode,
         embedding: Tensor,
         keys: AbstractSet[ObjectivePredictionKey],
-        tokenizers: ModuleDict | None = None,
-        **kwargs: Any,
+        tokenizers: ModuleDict,
     ) -> TensorDict:
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
@@ -104,7 +103,7 @@ class MemoryExtractionObjective(Objective):
             if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
                     value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[unresolved-attribute]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[unresolved-attribute, call-non-callable]
+                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable]
                         nested_keys=True,
                     ),
                     timestep_indices=timestep_indices,

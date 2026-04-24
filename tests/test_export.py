@@ -13,11 +13,13 @@ from torchvision.ops import MLP
 from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder, EpisodeExport
+from rmind.components.nn import Identity
+from rmind.components.norm import UniformBinner
 from rmind.components.objectives.policy import PolicyObjective
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
 
 if TYPE_CHECKING:
-    from tests.conftest import EmbeddingDims
+    from tests.conftest import EmbeddingDims, NumBins
 
 
 @pytest.fixture
@@ -42,6 +44,7 @@ def policy_objective(
     device: torch.device, request: pytest.FixtureRequest
 ) -> PolicyObjective:
     embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
+    num_bins: NumBins = request.getfixturevalue("num_bins")
 
     return PolicyObjective(
         heads=ModuleDict(
@@ -49,17 +52,17 @@ def policy_objective(
                 Modality.CONTINUOUS: {
                     "gas_pedal": MLP(
                         3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
+                        [embedding_dims.encoder, num_bins.gas_pedal],
                         bias=False,
                     ),
                     "brake_pedal": MLP(
                         3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
+                        [embedding_dims.encoder, num_bins.brake_pedal],
                         bias=False,
                     ),
                     "steering_angle": MLP(
                         3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
+                        [embedding_dims.encoder, num_bins.steering_angle],
                         bias=False,
                     ),
                 },
@@ -71,7 +74,19 @@ def policy_objective(
                     )
                 },
             }
-        )
+        ),
+        output_tokenizers=ModuleDict({
+            Modality.CONTINUOUS: {
+                "gas_pedal": UniformBinner(range=(0.0, 1.0), bins=num_bins.gas_pedal),
+                "brake_pedal": UniformBinner(
+                    range=(0.0, 1.0), bins=num_bins.brake_pedal
+                ),
+                "steering_angle": UniformBinner(
+                    range=(-1.0, 1.0), bins=num_bins.steering_angle
+                ),
+            },
+            Modality.DISCRETE: Identity(),
+        }),
     ).to(device)
 
 

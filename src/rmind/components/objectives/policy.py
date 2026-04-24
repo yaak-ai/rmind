@@ -1,9 +1,8 @@
 from collections.abc import Set as AbstractSet
-from typing import Any, final, overload, override
+from typing import final, overload, override
 
 import torch
 from einops import rearrange
-from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
@@ -12,6 +11,7 @@ from torch.utils._pytree import tree_map, tree_map_with_path  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken, TensorTree
 from rmind.components.containers import ModuleDict
+from rmind.components.distributions import categorical_expected_value, categorical_std
 from rmind.components.episode import Episode, EpisodeExport
 from rmind.components.objectives.base import (
     Metrics,
@@ -20,7 +20,7 @@ from rmind.components.objectives.base import (
     Prediction,
     Targets,
 )
-from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
+from rmind.utils.functional import non_zero_signal_with_threshold
 
 
 @final
@@ -30,12 +30,14 @@ class PolicyObjective(Objective):
         self,
         *,
         heads: InstanceOf[ModuleDict],
+        output_tokenizers: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
         self.heads: ModuleDict = heads
+        self.output_tokenizers: ModuleDict = output_tokenizers
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
@@ -52,35 +54,16 @@ class PolicyObjective(Objective):
         logits = self._compute_logits(episode=episode, embedding=embedding)
 
         if isinstance(episode, Episode):
+            return TensorDict(logits).named_apply(self._decode_value, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
 
-            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:
-                match nk:
-                    case (Modality.CONTINUOUS, _):
-                        return x[..., 0]
-                    case (Modality.DISCRETE, "turn_signal"):
-                        return non_zero_signal_with_threshold(x).class_idx
-                    case _:
-                        raise NotImplementedError
-
-            return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
-
-        def fn(kp: tuple[Any, ...], v: Tensor) -> Tensor:
-            if kp[0].key == Modality.CONTINUOUS.value:
-                return v[..., 0]
-
-            if kp[0].key == Modality.DISCRETE.value and kp[1].key == "turn_signal":
-                return non_zero_signal_with_threshold(v).class_idx
-
-            raise NotImplementedError
-
-        return tree_map_with_path(fn, logits)
+        return tree_map_with_path(
+            lambda kp, v: self._decode_value((kp[0].key, kp[1].key), v), logits
+        )
 
     def _compute_logits(
         self, *, episode: Episode | EpisodeExport, embedding: Tensor
     ) -> TensorTree:
         if isinstance(episode, Episode):
-            _b, _ = episode.input.batch_size
-
             embeddings = (
                 episode
                 .index[-1]
@@ -134,31 +117,37 @@ class PolicyObjective(Objective):
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
-        logits = self._compute_logits(episode=episode, embedding=embedding)
-        targets = tree_map(
-            lambda k: episode.get(k)[:, -1],
-            self.targets,
-            is_leaf=lambda x: isinstance(x, tuple),
+        b, _t = episode.input.batch_size
+        logits = TensorDict(
+            self._compute_logits(episode=episode, embedding=embedding),  # ty:ignore[invalid-argument-type]
+            batch_size=[b, 1],
+        )
+        targets = TensorDict(
+            tree_map(
+                lambda k: episode.get(k)[:, -1],
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            ),
+            batch_size=[b, 1],
         )
 
         losses = self.losses(
-            tree_map(Rearrange("b 1 d -> b d"), logits),
-            tree_map(Rearrange("b 1 -> b"), targets),
+            tree_map(lambda x: rearrange(x, "b t d -> (b t) d"), logits.to_dict()),
+            tree_map(lambda x: rearrange(x, "b t -> (b t)"), targets.to_dict()),
         )  # ty:ignore[call-non-callable]
 
         return {"loss": losses}
 
     @override
-    def predict(  # noqa: C901, PLR0915
+    def predict(
         self,
         episode: Episode,
         *,
         embedding: Tensor,
         keys: AbstractSet[ObjectivePredictionKey],
-        **kwargs: Any,
+        tokenizers: ModuleDict,
     ) -> TensorDict:
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
-
         b, _t = episode.input.batch_size
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
@@ -180,154 +169,87 @@ class PolicyObjective(Objective):
                     embedding
                 )
 
-            embeddings = (
-                episode
-                .index[-1]
-                .select(
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                    (Modality.CONTEXT, "waypoints"),
-                )
-                .parse(embedding)
+            logits = TensorDict(
+                self._compute_logits(episode=episode, embedding=embedding),  # ty:ignore[invalid-argument-type]
+                batch_size=[b, 1],
             )
-
-            observation_history = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_HISTORY,
-            )).detach()  # NOTE: equivalent to stop gradient layer in paper
-
-            observation_summary = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_SUMMARY,
-            ))
-
-            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                dim=1, keepdim=True
+            target_tokens = TensorDict(
+                tree_map(
+                    lambda k: episode.get(k)[:, -1],
+                    self.targets,
+                    is_leaf=lambda x: isinstance(x, tuple),
+                ),
+                batch_size=[b, 1],
             )
-
-            features = rearrange(
-                [observation_summary, observation_history, waypoints],
-                "i b 1 d -> b 1 (i d)",
-            )
-
-            logits = TensorDict(self.heads(features), batch_size=[b, 1])
-
+            ground_truth = episode.input.select(*self.heads.tree_paths())[:, -1]
             timestep_indices = slice(-1, None)
 
             if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
-
-                def fn(
-                    action_type: tuple[Modality, str], x: torch.Tensor
-                ) -> torch.Tensor:
-                    match action_type:
-                        case (Modality.CONTINUOUS, _):
-                            return x[..., 0]
-                        case (Modality.DISCRETE, "turn_signal"):
-                            return non_zero_signal_with_threshold(x).class_idx
-                        case _:
-                            msg = f"Invalid action type: {action_type}"
-                            raise NotImplementedError(msg)
-
                 predictions[key] = Prediction(
-                    value=logits.named_apply(fn, nested_keys=True),
+                    value=logits.named_apply(self._decode_value, nested_keys=True),
                     timestep_indices=timestep_indices,
                 )
 
             if (key := ObjectivePredictionKey.PREDICTION_STD) in keys:
-
-                def fn(
-                    action_type: tuple[Modality, str], x: torch.Tensor
-                ) -> torch.Tensor:
-                    match action_type:
-                        case (Modality.CONTINUOUS, _):
-                            return torch.sqrt(torch.exp(x[..., 1]))
-
-                        case (Modality.DISCRETE, "turn_signal"):
-                            return torch.zeros_like(x[..., 0])  # placeholder
-                        case _:
-                            msg = f"Invalid action type: {action_type}"
-                            raise NotImplementedError(msg)
-
                 predictions[key] = Prediction(
-                    value=logits.named_apply(fn, nested_keys=True),
+                    value=logits.named_apply(
+                        lambda k, v: (
+                            categorical_std(v, self.output_tokenizers.get_deepest(k))
+                            if k[0] == Modality.CONTINUOUS
+                            else torch.zeros_like(v[..., 0])
+                        ),
+                        nested_keys=True,
+                    ),
                     timestep_indices=timestep_indices,
                 )
 
             if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
-
-                def fn(
-                    action_type: tuple[Modality, str], x: torch.Tensor
-                ) -> torch.Tensor:
-                    match action_type:
-                        case (Modality.CONTINUOUS, _):
-                            mean = x[..., 0]
-                            std = torch.sqrt(torch.exp(x[..., 1]))
-                            return gauss_prob(mean, mean=mean, std=std)
-
-                        case (Modality.DISCRETE, "turn_signal"):
-                            return non_zero_signal_with_threshold(x).prob
-
-                        case _:
-                            msg = f"Invalid action type: {action_type}"
-                            raise NotImplementedError(msg)
-
                 predictions[key] = Prediction(
-                    value=logits.named_apply(fn, nested_keys=True),
+                    value=logits.apply(lambda x: x.softmax(dim=-1)),
                     timestep_indices=timestep_indices,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_LOGPROB) in keys:
-
-                def fn(
-                    action_type: tuple[Modality, str], x: torch.Tensor
-                ) -> torch.Tensor:
-                    match action_type:
-                        case (Modality.CONTINUOUS, _):
-                            mean = x[..., 0]
-                            std = torch.sqrt(torch.exp(x[..., 1]))
-                            return -torch.log(gauss_prob(mean, mean=mean, std=std))
-
-                        case (Modality.DISCRETE, "turn_signal"):
-                            gt = episode.input[action_type][:, -1]
-                            return F.cross_entropy(
-                                x.squeeze(1),
-                                gt.squeeze(1).long(),  # ty:ignore[unresolved-attribute]
-                                reduction="none",
-                            ).unsqueeze(1)
-
-                        case _:
-                            msg = f"Invalid action type: {action_type}"
-                            raise NotImplementedError(msg)
-
                 predictions[key] = Prediction(
-                    value=logits.named_apply(fn, nested_keys=True),
+                    value=logits.named_apply(
+                        lambda k, v: F.cross_entropy(
+                            rearrange(v, "... d -> (...) d"),
+                            rearrange(target_tokens.get(k).long(), "... -> (...)"),
+                            reduction="none",
+                        ).reshape(v.shape[:-1]),
+                        nested_keys=True,
+                    ),
                     timestep_indices=timestep_indices,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_L1) in keys:
-
-                def fn(
-                    action_type: tuple[Modality, str], x: torch.Tensor
-                ) -> torch.Tensor:
-                    gt = episode.input[action_type][:, -1]
-                    match action_type:
-                        case (Modality.CONTINUOUS, _):
-                            return F.l1_loss(x[..., 0], gt, reduction="none")  # ty:ignore[invalid-argument-type]
-
-                        case (Modality.DISCRETE, "turn_signal"):
-                            return F.l1_loss(
-                                non_zero_signal_with_threshold(x).class_idx.float(),
-                                gt.float(),
-                                reduction="none",
-                            )
-
-                        case _:
-                            msg = f"Invalid action type: {action_type}"
-                            raise NotImplementedError(msg)
-
                 predictions[key] = Prediction(
-                    value=logits.named_apply(fn, nested_keys=True),
+                    value=logits.named_apply(
+                        lambda k, v: F.l1_loss(
+                            self._decode_value(k, v).float(),
+                            ground_truth.get(k).float(),  # ty:ignore[unresolved-attribute]
+                            reduction="none",
+                        ),
+                        nested_keys=True,
+                    ),
                     timestep_indices=timestep_indices,
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
+
+    def _decode_value(
+        self, action_type: tuple[str, ...] | tuple[Modality, str], logits: Tensor
+    ) -> Tensor:
+        if action_type[0] == Modality.CONTINUOUS:
+            return categorical_expected_value(
+                logits, self.output_tokenizers.get_deepest(action_type)
+            )
+
+        if action_type == (Modality.DISCRETE, "turn_signal"):
+            return non_zero_signal_with_threshold(logits).class_idx
+
+        if action_type[0] == Modality.DISCRETE:
+            return logits.argmax(dim=-1)
+
+        msg = f"invalid action type: {action_type}"
+        raise NotImplementedError(msg)

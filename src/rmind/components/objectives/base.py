@@ -66,5 +66,5 @@ class Objective(Module, ABC):
         episode: Episode,
         embedding: Tensor,
         keys: AbstractSet[ObjectivePredictionKey],
-        tokenizers: ModuleDict | None = None,
+        tokenizers: ModuleDict,
     ) -> TensorDict: ...

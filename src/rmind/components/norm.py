@@ -113,6 +113,16 @@ class UniformBinner(Module, Invertible):
 
         return start + (input + 0.5) * width
 
+    @property
+    def bin_centers(self) -> Tensor:
+        start, end = self.range
+        bins = self.bins.to(dtype=self.range.dtype)
+        indices = torch.arange(
+            int(self.bins.item()), device=self.range.device, dtype=self.range.dtype
+        )
+
+        return start + (indices + 0.5) * ((end - start) / bins)
+
     @override
     def extra_repr(self) -> str:
         return f"{self.range.tolist()} -> {self.bins.item()}"

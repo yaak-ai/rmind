@@ -1,10 +1,8 @@
 from collections.abc import Set as AbstractSet
 from typing import final, override
 
-import torch
 import torch.nn.functional as F
 from einops import rearrange
-from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
@@ -12,6 +10,7 @@ from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
+from rmind.components.distributions import categorical_expected_value
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
     Metrics,
@@ -20,6 +19,7 @@ from rmind.components.objectives.base import (
     Prediction,
     Targets,
 )
+from rmind.utils.functional import non_zero_signal_with_threshold
 
 
 @final
@@ -53,17 +53,20 @@ class InverseDynamicsPredictionObjective(Objective):
             "i ... d -> ... (i d)",
         )
 
-        logits = self.heads(features)
-
-        targets = tree_map(
-            lambda k: episode.get(k)[:, :-1],
-            self.targets,
-            is_leaf=lambda x: isinstance(x, tuple),
+        b, t = episode.input.batch_size
+        logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
+        targets = TensorDict(
+            tree_map(
+                lambda k: episode.get(k)[:, :-1],
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            ),
+            batch_size=[b, t - 1],
         )
 
         losses = self.losses(
-            tree_map(Rearrange("b t 1 d -> (b t) d"), logits),
-            tree_map(Rearrange("b t 1 -> (b t)"), targets),
+            tree_map(lambda x: rearrange(x, "b t 1 d -> (b t) d"), logits.to_dict()),
+            tree_map(lambda x: rearrange(x, "b t 1 -> (b t)"), targets.to_dict()),
         )  # ty:ignore[call-non-callable]
 
         return {"loss": losses}
@@ -77,6 +80,10 @@ class InverseDynamicsPredictionObjective(Objective):
         keys: AbstractSet[ObjectivePredictionKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
+        if tokenizers is None:
+            msg = "tokenizers must be provided for inverse dynamics decoding"
+            raise ValueError(msg)
+
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
@@ -107,14 +114,23 @@ class InverseDynamicsPredictionObjective(Objective):
             )
 
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
+            target_tokens = TensorDict(
+                tree_map(
+                    lambda k: episode.get(k)[:, :-1],
+                    self.targets,
+                    is_leaf=lambda x: isinstance(x, tuple),
+                ),
+                batch_size=[b, t - 1],
+            )
+            ground_truth = episode.input.select(*self.heads.tree_paths())[:, : t - 1]
 
             # all but last
             timestep_indices = slice(t - 1)
 
             if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
-                    value=logits.apply(lambda x: x.argmax(dim=-1)).named_apply(  # ty:ignore[unresolved-attribute]
-                        lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
+                    value=logits.named_apply(
+                        lambda k, v: self._decode_value(k, v, tokenizers),
                         nested_keys=True,
                     ),
                     timestep_indices=timestep_indices,
@@ -128,33 +144,26 @@ class InverseDynamicsPredictionObjective(Objective):
 
             if (key := ObjectivePredictionKey.SCORE_LOGPROB) in keys:
                 predictions[key] = Prediction(
-                    value=(
-                        logits
-                        .apply(lambda x: x.softmax(dim=-1))
-                        .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[unresolved-attribute]
-                        .apply(  # ty:ignore[unresolved-attribute]
-                            lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                            episode.input_tokens[:, timestep_indices],  # ty:ignore[invalid-argument-type]
-                        )
-                        .apply(lambda x: -torch.log(x))  # ty:ignore[unresolved-attribute]
+                    value=logits.named_apply(
+                        lambda k, v: F.cross_entropy(
+                            rearrange(v, "... d -> (...) d"),
+                            rearrange(target_tokens.get(k).long(), "... -> (...)"),
+                            reduction="none",
+                        ).reshape(v.shape[:-1]),
+                        nested_keys=True,
                     ),
                     timestep_indices=timestep_indices,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_L1) in keys:
                 predictions[key] = Prediction(
-                    value=(
-                        logits
-                        .apply(lambda x: x.argmax(dim=-1))
-                        .named_apply(  # ty:ignore[unresolved-attribute]
-                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
-                            nested_keys=True,
-                        )
-                        .apply(  # ty:ignore[unresolved-attribute]
-                            lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                            episode.input[:, timestep_indices],  # ty:ignore[invalid-argument-type]
-                            nested_keys=True,
-                        )
+                    value=logits.named_apply(
+                        lambda k, v: F.l1_loss(
+                            self._decode_value(k, v, tokenizers).float(),
+                            ground_truth.get(k).float(),  # ty:ignore[unresolved-attribute]
+                            reduction="none",
+                        ),
+                        nested_keys=True,
                     ),
                     timestep_indices=timestep_indices,
                 )
@@ -165,3 +174,21 @@ class InverseDynamicsPredictionObjective(Objective):
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
+
+    @staticmethod
+    def _decode_value(
+        action_type: tuple[Modality, str], logits: Tensor, tokenizers: ModuleDict
+    ) -> Tensor:
+        if action_type[0] == Modality.CONTINUOUS:
+            return categorical_expected_value(
+                logits, tokenizers.get_deepest(action_type)
+            )
+
+        if action_type == (Modality.DISCRETE, "turn_signal"):
+            return non_zero_signal_with_threshold(logits).class_idx
+
+        if action_type[0] == Modality.DISCRETE:
+            return logits.argmax(dim=-1)
+
+        msg = f"invalid action type: {action_type}"
+        raise NotImplementedError(msg)

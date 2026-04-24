@@ -1,4 +1,4 @@
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,11 +16,7 @@ from torchvision.transforms.v2 import CenterCrop, Normalize, Resize, ToDtype
 from rmind.components.base import Modality, SummaryToken, TensorTree, TokenType
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
-from rmind.components.loss import (
-    GaussianNLLLoss,
-    GramAnchoringObjective,
-    LogitBiasCrossEntropyLoss,
-)
+from rmind.components.loss import GramAnchoringObjective, LogitBiasCrossEntropyLoss
 from rmind.components.mask import CausalAttentionMaskBuilder
 from rmind.components.nn import (
     AtLeast3D,
@@ -170,6 +166,27 @@ def tokenizers(device: torch.device, num_bins: NumBins) -> ModuleDict:
         Modality.DISCRETE: Identity(),
         Modality.CONTEXT: {"waypoints": Identity()},
     }).to(device)
+
+
+@pytest.fixture(scope="module")
+def output_tokenizers_factory(
+    device: torch.device, num_bins: NumBins
+) -> Callable[[], ModuleDict]:
+    def factory() -> ModuleDict:
+        return ModuleDict({
+            Modality.CONTINUOUS: {
+                "gas_pedal": UniformBinner(range=(0.0, 1.0), bins=num_bins.gas_pedal),
+                "brake_pedal": UniformBinner(
+                    range=(0.0, 1.0), bins=num_bins.brake_pedal
+                ),
+                "steering_angle": UniformBinner(
+                    range=(-1.0, 1.0), bins=num_bins.steering_angle
+                ),
+            },
+            Modality.DISCRETE: Identity(),
+        }).to(device)
+
+    return factory
 
 
 @pytest.fixture(scope="module")
@@ -534,7 +551,10 @@ def memory_extraction_objective(
 
 @pytest.fixture(scope="module")
 def policy_objective(
-    device: torch.device, embedding_dims: EmbeddingDims
+    device: torch.device,
+    embedding_dims: EmbeddingDims,
+    num_bins: NumBins,
+    output_tokenizers_factory: Callable[[], ModuleDict],
 ) -> PolicyObjective:
     logit_bias = torch.tensor(0)
 
@@ -544,17 +564,17 @@ def policy_objective(
                 Modality.CONTINUOUS: {
                     "gas_pedal": MLP(
                         3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
+                        [embedding_dims.encoder, num_bins.gas_pedal],
                         bias=False,
                     ),
                     "brake_pedal": MLP(
                         3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
+                        [embedding_dims.encoder, num_bins.brake_pedal],
                         bias=False,
                     ),
                     "steering_angle": MLP(
                         3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
+                        [embedding_dims.encoder, num_bins.steering_angle],
                         bias=False,
                     ),
                 },
@@ -567,12 +587,13 @@ def policy_objective(
                 },
             }
         ),
+        output_tokenizers=output_tokenizers_factory(),
         losses=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
-                    "gas_pedal": GaussianNLLLoss(),
-                    "brake_pedal": GaussianNLLLoss(),
-                    "steering_angle": GaussianNLLLoss(),
+                    "gas_pedal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias),
+                    "brake_pedal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias),
+                    "steering_angle": LogitBiasCrossEntropyLoss(logit_bias=logit_bias),
                 },
                 Modality.DISCRETE: {
                     "turn_signal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
@@ -581,12 +602,12 @@ def policy_objective(
         ),
         targets={
             (modality := Modality.CONTINUOUS): {
-                "gas_pedal": ("input", modality, "gas_pedal"),
-                "brake_pedal": ("input", modality, "brake_pedal"),
-                "steering_angle": ("input", modality, "steering_angle"),
+                "gas_pedal": ("input_tokens", modality, "gas_pedal"),
+                "brake_pedal": ("input_tokens", modality, "brake_pedal"),
+                "steering_angle": ("input_tokens", modality, "steering_angle"),
             },
             (modality := Modality.DISCRETE): {
-                "turn_signal": ("input", modality, "turn_signal")
+                "turn_signal": ("input_tokens", modality, "turn_signal")
             },
         },
     ).to(device)

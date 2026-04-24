@@ -3,6 +3,7 @@ from itertools import pairwise
 import torch
 from torch.testing import assert_close, make_tensor
 
+from rmind.components.distributions import categorical_expected_value, categorical_std
 from rmind.components.nn import Sequential
 from rmind.components.norm import Scaler, UniformBinner
 
@@ -36,6 +37,16 @@ def test_uniform_binner(device: torch.device) -> None:
 
     bin_width = (module.range[1] - module.range[0]) / module.bins
     assert_close(x_rt, x, rtol=0.0, atol=(bin_width / 2.0).item())
+
+
+def test_categorical_expected_value_and_std(device: torch.device) -> None:
+    tokenizer = UniformBinner(range=(0.0, 1.0), bins=4).to(device)
+    logits = torch.tensor([[[-100.0, 0.0, 0.0, -100.0]]], device=device)
+    decoded = categorical_expected_value(logits, tokenizer)
+    std = categorical_std(logits, tokenizer)
+
+    assert_close(decoded, torch.tensor([[0.5]], device=device), rtol=0.0, atol=1e-6)
+    assert_close(std, torch.tensor([[0.125]], device=device), rtol=0.0, atol=1e-6)
 
 
 def test_sequential(device: torch.device) -> None:
