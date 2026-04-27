@@ -184,7 +184,7 @@ class WandbAttentionMaskLogger(Callback):
         )
 
         sa_fig = visualize_attention_mask(
-            spatial_attention_mask, timestep_meta, sliced_index, n
+            spatial_attention_mask, timestep_meta, sliced_index, 1
         )
         try:
             for logger_ in loggers:

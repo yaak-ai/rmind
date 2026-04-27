@@ -126,9 +126,13 @@ class TransformerEncoder(nn.Module):
         self.emb_norm: nn.Module | None = emb_norm
 
     @override
-    def forward(self, *, src: Tensor, mask: Tensor) -> Tensor:
+    def forward(
+        self, *, src: Tensor, spatial_mask: Tensor, temporal_mask: Tensor
+    ) -> Tensor:
         x = self.emb_norm(src) if self.emb_norm is not None else src
-        return run_layer_stack(self.layers, x, mask, training=self.training)
+        return run_layer_stack(
+            self.layers, x, spatial_mask, temporal_mask, training=self.training
+        )
 
     @validate_call
     def compute_attention_rollout(
