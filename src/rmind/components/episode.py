@@ -226,9 +226,15 @@ class EpisodeBuilder(Module):
         })
 
         # Build spatial and temporal masks for factorized encoder
-        attention_mask_spatial, attention_mask_temporal = (
-            self._build_attention_mask_tensor(index, timestep, t, device)
+        spatial_mask_tensor, temporal_mask_tensor = self._build_attention_mask_tensor(
+            index, timestep, t, device
         )
+
+        attention_mask_spatial = AttentionMask.from_tensor(
+            mask_tensor=spatial_mask_tensor, legend=TorchAttentionMaskLegend
+        )
+
+        attention_mask_temporal = temporal_mask_tensor
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
         return (
@@ -271,7 +277,7 @@ class EpisodeBuilder(Module):
 
     def _build_attention_mask_tensor(
         self, index: TensorTree, timestep: TimestepExport, t: int, device: torch.device
-    ) -> tuple[AttentionMask, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Build (or return cached) spatial and temporal attention mask tensors.
 
         WARNING: attention_mask_builder is not trace-friendly, so torch.export relies
@@ -295,20 +301,17 @@ class EpisodeBuilder(Module):
         spatial_mask_tensor = self.attention_mask_builder(
             index=index_spatial, timestep=timestep, legend=TorchAttentionMaskLegend
         )
-        attention_mask_spatial = AttentionMask.from_tensor(
-            mask_tensor=spatial_mask_tensor, legend=TorchAttentionMaskLegend
-        )
 
         # Build temporal mask
-        attention_mask_temporal = torch.nn.Transformer.generate_square_subsequent_mask(
+        temporal_mask_tensor = torch.nn.Transformer.generate_square_subsequent_mask(
             t, device=device
         )
 
         if torch.compiler.is_exporting():
-            self._attention_mask_spatial = attention_mask_spatial
-            self._attention_mask_temporal = attention_mask_temporal
+            self._attention_mask_spatial = spatial_mask_tensor
+            self._attention_mask_temporal = temporal_mask_tensor
 
-        return attention_mask_spatial, attention_mask_temporal
+        return spatial_mask_tensor, temporal_mask_tensor
 
     def _build_index(self, embeddings: TensorTree) -> TensorTree:
         (_, t), device = mit.one({
