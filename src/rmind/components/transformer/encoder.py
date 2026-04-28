@@ -10,9 +10,11 @@ from torch import Tensor, nn
 from torch.nn.modules.module import Module
 
 from rmind.components.base import Modality, SummaryToken, TokenType
+from rmind.components.episode import Episode
 from rmind.components.mask import AttentionMask
 from rmind.components.nn import default_weight_init_fn
 from rmind.components.transformer.attention import MaskedSelfAttention
+from rmind.components.transformer.config import EncoderPredictionConfig
 from rmind.components.transformer.feed_forward import MLPGLU
 from rmind.components.transformer.utils import run_layer_stack
 
@@ -130,6 +132,12 @@ class TransformerEncoder(nn.Module):
     @override
     def predict(  # ty:ignore[invalid-explicit-override]
         self,
+        *,
+        src: InstanceOf[Tensor],
+        spatial_mask: InstanceOf[AttentionMask],
+        temporal_mask: InstanceOf[Tensor],
+        episode: InstanceOf[Episode] | None = None,
+        config: EncoderPredictionConfig | None = None,
     ) -> TensorDict:
         # Harsi: Implement actual attention_rollout for factorized attention
         predictions: dict[str, Prediction] = {}
