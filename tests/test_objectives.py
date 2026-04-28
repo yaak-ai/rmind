@@ -55,7 +55,9 @@ def test_predict(  # noqa: PLR0913, PLR0917
         episode=episode,
         keys=keys,
         embedding=encoder(
-            src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
+            src=episode.embeddings_packed,
+            spatial_mask=episode.attention_mask_spatial.mask_tensor,
+            temporal_mask=episode.attention_mask_temporal,
         ),
         tokenizers=tokenizers,
     )

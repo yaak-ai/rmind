@@ -84,6 +84,8 @@ class PolicyObjective(Objective):
     def _compute_logits(
         self, *, episode: Episode | EpisodeExport, embedding: Tensor
     ) -> TensorTree:
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
+
         if isinstance(episode, Episode):
             _b, _ = episode.input.batch_size
 
@@ -132,7 +134,7 @@ class PolicyObjective(Objective):
             ].mean(dim=1, keepdim=True)
 
         features = rearrange(
-            [observation_summary, observation_history.detach(), waypoints],
+            [observation_summary, observation_history, waypoints],
             "i b 1 d -> b 1 (i d)",
         )
 
@@ -166,6 +168,8 @@ class PolicyObjective(Objective):
         keys: AbstractSet[ObjectivePredictionKey],
         **kwargs: Any,
     ) -> TensorDict:
+        embedding = rearrange(embedding, "b t s d -> b (t s) d")
+
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
 
         b, _t = episode.input.batch_size

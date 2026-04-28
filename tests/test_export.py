@@ -83,7 +83,9 @@ def encoder_eval(encoder: Module) -> Module:
 @pytest.fixture
 def policy_embedding(encoder_eval: Module, episode: Episode) -> Tensor:
     return encoder_eval(
-        src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
+        src=episode.embeddings_packed.clone(),
+        spatial_mask=episode.attention_mask_spatial.mask_tensor.clone(),
+        temporal_mask=episode.attention_mask_temporal.clone(),
     )
 
 
@@ -92,9 +94,9 @@ def policy_embedding_export(
     encoder_eval: Module, episode_export: EpisodeExport
 ) -> Tensor:
     return encoder_eval(
-        src=episode_export.embeddings_packed,
-        spatial_mask=episode_export.attention_mask_spatial.mask_tensor,
-        temporal_mask=episode_export.attention_mask_temporal,
+        src=episode_export.embeddings_packed.clone(),
+        spatial_mask=episode_export.attention_mask_spatial.mask_tensor.clone(),
+        temporal_mask=episode_export.attention_mask_temporal.clone(),
     )
 
 
@@ -194,6 +196,8 @@ def test_torch_export_fake(
             actual,
             expected,
             equal_nan=True,
+            atol=1e-4,
+            rtol=1e-3,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
         )
 

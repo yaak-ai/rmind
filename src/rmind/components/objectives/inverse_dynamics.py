@@ -114,11 +114,7 @@ class InverseDynamicsPredictionObjective(Objective):
                 .get(k)
             )
 
-            # order: (o0, o1), (o1, o2), (o2, o3), ...
-            features = rearrange(
-                [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-                "i b t 1 d -> b t 1 (i d)",
-            )
+            features = observation_summaries[:, :-1]
 
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
 

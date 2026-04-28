@@ -64,7 +64,6 @@ class ForwardDynamicsPredictionObjective(Objective):
             .get(k)
         )
         features: TensorDict = observations.apply(
-            # pack: (obs[0], observation_summary, action_summary), (obs[1], observation_summary, action_summary), ...
             lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
                 0
             ]
@@ -107,7 +106,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         }
 
     @override
-    def predict(  # noqa: PLR0914, C901
+    def predict(  # noqa: C901
         self,
         *,
         episode: Episode,
@@ -151,21 +150,10 @@ class ForwardDynamicsPredictionObjective(Objective):
                 .parse(embedding)
                 .get(k)
             )
-            observation_summary = (
-                index
-                .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
-                .parse(embedding)
-                .get(k)
-            )
 
             features: TensorDict = observations.apply(
                 lambda obs: pack(
-                    [
-                        obs,
-                        observation_summary.broadcast_to(obs.shape),
-                        action_summary.broadcast_to(obs.shape),
-                    ],
-                    "b t p *",
+                    [obs, action_summary.broadcast_to(obs.shape)], "b t p *"
                 )[0]
             )
 

@@ -273,6 +273,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             "encoder": self.encoder.predict(  # ty:ignore[call-non-callable]
                 src=episode.embeddings_packed,
                 spatial_mask=episode.attention_mask_spatial,
+                temporal_mask=episode.attention_mask_temporal,
                 episode=episode,
                 config=self.prediction_config.encoder,
             )

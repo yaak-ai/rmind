@@ -6,7 +6,7 @@ from typing import Any, NamedTuple, final, override
 
 import more_itertools as mit
 import torch
-from einops import pack, rearrange, repeat
+from einops import pack, repeat
 from pydantic import InstanceOf, validate_call
 from structlog import get_logger
 from tensordict import TensorClass, TensorDict
@@ -145,7 +145,7 @@ class EpisodeExport:
 
         packed, _ = pack([key_get(embeddings, path) for path in paths], "b t * d")
 
-        return rearrange(packed, "b t s d -> b (t s) d")
+        return packed
 
     def __getitem__(self, item: str) -> Any:
         return getattr(self, item)

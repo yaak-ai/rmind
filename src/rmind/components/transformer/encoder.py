@@ -2,7 +2,6 @@ from functools import partial
 from math import sqrt
 from typing import TYPE_CHECKING, Any, override
 
-import torch
 import torch.nn.functional as F
 from einops import rearrange
 from pydantic import InstanceOf, validate_call
@@ -11,20 +10,14 @@ from torch import Tensor, nn
 from torch.nn.modules.module import Module
 
 from rmind.components.base import Modality, SummaryToken, TokenType
-from rmind.components.episode import Episode
 from rmind.components.mask import AttentionMask
 from rmind.components.nn import default_weight_init_fn
-from rmind.components.objectives.base import Prediction
 from rmind.components.transformer.attention import MaskedSelfAttention
-from rmind.components.transformer.config import (
-    AttentionRolloutPredictionConfig,
-    EncoderPredictionConfig,
-)
 from rmind.components.transformer.feed_forward import MLPGLU
 from rmind.components.transformer.utils import run_layer_stack
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from rmind.components.objectives.base import Prediction
 
 
 class TransformerEncoderBlock(nn.Module):
@@ -134,68 +127,12 @@ class TransformerEncoder(nn.Module):
             self.layers, x, spatial_mask, temporal_mask, training=self.training
         )
 
-    @validate_call
-    def compute_attention_rollout(
+    @override
+    def predict(  # ty:ignore[invalid-explicit-override]
         self,
-        *,
-        src: InstanceOf[Tensor],
-        mask: InstanceOf[AttentionMask],
-        config: AttentionRolloutPredictionConfig,
-    ) -> Tensor:
-        fuse_heads: Callable[[Tensor], Tensor]
-        match config.head_fusion:
-            case "mean":
-                fuse_heads = lambda x: x.mean(axis=1)  # noqa: E731
-            case "max":
-                fuse_heads = lambda x: x.max(axis=1).values  # noqa: E731
-            case "min":
-                fuse_heads = lambda x: x.min(axis=1).values  # noqa: E731
-
-        _, s, _ = src.shape
-        identity = torch.eye(s, s, device=src.device)
-        attn_rollout = identity.clone()
-
-        x = src
-        for layer in self.layers:
-            x, attn = layer(
-                x, mask.mask_tensor, need_weights=True, average_attn_weights=False
-            )
-            attn_fused = fuse_heads(attn)
-            attn_discarded = self._discard_attention(
-                attn_fused, mask, config.discard_ratio
-            )
-            attn_residual = (attn_discarded + identity) * 0.5
-            attn_norm = attn_residual / attn_residual.sum(dim=-1, keepdim=True)
-            attn_rollout = attn_norm @ attn_rollout
-
-        return attn_rollout
-
-    @validate_call
-    def predict(
-        self,
-        *,
-        src: InstanceOf[Tensor],
-        mask: InstanceOf[AttentionMask],
-        episode: InstanceOf[Episode] | None = None,
-        config: EncoderPredictionConfig | None = None,
     ) -> TensorDict:
+        # Harsi: Implement actual attention_rollout for factorized attention
         predictions: dict[str, Prediction] = {}
-
-        if config and config.attention_rollout:
-            if episode is None:
-                msg = "episode is required when requesting ATTENTION_ROLLOUT"
-                raise ValueError(msg)
-
-            rollout = self.compute_attention_rollout(
-                src=src, mask=mask, config=config.attention_rollout
-            )
-            _, t = episode.input.batch_size
-            predictions["attention_rollout"] = Prediction(
-                value=self._attention_rollout_visualization(
-                    episode=episode, attention_rollout=rollout
-                ),
-                timestep_indices=slice(t - 1, None),
-            )
 
         return TensorDict(predictions).auto_batch_size_(1)  # ty:ignore[invalid-argument-type]
 
@@ -356,6 +293,7 @@ class FactorizedTransformerEncoderBlock(nn.Module):
             average_attn_weights=average_attn_weights,
         )
         mha = mha[0] if isinstance(mha, tuple) else mha
+        mha[1] if isinstance(mha, tuple) else None
 
         x = residual + self.resid_drop(mha)
 
@@ -373,9 +311,11 @@ class FactorizedTransformerEncoderBlock(nn.Module):
             average_attn_weights=average_attn_weights,
         )
         mha = mha[0] if isinstance(mha, tuple) else mha
+        spatial_attention_weights = mha[1] if isinstance(mha, tuple) else None
 
         x = residual + self.resid_drop(mha)
         x = rearrange(x, "(b t) s d -> b t s d", t=t)
 
         residual = x
-        return residual + self.mlp(self.mlp_norm(x))
+        out = residual + self.mlp(self.mlp_norm(x))
+        return (out, spatial_attention_weights) if need_weights else out
