@@ -32,6 +32,7 @@ from rmind.components.containers import ModuleDict
 from rmind.components.mask import (
     AttentionMask,
     AttentionMaskBuilder,
+    FactorizedAttentionMask,
     TorchAttentionMaskLegend,
 )
 from rmind.utils.pytree import unflatten_keys
@@ -89,15 +90,14 @@ class Episode(TensorClass["frozen"]):
     role_embeddings: TensorDict
     index: Index
     timestep: Timestep
-    attention_mask_spatial: AttentionMask
-    attention_mask_temporal: Tensor
+    attention_mask: FactorizedAttentionMask
 
     @property
     def embeddings(self) -> TensorDict:
         return self.projected_embeddings + self.role_embeddings
 
     @property
-    def embeddings_packed(self) -> Tensor:
+    def embeddings_factorized(self) -> Tensor:
         embeddings = self.embeddings
         keys = (
             (modality, name)
@@ -120,8 +120,7 @@ class EpisodeExport:
     role_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
-    attention_mask_spatial: AttentionMask
-    attention_mask_temporal: Tensor
+    attention_mask: FactorizedAttentionMask
 
     @property
     def embeddings(self) -> TensorTree:
@@ -134,7 +133,7 @@ class EpisodeExport:
         )
 
     @property
-    def embeddings_packed(self) -> Tensor:
+    def embeddings_factorized(self) -> Tensor:
         embeddings = self.embeddings
         paths = (
             (modality, name)
@@ -198,6 +197,13 @@ class EpisodeBuilder(Module):
             for token in timestep
         }
 
+    @property
+    def attention_mask_cache_is_warm(self) -> bool:
+        return (
+            self._attention_mask_spatial is not None
+            and self._attention_mask_temporal is not None
+        )
+
     @override
     def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
         input = self.input_transform(batch)
@@ -230,11 +236,14 @@ class EpisodeBuilder(Module):
             index, timestep, t, device
         )
 
-        attention_mask_spatial = AttentionMask.from_tensor(
-            mask_tensor=spatial_mask_tensor, legend=TorchAttentionMaskLegend
+        attention_mask = FactorizedAttentionMask(
+            spatial=AttentionMask.from_tensor(
+                mask_tensor=spatial_mask_tensor, legend=TorchAttentionMaskLegend
+            ),
+            temporal=AttentionMask.from_tensor(
+                mask_tensor=temporal_mask_tensor, legend=TorchAttentionMaskLegend
+            ),
         )
-
-        attention_mask_temporal = temporal_mask_tensor
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
         return (
@@ -246,8 +255,7 @@ class EpisodeBuilder(Module):
                 role_embeddings=role_embeddings,
                 index=index,
                 timestep=timestep,
-                attention_mask_spatial=attention_mask_spatial,
-                attention_mask_temporal=attention_mask_temporal,
+                attention_mask=attention_mask,
             )
             if torch.compiler.is_exporting()
             else Episode(
@@ -269,8 +277,7 @@ class EpisodeBuilder(Module):
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 timestep=Timestep.from_dict(timestep),
-                attention_mask_spatial=attention_mask_spatial,
-                attention_mask_temporal=attention_mask_temporal,
+                attention_mask=attention_mask,
                 device=device,
             )
         )
@@ -284,10 +291,7 @@ class EpisodeBuilder(Module):
         on this cache being warm. An eager forward pass must run *before*
         torch.export.export() — see export_onnx.py.
         """
-        if (
-            self._attention_mask_spatial is not None
-            and self._attention_mask_temporal is not None
-        ):
+        if self.attention_mask_cache_is_warm:
             return self._attention_mask_spatial, self._attention_mask_temporal
 
         if torch.compiler.is_exporting():
@@ -302,12 +306,12 @@ class EpisodeBuilder(Module):
             index=index_spatial, timestep=timestep, legend=TorchAttentionMaskLegend
         )
 
-        # Build temporal mask
-        temporal_mask_tensor = torch.nn.Transformer.generate_square_subsequent_mask(
-            t, device=device
+        # Build temporal mask using the same boolean attention-mask convention as spatial
+        temporal_mask_tensor = torch.triu(
+            torch.ones((t, t), dtype=torch.bool, device=device), diagonal=1
         )
 
-        if torch.compiler.is_exporting():
+        if not torch.compiler.is_exporting():
             self._attention_mask_spatial = spatial_mask_tensor
             self._attention_mask_temporal = temporal_mask_tensor
 

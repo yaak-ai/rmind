@@ -2,7 +2,7 @@ from collections.abc import Set as AbstractSet
 from typing import Any, final, override
 
 import torch
-from einops import pack, rearrange, repeat
+from einops import pack, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
@@ -47,11 +47,8 @@ class ForwardDynamicsPredictionObjective(Objective):
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
-        # Apply per-objective normalization if configured
         if self.norm is not None:
             embedding = self.norm(embedding)
-
-        embedding = rearrange(embedding, "b t s d -> b (t s) d")
 
         index = episode.index[:-1]  # all but last timestep
 
@@ -106,7 +103,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         }
 
     @override
-    def predict(  # noqa: C901
+    def predict(
         self,
         *,
         episode: Episode,
@@ -117,8 +114,6 @@ class ForwardDynamicsPredictionObjective(Objective):
     ) -> TensorDict:
         if self.norm is not None:
             embedding = self.norm(embedding)
-
-        embedding = rearrange(embedding, "b t s d -> b (t s) d")
 
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
@@ -136,10 +131,6 @@ class ForwardDynamicsPredictionObjective(Objective):
             ObjectivePredictionKey.SCORE_L1,
             ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
-            # Apply per-objective normalization if configured
-            if self.norm is not None:
-                embedding = self.norm(embedding)
-
             index = episode.index[:-1]  # all but last timestep
             observation_keys = self.heads.tree_paths()
             observations = index.select(*observation_keys).parse(embedding)

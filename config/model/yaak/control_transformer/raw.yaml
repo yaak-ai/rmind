@@ -381,6 +381,8 @@ objectives:
 
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
+      # null is intentional: the speed projection LayerNorms its inputs and
+      # foresight features pass through their own projection
       norm: null
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D

@@ -1,7 +1,6 @@
 from collections.abc import Set as AbstractSet
 from typing import Any, final, override
 
-from einops import rearrange
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
@@ -43,11 +42,8 @@ class MemoryExtractionObjective(Objective):
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
-        # Apply per-objective normalization if configured
         if self.norm is not None:
             embedding = self.norm(embedding)
-
-        embedding = rearrange(embedding, "b t s d -> b (t s) d")
 
         features = (
             episode
@@ -88,8 +84,6 @@ class MemoryExtractionObjective(Objective):
 
         if self.norm is not None:
             embedding = self.norm(embedding)
-
-        embedding = rearrange(embedding, "b t s d -> b (t s) d")
 
         timestep_indices = slice(1, None)
 

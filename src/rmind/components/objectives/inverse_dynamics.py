@@ -3,7 +3,6 @@ from typing import final, override
 
 import torch
 import torch.nn.functional as F
-from einops import rearrange
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
@@ -46,12 +45,6 @@ class InverseDynamicsPredictionObjective(Objective):
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        embedding = rearrange(embedding, "b t s d -> b (t s) d")
-
-        # Apply per-objective normalization if configured
-        if self.norm is not None:
-            embedding = self.norm(embedding)
-
         observation_summaries = (
             episode.index
             .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
@@ -60,7 +53,6 @@ class InverseDynamicsPredictionObjective(Objective):
         )
 
         features = observation_summaries[:, :-1]
-
         logits = self.heads(features)
 
         targets = tree_map(
@@ -85,14 +77,19 @@ class InverseDynamicsPredictionObjective(Objective):
         keys: AbstractSet[ObjectivePredictionKey],
         tokenizers: ModuleDict | None = None,
     ) -> TensorDict:
+        predictions: dict[ObjectivePredictionKey, Prediction] = {}
+        b, t = episode.input.batch_size
 
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        embedding = rearrange(embedding, "b t s d -> b (t s) d")
-
-        predictions: dict[ObjectivePredictionKey, Prediction] = {}
-        b, t = episode.input.batch_size
+        observation_summaries = (
+            episode.index
+            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+        features = observation_summaries[:, :-1]
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
@@ -107,19 +104,10 @@ class InverseDynamicsPredictionObjective(Objective):
             ObjectivePredictionKey.SCORE_L1,
             ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
-            observation_summaries = (
-                episode.index
-                .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
-                .parse(embedding)
-                .get(k)
-            )
-
-            features = observation_summaries[:, :-1]
-
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
 
-            # all but last
-            timestep_indices = slice(t - 1)
+            # head predicts action_{i+1} from summary_i; predictions live at timesteps 1..t-1
+            timestep_indices = slice(1, None)
 
             if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(

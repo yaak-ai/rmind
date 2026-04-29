@@ -84,8 +84,6 @@ class PolicyObjective(Objective):
     def _compute_logits(
         self, *, episode: Episode | EpisodeExport, embedding: Tensor
     ) -> TensorTree:
-        embedding = rearrange(embedding, "b t s d -> b (t s) d")
-
         if isinstance(episode, Episode):
             _b, _ = episode.input.batch_size
 
@@ -168,8 +166,6 @@ class PolicyObjective(Objective):
         keys: AbstractSet[ObjectivePredictionKey],
         **kwargs: Any,
     ) -> TensorDict:
-        embedding = rearrange(embedding, "b t s d -> b (t s) d")
-
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
 
         b, _t = episode.input.batch_size
@@ -210,7 +206,7 @@ class PolicyObjective(Objective):
             observation_history = embeddings.get((
                 Modality.SUMMARY,
                 SummaryToken.OBSERVATION_HISTORY,
-            )).detach()  # NOTE: equivalent to stop gradient layer in paper
+            ))
 
             observation_summary = embeddings.get((
                 Modality.SUMMARY,

@@ -1,5 +1,6 @@
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -83,9 +84,9 @@ def encoder_eval(encoder: Module) -> Module:
 @pytest.fixture
 def policy_embedding(encoder_eval: Module, episode: Episode) -> Tensor:
     return encoder_eval(
-        src=episode.embeddings_packed.clone(),
-        spatial_mask=episode.attention_mask_spatial.mask_tensor.clone(),
-        temporal_mask=episode.attention_mask_temporal.clone(),
+        src=episode.embeddings_factorized.clone(),
+        mask=episode.attention_mask,
+        flatten=True,
     )
 
 
@@ -94,9 +95,9 @@ def policy_embedding_export(
     encoder_eval: Module, episode_export: EpisodeExport
 ) -> Tensor:
     return encoder_eval(
-        src=episode_export.embeddings_packed.clone(),
-        spatial_mask=episode_export.attention_mask_spatial.mask_tensor.clone(),
-        temporal_mask=episode_export.attention_mask_temporal.clone(),
+        src=episode_export.embeddings_factorized.clone(),
+        mask=episode_export.attention_mask,
+        flatten=True,
     )
 
 
@@ -123,11 +124,11 @@ def control_transformer(
 def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
     episode_dict = (src := episode).to_dict() | {
         "embeddings": src.embeddings.to_dict(),
-        "embeddings_packed": src.embeddings_packed,
+        "embeddings_factorized": src.embeddings_factorized,
     }
     episode_export_dict = asdict(src := episode_export) | {
         "embeddings": src.embeddings,
-        "embeddings_packed": src.embeddings_packed,
+        "embeddings_factorized": src.embeddings_factorized,
     }
 
     for kp, expected in tree_flatten_with_path(episode_dict)[0]:
@@ -192,14 +193,44 @@ def test_torch_export_fake(
             case _:
                 pass
 
+        # PolicyObjective._compute_logits has separate Episode / EpisodeExport
+        # branches (TensorDict .parse vs direct fancy-indexing + .mean) that are
+        # mathematically equivalent but not bit-equal on CUDA due to differing
+        # reduction order. Narrow the tolerance to the policy continuous keys.
+        is_policy_continuous = (
+            len(kp) >= 2  # noqa: PLR2004
+            and getattr(kp[0], "key", None) == "policy"
+            and getattr(kp[1], "key", None) == Modality.CONTINUOUS.value
+        )
+        kwargs = {"atol": 2e-4, "rtol": 2e-3} if is_policy_continuous else {}
+
         assert_close(
             actual,
             expected,
             equal_nan=True,
-            atol=1e-4,
-            rtol=1e-3,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
+            **kwargs,  # ty:ignore[invalid-argument-type]
         )
+
+
+@torch.inference_mode()
+def test_episode_builder_warms_attention_mask_cache(
+    episode_builder: EpisodeBuilder,
+    batch_dict: TensorTree,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = episode_builder(batch_dict)
+
+    assert episode_builder.attention_mask_cache_is_warm
+
+    with monkeypatch.context() as m:
+        m.setattr(
+            episode_builder.attention_mask_builder,
+            "forward",
+            Mock(side_effect=AssertionError("cache was not used during export")),
+        )
+        m.setattr("torch.compiler._is_exporting_flag", True)
+        _ = episode_builder(batch_dict)
 
 
 @pytest.mark.parametrize(

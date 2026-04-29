@@ -11,7 +11,7 @@ from torch.nn.modules.module import Module
 
 from rmind.components.base import Modality, SummaryToken, TokenType
 from rmind.components.episode import Episode
-from rmind.components.mask import AttentionMask
+from rmind.components.mask import AttentionMask, FactorizedAttentionMask
 from rmind.components.nn import default_weight_init_fn
 from rmind.components.transformer.attention import MaskedSelfAttention
 from rmind.components.transformer.config import EncoderPredictionConfig
@@ -20,75 +20,6 @@ from rmind.components.transformer.utils import run_layer_stack
 
 if TYPE_CHECKING:
     from rmind.components.objectives.base import Prediction
-
-
-class TransformerEncoderBlock(nn.Module):
-    def __init__(  # noqa: PLR0913, PLR0917
-        self,
-        embedding_dim: int,
-        num_heads: int,
-        attn_dropout: float = 0.1,
-        resid_dropout: float = 0.1,
-        mlp_dropout: float = 0.1,
-        hidden_layer_multiplier: int = 1,
-        rope: Module | None = None,
-    ) -> None:
-        super().__init__()
-
-        # self.pre_norm and self.mha mimic f in
-        # https://github.com/facebookresearch/xformers/blob/v0.0.28.post2/xformers/components/reversible.py#L72
-        self.pre_norm: nn.LayerNorm = nn.LayerNorm(embedding_dim)  # pre-norm
-        self.attn = MaskedSelfAttention(
-            embed_dim=embedding_dim,
-            num_heads=num_heads,
-            attn_dropout=attn_dropout,
-            rope=rope,
-        )
-
-        # https://github.com/facebookresearch/xformers/blob/v0.0.28.post2/xformers/components/multi_head_dispatch.py#L258
-        self.resid_drop: nn.Dropout = nn.Dropout(resid_dropout, inplace=False)
-
-        # self.post_norm and self.mlp mimic g in
-        # https://github.com/facebookresearch/xformers/blob/v0.0.28.post2/xformers/components/reversible.py#L72
-
-        self.post_norm: nn.LayerNorm = nn.LayerNorm(embedding_dim)  # ffn
-
-        self.mlp: MLPGLU = MLPGLU(
-            dim_model=embedding_dim,
-            dropout=mlp_dropout,
-            hidden_layer_multiplier=hidden_layer_multiplier,
-        )
-
-    @override
-    def forward(
-        self,
-        x: Tensor,
-        mask: Tensor,
-        *,
-        need_weights: bool = False,
-        average_attn_weights: bool = True,
-    ) -> tuple[Tensor, Tensor | None] | Tensor:
-        # f
-        residual = x
-        x_norm = self.pre_norm(x)
-        if need_weights:
-            attn_out, attn_weights = self.attn(
-                x_norm,
-                mask,
-                need_weights=True,
-                average_attn_weights=average_attn_weights,
-            )
-        else:
-            attn_out = self.attn(x_norm, mask, need_weights=False)
-            attn_weights = None
-        x = residual + self.resid_drop(attn_out)
-
-        # g
-        residual = x
-        mlp = self.mlp(self.post_norm(x))
-        out = residual + mlp
-
-        return (out, attn_weights) if need_weights else out
 
 
 class TransformerEncoder(nn.Module):
@@ -122,20 +53,24 @@ class TransformerEncoder(nn.Module):
 
     @override
     def forward(
-        self, *, src: Tensor, spatial_mask: Tensor, temporal_mask: Tensor
+        self, *, src: Tensor, mask: FactorizedAttentionMask, flatten: bool = False
     ) -> Tensor:
         x = self.emb_norm(src) if self.emb_norm is not None else src
-        return run_layer_stack(
-            self.layers, x, spatial_mask, temporal_mask, training=self.training
+        out = run_layer_stack(
+            self.layers,
+            x,
+            mask.spatial.mask_tensor,
+            mask.temporal.mask_tensor,
+            training=self.training,
         )
+        return rearrange(out, "b t s d -> b (t s) d") if flatten else out
 
     @override
     def predict(  # ty:ignore[invalid-explicit-override]
         self,
         *,
         src: InstanceOf[Tensor],
-        spatial_mask: InstanceOf[AttentionMask],
-        temporal_mask: InstanceOf[Tensor],
+        mask: InstanceOf[FactorizedAttentionMask],
         episode: InstanceOf[Episode] | None = None,
         config: EncoderPredictionConfig | None = None,
     ) -> TensorDict:
@@ -276,6 +211,31 @@ class FactorizedTransformerEncoderBlock(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
+    def _apply_attention(  # noqa: PLR0913
+        self,
+        *,
+        attention: MaskedSelfAttention,
+        norm: nn.LayerNorm,
+        x: Tensor,
+        mask: Tensor,
+        need_weights: bool,
+        average_attn_weights: bool,
+    ) -> tuple[Tensor, Tensor | None]:
+        residual = x
+        x_norm = norm(x)
+
+        attn_output = attention(
+            x_norm,
+            mask,
+            need_weights=need_weights,
+            average_attn_weights=average_attn_weights,
+        )
+        attn_value, attn_weights = (
+            attn_output if isinstance(attn_output, tuple) else (attn_output, None)
+        )
+
+        return residual + self.resid_drop(attn_value), attn_weights
+
     @override
     def forward(
         self,
@@ -288,40 +248,26 @@ class FactorizedTransformerEncoderBlock(nn.Module):
     ) -> tuple[Tensor, Tensor | None] | Tensor:
         _, t, s, _ = x.shape
 
-        x = rearrange(x, "b t s d -> b s t d")
-        x = rearrange(x, "b s t d -> (b s) t d")
-
-        residual = x
-        x_norm = self.temporal_norm(x)
-
-        mha = self.temporal_mha(
-            x_norm,
-            temporal_mask,
+        # Temporal attention: each spatial slot attends over timesteps independently.
+        x, _ = self._apply_attention(
+            attention=self.temporal_mha,
+            norm=self.temporal_norm,
+            x=rearrange(x, "b t s d -> (b s) t d"),
+            mask=temporal_mask,
             need_weights=need_weights,
             average_attn_weights=average_attn_weights,
         )
-        mha = mha[0] if isinstance(mha, tuple) else mha
-        mha[1] if isinstance(mha, tuple) else None
+        x = rearrange(x, "(b s) t d -> b t s d", s=s)
 
-        x = residual + self.resid_drop(mha)
-
-        x = rearrange(x, "(b s) t d -> b s t d", s=s)
-        x = rearrange(x, "b s t d -> b t s d")
-        x = rearrange(x, "b t s d -> (b t) s d")
-
-        residual = x
-        x_norm = self.spatial_norm(x)
-
-        mha = self.spatial_mha(
-            x_norm,
-            spatial_mask,
+        # Spatial attention: each timestep attends over within-step tokens independently.
+        x, spatial_attention_weights = self._apply_attention(
+            attention=self.spatial_mha,
+            norm=self.spatial_norm,
+            x=rearrange(x, "b t s d -> (b t) s d"),
+            mask=spatial_mask,
             need_weights=need_weights,
             average_attn_weights=average_attn_weights,
         )
-        mha = mha[0] if isinstance(mha, tuple) else mha
-        spatial_attention_weights = mha[1] if isinstance(mha, tuple) else None
-
-        x = residual + self.resid_drop(mha)
         x = rearrange(x, "(b t) s d -> b t s d", t=t)
 
         residual = x

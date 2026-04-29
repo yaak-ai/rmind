@@ -179,8 +179,8 @@ class WandbAttentionMaskLogger(Callback):
         }
 
         spatial_attention_mask = (
-            episode.attention_mask_spatial.mask_tensor
-            == episode.attention_mask_spatial.legend.DO_ATTEND
+            episode.attention_mask.spatial.mask_tensor
+            == episode.attention_mask.spatial.legend.DO_ATTEND
         )
 
         sa_fig = visualize_attention_mask(

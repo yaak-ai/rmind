@@ -8,10 +8,7 @@ from rmind.components.transformer.decoder import (
     CrossAttentionDecoderBlock,
     CrossAttentionDecoderHead,
 )
-from rmind.components.transformer.encoder import (
-    TransformerEncoder,
-    TransformerEncoderBlock,
-)
+from rmind.components.transformer.encoder import TransformerEncoder
 from rmind.components.transformer.feed_forward import MLPGLU
 
 __all__ = [
@@ -23,5 +20,4 @@ __all__ = [
     "EncoderPredictionConfig",
     "RotaryMultiheadAttention",
     "TransformerEncoder",
-    "TransformerEncoderBlock",
 ]

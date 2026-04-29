@@ -59,6 +59,12 @@ class AttentionMask:
         )
 
 
+@tensorclass
+class FactorizedAttentionMask:
+    spatial: AttentionMask
+    temporal: AttentionMask
+
+
 class AttentionMaskBuilder(Module, ABC):
     @abstractmethod
     def forward(
