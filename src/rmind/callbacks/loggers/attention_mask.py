@@ -178,21 +178,18 @@ class WandbAttentionMaskLogger(Callback):
             for mod, names in index.items()
         }
 
-        spatial_attention_mask = (
-            episode.attention_mask.spatial.mask_tensor
-            == episode.attention_mask.spatial.legend.DO_ATTEND
-        )
+        effective_attention_mask = episode.attention_mask.effective_allow(n)
 
-        sa_fig = visualize_attention_mask(
-            spatial_attention_mask, timestep_meta, sliced_index, 1
+        effective_fig = visualize_attention_mask(
+            effective_attention_mask, timestep_meta, sliced_index, n
         )
         try:
             for logger_ in loggers:
                 logger_.log_image(
-                    "spatial_attention_mask",
-                    [Image(_figure_to_rgba(sa_fig))],
+                    "effective_attention_mask",
+                    [Image(_figure_to_rgba(effective_fig))],
                     step=trainer.global_step,
                 )
 
         finally:
-            plt.close(sa_fig)
+            plt.close(effective_fig)

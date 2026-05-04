@@ -80,6 +80,23 @@ class FactorizedAttentionMask:
             ),
         )
 
+    def effective_allow(self, num_timesteps: int | None = None) -> Tensor:
+        spatial_allow = self.spatial.mask_tensor == self.spatial.legend.DO_ATTEND
+        temporal_mask_tensor = (
+            self.temporal.mask_tensor
+            if num_timesteps is None
+            else self.temporal.mask_tensor[:num_timesteps, :num_timesteps]
+        )
+        temporal_allow = temporal_mask_tensor == self.temporal.legend.DO_ATTEND
+
+        t = temporal_allow.shape[0]
+        s = spatial_allow.shape[0]
+        effective_allow = (
+            temporal_allow[:, :, None, None] & spatial_allow[None, None, :, :]
+        )
+
+        return effective_allow.permute(0, 2, 1, 3).reshape(t * s, t * s)
+
 
 class AttentionMaskBuilder(Module, ABC):
     @abstractmethod
