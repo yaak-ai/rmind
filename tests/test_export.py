@@ -6,7 +6,7 @@ import pytest
 import torch
 from pytest_lazy_fixtures import lf
 from torch import Tensor
-from torch.nn import Module
+from torch.nn import LayerNorm, Module
 from torch.testing import assert_close
 from torch.utils._pytree import key_get, keystr, tree_flatten_with_path  # noqa: PLC2701
 from torchvision.ops import MLP
@@ -45,6 +45,7 @@ def policy_objective(
     embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
 
     return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
@@ -72,7 +73,7 @@ def policy_objective(
                     )
                 },
             }
-        )
+        ),
     ).to(device)
 
 

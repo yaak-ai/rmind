@@ -16,6 +16,9 @@ hparams_updaters:
       modules:
         policy:
           _target_: rmind.components.objectives.PolicyObjective
+          norm:
+            _target_: torch.nn.LayerNorm
+            normalized_shape: 384
           heads:
             _target_: rmind.components.containers.ModuleDict
             modules:

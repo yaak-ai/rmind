@@ -234,6 +234,9 @@ objectives:
   modules:
     policy:
       _target_: rmind.components.objectives.PolicyObjective
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:

@@ -539,6 +539,7 @@ def policy_objective(
     logit_bias = torch.tensor(0)
 
     return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
