@@ -21,7 +21,7 @@ def test_compute_metrics(
     objective: Objective, episode: Episode, encoder: TransformerEncoder
 ) -> None:
     embedding = encoder(
-        src=episode.embeddings_factorized, mask=episode.attention_mask, flatten=True
+        src=episode.embeddings_unflattened, mask=episode.attention_mask, flatten=True
     )
     assert "loss" in objective.compute_metrics(episode=episode, embedding=embedding)
 
@@ -53,7 +53,9 @@ def test_predict(  # noqa: PLR0913, PLR0917
         episode=episode,
         keys=keys,
         embedding=encoder(
-            src=episode.embeddings_factorized, mask=episode.attention_mask, flatten=True
+            src=episode.embeddings_unflattened,
+            mask=episode.attention_mask,
+            flatten=True,
         ),
         tokenizers=tokenizers,
     )

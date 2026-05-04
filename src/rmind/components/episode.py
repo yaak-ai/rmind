@@ -97,7 +97,7 @@ class Episode(TensorClass["frozen"]):
         return self.projected_embeddings + self.role_embeddings
 
     @property
-    def embeddings_factorized(self) -> Tensor:
+    def embeddings_unflattened(self) -> Tensor:
         embeddings = self.embeddings
         keys = (
             (modality, name)
@@ -133,7 +133,7 @@ class EpisodeExport:
         )
 
     @property
-    def embeddings_factorized(self) -> Tensor:
+    def embeddings_unflattened(self) -> Tensor:
         embeddings = self.embeddings
         paths = (
             (modality, name)
