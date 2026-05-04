@@ -1,3 +1,4 @@
+import operator
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from typing import Protocol, final, override
@@ -7,7 +8,7 @@ from tensordict import tensorclass
 from torch import Tensor
 from torch.nn import Module
 from torch.types import Number
-from torch.utils._pytree import tree_leaves  # noqa: PLC2701
+from torch.utils._pytree import tree_leaves, tree_map  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken, TensorTree, TokenType
 
@@ -27,12 +28,6 @@ class AttentionMaskLegend:
 class TorchAttentionMaskLegend:
     DO_ATTEND = False
     DO_NOT_ATTEND = True
-
-
-@final
-class WandbAttentionMaskLegend:
-    DO_ATTEND = 1.0
-    DO_NOT_ATTEND = 0.0
 
 
 @tensorclass
@@ -58,11 +53,32 @@ class AttentionMask:
             ),
         )
 
+    def as_torch_attn_mask(self) -> Tensor:
+        """Return a bool mask where True means the destination is not attendable."""
+        return self.mask_tensor == self.legend.DO_NOT_ATTEND
+
 
 @tensorclass
 class FactorizedAttentionMask:
     spatial: AttentionMask
     temporal: AttentionMask
+
+    @classmethod
+    def from_tensors(
+        cls,
+        *,
+        spatial_mask_tensor: Tensor,
+        temporal_mask_tensor: Tensor,
+        legend: type[AttentionMaskLegendProvider],
+    ) -> "FactorizedAttentionMask":
+        return cls(
+            spatial=AttentionMask.from_tensor(
+                mask_tensor=spatial_mask_tensor, legend=legend
+            ),
+            temporal=AttentionMask.from_tensor(
+                mask_tensor=temporal_mask_tensor, legend=legend
+            ),
+        )
 
 
 class AttentionMaskBuilder(Module, ABC):
@@ -93,6 +109,17 @@ class AttentionMaskBuilder(Module, ABC):
 
         grid = torch.meshgrid(src, dest, indexing="ij")
         mask[grid] = val
+
+
+class FactorizedAttentionMaskBuilder(Module, ABC):
+    @abstractmethod
+    def forward(
+        self,
+        *,
+        index: TensorTree,
+        timestep: dict[str, dict[str, Mapping[str, int]]],
+        legend: type[AttentionMaskLegendProvider],
+    ) -> FactorizedAttentionMask: ...
 
 
 class CausalAttentionMaskBuilder(AttentionMaskBuilder):
@@ -153,18 +180,74 @@ class CausalAttentionMaskBuilder(AttentionMaskBuilder):
                 index, step=step, keys=action_summary_key
             )
 
+            past_obs = self._select_indices(
+                index, step=slice(None, step), keys=obs_keys
+            )
+            past_foresight = self._select_indices(
+                index, step=slice(None, step), keys=foresight_keys
+            )
+            past_actions = self._select_indices(
+                index, step=slice(None, step), keys=action_keys
+            )
+
             for src, dest in (
                 (cur_obs, cur_obs),
+                (cur_obs, past_obs),
                 (cur_foresight, cur_obs),
                 (cur_foresight, cur_foresight),
+                (cur_foresight, past_obs),
                 (cur_obs_summary, cur_foresight),
                 (cur_obs_summary, cur_obs_summary),
+                (cur_obs_summary, past_foresight),
                 (cur_obs_history, cur_foresight),
                 (cur_obs_history, cur_obs_history),
+                (cur_obs_history, past_foresight),
                 (cur_actions, cur_actions),
+                (cur_actions, past_actions),
                 (cur_action_summary, cur_actions),
                 (cur_action_summary, cur_action_summary),
+                (cur_action_summary, past_actions),
             ):
                 self._set(mask, src, dest, legend.DO_ATTEND)
 
         return mask
+
+
+class FactorizedCausalAttentionMaskBuilder(FactorizedAttentionMaskBuilder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.spatial_attention_mask_builder = CausalAttentionMaskBuilder()
+
+    @override
+    def forward(
+        self,
+        *,
+        index: TensorTree,
+        timestep: dict[str, dict[str, Mapping[str, int]]],
+        legend: type[AttentionMaskLegendProvider],
+    ) -> FactorizedAttentionMask:
+        leaves = tree_leaves(index, lambda x: isinstance(x, Tensor))
+        t = leaves[0].shape[0]
+        device = leaves[0].device
+
+        spatial_mask_tensor = self.spatial_attention_mask_builder(
+            index=tree_map(operator.itemgetter(slice(1)), index),
+            timestep=timestep,
+            legend=legend,
+        )
+        temporal_mask_tensor = torch.full(
+            size=(t, t),
+            fill_value=legend.DO_ATTEND,
+            dtype=torch.as_tensor(legend.DO_ATTEND).dtype,
+            device=device,
+        )
+        future_positions = torch.triu(
+            torch.ones((t, t), dtype=torch.bool, device=device), diagonal=1
+        )
+        temporal_mask_tensor.masked_fill_(future_positions, legend.DO_NOT_ATTEND)
+
+        return FactorizedAttentionMask.from_tensors(
+            spatial_mask_tensor=spatial_mask_tensor,
+            temporal_mask_tensor=temporal_mask_tensor,
+            legend=legend,
+        )

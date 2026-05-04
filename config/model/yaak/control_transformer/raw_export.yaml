@@ -213,7 +213,7 @@ episode_builder:
     num_embeddings: 8
     embedding_dim: ${encoder_embedding_dim}
   attention_mask_builder:
-    _target_: rmind.components.mask.CausalAttentionMaskBuilder
+    _target_: rmind.components.mask.FactorizedCausalAttentionMaskBuilder
 
 encoder:
   _target_: rmind.components.transformer.TransformerEncoder

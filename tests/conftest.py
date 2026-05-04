@@ -21,7 +21,7 @@ from rmind.components.loss import (
     GramAnchoringObjective,
     LogitBiasCrossEntropyLoss,
 )
-from rmind.components.mask import CausalAttentionMaskBuilder
+from rmind.components.mask import FactorizedCausalAttentionMaskBuilder
 from rmind.components.nn import (
     AtLeast3D,
     DiffLast,
@@ -342,7 +342,7 @@ def episode_builder(
             ),
         }),
         role_encoding=Embedding(8, embedding_dims.encoder),
-        attention_mask_builder=CausalAttentionMaskBuilder(),
+        attention_mask_builder=FactorizedCausalAttentionMaskBuilder(),
     ).to(device)
 
 
