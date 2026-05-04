@@ -1,25 +1,15 @@
-from functools import partial
-from math import sqrt
-from typing import TYPE_CHECKING, Any, override
+from typing import override
 
-import torch.nn.functional as F
 from einops import rearrange
 from pydantic import InstanceOf, validate_call
-from tensordict import TensorDict
 from torch import Tensor, nn
 from torch.nn.modules.module import Module
 
-from rmind.components.base import Modality, SummaryToken, TokenType
-from rmind.components.episode import Episode
-from rmind.components.mask import AttentionMask, FactorizedAttentionMask
+from rmind.components.mask import FactorizedAttentionMask
 from rmind.components.nn import default_weight_init_fn
 from rmind.components.transformer.attention import MaskedSelfAttention
-from rmind.components.transformer.config import EncoderPredictionConfig
 from rmind.components.transformer.feed_forward import MLPGLU
 from rmind.components.transformer.utils import run_layer_stack
-
-if TYPE_CHECKING:
-    from rmind.components.objectives.base import Prediction
 
 
 class TransformerEncoder(nn.Module):
@@ -64,105 +54,6 @@ class TransformerEncoder(nn.Module):
             training=self.training,
         )
         return rearrange(out, "b t s d -> b (t s) d") if flatten else out
-
-    @override
-    def predict(  # ty:ignore[invalid-explicit-override]
-        self,
-        *,
-        src: InstanceOf[Tensor],
-        mask: InstanceOf[FactorizedAttentionMask],
-        episode: InstanceOf[Episode] | None = None,
-        config: EncoderPredictionConfig | None = None,
-    ) -> TensorDict:
-        # Harsi: Implement actual attention_rollout for factorized attention
-        predictions: dict[str, Prediction] = {}
-
-        return TensorDict(predictions).auto_batch_size_(1)  # ty:ignore[invalid-argument-type]
-
-    @staticmethod
-    def _attention_rollout_visualization(
-        *, episode: Any, attention_rollout: Tensor
-    ) -> dict[str, Tensor]:
-        observation_keys = episode.timestep.get(TokenType.OBSERVATION).keys(
-            include_nested=True, leaves_only=True
-        )
-
-        attention = (
-            episode.index
-            .parse(attention_rollout, dim=1)
-            .select((Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))[:, -1]
-            .apply(
-                lambda x: (
-                    episode.index
-                    .parse(x, dim=2)
-                    .select(*observation_keys)
-                    .squeeze(dim=1)
-                )
-            )
-            .named_apply(
-                partial(
-                    TransformerEncoder._expand_attn_for_visualization,
-                    input=episode.input,
-                ),
-                nested_keys=True,
-            )
-            .update({"input": episode.input.select(Modality.IMAGE)})
-        )
-
-        return {
-            f"{k}": v
-            for (k, v) in enumerate(attention.auto_batch_size_(2).split(1, dim=1))
-        }
-
-    @staticmethod
-    def _expand_attn_for_visualization(
-        path: tuple[str, ...], attn: Tensor, *, input: TensorDict
-    ) -> Tensor:
-        match path:
-            case (*_, Modality.IMAGE, token_to):
-                (_b, _t, hw_attn) = attn.shape
-                (_b, _t, _c, h_img, w_img) = input.get_item_shape((
-                    Modality.IMAGE,
-                    token_to,
-                ))
-                attn = rearrange(
-                    attn,
-                    "... (h_attn w_attn) -> ... h_attn w_attn",
-                    h_attn=int(sqrt(hw_attn * h_img / w_img)),
-                )
-
-                return F.interpolate(attn, size=(h_img, w_img))
-
-            case _:
-                return rearrange(attn, "b t d -> b t 1 d")
-
-    @staticmethod
-    def _discard_attention(
-        attn: Tensor, mask: AttentionMask, discard_ratio: float | None
-    ) -> Tensor:
-        """Set `discard_ratio` of non-masked-out values (per-row) in `attn` to zero."""
-        if not discard_ratio:
-            return attn
-
-        attn_mask = mask.mask_tensor == mask.legend.DO_ATTEND
-        discard_counts = (attn_mask.count_nonzero(dim=1) * discard_ratio).int().tolist()
-
-        # NOTE: done per-row b/c masks and the k in topk may differ
-        # NOTE: could likely be optimized for blocky masks
-        for i, (row_mask, discard_count) in enumerate(
-            zip(attn_mask, discard_counts, strict=True)
-        ):
-            row = attn[:, i]
-            row_masked = row[:, row_mask]
-            discard_indices = row_masked.topk(
-                k=discard_count, dim=-1, largest=False
-            ).indices
-            row_masked_discarded = row_masked.scatter(
-                dim=1, index=discard_indices, value=0.0
-            )
-            attn[:, i] = row.masked_scatter(row_mask, row_masked_discarded)
-
-        return attn
 
 
 class FactorizedTransformerEncoderBlock(nn.Module):
