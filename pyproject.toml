@@ -57,7 +57,7 @@ train = [
 [dependency-groups]
 dev = [
   "better-exceptions>=0.3.3",
-  "deptry>=0.25.1",
+  "deptry==0.25.1",
   "ipython",
   "lovely-tensors",
   "patdb",

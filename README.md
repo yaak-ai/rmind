@@ -7,12 +7,34 @@ Foundation models for spatial intelligence.
 
 ## Setup
 
-```bash
-git clone https://github.com/yaak-ai/rmind
-cd rmind
-nix develop # alternatively, install `just`, `uv`, `ytt`
-just setup
-```
+### macOS quick start
+
+1. Install [Nix](https://determinate.systems/nix/) (Determinate):
+
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+   ```
+
+2. Clone and enter the repo:
+
+   ```bash
+   git clone https://github.com/yaak-ai/rmind
+   cd rmind
+   ```
+
+3. Enter the dev shell (installs `just`, `uv`, `ytt`):
+
+   ```bash
+   nix develop
+   ```
+
+4. Install Python dependencies and dev tooling:
+
+   ```bash
+   just setup
+   ```
+
+> On other platforms, install `just`, `uv`, and `ytt` manually, then run `just setup`.
 
 ## Training
 
