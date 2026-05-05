@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol, final, override
 
 import torch
+from einops import rearrange
 from tensordict import tensorclass
 from torch import Tensor
 from torch.nn import Module
@@ -89,13 +90,14 @@ class FactorizedAttentionMask:
         )
         temporal_allow = temporal_mask_tensor == self.temporal.legend.DO_ATTEND
 
-        t = temporal_allow.shape[0]
-        s = spatial_allow.shape[0]
         effective_allow = (
             temporal_allow[:, :, None, None] & spatial_allow[None, None, :, :]
         )
 
-        return effective_allow.permute(0, 2, 1, 3).reshape(t * s, t * s)
+        return rearrange(
+            effective_allow,
+            "t_src t_dest s_src s_dest -> (t_src s_src) (t_dest s_dest)",
+        )
 
 
 class AttentionMaskBuilder(Module, ABC):
