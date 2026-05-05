@@ -42,9 +42,7 @@ class TransformerEncoder(nn.Module):
         self.emb_norm: nn.Module | None = emb_norm
 
     @override
-    def forward(
-        self, *, src: Tensor, mask: FactorizedAttentionMask, flatten: bool = False
-    ) -> Tensor:
+    def forward(self, *, src: Tensor, mask: FactorizedAttentionMask) -> Tensor:
         x = self.emb_norm(src) if self.emb_norm is not None else src
         out = run_layer_stack(
             self.layers,
@@ -53,7 +51,7 @@ class TransformerEncoder(nn.Module):
             mask.temporal.as_torch_attn_mask(),
             training=self.training,
         )
-        return rearrange(out, "b t s d -> b (t s) d") if flatten else out
+        return rearrange(out, "b t s d -> b (t s) d")
 
 
 class FactorizedTransformerEncoderBlock(nn.Module):
