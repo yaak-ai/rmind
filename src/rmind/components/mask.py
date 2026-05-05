@@ -1,7 +1,7 @@
 import operator
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-from typing import Protocol, final, override
+from typing import Protocol, Self, final, override
 
 import torch
 from einops import rearrange
@@ -39,7 +39,7 @@ class AttentionMask:
     @classmethod
     def from_tensor(
         cls, *, mask_tensor: Tensor, legend: type[AttentionMaskLegendProvider]
-    ) -> "AttentionMask":
+    ) -> Self:
         return cls(
             mask_tensor=torch.as_tensor(mask_tensor),
             legend=AttentionMaskLegend(
@@ -71,7 +71,7 @@ class FactorizedAttentionMask:
         spatial_mask_tensor: Tensor,
         temporal_mask_tensor: Tensor,
         legend: type[AttentionMaskLegendProvider],
-    ) -> "FactorizedAttentionMask":
+    ) -> Self:
         return cls(
             spatial=AttentionMask.from_tensor(
                 mask_tensor=spatial_mask_tensor, legend=legend
