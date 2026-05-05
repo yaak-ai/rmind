@@ -2296,7 +2296,7 @@ check = [
 ]
 dev = [
   { name = "better-exceptions", specifier = ">=0.3.3" },
-  { name = "deptry", specifier = ">=0.25.1" },
+  { name = "deptry", specifier = "==0.25.1" },
   { name = "ipython" },
   { name = "lovely-tensors" },
   { name = "patdb" },
