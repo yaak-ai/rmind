@@ -102,65 +102,36 @@ class FactorizedTransformerEncoderBlock(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def _apply_attention(  # noqa: PLR0913
+    def _apply_attention(
         self,
         *,
         attention: MaskedSelfAttention,
         norm: nn.LayerNorm,
         x: Tensor,
         mask: Tensor,
-        need_weights: bool,
-        average_attn_weights: bool,
-    ) -> tuple[Tensor, Tensor | None]:
-        residual = x
-        x_norm = norm(x)
-
-        attn_output = attention(
-            x_norm,
-            mask,
-            need_weights=need_weights,
-            average_attn_weights=average_attn_weights,
-        )
-        attn_value, attn_weights = (
-            attn_output if isinstance(attn_output, tuple) else (attn_output, None)
-        )
-
-        return residual + self.resid_drop(attn_value), attn_weights
+    ) -> Tensor:
+        return x + self.resid_drop(attention(norm(x), mask))
 
     @override
-    def forward(
-        self,
-        x: Tensor,
-        spatial_mask: Tensor,
-        temporal_mask: Tensor,
-        *,
-        need_weights: bool = False,
-        average_attn_weights: bool = True,
-    ) -> tuple[Tensor, Tensor | None] | Tensor:
+    def forward(self, x: Tensor, spatial_mask: Tensor, temporal_mask: Tensor) -> Tensor:
         _, t, s, _ = x.shape
 
         # Temporal attention: each spatial slot attends over timesteps independently.
-        x, _ = self._apply_attention(
+        x = self._apply_attention(
             attention=self.temporal_mha,
             norm=self.temporal_norm,
             x=rearrange(x, "b t s d -> (b s) t d"),
             mask=temporal_mask,
-            need_weights=need_weights,
-            average_attn_weights=average_attn_weights,
         )
         x = rearrange(x, "(b s) t d -> b t s d", s=s)
 
         # Spatial attention: each timestep attends over within-step tokens independently.
-        x, spatial_attention_weights = self._apply_attention(
+        x = self._apply_attention(
             attention=self.spatial_mha,
             norm=self.spatial_norm,
             x=rearrange(x, "b t s d -> (b t) s d"),
             mask=spatial_mask,
-            need_weights=need_weights,
-            average_attn_weights=average_attn_weights,
         )
         x = rearrange(x, "(b t) s d -> b t s d", t=t)
 
-        residual = x
-        out = residual + self.mlp(self.mlp_norm(x))
-        return (out, spatial_attention_weights) if need_weights else out
+        return x + self.mlp(self.mlp_norm(x))

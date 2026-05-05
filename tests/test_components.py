@@ -12,8 +12,6 @@ from rmind.components.mask import (
 )
 from rmind.components.nn import Sequential
 from rmind.components.norm import Scaler, UniformBinner
-from rmind.components.position_encoding import RotaryPositionalEmbeddings
-from rmind.components.transformer.encoder import FactorizedTransformerEncoderBlock
 
 
 def test_scaler(device: torch.device) -> None:
@@ -141,31 +139,3 @@ def test_factorized_causal_attention_mask_builder(device: torch.device) -> None:
         mask.temporal.as_torch_attn_mask(),
         torch.tensor([[False, True], [False, False]], device=device),
     )
-
-
-def test_factorized_transformer_encoder_block_returns_spatial_attention_weights(
-    device: torch.device,
-) -> None:
-    b, t, s, d = 2, 3, 5, 8
-    num_heads = 2
-    block = FactorizedTransformerEncoderBlock(
-        embedding_dim=d,
-        num_heads=num_heads,
-        attn_dropout=0.0,
-        resid_dropout=0.0,
-        mlp_dropout=0.0,
-        rope=RotaryPositionalEmbeddings(dim=d // num_heads),
-    ).to(device)
-    x = make_tensor((b, t, s, d), dtype=torch.float32, device=device)
-    spatial_mask = torch.zeros((s, s), dtype=torch.bool, device=device)
-    temporal_mask = torch.nn.Transformer.generate_square_subsequent_mask(
-        t, device=device
-    )
-
-    out, spatial_attention_weights = block(
-        x, spatial_mask, temporal_mask, need_weights=True
-    )
-
-    assert out.shape == x.shape
-    assert spatial_attention_weights is not None
-    assert spatial_attention_weights.shape == (b * t, s, s)
