@@ -143,11 +143,11 @@ class TransformerEncoder(nn.Module):
         fuse_heads: Callable[[Tensor], Tensor]
         match config.head_fusion:
             case "mean":
-                fuse_heads = lambda x: x.mean(axis=1)  # noqa: E731
+                fuse_heads = lambda x: x.mean(dim=1)  # noqa: E731
             case "max":
-                fuse_heads = lambda x: x.max(axis=1).values  # noqa: E731
+                fuse_heads = lambda x: x.max(dim=1).values  # noqa: E731
             case "min":
-                fuse_heads = lambda x: x.min(axis=1).values  # noqa: E731
+                fuse_heads = lambda x: x.min(dim=1).values  # noqa: E731
 
         _, s, _ = src.shape
         identity = torch.eye(s, s, device=src.device)
