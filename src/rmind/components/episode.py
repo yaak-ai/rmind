@@ -45,7 +45,7 @@ class TokenMeta(NamedTuple):
     name: str
 
 
-class Index(TensorClass["frozen"]):
+class Index(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     continuous: TensorDict
     context: TensorDict
     discrete: TensorDict
@@ -81,7 +81,7 @@ register_pytree_node(
 TimestepExport = dict[str, dict[tuple[Modality, str], int]]
 
 
-class Episode(TensorClass["frozen"]):
+class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     input: TensorDict
     input_tokens: TensorDict
     input_embeddings: TensorDict

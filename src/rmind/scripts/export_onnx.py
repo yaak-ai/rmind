@@ -13,6 +13,7 @@ from structlog import get_logger
 from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
 
 from rmind.config import HydraConfig
+from rmind.utils.patch import monkeypatched
 
 logger = get_logger(__name__)
 
@@ -46,8 +47,14 @@ def main(cfg: DictConfig) -> None:
 
     # Eager forward populates cached buffers (e.g. attention mask) that are not
     # trace-friendly. Must run before torch.export — see EpisodeBuilder._build_attention_mask_tensor.
-    logger.debug("model eager forward")
-    _ = model(*args)
+    for patch in (False, True):
+        with monkeypatched(
+            obj=(obj := torch.compiler),
+            name=(name := "_is_exporting_flag"),
+            patch=patch,
+        ):
+            logger.debug("model eager forward", **{f"{obj.__name__}.{name}": patch})
+            _ = model(*args)
 
     logger.debug("torch exporting")
     exported_program = torch.export.export(mod=model, args=tuple(args), strict=True)

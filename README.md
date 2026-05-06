@@ -60,5 +60,5 @@ just predict inference=yaak/control_transformer/{config} model.artifact=yaak/rmi
 ### ONNX
 
 ```bash
-just export-onnx model=yaak/control_transformer/raw_export input=yaak/control_transformer/dummy +report=true
+just export-onnx model=yaak/control_transformer/export/finetuned model.artifact=yaak/rmind/model-XXXXXXXX:vN input=yaak/control_transformer/dummy +report=true
 ```

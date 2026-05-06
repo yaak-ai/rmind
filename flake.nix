@@ -21,6 +21,7 @@
               uv
               ytt
               just
+              jqp
             ]
             ++ lib.optional stdenv.isDarwin [ ffmpeg ];
 
