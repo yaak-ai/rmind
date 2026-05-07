@@ -467,7 +467,7 @@ def forward_dynamics_prediction_objective(
                 },
                 Modality.FORESIGHT: {
                     "cam_front_left": GramAnchoringObjective(
-                        weight_sim=100.0, weight_gram=100.0, patches=256
+                        weight_sim=100.0, weight_gram=100.0, patches=256, timesteps=5
                     )
                 },
             }

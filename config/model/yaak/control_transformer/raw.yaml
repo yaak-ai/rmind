@@ -459,6 +459,7 @@ objectives:
               weight_sim: 1.0
               weight_gram: 100.0
               patches: 256
+              timesteps: 5
 
     memory_extraction:
       _target_: rmind.components.objectives.MemoryExtractionObjective
