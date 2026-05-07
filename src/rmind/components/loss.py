@@ -78,67 +78,59 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         return super().forward(input=mean, target=target, var=var)
 
 
-# https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
-class GramAnchoringObjective(Module):
+class GramAnchoringLoss(Module):
     """
     Gram-based anchoring loss for feature matching.
     Based on DINOv3 implementation:
     https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
-    Uses target-driven patch uniqueness weights inspired by TF-IDF.
+    Uses target-driven within-frame patch uniqueness weights.
     """
 
     def __init__(
         self,
         *args: Any,
-        patches: int | None = None,
-        timesteps: int | None = None,
+        patches: int,
         weight_sim: float = 1.0,
         weight_gram: float = 10.0,
         **kwargs: Any,
     ) -> None:
-        if weight_gram > 0 and patches is None:
-            msg = "patches must be provided if weight_gram > 0"
+        if patches <= 0:
+            msg = "patches must be positive"
             raise ValueError(msg)
         super().__init__(*args, **kwargs)
         self.weight_sim: float = weight_sim
         self.weight_gram: float = weight_gram
-        self.patches: int | None = patches
-        self.timesteps: int | None = timesteps
+        self.patches: int = patches
 
     @override
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:  # noqa: PLR0914
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
         target = target.detach()
         eps = 1e-6
 
-        input_n = F.normalize(input, dim=-1)
-        target_n = F.normalize(target, dim=-1)
-
         input_view = rearrange(input, "(bt p) d -> bt p d", p=self.patches)
-        input_n = rearrange(input_n, "(bt p) d -> bt p d", p=self.patches)
         target_view = rearrange(target, "(bt p) d -> bt p d", p=self.patches)
-        target_n = rearrange(target_n, "(bt p) d -> bt p d", p=self.patches)
+        input_n = F.normalize(input_view, dim=-1)
+        target_n = F.normalize(target_view, dim=-1)
 
-        # TF-IDF patch uniqueness weights from GT
-        # TF: within-frame — patches similar to many others in the same frame are downweighted
-        frame_sim = torch.einsum("bpd,bqd->bpq", target_n, target_n).clamp(0)
-        tf = 1.0 / (frame_sim.mean(dim=-1) + eps)
-
-        # IDF: within-clip — patches common across frames in the batch are downweighted
-        _bt, _p, _ = target_n.shape
-        clip = rearrange(target_n, "(b t) p d -> b (t p) d", t=self.timesteps)
-        clip_sim = torch.einsum("bpd,bqd->bpq", clip, clip).clamp(0)
-        idf_flat = 1.0 / (clip_sim.mean(dim=-1) + eps)
-        idf = rearrange(
-            idf_flat, "b (t p) -> (b t) p", t=self.timesteps, p=self.patches
-        )
-
-        weights = tf * idf
-        weights /= weights.sum(dim=1, keepdim=True) + eps
+        # Target-driven within-frame patch uniqueness weights.
+        # Patches similar to many others in the same frame are downweighted.
+        frame_sim = torch.einsum("bpd,bqd->bpq", target_n, target_n).clamp_min(0.0)
+        if self.patches == 1:
+            weights = torch.ones_like(frame_sim[..., 0])
+        else:
+            eye = torch.eye(self.patches, dtype=torch.bool, device=target.device)
+            weights = 1.0 / (
+                frame_sim.masked_fill(eye, 0.0).sum(dim=-1) / (self.patches - 1) + eps
+            )
+            weights /= weights.sum(dim=1, keepdim=True) + eps
 
         patch_loss = F.mse_loss(input_view, target_view, reduction="none").mean(dim=-1)
         sim_loss = (weights * patch_loss).sum(dim=1).mean()
 
-        # Gram on L2-normed features weighted by TF-IDF pair uniqueness
+        if self.weight_gram <= 0:
+            return self.weight_sim * sim_loss
+
+        # Gram on L2-normed features weighted by patch uniqueness.
         gram_pred = torch.einsum("bpd,bqd->bpq", input_n, input_n)
         gram_gt = torch.einsum("bpd,bqd->bpq", target_n, target_n)
         pair_weights = torch.einsum("bp,bq->bpq", weights, weights)  # (bt, p, p)

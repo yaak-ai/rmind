@@ -18,7 +18,7 @@ from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
 from rmind.components.loss import (
     GaussianNLLLoss,
-    GramAnchoringObjective,
+    GramAnchoringLoss,
     LogitBiasCrossEntropyLoss,
 )
 from rmind.components.mask import FactorizedCausalAttentionMaskBuilder
@@ -466,8 +466,8 @@ def forward_dynamics_prediction_objective(
                     "speed": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
                 },
                 Modality.FORESIGHT: {
-                    "cam_front_left": GramAnchoringObjective(
-                        weight_sim=100.0, weight_gram=100.0, patches=256, timesteps=5
+                    "cam_front_left": GramAnchoringLoss(
+                        weight_sim=100.0, weight_gram=100.0, patches=256
                     )
                 },
             }
