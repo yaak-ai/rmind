@@ -89,12 +89,10 @@ class CrossAttentionDecoder(nn.Module):
             )
             for _ in range(num_layers)
         ])
-        self.layer_norm = nn.LayerNorm(dim_model)
 
     @override
     def forward(self, x: Tensor, context: Tensor) -> Tensor:
-        x = run_layer_stack(self.layers, x, context, training=self.training)
-        return self.layer_norm(x)
+        return run_layer_stack(self.layers, x, context, training=self.training)
 
 
 @final

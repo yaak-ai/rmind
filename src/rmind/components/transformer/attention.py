@@ -1,4 +1,3 @@
-from math import sqrt
 from typing import override
 
 import torch
@@ -30,14 +29,7 @@ class RotaryMultiheadAttention(nn.Module):
         self.rope: Module = rope
 
     @override
-    def forward(
-        self,
-        x: Tensor,
-        mask: Tensor,
-        *,
-        need_weights: bool = False,
-        average_attn_weights: bool = True,
-    ) -> tuple[Tensor, Tensor | None] | Tensor:
+    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
         q, k, v = self.qkv(x).chunk(3, dim=-1)
 
         q = rearrange(q, "b s (h d) -> b s h d", h=self.num_heads)
@@ -54,31 +46,16 @@ class RotaryMultiheadAttention(nn.Module):
             else mask.to(q.dtype)
         )
 
-        if need_weights:
-            scores = q @ k.transpose(-1, -2) / sqrt(self.head_dim)
-            scores += attn_mask
-            attn_weights = F.softmax(scores, dim=-1)
-            if self.training and self.attn_dropout > 0.0:
-                attn_weights = F.dropout(
-                    attn_weights, p=self.attn_dropout, training=True
-                )
-            y = attn_weights @ v
-        else:
-            attn_weights = None
-            y = F.scaled_dot_product_attention(
-                q.contiguous(),
-                k.contiguous(),
-                v.contiguous(),
-                attn_mask=attn_mask,
-                dropout_p=(self.attn_dropout if self.training else 0.0),
-            )
-
-        if need_weights and average_attn_weights:
-            attn_weights = attn_weights.mean(dim=1)  # ty:ignore[unresolved-attribute]
+        y = F.scaled_dot_product_attention(
+            q.contiguous(),
+            k.contiguous(),
+            v.contiguous(),
+            attn_mask=attn_mask,
+            dropout_p=(self.attn_dropout if self.training else 0.0),
+        )
 
         y = rearrange(y, "b h s d -> b s (h d)")
-        out = self.out_proj(y)
-        return (out, attn_weights) if need_weights else out
+        return self.out_proj(y)
 
 
 class MaskedSelfAttention(nn.Module):
@@ -107,28 +84,11 @@ class MaskedSelfAttention(nn.Module):
             )
 
     @override
-    def forward(
-        self,
-        x: Tensor,
-        mask: Tensor,
-        *,
-        need_weights: bool = False,
-        average_attn_weights: bool = True,
-    ) -> tuple[Tensor, Tensor | None] | Tensor:
+    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
         if isinstance(self.attn, RotaryMultiheadAttention):
-            return self.attn(
-                x,
-                mask,
-                need_weights=need_weights,
-                average_attn_weights=average_attn_weights,
-            )
+            return self.attn(x, mask)
 
-        attn_out, attn_weights = self.attn(
-            query=x,
-            key=x,
-            value=x,
-            attn_mask=mask,
-            need_weights=need_weights,
-            average_attn_weights=average_attn_weights,
+        attn_out, _ = self.attn(
+            query=x, key=x, value=x, attn_mask=mask, need_weights=False
         )
-        return (attn_out, attn_weights) if need_weights else attn_out
+        return attn_out

@@ -7,6 +7,7 @@ from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
+from torch.nn import Module
 from torch.nn import functional as F
 from torch.utils._pytree import tree_map, tree_map_with_path  # noqa: PLC2701
 
@@ -29,12 +30,14 @@ class PolicyObjective(Objective):
     def __init__(
         self,
         *,
+        norm: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
+        self.norm: Module | None = norm
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
@@ -49,6 +52,9 @@ class PolicyObjective(Objective):
     def forward(
         self, episode: Episode | EpisodeExport, embedding: Tensor
     ) -> TensorDict | TensorTree:
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+
         logits = self._compute_logits(episode=episode, embedding=embedding)
 
         if isinstance(episode, Episode):
@@ -126,7 +132,7 @@ class PolicyObjective(Objective):
             ].mean(dim=1, keepdim=True)
 
         features = rearrange(
-            [observation_summary, observation_history.detach(), waypoints],
+            [observation_summary, observation_history, waypoints],
             "i b 1 d -> b 1 (i d)",
         )
 
@@ -134,6 +140,9 @@ class PolicyObjective(Objective):
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+
         logits = self._compute_logits(episode=episode, embedding=embedding)
         targets = tree_map(
             lambda k: episode.get(k)[:, -1],
@@ -160,6 +169,9 @@ class PolicyObjective(Objective):
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
 
         b, _t = episode.input.batch_size
+
+        if self.norm is not None:
+            embedding = self.norm(embedding)
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
@@ -194,7 +206,7 @@ class PolicyObjective(Objective):
             observation_history = embeddings.get((
                 Modality.SUMMARY,
                 SummaryToken.OBSERVATION_HISTORY,
-            )).detach()  # NOTE: equivalent to stop gradient layer in paper
+            ))
 
             observation_summary = embeddings.get((
                 Modality.SUMMARY,

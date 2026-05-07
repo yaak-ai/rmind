@@ -3,11 +3,11 @@ from typing import final, override
 
 import torch
 import torch.nn.functional as F
-from einops import rearrange
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
+from torch.nn import Module
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken
@@ -28,18 +28,23 @@ class InverseDynamicsPredictionObjective(Objective):
     def __init__(
         self,
         *,
+        norm: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
     ) -> None:
         super().__init__()
 
+        self.norm: Module | None = norm
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+
         observation_summaries = (
             episode.index
             .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
@@ -47,16 +52,11 @@ class InverseDynamicsPredictionObjective(Objective):
             .get(k)
         )
 
-        # order: (o0, o1), (o1, o2), (o2, o3), ...
-        features = rearrange(
-            [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-            "i ... d -> ... (i d)",
-        )
-
+        features = observation_summaries[:, :-1]
         logits = self.heads(features)
 
         targets = tree_map(
-            lambda k: episode.get(k)[:, :-1],
+            lambda k: episode.get(k)[:, 1:],
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
@@ -80,6 +80,17 @@ class InverseDynamicsPredictionObjective(Objective):
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+
+        observation_summaries = (
+            episode.index
+            .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
+            .parse(embedding)
+            .get(k)
+        )
+        features = observation_summaries[:, :-1]
+
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
                 value=episode.input.select(*self.heads.tree_paths()),
@@ -93,23 +104,10 @@ class InverseDynamicsPredictionObjective(Objective):
             ObjectivePredictionKey.SCORE_L1,
             ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
-            observation_summaries = (
-                episode.index
-                .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
-                .parse(embedding)
-                .get(k)
-            )
-
-            # order: (o0, o1), (o1, o2), (o2, o3), ...
-            features = rearrange(
-                [observation_summaries[:, :-1], observation_summaries[:, 1:]],
-                "i b t 1 d -> b t 1 (i d)",
-            )
-
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
 
-            # all but last
-            timestep_indices = slice(t - 1)
+            # head predicts action_{i+1} from summary_i; predictions live at timesteps 1..t-1
+            timestep_indices = slice(1, None)
 
             if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(

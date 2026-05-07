@@ -3,6 +3,13 @@ from itertools import pairwise
 import torch
 from torch.testing import assert_close, make_tensor
 
+from rmind.components.base import Modality, SummaryToken, TokenType
+from rmind.components.mask import (
+    AttentionMask,
+    CausalAttentionMaskBuilder,
+    FactorizedCausalAttentionMaskBuilder,
+    TorchAttentionMaskLegend,
+)
 from rmind.components.nn import Sequential
 from rmind.components.norm import Scaler, UniformBinner
 
@@ -57,3 +64,78 @@ def test_sequential(device: torch.device) -> None:
     x_rt = module.invert(module(x))
 
     assert_close(x_rt, x)
+
+
+def _causal_mask_inputs(device: torch.device) -> tuple[dict, dict]:
+    index = {
+        Modality.IMAGE.value: {"obs": torch.tensor([[0], [6]], device=device)},
+        Modality.CONTINUOUS.value: {"act": torch.tensor([[4], [10]], device=device)},
+        Modality.CONTEXT.value: {},
+        Modality.DISCRETE.value: {},
+        Modality.FORESIGHT.value: {"future": torch.tensor([[3], [9]], device=device)},
+        Modality.SUMMARY.value: {
+            SummaryToken.OBSERVATION_SUMMARY.value: torch.tensor(
+                [[1], [7]], device=device
+            ),
+            SummaryToken.OBSERVATION_HISTORY.value: torch.tensor(
+                [[2], [8]], device=device
+            ),
+            SummaryToken.ACTION_SUMMARY.value: torch.tensor([[5], [11]], device=device),
+        },
+    }
+    timestep = {
+        TokenType.OBSERVATION.value: {Modality.IMAGE.value: {"obs": 0}},
+        TokenType.ACTION.value: {Modality.CONTINUOUS.value: {"act": 4}},
+        TokenType.SPECIAL.value: {
+            Modality.FORESIGHT.value: {"future": 3},
+            Modality.SUMMARY.value: {
+                SummaryToken.OBSERVATION_SUMMARY.value: 1,
+                SummaryToken.OBSERVATION_HISTORY.value: 2,
+                SummaryToken.ACTION_SUMMARY.value: 5,
+            },
+        },
+    }
+    return index, timestep
+
+
+def test_attention_mask_as_torch_attn_mask(device: torch.device) -> None:
+    mask = AttentionMask.from_tensor(
+        mask_tensor=torch.tensor([[False, True]], device=device),
+        legend=TorchAttentionMaskLegend,
+    )
+
+    assert_close(
+        mask.as_torch_attn_mask(), torch.tensor([[False, True]], device=device)
+    )
+
+
+def test_causal_attention_mask_builder_keeps_full_history_edges(
+    device: torch.device,
+) -> None:
+    index, timestep = _causal_mask_inputs(device)
+
+    mask = CausalAttentionMaskBuilder()(
+        index=index, timestep=timestep, legend=TorchAttentionMaskLegend
+    )
+
+    assert mask.shape == (12, 12)
+    assert not mask[6, 0]
+    assert not mask[9, 0]
+    assert not mask[7, 3]
+    assert not mask[10, 4]
+    assert not mask[11, 4]
+
+
+def test_factorized_causal_attention_mask_builder(device: torch.device) -> None:
+    index, timestep = _causal_mask_inputs(device)
+
+    mask = FactorizedCausalAttentionMaskBuilder()(
+        index=index, timestep=timestep, legend=TorchAttentionMaskLegend
+    )
+
+    assert mask.spatial.mask_tensor.shape == (6, 6)
+    assert mask.temporal.mask_tensor.shape == (2, 2)
+    assert_close(
+        mask.temporal.as_torch_attn_mask(),
+        torch.tensor([[False, True], [False, False]], device=device),
+    )

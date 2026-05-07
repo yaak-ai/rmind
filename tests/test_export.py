@@ -1,11 +1,12 @@
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
+from unittest.mock import Mock
 
 import pytest
 import torch
 from pytest_lazy_fixtures import lf
 from torch import Tensor
-from torch.nn import Module
+from torch.nn import LayerNorm, Module
 from torch.testing import assert_close
 from torch.utils._pytree import key_get, keystr, tree_flatten_with_path  # noqa: PLC2701
 from torchvision.ops import MLP
@@ -44,6 +45,7 @@ def policy_objective(
     embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
 
     return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
@@ -71,7 +73,7 @@ def policy_objective(
                     )
                 },
             }
-        )
+        ),
     ).to(device)
 
 
@@ -83,7 +85,7 @@ def encoder_eval(encoder: Module) -> Module:
 @pytest.fixture
 def policy_embedding(encoder_eval: Module, episode: Episode) -> Tensor:
     return encoder_eval(
-        src=episode.embeddings_packed, mask=episode.attention_mask.mask_tensor
+        src=episode.embeddings_unpacked.clone(), mask=episode.attention_mask
     )
 
 
@@ -92,8 +94,8 @@ def policy_embedding_export(
     encoder_eval: Module, episode_export: EpisodeExport
 ) -> Tensor:
     return encoder_eval(
-        src=episode_export.embeddings_packed,
-        mask=episode_export.attention_mask.mask_tensor,
+        src=episode_export.embeddings_unpacked.clone(),
+        mask=episode_export.attention_mask,
     )
 
 
@@ -120,11 +122,11 @@ def control_transformer(
 def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
     episode_dict = (src := episode).to_dict() | {
         "embeddings": src.embeddings.to_dict(),
-        "embeddings_packed": src.embeddings_packed,
+        "embeddings_unpacked": src.embeddings_unpacked,
     }
     episode_export_dict = asdict(src := episode_export) | {
         "embeddings": src.embeddings,
-        "embeddings_packed": src.embeddings_packed,
+        "embeddings_unpacked": src.embeddings_unpacked,
     }
 
     for kp, expected in tree_flatten_with_path(episode_dict)[0]:
@@ -189,12 +191,44 @@ def test_torch_export_fake(
             case _:
                 pass
 
+        # PolicyObjective._compute_logits has separate Episode / EpisodeExport
+        # branches (TensorDict .parse vs direct fancy-indexing + .mean) that are
+        # mathematically equivalent but not bit-equal on CUDA due to differing
+        # reduction order. Narrow the tolerance to the policy continuous keys.
+        is_policy_continuous = (
+            len(kp) >= 2  # noqa: PLR2004
+            and getattr(kp[0], "key", None) == "policy"
+            and getattr(kp[1], "key", None) == Modality.CONTINUOUS.value
+        )
+        kwargs = {"atol": 2e-4, "rtol": 2e-3} if is_policy_continuous else {}
+
         assert_close(
             actual,
             expected,
             equal_nan=True,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
+            **kwargs,  # ty:ignore[invalid-argument-type]
         )
+
+
+@torch.inference_mode()
+def test_episode_builder_warms_attention_mask_cache(
+    episode_builder: EpisodeBuilder,
+    batch_dict: TensorTree,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = episode_builder(batch_dict)
+
+    assert episode_builder.attention_mask_cache_is_warm
+
+    with monkeypatch.context() as m:
+        m.setattr(
+            episode_builder.attention_mask_builder,
+            "forward",
+            Mock(side_effect=AssertionError("cache was not used during export")),
+        )
+        m.setattr("torch.compiler._is_exporting_flag", True)
+        _ = episode_builder(batch_dict)
 
 
 @pytest.mark.parametrize(

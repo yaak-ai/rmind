@@ -24,10 +24,6 @@ from rmind.components.objectives import (
     PolicyObjective,
 )
 from rmind.components.objectives.base import ObjectivePredictionKey
-from rmind.components.transformer import (
-    AttentionRolloutPredictionConfig,
-    EncoderPredictionConfig,
-)
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
@@ -174,10 +170,7 @@ def test_predict(
         objectives={
             ObjectivePredictionKey.GROUND_TRUTH,
             ObjectivePredictionKey.PREDICTION_VALUE,
-        },
-        encoder=EncoderPredictionConfig(
-            attention_rollout=AttentionRolloutPredictionConfig()
-        ),
+        }
     )
     match trainer.predict(model, datamodule=datamodule, return_predictions=True):
         case [TensorDict() as prediction]:

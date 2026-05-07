@@ -6,7 +6,7 @@ from typing import Any, NamedTuple, final, override
 
 import more_itertools as mit
 import torch
-from einops import pack, rearrange, repeat
+from einops import pack, repeat
 from pydantic import InstanceOf, validate_call
 from structlog import get_logger
 from tensordict import TensorClass, TensorDict
@@ -30,8 +30,8 @@ from torch.utils._pytree import (  # noqa: PLC2701
 from rmind.components.base import Modality, TensorTree, TokenType
 from rmind.components.containers import ModuleDict
 from rmind.components.mask import (
-    AttentionMask,
-    AttentionMaskBuilder,
+    FactorizedAttentionMask,
+    FactorizedAttentionMaskBuilder,
     TorchAttentionMaskLegend,
 )
 from rmind.utils.pytree import unflatten_keys
@@ -89,14 +89,14 @@ class Episode(TensorClass["frozen"]):
     role_embeddings: TensorDict
     index: Index
     timestep: Timestep
-    attention_mask: AttentionMask
+    attention_mask: FactorizedAttentionMask
 
     @property
     def embeddings(self) -> TensorDict:
         return self.projected_embeddings + self.role_embeddings
 
     @property
-    def embeddings_packed(self) -> Tensor:
+    def embeddings_unpacked(self) -> Tensor:
         embeddings = self.embeddings
         keys = (
             (modality, name)
@@ -107,7 +107,7 @@ class Episode(TensorClass["frozen"]):
         )
         packed, _ = pack([embeddings[key] for key in keys], "b t * d")
 
-        return rearrange(packed, "b t s d -> b (t s) d")  # ty:ignore[invalid-return-type]
+        return packed  # ty:ignore[invalid-return-type]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -119,7 +119,7 @@ class EpisodeExport:
     role_embeddings: TensorTree
     index: TensorTree
     timestep: TimestepExport
-    attention_mask: AttentionMask
+    attention_mask: FactorizedAttentionMask
 
     @property
     def embeddings(self) -> TensorTree:
@@ -132,7 +132,7 @@ class EpisodeExport:
         )
 
     @property
-    def embeddings_packed(self) -> Tensor:
+    def embeddings_unpacked(self) -> Tensor:
         embeddings = self.embeddings
         paths = (
             (modality, name)
@@ -143,7 +143,7 @@ class EpisodeExport:
 
         packed, _ = pack([key_get(embeddings, path) for path in paths], "b t * d")
 
-        return rearrange(packed, "b t s d -> b (t s) d")
+        return packed
 
     def __getitem__(self, item: str) -> Any:
         return getattr(self, item)
@@ -167,7 +167,7 @@ class EpisodeBuilder(Module):
         embeddings: InstanceOf[ModuleDict],
         projections: InstanceOf[ModuleDict],
         role_encoding: InstanceOf[Module],
-        attention_mask_builder: InstanceOf[AttentionMaskBuilder],
+        attention_mask_builder: InstanceOf[FactorizedAttentionMaskBuilder],
     ) -> None:
         super().__init__()
 
@@ -180,8 +180,11 @@ class EpisodeBuilder(Module):
         self.embeddings: ModuleDict = embeddings
         self.projections: ModuleDict = projections
         self.role_encoding: Module = role_encoding
-        self.attention_mask_builder: AttentionMaskBuilder = attention_mask_builder
-        self.register_buffer("_attention_mask", None, persistent=False)
+        self.attention_mask_builder: FactorizedAttentionMaskBuilder = (
+            attention_mask_builder
+        )
+        self.register_buffer("_attention_mask_spatial", None, persistent=False)
+        self.register_buffer("_attention_mask_temporal", None, persistent=False)
         role_idx_by_type_modality: dict[tuple[str, str], int] = {}
         self._role_idx_by_path: dict[tuple[MappingKey, MappingKey], int] = {
             (
@@ -194,6 +197,13 @@ class EpisodeBuilder(Module):
             )
             for token in timestep
         }
+
+    @property
+    def attention_mask_cache_is_warm(self) -> bool:
+        return (
+            self._attention_mask_spatial is not None
+            and self._attention_mask_temporal is not None
+        )
 
     @override
     def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
@@ -222,12 +232,7 @@ class EpisodeBuilder(Module):
             tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
         })
 
-        attention_mask = AttentionMask.from_tensor(
-            mask_tensor=self._build_attention_mask_tensor(
-                index=index, timestep=timestep
-            ),
-            legend=TorchAttentionMaskLegend,
-        )
+        attention_mask = self._build_attention_mask(index=index, timestep=timestep)
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
         return (
@@ -266,17 +271,21 @@ class EpisodeBuilder(Module):
             )
         )
 
-    def _build_attention_mask_tensor(
+    def _build_attention_mask(
         self, *, index: TensorTree, timestep: TimestepExport
-    ) -> Tensor:
-        """Build (or return cached) attention mask tensor.
+    ) -> FactorizedAttentionMask:
+        """Build (or return cached) spatial and temporal attention masks.
 
         WARNING: attention_mask_builder is not trace-friendly, so torch.export relies
         on this cache being warm. An eager forward pass must run *before*
         torch.export.export() — see export_onnx.py.
         """
-        if self._attention_mask is not None:
-            return self._attention_mask
+        if self.attention_mask_cache_is_warm:
+            return FactorizedAttentionMask.from_tensors(
+                spatial_mask_tensor=self._attention_mask_spatial,
+                temporal_mask_tensor=self._attention_mask_temporal,
+                legend=TorchAttentionMaskLegend,
+            )
 
         if torch.compiler.is_exporting():
             logger.warning(
@@ -284,12 +293,15 @@ class EpisodeBuilder(Module):
                 "run an eager forward pass first to populate the cache"
             )
 
-        attention_mask_tensor = self.attention_mask_builder(
+        attention_mask = self.attention_mask_builder(
             index=index, timestep=timestep, legend=TorchAttentionMaskLegend
         )
+
         if not torch.compiler.is_exporting():
-            self._attention_mask = attention_mask_tensor
-        return attention_mask_tensor
+            self._attention_mask_spatial = attention_mask.spatial.mask_tensor
+            self._attention_mask_temporal = attention_mask.temporal.mask_tensor
+
+        return attention_mask
 
     def _build_index(self, embeddings: TensorTree) -> TensorTree:
         (_, t), device = mit.one({

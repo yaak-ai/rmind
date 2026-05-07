@@ -21,7 +21,7 @@ from rmind.components.loss import (
     GramAnchoringObjective,
     LogitBiasCrossEntropyLoss,
 )
-from rmind.components.mask import CausalAttentionMaskBuilder
+from rmind.components.mask import FactorizedCausalAttentionMaskBuilder
 from rmind.components.nn import (
     AtLeast3D,
     DiffLast,
@@ -342,7 +342,7 @@ def episode_builder(
             ),
         }),
         role_encoding=Embedding(8, embedding_dims.encoder),
-        attention_mask_builder=CausalAttentionMaskBuilder(),
+        attention_mask_builder=FactorizedCausalAttentionMaskBuilder(),
     ).to(device)
 
 
@@ -376,17 +376,17 @@ def inverse_dynamics_prediction_objective(
             modules={
                 Modality.CONTINUOUS: {
                     "gas_pedal": Linear(
-                        2 * embedding_dims.encoder, num_bins.gas_pedal, bias=False
+                        embedding_dims.encoder, num_bins.gas_pedal, bias=False
                     ),
                     "brake_pedal": Linear(
-                        2 * embedding_dims.encoder, num_bins.brake_pedal, bias=False
+                        embedding_dims.encoder, num_bins.brake_pedal, bias=False
                     ),
                     "steering_angle": Linear(
-                        2 * embedding_dims.encoder, num_bins.steering_angle, bias=False
+                        embedding_dims.encoder, num_bins.steering_angle, bias=False
                     ),
                 },
                 Modality.DISCRETE: {
-                    "turn_signal": Linear(2 * embedding_dims.encoder, 3, bias=False)
+                    "turn_signal": Linear(embedding_dims.encoder, 3, bias=False)
                 },
             }
         ),
@@ -430,7 +430,7 @@ def forward_dynamics_prediction_objective(
                 Modality.CONTINUOUS: {"speed": Identity()},
                 Modality.FORESIGHT: {
                     "cam_front_left": Sequential(
-                        Linear(3 * embedding_dims.encoder, embedding_dims.encoder)
+                        Linear(2 * embedding_dims.encoder, embedding_dims.encoder)
                     )
                 },
             }
@@ -439,7 +439,7 @@ def forward_dynamics_prediction_objective(
             modules={
                 Modality.CONTINUOUS: {
                     "speed": Linear(
-                        3 * embedding_dims.encoder, num_bins.speed, bias=False
+                        2 * embedding_dims.encoder, num_bins.speed, bias=False
                     )
                 },
                 Modality.FORESIGHT: {
@@ -539,6 +539,7 @@ def policy_objective(
     logit_bias = torch.tensor(0)
 
     return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {

@@ -24,7 +24,7 @@ episode_builder:
       cam_front_left:
         _target_: builtins.range
         _args_:
-          - 64
+          - 256
 
     summary:
       observation_summary: [0]
@@ -217,7 +217,7 @@ episode_builder:
 
       foresight:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: 64
+          num_embeddings: 256
           embedding_dim: ${encoder_embedding_dim}
 
       summary:
@@ -298,7 +298,7 @@ episode_builder:
     embedding_dim: ${encoder_embedding_dim}
 
   attention_mask_builder:
-    _target_: rmind.components.mask.CausalAttentionMaskBuilder
+    _target_: rmind.components.mask.FactorizedCausalAttentionMaskBuilder
 
 encoder:
   _target_: rmind.components.transformer.TransformerEncoder
@@ -319,6 +319,8 @@ encoder:
       _args_:
         - ${encoder_embedding_dim}
         - ${num_heads}
+    max_seq_len: 256
+    base: 10
 
 objectives:
   _target_: rmind.components.containers.ModuleDict
@@ -326,45 +328,32 @@ objectives:
   modules:
     inverse_dynamics:
       _target_: rmind.components.objectives.InverseDynamicsPredictionObjective
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
           continuous:
             gas_pedal:
               _target_: rmind.components.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${encoder_embedding_dim}
+              in_features: ${encoder_embedding_dim}
               out_features: ${gas_pedal_bins}
               bias: False
             brake_pedal:
               _target_: rmind.components.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${encoder_embedding_dim}
+              in_features: ${encoder_embedding_dim}
               out_features: ${brake_pedal_bins}
               bias: False
             steering_angle:
               _target_: rmind.components.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${encoder_embedding_dim}
+              in_features: ${encoder_embedding_dim}
               out_features: ${steering_angle_bins}
               bias: False
           discrete:
             turn_signal:
               _target_: rmind.components.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${encoder_embedding_dim}
+              in_features: ${encoder_embedding_dim}
               out_features: 3
               bias: False
 
@@ -392,6 +381,9 @@ objectives:
 
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
+      # null is intentional: the speed projection LayerNorms its inputs and
+      # foresight features pass through their own projection
+      norm: null
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
@@ -401,7 +393,12 @@ objectives:
         modules:
           continuous:
             speed:
-              _target_: torch.nn.Identity
+              _target_: torch.nn.LayerNorm
+              normalized_shape:
+                _target_: operator.mul
+                _args_:
+                  - 2
+                  - ${encoder_embedding_dim}
           foresight:
             cam_front_left:
               _target_: torch.nn.Sequential
@@ -410,11 +407,10 @@ objectives:
                   in_features:
                     _target_: operator.mul
                     _args_:
-                      - 3
+                      - 2
                       - ${encoder_embedding_dim}
                   out_features: ${encoder_embedding_dim}
-                - _target_: rmind.components.norm.ScaleByVectorDimensionality
-                  dim: ${image_embedding_dim}
+
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -424,7 +420,7 @@ objectives:
               in_features:
                 _target_: operator.mul
                 _args_:
-                  - 3
+                  - 2
                   - ${encoder_embedding_dim}
               out_features: ${speed_bins}
               bias: False
@@ -460,12 +456,15 @@ objectives:
           foresight:
             cam_front_left:
               _target_: rmind.components.loss.GramAnchoringObjective
-              weight_sim: 100.0
+              weight_sim: 1.0
               weight_gram: 100.0
               patches: 256
 
     memory_extraction:
       _target_: rmind.components.objectives.MemoryExtractionObjective
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
