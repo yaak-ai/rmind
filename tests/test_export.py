@@ -263,3 +263,39 @@ def test_onnx_export(module: Module, args: tuple[Any]) -> None:
     )
 
     assert program is not None
+
+
+@pytest.mark.parametrize(
+    ("module", "args"),
+    [(lf("control_transformer"), (lf("batch_dict"),))],
+    ids=["control_transformer"],
+)
+@torch.inference_mode()
+def test_onnx_inference(module: Module, args: tuple[Any]) -> None:
+    """Regression test: ORT inference on the exported ONNX model must match PyTorch eager numerically."""
+    module = module.eval()
+
+    eager_output = module(*args)
+    eager_leaves, _ = tree_flatten_with_path(eager_output)
+
+    exported_program = torch.export.export(module, args=args, strict=True)
+    onnx_program = torch.onnx.export(
+        model=exported_program,
+        external_data=False,
+        dynamo=True,
+        optimize=True,
+        verify=False,
+    )
+    assert onnx_program is not None
+
+    onnx_output = onnx_program(*args)
+    onnx_leaves, _ = tree_flatten_with_path(onnx_output)
+
+    for (kp, expected), (_, actual) in zip(eager_leaves, onnx_leaves, strict=True):
+        assert_close(
+            torch.as_tensor(actual).float(),
+            expected.cpu().float(),
+            rtol=1e-2,
+            atol=1e-3,
+            msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
+        )

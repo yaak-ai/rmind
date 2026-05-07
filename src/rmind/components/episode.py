@@ -206,7 +206,7 @@ class EpisodeBuilder(Module):
         )
 
     @override
-    def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
+    def forward(self, batch: TensorTree) -> Episode:
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
@@ -235,40 +235,27 @@ class EpisodeBuilder(Module):
         attention_mask = self._build_attention_mask(index=index, timestep=timestep)
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
-        return (
-            EpisodeExport(
-                input=input,
-                input_tokens=input_tokens,
-                input_embeddings=input_embeddings,
-                projected_embeddings=projected_embeddings,
-                role_embeddings=role_embeddings,
-                index=index,
-                timestep=timestep,
-                attention_mask=attention_mask,
-            )
-            if torch.compiler.is_exporting()
-            else Episode(
-                input=TensorDict.from_dict(
-                    input, batch_dims=2
-                ).filter_non_tensor_data(),
-                input_tokens=TensorDict.from_dict(
-                    input_tokens, batch_dims=2
-                ).filter_non_tensor_data(),
-                input_embeddings=TensorDict.from_dict(
-                    input_embeddings, batch_dims=2
-                ).filter_non_tensor_data(),
-                projected_embeddings=TensorDict.from_dict(
-                    projected_embeddings, batch_dims=2
-                ).filter_non_tensor_data(),
-                role_embeddings=TensorDict.from_dict(
-                    role_embeddings,  # ty:ignore[invalid-argument-type]
-                    batch_dims=2,
-                ).filter_non_tensor_data(),
-                index=Index.from_dict(index, batch_dims=1),
-                timestep=Timestep.from_dict(timestep),
-                attention_mask=attention_mask,
-                device=device,
-            )
+        return Episode(
+            input=TensorDict.from_dict(
+                input, batch_dims=2
+            ).filter_non_tensor_data(),
+            input_tokens=TensorDict.from_dict(
+                input_tokens, batch_dims=2
+            ).filter_non_tensor_data(),
+            input_embeddings=TensorDict.from_dict(
+                input_embeddings, batch_dims=2
+            ).filter_non_tensor_data(),
+            projected_embeddings=TensorDict.from_dict(
+                projected_embeddings, batch_dims=2
+            ).filter_non_tensor_data(),
+            role_embeddings=TensorDict.from_dict(
+                role_embeddings,  # ty:ignore[invalid-argument-type]
+                batch_dims=2,
+            ).filter_non_tensor_data(),
+            index=Index.from_dict(index, batch_dims=1),
+            timestep=Timestep.from_dict(timestep),
+            attention_mask=attention_mask,
+            device=device,
         )
 
     def _build_attention_mask(
