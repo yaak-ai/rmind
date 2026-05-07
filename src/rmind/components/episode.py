@@ -8,19 +8,12 @@ import more_itertools as mit
 import torch
 from einops import pack, repeat
 from pydantic import InstanceOf, validate_call
-from structlog import get_logger
 from tensordict import TensorClass, TensorDict
-from tensordict._pytree import (  # noqa: PLC2701
-    _td_flatten_with_keys,
-    _tensordict_flatten,
-    _tensordict_unflatten,
-)
 from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import (  # noqa: PLC2701
     MappingKey,
     key_get,
-    register_pytree_node,
     tree_leaves,
     tree_leaves_with_path,
     tree_map,
@@ -35,8 +28,6 @@ from rmind.components.mask import (
     TorchAttentionMaskLegend,
 )
 from rmind.utils.pytree import unflatten_keys
-
-logger = get_logger(__name__)
 
 
 class TokenMeta(NamedTuple):
@@ -67,16 +58,7 @@ class Index(TensorClass["frozen"]):
         )
 
 
-class Timestep(TensorDict):
-    pass
-
-
-register_pytree_node(
-    Timestep,
-    _tensordict_flatten,
-    _tensordict_unflatten,  # ty:ignore[invalid-argument-type]
-    flatten_with_keys_fn=_td_flatten_with_keys,
-)
+Timestep = TensorDict
 
 TimestepExport = dict[str, dict[tuple[Modality, str], int]]
 
@@ -88,21 +70,24 @@ class Episode(TensorClass["frozen"]):
     projected_embeddings: TensorDict
     role_embeddings: TensorDict
     index: Index
-    timestep: Timestep
+    timestep: TensorDict
     attention_mask: FactorizedAttentionMask
 
     @property
     def embeddings(self) -> TensorDict:
-        return self.projected_embeddings + self.role_embeddings
+        # .apply uses aten.add.Tensor (ONNX-exportable); TensorDict.__add__
+        # uses aten._foreach_add.List which has no ONNX decomposition
+        return self.projected_embeddings.apply(torch.add, self.role_embeddings)  # ty:ignore[invalid-return-type]
 
     @property
     def embeddings_unpacked(self) -> Tensor:
         embeddings = self.embeddings
+        # timestep insertion order matches enumerate(self.timestep_config) order,
+        # which is already the canonical token sequence — no sort needed
         keys = (
             (modality, name)
-            for (_token_type, modality, name), _pos in sorted(
-                self.timestep.items(include_nested=True, leaves_only=True),
-                key=itemgetter(1),
+            for (_token_type, modality, name) in self.timestep.keys(
+                include_nested=True, leaves_only=True
             )
         )
         packed, _ = pack([embeddings[key] for key in keys], "b t * d")
@@ -240,14 +225,20 @@ class EpisodeBuilder(Module):
         # getattr on a type is a constant at trace time. No fix needed here.
         return Episode(
             input=TensorDict(input, batch_size=[b, t]).filter_non_tensor_data(),
-            input_tokens=TensorDict(input_tokens, batch_size=[b, t]).filter_non_tensor_data(),
-            input_embeddings=TensorDict(input_embeddings, batch_size=[b, t]).filter_non_tensor_data(),
-            projected_embeddings=TensorDict(projected_embeddings, batch_size=[b, t]).filter_non_tensor_data(),
+            input_tokens=TensorDict(
+                input_tokens, batch_size=[b, t]
+            ).filter_non_tensor_data(),
+            input_embeddings=TensorDict(
+                input_embeddings, batch_size=[b, t]
+            ).filter_non_tensor_data(),
+            projected_embeddings=TensorDict(
+                projected_embeddings, batch_size=[b, t]
+            ).filter_non_tensor_data(),
             role_embeddings=TensorDict(
                 role_embeddings,  # ty:ignore[invalid-argument-type]
                 batch_size=[b, t],
             ).filter_non_tensor_data(),
-            index=Index.from_tensordict(TensorDict(index, batch_size=[t])),
+            index=Index.from_tensordict(TensorDict(index, batch_size=[t])),  # ty:ignore[invalid-argument-type]
             timestep=Timestep(timestep),
             attention_mask=attention_mask,
             device=device,
@@ -267,12 +258,6 @@ class EpisodeBuilder(Module):
                 spatial_mask_tensor=self._attention_mask_spatial,
                 temporal_mask_tensor=self._attention_mask_temporal,
                 legend=TorchAttentionMaskLegend,
-            )
-
-        if torch.compiler.is_exporting():
-            logger.warning(
-                "building attention mask during export; "
-                "run an eager forward pass first to populate the cache"
             )
 
         attention_mask = self.attention_mask_builder(
