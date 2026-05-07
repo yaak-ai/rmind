@@ -1,8 +1,6 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
 from itertools import accumulate, pairwise
-from operator import itemgetter
-from typing import Any, NamedTuple, final, override
+from typing import NamedTuple, final, override
 
 import more_itertools as mit
 import torch
@@ -15,7 +13,6 @@ from torch.utils._pytree import (  # noqa: PLC2701
     MappingKey,
     key_get,
     tree_leaves,
-    tree_leaves_with_path,
     tree_map,
     tree_map_with_path,
 )
@@ -93,50 +90,6 @@ class Episode(TensorClass["frozen"]):
         packed, _ = pack([embeddings[key] for key in keys], "b t * d")
 
         return packed  # ty:ignore[invalid-return-type]
-
-
-@dataclass(frozen=True, kw_only=True)
-class EpisodeExport:
-    input: TensorTree
-    input_tokens: TensorTree
-    input_embeddings: TensorTree
-    projected_embeddings: TensorTree
-    role_embeddings: TensorTree
-    index: TensorTree
-    timestep: TimestepExport
-    attention_mask: FactorizedAttentionMask
-
-    @property
-    def embeddings(self) -> TensorTree:
-        return tree_map(
-            lambda left, right: (
-                left + right if left is not None and right is not None else None
-            ),
-            self.projected_embeddings,
-            self.role_embeddings,
-        )
-
-    @property
-    def embeddings_unpacked(self) -> Tensor:
-        embeddings = self.embeddings
-        paths = (
-            (modality, name)
-            for (_token_type, modality, name), _pos in sorted(
-                tree_leaves_with_path(self.timestep), key=itemgetter(1)
-            )
-        )
-
-        packed, _ = pack([key_get(embeddings, path) for path in paths], "b t * d")
-
-        return packed
-
-    def __getitem__(self, item: str) -> Any:
-        return getattr(self, item)
-
-
-torch.export.register_dataclass(
-    (cls := EpisodeExport), serialized_type_name=cls.__name__
-)
 
 
 @final
