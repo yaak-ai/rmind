@@ -94,9 +94,6 @@ class GramAnchoringLoss(Module):
         weight_gram: float = 10.0,
         **kwargs: Any,
     ) -> None:
-        if patches <= 0:
-            msg = "patches must be positive"
-            raise ValueError(msg)
         super().__init__(*args, **kwargs)
         self.weight_sim: float = weight_sim
         self.weight_gram: float = weight_gram
@@ -115,14 +112,11 @@ class GramAnchoringLoss(Module):
         # Target-driven within-frame patch uniqueness weights.
         # Patches similar to many others in the same frame are downweighted.
         frame_sim = torch.einsum("bpd,bqd->bpq", target_n, target_n).clamp_min(0.0)
-        if self.patches == 1:
-            weights = torch.ones_like(frame_sim[..., 0])
-        else:
-            eye = torch.eye(self.patches, dtype=torch.bool, device=target.device)
-            weights = 1.0 / (
-                frame_sim.masked_fill(eye, 0.0).sum(dim=-1) / (self.patches - 1) + eps
-            )
-            weights /= weights.sum(dim=1, keepdim=True) + eps
+        eye = torch.eye(self.patches, dtype=torch.bool, device=target.device)
+        weights = 1.0 / (
+            frame_sim.masked_fill(eye, 0.0).sum(dim=-1) / (self.patches - 1) + eps
+        )
+        weights /= weights.sum(dim=1, keepdim=True) + eps
 
         patch_loss = F.mse_loss(input_view, target_view, reduction="none").mean(dim=-1)
         sim_loss = (weights * patch_loss).sum(dim=1).mean()
