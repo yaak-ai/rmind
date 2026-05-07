@@ -235,25 +235,20 @@ class EpisodeBuilder(Module):
         attention_mask = self._build_attention_mask(index=index, timestep=timestep)
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
+        # NOTE: filter_non_tensor_data uses is_non_tensor → _is_non_tensor which
+        # calls getattr(cls, "_is_non_tensor", False) — this is Dynamo-safe as
+        # getattr on a type is a constant at trace time. No fix needed here.
         return Episode(
-            input=TensorDict.from_dict(
-                input, batch_dims=2
-            ).filter_non_tensor_data(),
-            input_tokens=TensorDict.from_dict(
-                input_tokens, batch_dims=2
-            ).filter_non_tensor_data(),
-            input_embeddings=TensorDict.from_dict(
-                input_embeddings, batch_dims=2
-            ).filter_non_tensor_data(),
-            projected_embeddings=TensorDict.from_dict(
-                projected_embeddings, batch_dims=2
-            ).filter_non_tensor_data(),
-            role_embeddings=TensorDict.from_dict(
+            input=TensorDict(input, batch_size=[b, t]).filter_non_tensor_data(),
+            input_tokens=TensorDict(input_tokens, batch_size=[b, t]).filter_non_tensor_data(),
+            input_embeddings=TensorDict(input_embeddings, batch_size=[b, t]).filter_non_tensor_data(),
+            projected_embeddings=TensorDict(projected_embeddings, batch_size=[b, t]).filter_non_tensor_data(),
+            role_embeddings=TensorDict(
                 role_embeddings,  # ty:ignore[invalid-argument-type]
-                batch_dims=2,
+                batch_size=[b, t],
             ).filter_non_tensor_data(),
-            index=Index.from_dict(index, batch_dims=1),
-            timestep=Timestep.from_dict(timestep),
+            index=Index.from_tensordict(TensorDict(index, batch_size=[t])),
+            timestep=Timestep(timestep),
             attention_mask=attention_mask,
             device=device,
         )
