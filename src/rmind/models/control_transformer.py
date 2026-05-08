@@ -1,12 +1,20 @@
-from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, ClassVar, Literal, Self, override
 
+import jq  # ty:ignore[unresolved-import]
 import pytorch_lightning as pl
 import torch
+from deepdiff import DeepDiff
 from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from lightning_utilities.core.rank_zero import rank_zero_warn
-from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, Field, InstanceOf, validate_call
+from omegaconf import OmegaConf
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    InstanceOf,
+    validate_call,
+)
 from pytorch_lightning.core.saving import _load_state, pl_load  # noqa: PLC2701
 from pytorch_lightning.utilities.migration.utils import (
     _pl_migrate_checkpoint,  # noqa: PLC2701
@@ -105,6 +113,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     @_restricted_classmethod
+    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
     def load_from_checkpoint(
         cls,  # noqa: N805
         checkpoint_path: _PATH,
@@ -112,66 +121,59 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         map_location: _MAP_LOCATION_TYPE = None,
         hparams_file: _PATH | None = None,
         strict: bool | None = None,
-        hparams_updaters: Sequence[
-            Callable[[Mapping[Any, Any]], Mapping[Any, Any]]
-            | Callable[[Mapping[Any, Any]], None]
-        ]
-        | None = None,
+        hparams_jq: Annotated[jq._Program, BeforeValidator(jq.compile)] | None = None,
         weights_only: bool | None = False,
         **kwargs: Any,
     ) -> Self:  # ty:ignore[invalid-method-override]
-        match hparams_updaters:
-            case [] | None:
-                return super().load_from_checkpoint(
-                    checkpoint_path=checkpoint_path,
-                    map_location=map_location,
-                    hparams_file=hparams_file,
-                    weights_only=weights_only,
-                    strict=strict,
-                    **kwargs,
-                )
+        if hparams_jq is None:
+            return super().load_from_checkpoint(
+                checkpoint_path=checkpoint_path,
+                map_location=map_location,
+                hparams_file=hparams_file,
+                weights_only=weights_only,
+                strict=strict,
+                **kwargs,
+            )
 
-            case _:
-                with pl_legacy_patch():
-                    checkpoint = pl_load(
-                        checkpoint_path,
-                        map_location=map_location,
-                        weights_only=weights_only,
-                    )
+        with pl_legacy_patch():
+            checkpoint = pl_load(
+                checkpoint_path, map_location=map_location, weights_only=weights_only
+            )
 
-                # convert legacy checkpoints to the new format
-                checkpoint = _pl_migrate_checkpoint(
-                    checkpoint, checkpoint_path=checkpoint_path
-                )
+        # convert legacy checkpoints to the new format
+        checkpoint = _pl_migrate_checkpoint(checkpoint, checkpoint_path=checkpoint_path)
 
-                # update hparams
-                hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
-                for fn in hparams_updaters:
-                    match result := fn(hparams):
-                        case DictConfig():
-                            hparams = result
+        hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
+        hparams_container = OmegaConf.to_container(
+            OmegaConf.create(hparams), resolve=False, throw_on_missing=False
+        )
+        hparams_container_updated = hparams_jq.input_value(hparams_container).first()
 
-                        case None:
-                            pass  # modified inplace
+        for diff in (
+            DeepDiff(hparams_container, hparams_container_updated, view="tree")
+            .pretty()
+            .splitlines()
+        ):
+            logger.debug("hparams updated", diff=diff)
 
-                        case _:
-                            raise NotImplementedError
-                checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = hparams
+        checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = OmegaConf.create(
+            hparams_container_updated
+        )
 
-                model = _load_state(cls, checkpoint, strict=strict, **kwargs)
-                state_dict = checkpoint["state_dict"]
-                if not state_dict:
-                    rank_zero_warn(
-                        f"The state dict in {checkpoint_path!r} contains no parameters."
-                    )
-                    return model  # ty:ignore[invalid-return-type]
+        model = _load_state(cls, checkpoint, strict=strict, **kwargs)
+        state_dict = checkpoint["state_dict"]
+        if not state_dict:
+            rank_zero_warn(
+                f"The state dict in {checkpoint_path!r} contains no parameters."
+            )
+            return model  # ty:ignore[invalid-return-type]
 
-                device = next(
-                    (t for t in state_dict.values() if isinstance(t, torch.Tensor)),
-                    torch.tensor(0),
-                ).device
+        device = next(
+            (t for t in state_dict.values() if isinstance(t, torch.Tensor)),
+            torch.tensor(0),
+        ).device
 
-                return model.to(device)  # ty:ignore[invalid-return-type, unresolved-attribute]
+        return model.to(device)  # ty:ignore[invalid-return-type, unresolved-attribute]
 
     @override
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> STEP_OUTPUT:

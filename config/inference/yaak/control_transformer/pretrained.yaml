@@ -8,27 +8,17 @@ defaults:
   - _self_
 
 model:
-  hparams_updaters:
-    # 1. wrap hparams in DictConfig
-    - _target_: omegaconf.DictConfig
-      _partial_: true
-    # 2. delete unnecessary keys
-    - _target_: funcy.del_in
-      _partial_: true
-      path: ["objectives", "inverse_dynamics", "losses"]
-    - _target_: funcy.del_in
-      _partial_: true
-      path: ["objectives", "forward_dynamics", "losses"]
-    - _target_: funcy.del_in
-      _partial_: true
-      path: ["objectives", "memory_extraction", "losses"]
-    - _target_: funcy.del_in
-      _partial_: true
-      path: ["lr_scheduler"]
-    - _target_: funcy.set_in
-      _partial_: true
-      path: [episode_builder, input_transform, _args_, 0, paths, context, waypoints]
-      value: [data, "waypoints/xy_normalized"]
+  hparams_jq: |
+    delpaths([
+      ["objectives", "inverse_dynamics", "losses"],
+      ["objectives", "forward_dynamics", "losses"],
+      ["objectives", "memory_extraction", "losses"],
+      ["lr_scheduler"]
+    ])
+    | setpath(
+        ["episode_builder", "input_transform", "_args_", 0, "paths", "context", "waypoints"];
+        ["data", "waypoints/xy_normalized"]
+    )
 
 trainer:
   _target_: pytorch_lightning.Trainer

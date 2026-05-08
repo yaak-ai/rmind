@@ -27,7 +27,7 @@ class ObjectivePredictionKey(StrEnum):
     SUMMARY_EMBEDDINGS = auto()
 
 
-class Prediction(TensorClass["autocast"]):
+class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]
     value: TensorDict
     timestep_indices: MetaData  # for timestep-wise sparse values
 

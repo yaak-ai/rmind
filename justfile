@@ -16,7 +16,7 @@ sync:
     uv sync --all-extras --all-groups --locked
 
 setup: sync
-    uvx prek@latest install
+    uvx prek@latest install --overwrite
 
 format *ARGS:
     uvx ruff@latest format {{ ARGS }}
@@ -78,7 +78,7 @@ export-onnx *ARGS: generate-config
         {{ ARGS }}
 
 onnxvis *ARGS:
-    uvx --with=ai-edge-model-explorer --from=model-explorer-onnx onnxvis {{ ARGS }}
+    uvx --python 3.12 --with=ai-edge-model-explorer --from=model-explorer-onnx onnxvis {{ ARGS }}
 
 # start rerun server and viewer
 rerun *ARGS:
