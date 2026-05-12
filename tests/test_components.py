@@ -4,6 +4,7 @@ import torch
 from torch.testing import assert_close, make_tensor
 
 from rmind.components.base import Modality, SummaryToken, TokenType
+from rmind.components.loss import GramAnchoringLoss
 from rmind.components.mask import (
     AttentionMask,
     CausalAttentionMaskBuilder,
@@ -64,6 +65,29 @@ def test_sequential(device: torch.device) -> None:
     x_rt = module.invert(module(x))
 
     assert_close(x_rt, x)
+
+
+def test_gram_anchoring_loss_zero_for_matching_features(device: torch.device) -> None:
+    target = make_tensor(
+        (8, 16), dtype=torch.float32, device=device, low=-1.0, high=1.0
+    )
+    module = GramAnchoringLoss(patches=4).to(device)
+
+    loss = module(target, target.clone())
+
+    assert_close(loss, torch.zeros((), dtype=loss.dtype, device=device))
+
+
+def test_gram_anchoring_loss_runs_without_gram(device: torch.device) -> None:
+    input = make_tensor((8, 16), dtype=torch.float32, device=device, low=-1.0, high=1.0)
+    target = make_tensor(
+        (8, 16), dtype=torch.float32, device=device, low=-1.0, high=1.0
+    )
+    module = GramAnchoringLoss(patches=4, weight_gram=0.0).to(device)
+
+    loss = module(input, target)
+
+    assert loss.isfinite()
 
 
 def _causal_mask_inputs(device: torch.device) -> tuple[dict, dict]:

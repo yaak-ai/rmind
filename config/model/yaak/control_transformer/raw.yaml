@@ -455,7 +455,7 @@ objectives:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
           foresight:
             cam_front_left:
-              _target_: rmind.components.loss.GramAnchoringObjective
+              _target_: rmind.components.loss.GramAnchoringLoss
               weight_sim: 1.0
               weight_gram: 100.0
               patches: 256
