@@ -144,6 +144,16 @@ multirun/
 # generated
 config/dataset/*
 config/logger/*
+config/_templates/dataset/yaak/train_debug.yaml
+config/datamodule/yaak/train_debug.yaml
+.claude/
+CLAUDE.md
+PROMPT.md
+agents/
+plan-*.md
+rmind-vjepa2.1-agent-kit.zip
+scripts/
+vjepa2_1_vitl_dist_vitG_384.pt
 
 # editor
 .helix/
