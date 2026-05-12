@@ -85,7 +85,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.deptry.per_rule_ignores]
-DEP001 = ["rmind"]
+DEP001 = ["app", "rmind"]
 DEP002 = [
   "funcy",
   "torchmetrics",
