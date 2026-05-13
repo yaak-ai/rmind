@@ -3,7 +3,7 @@ from itertools import pairwise
 import torch
 from torch.testing import assert_close, make_tensor
 
-from rmind.components.base import Modality, SummaryToken, TokenType
+from rmind.components.base import Modality, SummaryToken, TokenMeta, TokenType
 from rmind.components.episode import Episode, EpisodeBuilder
 from rmind.components.loss import GramAnchoringLoss
 from rmind.components.mask import (
@@ -90,7 +90,7 @@ def test_gram_anchoring_loss_runs_without_gram(device: torch.device) -> None:
     assert loss.isfinite()
 
 
-def _causal_mask_inputs(device: torch.device) -> tuple[dict, dict]:
+def _causal_mask_inputs(device: torch.device) -> tuple[dict, tuple[TokenMeta, ...]]:
     index = {
         Modality.IMAGE.value: {"obs": torch.tensor([[0], [6]], device=device)},
         Modality.CONTINUOUS.value: {"act": torch.tensor([[4], [10]], device=device)},
@@ -107,18 +107,18 @@ def _causal_mask_inputs(device: torch.device) -> tuple[dict, dict]:
             SummaryToken.ACTION_SUMMARY.value: torch.tensor([[5], [11]], device=device),
         },
     }
-    timestep = {
-        TokenType.OBSERVATION.value: {Modality.IMAGE.value: {"obs": 0}},
-        TokenType.ACTION.value: {Modality.CONTINUOUS.value: {"act": 4}},
-        TokenType.SPECIAL.value: {
-            Modality.FORESIGHT.value: {"future": 3},
-            Modality.SUMMARY.value: {
-                SummaryToken.OBSERVATION_SUMMARY.value: 1,
-                SummaryToken.OBSERVATION_HISTORY.value: 2,
-                SummaryToken.ACTION_SUMMARY.value: 5,
-            },
-        },
-    }
+    timestep = (
+        TokenMeta(TokenType.OBSERVATION, Modality.IMAGE, "obs"),
+        TokenMeta(
+            TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY
+        ),
+        TokenMeta(
+            TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY
+        ),
+        TokenMeta(TokenType.SPECIAL, Modality.FORESIGHT, "future"),
+        TokenMeta(TokenType.ACTION, Modality.CONTINUOUS, "act"),
+        TokenMeta(TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.ACTION_SUMMARY),
+    )
     return index, timestep
 
 
