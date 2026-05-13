@@ -47,8 +47,8 @@ class TransformerEncoder(nn.Module):
         out = run_layer_stack(
             self.layers,
             x,
-            mask.spatial.as_torch_attn_mask(),
-            mask.temporal.as_torch_attn_mask(),
+            mask.spatial.mask_tensor,
+            mask.temporal.mask_tensor,
             training=self.training,
         )
         return rearrange(out, "b t s d -> b (t s) d")

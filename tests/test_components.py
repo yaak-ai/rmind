@@ -6,7 +6,6 @@ from torch.testing import assert_close, make_tensor
 from rmind.components.base import Modality, SummaryToken, TokenType
 from rmind.components.loss import GramAnchoringLoss
 from rmind.components.mask import (
-    AttentionMask,
     CausalAttentionMaskBuilder,
     FactorizedCausalAttentionMaskBuilder,
     TorchAttentionMaskLegend,
@@ -122,17 +121,6 @@ def _causal_mask_inputs(device: torch.device) -> tuple[dict, dict]:
     return index, timestep
 
 
-def test_attention_mask_as_torch_attn_mask(device: torch.device) -> None:
-    mask = AttentionMask.from_tensor(
-        mask_tensor=torch.tensor([[False, True]], device=device),
-        legend=TorchAttentionMaskLegend,
-    )
-
-    assert_close(
-        mask.as_torch_attn_mask(), torch.tensor([[False, True]], device=device)
-    )
-
-
 def test_causal_attention_mask_builder_keeps_full_history_edges(
     device: torch.device,
 ) -> None:
@@ -160,6 +148,6 @@ def test_factorized_causal_attention_mask_builder(device: torch.device) -> None:
     assert mask.spatial.mask_tensor.shape == (6, 6)
     assert mask.temporal.mask_tensor.shape == (2, 2)
     assert_close(
-        mask.temporal.as_torch_attn_mask(),
+        mask.temporal.mask_tensor,
         torch.tensor([[False, True], [False, False]], device=device),
     )
