@@ -6,6 +6,8 @@ import torch
 from torch import nn
 
 from rmind.callbacks.freeze import ModuleFreezer
+from rmind.callbacks.loggers import waypoints as waypoints_logger
+from rmind.callbacks.loggers.waypoints import WandbWaypointsLogger
 
 
 class ToyModule(pl.LightningModule):
@@ -53,3 +55,20 @@ def test_missing_path_raises(trainer: pl.Trainer, module: ToyModule) -> None:
     cb = ModuleFreezer(paths={"does_not_exist"})
     with pytest.raises(AttributeError):
         cb.setup(trainer, module, "fit")
+
+
+def test_waypoints_map_handles_basemap_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_http_error(*_args: object, **_kwargs: object) -> None:
+        msg = "missing tile"
+        raise waypoints_logger.requests.exceptions.HTTPError(msg)
+
+    monkeypatch.setattr(waypoints_logger.ctx, "add_basemap", raise_http_error)
+
+    image = WandbWaypointsLogger._plot_waypoints_on_map(  # noqa: SLF001
+        wpts_xy=torch.tensor([[392000.0, 5810000.0], [392010.0, 5810010.0]]),
+        crs="EPSG:25832",
+    )
+
+    assert image is not None

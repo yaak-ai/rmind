@@ -202,8 +202,8 @@ class WandbWaypointsLogger(Callback):
 
             try:
                 ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=crs)  # ty:ignore[unresolved-attribute]
-            except requests.exceptions.ConnectionError:
-                logger.warning("Failed to load tiles for basemap")
+            except requests.exceptions.RequestException as exc:
+                logger.warning("Failed to load tiles for basemap", error=str(exc))
 
             ax.set_axis_off()
             if ego_xy is not None:
