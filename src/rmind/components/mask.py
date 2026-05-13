@@ -54,10 +54,6 @@ class AttentionMask:
             ),
         )
 
-    def as_torch_attn_mask(self) -> Tensor:
-        """Return a bool mask where True means the destination is not attendable."""
-        return self.mask_tensor == self.legend.DO_NOT_ATTEND
-
 
 @tensorclass
 class FactorizedAttentionMask:
