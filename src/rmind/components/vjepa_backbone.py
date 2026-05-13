@@ -13,13 +13,12 @@ class VjepaBackbone(nn.Module):
     Weights are downloaded automatically via torch.hub on first use.
     """
 
-    def __init__(self, img_size: int = 256) -> None:
+    def __init__(self) -> None:
         super().__init__()
         encoder, _ = torch.hub.load(
             "facebookresearch/vjepa2",
             "vjepa2_1_vit_large_384",
             pretrained=True,
-            img_size=img_size,
             trust_repo=True,
         )
         self.encoder: nn.Module = encoder
