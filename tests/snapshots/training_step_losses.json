@@ -1,16 +1,19 @@
 {
-  "forward_dynamics/loss/continuous/speed": 6.443472385406494,
-  "forward_dynamics/loss/foresight/cam_front_left": 5160.12255859375,
-  "inverse_dynamics/loss/continuous/brake_pedal": 5.194517612457275,
-  "inverse_dynamics/loss/continuous/gas_pedal": 5.30350399017334,
-  "inverse_dynamics/loss/continuous/steering_angle": 6.9802069664001465,
-  "inverse_dynamics/loss/discrete/turn_signal": 1.1544688940048218,
-  "loss/total": 5204.23388671875,
-  "memory_extraction/loss/continuous/brake_pedal_diff": 5.2060041427612305,
-  "memory_extraction/loss/continuous/gas_pedal_diff": 5.630576133728027,
-  "memory_extraction/loss/continuous/steering_angle_diff": 7.0303850173950195,
-  "policy_objective/loss/continuous/brake_pedal": 0.015745088458061218,
-  "policy_objective/loss/continuous/gas_pedal": -0.06653700023889542,
-  "policy_objective/loss/continuous/steering_angle": 0.14995144307613373,
-  "policy_objective/loss/discrete/turn_signal": 1.0693943500518799
+  "fingerprint": "sha256:066e7ee39591608976cccac39d0544aea02a4a54a56a3ab52c44a173fdf1332f",
+  "losses": {
+    "forward_dynamics/loss/continuous/speed": 6.443472385406494,
+    "forward_dynamics/loss/foresight/cam_front_left": 5160.12255859375,
+    "inverse_dynamics/loss/continuous/brake_pedal": 5.194517612457275,
+    "inverse_dynamics/loss/continuous/gas_pedal": 5.30350399017334,
+    "inverse_dynamics/loss/continuous/steering_angle": 6.9802069664001465,
+    "inverse_dynamics/loss/discrete/turn_signal": 1.1544688940048218,
+    "loss/total": 5204.23388671875,
+    "memory_extraction/loss/continuous/brake_pedal_diff": 5.2060041427612305,
+    "memory_extraction/loss/continuous/gas_pedal_diff": 5.630576133728027,
+    "memory_extraction/loss/continuous/steering_angle_diff": 7.0303850173950195,
+    "policy_objective/loss/continuous/brake_pedal": 0.015745088458061218,
+    "policy_objective/loss/continuous/gas_pedal": -0.06653700023889542,
+    "policy_objective/loss/continuous/steering_angle": 0.14995144307613373,
+    "policy_objective/loss/discrete/turn_signal": 1.0693943500518799
+  }
 }
