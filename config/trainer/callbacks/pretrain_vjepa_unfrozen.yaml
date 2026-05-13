@@ -1,11 +1,7 @@
 - _target_: rmind.callbacks.LogitBiasSetter
-# Freeze the vjepa encoder; only the rmind transformer + heads are trained.
-# Mirrors V-JEPA 2 paper §3.1: "we freeze the video encoder and learn a new
-# action-conditioned predictor on top of the learned representation."
-# To train end-to-end instead, use trainer/callbacks=pretrain_vjepa_unfrozen.
-- _target_: rmind.callbacks.ModuleFreezer
-  types:
-    - rmind.components.vjepa_backbone.VjepaBackbone
+# End-to-end variant: VjepaBackbone is trainable alongside the rmind transformer.
+# Default (frozen) config is pretrain_vjepa. Use this via:
+#   trainer/callbacks=pretrain_vjepa_unfrozen
 - _target_: pytorch_lightning.callbacks.TQDMProgressBar
 - _target_: pytorch_lightning.callbacks.ModelSummary
   max_depth: 5
