@@ -2254,6 +2254,7 @@ dependencies = [
   { name = "torchvision", version = "0.26.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine != 's390x' and sys_platform == 'darwin'" },
   { name = "torchvision", version = "0.26.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 's390x' and sys_platform == 'darwin') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
   { name = "torchvision", version = "0.26.0+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" }, marker = "sys_platform == 'linux'" },
+  { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -2326,6 +2327,7 @@ requires-dist = [
   { name = "torchmetrics", marker = "extra == 'train'", specifier = ">=1.9" },
   { name = "torchvision", marker = "sys_platform != 'linux'", specifier = ">=0.26.0", index = "https://download.pytorch.org/whl/cpu" },
   { name = "torchvision", marker = "sys_platform == 'linux'", specifier = ">=0.26.0", index = "https://download.pytorch.org/whl/cu129" },
+  { name = "tqdm", specifier = ">=4.67.3" },
   { name = "wandb", marker = "extra == 'predict'", specifier = ">=0.24.2" },
   { name = "wandb", marker = "extra == 'train'", specifier = ">=0.24.2" },
 ]

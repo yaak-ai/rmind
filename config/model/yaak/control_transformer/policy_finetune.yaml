@@ -7,74 +7,30 @@ hparams_jq: |
     "_target_": "rmind.components.containers.ModuleDict",
     "modules": {
       "policy": {
-        "_target_": "rmind.components.objectives.PolicyObjective",
-        "norm": {
-          "_target_": "torch.nn.LayerNorm",
-          "normalized_shape": 384
+        "_target_": "rmind.components.objectives.FlowPolicyObjective",
+        "history_steps": ${history_steps},
+        "flow_time_sampling": "${flow_time_sampling}",
+        "validation_seed": ${flow_validation_seed},
+        "validation_sample_metrics": true,
+        "loss": {
+          "_target_": "rmind.components.loss.WeightedMSELoss",
+          "weight": [1.0, 1.0, 1.0]
         },
-        "heads": {
-          "_target_": "rmind.components.containers.ModuleDict",
-          "modules": {
-            "continuous": {
-              "gas_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              },
-              "brake_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              },
-              "steering_angle": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              }
-            },
-            "discrete": {
-              "turn_signal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 3],
-                "bias": false
-              }
-            }
-          }
-        },
-        "targets": {
-          "continuous": {
-            "gas_pedal": ["input", "continuous", "gas_pedal"],
-            "brake_pedal": ["input", "continuous", "brake_pedal"],
-            "steering_angle": ["input", "continuous", "steering_angle"]
-          },
-          "discrete": {
-            "turn_signal": ["input", "discrete", "turn_signal"]
-          }
-        },
-        "losses": {
-          "_target_": "rmind.components.containers.ModuleDict",
-          "modules": {
-            "continuous": {
-              "gas_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              },
-              "brake_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              },
-              "steering_angle": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              }
-            },
-            "discrete": {
-              "turn_signal": {
-                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
-              }
-            }
-          }
+        "decoder": {
+          "_target_": "rmind.components.transformer.FlowActionDecoder",
+          "condition_dim": ${encoder_embedding_dim},
+          "dim_model": ${flow_decoder_embedding_dim},
+          "action_horizon": ${action_horizon},
+          "flow_sampling_steps": ${flow_sampling_steps},
+          "flow_sampling_method": "${flow_sampling_method}",
+          "time_embedding_scale": 1000.0,
+          "time_logit_scale": 0.25,
+          "num_layers": 2,
+          "num_heads": 4,
+          "attn_dropout": 0.1,
+          "resid_dropout": 0.1,
+          "mlp_dropout": 0.1,
+          "hidden_layer_multiplier": 1
         }
       }
     }

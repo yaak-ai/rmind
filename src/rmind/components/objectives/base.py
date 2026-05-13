@@ -39,7 +39,8 @@ class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]
 
 
 class Metrics(TypedDict):
-    loss: TensorTree | None
+    loss: TensorTree | Tensor | None
+    sample_l1: NotRequired[TensorTree | Tensor | None]
     _artifacts: NotRequired[TensorTree]
 
 
@@ -63,7 +64,9 @@ class Objective(Module, ABC):
         return getattr(self, name)
 
     @abstractmethod
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics: ...
+    def compute_metrics(
+        self, *, episode: Episode, embedding: Tensor, **kwargs: Any
+    ) -> Metrics: ...
 
     @abstractmethod
     def predict(
@@ -73,4 +76,5 @@ class Objective(Module, ABC):
         embedding: Tensor,
         keys: AbstractSet[ObjectivePredictionKey],
         tokenizers: ModuleDict | None = None,
+        **kwargs: Any,
     ) -> TensorDict: ...

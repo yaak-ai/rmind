@@ -5,7 +5,7 @@ from torch.testing import assert_close, make_tensor
 
 from rmind.components.base import Modality, SummaryToken, TokenMeta, TokenType
 from rmind.components.episode import Episode, EpisodeBuilder
-from rmind.components.loss import GramAnchoringLoss
+from rmind.components.loss import GramAnchoringLoss, WeightedMSELoss
 from rmind.components.mask import (
     CausalAttentionMaskBuilder,
     FactorizedCausalAttentionMaskBuilder,
@@ -66,6 +66,16 @@ def test_sequential(device: torch.device) -> None:
     x_rt = module.invert(module(x))
 
     assert_close(x_rt, x)
+
+
+def test_weighted_mse_loss_weights_last_dimension(device: torch.device) -> None:
+    loss_fn = WeightedMSELoss(weight=(1.0, 2.0, 3.0)).to(device)
+    input = torch.tensor([[[1.0, 2.0, 3.0]]], device=device)
+    target = torch.zeros_like(input)
+
+    loss = loss_fn(input, target)
+
+    assert_close(loss, torch.tensor((1.0 + 8.0 + 27.0) / 6.0, device=device))
 
 
 def test_gram_anchoring_loss_zero_for_matching_features(device: torch.device) -> None:

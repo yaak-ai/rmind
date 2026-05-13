@@ -183,7 +183,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         )
 
         metrics = TensorDict({
-            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(
+                episode=episode, embedding=embedding, batch=batch
+            )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -222,7 +224,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             src=episode.embeddings_flattened, mask=episode.attention_mask
         )
         metrics = TensorDict({
-            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(
+                episode=episode, embedding=embedding, batch=batch
+            )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -260,6 +264,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 embedding=embedding,
                 keys=frozenset(self.prediction_config.objectives),
                 tokenizers=self.episode_builder.tokenizers,
+                batch=batch,
             )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         }

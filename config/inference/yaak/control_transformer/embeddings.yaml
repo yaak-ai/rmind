@@ -6,6 +6,7 @@ defaults:
   - /paths: yaak/default
   - _self_
 
+sequence_length: 6
 output_dir: ???
 
 trainer:
