@@ -4,6 +4,7 @@ import torch
 from torch.testing import assert_close, make_tensor
 
 from rmind.components.base import Modality, SummaryToken, TokenType
+from rmind.components.episode import Episode, EpisodeBuilder
 from rmind.components.loss import GramAnchoringLoss
 from rmind.components.mask import (
     AttentionMask,
@@ -163,3 +164,28 @@ def test_factorized_causal_attention_mask_builder(device: torch.device) -> None:
         mask.temporal.as_torch_attn_mask(),
         torch.tensor([[False, True], [False, False]], device=device),
     )
+
+
+def test_embeddings_unpacked_order(
+    episode_builder: EpisodeBuilder, episode: Episode
+) -> None:
+    """embeddings_unpacked must pack tokens in the order declared in episode_builder.timestep.
+
+    The index assigns flat positions by enumerating episode_builder.timestep, so the
+    slice at each offset must match the corresponding token's embeddings. Removing
+    sorted() from embeddings_unpacked causes TensorDict to iterate alphabetically,
+    placing e.g. action tokens before image tokens and failing this check.
+    """
+    unpacked = episode.embeddings_unpacked  # (b, t, s, d)
+    embeddings = episode.embeddings
+
+    pos = 0
+    for idx, token in enumerate(episode_builder.timestep):
+        key = (token.modality.value, str(token.name))
+        expected = embeddings[key]  # (b, t, n, d)
+        n = expected.shape[2]
+        actual = unpacked[:, :, pos : pos + n, :]
+        assert_close(
+            actual, expected, msg=f"wrong slice at timestep position {idx} {token}"
+        )
+        pos += n
