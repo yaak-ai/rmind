@@ -176,8 +176,7 @@ episode_builder:
         _target_: torch.nn.Sequential
         _args_:
           - _target_: rmind.components.vjepa_backbone.VjepaBackbone
-            checkpoint_path: /home/max/Code/rmind/vjepa2_1_vitl_dist_vitG_384.pt
-            img_size: [256, 256]
+            img_size: 256
 
       continuous:
         speed:
