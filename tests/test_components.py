@@ -160,9 +160,7 @@ def test_embeddings_unpacked_order(
     """embeddings_unpacked must pack tokens in the order declared in episode_builder.timestep.
 
     The index assigns flat positions by enumerating episode_builder.timestep, so the
-    slice at each offset must match the corresponding token's embeddings. Removing
-    sorted() from embeddings_unpacked causes TensorDict to iterate alphabetically,
-    placing e.g. action tokens before image tokens and failing this check.
+    slice at each offset must match the corresponding token's embeddings.
     """
     unpacked = episode.embeddings_unpacked  # (b, t, s, d)
     embeddings = episode.embeddings
@@ -177,3 +175,24 @@ def test_embeddings_unpacked_order(
             actual, expected, msg=f"wrong slice at timestep position {idx} {token}"
         )
         pos += n
+
+
+def test_index_unpacked_alignment(episode: Episode) -> None:
+    """index.parse(flat embeddings_unpacked) must recover the per-token embeddings.
+
+    This is the load-bearing invariant for every downstream `index.parse(encoder_output)`
+    call: a token's position in the flat (t*s,) sequence — assigned by the builder when
+    constructing the index — must match where that token actually sits in
+    embeddings_unpacked. If the two disagree, every objective reads the wrong slice.
+    """
+    unpacked = episode.embeddings_unpacked  # (b, t, s, d)
+    b, t, s, d = unpacked.shape
+    flat = unpacked.reshape(b, t * s, d)  # same shape the encoder returns
+
+    recovered = episode.index.parse(flat)  # nested TensorDict, leaves (b, t, n, d)
+    expected = episode.embeddings
+
+    for key in recovered.keys(include_nested=True, leaves_only=True):
+        assert_close(
+            recovered[key], expected[key], msg=f"index/unpacked misaligned for {key}"
+        )
