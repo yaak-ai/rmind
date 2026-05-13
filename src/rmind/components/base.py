@@ -1,5 +1,5 @@
 from enum import StrEnum, auto, unique
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 
 from torch import Tensor
 
@@ -35,3 +35,9 @@ class SummaryToken(StrEnum):
     OBSERVATION_SUMMARY = auto()
     OBSERVATION_HISTORY = auto()
     ACTION_SUMMARY = auto()
+
+
+class TokenMeta(NamedTuple):
+    type: TokenType
+    modality: Modality
+    name: str

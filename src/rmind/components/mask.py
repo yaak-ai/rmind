@@ -1,6 +1,6 @@
 import operator
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Protocol, Self, final, override
 
 import torch
@@ -11,7 +11,13 @@ from torch.nn import Module
 from torch.types import Number
 from torch.utils._pytree import tree_leaves, tree_map  # noqa: PLC2701
 
-from rmind.components.base import Modality, SummaryToken, TensorTree, TokenType
+from rmind.components.base import (
+    Modality,
+    SummaryToken,
+    TensorTree,
+    TokenMeta,
+    TokenType,
+)
 
 
 class AttentionMaskLegendProvider(Protocol):
@@ -102,7 +108,7 @@ class AttentionMaskBuilder(Module, ABC):
         self,
         *,
         index: TensorTree,
-        timestep: dict[str, dict[str, Mapping[str, int]]],
+        timestep: Sequence[TokenMeta],
         legend: type[AttentionMaskLegendProvider],
     ) -> Tensor: ...
 
@@ -132,7 +138,7 @@ class FactorizedAttentionMaskBuilder(Module, ABC):
         self,
         *,
         index: TensorTree,
-        timestep: dict[str, dict[str, Mapping[str, int]]],
+        timestep: Sequence[TokenMeta],
         legend: type[AttentionMaskLegendProvider],
     ) -> FactorizedAttentionMask: ...
 
@@ -143,7 +149,7 @@ class CausalAttentionMaskBuilder(AttentionMaskBuilder):
         self,
         *,
         index: TensorTree,
-        timestep: dict[str, dict[str, Mapping[str, int]]],
+        timestep: Sequence[TokenMeta],
         legend: type[AttentionMaskLegendProvider],
     ) -> Tensor:
         leaves = tree_leaves(index, lambda x: isinstance(x, Tensor))
@@ -159,14 +165,14 @@ class CausalAttentionMaskBuilder(AttentionMaskBuilder):
         )
 
         obs_keys = tuple(
-            (modality, name)
-            for modality, names in timestep[TokenType.OBSERVATION.value].items()
-            for name in names
+            (token.modality.value, str(token.name))
+            for token in timestep
+            if token.type == TokenType.OBSERVATION
         )
         action_keys = tuple(
-            (modality, name)
-            for modality, names in timestep[TokenType.ACTION.value].items()
-            for name in names
+            (token.modality.value, str(token.name))
+            for token in timestep
+            if token.type == TokenType.ACTION
         )
         foresight_keys = tuple(
             (Modality.FORESIGHT.value, name) for name in index[Modality.FORESIGHT.value]
@@ -238,7 +244,7 @@ class FactorizedCausalAttentionMaskBuilder(FactorizedAttentionMaskBuilder):
         self,
         *,
         index: TensorTree,
-        timestep: dict[str, dict[str, Mapping[str, int]]],
+        timestep: Sequence[TokenMeta],
         legend: type[AttentionMaskLegendProvider],
     ) -> FactorizedAttentionMask:
         leaves = tree_leaves(index, lambda x: isinstance(x, Tensor))
