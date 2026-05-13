@@ -13,9 +13,15 @@ from torch.testing import make_tensor
 from torchvision.ops import MLP
 from torchvision.transforms.v2 import CenterCrop, Normalize, Resize, ToDtype
 
-from rmind.components.base import Modality, SummaryToken, TensorTree, TokenType
+from rmind.components.base import (
+    Modality,
+    SummaryToken,
+    TensorTree,
+    TokenMeta,
+    TokenType,
+)
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
+from rmind.components.episode import Episode, EpisodeBuilder
 from rmind.components.loss import (
     GaussianNLLLoss,
     GramAnchoringLoss,

@@ -1,8 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import accumulate, pairwise
-from operator import itemgetter
-from typing import Any, NamedTuple, final, override
+from typing import Any, final, override
 
 import more_itertools as mit
 import torch
@@ -10,24 +9,17 @@ from einops import pack, repeat
 from pydantic import InstanceOf, validate_call
 from structlog import get_logger
 from tensordict import TensorClass, TensorDict
-from tensordict._pytree import (  # noqa: PLC2701
-    _td_flatten_with_keys,
-    _tensordict_flatten,
-    _tensordict_unflatten,
-)
 from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import (  # noqa: PLC2701
     MappingKey,
     key_get,
-    register_pytree_node,
     tree_leaves,
-    tree_leaves_with_path,
     tree_map,
     tree_map_with_path,
 )
 
-from rmind.components.base import Modality, TensorTree, TokenType
+from rmind.components.base import TensorTree, TokenMeta
 from rmind.components.containers import ModuleDict
 from rmind.components.mask import (
     FactorizedAttentionMask,
@@ -37,12 +29,6 @@ from rmind.components.mask import (
 from rmind.utils.pytree import unflatten_keys
 
 logger = get_logger(__name__)
-
-
-class TokenMeta(NamedTuple):
-    type: TokenType
-    modality: Modality
-    name: str
 
 
 class Index(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
@@ -67,20 +53,6 @@ class Index(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
         )
 
 
-class Timestep(TensorDict):
-    pass
-
-
-register_pytree_node(
-    Timestep,
-    _tensordict_flatten,
-    _tensordict_unflatten,  # ty:ignore[invalid-argument-type]
-    flatten_with_keys_fn=_td_flatten_with_keys,
-)
-
-TimestepExport = dict[str, dict[tuple[Modality, str], int]]
-
-
 class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     input: TensorDict
     input_tokens: TensorDict
@@ -88,26 +60,12 @@ class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     projected_embeddings: TensorDict
     role_embeddings: TensorDict
     index: Index
-    timestep: Timestep
+    embeddings_unpacked: Tensor
     attention_mask: FactorizedAttentionMask
 
     @property
     def embeddings(self) -> TensorDict:
         return self.projected_embeddings + self.role_embeddings
-
-    @property
-    def embeddings_unpacked(self) -> Tensor:
-        embeddings = self.embeddings
-        keys = (
-            (modality, name)
-            for (_token_type, modality, name), _pos in sorted(
-                self.timestep.items(include_nested=True, leaves_only=True),
-                key=itemgetter(1),
-            )
-        )
-        packed, _ = pack([embeddings[key] for key in keys], "b t * d")
-
-        return packed  # ty:ignore[invalid-return-type]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -118,7 +76,7 @@ class EpisodeExport:
     projected_embeddings: TensorTree
     role_embeddings: TensorTree
     index: TensorTree
-    timestep: TimestepExport
+    embeddings_unpacked: Tensor
     attention_mask: FactorizedAttentionMask
 
     @property
@@ -130,20 +88,6 @@ class EpisodeExport:
             self.projected_embeddings,
             self.role_embeddings,
         )
-
-    @property
-    def embeddings_unpacked(self) -> Tensor:
-        embeddings = self.embeddings
-        paths = (
-            (modality, name)
-            for (_token_type, modality, name), _pos in sorted(
-                tree_leaves_with_path(self.timestep), key=itemgetter(1)
-            )
-        )
-
-        packed, _ = pack([key_get(embeddings, path) for path in paths], "b t * d")
-
-        return packed
 
     def __getitem__(self, item: str) -> Any:
         return getattr(self, item)
@@ -228,13 +172,22 @@ class EpisodeBuilder(Module):
 
         index = self._build_index(projected_embeddings)
 
-        timestep = unflatten_keys({
-            tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
-        })
-
-        attention_mask = self._build_attention_mask(index=index, timestep=timestep)
+        attention_mask = self._build_attention_mask(index=index, timestep=self.timestep)
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
+
+        embeddings_unpacked, _ = pack(
+            [
+                key_get(projected_embeddings, kp)  # ty:ignore[invalid-argument-type]
+                + key_get(role_embeddings, kp)  # ty:ignore[invalid-argument-type]
+                for kp in (
+                    (MappingKey(token.modality.value), MappingKey(str(token.name)))
+                    for token in self.timestep
+                )
+            ],
+            "b t * d",
+        )
+
         return (
             EpisodeExport(
                 input=input,
@@ -243,7 +196,7 @@ class EpisodeBuilder(Module):
                 projected_embeddings=projected_embeddings,
                 role_embeddings=role_embeddings,
                 index=index,
-                timestep=timestep,
+                embeddings_unpacked=embeddings_unpacked,
                 attention_mask=attention_mask,
             )
             if torch.compiler.is_exporting()
@@ -265,14 +218,14 @@ class EpisodeBuilder(Module):
                     batch_dims=2,
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
-                timestep=Timestep.from_dict(timestep),
+                embeddings_unpacked=embeddings_unpacked,
                 attention_mask=attention_mask,
                 device=device,
             )
         )
 
     def _build_attention_mask(
-        self, *, index: TensorTree, timestep: TimestepExport
+        self, *, index: TensorTree, timestep: tuple[TokenMeta, ...]
     ) -> FactorizedAttentionMask:
         """Build (or return cached) spatial and temporal attention masks.
 

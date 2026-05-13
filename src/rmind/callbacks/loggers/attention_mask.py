@@ -12,8 +12,8 @@ from structlog import get_logger
 from torch import Tensor
 from wandb import Image
 
-from rmind.components.base import TokenType
-from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
+from rmind.components.base import TokenMeta, TokenType
+from rmind.components.episode import Episode, EpisodeBuilder
 
 from .common import _figure_to_rgba, _get_wandb_loggers
 
