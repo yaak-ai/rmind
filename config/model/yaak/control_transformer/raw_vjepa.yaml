@@ -379,6 +379,13 @@ objectives:
       # null is intentional: the speed projection LayerNorms its inputs and
       # foresight features pass through their own projection
       norm: null
+      # AR rollout loss: set ar_steps: 0 (or feedback_projection: null) to disable.
+      # When disabled the loss dict is unchanged — no structural diff vs the original.
+      ar_steps: 1
+      feedback_projection:
+        _target_: rmind.components.nn.Linear
+        in_features: ${image_embedding_dim}
+        out_features: ${encoder_embedding_dim}
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
