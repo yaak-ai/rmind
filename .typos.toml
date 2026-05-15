@@ -1,0 +1,5 @@
+[default.extend-words]
+# numpy / PyTorch array-range function — not a misspelling of "arrange"
+arange = "arange"
+# "nd" abbreviation (n-dimensional) — not a misspelling of "and"
+nd = "nd"

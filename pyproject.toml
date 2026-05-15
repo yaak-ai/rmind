@@ -52,6 +52,7 @@ test = ["pytest>=9.0.2", "pytest-lazy-fixtures>=1.4.0"]
 train = [
   "contextily>=1.6.2",
   "matplotlib>=3.10.3",
+  "scikit-learn>=1.6",
   "torchmetrics>=1.9",
   "wandb>=0.24.2",
 ]
@@ -88,6 +89,7 @@ build-backend = "hatchling.build"
 DEP001 = ["app", "rmind"]
 DEP002 = [
   "funcy",
+  "scikit-learn",
   "torchmetrics",
   "pytest",
   "pytest-lazy-fixtures",
@@ -98,6 +100,7 @@ DEP003 = ["rmind"]
 
 [tool.deptry.package_module_name_map]
 hydra-core = "hydra"
+scikit-learn = "sklearn"
 tensordict-nightly = "tensordict"
 pytorch-lightning = [
   "pytorch_lightning",
