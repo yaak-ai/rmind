@@ -154,17 +154,17 @@ def test_factorized_causal_attention_mask_builder(device: torch.device) -> None:
     )
 
 
-def test_embeddings_unpacked_order(
+def test_token_embeddings_order(
     episode_builder: EpisodeBuilder, episode: Episode
 ) -> None:
-    """embeddings_unpacked must pack tokens in the order declared in episode_builder.timestep.
+    """token_embeddings must pack tokens in the order declared in episode_builder.timestep.
 
     The index assigns flat positions by enumerating episode_builder.timestep, so the
     slice at each offset must match the corresponding token's embeddings. Removing
-    sorted() from embeddings_unpacked causes TensorDict to iterate alphabetically,
+    sorted() from token_embeddings causes TensorDict to iterate alphabetically,
     placing e.g. action tokens before image tokens and failing this check.
     """
-    unpacked = episode.embeddings_unpacked  # (b, t, s, d)
+    unpacked = episode.token_embeddings  # (b, t, s, d)
     embeddings = episode.embeddings
 
     pos = 0
@@ -180,14 +180,14 @@ def test_embeddings_unpacked_order(
 
 
 def test_index_unpacked_alignment(episode: Episode) -> None:
-    """index.parse(flat embeddings_unpacked) must recover the per-token embeddings.
+    """index.parse(flat token_embeddings) must recover the per-token embeddings.
 
     This is the load-bearing invariant for every downstream `index.parse(encoder_output)`
     call: a token's position in the flat (t*s,) sequence — assigned by the builder when
     constructing the index — must match where that token actually sits in
-    embeddings_unpacked. If the two disagree, every objective reads the wrong slice.
+    token_embeddings. If the two disagree, every objective reads the wrong slice.
     """
-    unpacked = episode.embeddings_unpacked  # (b, t, s, d)
+    unpacked = episode.token_embeddings  # (b, t, s, d)
     b, t, s, d = unpacked.shape
     flat = unpacked.reshape(b, t * s, d)  # same shape the encoder returns
 

@@ -57,15 +57,10 @@ class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     input: TensorDict
     input_tokens: TensorDict
     input_embeddings: TensorDict
-    projected_embeddings: TensorDict
-    role_embeddings: TensorDict
+    embeddings: TensorDict
     index: Index
-    embeddings_unpacked: Tensor
+    token_embeddings: Tensor
     attention_mask: FactorizedAttentionMask
-
-    @property
-    def embeddings(self) -> TensorDict:
-        return self.projected_embeddings + self.role_embeddings
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -73,21 +68,10 @@ class EpisodeExport:
     input: TensorTree
     input_tokens: TensorTree
     input_embeddings: TensorTree
-    projected_embeddings: TensorTree
-    role_embeddings: TensorTree
+    embeddings: TensorTree
     index: TensorTree
-    embeddings_unpacked: Tensor
+    token_embeddings: Tensor
     attention_mask: FactorizedAttentionMask
-
-    @property
-    def embeddings(self) -> TensorTree:
-        return tree_map(
-            lambda left, right: (
-                left + right if left is not None and right is not None else None
-            ),
-            self.projected_embeddings,
-            self.role_embeddings,
-        )
 
     def __getitem__(self, item: str) -> Any:
         return getattr(self, item)
@@ -176,10 +160,15 @@ class EpisodeBuilder(Module):
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
 
-        embeddings_unpacked, _ = pack(
+        embeddings = tree_map(
+            lambda p, r: p + r if p is not None and r is not None else None,
+            projected_embeddings,
+            role_embeddings,
+        )
+
+        token_embeddings, _ = pack(
             [
-                key_get(projected_embeddings, kp)  # ty:ignore[invalid-argument-type]
-                + key_get(role_embeddings, kp)  # ty:ignore[invalid-argument-type]
+                key_get(embeddings, kp)  # ty:ignore[invalid-argument-type]
                 for kp in (
                     (MappingKey(token.modality.value), MappingKey(str(token.name)))
                     for token in self.timestep
@@ -193,10 +182,9 @@ class EpisodeBuilder(Module):
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
-                projected_embeddings=projected_embeddings,
-                role_embeddings=role_embeddings,
+                embeddings=embeddings,
                 index=index,
-                embeddings_unpacked=embeddings_unpacked,
+                token_embeddings=token_embeddings,
                 attention_mask=attention_mask,
             )
             if torch.compiler.is_exporting()
@@ -210,15 +198,11 @@ class EpisodeBuilder(Module):
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
-                projected_embeddings=TensorDict.from_dict(
-                    projected_embeddings, batch_dims=2
-                ).filter_non_tensor_data(),
-                role_embeddings=TensorDict.from_dict(
-                    role_embeddings,  # ty:ignore[invalid-argument-type]
-                    batch_dims=2,
+                embeddings=TensorDict.from_dict(
+                    embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
-                embeddings_unpacked=embeddings_unpacked,
+                token_embeddings=token_embeddings,
                 attention_mask=attention_mask,
                 device=device,
             )
