@@ -240,7 +240,9 @@ def test_episode_builder_warms_attention_mask_cache(
 )
 @torch.inference_mode()
 def test_torch_export(module: Module, args: tuple[Any]) -> None:
-    torch.export.export(module.eval(), args=args, strict=True)
+    module = module.eval()
+    module(*args)  # warm internal caches (e.g. attention mask) before export
+    torch.export.export(module, args=args, strict=True)
 
 
 @pytest.mark.parametrize(
