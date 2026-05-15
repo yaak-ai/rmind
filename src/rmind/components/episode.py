@@ -160,19 +160,20 @@ class EpisodeBuilder(Module):
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
 
-        embeddings = tree_map(
-            lambda p, r: p + r if p is not None and r is not None else None,
-            projected_embeddings,
-            role_embeddings,
+        embeddings = (
+            TensorDict.from_dict(
+                projected_embeddings, batch_dims=2
+            ).filter_non_tensor_data()
+            + TensorDict.from_dict(
+                role_embeddings,  # ty:ignore[invalid-argument-type]
+                batch_dims=2,
+            ).filter_non_tensor_data()
         )
 
         token_embeddings, _ = pack(
             [
-                key_get(embeddings, kp)  # ty:ignore[invalid-argument-type]
-                for kp in (
-                    (MappingKey(token.modality.value), MappingKey(str(token.name)))
-                    for token in self.timestep
-                )
+                embeddings.get((token.modality.value, str(token.name)))
+                for token in self.timestep
             ],
             "b t * d",
         )
@@ -182,7 +183,7 @@ class EpisodeBuilder(Module):
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
-                embeddings=embeddings,
+                embeddings=embeddings.to_dict(),
                 index=index,
                 token_embeddings=token_embeddings,
                 attention_mask=attention_mask,
@@ -198,9 +199,7 @@ class EpisodeBuilder(Module):
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
-                embeddings=TensorDict.from_dict(
-                    embeddings, batch_dims=2
-                ).filter_non_tensor_data(),
+                embeddings=embeddings,
                 index=Index.from_dict(index, batch_dims=1),
                 token_embeddings=token_embeddings,
                 attention_mask=attention_mask,
