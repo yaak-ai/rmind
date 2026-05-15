@@ -1,3 +1,4 @@
+- _target_: rmind.callbacks.AutoPrecisionCallback
 - _target_: rmind.callbacks.LogitBiasSetter
 - _target_: rmind.callbacks.ModuleFreezer
   paths:

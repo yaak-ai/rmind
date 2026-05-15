@@ -29,6 +29,10 @@
               (lib.optionalString stdenv.isDarwin "export DYLD_FALLBACK_LIBRARY_PATH=${
                 pkgs.lib.makeLibraryPath [ pkgs.ffmpeg ]
               }")
+              (lib.optionalString stdenv.isLinux ''
+                export CXX=/usr/bin/g++
+                export CC=/usr/bin/gcc
+              '')
             ];
           };
       }

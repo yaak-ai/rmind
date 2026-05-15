@@ -74,6 +74,8 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         prediction_config: Annotated[
             PredictionConfig, Field(default_factory=PredictionConfig)
         ],
+        compile: bool = False,
+        compile_backend: str = "inductor",
     ) -> None:
         super().__init__()
 
@@ -88,6 +90,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         if isinstance(encoder, HydraConfig):
             hparams["encoder"] = encoder.model_dump()
             encoder = encoder.instantiate()
+
+        if compile:
+            encoder = torch.compile(encoder, backend=compile_backend)  # ty:ignore[invalid-assignment]
 
         self.encoder: HydraConfig[Module] | InstanceOf[Module] = encoder
 
