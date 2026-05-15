@@ -125,6 +125,10 @@ class EpisodeBuilder(Module):
             if leaf is not None
         })
 
+        if torch.compiler.is_exporting() and isinstance(b, torch.SymInt):
+            msg = "Dynamic batch/sequence dims not supported for export — pytorch/tensordict#1003"
+            raise NotImplementedError(msg)
+
         input_tokens.update(
             tree_map(
                 lambda x: torch.tensor(x, device=device).expand(b, t, -1),
