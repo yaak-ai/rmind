@@ -46,17 +46,10 @@ class Scaler(Module, Invertible):
     @override
     def forward(self, input: Tensor) -> Tensor:
         input_min, input_max = self.in_range
-
-        if torch.compiler.is_exporting():
-            input = torch.clamp(input, input_min, input_max)
-        elif input.min() < input_min or input.max() > input_max:
-            msg = "input out of range"
-            raise ValueError(msg)
-
         out_min, out_max = self.out_range
         out_std = (input - input_min) / (input_max - input_min)
 
-        return out_std * (out_max - out_min) + out_min
+        return (out_std * (out_max - out_min) + out_min).clamp(out_min, out_max)
 
     @override
     def invert(self, input: Tensor) -> Tensor:
@@ -89,16 +82,9 @@ class UniformBinner(Module, Invertible):
     @override
     def forward(self, input: Tensor) -> Tensor:
         input_min, input_max = self.range
-
-        if torch.compiler.is_exporting():
-            input = torch.clamp(input, input_min, input_max)
-        elif input.min() < input_min or input.max() > input_max:
-            msg = "input out of range"
-            raise ValueError(msg)
-
         x_norm = (input - input_min) / (input_max - input_min)
 
-        return (x_norm * self.bins).to(torch.long).clamp(max=self.bins - 1)
+        return (x_norm * self.bins).to(torch.long).clamp(0, self.bins - 1)
 
     @override
     def invert(self, input: Tensor) -> Tensor:
