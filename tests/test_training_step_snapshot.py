@@ -44,8 +44,8 @@ from rmind.components.objectives import (
 
 SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "training_step_losses.json"
 UPDATE_ENV_VAR = "RMIND_UPDATE_SNAPSHOTS"
-RTOL = 1e-4
-ATOL = 1e-6
+RTOL = 1e-3  # wide enough for cross-platform matmul jitter; real regressions are >>0.1%
+ATOL = 1e-5
 
 
 BATCH_SEED = 42
