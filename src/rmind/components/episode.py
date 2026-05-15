@@ -59,8 +59,15 @@ class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     input_embeddings: TensorDict
     embeddings: TensorDict
     index: Index
-    token_embeddings: Tensor
+    timestep_keys: tuple[tuple[str, str], ...]
     attention_mask: FactorizedAttentionMask
+
+    @property
+    def token_embeddings(self) -> Tensor:
+        packed, _ = pack(
+            [self.embeddings.get(k) for k in self.timestep_keys], "b t * d"
+        )
+        return packed  # ty:ignore[invalid-return-type]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -70,15 +77,28 @@ class EpisodeExport:
     input_embeddings: TensorTree
     embeddings: TensorTree
     index: TensorTree
-    token_embeddings: Tensor
+    timestep_keys: tuple[tuple[str, str], ...]
     attention_mask: FactorizedAttentionMask
+
+    @property
+    def token_embeddings(self) -> Tensor:
+        packed, _ = pack(
+            [
+                key_get(self.embeddings, (MappingKey(k[0]), MappingKey(k[1])))  # ty:ignore[invalid-argument-type]
+                for k in self.timestep_keys
+            ],
+            "b t * d",
+        )
+        return packed
 
     def __getitem__(self, item: str) -> Any:
         return getattr(self, item)
 
 
-torch.export.register_dataclass(
-    (cls := EpisodeExport), serialized_type_name=cls.__name__
+torch.utils._pytree.register_dataclass(  # noqa: SLF001
+    (cls := EpisodeExport),
+    drop_field_names=["timestep_keys"],  # non-tensor; treated as static context
+    serialized_type_name=cls.__name__,
 )
 
 
@@ -103,6 +123,9 @@ class EpisodeBuilder(Module):
             special_tokens
         )
         self.timestep: tuple[TokenMeta, ...] = timestep
+        self._timestep_keys: tuple[tuple[str, str], ...] = tuple(
+            (token.modality.value, str(token.name)) for token in timestep
+        )
         self.input_transform: Module = input_transform
         self.tokenizers: ModuleDict = tokenizers
         self.embeddings: ModuleDict = embeddings
@@ -166,17 +189,6 @@ class EpisodeBuilder(Module):
             role_embeddings,
         )
 
-        token_embeddings, _ = pack(
-            [
-                key_get(embeddings, kp)  # ty:ignore[invalid-argument-type]
-                for kp in (
-                    (MappingKey(token.modality.value), MappingKey(str(token.name)))
-                    for token in self.timestep
-                )
-            ],
-            "b t * d",
-        )
-
         return (
             EpisodeExport(
                 input=input,
@@ -184,7 +196,7 @@ class EpisodeBuilder(Module):
                 input_embeddings=input_embeddings,
                 embeddings=embeddings,
                 index=index,
-                token_embeddings=token_embeddings,
+                timestep_keys=self._timestep_keys,
                 attention_mask=attention_mask,
             )
             if torch.compiler.is_exporting()
@@ -202,7 +214,7 @@ class EpisodeBuilder(Module):
                     embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
-                token_embeddings=token_embeddings,
+                timestep_keys=self._timestep_keys,
                 attention_mask=attention_mask,
                 device=device,
             )

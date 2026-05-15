@@ -123,9 +123,11 @@ def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
         "embeddings": src.embeddings.to_dict(),
         "token_embeddings": src.token_embeddings,
     }
+    episode_dict.pop("timestep_keys", None)
     episode_export_dict = asdict(src := episode_export) | {
         "token_embeddings": src.token_embeddings
     }
+    episode_export_dict.pop("timestep_keys", None)
 
     for kp, expected in tree_flatten_with_path(episode_dict)[0]:
         actual = key_get(episode_export_dict, kp)
