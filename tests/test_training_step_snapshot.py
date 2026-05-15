@@ -45,16 +45,30 @@ from rmind.components.objectives import (
 
 SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "training_step_losses.json"
 UPDATE_ENV_VAR = "RMIND_UPDATE_SNAPSHOTS"
-RTOL = 1e-2
-ATOL = 1e-3
+RTOL = 1e-4
+ATOL = 1e-6
+RESET_SEED = 42
+FORWARD_SEED = 42
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _reseed_module() -> None:
-    """Re-seed at module start so module-scoped fixtures (episode_builder, encoder,
-    objectives) construct from a known RNG state regardless of preceding test modules.
+def _reset_all_parameters(*modules: Module) -> None:
+    """Reseed and re-initialize every parameter that has a `reset_parameters` method.
+
+    Module-scoped fixtures cache their weights, and the RNG state at the time those
+    fixtures were *constructed* depends on what tests pytest ran first. To get
+    bit-identical weights across machines we ignore the cached values and reset
+    everything from a fresh seed right before the forward pass.
     """
-    pl.seed_everything(42, workers=True, verbose=False)
+    pl.seed_everything(RESET_SEED, workers=True, verbose=False)
+    for m in modules:
+        m.apply(
+            lambda submodule: (
+                submodule.reset_parameters()  # ty:ignore[possibly-unbound-attribute]
+                if hasattr(submodule, "reset_parameters")
+                and callable(submodule.reset_parameters)
+                else None
+            )
+        )
 
 
 def _flatten_scalars(td: TensorDict) -> dict[str, float]:
@@ -166,12 +180,14 @@ def test_training_step_losses_snapshot(  # noqa: PLR0913, PLR0917
         "policy_objective": policy_objective,
     }
 
+    _reset_all_parameters(episode_builder, encoder, *objectives.values())
+
     structure = _structure_hash(
         {"episode_builder": episode_builder, "encoder": encoder, **objectives},
         batch_dict,
     )
 
-    torch.manual_seed(42)
+    torch.manual_seed(FORWARD_SEED)
     episode = episode_builder(batch_dict)
     embedding = encoder(src=episode.embeddings_unpacked, mask=episode.attention_mask)
 
