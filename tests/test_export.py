@@ -7,7 +7,12 @@ from pytest_lazy_fixtures import lf
 from torch import Tensor
 from torch.nn import LayerNorm, Module
 from torch.testing import assert_close
-from torch.utils._pytree import key_get, keystr, tree_flatten_with_path  # noqa: PLC2701
+from torch.utils._pytree import (  # noqa: PLC2701
+    key_get,
+    keystr,
+    tree_flatten_with_path,
+    tree_map,
+)
 from torchvision.ops import MLP
 
 from rmind.components.base import Modality, TensorTree
@@ -229,6 +234,23 @@ def test_torch_export(module: Module, args: tuple[Any]) -> None:
     module = module.eval()
     module(*args)  # warm internal caches (e.g. attention mask) before export
     torch.export.export(module, args=args, strict=True)
+
+
+@pytest.mark.xfail(
+    reason="TensorDict batch_size rejects SymInt in export trace — pytorch/tensordict#1003",
+    strict=True,
+)
+@torch.inference_mode()
+def test_torch_export_dynamic_shapes(
+    control_transformer: ControlTransformer, batch_dict: TensorTree
+) -> None:
+    module = control_transformer.eval()
+    module(batch_dict)  # warm caches
+    batch_dim = torch.export.Dim("batch", min=1)
+    dynamic_shapes = (tree_map(lambda _: {0: batch_dim}, batch_dict),)
+    torch.export.export(
+        module, args=(batch_dict,), dynamic_shapes=dynamic_shapes, strict=True
+    )
 
 
 @pytest.mark.parametrize(
