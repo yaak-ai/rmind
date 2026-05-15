@@ -160,20 +160,19 @@ class EpisodeBuilder(Module):
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
 
-        embeddings = (
-            TensorDict.from_dict(
-                projected_embeddings, batch_dims=2
-            ).filter_non_tensor_data()
-            + TensorDict.from_dict(
-                role_embeddings,  # ty:ignore[invalid-argument-type]
-                batch_dims=2,
-            ).filter_non_tensor_data()
+        embeddings = tree_map(
+            lambda p, r: p + r if p is not None and r is not None else None,
+            projected_embeddings,
+            role_embeddings,
         )
 
         token_embeddings, _ = pack(
             [
-                embeddings.get((token.modality.value, str(token.name)))
-                for token in self.timestep
+                key_get(embeddings, kp)  # ty:ignore[invalid-argument-type]
+                for kp in (
+                    (MappingKey(token.modality.value), MappingKey(str(token.name)))
+                    for token in self.timestep
+                )
             ],
             "b t * d",
         )
@@ -183,7 +182,7 @@ class EpisodeBuilder(Module):
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
-                embeddings=embeddings.to_dict(),
+                embeddings=embeddings,
                 index=index,
                 token_embeddings=token_embeddings,
                 attention_mask=attention_mask,
@@ -199,7 +198,9 @@ class EpisodeBuilder(Module):
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
-                embeddings=embeddings,
+                embeddings=TensorDict.from_dict(
+                    embeddings, batch_dims=2
+                ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 token_embeddings=token_embeddings,
                 attention_mask=attention_mask,
@@ -223,7 +224,10 @@ class EpisodeBuilder(Module):
                 legend=TorchAttentionMaskLegend,
             )
 
-        if torch.compiler.is_exporting():
+        if torch.compiler.is_exporting() and not torch.compiler.is_compiling():
+            # Guard with is_compiling(): structlog's logger is not dynamo-traceable
+            # (_thread.allocate_lock breaks strict export). The warning still fires
+            # in fake-export paths where is_exporting()=True but dynamo isn't active.
             logger.warning(
                 "building attention mask during export; "
                 "run an eager forward pass first to populate the cache"
