@@ -85,7 +85,7 @@ def encoder_eval(encoder: Module) -> Module:
 @pytest.fixture
 def policy_embedding(encoder_eval: Module, episode: Episode) -> Tensor:
     return encoder_eval(
-        src=episode.embeddings_unpacked.clone(), mask=episode.attention_mask
+        src=episode.token_embeddings.clone(), mask=episode.attention_mask
     )
 
 
@@ -94,8 +94,7 @@ def policy_embedding_export(
     encoder_eval: Module, episode_export: EpisodeExport
 ) -> Tensor:
     return encoder_eval(
-        src=episode_export.embeddings_unpacked.clone(),
-        mask=episode_export.attention_mask,
+        src=episode_export.token_embeddings.clone(), mask=episode_export.attention_mask
     )
 
 
@@ -122,11 +121,10 @@ def control_transformer(
 def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
     episode_dict = (src := episode).to_dict() | {
         "embeddings": src.embeddings.to_dict(),
-        "embeddings_unpacked": src.embeddings_unpacked,
+        "token_embeddings": src.token_embeddings,
     }
     episode_export_dict = asdict(src := episode_export) | {
-        "embeddings": src.embeddings,
-        "embeddings_unpacked": src.embeddings_unpacked,
+        "token_embeddings": src.token_embeddings
     }
 
     for kp, expected in tree_flatten_with_path(episode_dict)[0]:
