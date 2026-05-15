@@ -1,5 +1,4 @@
 {
-  "fingerprint": "sha256:066e7ee39591608976cccac39d0544aea02a4a54a56a3ab52c44a173fdf1332f",
   "losses": {
     "forward_dynamics/loss/continuous/speed": 6.443472385406494,
     "forward_dynamics/loss/foresight/cam_front_left": 5160.12255859375,
@@ -15,5 +14,6 @@
     "policy_objective/loss/continuous/gas_pedal": -0.06653700023889542,
     "policy_objective/loss/continuous/steering_angle": 0.14995144307613373,
     "policy_objective/loss/discrete/turn_signal": 1.0693943500518799
-  }
+  },
+  "structure": "sha256:8ed7f05f86e55bd4edbacb4bfe34a69b648cf37f64d7e6b6eeac9d459d8cfb12"
 }
