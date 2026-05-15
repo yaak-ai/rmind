@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import Any, final, overload, override
+from typing import Any, final, override
 
 import torch
 from einops import rearrange
@@ -9,11 +9,11 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
-from torch.utils._pytree import tree_map, tree_map_with_path  # noqa: PLC2701
+from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken, TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import Episode, EpisodeExport
+from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
@@ -42,94 +42,51 @@ class PolicyObjective(Objective):
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
-    @overload
-    def forward(self, episode: Episode, embedding: Tensor) -> TensorDict: ...
-
-    @overload
-    def forward(self, episode: EpisodeExport, embedding: Tensor) -> TensorTree: ...
-
     @override
-    def forward(
-        self, episode: Episode | EpisodeExport, embedding: Tensor
-    ) -> TensorDict | TensorTree:
+    def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
         if self.norm is not None:
             embedding = self.norm(embedding)
 
         logits = self._compute_logits(episode=episode, embedding=embedding)
 
-        if isinstance(episode, Episode):
+        def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:
+            match nk:
+                case (Modality.CONTINUOUS, _):
+                    return x[..., 0]
+                case (Modality.DISCRETE, "turn_signal"):
+                    return non_zero_signal_with_threshold(x).class_idx
+                case _:
+                    raise NotImplementedError
 
-            def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:
-                match nk:
-                    case (Modality.CONTINUOUS, _):
-                        return x[..., 0]
-                    case (Modality.DISCRETE, "turn_signal"):
-                        return non_zero_signal_with_threshold(x).class_idx
-                    case _:
-                        raise NotImplementedError
+        return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
 
-            return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
+    def _compute_logits(self, *, episode: Episode, embedding: Tensor) -> TensorTree:
+        _b, _ = episode.input.batch_size
 
-        def fn(kp: tuple[Any, ...], v: Tensor) -> Tensor:
-            if kp[0].key == Modality.CONTINUOUS.value:
-                return v[..., 0]
-
-            if kp[0].key == Modality.DISCRETE.value and kp[1].key == "turn_signal":
-                return non_zero_signal_with_threshold(v).class_idx
-
-            raise NotImplementedError
-
-        return tree_map_with_path(fn, logits)
-
-    def _compute_logits(
-        self, *, episode: Episode | EpisodeExport, embedding: Tensor
-    ) -> TensorTree:
-        if isinstance(episode, Episode):
-            _b, _ = episode.input.batch_size
-
-            embeddings = (
-                episode
-                .index[-1]
-                .select(
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                    (Modality.CONTEXT, "waypoints"),
-                )
-                .parse(embedding)
+        embeddings = (
+            episode
+            .index[-1]
+            .select(
+                (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+                (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
+                (Modality.CONTEXT, "waypoints"),
             )
+            .parse(embedding)
+        )
 
-            observation_history = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_HISTORY,
-            ))
+        observation_history = embeddings.get((
+            Modality.SUMMARY,
+            SummaryToken.OBSERVATION_HISTORY,
+        ))
 
-            observation_summary = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_SUMMARY,
-            ))
+        observation_summary = embeddings.get((
+            Modality.SUMMARY,
+            SummaryToken.OBSERVATION_SUMMARY,
+        ))
 
-            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                dim=1, keepdim=True
-            )
-
-        else:
-            observation_summary = embedding[  # ty:ignore[invalid-argument-type]
-                :,
-                episode.index[Modality.SUMMARY.value][  # ty:ignore[invalid-argument-type]
-                    SummaryToken.OBSERVATION_SUMMARY.value
-                ][-1],
-            ]
-
-            observation_history = embedding[  # ty:ignore[invalid-argument-type]
-                :,
-                episode.index[Modality.SUMMARY.value][  # ty:ignore[invalid-argument-type]
-                    SummaryToken.OBSERVATION_HISTORY.value
-                ][-1],
-            ]
-
-            waypoints = embedding[  # ty:ignore[invalid-argument-type]
-                :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # ty:ignore[invalid-argument-type]
-            ].mean(dim=1, keepdim=True)
+        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
+            dim=1, keepdim=True
+        )
 
         features = rearrange(
             [observation_summary, observation_history, waypoints],

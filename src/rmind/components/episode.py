@@ -1,7 +1,6 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
 from itertools import accumulate, pairwise
-from typing import Any, final, override
+from typing import final, override
 
 import more_itertools as mit
 import torch
@@ -63,25 +62,6 @@ class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     attention_mask: FactorizedAttentionMask
 
 
-@dataclass(frozen=True, kw_only=True)
-class EpisodeExport:
-    input: TensorTree
-    input_tokens: TensorTree
-    input_embeddings: TensorTree
-    embeddings: TensorTree
-    index: TensorTree
-    embeddings_flattened: Tensor
-    attention_mask: FactorizedAttentionMask
-
-    def __getitem__(self, item: str) -> Any:
-        return getattr(self, item)
-
-
-torch.export.register_dataclass(
-    (cls := EpisodeExport), serialized_type_name=cls.__name__
-)
-
-
 @final
 class EpisodeBuilder(Module):
     @validate_call
@@ -135,7 +115,7 @@ class EpisodeBuilder(Module):
         )
 
     @override
-    def forward(self, batch: TensorTree) -> Episode | EpisodeExport:
+    def forward(self, batch: TensorTree) -> Episode:
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
@@ -175,35 +155,21 @@ class EpisodeBuilder(Module):
             "b t * d",
         )
 
-        return (
-            EpisodeExport(
-                input=input,
-                input_tokens=input_tokens,
-                input_embeddings=input_embeddings,
-                embeddings=embeddings,
-                index=index,
-                embeddings_flattened=embeddings_flattened,
-                attention_mask=attention_mask,
-            )
-            if torch.compiler.is_exporting()
-            else Episode(
-                input=TensorDict.from_dict(
-                    input, batch_dims=2
-                ).filter_non_tensor_data(),
-                input_tokens=TensorDict.from_dict(
-                    input_tokens, batch_dims=2
-                ).filter_non_tensor_data(),
-                input_embeddings=TensorDict.from_dict(
-                    input_embeddings, batch_dims=2
-                ).filter_non_tensor_data(),
-                embeddings=TensorDict.from_dict(
-                    embeddings, batch_dims=2
-                ).filter_non_tensor_data(),
-                index=Index.from_dict(index, batch_dims=1),
-                embeddings_flattened=embeddings_flattened,
-                attention_mask=attention_mask,
-                device=device,
-            )
+        return Episode(
+            input=TensorDict(input, batch_size=[b, t]).filter_non_tensor_data(),
+            input_tokens=TensorDict(
+                input_tokens, batch_size=[b, t]
+            ).filter_non_tensor_data(),
+            input_embeddings=TensorDict(
+                input_embeddings, batch_size=[b, t]
+            ).filter_non_tensor_data(),
+            embeddings=TensorDict.from_dict(
+                embeddings, batch_dims=2
+            ).filter_non_tensor_data(),
+            index=Index.from_tensordict(TensorDict(index, batch_size=[t])),  # ty:ignore[invalid-argument-type]
+            embeddings_flattened=embeddings_flattened,
+            attention_mask=attention_mask,
+            device=device,
         )
 
     def _build_attention_mask(

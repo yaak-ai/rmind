@@ -277,7 +277,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             for name, objective in self.objectives.items()
         }
 
-        return TensorDict(outputs) if not torch.compiler.is_exporting() else outputs  # ty:ignore[invalid-argument-type]
+        return TensorDict(outputs)  # ty:ignore[invalid-argument-type]
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
