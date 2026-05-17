@@ -62,6 +62,7 @@ class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     attention_mask: FactorizedAttentionMask
 
 
+
 @final
 class EpisodeBuilder(Module):
     @validate_call
@@ -119,15 +120,10 @@ class EpisodeBuilder(Module):
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
-        (b, t), device = mit.one({
-            (leaf.shape[:2], leaf.device)
-            for leaf in tree_leaves(input_tokens)
-            if leaf is not None
-        })
-
-        if torch.compiler.is_exporting() and isinstance(b, torch.SymInt):
-            msg = "Dynamic batch/sequence dims not supported for export — pytorch/tensordict#1003"
-            raise NotImplementedError(msg)
+        first_leaf = mit.first(
+            leaf for leaf in tree_leaves(input_tokens) if leaf is not None
+        )
+        b, t, device = first_leaf.shape[0], first_leaf.shape[1], first_leaf.device
 
         input_tokens.update(
             tree_map(
@@ -212,11 +208,10 @@ class EpisodeBuilder(Module):
         return attention_mask
 
     def _build_index(self, embeddings: TensorTree) -> TensorTree:
-        (_, t), device = mit.one({
-            (leaf.shape[:2], leaf.device)
-            for leaf in tree_leaves(embeddings)
-            if leaf is not None
-        })
+        first_leaf = mit.first(
+            leaf for leaf in tree_leaves(embeddings) if leaf is not None
+        )
+        t, device = first_leaf.shape[1], first_leaf.device
 
         lengths = [
             key_get(
@@ -240,11 +235,10 @@ class EpisodeBuilder(Module):
         )
 
     def _build_role_embeddings(self, embeddings: TensorTree) -> TensorTree:
-        (_, t), device = mit.one({
-            (leaf.shape[:2], leaf.device)
-            for leaf in tree_leaves(embeddings)
-            if leaf is not None
-        })
+        first_leaf = mit.first(
+            leaf for leaf in tree_leaves(embeddings) if leaf is not None
+        )
+        t, device = first_leaf.shape[1], first_leaf.device
 
         roles = torch.arange(self.role_encoding.num_embeddings, device=device)  # ty:ignore[no-matching-overload]
         role_embeddings = self.role_encoding(roles)
