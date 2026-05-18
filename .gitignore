@@ -148,7 +148,6 @@ config/logger/*
 # editor
 .helix/
 .vscode/
-!.vscode/launch.json
 CLAUDE.md
 
 # macOS
