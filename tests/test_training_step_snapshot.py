@@ -8,8 +8,8 @@ torch's RNG entirely, so weights are bit-identical across:
   - test ordering (no dependence on what consumed RNG before this test ran)
   - pytest sessions (no dependence on fixture cache state)
 
-The snapshot lives at `tests/snapshots/training_step_losses.json` and contains
-the per-objective scalar losses. Refresh with:
+The snapshot lives at `tests/snapshots/training_step_losses.pt` and contains
+the per-objective loss TensorDict. Refresh with:
 
     just update-snapshots
 
@@ -18,20 +18,16 @@ configuration — they're a stable function of the architecture and the input
 shape. The test catches code regressions that change forward-pass arithmetic.
 """
 
-import json
-import math
-import os
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytorch_lightning as pl
 import torch
-from rbyte.types import Batch
 from tensordict import TensorDict
-from torch import Tensor
 from torch.nn import Module
-from torch.testing import make_tensor
+from torch.testing import assert_close
 
 from rmind.components.base import TensorTree
 from rmind.components.episode import EpisodeBuilder
@@ -41,12 +37,11 @@ from rmind.components.objectives import (
     MemoryExtractionObjective,
     PolicyObjective,
 )
+from tests.conftest import make_batch
 
-SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "training_step_losses.json"
-UPDATE_ENV_VAR = "RMIND_UPDATE_SNAPSHOTS"
+SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "training_step_losses.pt"
 RTOL = 1e-3  # wide enough for cross-platform matmul jitter; real regressions are >>0.1%
 ATOL = 1e-5
-
 
 BATCH_SEED = 42
 BATCH_B, BATCH_T = 2, 6
@@ -55,52 +50,17 @@ BATCH_B, BATCH_T = 2, 6
 def _fresh_batch(device: torch.device) -> TensorTree:
     """Build a fresh batch with a fixed seed, independent of any shared fixture.
 
-    Module-scoped batch fixtures get mutated in-place by transforms inside
-    episode_builder.forward (e.g. in-place Normalize). Rebuilding from scratch here
-    ensures every run of this test starts from identical input bytes.
+    The module-scoped conftest batch gets mutated in-place by transforms inside
+    episode_builder.forward (e.g. in-place Normalize). Re-seeding and calling
+    make_batch() directly ensures every run of this test starts from identical
+    input bytes regardless of test ordering or fixture cache state.
+
+    The seed is set inline here rather than in a session/function-scoped fixture
+    because it must fire immediately before make_batch() — any intervening test
+    that consumes RNG would shift the values and break the bit-identical guarantee.
     """
     pl.seed_everything(BATCH_SEED, workers=True, verbose=False)
-    b, t = BATCH_B, BATCH_T
-    batch = Batch(
-        data=TensorDict(
-            {
-                "cam_front_left": make_tensor(
-                    (b, t, 324, 576, 3),
-                    dtype=torch.uint8,
-                    device=device,
-                    low=0,
-                    high=256,
-                ),
-                "meta/VehicleMotion/brake_pedal_normalized": make_tensor(
-                    (b, t), dtype=torch.float32, device=device, low=0.0, high=1.0
-                ),
-                "meta/VehicleMotion/gas_pedal_normalized": make_tensor(
-                    (b, t), dtype=torch.float32, device=device, low=0.0, high=1.0
-                ),
-                "meta/VehicleMotion/steering_angle_normalized": make_tensor(
-                    (b, t), dtype=torch.float32, device=device, low=-1.0, high=1.0
-                ),
-                "meta/VehicleMotion/speed": make_tensor(
-                    (b, t), dtype=torch.float32, device=device, low=0.0, high=130.0
-                ),
-                "meta/VehicleState/turn_signal": make_tensor(
-                    (b, t), dtype=torch.int64, device=device, low=0, high=3
-                ),
-                "waypoints/xy_normalized": make_tensor(
-                    (b, t, 10, 2),
-                    dtype=torch.float32,
-                    device=device,
-                    low=0.0,
-                    high=20.0,
-                ),
-            },
-            batch_size=[b],
-            device=device,
-        ),
-        batch_size=[b],
-        device=device,
-    )
-    return batch.to_dict(retain_none=False)
+    return make_batch(device, b=BATCH_B, t=BATCH_T).to_dict(retain_none=False)
 
 
 def _fill_deterministic(modules: Iterable[Module]) -> None:
@@ -127,41 +87,31 @@ def _fill_deterministic(modules: Iterable[Module]) -> None:
             m.register_buffer("_attention_mask_temporal", None, persistent=False)
 
 
-def _flatten_scalars(td: TensorDict) -> dict[str, float]:
-    return {
-        "/".join(map(str, k)): v.item()
-        for k, v in td.items(include_nested=True, leaves_only=True)
-        if isinstance(v, Tensor) and v.ndim == 0
-    }
-
-
-def _diagnose(actual: dict[str, float], expected: dict[str, float]) -> str:
-    drifted = {
-        k: (actual[k], expected[k])
-        for k in expected
-        if k in actual
-        and not math.isclose(actual[k], expected[k], rel_tol=RTOL, abs_tol=ATOL)
-    }
-    missing = set(expected) - set(actual)
-    added = set(actual) - set(expected)
-
-    parts = [
-        (
-            "loss diff vs snapshot — weights are filled deterministically (no RNG), so "
-            "this is a CODE REGRESSION unless the architecture or input shape changed. "
-            f"rel_tol={RTOL}, abs_tol={ATOL}."
-        )
-    ]
-    if drifted:
-        parts.append("drifted losses:")
-        for k, (a, e) in sorted(drifted.items()):
-            parts.append(f"  {k}: actual={a!r} expected={e!r} delta={a - e:+.4g}")
-    if missing:
-        parts.append(f"missing from actual: {sorted(missing)}")
-    if added:
-        parts.append(f"new keys not in snapshot: {sorted(added)}")
-    parts.append("if intentional, refresh with `just update-snapshots`.")
-    return "\n".join(parts)
+def _compute_metrics(
+    device: torch.device,
+    episode_builder: EpisodeBuilder,
+    encoder: Module,
+    objectives: dict[str, Any],
+) -> TensorDict:
+    _fill_deterministic([episode_builder, encoder, *objectives.values()])
+    batch = _fresh_batch(device)
+    episode = episode_builder(batch)
+    embedding = encoder(src=episode.embeddings_unpacked, mask=episode.attention_mask)
+    metrics = TensorDict({
+        name: obj.compute_metrics(episode=episode, embedding=embedding)
+        for name, obj in objectives.items()
+    })
+    losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
+    metrics["loss", "total"] = losses.sum(reduce=True)
+    # Only keep scalar losses — metrics also contains _artifacts (large tensors).
+    return TensorDict(
+        {
+            k: v
+            for k, v in metrics.items(include_nested=True, leaves_only=True)
+            if v.ndim == 0
+        },
+        batch_size=[],
+    ).detach()
 
 
 def test_training_step_losses_snapshot(  # noqa: PLR0913, PLR0917
@@ -176,49 +126,18 @@ def test_training_step_losses_snapshot(  # noqa: PLR0913, PLR0917
     if device.type != "cpu":
         pytest.skip("snapshot is CPU-only for cross-machine reproducibility")
 
+    if not SNAPSHOT_PATH.exists():
+        pytest.fail(
+            f"snapshot {SNAPSHOT_PATH} missing; run `just update-snapshots` to create it"
+        )
+
     objectives = {
         "inverse_dynamics": inverse_dynamics_prediction_objective,
         "forward_dynamics": forward_dynamics_prediction_objective,
         "memory_extraction": memory_extraction_objective,
         "policy_objective": policy_objective,
     }
-    modules = [episode_builder, encoder, *objectives.values()]
+    actual = _compute_metrics(device, episode_builder, encoder, objectives)
+    expected = torch.load(SNAPSHOT_PATH, weights_only=False)
 
-    _fill_deterministic(modules)
-    batch = _fresh_batch(device)
-
-    episode = episode_builder(batch)
-    embedding = encoder(src=episode.embeddings_unpacked, mask=episode.attention_mask)
-
-    metrics = TensorDict({  # ty:ignore[invalid-argument-type]
-        name: obj.compute_metrics(episode=episode, embedding=embedding)
-        for name, obj in objectives.items()
-    })
-    losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
-    metrics["loss", "total"] = losses.sum(reduce=True)
-    actual = _flatten_scalars(metrics.detach())
-
-    if os.environ.get(UPDATE_ENV_VAR):
-        SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with SNAPSHOT_PATH.open("w") as f:
-            json.dump(actual, f, indent=2, sort_keys=True)
-            f.write("\n")
-        return
-
-    if not SNAPSHOT_PATH.exists():
-        pytest.fail(
-            f"snapshot {SNAPSHOT_PATH} missing; run `just update-snapshots` to create it"
-        )
-
-    with SNAPSHOT_PATH.open() as f:
-        expected = json.load(f)
-
-    keys_match = actual.keys() == expected.keys()
-    values_match = keys_match and all(
-        math.isclose(actual[k], expected[k], rel_tol=RTOL, abs_tol=ATOL)
-        for k in expected
-    )
-    if values_match:
-        return
-
-    pytest.fail(_diagnose(actual, expected))
+    assert_close(actual, expected, atol=ATOL, rtol=RTOL)

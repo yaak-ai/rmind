@@ -72,8 +72,8 @@ test *ARGS: generate-config
     uv run pytest --capture=no -v {{ ARGS }}
 
 # refresh recorded test snapshots (e.g. training_step_losses.json)
-update-snapshots *ARGS:
-    RMIND_UPDATE_SNAPSHOTS=1 uv run pytest tests/test_training_step_snapshot.py {{ ARGS }}
+update-snapshots:
+    uv run python tests/update_snapshots.py
 
 export-onnx *ARGS: generate-config
     uv run --group export rmind-export-onnx \
