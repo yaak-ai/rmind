@@ -147,6 +147,8 @@ config/logger/*
 
 # editor
 .helix/
+.vscode/
+!.vscode/launch.json
 
 # artifacts
 inference_results/
