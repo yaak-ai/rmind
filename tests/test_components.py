@@ -194,7 +194,18 @@ def test_index_unpacked_alignment(episode: Episode) -> None:
     recovered = episode.index.parse(flat)  # nested TensorDict, leaves (b, t, n, d)
     expected = episode.embeddings
 
-    for key in recovered.keys(include_nested=True, leaves_only=True):
-        assert_close(
-            recovered[key], expected[key], msg=f"index/unpacked misaligned for {key}"
-        )
+    # Verify recovered has exactly the indexed keys — none silently skipped.
+    # episode.embeddings also contains special_tokens (e.g. utility/mask) that
+    # are NOT in timestep and therefore have no position in the packed sequence.
+    # Those tokens are accessed directly from episode.embeddings by objectives
+    # (e.g. ForwardDynamics uses utility/mask as a learned placeholder) and are
+    # intentionally absent from token_embeddings and the index.
+    assert set(recovered.keys(include_nested=True, leaves_only=True)) == set(
+        episode.index.keys(include_nested=True, leaves_only=True)
+    )
+
+    assert_close(
+        recovered,
+        expected.select(*recovered.keys(include_nested=True, leaves_only=True)),
+        msg="index/unpacked misaligned",
+    )

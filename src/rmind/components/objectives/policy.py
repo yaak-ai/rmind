@@ -113,21 +113,21 @@ class PolicyObjective(Objective):
             )
 
         else:
-            observation_summary = embedding[  # ty:ignore[invalid-argument-type]
+            observation_summary = embedding[
                 :,
                 episode.index[Modality.SUMMARY.value][  # ty:ignore[invalid-argument-type]
                     SummaryToken.OBSERVATION_SUMMARY.value
                 ][-1],
             ]
 
-            observation_history = embedding[  # ty:ignore[invalid-argument-type]
+            observation_history = embedding[
                 :,
                 episode.index[Modality.SUMMARY.value][  # ty:ignore[invalid-argument-type]
                     SummaryToken.OBSERVATION_HISTORY.value
                 ][-1],
             ]
 
-            waypoints = embedding[  # ty:ignore[invalid-argument-type]
+            waypoints = embedding[
                 :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # ty:ignore[invalid-argument-type]
             ].mean(dim=1, keepdim=True)
 
