@@ -285,6 +285,41 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return TensorDict(outputs)  # ty:ignore[invalid-argument-type]
 
     @override
+    def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        # Normalize encoder keys to encoder.* so checkpoints are portable
+        # regardless of whether the encoder was compiled (which stores weights
+        # under encoder._orig_mod.* instead of encoder.*).
+        checkpoint["state_dict"] = {
+            k.replace("encoder._orig_mod.", "encoder.", 1)
+            if k.startswith("encoder._orig_mod.")
+            else k: v
+            for k, v in checkpoint["state_dict"].items()
+        }
+
+    @override
+    def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        compiled = hasattr(self.encoder, "_orig_mod")
+        state = checkpoint["state_dict"]
+        if compiled:
+            # Model is compiled: keys must be encoder._orig_mod.*
+            # Add prefix to any encoder.* keys that don't already have it.
+            checkpoint["state_dict"] = {
+                k.replace("encoder.", "encoder._orig_mod.", 1)
+                if k.startswith("encoder.") and not k.startswith("encoder._orig_mod.")
+                else k: v
+                for k, v in state.items()
+            }
+        else:
+            # Model is not compiled: keys must be encoder.*
+            # Strip prefix from any legacy encoder._orig_mod.* keys.
+            checkpoint["state_dict"] = {
+                k.replace("encoder._orig_mod.", "encoder.", 1)
+                if k.startswith("encoder._orig_mod.")
+                else k: v
+                for k, v in state.items()
+            }
+
+    @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
         if self.optimizer is not None:
             from rmind.components import optimizers  # noqa: PLC0415

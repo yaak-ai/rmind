@@ -300,6 +300,7 @@ episode_builder:
   attention_mask_builder:
     _target_: rmind.components.mask.FactorizedCausalAttentionMaskBuilder
 
+compile: true
 
 encoder:
   _target_: rmind.components.transformer.TransformerEncoder
