@@ -1,0 +1,8 @@
+# @package _global_
+
+defaults:
+  - pretrain
+  - /datamodule: yaak/train_debug
+  - _self_
+
+compile: false

@@ -52,6 +52,7 @@ train-debug *ARGS: generate-config
     WANDB_MODE=disabled uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml \
+        experiment=yaak/control_transformer/pretrain_debug \
         {{ ARGS }}
 
 predict +ARGS: generate-config
