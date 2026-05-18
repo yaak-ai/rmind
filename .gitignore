@@ -147,6 +147,11 @@ config/logger/*
 
 # editor
 .helix/
+.vscode/
+CLAUDE.md
+
+# macOS
+.DS_Store
 
 # artifacts
 inference_results/
