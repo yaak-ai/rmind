@@ -163,17 +163,18 @@ class EpisodeBuilder(Module):
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
 
-        embeddings = TensorDict.from_dict(
-            tree_map(
-                lambda p, r: p + r if p is not None and r is not None else None,
-                projected_embeddings,
-                role_embeddings,
-            ),
-            batch_dims=2,
-        ).filter_non_tensor_data()
+        embeddings = tree_map(
+            lambda p, r: p + r if p is not None and r is not None else None,
+            projected_embeddings,
+            role_embeddings,
+        )
 
         embeddings_flattened, _ = pack(
-            [embeddings.get(k) for k in self._timestep_keys], "b t * d"
+            [
+                key_get(embeddings, (MappingKey(k[0]), MappingKey(k[1])))  # ty:ignore[invalid-argument-type]
+                for k in self._timestep_keys
+            ],
+            "b t * d",
         )
 
         return (
@@ -181,7 +182,7 @@ class EpisodeBuilder(Module):
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
-                embeddings=embeddings.to_dict(),
+                embeddings=embeddings,
                 index=index,
                 embeddings_flattened=embeddings_flattened,
                 attention_mask=attention_mask,
@@ -197,7 +198,9 @@ class EpisodeBuilder(Module):
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
-                embeddings=embeddings,
+                embeddings=TensorDict.from_dict(
+                    embeddings, batch_dims=2
+                ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
                 embeddings_flattened=embeddings_flattened,
                 attention_mask=attention_mask,
