@@ -1,5 +1,5 @@
 """Golden-snapshot regression test for the loss values produced by a deterministic
-forward + compute_metrics pass on a fixed batch.
+training_step pass on a fixed batch.
 
 Parameters are filled with an RNG-free, index-based pattern (sin of the parameter
 index in `named_parameters()` order) before the forward pass. This sidesteps
@@ -20,24 +20,19 @@ shape. The test catches code regressions that change forward-pass arithmetic.
 
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from unittest.mock import patch
 
 import pytest
 import pytorch_lightning as pl
 import torch
 from tensordict import TensorDict
+from torch import Tensor
 from torch.nn import Module
 from torch.testing import assert_close
 
 from rmind.components.base import TensorTree
-from rmind.components.episode import EpisodeBuilder
-from rmind.components.objectives import (
-    ForwardDynamicsPredictionObjective,
-    InverseDynamicsPredictionObjective,
-    MemoryExtractionObjective,
-    PolicyObjective,
-)
-from tests.conftest import make_batch
+from rmind.models.control_transformer import ControlTransformer
+from tests.conftest import build_snapshot_modules, make_batch
 
 SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "training_step_losses.pt"
 RTOL = 1e-3  # wide enough for cross-platform matmul jitter; real regressions are >>0.1%
@@ -87,42 +82,24 @@ def _fill_deterministic(modules: Iterable[Module]) -> None:
             m.register_buffer("_attention_mask_temporal", None, persistent=False)
 
 
-def _compute_metrics(
-    device: torch.device,
-    episode_builder: EpisodeBuilder,
-    encoder: Module,
-    objectives: dict[str, Any],
-) -> TensorDict:
-    _fill_deterministic([episode_builder, encoder, *objectives.values()])
-    batch = _fresh_batch(device)
-    episode = episode_builder(batch)
-    embedding = encoder(src=episode.embeddings_unpacked, mask=episode.attention_mask)
-    metrics = TensorDict({
-        name: obj.compute_metrics(episode=episode, embedding=embedding)
-        for name, obj in objectives.items()
-    })
-    losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
-    metrics["loss", "total"] = losses.sum(reduce=True)
-    # Only keep scalar losses — metrics also contains _artifacts (large tensors).
+def _compute_metrics(model: ControlTransformer, batch: TensorTree) -> TensorDict:
+    _fill_deterministic([
+        model.episode_builder,
+        model.encoder,
+        *model.objectives.values(),
+    ])
+
+    captured: dict[str, Tensor] = {}
+    with patch.object(model, "log_dict", side_effect=lambda d, **_: captured.update(d)):
+        model.training_step(batch, 0)
+
     return TensorDict(
-        {
-            k: v
-            for k, v in metrics.items(include_nested=True, leaves_only=True)
-            if v.ndim == 0
-        },
+        {tuple(k.removeprefix("train/").split("/")): v for k, v in captured.items()},
         batch_size=[],
-    ).detach()
+    )
 
 
-def test_training_step_losses_snapshot(  # noqa: PLR0913, PLR0917
-    device: torch.device,
-    episode_builder: EpisodeBuilder,
-    encoder: Module,
-    inverse_dynamics_prediction_objective: InverseDynamicsPredictionObjective,
-    forward_dynamics_prediction_objective: ForwardDynamicsPredictionObjective,
-    memory_extraction_objective: MemoryExtractionObjective,
-    policy_objective: PolicyObjective,
-) -> None:
+def test_training_step_losses_snapshot(device: torch.device) -> None:
     if device.type != "cpu":
         pytest.skip("snapshot is CPU-only for cross-machine reproducibility")
 
@@ -131,13 +108,8 @@ def test_training_step_losses_snapshot(  # noqa: PLR0913, PLR0917
             f"snapshot {SNAPSHOT_PATH} missing; run `just update-snapshots` to create it"
         )
 
-    objectives = {
-        "inverse_dynamics": inverse_dynamics_prediction_objective,
-        "forward_dynamics": forward_dynamics_prediction_objective,
-        "memory_extraction": memory_extraction_objective,
-        "policy_objective": policy_objective,
-    }
-    actual = _compute_metrics(device, episode_builder, encoder, objectives)
+    modules = build_snapshot_modules(device)
+    actual = _compute_metrics(modules.model, _fresh_batch(device))
     expected = torch.load(SNAPSHOT_PATH, weights_only=False)
 
     assert_close(actual, expected, atol=ATOL, rtol=RTOL)

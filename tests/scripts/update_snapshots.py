@@ -4,7 +4,7 @@ Run via:
     just update-snapshots
 
 or directly:
-    uv run python tests/update_snapshots.py
+    uv run python -m tests.scripts.update_snapshots
 
 This is intentionally NOT a pytest test — it has the side effect of writing
 a file, which tests should never do.
@@ -13,7 +13,11 @@ a file, which tests should never do.
 import torch
 
 from tests.conftest import build_snapshot_modules
-from tests.test_training_step_snapshot import SNAPSHOT_PATH, _compute_metrics
+from tests.test_training_step_snapshot import (
+    SNAPSHOT_PATH,
+    _compute_metrics,
+    _fresh_batch,
+)
 
 
 def main() -> None:
@@ -22,9 +26,7 @@ def main() -> None:
     device = torch.device("cpu")
     modules = build_snapshot_modules(device)
 
-    metrics = _compute_metrics(
-        device, modules.episode_builder, modules.encoder, modules.objectives
-    )
+    metrics = _compute_metrics(modules.model, _fresh_batch(device))
 
     SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     torch.save(metrics, SNAPSHOT_PATH)
