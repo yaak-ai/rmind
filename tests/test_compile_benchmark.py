@@ -78,7 +78,7 @@ def _time_encoder_steps(  # noqa: PLR0913
     """Time only the encoder forward pass (the compiled portion)."""
     with torch.inference_mode():
         episode: Episode = episode_builder(batch)
-        src = episode.token_embeddings
+        src = episode.embeddings_flattened
         mask = episode.attention_mask
 
     for _ in range(n_warmup):
