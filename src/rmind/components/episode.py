@@ -12,7 +12,6 @@ from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import (  # noqa: PLC2701
     MappingKey,
-    key_get,
     tree_leaves,
     tree_map,
     tree_map_with_path,
@@ -133,24 +132,20 @@ class EpisodeBuilder(Module):
         )
         input_embeddings = self.embeddings(input_tokens)
         projected_embeddings = self.projections(input_embeddings)
+        projected_td = TensorDict(
+            projected_embeddings, batch_size=[b, t]
+        ).filter_non_tensor_data()
 
-        index = self._build_index(projected_embeddings)
+        index = self._build_index(projected_td, device=device)
 
         attention_mask = self._build_attention_mask(index=index, timestep=self.timestep)
 
-        role_embeddings = self._build_role_embeddings(projected_embeddings)
+        role_td = self._build_role_embeddings(projected_td, device=device)
 
-        embeddings = tree_map(
-            lambda p, r: p + r if p is not None and r is not None else None,
-            projected_embeddings,
-            role_embeddings,
-        )
+        embeddings = projected_td.apply(torch.add, role_td)
 
         embeddings_flattened, _ = pack(
-            [
-                key_get(embeddings, (MappingKey(k[0]), MappingKey(k[1])))  # ty:ignore[invalid-argument-type]
-                for k in self._timestep_keys
-            ],
+            [embeddings.get(k) for k in self._timestep_keys],  # ty:ignore[unresolved-attribute]
             "b t * d",
         )
 
@@ -162,9 +157,7 @@ class EpisodeBuilder(Module):
             input_embeddings=TensorDict(
                 input_embeddings, batch_size=[b, t]
             ).filter_non_tensor_data(),
-            embeddings=TensorDict(
-                embeddings, batch_size=[b, t]
-            ).filter_non_tensor_data(),
+            embeddings=embeddings,
             index=Index.from_tensordict(TensorDict(index, batch_size=[t])),  # ty:ignore[invalid-argument-type]
             embeddings_flattened=embeddings_flattened,
             attention_mask=attention_mask,
@@ -206,17 +199,13 @@ class EpisodeBuilder(Module):
 
         return attention_mask
 
-    def _build_index(self, embeddings: TensorTree) -> TensorTree:
-        first_leaf = mit.first(
-            leaf for leaf in tree_leaves(embeddings) if leaf is not None
-        )
-        t, device = first_leaf.shape[1], first_leaf.device
+    def _build_index(
+        self, embeddings: TensorDict, *, device: torch.device
+    ) -> TensorTree:
+        t = embeddings.batch_size[1]
 
         lengths = [
-            key_get(
-                embeddings,
-                (MappingKey(token.modality.value), MappingKey(token.name)),  # ty:ignore[invalid-argument-type]
-            ).shape[2]
+            embeddings.get((token.modality.value, token.name)).shape[2]
             for token in self.timestep
         ]
 
@@ -233,11 +222,10 @@ class EpisodeBuilder(Module):
             timestep_index,
         )
 
-    def _build_role_embeddings(self, embeddings: TensorTree) -> TensorTree:
-        first_leaf = mit.first(
-            leaf for leaf in tree_leaves(embeddings) if leaf is not None
-        )
-        t, device = first_leaf.shape[1], first_leaf.device
+    def _build_role_embeddings(
+        self, embeddings: TensorDict, *, device: torch.device
+    ) -> TensorDict:
+        t = embeddings.batch_size[1]
 
         roles = torch.arange(self.role_encoding.num_embeddings, device=device)  # ty:ignore[no-matching-overload]
         role_embeddings = self.role_encoding(roles)
@@ -251,10 +239,8 @@ class EpisodeBuilder(Module):
                     t=t,
                     n=leaf.shape[-2],
                 )
-                if leaf is not None
-                and path is not None
-                and path in self._role_idx_by_path
-                else (torch.zeros_like(leaf) if leaf is not None else None)
+                if path in self._role_idx_by_path
+                else torch.zeros_like(leaf)
             ),
             embeddings,
         )
