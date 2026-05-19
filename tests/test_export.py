@@ -249,9 +249,13 @@ def test_torch_export(module: Module, args: tuple[Any]) -> None:
 
 
 @pytest.mark.xfail(
-    reason="torch.export.export dynamic_shapes spec doesn't accept the "
-    "TensorDict pytree structure of args=(TensorDict,) — the outer tuple "
-    "wraps TensorDict, but dynamic_shapes spec expects list/dict at that level.",
+    reason="torch.export.export `dynamic_shapes` spec must mirror the args' "
+    "pytree structure with `{dim_index: Dim}` dicts at leaves. When args=(TensorDict,) "
+    "the spec inside the tuple must mirror the TensorDict's pytree, but TensorDict "
+    "only holds tensors as values — it cannot hold `{0: Dim}` dicts at leaves. "
+    "Independent of tensordict#1003 (that issue is about TensorDict's own pytree "
+    "spec serialization during trace); this requires torch.export to grow native "
+    "TensorDict handling in dynamic_shapes or a ShapesCollection-style API.",
     strict=True,
 )
 @torch.inference_mode()
