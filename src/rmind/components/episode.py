@@ -59,15 +59,8 @@ class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     input_embeddings: TensorDict
     embeddings: TensorDict
     index: Index
-    timestep_keys: tuple[tuple[str, str], ...]
+    embeddings_flattened: Tensor
     attention_mask: FactorizedAttentionMask
-
-    @property
-    def token_embeddings(self) -> Tensor:
-        packed, _ = pack(
-            [self.embeddings.get(k) for k in self.timestep_keys], "b t * d"
-        )
-        return packed  # ty:ignore[invalid-return-type]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -77,28 +70,15 @@ class EpisodeExport:
     input_embeddings: TensorTree
     embeddings: TensorTree
     index: TensorTree
-    timestep_keys: tuple[tuple[str, str], ...]
+    embeddings_flattened: Tensor
     attention_mask: FactorizedAttentionMask
-
-    @property
-    def token_embeddings(self) -> Tensor:
-        packed, _ = pack(
-            [
-                key_get(self.embeddings, (MappingKey(k[0]), MappingKey(k[1])))  # ty:ignore[invalid-argument-type]
-                for k in self.timestep_keys
-            ],
-            "b t * d",
-        )
-        return packed
 
     def __getitem__(self, item: str) -> Any:
         return getattr(self, item)
 
 
-torch.utils._pytree.register_dataclass(  # noqa: SLF001
-    (cls := EpisodeExport),
-    drop_field_names=["timestep_keys"],  # non-tensor; treated as static context
-    serialized_type_name=cls.__name__,
+torch.export.register_dataclass(
+    (cls := EpisodeExport), serialized_type_name=cls.__name__
 )
 
 
@@ -183,10 +163,17 @@ class EpisodeBuilder(Module):
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
 
-        embeddings = tree_map(
-            lambda p, r: p + r if p is not None and r is not None else None,
-            projected_embeddings,
-            role_embeddings,
+        embeddings = TensorDict.from_dict(
+            tree_map(
+                lambda p, r: p + r if p is not None and r is not None else None,
+                projected_embeddings,
+                role_embeddings,
+            ),
+            batch_dims=2,
+        ).filter_non_tensor_data()
+
+        embeddings_flattened, _ = pack(
+            [embeddings.get(k) for k in self._timestep_keys], "b t * d"
         )
 
         return (
@@ -194,9 +181,9 @@ class EpisodeBuilder(Module):
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
-                embeddings=embeddings,
+                embeddings=embeddings.to_dict(),
                 index=index,
-                timestep_keys=self._timestep_keys,
+                embeddings_flattened=embeddings_flattened,
                 attention_mask=attention_mask,
             )
             if torch.compiler.is_exporting()
@@ -210,11 +197,9 @@ class EpisodeBuilder(Module):
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
-                embeddings=TensorDict.from_dict(
-                    embeddings, batch_dims=2
-                ).filter_non_tensor_data(),
+                embeddings=embeddings,
                 index=Index.from_dict(index, batch_dims=1),
-                timestep_keys=self._timestep_keys,
+                embeddings_flattened=embeddings_flattened,
                 attention_mask=attention_mask,
                 device=device,
             )

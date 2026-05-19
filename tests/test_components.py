@@ -92,8 +92,8 @@ def test_gram_anchoring_loss_runs_without_gram(device: torch.device) -> None:
 
 def _causal_mask_inputs(device: torch.device) -> tuple[dict, tuple[TokenMeta, ...]]:
     index = {
-        Modality.IMAGE.value: {"obs": torch.tensor([[0], [6]], device=device)},
-        Modality.CONTINUOUS.value: {"act": torch.tensor([[4], [10]], device=device)},
+        Modality.IMAGE.value: {"observation": torch.tensor([[0], [6]], device=device)},
+        Modality.CONTINUOUS.value: {"action": torch.tensor([[4], [10]], device=device)},
         Modality.CONTEXT.value: {},
         Modality.DISCRETE.value: {},
         Modality.FORESIGHT.value: {"future": torch.tensor([[3], [9]], device=device)},
@@ -108,7 +108,7 @@ def _causal_mask_inputs(device: torch.device) -> tuple[dict, tuple[TokenMeta, ..
         },
     }
     timestep = (
-        TokenMeta(TokenType.OBSERVATION, Modality.IMAGE, "obs"),
+        TokenMeta(TokenType.OBSERVATION, Modality.IMAGE, "observation"),
         TokenMeta(
             TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY
         ),
@@ -116,7 +116,7 @@ def _causal_mask_inputs(device: torch.device) -> tuple[dict, tuple[TokenMeta, ..
             TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY
         ),
         TokenMeta(TokenType.SPECIAL, Modality.FORESIGHT, "future"),
-        TokenMeta(TokenType.ACTION, Modality.CONTINUOUS, "act"),
+        TokenMeta(TokenType.ACTION, Modality.CONTINUOUS, "action"),
         TokenMeta(TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.ACTION_SUMMARY),
     )
     return index, timestep
@@ -154,17 +154,17 @@ def test_factorized_causal_attention_mask_builder(device: torch.device) -> None:
     )
 
 
-def test_token_embeddings_order(
+def test_embeddings_flattened_order(
     episode_builder: EpisodeBuilder, episode: Episode
 ) -> None:
-    """token_embeddings must pack tokens in the order declared in episode_builder.timestep.
+    """embeddings_flattened must pack tokens in the order declared in episode_builder.timestep.
 
     The index assigns flat positions by enumerating episode_builder.timestep, so the
     slice at each offset must match the corresponding token's embeddings. Removing
-    sorted() from token_embeddings causes TensorDict to iterate alphabetically,
+    sorted() from embeddings_flattened causes TensorDict to iterate alphabetically,
     placing e.g. action tokens before image tokens and failing this check.
     """
-    unpacked = episode.token_embeddings  # (b, t, s, d)
+    unpacked = episode.embeddings_flattened  # (b, t, s, d)
     embeddings = episode.embeddings
 
     pos = 0
@@ -180,14 +180,14 @@ def test_token_embeddings_order(
 
 
 def test_index_unpacked_alignment(episode: Episode) -> None:
-    """index.parse(flat token_embeddings) must recover the per-token embeddings.
+    """index.parse(flat embeddings_flattened) must recover the per-token embeddings.
 
     This is the load-bearing invariant for every downstream `index.parse(encoder_output)`
     call: a token's position in the flat (t*s,) sequence — assigned by the builder when
     constructing the index — must match where that token actually sits in
-    token_embeddings. If the two disagree, every objective reads the wrong slice.
+    embeddings_flattened. If the two disagree, every objective reads the wrong slice.
     """
-    unpacked = episode.token_embeddings  # (b, t, s, d)
+    unpacked = episode.embeddings_flattened  # (b, t, s, d)
     b, t, s, d = unpacked.shape
     flat = unpacked.reshape(b, t * s, d)  # same shape the encoder returns
 
@@ -199,7 +199,7 @@ def test_index_unpacked_alignment(episode: Episode) -> None:
     # are NOT in timestep and therefore have no position in the packed sequence.
     # Those tokens are accessed directly from episode.embeddings by objectives
     # (e.g. ForwardDynamics uses utility/mask as a learned placeholder) and are
-    # intentionally absent from token_embeddings and the index.
+    # intentionally absent from embeddings_flattened and the index.
     assert set(recovered.keys(include_nested=True, leaves_only=True)) == set(
         episode.index.keys(include_nested=True, leaves_only=True)
     )
