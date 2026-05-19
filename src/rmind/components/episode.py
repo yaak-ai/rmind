@@ -2,7 +2,6 @@ from collections.abc import Mapping
 from itertools import accumulate, pairwise
 from typing import final, override
 
-import more_itertools as mit
 import torch
 from einops import pack, repeat
 from pydantic import InstanceOf, validate_call
@@ -118,18 +117,18 @@ class EpisodeBuilder(Module):
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
-        first_leaf = mit.first(
+        first_leaf = next(
             leaf for leaf in tree_leaves(input_tokens) if leaf is not None
         )
         b, t, device = first_leaf.shape[0], first_leaf.shape[1], first_leaf.device
 
-        input_tokens.update(
-            tree_map(
-                lambda x: torch.tensor(x, device=device).expand(b, t, -1),
-                self.special_tokens,
-                is_leaf=lambda x: isinstance(x, tuple),
-            )
-        )
+        input_tokens.update({
+            modality: {
+                name: torch.tensor(values, device=device).expand(b, t, -1)
+                for name, values in names.items()
+            }
+            for modality, names in self.special_tokens.items()
+        })
         input_embeddings = self.embeddings(input_tokens)
         projected_embeddings = self.projections(input_embeddings)
         projected_td = TensorDict(
