@@ -16,19 +16,19 @@ hparams_jq: |
           "_target_": "rmind.components.containers.ModuleDict",
           "modules": {
             "continuous": {
-              "gas_pedal": {
+              "gas_pedal_diff": {
                 "_target_": "torchvision.ops.MLP",
                 "in_channels": 1152,
                 "hidden_channels": [384, 2],
                 "bias": false
               },
-              "brake_pedal": {
+              "brake_pedal_diff": {
                 "_target_": "torchvision.ops.MLP",
                 "in_channels": 1152,
                 "hidden_channels": [384, 2],
                 "bias": false
               },
-              "steering_angle": {
+              "steering_angle_diff": {
                 "_target_": "torchvision.ops.MLP",
                 "in_channels": 1152,
                 "hidden_channels": [384, 2],
@@ -47,9 +47,9 @@ hparams_jq: |
         },
         "targets": {
           "continuous": {
-            "gas_pedal": ["input", "continuous", "gas_pedal"],
-            "brake_pedal": ["input", "continuous", "brake_pedal"],
-            "steering_angle": ["input", "continuous", "steering_angle"]
+            "gas_pedal_diff": ["input", "continuous", "gas_pedal_diff"],
+            "brake_pedal_diff": ["input", "continuous", "brake_pedal_diff"],
+            "steering_angle_diff": ["input", "continuous", "steering_angle_diff"]
           },
           "discrete": {
             "turn_signal": ["input", "discrete", "turn_signal"]
@@ -59,13 +59,13 @@ hparams_jq: |
           "_target_": "rmind.components.containers.ModuleDict",
           "modules": {
             "continuous": {
-              "gas_pedal": {
+              "gas_pedal_diff": {
                 "_target_": "rmind.components.loss.GaussianNLLLoss"
               },
-              "brake_pedal": {
+              "brake_pedal_diff": {
                 "_target_": "rmind.components.loss.GaussianNLLLoss"
               },
-              "steering_angle": {
+              "steering_angle_diff": {
                 "_target_": "rmind.components.loss.GaussianNLLLoss"
               }
             },
