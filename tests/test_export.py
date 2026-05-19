@@ -84,9 +84,7 @@ def encoder_eval(encoder: Module) -> Module:
 
 @pytest.fixture
 def policy_embedding(encoder_eval: Module, episode: Episode) -> Tensor:
-    return encoder_eval(
-        src=episode.embeddings_flattened.clone(), mask=episode.attention_mask
-    )
+    return encoder_eval(src=episode.embeddings_flattened, mask=episode.attention_mask)
 
 
 @pytest.fixture
@@ -94,8 +92,7 @@ def policy_embedding_export(
     encoder_eval: Module, episode_export: EpisodeExport
 ) -> Tensor:
     return encoder_eval(
-        src=episode_export.embeddings_flattened.clone(),
-        mask=episode_export.attention_mask,
+        src=episode_export.embeddings_flattened, mask=episode_export.attention_mask
     )
 
 

@@ -13,6 +13,7 @@ from rmind.components.mask import (
 )
 from rmind.components.nn import Sequential
 from rmind.components.norm import Scaler, UniformBinner
+from rmind.components.transformer import TransformerEncoder
 
 
 def test_scaler(device: torch.device) -> None:
@@ -169,7 +170,7 @@ def test_embeddings_flattened_order(
 
     pos = 0
     for idx, token in enumerate(episode_builder.timestep):
-        key = (token.modality.value, str(token.name))
+        key = (token.modality.value, token.name)
         expected = embeddings[key]  # (b, t, n, d)
         n = expected.shape[2]
         actual = unpacked[:, :, pos : pos + n, :]
@@ -209,3 +210,19 @@ def test_index_unpacked_alignment(episode: Episode) -> None:
         expected.select(*recovered.keys(include_nested=True, leaves_only=True)),
         msg="index/unpacked misaligned",
     )
+
+
+def test_encoder_no_inplace_ops(encoder: TransformerEncoder) -> None:
+    """Encoder must not use in-place ops.
+
+    Episode.embeddings_flattened is passed directly to the encoder without
+    cloning. A clone would cost ~134 MB per forward at production batch size
+    (b=90, bf16). In-place ops on submodule level are caught here; if one is
+    ever added, this test fails before it silently corrupts Episode state.
+    """
+    inplace_modules = [
+        name
+        for name, module in encoder.named_modules()
+        if getattr(module, "inplace", False)
+    ]
+    assert not inplace_modules, f"encoder contains inplace ops: {inplace_modules}"

@@ -165,12 +165,12 @@ class CausalAttentionMaskBuilder(AttentionMaskBuilder):
         )
 
         obs_keys = tuple(
-            (token.modality.value, str(token.name))
+            (token.modality.value, token.name)
             for token in timestep
             if token.type == TokenType.OBSERVATION
         )
         action_keys = tuple(
-            (token.modality.value, str(token.name))
+            (token.modality.value, token.name)
             for token in timestep
             if token.type == TokenType.ACTION
         )
