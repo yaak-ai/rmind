@@ -30,8 +30,8 @@ from torch import Tensor
 from torch.nn import Module
 from torch.testing import assert_close
 
-from rmind.components.base import TensorTree
 from rmind.models.control_transformer import ControlTransformer
+from rmind.utils.functional import collate_batch
 from tests.conftest import build_snapshot_modules, make_batch
 
 SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "training_step_losses.pt"
@@ -42,7 +42,7 @@ BATCH_SEED = 42
 BATCH_B, BATCH_T = 2, 6
 
 
-def _fresh_batch(device: torch.device) -> TensorTree:
+def _fresh_batch(device: torch.device) -> TensorDict:
     """Build a fresh batch with a fixed seed, independent of any shared fixture.
 
     The module-scoped conftest batch gets mutated in-place by transforms inside
@@ -55,7 +55,7 @@ def _fresh_batch(device: torch.device) -> TensorTree:
     that consumes RNG would shift the values and break the bit-identical guarantee.
     """
     pl.seed_everything(BATCH_SEED, workers=True, verbose=False)
-    return make_batch(device, b=BATCH_B, t=BATCH_T).to_dict(retain_none=False)
+    return collate_batch(make_batch(device, b=BATCH_B, t=BATCH_T))
 
 
 def _fill_deterministic(modules: Iterable[Module]) -> None:
@@ -82,7 +82,7 @@ def _fill_deterministic(modules: Iterable[Module]) -> None:
             m.register_buffer("_attention_mask_temporal", None, persistent=False)
 
 
-def _compute_metrics(model: ControlTransformer, batch: TensorTree) -> TensorDict:
+def _compute_metrics(model: ControlTransformer, batch: TensorDict) -> TensorDict:
     _fill_deterministic([
         model.episode_builder,
         model.encoder,

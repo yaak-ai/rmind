@@ -4,6 +4,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 from pytest_lazy_fixtures import lf
+from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import LayerNorm, Module
 from torch.testing import assert_close
@@ -247,18 +248,28 @@ def test_torch_export(module: Module, args: tuple[Any]) -> None:
     torch.export.export(module, args=args, strict=True)
 
 
+@pytest.mark.xfail(
+    reason="torch.export.export `dynamic_shapes` spec must mirror the args' "
+    "pytree structure with `{dim_index: Dim}` dicts at leaves. When args=(TensorDict,) "
+    "the spec inside the tuple must mirror the TensorDict's pytree, but TensorDict "
+    "only holds tensors as values — it cannot hold `{0: Dim}` dicts at leaves. "
+    "Independent of tensordict#1003 (that issue is about TensorDict's own pytree "
+    "spec serialization during trace); this requires torch.export to grow native "
+    "TensorDict handling in dynamic_shapes or a ShapesCollection-style API.",
+    strict=True,
+)
 @torch.inference_mode()
 def test_torch_export_dynamic_shapes(
-    control_transformer: ControlTransformer, batch_dict: TensorTree
+    control_transformer: ControlTransformer, batch_dict: TensorDict
 ) -> None:
-    """Dynamic-shape export works with the tensordict#1003 patch applied."""
+    """Dynamic-shape export with TensorDict batch input."""
     from rmind.utils.tensordict_export_patch import apply  # noqa: PLC0415
 
     apply()
     module = control_transformer.eval()
     module(batch_dict)  # warm caches
     batch_dim = torch.export.Dim("batch", min=1)
-    dynamic_shapes = (tree_map(lambda _: {0: batch_dim}, batch_dict),)
+    dynamic_shapes = (tree_map(lambda _: {0: batch_dim}, batch_dict.to_dict()),)
     torch.export.export(
         module, args=(batch_dict,), dynamic_shapes=dynamic_shapes, strict=True
     )

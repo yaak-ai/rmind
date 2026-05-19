@@ -9,7 +9,7 @@ predict:
   batch_size: 16
   shuffle: false
   collate_fn:
-    _target_: rbyte.types.Batch.to_dict
+    _target_: rmind.utils.functional.collate_batch
     _partial_: true
 
   num_workers: 2

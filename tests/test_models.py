@@ -49,19 +49,27 @@ def predict_dataset(batch: Batch) -> TensorDict:
     return batch.to_tensordict()  # ty:ignore[invalid-return-type]
 
 
+def _collate_tensordict(items: list[TensorDict]) -> TensorDict:
+    """Stack items into a TensorDict batch with batch_size=[b, t]."""
+    td: TensorDict = torch.stack(items)  # ty:ignore[invalid-argument-type, invalid-assignment]
+    td.auto_batch_size_(batch_dims=2)
+    td.auto_device_()
+    return td
+
+
 @pytest.fixture
 def train_dataloader(train_dataset: TensorDict) -> DataLoader[Any]:
-    return DataLoader(train_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # ty:ignore[invalid-argument-type]
+    return DataLoader(train_dataset, batch_size=1, collate_fn=_collate_tensordict)  # ty:ignore[invalid-argument-type]
 
 
 @pytest.fixture
 def val_dataloader(val_dataset: TensorDict) -> DataLoader[Any]:
-    return DataLoader(val_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # ty:ignore[invalid-argument-type]
+    return DataLoader(val_dataset, batch_size=1, collate_fn=_collate_tensordict)  # ty:ignore[invalid-argument-type]
 
 
 @pytest.fixture
 def predict_dataloader(predict_dataset: TensorDict) -> DataLoader[Any]:
-    return DataLoader(predict_dataset, batch_size=1, collate_fn=TensorDict.to_dict)  # ty:ignore[invalid-argument-type]
+    return DataLoader(predict_dataset, batch_size=1, collate_fn=_collate_tensordict)  # ty:ignore[invalid-argument-type]
 
 
 @pytest.fixture

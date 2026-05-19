@@ -10,7 +10,7 @@ train:
   batch_size: 64
   shuffle: true
   collate_fn:
-    _target_: rbyte.types.Batch.to_dict
+    _target_: rmind.utils.functional.collate_batch
     _partial_: true
   pin_memory: true
   num_workers: 2
@@ -21,7 +21,7 @@ val:
   batch_size: 32
   shuffle: false
   collate_fn:
-    _target_: rbyte.types.Batch.to_dict
+    _target_: rmind.utils.functional.collate_batch
     _partial_: true
   pin_memory: true
   num_workers: 2

@@ -3,6 +3,7 @@ from typing import Any, overload, override
 
 from more_itertools import always_iterable
 from pydantic import InstanceOf, validate_call
+from tensordict.base import TensorDictBase
 from torch.nn import Module
 from torch.nn import ModuleDict as _ModuleDict
 from torch.utils._pytree import (  # noqa: PLC2701
@@ -87,6 +88,15 @@ class ModuleDict(_ModuleDict):
 
         modules = self.to_dict()
 
+        # tree_map requires matching structure types across args. modules is a
+        # plain dict, so coerce TensorDict args (TensorDict converts to dict,
+        # dropping None entries) — but ModuleDict can have None modules for
+        # those keys, so we use a dict view of the TensorDict that preserves
+        # structure via .to_dict(). The result remains a plain dict.
+        coerced_args = tuple(
+            arg.to_dict() if isinstance(arg, TensorDictBase) else arg for arg in args
+        )
+
         return (
             # should be roughly equivalent to
             # `optree.tree_broadcast_map(operator.call, modules, *args, none_is_leaf=True, is_leaf=is_leaf)`
@@ -103,11 +113,11 @@ class ModuleDict(_ModuleDict):
                     else None
                 ),
                 modules,
-                *args,
+                *coerced_args,
                 is_leaf=is_leaf,
             )
             if broadcast
-            else tree_map(lambda mod: mod(*args), modules, is_leaf=is_leaf)
+            else tree_map(lambda mod: mod(*coerced_args), modules, is_leaf=is_leaf)
         )
 
     def tree_paths(self) -> tuple[tuple[str, ...], ...]:

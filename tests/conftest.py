@@ -54,6 +54,7 @@ from rmind.components.transformer import (
     TransformerEncoder,
 )
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
+from rmind.utils.functional import collate_batch
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -160,8 +161,8 @@ def batch(device: torch.device) -> Batch:
 
 
 @pytest.fixture(scope="module")
-def batch_dict(batch: Batch) -> TensorTree:
-    return batch.to_dict(retain_none=False)
+def batch_dict(batch: Batch) -> TensorDict:
+    return collate_batch(batch)
 
 
 def _make_tokenizers(num_bins: NumBins, device: torch.device) -> ModuleDict:
