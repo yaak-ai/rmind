@@ -11,7 +11,6 @@ from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import (  # noqa: PLC2701
     MappingKey,
-    tree_leaves,
     tree_map,
     tree_map_with_path,
 )
@@ -113,14 +112,12 @@ class EpisodeBuilder(Module):
         )
 
     @override
-    def forward(self, batch: TensorTree) -> Episode:
+    def forward(self, batch: TensorDict) -> Episode:
+        b, t = batch.batch_size
+        device = batch.device
+
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
-
-        first_leaf = next(
-            leaf for leaf in tree_leaves(input_tokens) if leaf is not None
-        )
-        b, t, device = first_leaf.shape[0], first_leaf.shape[1], first_leaf.device
 
         input_tokens.update({
             modality: {
@@ -199,7 +196,7 @@ class EpisodeBuilder(Module):
         return attention_mask
 
     def _build_index(
-        self, embeddings: TensorDict, *, device: torch.device
+        self, embeddings: TensorDict, *, device: torch.device | None
     ) -> TensorTree:
         t = embeddings.batch_size[1]
 
@@ -222,7 +219,7 @@ class EpisodeBuilder(Module):
         )
 
     def _build_role_embeddings(
-        self, embeddings: TensorDict, *, device: torch.device
+        self, embeddings: TensorDict, *, device: torch.device | None
     ) -> TensorDict:
         t = embeddings.batch_size[1]
 

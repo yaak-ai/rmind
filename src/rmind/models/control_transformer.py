@@ -176,7 +176,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return model.to(device)  # ty:ignore[invalid-return-type, unresolved-attribute]
 
     @override
-    def training_step(self, batch: dict[str, Any], batch_idx: int) -> STEP_OUTPUT:
+    def training_step(self, batch: TensorDict, batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
             src=episode.embeddings_flattened, mask=episode.attention_mask
@@ -216,7 +216,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return outputs
 
     @override
-    def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
+    def validation_step(self, batch: TensorDict, _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
             src=episode.embeddings_flattened, mask=episode.attention_mask
@@ -249,7 +249,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         ).to_dict()
 
     @override
-    def predict_step(self, batch: dict[str, Any]) -> TensorDict:
+    def predict_step(self, batch: TensorDict) -> TensorDict:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
             src=episode.embeddings_flattened, mask=episode.attention_mask
@@ -266,7 +266,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return TensorDict(objectives_predictions).auto_batch_size_(1)  # ty:ignore[invalid-argument-type]
 
     @override
-    def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
+    def forward(self, batch: TensorDict) -> TensorTree | TensorDict:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
             src=episode.embeddings_flattened, mask=episode.attention_mask

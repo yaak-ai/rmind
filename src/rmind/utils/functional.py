@@ -1,9 +1,24 @@
 from typing import NamedTuple
 
 import torch
+from rbyte.types import Batch
+from tensordict import TensorDict
 from torch import Tensor
 from torch.distributions import Normal
 from torch.nn import functional as F
+
+
+def collate_batch(batch: Batch) -> TensorDict:
+    """Collate an rbyte Batch into a TensorDict with batch_size=[b, t].
+
+    Sets the device from the first tensor leaf so downstream code can rely on
+    `batch.device` instead of probing leaves. batch_dims=2 captures both the
+    batch and time dimensions, giving `b, t = batch.batch_size`.
+    """
+    td: TensorDict = batch.to_tensordict()  # ty:ignore[invalid-assignment]
+    td.auto_batch_size_(batch_dims=2)
+    td.auto_device_()
+    return td
 
 
 def gauss_prob(
