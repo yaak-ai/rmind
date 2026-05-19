@@ -162,8 +162,8 @@ class EpisodeBuilder(Module):
             input_embeddings=TensorDict(
                 input_embeddings, batch_size=[b, t]
             ).filter_non_tensor_data(),
-            embeddings=TensorDict.from_dict(
-                embeddings, batch_dims=2
+            embeddings=TensorDict(
+                embeddings, batch_size=[b, t]
             ).filter_non_tensor_data(),
             index=Index.from_tensordict(TensorDict(index, batch_size=[t])),  # ty:ignore[invalid-argument-type]
             embeddings_flattened=embeddings_flattened,
