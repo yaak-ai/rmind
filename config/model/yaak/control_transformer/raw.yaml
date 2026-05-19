@@ -24,7 +24,7 @@ episode_builder:
       cam_front_left:
         _target_: builtins.range
         _args_:
-          - 256
+          - 64
 
     summary:
       observation_summary: [0]
@@ -217,7 +217,7 @@ episode_builder:
 
       foresight:
           _target_: rmind.components.nn.Embedding
-          num_embeddings: 256
+          num_embeddings: 64
           embedding_dim: ${encoder_embedding_dim}
 
       summary:
