@@ -104,7 +104,7 @@ class EpisodeBuilder(Module):
         )
         self.timestep: tuple[TokenMeta, ...] = timestep
         self._timestep_keys: tuple[tuple[str, str], ...] = tuple(
-            (token.modality.value, str(token.name)) for token in timestep
+            (token.modality.value, token.name) for token in timestep
         )
         self.input_transform: Module = input_transform
         self.tokenizers: ModuleDict = tokenizers
@@ -120,9 +120,7 @@ class EpisodeBuilder(Module):
         self._role_idx_by_path: dict[tuple[MappingKey, MappingKey], int] = {
             (
                 MappingKey(token.modality.value),
-                MappingKey(
-                    str(token.name)
-                ),  # https://github.com/yaak-ai/rmind/issues/204
+                MappingKey(token.name),  # https://github.com/yaak-ai/rmind/issues/204
             ): role_idx_by_type_modality.setdefault(
                 (token.type.value, token.modality.value), len(role_idx_by_type_modality)
             )
@@ -253,7 +251,7 @@ class EpisodeBuilder(Module):
         lengths = [
             key_get(
                 embeddings,
-                (MappingKey(token.modality.value), MappingKey(str(token.name))),  # ty:ignore[invalid-argument-type]
+                (MappingKey(token.modality.value), MappingKey(token.name)),  # ty:ignore[invalid-argument-type]
             ).shape[2]
             for token in self.timestep
         ]
@@ -262,9 +260,7 @@ class EpisodeBuilder(Module):
         ranges = pairwise(accumulate(lengths, initial=0))
 
         timestep_index = unflatten_keys({
-            (token.modality.value, str(token.name)): torch.arange(
-                *range_, device=device
-            )
+            (token.modality.value, token.name): torch.arange(*range_, device=device)
             for token, range_ in zip(self.timestep, ranges, strict=True)
         })
 
