@@ -152,7 +152,7 @@ class PolicyObjective(Objective):
 
         losses = self.losses(
             tree_map(Rearrange("b 1 d -> b d"), logits),
-            tree_map(Rearrange("b 1 -> b"), targets),
+            tree_map(lambda x: x.squeeze(-1), targets),
         )  # ty:ignore[call-non-callable]
 
         return {"loss": losses}
