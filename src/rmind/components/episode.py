@@ -62,7 +62,6 @@ class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     attention_mask: FactorizedAttentionMask
 
 
-
 @final
 class EpisodeBuilder(Module):
     @validate_call
