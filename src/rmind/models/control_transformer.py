@@ -179,7 +179,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.token_embeddings, mask=episode.attention_mask
+            src=episode.embeddings_flattened, mask=episode.attention_mask
         )
 
         metrics = TensorDict({
@@ -219,7 +219,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.token_embeddings, mask=episode.attention_mask
+            src=episode.embeddings_flattened, mask=episode.attention_mask
         )
         metrics = TensorDict({
             name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
@@ -252,7 +252,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.token_embeddings, mask=episode.attention_mask
+            src=episode.embeddings_flattened, mask=episode.attention_mask
         )
         objectives_predictions = {
             name: objective.predict(
@@ -269,7 +269,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     def forward(self, batch: TensorTree) -> TensorTree | TensorDict:
         episode = self.episode_builder(batch)
         embedding = self.encoder(
-            src=episode.token_embeddings, mask=episode.attention_mask
+            src=episode.embeddings_flattened, mask=episode.attention_mask
         )
 
         outputs = {
