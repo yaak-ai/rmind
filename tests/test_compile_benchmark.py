@@ -12,6 +12,7 @@ and prints a summary table. The assertion only guards against severe regression
 (compiled > 1.5x slower than eager); the printed speedup is the real output.
 """
 
+import copy
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -112,7 +113,6 @@ def control_transformer_eager(
         encoder=encoder,
         objectives=objectives,
         prediction_config=PredictionConfig(),
-        compile=False,
     ).to(device)
 
 
@@ -131,13 +131,13 @@ def test_compile_vs_eager_encoder(  # noqa: PLR0913, PLR0917
     if not _probe(backend):
         pytest.skip(f"backend '{backend}' not available on this machine")
 
+    compiled_encoder = copy.deepcopy(encoder)
+    compiled_encoder.compile(backend=backend)
     compiled_ct = ControlTransformer(
         episode_builder=episode_builder,
-        encoder=encoder,
+        encoder=compiled_encoder,
         objectives=objectives,
         prediction_config=PredictionConfig(),
-        compile=True,
-        compile_backend=backend,
     ).to(device)
 
     eager_times = _time_encoder_steps(

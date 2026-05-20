@@ -1,8 +1,10 @@
 # @package _global_
 
 defaults:
-  - pretrain
-  - /datamodule: yaak/train_debug
+  - /experiment/yaak/control_transformer/pretrain
+  - override /datamodule: yaak/train_debug
   - _self_
 
-compile: false
+model:
+  encoder:
+    disable: true
