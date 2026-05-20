@@ -10,6 +10,8 @@ from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
 from structlog import get_logger
 
+from rmind.utils.precision import auto_precision
+
 logger = get_logger(__name__)
 
 
@@ -23,6 +25,7 @@ def _train(cfg: DictConfig) -> None:
     logger.debug("instantiating datamodule", target=cfg.datamodule._target_)
     datamodule: pl.LightningDataModule = instantiate(cfg.datamodule)
 
+    cfg.trainer.precision = auto_precision(cfg.trainer.precision)
     logger.debug("instantiating trainer", target=cfg.trainer._target_)
     trainer: pl.Trainer = instantiate(cfg.trainer)
 
