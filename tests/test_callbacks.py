@@ -8,6 +8,9 @@ from torch import nn
 from rmind.callbacks.freeze import ModuleFreezer
 from rmind.callbacks.loggers import waypoints as waypoints_logger
 from rmind.callbacks.loggers.waypoints import WandbWaypointsLogger
+from rmind.callbacks.safe import SafeCallback
+
+_RETRY_CALL_COUNT = 2
 
 
 class ToyModule(pl.LightningModule):
@@ -55,6 +58,85 @@ def test_missing_path_raises(trainer: pl.Trainer, module: ToyModule) -> None:
     cb = ModuleFreezer(paths={"does_not_exist"})
     with pytest.raises(AttributeError):
         cb.setup(trainer, module, "fit")
+
+
+class FailingBatchCallback(SafeCallback):
+    def __init__(
+        self,
+        *,
+        hook_style: str = "direct",
+        fail_gracefully: bool = True,
+        disable_on_error: bool = True,
+    ) -> None:
+        super().__init__(
+            fail_gracefully=fail_gracefully, disable_on_error=disable_on_error
+        )
+        self.calls = 0
+        self.msg = "logger failed"
+        if hook_style == "dynamic":
+            hook = "on_train_batch_end"
+            setattr(self, hook, self._safe_hook(hook, self._call))
+
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: object,
+        batch: object,
+        batch_idx: int,
+    ) -> None:
+        self._safe_call(
+            "on_train_batch_end",
+            self._call,
+            trainer,
+            pl_module,
+            outputs,
+            batch,
+            batch_idx,
+        )
+
+    def _call(
+        self,
+        trainer: pl.Trainer,  # noqa: ARG002
+        pl_module: pl.LightningModule,  # noqa: ARG002
+        outputs: object,  # noqa: ARG002
+        batch: object,  # noqa: ARG002
+        batch_idx: int,  # noqa: ARG002
+    ) -> None:
+        self.calls += 1
+        raise RuntimeError(self.msg)
+
+
+@pytest.mark.parametrize("hook_style", ["direct", "dynamic"])
+def test_safe_callback_swallows_batch_hook_error(
+    trainer: pl.Trainer, module: ToyModule, hook_style: str
+) -> None:
+    callback = FailingBatchCallback(hook_style=hook_style)
+
+    callback.on_train_batch_end(trainer, module, outputs=None, batch=None, batch_idx=0)
+    callback.on_train_batch_end(trainer, module, outputs=None, batch=None, batch_idx=1)
+
+    assert callback.calls == 1
+
+
+def test_safe_callback_can_retry_after_error(
+    trainer: pl.Trainer, module: ToyModule
+) -> None:
+    callback = FailingBatchCallback(disable_on_error=False)
+
+    callback.on_train_batch_end(trainer, module, outputs=None, batch=None, batch_idx=0)
+    callback.on_train_batch_end(trainer, module, outputs=None, batch=None, batch_idx=1)
+
+    assert callback.calls == _RETRY_CALL_COUNT
+
+
+def test_safe_callback_can_fail_loudly(trainer: pl.Trainer, module: ToyModule) -> None:
+    callback = FailingBatchCallback(fail_gracefully=False)
+
+    with pytest.raises(RuntimeError, match="logger failed"):
+        callback.on_train_batch_end(
+            trainer, module, outputs=None, batch=None, batch_idx=0
+        )
 
 
 def test_waypoints_map_handles_basemap_http_error(

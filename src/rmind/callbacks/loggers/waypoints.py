@@ -7,12 +7,12 @@ import pytorch_lightning as pl
 from contextily.tile import requests
 from einops import rearrange
 from pydantic import AfterValidator, validate_call
-from pytorch_lightning.callbacks import Callback
 from structlog import get_logger
 from torch import Tensor
 from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
 from wandb import Image
 
+from rmind.callbacks.safe import SafeCallback
 from rmind.utils.pytree import key_get_default
 
 from .common import (
@@ -30,7 +30,7 @@ NoneKey = (MappingKey(None),)
 
 
 @final
-class WandbWaypointsLogger(Callback):
+class WandbWaypointsLogger(SafeCallback):
     class DataColumns(StrEnum):
         IMAGE = auto()
         WAYPOINTS_XY_NORMALIZED = auto()
@@ -47,7 +47,12 @@ class WandbWaypointsLogger(Callback):
         key: str,
         every_n_batch: int | None = None,
         crs: str | None = None,
+        fail_gracefully: bool = True,
+        disable_on_error: bool = True,
     ) -> None:
+        super().__init__(
+            fail_gracefully=fail_gracefully, disable_on_error=disable_on_error
+        )
         self._key = key
         _validate_every_n_batch(
             when=when, every_n_batch=every_n_batch, allowed_hooks=BATCH_HOOKS
@@ -65,7 +70,7 @@ class WandbWaypointsLogger(Callback):
             is_leaf=lambda x: isinstance(x, list),
         )
         self._crs = crs
-        setattr(self, when, self._call)
+        setattr(self, when, self._safe_hook(when, self._call))
 
     def _call(
         self,
