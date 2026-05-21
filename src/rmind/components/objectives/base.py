@@ -25,6 +25,11 @@ class ObjectivePredictionKey(StrEnum):
     SCORE_L1 = auto()
     GROUND_TRUTH = auto()
     SUMMARY_EMBEDDINGS = auto()
+    SCORE_L1_REL = auto()
+    PREDICTION_DIFF_PREV = auto()
+    GROUND_TRUTH_DIFF_PREV = auto()
+    PREDICTION_DIFF_HIST = auto()
+    GROUND_TRUTH_DIFF_HIST = auto()
 
 
 class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]

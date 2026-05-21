@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import Any, final, override
+from typing import Any, cast, final, override
 
 import torch
 from einops import rearrange
@@ -115,7 +115,7 @@ class PolicyObjective(Objective):
         return {"loss": losses}
 
     @override
-    def predict(  # noqa: C901, PLR0915
+    def predict(  # noqa: C901, PLR0912, PLR0915
         self,
         episode: Episode,
         *,
@@ -143,6 +143,11 @@ class PolicyObjective(Objective):
             ObjectivePredictionKey.SCORE_LOGPROB,
             ObjectivePredictionKey.SCORE_L1,
             ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
+            ObjectivePredictionKey.SCORE_L1_REL,
+            ObjectivePredictionKey.PREDICTION_DIFF_PREV,
+            ObjectivePredictionKey.GROUND_TRUTH_DIFF_PREV,
+            ObjectivePredictionKey.PREDICTION_DIFF_HIST,
+            ObjectivePredictionKey.GROUND_TRUTH_DIFF_HIST,
         }:
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
@@ -289,6 +294,148 @@ class PolicyObjective(Objective):
                                 gt.float(),
                                 reduction="none",
                             )
+
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
+                )
+
+            if (key := ObjectivePredictionKey.SCORE_L1_REL) in keys:
+
+                def fn(
+                    action_type: tuple[Modality, str], x: torch.Tensor
+                ) -> torch.Tensor:
+                    gt_episode = cast(
+                        "Tensor", episode.input[action_type]
+                    )  # (b, ep_length, 1)
+                    gt = gt_episode[:, -1]  # (b, 1)
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            prediction = x[..., 0]  # (b, 1)
+                            return (prediction - gt).abs() / (gt + 1e-4)
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            return F.l1_loss(
+                                non_zero_signal_with_threshold(x).class_idx.float(),
+                                gt.float(),
+                                reduction="none",
+                            )
+
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
+                )
+
+            if (key := ObjectivePredictionKey.PREDICTION_DIFF_PREV) in keys:
+
+                def fn(
+                    action_type: tuple[Modality, str], x: torch.Tensor
+                ) -> torch.Tensor:
+                    gt_episode = cast(
+                        "Tensor", episode.input[action_type]
+                    )  # (b, ep_length, 1)
+                    gt_prev = gt_episode[:, -2]  # (b, 1)
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            prediction = x[..., 0]  # (b, 1)
+                            return prediction - gt_prev
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            prediction = non_zero_signal_with_threshold(
+                                x
+                            ).class_idx  # (b, 1)
+                            return (prediction != gt_prev).float()
+
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
+                )
+
+            if (key := ObjectivePredictionKey.GROUND_TRUTH_DIFF_PREV) in keys:
+
+                def fn(
+                    action_type: tuple[Modality, str], _x: torch.Tensor
+                ) -> torch.Tensor:
+                    gt_episode = cast(
+                        "Tensor", episode.input[action_type]
+                    )  # (b, ep_length, 1)
+                    gt_prev = gt_episode[:, -2]  # (b, 1)
+                    gt = gt_episode[:, -1]  # (b, 1)
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            return gt - gt_prev
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            return (gt != gt_prev).float()
+
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
+                )
+
+            if (key := ObjectivePredictionKey.PREDICTION_DIFF_HIST) in keys:
+
+                def fn(
+                    action_type: tuple[Modality, str], x: torch.Tensor
+                ) -> torch.Tensor:
+                    gt_episode = cast(
+                        "Tensor", episode.input[action_type]
+                    )  # (b, ep_length, 1)
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            gt_hist = gt_episode.mean(dim=1)  # (b, 1)
+                            prediction = x[..., 0]  # (b, 1)
+                            return prediction - gt_hist
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            gt_hist = torch.mode(gt_episode, dim=1).values  # (b, 1)
+                            prediction = non_zero_signal_with_threshold(
+                                x
+                            ).class_idx  # (b, 1)
+                            return (prediction != gt_hist).float()
+
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
+                )
+
+            if (key := ObjectivePredictionKey.GROUND_TRUTH_DIFF_HIST) in keys:
+
+                def fn(
+                    action_type: tuple[Modality, str], _x: torch.Tensor
+                ) -> torch.Tensor:
+                    gt_episode = cast(
+                        "Tensor", episode.input[action_type]
+                    )  # (b, ep_length, 1)
+                    gt = gt_episode[:, -1]  # (b, 1)
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            gt_hist = gt_episode.mean(dim=1)  # (b, 1)
+                            return gt - gt_hist
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            gt_hist = torch.mode(gt_episode, dim=1).values
+                            return (gt != gt_hist).float()
 
                         case _:
                             msg = f"Invalid action type: {action_type}"
