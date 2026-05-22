@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING, cast
+
 import pytest
 import torch
 from pytest_lazy_fixtures import lf
@@ -5,7 +7,11 @@ from pytest_lazy_fixtures import lf
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import Objective, ObjectivePredictionKey
+from rmind.components.objectives.policy import PolicyObjective
 from rmind.components.transformer import TransformerEncoder
+
+if TYPE_CHECKING:
+    from rmind.components.base import TensorTree
 
 
 @pytest.mark.parametrize(
@@ -17,11 +23,44 @@ from rmind.components.transformer import TransformerEncoder
         lf("policy_objective"),
     ],
 )
-def test_compute_metrics(
+def test_compute_losses_and_metrics(
     objective: Objective, episode: Episode, encoder: TransformerEncoder
 ) -> None:
     embedding = encoder(src=episode.embeddings_flattened, mask=episode.attention_mask)
-    assert "loss" in objective.compute_metrics(episode=episode, embedding=embedding)
+    assert "loss" in objective.compute(episode=episode, embedding=embedding)
+
+
+@torch.no_grad()
+def test_policy_distribution_metrics(
+    policy_objective: PolicyObjective, episode: Episode, encoder: TransformerEncoder
+) -> None:
+    embedding = encoder(src=episode.embeddings_flattened, mask=episode.attention_mask)
+    result = policy_objective.compute(episode=episode, embedding=embedding)
+
+    assert "metrics" in result
+    dist = result["metrics"]
+
+    expected_keys = {
+        "pred_std",
+        "gt_std",
+        "std_ratio",
+        "pred_mean",
+        "gt_mean",
+        "gt_diff",
+        "pred_diff",
+    }
+    assert set(dist.keys()) == expected_keys
+
+    expected_actions = {"gas_pedal", "brake_pedal", "steering_angle"}
+    for metric_key in expected_keys:
+        action_values = cast("TensorTree", dist[metric_key])
+        assert set(action_values.keys()) == expected_actions
+        for value in action_values.values():
+            assert cast("torch.Tensor", value).ndim == 0
+            assert cast("torch.Tensor", value).isfinite()
+
+    for value in cast("TensorTree", dist["std_ratio"]).values():
+        assert cast("torch.Tensor", value) >= 0
 
 
 @pytest.mark.parametrize(

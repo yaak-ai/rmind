@@ -37,8 +37,9 @@ class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]
     timestep_indices: MetaData  # for timestep-wise sparse values
 
 
-class Metrics(TypedDict):
+class ObjectiveOutput(TypedDict):
     loss: TensorTree | None
+    metrics: NotRequired[TensorTree]
     _artifacts: NotRequired[TensorTree]
 
 
@@ -62,7 +63,7 @@ class Objective(Module, ABC):
         return getattr(self, name)
 
     @abstractmethod
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics: ...
+    def compute(self, *, episode: Episode, embedding: Tensor) -> ObjectiveOutput: ...
 
     @abstractmethod
     def predict(

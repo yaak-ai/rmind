@@ -1,4 +1,5 @@
 from collections.abc import Set as AbstractSet
+from enum import StrEnum
 from typing import Any, cast, final, overload, override
 
 import torch
@@ -15,13 +16,49 @@ from rmind.components.base import Modality, SummaryToken, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeExport
 from rmind.components.objectives.base import (
-    Metrics,
     Objective,
+    ObjectiveOutput,
     ObjectivePredictionKey,
     Prediction,
     Targets,
 )
 from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
+
+
+class PolicyMetric(StrEnum):
+    PRED_STD = "pred_std"
+    GT_STD = "gt_std"
+    STD_RATIO = "std_ratio"
+    PRED_MEAN = "pred_mean"
+    GT_MEAN = "gt_mean"
+    GT_DIFF = "gt_diff"
+    PRED_DIFF = "pred_diff"
+
+
+class ActionMetrics:
+    @staticmethod
+    def std(x: Tensor) -> Tensor:
+        return x.std()
+
+    @staticmethod
+    def mean(x: Tensor) -> Tensor:
+        return x.mean()
+
+    def compute(self, gt: Tensor, pred: Tensor) -> dict[PolicyMetric, Tensor]:
+        pred = pred[:, -1, 0]
+        gt_cur = gt[:, -1, 0]
+        gt_prev = gt[:, -2, 0]
+        pred_std = self.std(pred)
+        gt_std = self.std(gt_cur)
+        return {
+            PolicyMetric.PRED_STD: pred_std,
+            PolicyMetric.GT_STD: gt_std,
+            PolicyMetric.STD_RATIO: pred_std / (gt_std + 1e-8),
+            PolicyMetric.PRED_MEAN: self.mean(pred),
+            PolicyMetric.GT_MEAN: self.mean(gt_cur),
+            PolicyMetric.GT_DIFF: self.mean(gt_cur - gt_prev),
+            PolicyMetric.PRED_DIFF: self.mean(pred - gt_prev),
+        }
 
 
 @final
@@ -139,7 +176,7 @@ class PolicyObjective(Objective):
         return self.heads(features)
 
     @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+    def compute(self, *, episode: Episode, embedding: Tensor) -> ObjectiveOutput:
         if self.norm is not None:
             embedding = self.norm(embedding)
 
@@ -149,13 +186,23 @@ class PolicyObjective(Objective):
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
-
         losses = self.losses(
             tree_map(Rearrange("b 1 d -> b d"), logits),
             tree_map(Rearrange("b 1 -> b"), targets),
         )  # ty:ignore[call-non-callable]
 
-        return {"loss": losses}
+        action_metrics = {
+            name: ActionMetrics().compute(
+                episode.get(path), cast("Tensor", logits[Modality.CONTINUOUS][name])
+            )
+            for name, path in (self.targets or {}).get(Modality.CONTINUOUS, {}).items()
+        }
+        metrics: TensorTree = {
+            metric: {name: values[metric] for name, values in action_metrics.items()}
+            for metric in PolicyMetric
+        }
+
+        return {"loss": losses, "metrics": metrics}
 
     @override
     def predict(  # noqa: C901, PLR0912, PLR0915

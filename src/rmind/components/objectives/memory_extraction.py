@@ -12,8 +12,8 @@ from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
-    Metrics,
     Objective,
+    ObjectiveOutput,
     ObjectivePredictionKey,
     Prediction,
     Targets,
@@ -41,7 +41,7 @@ class MemoryExtractionObjective(Objective):
         self.targets: Targets | None = targets
 
     @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+    def compute(self, *, episode: Episode, embedding: Tensor) -> ObjectiveOutput:
         if self.norm is not None:
             embedding = self.norm(embedding)
 
