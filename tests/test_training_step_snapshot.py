@@ -8,16 +8,22 @@ torch's RNG entirely, so weights are bit-identical across:
   - test ordering (no dependence on what consumed RNG before this test ran)
   - pytest sessions (no dependence on fixture cache state)
 
-The snapshot lives at `tests/snapshots/training_step_losses.pt` and contains
-the per-objective loss TensorDict. Refresh with:
+The snapshot lives at `tests/snapshots/training_step_losses.json` and contains
+a flat dict from "/"-joined metric path to scalar loss value. Refresh with:
 
     just update-snapshots
+
+JSON (not pickle) so the file is human-readable and diff-friendly — pickled
+TensorDict emits format-dependent metadata bytes (e.g. _device fields) that
+churn between tensordict versions even when the actual numbers are identical.
 
 CPU-only. The recorded losses don't correspond to any "real" training
 configuration — they're a stable function of the architecture and the input
 shape. The test catches code regressions that change forward-pass arithmetic.
 """
 
+import json
+import math
 from collections.abc import Iterable
 from pathlib import Path
 from unittest.mock import patch
@@ -25,16 +31,14 @@ from unittest.mock import patch
 import pytest
 import pytorch_lightning as pl
 import torch
-from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
-from torch.testing import assert_close
 
 from rmind.components.base import TensorTree
 from rmind.models.control_transformer import ControlTransformer
 from tests.conftest import build_snapshot_modules, make_batch
 
-SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "training_step_losses.pt"
+SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "training_step_losses.json"
 RTOL = 1e-3  # wide enough for cross-platform matmul jitter; real regressions are >>0.1%
 ATOL = 1e-5
 
@@ -82,7 +86,7 @@ def _fill_deterministic(modules: Iterable[Module]) -> None:
             m.register_buffer("_attention_mask_temporal", None, persistent=False)
 
 
-def _compute_metrics(model: ControlTransformer, batch: TensorTree) -> TensorDict:
+def _compute_metrics(model: ControlTransformer, batch: TensorTree) -> dict[str, float]:
     _fill_deterministic([
         model.episode_builder,
         model.encoder,
@@ -93,10 +97,7 @@ def _compute_metrics(model: ControlTransformer, batch: TensorTree) -> TensorDict
     with patch.object(model, "log_dict", side_effect=lambda d, **_: captured.update(d)):
         model.training_step(batch, 0)
 
-    return TensorDict(
-        {tuple(k.removeprefix("train/").split("/")): v for k, v in captured.items()},
-        batch_size=[],
-    )
+    return {k.removeprefix("train/"): v.item() for k, v in captured.items()}
 
 
 def test_training_step_losses_snapshot(device: torch.device) -> None:
@@ -110,6 +111,24 @@ def test_training_step_losses_snapshot(device: torch.device) -> None:
 
     modules = build_snapshot_modules(device)
     actual = _compute_metrics(modules.model, _fresh_batch(device))
-    expected = torch.load(SNAPSHOT_PATH, weights_only=False)
+    with SNAPSHOT_PATH.open() as f:
+        expected = json.load(f)
 
-    assert_close(actual, expected, atol=ATOL, rtol=RTOL)
+    assert actual.keys() == expected.keys(), (
+        f"loss key set drifted from snapshot: "
+        f"added={sorted(actual.keys() - expected.keys())} "
+        f"removed={sorted(expected.keys() - actual.keys())}"
+    )
+    mismatched = {
+        k: (actual[k], expected[k])
+        for k in expected
+        if not math.isclose(actual[k], expected[k], rel_tol=RTOL, abs_tol=ATOL)
+    }
+    assert not mismatched, (
+        f"loss values drifted from snapshot (rtol={RTOL}, atol={ATOL}):\n"
+        + "\n".join(
+            f"  {k}: actual={a!r} expected={e!r} delta={a - e:+.4g}"
+            for k, (a, e) in sorted(mismatched.items())
+        )
+        + "\nif intentional, refresh with `just update-snapshots`."
+    )
