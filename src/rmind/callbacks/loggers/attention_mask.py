@@ -12,8 +12,8 @@ from structlog import get_logger
 from torch import Tensor
 from wandb import Image
 
-from rmind.components.base import TokenType
-from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
+from rmind.components.base import TokenMeta, TokenType
+from rmind.components.episode import Episode, EpisodeBuilder
 
 from .common import _figure_to_rgba, _get_wandb_loggers
 
@@ -43,10 +43,11 @@ def visualize_attention_mask(  # noqa: PLR0914
     for t in range(num_timesteps):
         t_sub = _subscript(t)
         for token in timestep_meta:
-            num_tokens = index[token.modality.value][str(token.name)].shape[-1]
-            name = str(token.name)
+            num_tokens = index[token.modality.value][token.name].shape[-1]
             label = (
-                f"{name}[{num_tokens}]{t_sub}" if num_tokens > 1 else f"{name}{t_sub}"
+                f"{token.name}[{num_tokens}]{t_sub}"
+                if num_tokens > 1
+                else f"{token.name}{t_sub}"
             )
             blocks.append((label, token.type, num_tokens))
 

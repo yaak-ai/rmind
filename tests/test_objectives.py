@@ -20,7 +20,7 @@ from rmind.components.transformer import TransformerEncoder
 def test_compute_metrics(
     objective: Objective, episode: Episode, encoder: TransformerEncoder
 ) -> None:
-    embedding = encoder(src=episode.embeddings_unpacked, mask=episode.attention_mask)
+    embedding = encoder(src=episode.embeddings_flattened, mask=episode.attention_mask)
     assert "loss" in objective.compute_metrics(episode=episode, embedding=embedding)
 
 
@@ -50,7 +50,9 @@ def test_predict(  # noqa: PLR0913, PLR0917
     predictions = objective.predict(
         episode=episode,
         keys=keys,
-        embedding=encoder(src=episode.embeddings_unpacked, mask=episode.attention_mask),
+        embedding=encoder(
+            src=episode.embeddings_flattened, mask=episode.attention_mask
+        ),
         tokenizers=tokenizers,
     )
     prediction_keys = set(predictions.keys())

@@ -3,7 +3,7 @@ from itertools import pairwise
 import torch
 from torch.testing import assert_close, make_tensor
 
-from rmind.components.base import Modality, SummaryToken, TokenType
+from rmind.components.base import Modality, SummaryToken, TokenMeta, TokenType
 from rmind.components.episode import Episode, EpisodeBuilder
 from rmind.components.loss import GramAnchoringLoss
 from rmind.components.mask import (
@@ -13,6 +13,7 @@ from rmind.components.mask import (
 )
 from rmind.components.nn import Sequential
 from rmind.components.norm import Scaler, UniformBinner
+from rmind.components.transformer import TransformerEncoder
 
 
 def test_scaler(device: torch.device) -> None:
@@ -90,10 +91,10 @@ def test_gram_anchoring_loss_runs_without_gram(device: torch.device) -> None:
     assert loss.isfinite()
 
 
-def _causal_mask_inputs(device: torch.device) -> tuple[dict, dict]:
+def _causal_mask_inputs(device: torch.device) -> tuple[dict, tuple[TokenMeta, ...]]:
     index = {
-        Modality.IMAGE.value: {"obs": torch.tensor([[0], [6]], device=device)},
-        Modality.CONTINUOUS.value: {"act": torch.tensor([[4], [10]], device=device)},
+        Modality.IMAGE.value: {"observation": torch.tensor([[0], [6]], device=device)},
+        Modality.CONTINUOUS.value: {"action": torch.tensor([[4], [10]], device=device)},
         Modality.CONTEXT.value: {},
         Modality.DISCRETE.value: {},
         Modality.FORESIGHT.value: {"future": torch.tensor([[3], [9]], device=device)},
@@ -107,18 +108,18 @@ def _causal_mask_inputs(device: torch.device) -> tuple[dict, dict]:
             SummaryToken.ACTION_SUMMARY.value: torch.tensor([[5], [11]], device=device),
         },
     }
-    timestep = {
-        TokenType.OBSERVATION.value: {Modality.IMAGE.value: {"obs": 0}},
-        TokenType.ACTION.value: {Modality.CONTINUOUS.value: {"act": 4}},
-        TokenType.SPECIAL.value: {
-            Modality.FORESIGHT.value: {"future": 3},
-            Modality.SUMMARY.value: {
-                SummaryToken.OBSERVATION_SUMMARY.value: 1,
-                SummaryToken.OBSERVATION_HISTORY.value: 2,
-                SummaryToken.ACTION_SUMMARY.value: 5,
-            },
-        },
-    }
+    timestep = (
+        TokenMeta(TokenType.OBSERVATION, Modality.IMAGE, "observation"),
+        TokenMeta(
+            TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY
+        ),
+        TokenMeta(
+            TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY
+        ),
+        TokenMeta(TokenType.SPECIAL, Modality.FORESIGHT, "future"),
+        TokenMeta(TokenType.ACTION, Modality.CONTINUOUS, "action"),
+        TokenMeta(TokenType.SPECIAL, Modality.SUMMARY, SummaryToken.ACTION_SUMMARY),
+    )
     return index, timestep
 
 
@@ -154,22 +155,22 @@ def test_factorized_causal_attention_mask_builder(device: torch.device) -> None:
     )
 
 
-def test_embeddings_unpacked_order(
+def test_embeddings_flattened_order(
     episode_builder: EpisodeBuilder, episode: Episode
 ) -> None:
-    """embeddings_unpacked must pack tokens in the order declared in episode_builder.timestep.
+    """embeddings_flattened must pack tokens in the order declared in episode_builder.timestep.
 
     The index assigns flat positions by enumerating episode_builder.timestep, so the
     slice at each offset must match the corresponding token's embeddings. Removing
-    sorted() from embeddings_unpacked causes TensorDict to iterate alphabetically,
+    sorted() from embeddings_flattened causes TensorDict to iterate alphabetically,
     placing e.g. action tokens before image tokens and failing this check.
     """
-    unpacked = episode.embeddings_unpacked  # (b, t, s, d)
+    unpacked = episode.embeddings_flattened  # (b, t, s, d)
     embeddings = episode.embeddings
 
     pos = 0
     for idx, token in enumerate(episode_builder.timestep):
-        key = (token.modality.value, str(token.name))
+        key = (token.modality.value, token.name)
         expected = embeddings[key]  # (b, t, n, d)
         n = expected.shape[2]
         actual = unpacked[:, :, pos : pos + n, :]
@@ -180,14 +181,14 @@ def test_embeddings_unpacked_order(
 
 
 def test_index_unpacked_alignment(episode: Episode) -> None:
-    """index.parse(flat embeddings_unpacked) must recover the per-token embeddings.
+    """index.parse(flat embeddings_flattened) must recover the per-token embeddings.
 
     This is the load-bearing invariant for every downstream `index.parse(encoder_output)`
     call: a token's position in the flat (t*s,) sequence — assigned by the builder when
     constructing the index — must match where that token actually sits in
-    embeddings_unpacked. If the two disagree, every objective reads the wrong slice.
+    embeddings_flattened. If the two disagree, every objective reads the wrong slice.
     """
-    unpacked = episode.embeddings_unpacked  # (b, t, s, d)
+    unpacked = episode.embeddings_flattened  # (b, t, s, d)
     b, t, s, d = unpacked.shape
     flat = unpacked.reshape(b, t * s, d)  # same shape the encoder returns
 
@@ -199,7 +200,7 @@ def test_index_unpacked_alignment(episode: Episode) -> None:
     # are NOT in timestep and therefore have no position in the packed sequence.
     # Those tokens are accessed directly from episode.embeddings by objectives
     # (e.g. ForwardDynamics uses utility/mask as a learned placeholder) and are
-    # intentionally absent from token_embeddings and the index.
+    # intentionally absent from embeddings_flattened and the index.
     assert set(recovered.keys(include_nested=True, leaves_only=True)) == set(
         episode.index.keys(include_nested=True, leaves_only=True)
     )
@@ -209,3 +210,19 @@ def test_index_unpacked_alignment(episode: Episode) -> None:
         expected.select(*recovered.keys(include_nested=True, leaves_only=True)),
         msg="index/unpacked misaligned",
     )
+
+
+def test_encoder_no_inplace_ops(encoder: TransformerEncoder) -> None:
+    """Encoder must not use in-place ops.
+
+    Episode.embeddings_flattened is passed directly to the encoder without
+    cloning. A clone would cost ~134 MB per forward at production batch size
+    (b=90, bf16). In-place ops on submodule level are caught here; if one is
+    ever added, this test fails before it silently corrupts Episode state.
+    """
+    inplace_modules = [
+        name
+        for name, module in encoder.named_modules()
+        if getattr(module, "inplace", False)
+    ]
+    assert not inplace_modules, f"encoder contains inplace ops: {inplace_modules}"
