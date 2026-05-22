@@ -8,7 +8,6 @@ from torch import Tensor
 from torch.nn import LayerNorm, Module
 from torch.testing import assert_close
 from torch.utils._pytree import (  # noqa: PLC2701
-    key_get,
     keystr,
     tree_flatten_with_path,
     tree_map,
@@ -130,32 +129,7 @@ def control_transformer(
 
 
 def test_episode(episode: Episode, episode_export: Episode) -> None:
-    def ep_dict(src: Episode) -> dict:
-        return src.to_dict() | {
-            "embeddings": src.embeddings.to_dict(),
-            "embeddings_flattened": src.embeddings_flattened,
-        }
-
-    episode_dict = ep_dict(episode)
-    episode_export_dict = ep_dict(episode_export)
-
-    for kp, expected in tree_flatten_with_path(episode_dict)[0]:
-        actual = key_get(episode_export_dict, kp)
-        match expected, actual:
-            case (Tensor(shape=[]), int() | float()):
-                expected = expected.item()  # noqa: PLW2901
-
-            case _:
-                pass
-
-        assert_close(
-            actual,
-            expected=expected,
-            rtol=0.0,
-            atol=0.0,
-            equal_nan=True,
-            msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
-        )
+    assert_close(episode, episode_export)
 
 
 @pytest.mark.parametrize(
