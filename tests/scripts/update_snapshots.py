@@ -1,4 +1,4 @@
-"""Standalone script to refresh tests/snapshots/training_step_losses.pt.
+"""Standalone script to refresh tests/snapshots/training_step_losses.json.
 
 Run via:
     just update-snapshots
@@ -9,6 +9,8 @@ or directly:
 This is intentionally NOT a pytest test — it has the side effect of writing
 a file, which tests should never do.
 """
+
+import json
 
 import torch
 
@@ -23,18 +25,27 @@ from tests.test_training_step_snapshot import (
 def main() -> None:
     torch.set_float32_matmul_precision("high")
 
+    # Fail fast if the destination dir can't be created — don't waste a minute
+    # building modules and computing metrics only to discover we can't write.
+    SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
     device = torch.device("cpu")
     modules = build_snapshot_modules(device)
 
     metrics = _compute_metrics(modules.model, _fresh_batch(device))
 
-    SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(metrics, SNAPSHOT_PATH)
+    try:
+        with SNAPSHOT_PATH.open("w") as f:
+            json.dump(metrics, f, indent=2, sort_keys=True)
+            f.write("\n")
+    except BaseException:
+        # Don't leave a half-written snapshot behind.
+        SNAPSHOT_PATH.unlink(missing_ok=True)
+        raise
 
     print(f"Snapshot written to {SNAPSHOT_PATH}")  # noqa: T201
-    for k, v in metrics.items(include_nested=True, leaves_only=True):
-        if isinstance(v, torch.Tensor) and v.ndim == 0:
-            print(f"  {'/'.join(map(str, k))}: {v.item():.6g}")  # noqa: T201
+    for k, v in sorted(metrics.items()):
+        print(f"  {k}: {v:.6g}")  # noqa: T201
 
 
 if __name__ == "__main__":
