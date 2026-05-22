@@ -177,3 +177,35 @@ def test_embeddings_unpacked_order(
             actual, expected, msg=f"wrong slice at timestep position {idx} {token}"
         )
         pos += n
+
+
+def test_index_unpacked_alignment(episode: Episode) -> None:
+    """index.parse(flat embeddings_unpacked) must recover the per-token embeddings.
+
+    This is the load-bearing invariant for every downstream `index.parse(encoder_output)`
+    call: a token's position in the flat (t*s,) sequence — assigned by the builder when
+    constructing the index — must match where that token actually sits in
+    embeddings_unpacked. If the two disagree, every objective reads the wrong slice.
+    """
+    unpacked = episode.embeddings_unpacked  # (b, t, s, d)
+    b, t, s, d = unpacked.shape
+    flat = unpacked.reshape(b, t * s, d)  # same shape the encoder returns
+
+    recovered = episode.index.parse(flat)  # nested TensorDict, leaves (b, t, n, d)
+    expected = episode.embeddings
+
+    # Verify recovered has exactly the indexed keys — none silently skipped.
+    # episode.embeddings also contains special_tokens (e.g. utility/mask) that
+    # are NOT in timestep and therefore have no position in the packed sequence.
+    # Those tokens are accessed directly from episode.embeddings by objectives
+    # (e.g. ForwardDynamics uses utility/mask as a learned placeholder) and are
+    # intentionally absent from token_embeddings and the index.
+    assert set(recovered.keys(include_nested=True, leaves_only=True)) == set(
+        episode.index.keys(include_nested=True, leaves_only=True)
+    )
+
+    assert_close(
+        recovered,
+        expected.select(*recovered.keys(include_nested=True, leaves_only=True)),
+        msg="index/unpacked misaligned",
+    )

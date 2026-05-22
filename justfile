@@ -71,6 +71,10 @@ predict-policy-with-permutations +ARGS: generate-config
 test *ARGS: generate-config
     uv run pytest --capture=no -v {{ ARGS }}
 
+# refresh recorded test snapshots (e.g. training_step_losses.json)
+update-snapshots:
+    uv run python -m tests.scripts.update_snapshots
+
 export-onnx *ARGS: generate-config
     uv run --group export rmind-export-onnx \
         --config-path {{ justfile_directory() }}/config \
