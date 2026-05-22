@@ -23,7 +23,6 @@ shape. The test catches code regressions that change forward-pass arithmetic.
 """
 
 import json
-import math
 from collections.abc import Iterable
 from pathlib import Path
 from unittest.mock import patch
@@ -31,8 +30,10 @@ from unittest.mock import patch
 import pytest
 import pytorch_lightning as pl
 import torch
+from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
+from torch.testing import assert_close
 
 from rmind.components.base import TensorTree
 from rmind.models.control_transformer import ControlTransformer
@@ -100,6 +101,10 @@ def _compute_metrics(model: ControlTransformer, batch: TensorTree) -> dict[str, 
     return {k.removeprefix("train/"): v.item() for k, v in captured.items()}
 
 
+def _as_tensordict(metrics: dict[str, float]) -> TensorDict:
+    return TensorDict({k: torch.tensor(v) for k, v in metrics.items()}, batch_size=[])
+
+
 def test_training_step_losses_snapshot(device: torch.device) -> None:
     if device.type != "cpu":
         pytest.skip("snapshot is CPU-only for cross-machine reproducibility")
@@ -110,25 +115,8 @@ def test_training_step_losses_snapshot(device: torch.device) -> None:
         )
 
     modules = build_snapshot_modules(device)
-    actual = _compute_metrics(modules.model, _fresh_batch(device))
+    actual = _as_tensordict(_compute_metrics(modules.model, _fresh_batch(device)))
     with SNAPSHOT_PATH.open() as f:
-        expected = json.load(f)
+        expected = _as_tensordict(json.load(f))
 
-    assert actual.keys() == expected.keys(), (
-        f"loss key set drifted from snapshot: "
-        f"added={sorted(actual.keys() - expected.keys())} "
-        f"removed={sorted(expected.keys() - actual.keys())}"
-    )
-    mismatched = {
-        k: (actual[k], expected[k])
-        for k in expected
-        if not math.isclose(actual[k], expected[k], rel_tol=RTOL, abs_tol=ATOL)
-    }
-    assert not mismatched, (
-        f"loss values drifted from snapshot (rtol={RTOL}, atol={ATOL}):\n"
-        + "\n".join(
-            f"  {k}: actual={a!r} expected={e!r} delta={a - e:+.4g}"
-            for k, (a, e) in sorted(mismatched.items())
-        )
-        + "\nif intentional, refresh with `just update-snapshots`."
-    )
+    assert_close(actual, expected, rtol=RTOL, atol=ATOL)
