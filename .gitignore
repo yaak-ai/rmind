@@ -149,6 +149,10 @@ config/logger/*
 .helix/
 .vscode/
 !.vscode/launch.json
+CLAUDE.md
+
+# macOS
+.DS_Store
 
 # artifacts
 inference_results/

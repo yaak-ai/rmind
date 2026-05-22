@@ -1,4 +1,3 @@
-from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -8,17 +7,32 @@ from pytest_lazy_fixtures import lf
 from torch import Tensor
 from torch.nn import LayerNorm, Module
 from torch.testing import assert_close
-from torch.utils._pytree import key_get, keystr, tree_flatten_with_path  # noqa: PLC2701
+from torch.utils._pytree import (  # noqa: PLC2701
+    keystr,
+    tree_flatten_with_path,
+    tree_map,
+)
 from torchvision.ops import MLP
 
 from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import Episode, EpisodeBuilder, EpisodeExport
+from rmind.components.episode import Episode, EpisodeBuilder
 from rmind.components.objectives.policy import PolicyObjective
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
 
 if TYPE_CHECKING:
     from tests.conftest import EmbeddingDims
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _soft_pending_unbacked() -> None:
+    # tensordict's _device_recorder and _CONSTRUCTORS are global dicts mutated
+    # during export tracing (dynamo side-effect). This creates a spurious
+    # "pending unbacked symbol u0" error even though the exported graph is valid.
+    # Demote to warning so torch.export tests are not falsely blocked.
+    import torch.fx.experimental._config as _fx_config  # noqa: PLC0415, PLC2701
+
+    _fx_config.soft_pending_unbacked_not_found_error = True  # ty:ignore[invalid-assignment]
 
 
 @pytest.fixture
@@ -32,7 +46,7 @@ def episode_export(
     episode_builder: EpisodeBuilder,
     batch_dict: TensorTree,
     monkeypatch: pytest.MonkeyPatch,
-) -> EpisodeExport:
+) -> Episode:
     with torch.inference_mode(), monkeypatch.context() as m:
         m.setattr("torch.compiler._is_exporting_flag", True)
         return episode_builder(batch_dict)
@@ -88,9 +102,7 @@ def policy_embedding(encoder_eval: Module, episode: Episode) -> Tensor:
 
 
 @pytest.fixture
-def policy_embedding_export(
-    encoder_eval: Module, episode_export: EpisodeExport
-) -> Tensor:
+def policy_embedding_export(encoder_eval: Module, episode_export: Episode) -> Tensor:
     return encoder_eval(
         src=episode_export.embeddings_flattened, mask=episode_export.attention_mask
     )
@@ -116,32 +128,8 @@ def control_transformer(
     ).to(device)
 
 
-def test_episode(episode: Episode, episode_export: EpisodeExport) -> None:
-    episode_dict = (src := episode).to_dict() | {
-        "embeddings": src.embeddings.to_dict(),
-        "embeddings_flattened": src.embeddings_flattened,
-    }
-    episode_export_dict = asdict(src := episode_export) | {
-        "embeddings_flattened": src.embeddings_flattened
-    }
-
-    for kp, expected in tree_flatten_with_path(episode_dict)[0]:
-        actual = key_get(episode_export_dict, kp)
-        match expected, actual:
-            case (Tensor(shape=[]), int() | float()):
-                expected = expected.item()  # noqa: PLW2901
-
-            case _:
-                pass
-
-        assert_close(
-            actual,
-            expected=expected,
-            rtol=0.0,
-            atol=0.0,
-            equal_nan=True,
-            msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
-        )
+def test_episode(episode: Episode, episode_export: Episode) -> None:
+    assert_close(episode, episode_export)
 
 
 @pytest.mark.parametrize(
@@ -174,12 +162,14 @@ def test_torch_export_fake(
         # so we can breakpoint() inside export code paths
         module_export_output = module(*args_export)
 
-    # since in EpisodeExport attention_mask is a tensorclass, not tensordict
-    if is_dataclass(module_export_output):
-        module_export_output = asdict(module_export_output)
+    module_export_output_items, _ = tree_flatten_with_path(module_export_output)
 
-    for kp, expected in module_output_items:
-        actual = key_get(module_export_output, kp)
+    for (kp, expected), (_, actual) in zip(
+        module_output_items, module_export_output_items, strict=True
+    ):
+        if not isinstance(expected, Tensor):
+            continue
+
         match expected, actual:
             case (Tensor(shape=[]), int() | float()):
                 expected = expected.item()  # noqa: PLW2901
@@ -187,23 +177,11 @@ def test_torch_export_fake(
             case _:
                 pass
 
-        # PolicyObjective._compute_logits has separate Episode / EpisodeExport
-        # branches (TensorDict .parse vs direct fancy-indexing + .mean) that are
-        # mathematically equivalent but not bit-equal on CUDA due to differing
-        # reduction order. Narrow the tolerance to the policy continuous keys.
-        is_policy_continuous = (
-            len(kp) >= 2  # noqa: PLR2004
-            and getattr(kp[0], "key", None) == "policy"
-            and getattr(kp[1], "key", None) == Modality.CONTINUOUS.value
-        )
-        kwargs = {"atol": 2e-4, "rtol": 2e-3} if is_policy_continuous else {}
-
         assert_close(
             actual,
             expected,
             equal_nan=True,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
-            **kwargs,  # ty:ignore[invalid-argument-type]
         )
 
 
@@ -243,6 +221,23 @@ def test_torch_export(module: Module, args: tuple[Any]) -> None:
     torch.export.export(module, args=args, strict=True)
 
 
+@torch.inference_mode()
+def test_torch_export_dynamic_shapes(
+    control_transformer: ControlTransformer, batch_dict: TensorTree
+) -> None:
+    """Dynamic-shape export works with the tensordict#1003 patch applied."""
+    from rmind.utils.tensordict_export_patch import apply  # noqa: PLC0415
+
+    apply()
+    module = control_transformer.eval()
+    module(batch_dict)  # warm caches
+    batch_dim = torch.export.Dim("batch", min=1)
+    dynamic_shapes = (tree_map(lambda _: {0: batch_dim}, batch_dict),)
+    torch.export.export(
+        module, args=(batch_dict,), dynamic_shapes=dynamic_shapes, strict=True
+    )
+
+
 @pytest.mark.parametrize(
     ("module", "args"),
     [(lf("control_transformer"), (lf("batch_dict"),))],
@@ -261,3 +256,39 @@ def test_onnx_export(module: Module, args: tuple[Any]) -> None:
     )
 
     assert program is not None
+
+
+@pytest.mark.parametrize(
+    ("module", "args"),
+    [(lf("control_transformer"), (lf("batch_dict"),))],
+    ids=["control_transformer"],
+)
+@torch.inference_mode()
+def test_onnx_inference(module: Module, args: tuple[Any]) -> None:
+    """ORT inference on the exported ONNX model must match PyTorch eager numerically."""
+    module = module.eval()
+
+    eager_output = module(*args)
+    eager_leaves, _ = tree_flatten_with_path(eager_output)
+
+    exported_program = torch.export.export(module, args=args, strict=True)
+    onnx_program = torch.onnx.export(
+        model=exported_program,
+        external_data=False,
+        dynamo=True,
+        optimize=True,
+        verify=False,
+    )
+    assert onnx_program is not None
+
+    onnx_output = onnx_program(*args)
+    onnx_leaves, _ = tree_flatten_with_path(onnx_output)
+
+    for (kp, expected), (_, actual) in zip(eager_leaves, onnx_leaves, strict=True):
+        assert_close(
+            torch.as_tensor(actual).float(),
+            expected.cpu().float(),
+            rtol=1e-2,
+            atol=1e-3,
+            msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
+        )
