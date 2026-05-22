@@ -7,5 +7,7 @@ from typing import Any
 def monkeypatched(obj: Any, name: str, patch: Any) -> Generator[Any, None, None]:
     old = getattr(obj, name)
     setattr(obj, name, patch)
-    yield obj
-    setattr(obj, name, old)
+    try:
+        yield obj
+    finally:
+        setattr(obj, name, old)
