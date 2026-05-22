@@ -1,8 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import accumulate, pairwise
-from operator import itemgetter
-from typing import Any, NamedTuple, final, override
+from typing import Any, final, override
 
 import more_itertools as mit
 import torch
@@ -10,24 +9,17 @@ from einops import pack, repeat
 from pydantic import InstanceOf, validate_call
 from structlog import get_logger
 from tensordict import TensorClass, TensorDict
-from tensordict._pytree import (  # noqa: PLC2701
-    _td_flatten_with_keys,
-    _tensordict_flatten,
-    _tensordict_unflatten,
-)
 from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import (  # noqa: PLC2701
     MappingKey,
     key_get,
-    register_pytree_node,
     tree_leaves,
-    tree_leaves_with_path,
     tree_map,
     tree_map_with_path,
 )
 
-from rmind.components.base import Modality, TensorTree, TokenType
+from rmind.components.base import TensorTree, TokenMeta
 from rmind.components.containers import ModuleDict
 from rmind.components.mask import (
     FactorizedAttentionMask,
@@ -37,12 +29,6 @@ from rmind.components.mask import (
 from rmind.utils.pytree import unflatten_keys
 
 logger = get_logger(__name__)
-
-
-class TokenMeta(NamedTuple):
-    type: TokenType
-    modality: Modality
-    name: str
 
 
 class Index(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
@@ -67,47 +53,14 @@ class Index(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
         )
 
 
-class Timestep(TensorDict):
-    pass
-
-
-register_pytree_node(
-    Timestep,
-    _tensordict_flatten,
-    _tensordict_unflatten,  # ty:ignore[invalid-argument-type]
-    flatten_with_keys_fn=_td_flatten_with_keys,
-)
-
-TimestepExport = dict[str, dict[tuple[Modality, str], int]]
-
-
 class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     input: TensorDict
     input_tokens: TensorDict
     input_embeddings: TensorDict
-    projected_embeddings: TensorDict
-    role_embeddings: TensorDict
+    embeddings: TensorDict
     index: Index
-    timestep: Timestep
+    embeddings_flattened: Tensor
     attention_mask: FactorizedAttentionMask
-
-    @property
-    def embeddings(self) -> TensorDict:
-        return self.projected_embeddings + self.role_embeddings
-
-    @property
-    def embeddings_unpacked(self) -> Tensor:
-        embeddings = self.embeddings
-        keys = (
-            (modality, name)
-            for (_token_type, modality, name), _pos in sorted(
-                self.timestep.items(include_nested=True, leaves_only=True),
-                key=itemgetter(1),
-            )
-        )
-        packed, _ = pack([embeddings[key] for key in keys], "b t * d")
-
-        return packed  # ty:ignore[invalid-return-type]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -115,35 +68,10 @@ class EpisodeExport:
     input: TensorTree
     input_tokens: TensorTree
     input_embeddings: TensorTree
-    projected_embeddings: TensorTree
-    role_embeddings: TensorTree
+    embeddings: TensorTree
     index: TensorTree
-    timestep: TimestepExport
+    embeddings_flattened: Tensor
     attention_mask: FactorizedAttentionMask
-
-    @property
-    def embeddings(self) -> TensorTree:
-        return tree_map(
-            lambda left, right: (
-                left + right if left is not None and right is not None else None
-            ),
-            self.projected_embeddings,
-            self.role_embeddings,
-        )
-
-    @property
-    def embeddings_unpacked(self) -> Tensor:
-        embeddings = self.embeddings
-        paths = (
-            (modality, name)
-            for (_token_type, modality, name), _pos in sorted(
-                tree_leaves_with_path(self.timestep), key=itemgetter(1)
-            )
-        )
-
-        packed, _ = pack([key_get(embeddings, path) for path in paths], "b t * d")
-
-        return packed
 
     def __getitem__(self, item: str) -> Any:
         return getattr(self, item)
@@ -175,6 +103,9 @@ class EpisodeBuilder(Module):
             special_tokens
         )
         self.timestep: tuple[TokenMeta, ...] = timestep
+        self._timestep_keys: tuple[tuple[str, str], ...] = tuple(
+            (token.modality.value, token.name) for token in timestep
+        )
         self.input_transform: Module = input_transform
         self.tokenizers: ModuleDict = tokenizers
         self.embeddings: ModuleDict = embeddings
@@ -189,9 +120,7 @@ class EpisodeBuilder(Module):
         self._role_idx_by_path: dict[tuple[MappingKey, MappingKey], int] = {
             (
                 MappingKey(token.modality.value),
-                MappingKey(
-                    str(token.name)
-                ),  # https://github.com/yaak-ai/rmind/issues/204
+                MappingKey(token.name),  # https://github.com/yaak-ai/rmind/issues/204
             ): role_idx_by_type_modality.setdefault(
                 (token.type.value, token.modality.value), len(role_idx_by_type_modality)
             )
@@ -228,22 +157,32 @@ class EpisodeBuilder(Module):
 
         index = self._build_index(projected_embeddings)
 
-        timestep = unflatten_keys({
-            tuple(map(str, k)): idx for idx, k in enumerate(self.timestep)
-        })
-
-        attention_mask = self._build_attention_mask(index=index, timestep=timestep)
+        attention_mask = self._build_attention_mask(index=index, timestep=self.timestep)
 
         role_embeddings = self._build_role_embeddings(projected_embeddings)
+
+        embeddings = tree_map(
+            lambda p, r: p + r if p is not None and r is not None else None,
+            projected_embeddings,
+            role_embeddings,
+        )
+
+        embeddings_flattened, _ = pack(
+            [
+                key_get(embeddings, (MappingKey(k[0]), MappingKey(k[1])))  # ty:ignore[invalid-argument-type]
+                for k in self._timestep_keys
+            ],
+            "b t * d",
+        )
+
         return (
             EpisodeExport(
                 input=input,
                 input_tokens=input_tokens,
                 input_embeddings=input_embeddings,
-                projected_embeddings=projected_embeddings,
-                role_embeddings=role_embeddings,
+                embeddings=embeddings,
                 index=index,
-                timestep=timestep,
+                embeddings_flattened=embeddings_flattened,
                 attention_mask=attention_mask,
             )
             if torch.compiler.is_exporting()
@@ -257,22 +196,18 @@ class EpisodeBuilder(Module):
                 input_embeddings=TensorDict.from_dict(
                     input_embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
-                projected_embeddings=TensorDict.from_dict(
-                    projected_embeddings, batch_dims=2
-                ).filter_non_tensor_data(),
-                role_embeddings=TensorDict.from_dict(
-                    role_embeddings,  # ty:ignore[invalid-argument-type]
-                    batch_dims=2,
+                embeddings=TensorDict.from_dict(
+                    embeddings, batch_dims=2
                 ).filter_non_tensor_data(),
                 index=Index.from_dict(index, batch_dims=1),
-                timestep=Timestep.from_dict(timestep),
+                embeddings_flattened=embeddings_flattened,
                 attention_mask=attention_mask,
                 device=device,
             )
         )
 
     def _build_attention_mask(
-        self, *, index: TensorTree, timestep: TimestepExport
+        self, *, index: TensorTree, timestep: tuple[TokenMeta, ...]
     ) -> FactorizedAttentionMask:
         """Build (or return cached) spatial and temporal attention masks.
 
@@ -287,7 +222,10 @@ class EpisodeBuilder(Module):
                 legend=TorchAttentionMaskLegend,
             )
 
-        if torch.compiler.is_exporting():
+        if torch.compiler.is_exporting() and not torch.compiler.is_compiling():
+            # Guard with is_compiling(): structlog's logger is not dynamo-traceable
+            # (_thread.allocate_lock breaks strict export). The warning still fires
+            # in fake-export paths where is_exporting()=True but dynamo isn't active.
             logger.warning(
                 "building attention mask during export; "
                 "run an eager forward pass first to populate the cache"
@@ -313,7 +251,7 @@ class EpisodeBuilder(Module):
         lengths = [
             key_get(
                 embeddings,
-                (MappingKey(token.modality.value), MappingKey(str(token.name))),  # ty:ignore[invalid-argument-type]
+                (MappingKey(token.modality.value), MappingKey(token.name)),  # ty:ignore[invalid-argument-type]
             ).shape[2]
             for token in self.timestep
         ]
@@ -322,9 +260,7 @@ class EpisodeBuilder(Module):
         ranges = pairwise(accumulate(lengths, initial=0))
 
         timestep_index = unflatten_keys({
-            (token.modality.value, str(token.name)): torch.arange(
-                *range_, device=device
-            )
+            (token.modality.value, token.name): torch.arange(*range_, device=device)
             for token, range_ in zip(self.timestep, ranges, strict=True)
         })
 
