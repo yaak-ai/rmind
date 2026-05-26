@@ -144,6 +144,8 @@ multirun/
 # generated
 config/dataset/*
 config/logger/*
+.claude/
+vjepa2_1_vitl_dist_vitG_384.pt
 
 # editor
 .helix/

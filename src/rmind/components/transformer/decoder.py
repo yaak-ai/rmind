@@ -136,7 +136,7 @@ class CrossAttentionDecoderHead(nn.Module):
             decoded = self.decoder(query_flat, context_flat)
             output = self.output_projection(decoded)
 
-            return output.reshape(b, t, sq, d)
+            return output.reshape(b, t, sq, -1)
 
         decoded = self.decoder(query, context)
         return self.output_projection(decoded)

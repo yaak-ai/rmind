@@ -12,3 +12,5 @@ enable_model_summary: false
 logger:
   _target_: pytorch_lightning.loggers.WandbLogger
   log_model: all
+  entity: ${wandb.entity}
+  project: ${wandb.project}
