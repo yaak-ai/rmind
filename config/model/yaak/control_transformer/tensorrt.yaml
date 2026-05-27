@@ -1,0 +1,53 @@
+---
+_target_: rmind.inference.LightningInferenceWrapper
+backend:
+  _target_: rmind.inference.backends.TensorRTInferenceBackend
+  path: ???
+  device: cuda
+
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: torch.nn.Sequential
+      _convert_: all
+      _args_:
+        - _target_: rmind.components.nn.Remapper
+          paths:
+            cam_front_left: [data, cam_front_left]
+            brake_pedal_normalized: [data, meta/VehicleMotion/brake_pedal_normalized]
+            gas_pedal_normalized: [data, meta/VehicleMotion/gas_pedal_normalized]
+            steering_angle_normalized: [data, meta/VehicleMotion/steering_angle_normalized]
+            speed: [data, meta/VehicleMotion/speed]
+            turn_signal: [data, meta/VehicleState/turn_signal]
+            waypoints_xy_normalized: [data, waypoints/xy_normalized]
+
+        - _target_: rmind.components.containers.ModuleDict
+          modules:
+            cam_front_left:
+              _target_: torch.nn.Identity
+            brake_pedal_normalized:
+              _target_: rmind.components.nn.AtLeast3D
+            gas_pedal_normalized:
+              _target_: rmind.components.nn.AtLeast3D
+            steering_angle_normalized:
+              _target_: rmind.components.nn.AtLeast3D
+            speed:
+              _target_: rmind.components.nn.AtLeast3D
+            turn_signal:
+              _target_: rmind.components.nn.AtLeast3D
+            waypoints_xy_normalized:
+              _target_: torch.nn.Identity
+
+output_transform:
+  _target_: rmind.components.nn.Remapper
+  paths:
+    policy:
+      prediction_value:
+        value:
+          continuous:
+            brake_pedal: [policy.continuous.brake_pedal]
+            gas_pedal: [policy.continuous.gas_pedal]
+            steering_angle: [policy.continuous.steering_angle]
+          discrete:
+            turn_signal: [policy.discrete.turn_signal]

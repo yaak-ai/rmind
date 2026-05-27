@@ -11,10 +11,13 @@ Foundation models for spatial intelligence.
 
 0. install [`nix`](https://github.com/NixOS/nix) if necessary
 1. enter the dev shell:
+
 ```bash
 nix develop
 ```
+
 2. setup the Python environment:
+
 ```bash
 just setup
 ```
@@ -37,6 +40,16 @@ just train-debug
 
 This runs the `pretrain` experiment with `datamodule=yaak/train_debug` and `++model.encoder.disable=true`, plus `WANDB_MODE=disabled` — 3 episodes, W&B off, no JIT warmup. The 3-episode dataset config is generated from `config/_templates/dataset/yaak/train_debug.yaml`.
 
+## Export
+
+### ONNX
+
+<a name="export-onnx"></a>
+
+```bash
+just export-onnx export=yaak/control_transformer/finetuned model.artifact=yaak/rmind/model-{run_id}:v{version}
+```
+
 ## Inference
 
 > [!IMPORTANT]
@@ -50,10 +63,29 @@ This runs the `pretrain` experiment with `datamodule=yaak/train_debug` and `++mo
 just predict inference=yaak/control_transformer/{config} model.artifact=yaak/rmind/model-{run_id}:v{version} [+model.map_location=cuda:0] [+model.strict=false]
 ```
 
-## Export
+<details>
+<summary>Comparison vs drahve</summary>
 
-### ONNX
+### Comparison vs [`drahve`](https://github.com/yaak-ai/drahve)
+
+The following commands are useful for comparing single-drive inference results vs [`drahve/pipelines/infer/drive.nu`](https://github.com/yaak-ai/drahve/blob/nnstreamer/pipelines/infer/drive.nu).
+
+#### Torch
 
 ```bash
-just export-onnx model=yaak/control_transformer/export/finetuned model.artifact=yaak/rmind/model-XXXXXXXX:vN input=yaak/control_transformer/dummy +report=true
+just predict inference=yaak/control_transformer/drahve model=yaak/control_transformer/drahve drive_dir=/path/to/drive
 ```
+
+#### ONNX
+
+```bash
+just predict inference=yaak/control_transformer/drahve model=yaak/control_transformer/onnx model.backend.path=/path/to/model.onnx drive_dir=/path/to/drive
+```
+
+#### TensorRT
+
+```bash
+just predict inference=yaak/control_transformer/drahve model=yaak/control_transformer/tensorrt model.backend.path=/path/to/model.engine drive_dir=/path/to/drive
+```
+
+</details>

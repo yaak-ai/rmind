@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        shell: nix develop --accept-flake-config .#ci -c bash --noprofile --norc -eo pipefail {0}
+        shell: nix develop -c bash --noprofile --norc -eo pipefail {0}
 
     steps:
       - name: checkout
@@ -40,7 +40,5 @@ jobs:
             uv-${{ runner.os }}
 
       - run: just sync
-      - run: just format --check
-      - run: just lint
-      - run: just typecheck
+      - run: just check
       - run: just test

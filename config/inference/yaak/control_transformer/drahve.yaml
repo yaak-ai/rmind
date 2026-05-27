@@ -1,0 +1,475 @@
+# @package _global_
+---
+defaults:
+  - /model: yaak/control_transformer/drahve
+  - _self_
+
+drive_dir: ???
+
+# match drahve timestamping behaviour
+time_index:
+  index: "[:, 0]"
+
+datamodule:
+  _target_: rmind.datamodules.GenericDataModule
+  predict:
+    _target_: rbyte.dataloader.TorchDataNodeDataLoader
+    batch_size: 1
+    shuffle: false
+    collate_fn:
+      _target_: rbyte.types.Batch.to_dict
+      _partial_: true
+
+    num_workers: 1
+    pin_memory: false
+    method: thread
+    dataset:
+      _target_: rbyte.Dataset.from_config
+      _recursive_: false
+      _convert_: all
+      streams:
+        cam_front_left:
+          index: meta/ImageMetadata.cam_front_left/frame_idx
+          sources:
+            drive:
+              _target_: rbyte.io.TorchCodecFrameSource
+              source: ${drive_dir}/cam_front_left.pii.mp4
+              custom_frame_mappings: ${drive_dir}/cam_front_left.pii.mp4.frames.json
+              dimension_order: NCHW
+              output_dtype:
+                _target_: hydra.utils.get_object
+                path: torch.float32
+              device: cpu
+              num_ffmpeg_threads: 0
+              transforms:
+                - _target_: torchcodec.transforms.Resize
+                  size: [256, 256]
+
+      samples:
+        inputs:
+          input_id: [drive]
+          meta_path: ["${drive_dir}/metadata.log"]
+          waypoints_path: ["${drive_dir}/waypoints.json"]
+          cam_front_left_path: ["${drive_dir}/cam_front_left.pii.mp4"]
+
+        parallel: false
+
+        pipeline:
+          _target_: pipefunc.Pipeline
+          validate_type_annotations: false
+          cache_type: disk
+          cache_kwargs:
+            cache_dir: /tmp/rbyte_cache
+          functions:
+            - _target_: pipefunc.PipeFunc
+              renames:
+                path: meta_path
+              output_name: meta
+              mapspec: "${.renames.path}[i] -> ${.output_name}[i]"
+              cache: true
+              func:
+                _target_: rbyte.io.YaakMetadataDataFrameBuilder
+                fields:
+                  rbyte.io.yaak.proto.sensor_pb2.DriveSessionInfo:
+                    time_stamp:
+                      _target_: polars.Datetime
+                      time_unit: us
+
+                  rbyte.io.yaak.proto.sensor_pb2.ImageMetadata:
+                    session_timestamp:
+                      _target_: polars.UInt64
+                    frame_idx:
+                      _target_: polars.Int32
+                    camera_name:
+                      _target_: polars.Enum
+                      categories:
+                        - cam_front_center
+                        - cam_front_left
+                        - cam_front_right
+                        - cam_left_forward
+                        - cam_right_forward
+                        - cam_left_backward
+                        - cam_right_backward
+                        - cam_rear
+
+                  rbyte.io.yaak.proto.can_pb2.VehicleMotion:
+                    session_timestamp:
+                      _target_: polars.UInt64
+                    speed:
+                      _target_: polars.Float32
+                    gas_pedal_normalized:
+                      _target_: polars.Float32
+                    brake_pedal_normalized:
+                      _target_: polars.Float32
+                    steering_angle_normalized:
+                      _target_: polars.Float32
+
+                  rbyte.io.yaak.proto.can_pb2.VehicleState:
+                    session_timestamp:
+                      _target_: polars.UInt64
+                    turn_signal:
+                      _target_: polars.Int8
+
+                  rbyte.io.yaak.proto.sensor_pb2.Gnss:
+                    session_timestamp:
+                      _target_: polars.UInt64
+                    latitude:
+                      _target_: polars.Float32
+                    longitude:
+                      _target_: polars.Float32
+                    heading:
+                      _target_: polars.Float32
+
+            - _target_: pipefunc.PipeFunc
+              renames:
+                path: cam_front_left_path
+              output_name: cam_front_left_meta
+              mapspec: "${.renames.path}[i] -> ${.output_name}[i]"
+              cache: true
+              func:
+                _target_: rbyte.io.VideoDataFrameBuilder
+                fields:
+                  frame_idx:
+                    _target_: polars.Int32
+
+            - _target_: pipefunc.PipeFunc
+              renames:
+                self: meta
+              output_name: drive_session_info
+              mapspec: "${.renames.self}[i] -> ${.output_name}[i]"
+              func:
+                _target_: hydra.utils.get_method
+                path: collections.abc.Mapping.get
+              bound:
+                key: DriveSessionInfo
+
+            - _target_: pipefunc.PipeFunc
+              output_name: waypoints_raw
+              mapspec: "waypoints_path[i], drive_session_info[i] -> ${.output_name}[i]"
+              cache: true
+              func:
+                _target_: makefun.create_function
+                func_signature: "build_waypoints(*, waypoints_path, drive_session_info)"
+                func_impl:
+                  _target_: rbyte.io.DuckDBDataFrameQuery
+                  extensions: [spatial]
+                  config:
+                    TimeZone: "UTC"
+                  query: |
+                    WITH
+                      session AS (
+                        SELECT min(time_stamp)::TIMESTAMP AS time_stamp
+                        FROM drive_session_info
+                      ),
+                      waypoints AS (
+                        SELECT TO_TIMESTAMP(timestamp)::TIMESTAMP AS timestamp,
+                               ST_AsWKB(ST_Transform(geom, 'EPSG:4326', 'EPSG:25832', always_xy := true)) AS geometry
+                        FROM ST_Read($waypoints_path)
+                      )
+                    SELECT
+                      timestamp,
+                      epoch_us(timestamp) - epoch_us(session.time_stamp) AS session_timestamp,
+                      geometry
+                    FROM waypoints
+                    CROSS JOIN session
+                    ORDER BY timestamp;
+
+            - _target_: pipefunc.PipeFunc
+              renames:
+                input: waypoints_raw
+              output_name: waypoints
+              mapspec: "${.renames.input}[i] -> ${.output_name}[i]"
+              func:
+                _target_: rbyte.io.WaypointBuilder
+                length: 10
+                columns:
+                  points: geometry
+                  output: xy
+
+            - _target_: pipefunc.PipeFunc
+              output_name: aligned
+              mapspec: "meta[i], waypoints[i] -> ${.output_name}[i]"
+              func:
+                _target_: makefun.create_function
+                func_signature: "align(*, meta,  waypoints)"
+                func_impl:
+                  _target_: rbyte.io.DataFrameAligner
+                  separator: /
+                  fields:
+                    meta:
+                      ImageMetadata.cam_front_left:
+                        key: session_timestamp
+
+                      VehicleMotion:
+                        key: session_timestamp
+                        columns:
+                          speed:
+                            method: asof
+                            strategy: backward
+                          gas_pedal_normalized:
+                            method: asof
+                            strategy: backward
+                          brake_pedal_normalized:
+                            method: asof
+                            strategy: backward
+                          steering_angle_normalized:
+                            method: asof
+                            strategy: backward
+
+                      VehicleState:
+                        key: session_timestamp
+                        columns:
+                          turn_signal:
+                            method: asof
+                            strategy: backward
+
+                      Gnss:
+                        key: session_timestamp
+                        columns:
+                          heading:
+                            method: asof
+                            strategy: backward
+
+                          latitude:
+                            method: asof
+                            strategy: backward
+
+                          longitude:
+                            method: asof
+                            strategy: backward
+
+                    waypoints:
+                      key: session_timestamp
+                      columns:
+                        xy:
+                          method: asof
+                          strategy: backward
+
+            - _target_: pipefunc.PipeFunc
+              output_name: filtered
+              mapspec: "aligned[i], cam_front_left_meta[i] -> ${.output_name}[i]"
+              func:
+                _target_: makefun.create_function
+                func_signature: "filter(*, aligned, cam_front_left_meta)"
+                func_impl:
+                  _target_: rbyte.io.DuckDBDataFrameQuery
+                  extensions: [spatial]
+                  query: |
+                    WITH
+                      base_data AS (
+                        SELECT
+                          *,
+                          ST_Transform(ST_Point("meta/Gnss/longitude", "meta/Gnss/latitude"), 'EPSG:4326', 'EPSG:25832', always_xy := true) AS ego_geom,
+                          ST_GeomFromWKB("waypoints/xy") AS waypoints_geom
+                        FROM
+                          aligned
+                          SEMI JOIN cam_front_left_meta
+                          ON aligned."meta/ImageMetadata.cam_front_left/frame_idx"
+                          = cam_front_left_meta.frame_idx
+                        WHERE
+                          COLUMNS(*) IS NOT NULL
+                      ),
+                      normalized_geometries AS (
+                        SELECT
+                          *,
+                          ST_Rotate(
+                            ST_Translate(waypoints_geom, -ST_X(ego_geom), -ST_Y(ego_geom)),
+                            radians("meta/Gnss/heading")
+                          ) AS normalized_waypoints_geom
+                        FROM
+                          base_data
+                      )
+                    SELECT
+                      * EXCLUDE (
+                        ego_geom,
+                        waypoints_geom,
+                        normalized_waypoints_geom,
+                        "waypoints/xy",
+                      ),
+                      [["meta/Gnss/latitude", "meta/Gnss/longitude"]] AS "meta/Gnss/lat_lon",
+                      (
+                        SELECT
+                          list([ST_X(p.point_struct.geom), ST_Y(p.point_struct.geom)] ORDER BY p.point_struct.path)
+                        FROM
+                          UNNEST(ST_Dump(waypoints_geom)) AS p(point_struct)
+                      ) AS "waypoints/xy",
+                      (
+                        SELECT
+                          list([ST_X(p.point_struct.geom) / 100, ST_Y(p.point_struct.geom) / 100] ORDER BY p.point_struct.path)
+                        FROM
+                          UNNEST(ST_Dump(normalized_waypoints_geom)) AS p(point_struct)
+                      ) AS "waypoints/xy_normalized",
+                      (
+                        SELECT
+                          list([ST_X(p.point_struct.geom), ST_Y(p.point_struct.geom)] ORDER BY p.point_struct.path)
+                        FROM
+                          UNNEST(ST_Dump(ST_Transform(waypoints_geom, 'EPSG:25832', 'EPSG:4326', always_xy := false))) AS p(point_struct)
+                      ) AS "waypoints/xy_viz"
+                    FROM
+                      normalized_geometries
+                    -- WHERE
+                    --   ST_Contains(
+                    --     ST_MakeEnvelope(-150, -150, 150, 150),
+                    --     normalized_waypoints_geom
+                    --   )
+                    ORDER BY
+                      "meta/ImageMetadata.cam_front_left/session_timestamp";
+
+            - _target_: pipefunc.PipeFunc
+              renames:
+                input: filtered
+              output_name: samples
+              mapspec: "${.renames.input}[i] -> ${.output_name}[i]"
+              func:
+                _target_: rbyte.io.DataFrameGroupByDynamic
+                index_column: meta/ImageMetadata.cam_front_left/frame_idx
+                every: 10i
+                period: 60i
+                closed: left
+                gather_every: 10
+                #! label: left # TODO
+
+            - _target_: pipefunc.PipeFunc
+              output_name: samples_cast
+              mapspec: "samples[i] -> ${.output_name}[i]"
+              func:
+                _target_: makefun.create_function
+                func_signature: "cast(*, samples)"
+                func_impl:
+                  _target_: rbyte.io.DuckDBDataFrameQuery
+                  query: |
+                    SELECT
+                       "meta/ImageMetadata.cam_front_left/session_timestamp"::UINT64[6]       AS "meta/ImageMetadata.cam_front_left/session_timestamp",
+                       "meta/ImageMetadata.cam_front_left/frame_idx"        ::INT32[6]        AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                       "meta/VehicleMotion/speed"                           ::FLOAT[6]        AS "meta/VehicleMotion/speed",
+                       "meta/VehicleMotion/gas_pedal_normalized"            ::FLOAT[6]        AS "meta/VehicleMotion/gas_pedal_normalized",
+                       "meta/VehicleMotion/brake_pedal_normalized"          ::FLOAT[6]        AS "meta/VehicleMotion/brake_pedal_normalized",
+                       "meta/VehicleMotion/steering_angle_normalized"       ::FLOAT[6]        AS "meta/VehicleMotion/steering_angle_normalized",
+                       "meta/VehicleState/turn_signal"                      ::INT32[6]        AS "meta/VehicleState/turn_signal",
+                       "waypoints/xy_normalized"                            ::FLOAT[2][10][6] AS "waypoints/xy_normalized",
+                       "waypoints/xy"                                       ::FLOAT[2][10][6] AS "waypoints/xy",
+                       "waypoints/xy_viz"                                   ::FLOAT[2][10][6] AS "waypoints/xy_viz",
+                       "meta/Gnss/lat_lon"                                  ::FLOAT[2][1][6]  AS "meta/Gnss/lat_lon",
+                       "meta/Gnss/heading"                                  ::FLOAT[6]        AS "meta/Gnss/heading"
+                    FROM
+                      samples
+                    WHERE
+                      len("meta/ImageMetadata.cam_front_left/frame_idx") == 6
+                      AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 50
+
+            - _target_: pipefunc.PipeFunc
+              renames:
+                keys: input_id
+                values: samples_cast
+              output_name: samples_aggregated
+              func:
+                _target_: rbyte.io.DataFrameConcater
+                key_column: input_id
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  _convert_: all
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  precision: "bf16-mixed"
+  logger: false
+  callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives: [prediction_value]
+
+    - _target_: rmind.callbacks.RerunPredictionWriter
+      write_interval: batch
+      logger:
+        _target_: rbyte.viz.loggers.RerunLogger
+        _convert_: all
+        _recursive_: false
+        application_id: test
+        recording_id: test
+        recording_name: test
+        entity_path_format: "/{}/rmind"
+        schema:
+          gst/buffer/pts:
+            _target_: rerun.TimeColumn
+            columns:
+              duration: [batch, data, meta/ImageMetadata.cam_front_left/session_timestamp]
+            dtype: timedelta64[us]
+
+          episode/camera/cam_front_left/5:
+            - _target_: rerun.Image.columns
+              columns:
+                buffer:
+                  path: [batch, data, cam_front_left]
+                  index: "[:, 5, ...]"
+              time_index: ${time_index}
+
+            - static: true
+              _target_: rerun.Image.from_fields
+              fields:
+                format:
+                  _target_: rerun.components.ImageFormat
+                  color_model: RGB
+                  channel_datatype: f32
+                  height: 256
+                  width: 256
+
+          episode/meta/gas_pedal_normalized:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [batch, data, meta/VehicleMotion/gas_pedal_normalized]
+              time_index: ${time_index}
+
+          episode/meta/brake_pedal_normalized:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [batch, data, meta/VehicleMotion/brake_pedal_normalized]
+              time_index: ${time_index}
+
+          episode/meta/steering_angle_normalized:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [batch, data, meta/VehicleMotion/steering_angle_normalized]
+              time_index: ${time_index}
+
+          episode/meta/speed:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [batch, data, meta/VehicleMotion/speed]
+              time_index: ${time_index}
+
+          episode/meta/turn_signal:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [batch, data, meta/VehicleState/turn_signal]
+              time_index: ${time_index}
+
+          episode/waypoints/xy_normalized:
+            - _target_: rerun.LineStrips3D.columns
+              columns:
+                strips: [batch, data, waypoints/xy_normalized]
+              time_index: ${time_index}
+
+          prediction/gas_pedal_normalized:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [prediction, policy, prediction_value, value, continuous, gas_pedal]
+              time_index: ${time_index}
+
+          prediction/brake_pedal_normalized:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [prediction, policy, prediction_value, value, continuous, brake_pedal]
+              time_index: ${time_index}
+
+          prediction/steering_angle_normalized:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [prediction, policy, prediction_value, value, continuous, steering_angle]
+              time_index: ${time_index}
+
+          prediction/turn_signal:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [prediction, policy, prediction_value, value, discrete, turn_signal]
+              time_index: ${time_index}

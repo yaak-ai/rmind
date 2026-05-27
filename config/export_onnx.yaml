@@ -2,8 +2,7 @@
 
 ---
 defaults:
-  - /model: yaak/control_transformer/export/finetuned
-  - /input: yaak/control_transformer/dummy
+  - export: null
   - _self_
 
 args:

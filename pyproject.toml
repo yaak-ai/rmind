@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "Foundation models for spatial intelligence"
 readme = "README.md"
 requires-python = ">=3.12, <3.13"
-license = { text = "Apache-2.0" }
-authors = [{ name = "ML yaak team", email = "ml@yaak.ai" }]
+license-files = ["LICENSE.txt"]
+authors = [{ name = "yaak ML team", email = "ml@yaak.ai" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -18,7 +18,7 @@ classifiers = [
 dependencies = [
   "deepdiff>=9.0.0",
   "einops>=0.8.1",
-  "hydra-core>=1.3.2",
+  "hydra-core>=1.3.3",
   "jq>=1.11.0",
   "kornia>=0.8.2",
   "more-itertools>=10.4.0",
@@ -47,8 +47,18 @@ rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 
 [project.optional-dependencies]
-predict = ["wandb>=0.27.2", "rbyte[visualize]"]
-test = ["pytest>=9.0.2", "pytest-lazy-fixtures>=1.4.0"]
+export = [
+  "onnx>=1.22.0",
+  "onnxruntime>=1.27.0",
+  "onnxscript>=0.7.0",
+]
+predict = [
+  "wandb>=0.27.2",
+  "rbyte[visualize]",
+  "torchcodec",  # transitive dependency of rbyte; only here so we can configure [tool.uv.sources.torchcodec] (https://github.com/astral-sh/uv/issues/8253)
+  "onnxruntime>=1.27.0",
+  "tensorrt-cu13==10.14.1.48.post1; sys_platform == 'linux'",
+]
 train = [
   "contextily>=1.6.2",
   "matplotlib>=3.10.3",
@@ -68,12 +78,7 @@ dev = [
 ]
 check = [
   "ruff>=0.15.18",
-  "ty>=0.0.51",
-]
-export = [
-  "onnx>=1.22.0",
-  "onnxruntime>=1.27.0",
-  "onnxscript>=0.7.0",
+  "ty>=0.0.52",
 ]
 test = [
   "pytest>=9.0.2",
@@ -88,13 +93,20 @@ build-backend = "hatchling.build"
 DEP001 = ["rmind"]
 DEP002 = [
   "funcy",
-  "torchmetrics",
+  "onnx",
+  "onnxscript",
   "pytest",
   "pytest-lazy-fixtures",
+  "tensorrt-cu13",
+  "torchcodec",
   "torchmetrics",
   "torchvision",
 ]
 DEP003 = ["rmind"]
+DEP004 = [
+  "onnxruntime",
+  "tensorrt",
+]
 
 [tool.deptry.package_module_name_map]
 hydra-core = "hydra"
@@ -141,6 +153,9 @@ split-on-trailing-comma = false
 preview = true
 skip-magic-trailing-comma = true
 
+[tool.tombi]
+files.exclude = ["uv.lock"]
+
 [tool.ty.rules]
 unused-ignore-comment = "warn"
 
@@ -153,17 +168,22 @@ constraint-dependencies = [
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
-  { index = "pytorch-cuda", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
 
 torchvision = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
-  { index = "pytorch-cuda", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
 
 torchaudio = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
-  { index = "pytorch-cuda", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+
+torchcodec = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
 
 [[tool.uv.index]]
@@ -172,6 +192,6 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cuda"
-url = "https://download.pytorch.org/whl/cu129"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true

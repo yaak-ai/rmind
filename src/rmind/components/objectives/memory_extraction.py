@@ -1,6 +1,7 @@
 from collections.abc import Set as AbstractSet
 from typing import Any, final, override
 
+import torch
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
@@ -85,14 +86,15 @@ class MemoryExtractionObjective(Objective):
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        timestep_indices = slice(1, None)
+        timestep_index = slice(1, None)
+        time_index = torch.arange(t).expand(b, -1)[:, timestep_index]
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
                 value=episode.input.select(*self.heads.tree_paths()).apply(
                     lambda x: x.diff(dim=1), batch_size=[b, t - 1]
                 ),
-                timestep_indices=timestep_indices,
+                time_index=time_index,
             )
 
         if keys & {
@@ -116,13 +118,13 @@ class MemoryExtractionObjective(Objective):
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[unresolved-attribute, call-non-callable]
                         nested_keys=True,
                     ),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
                 predictions[key] = Prediction(
                     value=logits.apply(lambda x: x.softmax(dim=-1)),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
