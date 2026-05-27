@@ -48,6 +48,12 @@ trainer:
         - [policy, prediction_probs, value]
         - [policy, score_l1, value]
         - [policy, score_logprob, value]
+        - [policy, score_l1_rel, value]
+        - [policy, score_signed_error, value]
+        - [policy, prediction_diff_prev, value]
+        - [policy, ground_truth_diff_prev, value]
+        - [policy, prediction_diff_hist, value]
+        - [policy, ground_truth_diff_hist, value]
       writer:
         _target_: polars.DataFrame.write_parquet
         _partial_: true

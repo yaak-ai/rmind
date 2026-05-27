@@ -148,6 +148,7 @@ class PolicyObjective(Objective):
             ObjectivePredictionKey.GROUND_TRUTH_DIFF_PREV,
             ObjectivePredictionKey.PREDICTION_DIFF_HIST,
             ObjectivePredictionKey.GROUND_TRUTH_DIFF_HIST,
+            ObjectivePredictionKey.SCORE_SIGNED_ERROR,
         }:
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
@@ -323,6 +324,31 @@ class PolicyObjective(Objective):
                                 non_zero_signal_with_threshold(x).class_idx.float(),
                                 gt.float(),
                                 reduction="none",
+                            )
+
+                        case _:
+                            msg = f"Invalid action type: {action_type}"
+                            raise NotImplementedError(msg)
+
+                predictions[key] = Prediction(
+                    value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
+                )
+
+            if (key := ObjectivePredictionKey.SCORE_SIGNED_ERROR) in keys:
+
+                def fn(
+                    action_type: tuple[Modality, str], x: torch.Tensor
+                ) -> torch.Tensor:
+                    gt = episode.input[action_type][:, -1]
+                    match action_type:
+                        case (Modality.CONTINUOUS, _):
+                            return x[..., 0] - gt  # ty:ignore[unsupported-operator]
+
+                        case (Modality.DISCRETE, "turn_signal"):
+                            return (
+                                non_zero_signal_with_threshold(x).class_idx.float()
+                                - gt.float()
                             )
 
                         case _:

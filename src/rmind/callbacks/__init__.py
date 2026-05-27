@@ -7,6 +7,7 @@ from .loggers import (
     WandbWaypointsLogger,
 )
 from .logit_bias import LogitBiasSetter
+from .predict_metrics import PredictMetricsCallback, RuleBasedCluster
 from .prediction import (
     DataFramePredictionWriter,
     RerunPredictionWriter,
@@ -19,8 +20,10 @@ __all__ = [
     "FeaturePermutator",
     "LogitBiasSetter",
     "ModuleFreezer",
+    "PredictMetricsCallback",
     "PredictionConfigSetter",
     "RerunPredictionWriter",
+    "RuleBasedCluster",
     "TensorDictPredictionWriter",
     "WandbAttentionMaskLogger",
     "WandbImageParamLogger",
