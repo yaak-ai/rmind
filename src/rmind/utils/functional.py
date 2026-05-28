@@ -3,7 +3,20 @@ from typing import NamedTuple
 import torch
 from torch import Tensor
 from torch.distributions import Normal
+from torch.nn import Module
 from torch.nn import functional as F
+
+
+def compiled(module: Module, *, disable: bool = False, **kwargs: object) -> Module:
+    """Compile a module in-place and return it. For use as a Hydra wrapper.
+
+    Unlike torch.compile(), Module.compile() mutates the module in-place so
+    state dict keys are unchanged (no _orig_mod prefix). Set ``disable=True``
+    to skip compilation entirely (e.g. for debug configs).
+    """
+    if not disable:
+        module.compile(**kwargs)
+    return module
 
 
 def gauss_prob(

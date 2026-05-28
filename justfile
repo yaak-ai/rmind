@@ -6,6 +6,7 @@ export HYDRA_FULL_ERROR := "1"
 export RERUN_STRICT := "1"
 export WANDB_DIR := "wandb_logs"
 export TORCHDYNAMO_VERBOSE := "1"
+export PYTORCH_CUDA_ALLOC_CONF := "expandable_segments:True"
 
 # export PYTHONOPTIMIZE := "1" # incompatible w/ torch.export in 2.10
 
@@ -51,6 +52,9 @@ train-debug *ARGS: generate-config
     WANDB_MODE=disabled uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml \
+        experiment=yaak/control_transformer/pretrain \
+        datamodule=yaak/train_debug \
+        ++model.encoder.disable=true \
         {{ ARGS }}
 
 predict +ARGS: generate-config

@@ -56,6 +56,15 @@ from rmind.components.transformer import (
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--backends",
+        default=None,
+        help="Comma-separated compile backends to benchmark (default: best available). "
+        "Example: --backends inductor,cudagraphs,aot_eager",
+    )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _seed_everything() -> None:
     pl.seed_everything(42, workers=True, verbose=True)

@@ -42,6 +42,18 @@ Foundation models for spatial intelligence.
 just train experiment=yaak/control_transformer/pretrain [...]
 ```
 
+Training uses `torch.compile` on the encoder by default (set in the model config via the `rmind.utils.functional.compiled` Hydra wrapper). To disable it, pass `++model.encoder.disable=true`.
+
+### Debug training (3 episodes, no compile)
+
+Useful for quickly verifying a code change end-to-end without waiting for the full dataset to load or for JIT compilation:
+
+```bash
+just train-debug
+```
+
+This runs the `pretrain` experiment with `datamodule=yaak/train_debug` and `++model.encoder.disable=true`, plus `WANDB_MODE=disabled` — 3 episodes, W&B off, no JIT warmup. The 3-episode dataset config is generated from `config/_templates/dataset/yaak/train_debug.yaml`.
+
 ## Inference
 
 > [!IMPORTANT]

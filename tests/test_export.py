@@ -1,3 +1,4 @@
+from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -132,6 +133,26 @@ def test_episode(episode: Episode, episode_export: Episode) -> None:
     assert_close(episode, episode_export)
 
 
+@pytest.fixture
+def _no_tf32_matmul() -> Generator[None, Any, None]:
+    """Force fp32 matmul (no tf32) for the flag-invariance assertion below.
+
+    The session-level conftest fixture sets matmul_precision="high", which lets
+    PyTorch use tf32 for fp32 matmuls. tf32 dispatch differs under
+    torch.compiler.is_exporting() — some kernels fall back to fp32 when the
+    flag is set — producing ~2e-4 drift on the encoder output between the
+    eager call (flag=False) and the export-flag call (flag=True). That drift
+    is well within bf16 training noise and ORT verify tolerance, but breaks
+    this test's strict bit-exact check. Forcing "highest" here keeps the test
+    measuring what its name claims — that the *rmind* code paths are
+    flag-invariant — independent of PyTorch's tf32 dispatch.
+    """
+    prev = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    yield
+    torch.set_float32_matmul_precision(prev)
+
+
 @pytest.mark.parametrize(
     ("module", "args", "args_export"),
     [
@@ -145,6 +166,7 @@ def test_episode(episode: Episode, episode_export: Episode) -> None:
     ],
     ids=["episode_builder", "policy_objective", "control_transformer"],
 )
+@pytest.mark.usefixtures("_no_tf32_matmul")
 @torch.inference_mode()
 def test_torch_export_fake(
     module: Module,

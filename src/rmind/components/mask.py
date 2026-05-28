@@ -1,7 +1,7 @@
 import operator
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Protocol, Self, final, override
+from typing import NamedTuple, Protocol, Self, final, override
 
 import torch
 from einops import rearrange
@@ -25,10 +25,9 @@ class AttentionMaskLegendProvider(Protocol):
     DO_NOT_ATTEND: Number
 
 
-@tensorclass
-class AttentionMaskLegend:
-    DO_ATTEND: Tensor
-    DO_NOT_ATTEND: Tensor
+class AttentionMaskLegend(NamedTuple):
+    DO_ATTEND: Number
+    DO_NOT_ATTEND: Number
 
 
 @final
@@ -49,14 +48,7 @@ class AttentionMask:
         return cls(
             mask_tensor=torch.as_tensor(mask_tensor),
             legend=AttentionMaskLegend(
-                DO_ATTEND=torch.as_tensor(
-                    legend.DO_ATTEND, dtype=mask_tensor.dtype, device=mask_tensor.device
-                ),
-                DO_NOT_ATTEND=torch.as_tensor(
-                    legend.DO_NOT_ATTEND,
-                    dtype=mask_tensor.dtype,
-                    device=mask_tensor.device,
-                ),
+                DO_ATTEND=legend.DO_ATTEND, DO_NOT_ATTEND=legend.DO_NOT_ATTEND
             ),
         )
 
