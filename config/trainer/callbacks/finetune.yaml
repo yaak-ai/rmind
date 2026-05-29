@@ -29,27 +29,20 @@
   prediction_config:
     objectives:
       - score_l1
-      - score_l1_rel
       - score_signed_error
       - prediction_std
-      - prediction_diff_prev
   cluster_fn: ${cluster_fn}
-  # cluster_metrics:
-  #   acceleration:
-  #     - policy/score_l1/value/continuous/gas_pedal
-  #     - policy/score_signed_error/value/continuous/gas_pedal
-  #   cruise_turn:
-  #     - policy/score_l1/value/continuous/gas_pedal
-  #     - policy/score_l1/value/continuous/steering_angle
-  #   braking_turn:
-  #     - policy/score_l1/value/continuous/brake_pedal
-  #     - policy/score_l1/value/continuous/steering_angle
-  #     - policy/score_l1_rel/value/continuous/steering_angle
-  #     - policy/score_signed_error/value/continuous/brake_pedal
-  #   braking:
-  #     - policy/score_l1/value/continuous/brake_pedal
-  #     - policy/score_l1/value/continuous/steering_angle
-  #     - policy/score_signed_error/value/continuous/brake_pedal
-  #   highway:
-  #     - policy/score_l1/value/continuous/gas_pedal
-  #     - policy/score_l1/value/continuous/steering_angle
+  cluster_metrics:
+    acceleration:
+      - policy/score_l1/value/continuous/gas_pedal
+      - policy/score_signed_error/value/continuous/gas_pedal
+    cruise_turn:
+      - policy/score_l1/value/continuous/steering_angle
+    braking_turn:
+      - policy/score_l1/value/continuous/brake_pedal
+      - policy/score_l1/value/continuous/steering_angle
+    braking:
+      - policy/score_l1/value/continuous/brake_pedal
+    highway:
+      - policy/score_l1/value/continuous/gas_pedal
+      - policy/score_signed_error/value/continuous/gas_pedal
