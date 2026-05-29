@@ -10,3 +10,9 @@ defaults:
   - _self_
 
 encoder_embedding_dim: 384
+
+# Policy feature flags — pass via ++policy_use_speed=1 etc.
+# use_speed and use_action_summary are mutually exclusive
+policy_use_speed: 0
+policy_use_action_summary: 0
+policy_use_trunk: 0
