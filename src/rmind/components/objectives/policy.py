@@ -64,13 +64,16 @@ class ActionMetrics:
 @final
 class PolicyObjective(Objective):
     @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         norm: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
+        use_speed: bool = False,
+        use_action_summary: bool = False,
+        trunk: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -78,6 +81,9 @@ class PolicyObjective(Objective):
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
+        self.use_speed: bool = use_speed
+        self.use_action_summary: bool = use_action_summary
+        self.trunk: Module | None = trunk
 
     @overload
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict: ...
@@ -118,27 +124,29 @@ class PolicyObjective(Objective):
 
         return tree_map_with_path(fn, logits)
 
-    def _compute_logits(
-        self, *, episode: Episode | EpisodeExport, embedding: Tensor
-    ) -> TensorTree:
-        if isinstance(episode, Episode):
-            _b, _ = episode.input.batch_size
+    def _third_feature_key(self) -> tuple[Modality, str]:
+        if self.use_speed:
+            return (Modality.CONTINUOUS, "speed")
+        if self.use_action_summary:
+            return (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY)
+        return (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY)
 
+    def _compute_features(
+        self, *, episode: Episode | EpisodeExport, embedding: Tensor
+    ) -> Tensor:
+        third_key = self._third_feature_key()
+
+        if isinstance(episode, Episode):
             embeddings = (
                 episode
                 .index[-1]
                 .select(
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
                     (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
                     (Modality.CONTEXT, "waypoints"),
+                    third_key,
                 )
                 .parse(embedding)
             )
-
-            observation_history = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_HISTORY,
-            ))
 
             observation_summary = embeddings.get((
                 Modality.SUMMARY,
@@ -149,6 +157,8 @@ class PolicyObjective(Objective):
                 dim=1, keepdim=True
             )
 
+            third = embeddings.get(third_key)
+
         else:
             observation_summary = embedding[  # ty:ignore[invalid-argument-type]
                 :,
@@ -157,23 +167,28 @@ class PolicyObjective(Objective):
                 ][-1],
             ]
 
-            observation_history = embedding[  # ty:ignore[invalid-argument-type]
-                :,
-                episode.index[Modality.SUMMARY.value][  # ty:ignore[invalid-argument-type]
-                    SummaryToken.OBSERVATION_HISTORY.value
-                ][-1],
-            ]
-
             waypoints = embedding[  # ty:ignore[invalid-argument-type]
                 :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # ty:ignore[invalid-argument-type]
             ].mean(dim=1, keepdim=True)
 
+            modality, token = third_key
+            third = embedding[  # ty:ignore[invalid-argument-type]
+                :, episode.index[modality.value][token][-1]  # ty:ignore[invalid-argument-type]
+            ]
+
         features = rearrange(
-            [observation_summary, observation_history, waypoints],
-            "i b 1 d -> b 1 (i d)",
+            [observation_summary, third, waypoints], "i b 1 d -> b 1 (i d)"
         )
 
-        return self.heads(features)
+        if self.trunk is not None:
+            features = self.trunk(features)
+
+        return features
+
+    def _compute_logits(
+        self, *, episode: Episode | EpisodeExport, embedding: Tensor
+    ) -> TensorTree:
+        return self.heads(self._compute_features(episode=episode, embedding=embedding))
 
     @override
     def compute(self, *, episode: Episode, embedding: Tensor) -> ObjectiveOutput:
@@ -245,36 +260,7 @@ class PolicyObjective(Objective):
                     embedding
                 )
 
-            embeddings = (
-                episode
-                .index[-1]
-                .select(
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                    (Modality.CONTEXT, "waypoints"),
-                )
-                .parse(embedding)
-            )
-
-            observation_history = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_HISTORY,
-            ))
-
-            observation_summary = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_SUMMARY,
-            ))
-
-            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                dim=1, keepdim=True
-            )
-
-            features = rearrange(
-                [observation_summary, observation_history, waypoints],
-                "i b 1 d -> b 1 (i d)",
-            )
-
+            features = self._compute_features(episode=episode, embedding=embedding)
             logits = TensorDict(self.heads(features), batch_size=[b, 1])
 
             timestep_indices = slice(-1, None)
