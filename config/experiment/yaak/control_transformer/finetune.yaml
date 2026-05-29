@@ -17,3 +17,8 @@ encoder_embedding_dim: 384
 policy_use_speed: 0
 policy_use_action_summary: 0
 policy_use_trunk: 0
+
+# log_var clamp for GaussianNLLLoss — prevents variance explosion/underflow
+# pass null to disable, e.g. ++policy_log_var_clamp_min=null
+policy_log_var_clamp_min: -10
+policy_log_var_clamp_max: 10
