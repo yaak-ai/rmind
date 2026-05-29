@@ -9,40 +9,38 @@ on:
 
   workflow_dispatch:
 
+env:
+  UV_CACHE_DIR: /tmp/.uv-cache
+
 jobs:
   ci:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: nix develop --accept-flake-config .#ci -c bash --noprofile --norc -eo pipefail {0}
+
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
           persist-credentials: false
           lfs: true
 
-      - name: setup just
-        uses: extractions/setup-just@v2
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: DeterminateSystems/flake-checker-action@main
 
-      - name: setup python
-        uses: actions/setup-python@v5
+      - uses: actions/cache@v5
         with:
-          python-version-file: "pyproject.toml"
-
-      - name: setup uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "**/pyproject.toml"
+          path: /tmp/.uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+            uv-${{ runner.os }}
 
       - run: just sync
       - run: just format --check
       - run: just lint
       - run: just typecheck
-
-      - name: setup ytt
-        uses: carvel-dev/setup-action@v2
-        with:
-          only: ytt
-
       - run: just test
