@@ -10,9 +10,10 @@ from torch import Tensor, nn
 from rmind.callbacks.freeze import ModuleFreezer
 from rmind.callbacks.loggers import waypoints as waypoints_logger
 from rmind.callbacks.loggers.waypoints import WandbWaypointsLogger
-from rmind.callbacks.predict_metrics import PredictMetricsCallback, RuleBasedCluster
+from rmind.callbacks.predict_metrics import PredictMetricsCallback
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.models.control_transformer import PredictionConfig
+from rmind.utils.cluster import RuleBasedCluster
 
 
 class ToyModule(pl.LightningModule):
@@ -140,7 +141,7 @@ def test_predict_metrics_callback_logs_predict_prefix(
     mock_logger = MagicMock()
     mock_logger.log_metrics.side_effect = lambda m, **_: logged.update(m)
 
-    cb = PredictMetricsCallback()
+    cb = PredictMetricsCallback(prediction_config=PredictionConfig())
 
     with patch(
         "rmind.callbacks.predict_metrics._get_wandb_loggers", return_value=[mock_logger]
@@ -162,6 +163,7 @@ def test_predict_metrics_callback_logs_per_cluster(
     mock_logger.log_metrics.side_effect = lambda m, **_: logged.update(m)
 
     cb = PredictMetricsCallback(
+        prediction_config=PredictionConfig(),
         cluster_fn=RuleBasedCluster(
             fields={"speed": {"key": "meta/VehicleMotion/speed", "reduce": "last"}},
             rules=[
@@ -169,7 +171,7 @@ def test_predict_metrics_callback_logs_per_cluster(
                 {"name": "urban", "when": {"speed": {"ge": 30.0, "lt": 90.0}}},
             ],
             default="fast",
-        )
+        ),
     )
 
     with patch(
