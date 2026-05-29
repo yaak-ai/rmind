@@ -17,22 +17,22 @@ sync:
     uv sync --all-extras --all-groups --locked
 
 setup: sync
-    uvx prek@latest install --overwrite
+    prek install --overwrite
 
 format *ARGS:
-    uvx ruff@latest format {{ ARGS }}
+    uv run ruff format {{ ARGS }}
 
 lint *ARGS:
-    uvx ruff@latest check {{ ARGS }}
+    uv run ruff check {{ ARGS }}
 
 check-git:
     uv run rmind-check-git
 
 typecheck *ARGS:
-    uvx ty@latest check {{ ARGS }}
+    uv run ty check {{ ARGS }}
 
 prek *ARGS:
-    uvx prek@latest --all-files {{ ARGS }}
+    prek --all-files {{ ARGS }}
 
 # generate config files from templates with ytt
 generate-config:
@@ -90,7 +90,7 @@ onnxvis *ARGS:
 
 # start rerun server and viewer
 rerun *ARGS:
-    uvx --from rerun-sdk@latest rerun --serve-web {{ ARGS }}
+    uv run rerun --serve-web {{ ARGS }}
 
 clean:
     rm -rf dist outputs lightning_logs wandb artifacts
