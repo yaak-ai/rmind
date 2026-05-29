@@ -1,0 +1,33 @@
+_target_: rmind.utils.RuleBasedCluster
+fields:
+  gas:
+    key: meta/VehicleMotion/gas_pedal_normalized
+    reduce: last
+  brake:
+    key: meta/VehicleMotion/brake_pedal_normalized
+    reduce: last
+  steer:
+    key: meta/VehicleMotion/steering_angle_normalized
+    reduce: last
+  dp_g:
+    key: meta/VehicleMotion/gas_pedal_normalized
+    reduce: last_diff
+  speed:
+    key: meta/VehicleMotion/speed
+    reduce: last
+rules:
+  - name: highway
+    when: {speed: {ge: 70}}
+  - name: braking_turn
+    when: {brake: {ge: 0.02}, steer: {abs_ge: 0.05}}
+  - name: braking
+    when: {brake: {ge: 0.02}, steer: {abs_lt: 0.05}}
+  - name: cruise_turn
+    when: {gas: {ge: 0.05}, brake: {lt: 0.02}, steer: {abs_ge: 0.05}}
+  - name: acceleration
+    when: {gas: {ge: 0.05}, brake: {lt: 0.02}, dp_g: {ge: 0.01}}
+  - name: gas_release
+    when: {gas: {ge: 0.05}, brake: {lt: 0.02}, dp_g: {lt: -0.01}}
+  - name: cruise
+    when: {gas: {ge: 0.05}, brake: {lt: 0.02}, steer: {abs_lt: 0.05}, dp_g: {abs_lt: 0.01}}
+default: idle_coast

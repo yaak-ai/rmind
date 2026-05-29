@@ -5,6 +5,7 @@ defaults:
   - /datamodule: yaak/train
   - /trainer: default
   - /trainer/callbacks: finetune
+  - /cluster_fn: rule_based
   - /paths: yaak/default
   - /wandb: yaak/rmind
   - _self_
