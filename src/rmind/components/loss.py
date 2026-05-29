@@ -59,11 +59,13 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         *args: Any,
         # NOTE: use torch.ones_like to get vanilla MSE
         var_pos_function: Callable[[Tensor], Tensor] = torch.exp,
+        log_var_clamp: tuple[float, float] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
 
         self.var_pos_function: Callable[[Tensor], Tensor] = var_pos_function
+        self.log_var_clamp: tuple[float, float] | None = log_var_clamp
 
     @override
     def forward(
@@ -73,6 +75,8 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
             raise ValueError
 
         mean, log_var = input[..., 0], input[..., 1]
+        if self.log_var_clamp is not None:
+            log_var = log_var.clamp(*self.log_var_clamp)
         var = self.var_pos_function(log_var)
 
         return super().forward(input=mean, target=target, var=var)
