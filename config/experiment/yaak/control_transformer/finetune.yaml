@@ -27,3 +27,6 @@ policy_log_var_clamp_max: 10
 # pass ++policy_activity_weighted_loss=1 to enable
 policy_activity_weighted_loss: 0
 policy_activity_weight: 5.0
+
+# per-sample loss weighting strategy: "none" | "activity" (|target|) | "delta" (|target_t - target_{t-1}|)
+policy_loss_weighting: "none"

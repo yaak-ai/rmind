@@ -1,4 +1,5 @@
 from collections.abc import Set as AbstractSet
+from enum import StrEnum
 from typing import Any, cast, final, override
 
 import torch
@@ -24,6 +25,48 @@ from rmind.components.objectives.base import (
 from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
 
 
+class LossWeighting(StrEnum):
+    ACTIVITY = "activity"
+    DELTA = "delta"
+
+
+class PolicyMetric(StrEnum):
+    PRED_STD = "pred_std"
+    GT_STD = "gt_std"
+    STD_RATIO = "std_ratio"
+    PRED_MEAN = "pred_mean"
+    GT_MEAN = "gt_mean"
+    GT_DIFF = "gt_diff"
+    PRED_DIFF = "pred_diff"
+
+
+class ActionMetrics:
+    @staticmethod
+    def std(x: Tensor) -> Tensor:
+        return x.std()
+
+    @staticmethod
+    def mean(x: Tensor) -> Tensor:
+        return x.mean()
+
+    def compute(self, gt: Tensor, pred: Tensor) -> dict[PolicyMetric, Tensor]:
+        pred = pred[:, -1, 0]
+        gt_cur = gt[:, -1, 0]
+        gt_prev = gt[:, -2, 0]
+        pred_std = self.std(pred)
+        gt_std = self.std(gt_cur)
+        return {
+            PolicyMetric.PRED_STD: pred_std,
+            PolicyMetric.GT_STD: gt_std,
+            PolicyMetric.STD_RATIO: pred_std / (gt_std + 1e-8),
+            PolicyMetric.PRED_MEAN: self.mean(pred),
+            PolicyMetric.GT_MEAN: self.mean(gt_cur),
+            PolicyMetric.GT_DIFF: self.mean(gt_cur - gt_prev),
+            PolicyMetric.PRED_DIFF: self.mean(pred - gt_prev),
+        }
+
+
+
 @final
 class PolicyObjective(Objective):
     @validate_call
@@ -38,6 +81,7 @@ class PolicyObjective(Objective):
         use_action_summary: bool = False,
         use_observation_history: bool = True,
         trunk: InstanceOf[Module] | None = None,
+        loss_weighting: LossWeighting | None = None,
     ) -> None:
         super().__init__()
 
@@ -49,6 +93,7 @@ class PolicyObjective(Objective):
         self.use_action_summary: bool = use_action_summary
         self.use_observation_history: bool = use_observation_history
         self.trunk: Module | None = trunk
+        self.loss_weighting: LossWeighting | None = loss_weighting
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -124,10 +169,26 @@ class PolicyObjective(Objective):
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
-
+        if self.loss_weighting == LossWeighting.ACTIVITY:
+            weights = tree_map(
+                lambda k: episode.get(k)[:, -1].abs(),
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+            weights = tree_map(Rearrange("b 1 -> b"), weights)
+        elif self.loss_weighting == LossWeighting.DELTA:
+            weights = tree_map(
+                lambda k: (episode.get(k)[:, -1] - episode.get(k)[:, -2]).abs(),
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+            weights = tree_map(Rearrange("b 1 -> b"), weights)
+        else:
+            weights = None
         losses = self.losses(
             tree_map(Rearrange("b 1 d -> b d"), logits),
             tree_map(Rearrange("b 1 -> b"), targets),
+            *((weights,) if weights is not None else ()),
         )  # ty:ignore[call-non-callable]
 
         return {"loss": losses}
