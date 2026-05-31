@@ -15,6 +15,7 @@ encoder_embedding_dim: 384
 # use_speed and use_action_summary are mutually exclusive
 policy_use_speed: 0
 policy_use_action_summary: 0
+policy_use_observation_history: 1
 policy_use_trunk: 0
 
 # log_var clamp for GaussianNLLLoss — prevents variance explosion/underflow

@@ -10,6 +10,7 @@ hparams_jq: |
         "_target_": "rmind.components.objectives.PolicyObjective",
         "use_speed": (${policy_use_speed} != 0),
         "use_action_summary": (${policy_use_action_summary} != 0),
+        "use_observation_history": (${policy_use_observation_history} != 0),
         "trunk": (if ${policy_use_trunk} != 0 then {
           "_target_": "torchvision.ops.MLP",
           "in_channels": 1152,
