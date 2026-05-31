@@ -23,3 +23,8 @@ policy_use_trunk: 0
 # pass null to disable, e.g. ++policy_log_var_clamp_min=null
 policy_log_var_clamp_min: -10
 policy_log_var_clamp_max: 10
+
+# use ActivityWeightedGaussianNLLLoss instead of plain GaussianNLLLoss
+# pass ++policy_activity_weighted_loss=1 to enable
+policy_activity_weighted_loss: 0
+policy_activity_weight: 5.0

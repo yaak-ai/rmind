@@ -68,18 +68,9 @@ hparams_jq: |
           "_target_": "rmind.components.containers.ModuleDict",
           "modules": {
             "continuous": {
-              "gas_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss",
-                "log_var_clamp": (if ${policy_log_var_clamp_min} != null then [${policy_log_var_clamp_min}, ${policy_log_var_clamp_max}] else null end)
-              },
-              "brake_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss",
-                "log_var_clamp": (if ${policy_log_var_clamp_min} != null then [${policy_log_var_clamp_min}, ${policy_log_var_clamp_max}] else null end)
-              },
-              "steering_angle": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss",
-                "log_var_clamp": (if ${policy_log_var_clamp_min} != null then [${policy_log_var_clamp_min}, ${policy_log_var_clamp_max}] else null end)
-              }
+              "gas_pedal": ({"_target_": (if ${policy_activity_weighted_loss} != 0 then "rmind.components.loss.ActivityWeightedGaussianNLLLoss" else "rmind.components.loss.GaussianNLLLoss" end), "log_var_clamp": (if ${policy_log_var_clamp_min} != null then [${policy_log_var_clamp_min}, ${policy_log_var_clamp_max}] else null end)} + (if ${policy_activity_weighted_loss} != 0 then {"activity_weight": ${policy_activity_weight}} else {} end)),
+              "brake_pedal": ({"_target_": (if ${policy_activity_weighted_loss} != 0 then "rmind.components.loss.ActivityWeightedGaussianNLLLoss" else "rmind.components.loss.GaussianNLLLoss" end), "log_var_clamp": (if ${policy_log_var_clamp_min} != null then [${policy_log_var_clamp_min}, ${policy_log_var_clamp_max}] else null end)} + (if ${policy_activity_weighted_loss} != 0 then {"activity_weight": ${policy_activity_weight}} else {} end)),
+              "steering_angle": ({"_target_": (if ${policy_activity_weighted_loss} != 0 then "rmind.components.loss.ActivityWeightedGaussianNLLLoss" else "rmind.components.loss.GaussianNLLLoss" end), "log_var_clamp": (if ${policy_log_var_clamp_min} != null then [${policy_log_var_clamp_min}, ${policy_log_var_clamp_max}] else null end)} + (if ${policy_activity_weighted_loss} != 0 then {"activity_weight": ${policy_activity_weight}} else {} end))
             },
             "discrete": {
               "turn_signal": {
