@@ -25,6 +25,11 @@ from rmind.components.objectives.base import (
 from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
 
 
+class LossWeighting(StrEnum):
+    ACTIVITY = "activity"
+    DELTA = "delta"
+
+
 class PolicyMetric(StrEnum):
     PRED_STD = "pred_std"
     GT_STD = "gt_std"
@@ -75,6 +80,7 @@ class PolicyObjective(Objective):
         use_action_summary: bool = False,
         use_observation_history: bool = True,
         trunk: InstanceOf[Module] | None = None,
+        loss_weighting: LossWeighting | None = None,
     ) -> None:
         super().__init__()
 
@@ -86,6 +92,7 @@ class PolicyObjective(Objective):
         self.use_action_summary: bool = use_action_summary
         self.use_observation_history: bool = use_observation_history
         self.trunk: Module | None = trunk
+        self.loss_weighting: LossWeighting | None = loss_weighting
 
     @overload
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict: ...
@@ -207,9 +214,26 @@ class PolicyObjective(Objective):
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
+        if self.loss_weighting == LossWeighting.ACTIVITY:
+            weights = tree_map(
+                lambda k: episode.get(k)[:, -1].abs(),
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+            weights = tree_map(Rearrange("b 1 -> b"), weights)
+        elif self.loss_weighting == LossWeighting.DELTA:
+            weights = tree_map(
+                lambda k: (episode.get(k)[:, -1] - episode.get(k)[:, -2]).abs(),
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+            weights = tree_map(Rearrange("b 1 -> b"), weights)
+        else:
+            weights = None
         losses = self.losses(
             tree_map(Rearrange("b 1 d -> b d"), logits),
             tree_map(Rearrange("b 1 -> b"), targets),
+            *((weights,) if weights is not None else ()),
         )  # ty:ignore[call-non-callable]
 
         action_metrics = {

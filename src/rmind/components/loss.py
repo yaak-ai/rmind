@@ -49,7 +49,9 @@ class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
         self.logit_bias: Tensor | None = logit_bias
 
     @override
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+    def forward(
+        self, input: Tensor, target: Tensor, _weight: Tensor | None = None
+    ) -> Tensor:
         return super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
 
 
@@ -69,15 +71,18 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
 
     @override
     def forward(
-        self, input: Tensor, target: Tensor, var: Tensor | None = None
+        self, input: Tensor, target: Tensor, weight: Tensor | None = None
     ) -> Tensor:  # ty:ignore[invalid-method-override]
-        if var is not None:
-            raise ValueError
-
         mean, log_var = input[..., 0], input[..., 1]
         if self.log_var_clamp is not None:
             log_var = log_var.clamp(*self.log_var_clamp)
         var = self.var_pos_function(log_var)
+
+        if weight is not None:
+            per_sample = F.gaussian_nll_loss(
+                mean, target, var, full=self.full, eps=self.eps, reduction="none"
+            )
+            return (weight * per_sample).mean()
 
         return super().forward(input=mean, target=target, var=var)
 
@@ -90,18 +95,18 @@ class ActivityWeightedGaussianNLLLoss(GaussianNLLLoss):
     """
 
     def __init__(self, *args: Any, activity_weight: float = 5.0, **kwargs: Any) -> None:
-        kwargs["reduction"] = "none"
         super().__init__(*args, **kwargs)
         self.activity_weight = activity_weight
 
     @override
     def forward(
-        self, input: Tensor, target: Tensor, var: Tensor | None = None
+        self, input: Tensor, target: Tensor, weight: Tensor | None = None
     ) -> Tensor:
-        per_sample = super().forward(input, target, var)  # [B]
-        weights = 1.0 + self.activity_weight * target.abs()  # [B]
-        weights /= weights.mean()  # keep loss scale stable
-        return (weights * per_sample).mean()
+        if weight is None:
+            weight = target.abs()
+        weights = 1.0 + self.activity_weight * weight
+        weights /= weights.mean()
+        return super().forward(input, target, weight=weights)
 
 
 class GramAnchoringLoss(Module):
