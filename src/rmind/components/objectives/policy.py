@@ -73,6 +73,7 @@ class PolicyObjective(Objective):
         targets: Targets | None = None,
         use_speed: bool = False,
         use_action_summary: bool = False,
+        use_observation_history: bool = True,
         trunk: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
@@ -83,6 +84,7 @@ class PolicyObjective(Objective):
         self.targets: Targets | None = targets
         self.use_speed: bool = use_speed
         self.use_action_summary: bool = use_action_summary
+        self.use_observation_history: bool = use_observation_history
         self.trunk: Module | None = trunk
 
     @overload
@@ -124,12 +126,14 @@ class PolicyObjective(Objective):
 
         return tree_map_with_path(fn, logits)
 
-    def _third_feature_key(self) -> tuple[Modality, str]:
+    def _third_feature_key(self) -> tuple[Modality, str] | None:
         if self.use_speed:
             return (Modality.CONTINUOUS, "speed")
         if self.use_action_summary:
             return (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY)
-        return (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY)
+        if self.use_observation_history:
+            return (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY)
+        return None
 
     def _compute_features(
         self, *, episode: Episode | EpisodeExport, embedding: Tensor
@@ -137,16 +141,12 @@ class PolicyObjective(Objective):
         third_key = self._third_feature_key()
 
         if isinstance(episode, Episode):
-            embeddings = (
-                episode
-                .index[-1]
-                .select(
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                    (Modality.CONTEXT, "waypoints"),
-                    third_key,
-                )
-                .parse(embedding)
-            )
+            keys = [
+                (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
+                (Modality.CONTEXT, "waypoints"),
+                *([] if third_key is None else [third_key]),
+            ]
+            embeddings = episode.index[-1].select(*keys).parse(embedding)
 
             observation_summary = embeddings.get((
                 Modality.SUMMARY,
@@ -157,7 +157,7 @@ class PolicyObjective(Objective):
                 dim=1, keepdim=True
             )
 
-            third = embeddings.get(third_key)
+            third = None if third_key is None else embeddings.get(third_key)
 
         else:
             observation_summary = embedding[  # ty:ignore[invalid-argument-type]
@@ -171,14 +171,20 @@ class PolicyObjective(Objective):
                 :, episode.index[Modality.CONTEXT.value]["waypoints"][-1]  # ty:ignore[invalid-argument-type]
             ].mean(dim=1, keepdim=True)
 
-            modality, token = third_key
-            third = embedding[  # ty:ignore[invalid-argument-type]
-                :, episode.index[modality.value][token][-1]  # ty:ignore[invalid-argument-type]
-            ]
+            if third_key is not None:
+                modality, token = third_key
+                third = embedding[  # ty:ignore[invalid-argument-type]
+                    :, episode.index[modality.value][token][-1]  # ty:ignore[invalid-argument-type]
+                ]
+            else:
+                third = None
 
-        features = rearrange(
-            [observation_summary, third, waypoints], "i b 1 d -> b 1 (i d)"
+        parts = (
+            [observation_summary, waypoints]
+            if third is None
+            else [observation_summary, third, waypoints]
         )
+        features = rearrange(parts, "i b 1 d -> b 1 (i d)")
 
         if self.trunk is not None:
             features = self.trunk(features)
