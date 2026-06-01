@@ -5,7 +5,7 @@ import pytest
 import pytorch_lightning as pl
 import torch
 from tensordict import TensorDict
-from torch import Tensor, nn
+from torch import nn
 
 from rmind.callbacks.freeze import ModuleFreezer
 from rmind.callbacks.loggers import waypoints as waypoints_logger
@@ -137,7 +137,7 @@ def _run_validation(
 def test_predict_metrics_callback_logs_predict_prefix(
     fake_module: FakePredictModule, trainer: pl.Trainer
 ) -> None:
-    logged: dict[str, Tensor] = {}
+    logged: dict[str, float] = {}
     mock_logger = MagicMock()
     mock_logger.log_metrics.side_effect = lambda m, **_: logged.update(m)
 
@@ -150,7 +150,7 @@ def test_predict_metrics_callback_logs_predict_prefix(
 
     assert logged, "no metrics were logged"
     assert all(k.startswith("predict/") for k in logged)
-    assert all(v.ndim == 0 for v in logged.values()), (
+    assert all(isinstance(v, float) for v in logged.values()), (
         "all logged values should be scalars"
     )
 
@@ -158,7 +158,7 @@ def test_predict_metrics_callback_logs_predict_prefix(
 def test_predict_metrics_callback_logs_per_cluster(
     fake_module: FakePredictModule, trainer: pl.Trainer
 ) -> None:
-    logged: dict[str, Tensor] = {}
+    logged: dict[str, float] = {}
     mock_logger = MagicMock()
     mock_logger.log_metrics.side_effect = lambda m, **_: logged.update(m)
 

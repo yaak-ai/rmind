@@ -9,7 +9,7 @@ from pytorch_lightning.callbacks import Callback
 from torch import Tensor
 
 from rmind.callbacks.loggers.common import _get_wandb_loggers
-from rmind.models.control_transformer import ControlTransformer, PredictionConfig
+from rmind.models.control_transformer import PredictionConfig
 
 
 class PredictMetricsCallback(Callback):
@@ -35,10 +35,12 @@ class PredictMetricsCallback(Callback):
     ) -> None:
         self._accumulated = defaultdict(list)
         self._accumulated_by_cluster = defaultdict(lambda: defaultdict(list))
-        if not isinstance(pl_module, ControlTransformer):
+        if not hasattr(pl_module, "prediction_config"):
             return
-        self._prev_prediction_config = pl_module.prediction_config
-        pl_module.prediction_config = self._prediction_config
+        self._prev_prediction_config = cast(
+            "PredictionConfig", pl_module.prediction_config
+        )
+        pl_module.prediction_config = self._prediction_config  # ty: ignore[unresolved-attribute]
 
     @override
     @torch.no_grad()
@@ -97,10 +99,10 @@ class PredictMetricsCallback(Callback):
         self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
         if (
-            isinstance(pl_module, ControlTransformer)
+            hasattr(pl_module, "prediction_config")
             and self._prev_prediction_config is not None
         ):
-            pl_module.prediction_config = self._prev_prediction_config
+            pl_module.prediction_config = self._prev_prediction_config  # ty: ignore[unresolved-attribute]
             self._prev_prediction_config = None
 
         metrics: dict[str, Tensor] = {
