@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from functools import wraps
+from functools import partial
 from typing import Any, TypeVar
 
 from pydantic import validate_call
@@ -29,13 +29,10 @@ class SafeCallback(Callback):
         self._disabled_hooks: set[str] = set()
 
     def _safe_hook(self, hook: str, fn: Callable[..., T]) -> Callable[..., T | None]:
-        hook = _validate_callback_hook(hook)
-
-        @wraps(fn)
-        def wrapper(*args: Any, **kwargs: Any) -> T | None:
-            return self._safe_call(hook, fn, *args, **kwargs)
-
-        return wrapper
+        # Return `partial` over the bound `_safe_call` rather than a nested
+        # closure so the resulting attribute stays pickleable for spawn-based
+        # DDP launchers.
+        return partial(self._safe_call, _validate_callback_hook(hook), fn)
 
     def _safe_call(
         self, hook: str, fn: Callable[..., T], *args: Any, **kwargs: Any

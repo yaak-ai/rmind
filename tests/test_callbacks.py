@@ -1,3 +1,4 @@
+import pickle
 from typing import override
 
 import pytest
@@ -137,6 +138,14 @@ def test_safe_callback_can_fail_loudly(trainer: pl.Trainer, module: ToyModule) -
         callback.on_train_batch_end(
             trainer, module, outputs=None, batch=None, batch_idx=0
         )
+
+
+def test_safe_callback_dynamic_hook_is_picklable() -> None:
+    # Spawn-based DDP launchers pickle the trainer (and therefore callbacks);
+    # the dynamically-installed hook must survive a pickle round-trip.
+    callback = FailingBatchCallback(hook_style="dynamic")
+
+    pickle.loads(pickle.dumps(callback))
 
 
 def test_waypoints_map_handles_basemap_http_error(
