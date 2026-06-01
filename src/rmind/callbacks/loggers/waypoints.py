@@ -48,7 +48,7 @@ class WandbWaypointsLogger(SafeCallback):
         every_n_batch: int | None = None,
         crs: str | None = None,
         fail_gracefully: bool = True,
-        disable_on_error: bool = True,
+        disable_on_error: bool = False,
     ) -> None:
         super().__init__(
             fail_gracefully=fail_gracefully, disable_on_error=disable_on_error

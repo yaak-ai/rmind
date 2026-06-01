@@ -36,7 +36,7 @@ class WandbPatchSimilarityLogger(SafeCallback):
         every_n_sample: int,
         patch_grid_size: int = 16,
         fail_gracefully: bool = True,
-        disable_on_error: bool = True,
+        disable_on_error: bool = False,
     ) -> None:
         super().__init__(
             fail_gracefully=fail_gracefully, disable_on_error=disable_on_error

@@ -33,7 +33,7 @@ class WandbImageParamLogger(SafeCallback):
         every_n_batch: int | None = None,
         cmap_type: K.ColorMapType | None = K.ColorMapType.viridis,
         fail_gracefully: bool = True,
-        disable_on_error: bool = True,
+        disable_on_error: bool = False,
     ) -> None:
         super().__init__(
             fail_gracefully=fail_gracefully, disable_on_error=disable_on_error
