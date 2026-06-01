@@ -1047,3 +1047,12 @@ samples:
           _target_: polars.DataFrame.with_row_index
           _partial_: true
           name: meta/sample_id
+
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_labeled
+        renames:
+          df: samples_with_id
+        func:
+          _target_: rmind.utils.ClusterLabelFilter
+          labels_path: ${paths.cluster_labels.train}
+          clusters: ${paths.cluster_filter}

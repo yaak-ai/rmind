@@ -1,0 +1,15 @@
+# @package _global_
+
+defaults:
+  - /datamodule: yaak/train
+  - /cluster_fn: rule_based
+  - /paths: yaak/default
+  - _self_
+
+# Override train dataloader to process every sample (no shuffle, no drop_last)
+datamodule:
+  train:
+    shuffle: false
+    drop_last: false
+
+output_dir: ~/cluster_labels

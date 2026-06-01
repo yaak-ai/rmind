@@ -42,6 +42,12 @@ generate-config:
         --ignore-unknown-comments \
         --strict
 
+label-clusters *ARGS: generate-config
+    uv run rmind-label-clusters \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name label_clusters.yaml \
+        {{ ARGS }}
+
 train *ARGS: generate-config check-git
     uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
