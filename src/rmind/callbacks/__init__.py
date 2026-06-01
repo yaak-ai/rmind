@@ -13,6 +13,7 @@ from .prediction import (
     TensorDictPredictionWriter,
 )
 from .prediction_config import PredictionConfigSetter
+from .safe import SafeCallback
 
 __all__ = [
     "DataFramePredictionWriter",
@@ -21,6 +22,7 @@ __all__ = [
     "ModuleFreezer",
     "PredictionConfigSetter",
     "RerunPredictionWriter",
+    "SafeCallback",
     "TensorDictPredictionWriter",
     "WandbAttentionMaskLogger",
     "WandbImageParamLogger",

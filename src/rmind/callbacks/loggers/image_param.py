@@ -5,10 +5,11 @@ import kornia.color as K
 import pytorch_lightning as pl
 from einops import rearrange
 from pydantic import AfterValidator, validate_call
-from pytorch_lightning.callbacks import Callback
 from tensordict import TensorDict
 from torch import Tensor
 from wandb import Image
+
+from rmind.callbacks.safe import SafeCallback
 
 from .common import (
     BATCH_HOOKS,
@@ -20,7 +21,7 @@ from .common import (
 
 
 @final
-class WandbImageParamLogger(Callback):
+class WandbImageParamLogger(SafeCallback):
     @validate_call
     def __init__(  # noqa: PLR0913
         self,
@@ -31,7 +32,12 @@ class WandbImageParamLogger(Callback):
         apply: Callable[[Tensor], Tensor] | None = None,
         every_n_batch: int | None = None,
         cmap_type: K.ColorMapType | None = K.ColorMapType.viridis,
+        fail_gracefully: bool = True,
+        disable_on_error: bool = False,
     ) -> None:
+        super().__init__(
+            fail_gracefully=fail_gracefully, disable_on_error=disable_on_error
+        )
         self._key = key
         self._select = select
         self._apply = apply
@@ -42,7 +48,7 @@ class WandbImageParamLogger(Callback):
         )
         self._every_n_batch = every_n_batch
         self._when = when
-        setattr(self, when, self._call)
+        setattr(self, when, self._safe_hook(when, self._call))
 
     def _call(
         self,
