@@ -6,14 +6,14 @@ import pytorch_lightning as pl
 import torch
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.patches import Patch
-from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 from structlog import get_logger
 from torch import Tensor
 from wandb import Image
 
-from rmind.components.base import TokenMeta, TokenType
-from rmind.components.episode import Episode, EpisodeBuilder
+from rmind.callbacks.safe import SafeCallback
+from rmind.components.base import TokenType
+from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
 
 from .common import _figure_to_rgba, _get_wandb_loggers
 
@@ -126,11 +126,38 @@ def visualize_attention_mask(  # noqa: PLR0914
 
 
 @final
-class WandbAttentionMaskLogger(Callback):
-    def __init__(self, *, num_vis_timesteps: int = 2) -> None:
+class WandbAttentionMaskLogger(SafeCallback):
+    def __init__(
+        self,
+        *,
+        num_vis_timesteps: int = 2,
+        fail_gracefully: bool = True,
+        disable_on_error: bool = False,
+    ) -> None:
+        super().__init__(
+            fail_gracefully=fail_gracefully, disable_on_error=disable_on_error
+        )
         self._num_vis_timesteps = num_vis_timesteps
 
     def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: STEP_OUTPUT,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
+        self._safe_call(
+            "on_train_batch_end",
+            self._log_attention_mask,
+            trainer,
+            pl_module,
+            outputs,
+            batch,
+            batch_idx,
+        )
+
+    def _log_attention_mask(
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,

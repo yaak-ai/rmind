@@ -6,11 +6,12 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from pydantic import AfterValidator, validate_call
-from pytorch_lightning.callbacks import Callback
 from torch import Tensor
 from torch.nn.functional import cosine_similarity
 from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
 from wandb import Image
+
+from rmind.callbacks.safe import SafeCallback
 
 from .common import (
     _bind_hook_arguments,
@@ -21,7 +22,7 @@ from .common import (
 
 
 @final
-class WandbPatchSimilarityLogger(Callback):
+class WandbPatchSimilarityLogger(SafeCallback):
     @validate_call
     def __init__(  # noqa: PLR0913
         self,
@@ -34,7 +35,12 @@ class WandbPatchSimilarityLogger(Callback):
         sample_id_path: list[str | int],
         every_n_sample: int,
         patch_grid_size: int = 16,
+        fail_gracefully: bool = True,
+        disable_on_error: bool = False,
     ) -> None:
+        super().__init__(
+            fail_gracefully=fail_gracefully, disable_on_error=disable_on_error
+        )
         self._key = key
         self._image_sources_path = tree_map(
             lambda v: tuple(map(MappingKey, v)),
@@ -49,7 +55,7 @@ class WandbPatchSimilarityLogger(Callback):
         self._every_n_sample = every_n_sample
         self._when = when
 
-        setattr(self, when, self._call)
+        setattr(self, when, self._safe_hook(when, self._call))
 
     @staticmethod
     def _stable_ref_patch_idx(
