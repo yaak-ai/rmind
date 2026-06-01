@@ -11,7 +11,6 @@ from torch.testing import assert_close, make_tensor
 
 from rmind.components.base import Modality
 from rmind.components.episode import Episode
-from rmind.components.loss import WeightedMSELoss
 from rmind.components.objectives import FlowPolicyObjective
 from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
 from rmind.components.objectives.flow_policy import DEFAULT_ACTION_KEYS
@@ -29,10 +28,8 @@ FLOW_TIME_LOGIT_SCALE = 0.25
 FLOW_VALIDATION_SEED = 2027
 
 
-def _flow_policy_loss(
-    *, weight: tuple[float, ...] = (1.0, 1.0, 1.0)
-) -> WeightedMSELoss:
-    return WeightedMSELoss(weight=weight)
+def _flow_policy_loss() -> torch.nn.MSELoss:
+    return torch.nn.MSELoss()
 
 
 def _flow_policy_batch(
@@ -387,11 +384,7 @@ def test_flow_policy_config_instantiates(
     assert objective.flow_time_sampling == "logit-normal"
     assert objective.validation_seed == FLOW_VALIDATION_SEED
     assert objective.validation_sample_metrics is True
-    assert isinstance(objective.loss, WeightedMSELoss)
-    assert_close(
-        cast("torch.Tensor", objective.loss.weight),
-        torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32),
-    )
+    assert isinstance(objective.loss, torch.nn.MSELoss)
     assert objective.decoder.action_horizon == action_horizon
     assert objective.decoder.flow_sampling_method == "heun"
     assert objective.decoder.time_embedding.scale == pytest.approx(

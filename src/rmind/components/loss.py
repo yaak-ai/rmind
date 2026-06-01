@@ -1,4 +1,4 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Any, Protocol, override, runtime_checkable
 
 import torch
@@ -76,50 +76,6 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         var = self.var_pos_function(log_var)
 
         return super().forward(input=mean, target=target, var=var)
-
-
-class WeightedMSELoss(Module):
-    def __init__(self, *, weight: Sequence[float] | Tensor | None = None) -> None:
-        super().__init__()
-        self.weight: Tensor | None
-
-        if weight is None:
-            self.register_buffer("weight", None)
-            return
-
-        weight_tensor = torch.as_tensor(weight, dtype=torch.float32)
-        if weight_tensor.ndim != 1:
-            msg = f"weight must be 1D, got shape {tuple(weight_tensor.shape)}"
-            raise ValueError(msg)
-
-        if not torch.isfinite(weight_tensor).all():
-            msg = "weight must contain only finite values"
-            raise ValueError(msg)
-
-        if not (weight_tensor > 0).all():
-            msg = "weight values must be positive"
-            raise ValueError(msg)
-
-        self.register_buffer("weight", weight_tensor)
-
-    @override
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        loss = F.mse_loss(input, target, reduction="none")
-        weight = self.weight
-        if weight is None:
-            return loss.mean()
-
-        if input.shape[-1] != weight.shape[0]:
-            msg = (
-                "input last dimension must match weight length, "
-                f"got input shape {tuple(input.shape)} and weight shape "
-                f"{tuple(weight.shape)}"
-            )
-            raise ValueError(msg)
-
-        loss_by_channel = loss.flatten(end_dim=-2).mean(dim=0)
-        weight = weight.to(device=loss.device, dtype=loss.dtype)
-        return (loss_by_channel * weight).sum() / weight.sum()
 
 
 class GramAnchoringLoss(Module):

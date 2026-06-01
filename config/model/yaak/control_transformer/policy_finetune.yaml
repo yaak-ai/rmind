@@ -13,8 +13,7 @@ hparams_jq: |
         "validation_seed": ${flow_validation_seed},
         "validation_sample_metrics": true,
         "loss": {
-          "_target_": "rmind.components.loss.WeightedMSELoss",
-          "weight": [1.0, 1.0, 1.0]
+          "_target_": "torch.nn.MSELoss"
         },
         "decoder": {
           "_target_": "rmind.components.transformer.FlowActionDecoder",
