@@ -1,5 +1,7 @@
 - [ ] Fix Waypoint logger issue (?)
+- [ ] Add turn_signal prediction
 - [ ] Experiments:
+```
 Tier 0 — Implementation sanity (no full training, minutes)
 
 - E0.1 Oracle fit: run flow_oracle.py on the synthetic oracle; confirm flow_mse and sample_l1 converge. This validates the decoder/sampler before any GPU finetune.
@@ -35,3 +37,4 @@ Open-loop accuracy is a weak proxy for driving quality (no compounding-error / c
 Suggested decision criterion
 
 Ship the action expert only if it (a) matches or beats the horizon-matched Gaussian baseline (E1.2) on first-step steering RMSE, (b) shows a measurable best-of-N / multimodality gain (E3.1), and (c) is non-inferior closed-loop (E4.1) at an inference NFE you can afford on-vehicle (E2.2). If it only wins on E1.1 but ties E1.2, the win is the horizon/shift, not flow matching — and you could keep the cheaper deterministic head.
+```
