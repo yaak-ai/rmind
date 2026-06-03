@@ -317,7 +317,7 @@ class PolicyObjective(Objective):
                     match action_type:
                         case (Modality.CONTINUOUS, _):
                             prediction = x[..., 0]  # (b, 1)
-                            return (prediction - gt).abs() / (gt + 1e-4)
+                            return (prediction - gt).abs() / (gt.abs() + 1e-4)
 
                         case (Modality.DISCRETE, "turn_signal"):
                             return F.l1_loss(

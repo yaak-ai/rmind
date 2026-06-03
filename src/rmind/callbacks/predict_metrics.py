@@ -23,7 +23,7 @@ class PredictMetricsCallback(Callback):
         self._cluster_fn = cluster_fn
         self._cluster_metrics = cluster_metrics
         self._prediction_config = prediction_config
-        self._accumulated: dict[str, list[Tensor]] = defaultdict(list)
+        self._accumulated: dict[str, list[tuple[Tensor, int]]] = defaultdict(list)
         self._accumulated_by_cluster: dict[str, dict[str, list[tuple[Tensor, int]]]] = (
             defaultdict(lambda: defaultdict(list))
         )
@@ -80,7 +80,8 @@ class PredictMetricsCallback(Callback):
             if all_allowed is not None and key not in all_allowed:
                 continue
 
-            self._accumulated[key].append(v.float().mean())
+            values_float = v.float()
+            self._accumulated[key].append((values_float.sum(), values_float.numel()))
 
             if cluster_masks is not None:
                 for cname, mask in cluster_masks.items():
@@ -88,7 +89,7 @@ class PredictMetricsCallback(Callback):
                         allowed = self._cluster_metrics.get(cname)
                         if allowed is None or key not in allowed:
                             continue
-                    filtered = v[mask].float()
+                    filtered = values_float[mask]
                     self._accumulated_by_cluster[cname][key].append((
                         filtered.sum(),
                         filtered.numel(),
@@ -105,10 +106,12 @@ class PredictMetricsCallback(Callback):
             pl_module.prediction_config = self._prev_prediction_config  # ty: ignore[unresolved-attribute]
             self._prev_prediction_config = None
 
-        metrics: dict[str, Tensor] = {
-            f"predict/{k}": torch.stack(vs).mean()
-            for k, vs in self._accumulated.items()
-        }
+        metrics: dict[str, Tensor] = {}
+        for k, vs in self._accumulated.items():
+            total = cast("Tensor", sum(s for s, _ in vs))
+            count = sum(n for _, n in vs)
+            metrics[f"predict/{k}"] = total / count
+
         for cname, cname_acc in self._accumulated_by_cluster.items():
             for k, vs in cname_acc.items():
                 total = cast("Tensor", sum(s for s, _ in vs))

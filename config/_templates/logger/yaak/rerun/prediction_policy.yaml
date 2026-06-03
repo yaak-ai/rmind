@@ -50,6 +50,7 @@ schema:
   #@             "prediction_value",
   #@             "score_l1",
   #@             "score_logprob",
+  #@             "score_signed_error",
   #@             "ground_truth_diff_prev",
   #@             "prediction_diff_prev",
   #@             "ground_truth_diff_hist",
