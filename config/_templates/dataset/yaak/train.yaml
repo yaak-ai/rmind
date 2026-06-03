@@ -1041,6 +1041,19 @@ samples:
                       AND list_max("meta/VehicleMotion/speed") >= 25.0
                       AND list_last("meta/VehicleMotion/speed") - list_first("meta/VehicleMotion/speed") >= -0.05 * list_avg("meta/VehicleMotion/speed")
                   )
+                  -- Drop episodes where any frame still has simultaneous non-zero gas
+                  -- AND brake after the Stage-6 clamp. This catches vehicles with a
+                  -- genuinely fluctuating brake signal (Niro101, Niro107, Niro112,
+                  -- Niro115, Niro128, Niro130, Niro131) where the clamp does not
+                  -- apply (brake > 0.05). Such conflicts are unrecoverable noise.
+                  AND len(list_filter(
+                      list_zip(
+                          "meta/VehicleMotion/gas_pedal_normalized",
+                          "meta/VehicleMotion/brake_pedal_normalized"
+                      ),
+                      x -> x[1] > (1.0 / 255 + 0.001)
+                           AND x[2] > (1.0 / 164 + 0.001)
+                  )) = 0
 
       - _target_: pipefunc.PipeFunc
         renames:
