@@ -9,10 +9,11 @@ defaults:
   - /wandb: yaak/rmind
   - _self_
 
-# VQ-BeT recipe: small codebooks + residual composition (kitchen uses n_embed=16, groups=2)
+# VQ-BeT recipe: small codebooks + residual composition.
+# resolution compounds as codebook_size ** num_quantizers → 16**4 ≈ 65k prototypes.
 action_dim: 4
 action_hidden_dim: 128
 action_latent_dim: 384
 
-primary_codebook_size: 16
-secondary_codebook_size: 16
+codebook_size: 16
+num_quantizers: 4

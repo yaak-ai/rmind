@@ -40,9 +40,8 @@ encoder:
 quantizer:
   _target_: rmind.components.vq.ResidualVQ
   dim: ${action_latent_dim}
-  codebook_sizes:
-    - ${primary_codebook_size}
-    - ${secondary_codebook_size}
+  codebook_size: ${codebook_size}
+  num_quantizers: ${num_quantizers}
 
 decoder:
   _target_: torch.nn.Sequential
