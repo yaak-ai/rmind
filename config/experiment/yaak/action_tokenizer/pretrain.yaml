@@ -1,0 +1,18 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/action_tokenizer/raw
+  - /datamodule: yaak/action_train
+  - /trainer: default
+  - /trainer/callbacks: action_tokenizer
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+# VQ-BeT recipe: small codebooks + residual composition (kitchen uses n_embed=16, groups=2)
+action_dim: 4
+action_hidden_dim: 128
+action_latent_dim: 384
+
+primary_codebook_size: 16
+secondary_codebook_size: 16

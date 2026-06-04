@@ -57,6 +57,14 @@ train-debug *ARGS: generate-config
         ++model.encoder.disable=true \
         {{ ARGS }}
 
+train-action *ARGS:
+    uv run rmind-train \
+          --config-path {{ justfile_directory() }}/config \
+          --config-name train.yaml \
+          experiment=yaak/action_tokenizer/pretrain \
+          datamodule=yaak/action_train \
+          {{ ARGS }}
+
 predict +ARGS: generate-config
     uv run rmind-predict \
         --config-path {{ justfile_directory() }}/config \
