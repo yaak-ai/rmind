@@ -137,6 +137,7 @@ predictions/
 lightning_logs/
 .hydra
 multirun/
+screenshots/
 
 # env
 .cenv
