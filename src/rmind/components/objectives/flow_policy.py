@@ -22,6 +22,15 @@ from rmind.components.transformer import FlowActionDecoder
 POLICY_CONDITION_TOKENS: tuple[tuple[Modality, str], ...] = (
     (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
     (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+    # Route intent: the baseline (PolicyObjective) conditions on waypoints; the
+    # cross-attention decoder takes the waypoint tokens directly (no mean-pool).
+    (Modality.CONTEXT, "waypoints"),
+    # Raw scene: 256 encoded image patch tokens (a fixed spatial grid, already
+    # position-tagged by the encoder's RoPE). The decoder's 6 action queries
+    # cross-attend over them, so cost is negligible and the encoder already
+    # computed the embeddings. Gives the policy direct access to the present
+    # scene, which the summary path only sees through the foresight bottleneck.
+    (Modality.IMAGE, "cam_front_left"),
 )
 
 DEFAULT_ACTION_KEYS = ("gas_pedal", "brake_pedal", "steering_angle")
@@ -49,6 +58,7 @@ class FlowPolicyObjective(Objective):
         flow_time_sampling: str = "uniform",
         validation_seed: int = 0,
         validation_sample_metrics: bool = True,
+        prediction_samples: int = 1,
     ) -> None:
         super().__init__()
 
@@ -74,7 +84,12 @@ class FlowPolicyObjective(Objective):
             msg = f"Invalid flow_time_sampling method: {flow_time_sampling}"
             raise ValueError(msg)
 
+        if prediction_samples <= 0:
+            msg = f"prediction_samples must be positive, got {prediction_samples}"
+            raise ValueError(msg)
+
         self.decoder = decoder
+        self.prediction_samples = prediction_samples
         self.history_steps = history_steps
         self.action_keys = action_keys
         self.batch_action_paths = batch_action_paths
@@ -128,16 +143,20 @@ class FlowPolicyObjective(Objective):
             "loss": self.loss(predicted_action_flow, target_action_flow)
         }
         if not self.training and self.validation_sample_metrics:
-            sample_noise = torch.randn(
-                target_actions.shape,
-                dtype=target_actions.dtype,
-                device=target_actions.device,
-                generator=generator,
-            )
-            sample_actions = self.decoder.sample(
-                condition_tokens=condition_tokens, noise=sample_noise
-            )
-            metrics["sample_l1"] = F.l1_loss(sample_actions, target_actions)
+            # Best-of-k L1 curve from one set of N draws (best-of-k = min over any
+            # k iid samples). sample_l1_bo1 is the defensive floor (honest single
+            # draw); the bo1 -> boN drop is the multimodality signal. sample_l1 is
+            # kept as the full best-of-N for continuity.
+            samples = self._draw_samples(
+                condition_tokens=condition_tokens, generator=generator
+            )  # (N, B, H, A)
+            target = target_actions.to(dtype=samples.dtype).unsqueeze(0)
+            per_sample_l1 = (samples - target).abs().flatten(start_dim=2).mean(dim=2)
+            for k in self._sample_curve_ks():
+                metrics[f"sample_l1_bo{k}"] = per_sample_l1[:k].min(dim=0).values.mean()
+            # sample_l1 is the honest single-draw floor (one forward sample), not
+            # the oracle best-of-N; the bo{k} keys carry the multimodality curve.
+            metrics["sample_l1"] = per_sample_l1[0].mean()
 
         return metrics
 
@@ -172,7 +191,17 @@ class FlowPolicyObjective(Objective):
             condition_tokens = self._condition_tokens(
                 episode=episode, embedding=embedding
             )
-            prediction_actions = self.decoder.sample(condition_tokens=condition_tokens)
+            # Single honest draw (one forward sample), matching the sample_l1
+            # metric — not an oracle best-of-N selection. Use the global RNG
+            # (generator=None): re-seeding a per-batch generator to a fixed seed
+            # makes the noise a function of within-batch position, which imprints
+            # a period-`batch_size` artifact on the plotted predictions. The
+            # global RNG advances across batches (run-level reproducibility comes
+            # from seed_everything), so noise differs batch-to-batch.
+            prediction_actions = self.decoder.sample(
+                condition_tokens=condition_tokens,
+                noise=self._noise(condition_tokens=condition_tokens, generator=None),
+            )
 
         if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
             if prediction_actions is None:
@@ -200,6 +229,45 @@ class FlowPolicyObjective(Objective):
             )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
+
+    def _draw_samples(
+        self, *, condition_tokens: Tensor, generator: torch.Generator | None
+    ) -> Tensor:
+        # N seeded trajectories: (N, B, H, A).
+        return torch.stack(
+            [
+                self.decoder.sample(
+                    condition_tokens=condition_tokens,
+                    noise=self._noise(
+                        condition_tokens=condition_tokens, generator=generator
+                    ),
+                )
+                for _ in range(self.prediction_samples)
+            ],
+            dim=0,
+        )
+
+    def _sample_curve_ks(self) -> list[int]:
+        # Powers of two up to N, always including 1 (defensive floor) and N.
+        ks: list[int] = []
+        k = 1
+        while k < self.prediction_samples:
+            ks.append(k)
+            k *= 2
+        ks.append(self.prediction_samples)
+        return ks
+
+    def _noise(
+        self, *, condition_tokens: Tensor, generator: torch.Generator | None
+    ) -> Tensor:
+        return torch.randn(
+            condition_tokens.shape[0],
+            self.decoder.action_horizon,
+            self.decoder.action_dim,
+            dtype=condition_tokens.dtype,
+            device=condition_tokens.device,
+            generator=generator,
+        )
 
     def _condition_tokens(self, *, episode: Episode, embedding: Tensor) -> Tensor:
         embeddings = (

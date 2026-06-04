@@ -1,12 +1,12 @@
 ---
 defaults:
-  - /dataset/yaak/predict@predict.dataset
+  - /dataset/yaak/overfit@predict.dataset
   - _self_
 
 _target_: rmind.datamodules.GenericDataModule
 predict:
   _target_: rbyte.dataloader.TorchDataNodeDataLoader
-  batch_size: 16
+  batch_size: 8
   shuffle: false
   collate_fn:
     _target_: rbyte.types.Batch.to_dict

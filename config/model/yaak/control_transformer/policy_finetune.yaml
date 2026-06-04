@@ -12,6 +12,7 @@ hparams_jq: |
         "flow_time_sampling": "${flow_time_sampling}",
         "validation_seed": ${flow_validation_seed},
         "validation_sample_metrics": true,
+        "prediction_samples": ${oc.select:flow_prediction_samples,32},
         "loss": {
           "_target_": "torch.nn.MSELoss"
         },
@@ -24,7 +25,7 @@ hparams_jq: |
           "flow_sampling_method": "${flow_sampling_method}",
           "time_embedding_scale": 1000.0,
           "time_logit_scale": 0.25,
-          "num_layers": 2,
+          "num_layers": 4,
           "num_heads": 4,
           "attn_dropout": 0.1,
           "resid_dropout": 0.1,

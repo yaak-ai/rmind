@@ -1,3 +1,4 @@
+export HOSTNAME := `hostname`
 export PYTHONBREAKPOINT := "pudb.debug"
 export PATDB_CODE_STYLE := "vim"
 export BETTER_EXCEPTIONS := "1"
@@ -59,6 +60,13 @@ train-debug *ARGS: generate-config
 
 predict +ARGS: generate-config
     uv run rmind-predict \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        {{ ARGS }}
+
+# sample-concentration diagnostic for the flow policy (fan plot + hit rates)
+fan +ARGS: generate-config
+    uv run python -m rmind.scripts.flow_sample_fan \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml \
         {{ ARGS }}

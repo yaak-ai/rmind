@@ -28,9 +28,9 @@ trainer:
           - prediction_value
           - score_l1
 
-    - _target_: rmind.callbacks.RerunPredictionWriter
-      write_interval: batch
-      logger: ${logger}
+    # - _target_: rmind.callbacks.RerunPredictionWriter
+    #   write_interval: batch
+    #   logger: ${logger}
 
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
