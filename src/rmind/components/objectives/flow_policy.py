@@ -25,12 +25,13 @@ POLICY_CONDITION_TOKENS: tuple[tuple[Modality, str], ...] = (
     # Route intent: the baseline (PolicyObjective) conditions on waypoints; the
     # cross-attention decoder takes the waypoint tokens directly (no mean-pool).
     (Modality.CONTEXT, "waypoints"),
-    # Raw scene: 256 encoded image patch tokens (a fixed spatial grid, already
-    # position-tagged by the encoder's RoPE). The decoder's 6 action queries
-    # cross-attend over them, so cost is negligible and the encoder already
-    # computed the embeddings. Gives the policy direct access to the present
-    # scene, which the summary path only sees through the foresight bottleneck.
-    (Modality.IMAGE, "cam_front_left"),
+    # Raw scene: 256 encoded image patch tokens. Tested on the overfit and
+    # found informationally redundant with the summaries (null result: same
+    # floor, decoder substitutes one source for the other — see
+    # flow_action_expert_improvements.md). Disabled for now; ckpts trained
+    # with it (e.g. model-tfuv76yx) need `+fan.legacy_condition=false`-style
+    # care: conditioning is baked into code, not the checkpoint.
+    # (Modality.IMAGE, "cam_front_left"),
 )
 
 DEFAULT_ACTION_KEYS = ("gas_pedal", "brake_pedal", "steering_angle")

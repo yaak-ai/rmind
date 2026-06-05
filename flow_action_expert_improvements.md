@@ -127,22 +127,44 @@ Suspects, with the decision tree:
    not integration. Oracle's "heun 8→32 negligible" does NOT transfer: the
    real learned field is curvier (harder conditional map, stiffer ODE) than
    the synthetic oracle's.
-   **NFE-fair integrator sweep (image ckpt, flat hit@0.05 / flat L1):**
-   heun/8=16NFE 53%/0.058 · heun/16=32NFE 72%/0.041 ·
-   **euler/32=32NFE 81%/0.0335 (best)** · euler/64 78%/0.036 ·
-   heun/32=64NFE 73%/0.040 · heun/128 74%/0.039.
-   Non-monotone (euler/32 > euler/64; 1st order > 2nd at matched NFE) →
-   the **exact flow of the learned field tops out at the heun plateau
-   (~74%)**; euler/32's truncation bias lands *closer to GT* than the field's
-   own exact solution (coarse-solver-as-smoothing, known diffusion-sampler
-   effect). Practice: **deploy euler/32** (cheapest + best; single-run,
-   confirm with a repeat); **measure field quality with heun/32** (converged,
-   unbiased) in val metrics; re-sweep cheaply (`just fan`) after EMA — a
-   better field may erase euler/32's bias bonus.
+
+   **FINAL integrator sweep** (image ckpt; flat hit@0.05 / flat mean L1 /
+   flat bo32; spike hit@0.05):
+
+   | sampler | NFE | flat | bo32 | spike |
+   |---|---|---|---|---|
+   | heun/8 (old default) | 16 | 53% / .058 | .0031 | 34% |
+   | **euler/16** | 16 | **89% / .025** | .0029 | **49%** |
+   | heun/16 | 32 | 72% / .041 | .0027 | 42% |
+   | midpoint/16 | 32 | 69% / .043 | .0027 | 40% |
+   | euler/32 (×2, reproduced) | 32 | 81% / .0335 | .0024 | 45% |
+   | heun/32 | 64 | 73% / .040 | .0024 | 42% |
+   | euler/64 | 64 | 78% / .036 | .0025 | 44% |
+   | heun/128 | 256 | 74% / .039 | .0024 | 43% |
+
+   Reading (the numbers force it):
+   - **Exact flow of the learned field = heun plateau**: 74% / 0.040 / bo32
+     0.0024. That is the honest field quality. → **val metrics: heun/32**
+     (set in `finetune_overfit_flow.yaml`).
+   - **Coarser Euler is monotonically "better"** (64→32→16: 78→81→89%) while
+     **bo32 worsens** (0.0024→0.0029): the signature of **variance
+     reduction**, not accuracy. Coarse Euler under-resolves the conditional
+     distribution and contracts draws toward its mean — trading the sample
+     diversity flow exists for, to win unimodal single-draw metrics. The
+     limit of this trend is a 1-step mean regressor (≈ the Gaussian
+     baseline). euler/8/4 untested; the curve presumably keeps "rising".
+   - **midpoint/16 ≈ heun/16** → the t=1-endpoint-query hypothesis is dead;
+     the mechanism is step-coarseness smoothing/contraction, period.
+   - **Deployment: deliberately open.** On unimodal overfit data euler/16
+     dominates, but partly by collapsing the distribution — the property
+     that would erase flow's multimodal edge on real data. Choose per
+     checkpoint/data via fan + closed-loop, not as doctrine. Re-sweep after
+     EMA (better field ⇒ less to gain from contraction).
+
    Gotchas: `sample()` already has euler/midpoint/heun — check the ckpt's
    `flow_sampling_method` hparam before reasoning about integrators. All
-   training-time val curves so far were heun/8 → their *levels* include
-   ~0.015 integrator penalty (comparisons stay valid; absolute floors don't).
+   training-time val curves before this change were heun/8 → their *levels*
+   include ~0.015 integrator penalty (comparisons valid; absolute floors not).
 2. **Training noise (no EMA)** — flow-matching loss is per-batch noisy (random
    t, random x₀ per visit); sampled field = one jittery SGD iterate, and
    integration compounds the wobble. bo-curves plateauing with wiggles at
@@ -172,10 +194,14 @@ Suspects, with the decision tree:
 
 ## Top 3 to do next
 
-1. **`flow_sampling_steps: 8 → 32`** in the experiment/inference configs
-   (sweep-proven free win; or implement Heun for the same at ~16 NFE).
-2. **Decoder-only EMA** on the overfit run — decides suspect 2; now the main
-   lever for the remaining floor (flat 0.040 / spike 0.121 vs oracle 0.017).
+1. **EMA run** — `EMAWeights` callback implemented (swaps in for val, shadow
+   persisted in ckpt callback state; `finetune_overfit_flow` now uses
+   `/trainer/callbacks: finetune_ema`, val at heun/32). Launch the overfit,
+   read val `sample_l1` + `just fan '+fan.ema=true'` vs the 74%/0.040 field
+   floor. This is the main lever for the remaining gap vs oracle 0.017.
+2. **Post-EMA integrator re-sweep** (cheap, `just fan`) — tests the
+   prediction that a smoother field lifts the heun plateau and shrinks the
+   coarse-Euler contraction bonus.
 3. **Maneuver-L1 metric** (L1 on `|GT| > 0.5` frames, spike vs flat) as a
    first-class val metric — the scoreboard that actually favors getting
    maneuvers right, for the baseline comparison and all future runs.

@@ -9,7 +9,7 @@ defaults:
   - /model: yaak/control_transformer/policy_finetune
   - /datamodule: yaak/overfit
   - /trainer: default
-  - /trainer/callbacks: finetune
+  - /trainer/callbacks: finetune_ema
   - /paths: yaak/default
   - /wandb: yaak/rmind
   - _self_
@@ -19,7 +19,10 @@ model:
 
 encoder_embedding_dim: 384
 flow_decoder_embedding_dim: 256
-flow_sampling_steps: 8
+# heun/32 = converged exact flow of the learned field (sweep-verified):
+# val metrics measure field quality, unbiased by integrator truncation.
+# Deployment-time method/steps are chosen separately (see improvements doc).
+flow_sampling_steps: 32
 flow_sampling_method: heun
 flow_time_sampling: logit-normal
 flow_validation_seed: 2027

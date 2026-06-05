@@ -72,6 +72,26 @@ def _to_device(obj: Any, device: torch.device) -> Any:
     return obj
 
 
+def _load_ema_weights(model: Any, cfg: DictConfig) -> None:
+    """Apply the EMAWeights shadow stored in the artifact's checkpoint."""
+    artifact = str(cfg.model.artifact)
+    ckpt_path = (
+        Path("artifacts") / artifact.rsplit("/", 1)[-1] / str(cfg.model.filename)
+    )
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    callbacks_state = ckpt.get("callbacks", {})
+    key = next((k for k in callbacks_state if "EMAWeights" in k), None)
+    if key is None:
+        msg = f"no EMAWeights state found in {ckpt_path}"
+        raise ValueError(msg)
+    shadow = callbacks_state[key]["shadow"]
+    params = dict(model.named_parameters())
+    with torch.no_grad():
+        for name, tensor in shadow.items():
+            params[name].copy_(tensor)
+    logger.info("applied EMA weights", count=len(shadow), path=str(ckpt_path))
+
+
 def _dilate(mask: np.ndarray, pad: int) -> np.ndarray:
     if pad <= 0:
         return mask
@@ -94,12 +114,15 @@ def _collect(
     num_samples: int,
     sampling_steps: int | None = None,
     sampling_method: str | None = None,
+    apply_ema: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run the model over the predict dataloader; return (frame, gt, sample)."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     logger.debug("instantiating model", target=cfg.model._target_)
     model: pl.LightningModule = instantiate(cfg.model)
+    if apply_ema:
+        _load_ema_weights(model, cfg)
     model = model.to(device).eval()
 
     objective = model.objectives["policy"]
@@ -220,6 +243,7 @@ def main(cfg: DictConfig) -> None:
             num_samples=num_samples,
             sampling_steps=sampling_steps,
             sampling_method=sampling_method,
+            apply_ema=bool(fan.get("ema", False)),
         )
         cache_path = out_path.with_suffix(".npz")
         np.savez_compressed(cache_path, frame=frame, gt=gt, sample=sample)
