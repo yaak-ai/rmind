@@ -25,6 +25,12 @@ trainer:
           - prediction_probs
           - score_l1
           - score_logprob
+          - score_signed_error
+          - score_l1_rel
+          - prediction_diff_prev
+          - ground_truth_diff_prev
+          - prediction_diff_hist
+          - ground_truth_diff_hist
 
     - _target_: rmind.callbacks.RerunPredictionWriter
       write_interval: batch
@@ -36,6 +42,7 @@ trainer:
       select:
         - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
         - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+        - [batch, data, meta/VehicleMotion/speed]
         - [batch, meta, input_id]
         - [policy, ground_truth, value]
         - [policy, prediction_value, value]
@@ -43,6 +50,12 @@ trainer:
         - [policy, prediction_probs, value]
         - [policy, score_l1, value]
         - [policy, score_logprob, value]
+        - [policy, score_l1_rel, value]
+        - [policy, score_signed_error, value]
+        - [policy, prediction_diff_prev, value]
+        - [policy, ground_truth_diff_prev, value]
+        - [policy, prediction_diff_hist, value]
+        - [policy, ground_truth_diff_hist, value]
       writer:
         _target_: polars.DataFrame.write_parquet
         _partial_: true
