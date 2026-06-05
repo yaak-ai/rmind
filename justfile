@@ -1,3 +1,4 @@
+export HOSTNAME := `hostname`
 export PYTHONBREAKPOINT := "patdb.debug"
 export PATDB_CODE_STYLE := "vim"
 export BETTER_EXCEPTIONS := "1"

@@ -1,3 +1,3 @@
 data: /nasa/drives/yaak/data
 rbyte:
-  cache: .rbyte_cache
+  cache: /nasa/team-space/${oc.env:USER}/.rbyte_cache/${oc.env:HOSTNAME}
