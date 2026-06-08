@@ -56,3 +56,11 @@
   sample_id_path: [data, meta/sample_id]
   every_n_sample: 1000
   patch_grid_size: 16
+- _target_: rmind.callbacks.WandbForesightMetricsLogger
+  key: foresight
+  image_sources:
+    cam_front_left: [foresight, cam_front_left]
+  embeddings_predict: [forward_dynamics, _artifacts, last_embeddings]
+  embeddings_target: [forward_dynamics, _artifacts, last_targets]
+  hot_quantile: 0.05
+  max_hot_pairs: 50000
