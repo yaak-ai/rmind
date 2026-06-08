@@ -107,8 +107,12 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
-        action = torch.stack(tree_leaves(gathered), dim=-1)  # (B, T, action_dim)
-        return action.reshape(-1, action.shape[-1])
+        # leaves are (B,) for single-timestep or (B, T) for a clip; stacking the
+        # action features then flattening gives one vector per sample:
+        #   single → (B, n_features);  clip → (B, T * n_features)
+        # so the whole clip is encoded as a single VQ token (set action_dim to T*n).
+        action = torch.stack(tree_leaves(gathered), dim=-1)  # (B, n) or (B, T, n)
+        return action.reshape(action.shape[0], -1)
 
     def _step(self, batch: Any) -> tuple[Tensor, dict[str, Tensor]]:
         inputs = self.input_transform(batch)

@@ -9,9 +9,27 @@ defaults:
   - /wandb: yaak/rmind
   - _self_
 
-# VQ-BeT recipe: small codebooks + residual composition.
-# resolution compounds as codebook_size ** num_quantizers → 16**4 ≈ 65k prototypes.
-action_dim: 4
+timesteps: 6      # frames per action clip (1 or 6)
+stride: 10        # frame spacing within a clip → clip = [0, 10, 20, ...]
+action_space: 4   # action features per timestep
+action_dim:       # encoder-in / decoder-out width = action_space * timesteps
+  _target_: operator.mul
+  _args_:
+    - ${action_space}
+    - ${timesteps}
+
+# clip window span in frame units, as a polars "<n>i" string = stride * timesteps
+clip_period:
+  _target_: operator.add
+  _args_:
+    - _target_: builtins.str
+      _args_:
+        - _target_: operator.mul
+          _args_:
+            - ${stride}
+            - ${timesteps}
+    - "i"
+
 action_hidden_dim: 128
 action_latent_dim: 384
 
