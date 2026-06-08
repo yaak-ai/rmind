@@ -31,6 +31,7 @@ class PolicyObjective(Objective):
         self,
         *,
         norm: InstanceOf[Module] | None = None,
+        trunk: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
@@ -38,6 +39,7 @@ class PolicyObjective(Objective):
         super().__init__()
 
         self.norm: Module | None = norm
+        self.trunk: Module | None = trunk
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
@@ -93,7 +95,16 @@ class PolicyObjective(Objective):
             "i b 1 d -> b 1 (i d)",
         )
 
-        return self.heads(features)
+        return self._apply_heads(features)
+
+    def _apply_heads(self, features: Tensor) -> TensorTree:
+        if self.trunk is None:
+            return self.heads(features)
+        trunk_out = self.trunk(features)
+        return {
+            "continuous": self.heads["continuous"](trunk_out),
+            "discrete": self.heads["discrete"](features),
+        }
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
@@ -185,7 +196,7 @@ class PolicyObjective(Objective):
                 "i b 1 d -> b 1 (i d)",
             )
 
-            logits = TensorDict(self.heads(features), batch_size=[b, 1])
+            logits = TensorDict(self._apply_heads(features), batch_size=[b, 1])
 
             timestep_indices = slice(-1, None)
 
