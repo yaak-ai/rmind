@@ -1006,7 +1006,7 @@ samples:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
           every: 10i
-          period: 60i
+          period: 110i
           closed: left
           gather_every: 10
 
@@ -1020,22 +1020,22 @@ samples:
             _target_: rbyte.io.DuckDBDataFrameQuery
             query: |
               SELECT
-                  "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[6] AS "meta/ImageMetadata.cam_front_left/time_stamp",
-                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[6] AS "meta/ImageMetadata.cam_front_left/frame_idx",
-                  "meta/VehicleMotion/speed"::FLOAT[6] AS "meta/VehicleMotion/speed",
-                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/gas_pedal_normalized",
-                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/brake_pedal_normalized",
-                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
-                  "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
-                  "meta/Gnss/xy"::FLOAT[2][6] AS "meta/Gnss/xy",
-                  "headings_denoised/heading"::FLOAT[6] AS "headings_denoised/heading",
-                  "waypoints/xy_normalized"::FLOAT[2][10][6] AS "waypoints/xy_normalized",
-                  "waypoints/xy"::FLOAT[2][10][6] AS "waypoints/xy",
+                  "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[11] AS "meta/ImageMetadata.cam_front_left/time_stamp",
+                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[11] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                  "meta/VehicleMotion/speed"::FLOAT[11] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[11] AS "meta/VehicleMotion/gas_pedal_normalized",
+                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[11] AS "meta/VehicleMotion/brake_pedal_normalized",
+                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[11] AS "meta/VehicleMotion/steering_angle_normalized",
+                  "meta/VehicleState/turn_signal"::INT8[11] AS "meta/VehicleState/turn_signal",
+                  "meta/Gnss/xy"::FLOAT[2][11] AS "meta/Gnss/xy",
+                  "headings_denoised/heading"::FLOAT[11] AS "headings_denoised/heading",
+                  "waypoints/xy_normalized"::FLOAT[2][10][11] AS "waypoints/xy_normalized",
+                  "waypoints/xy"::FLOAT[2][10][11] AS "waypoints/xy",
               FROM
                   samples
               WHERE
-                  len("meta/ImageMetadata.cam_front_left/frame_idx") = 6
-                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 50
+                  len("meta/ImageMetadata.cam_front_left/frame_idx") = 11
+                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 100
                   AND NOT (
                       list_max("meta/VehicleMotion/gas_pedal_normalized") <= (1.0 / 255 + 0.001)
                       AND list_max("meta/VehicleMotion/brake_pedal_normalized") <= (1.0 / 164 + 0.001)

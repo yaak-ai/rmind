@@ -94,9 +94,11 @@ class LogitBiasSetter(Callback):
                 objective=objective_key,
                 loss_key=keystr(loss_keypath),
             )
-            loss_head = key_get(objectives[objective_key].heads, loss_keypath)
+            objective = objectives[objective_key]
+            action_horizon = getattr(objective, 'action_horizon', 1)
+            loss_head = key_get(objective.heads, loss_keypath)
             loss_labels = key_get(labels, loss_keypath)
-            minlength = self._get_out_features(loss_head)
+            minlength = self._get_out_features(loss_head) // action_horizon
             freq = torch.bincount(input=loss_labels, weights=None, minlength=minlength)
             loss.logit_bias = ((freq + 1) / freq.sum()).log()
 
