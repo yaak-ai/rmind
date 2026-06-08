@@ -8,6 +8,8 @@ hparams_jq: |
     "modules": {
       "policy": {
         "_target_": "rmind.components.objectives.PolicyObjective",
+        "history_steps": 5,
+        "action_horizon": 6,
         "norm": {
           "_target_": "torch.nn.LayerNorm",
           "normalized_shape": 384
@@ -19,19 +21,19 @@ hparams_jq: |
               "gas_pedal": {
                 "_target_": "torchvision.ops.MLP",
                 "in_channels": 1152,
-                "hidden_channels": [384, 2],
+                "hidden_channels": [384, 12],
                 "bias": false
               },
               "brake_pedal": {
                 "_target_": "torchvision.ops.MLP",
                 "in_channels": 1152,
-                "hidden_channels": [384, 2],
+                "hidden_channels": [384, 12],
                 "bias": false
               },
               "steering_angle": {
                 "_target_": "torchvision.ops.MLP",
                 "in_channels": 1152,
-                "hidden_channels": [384, 2],
+                "hidden_channels": [384, 12],
                 "bias": false
               }
             },
@@ -39,7 +41,7 @@ hparams_jq: |
               "turn_signal": {
                 "_target_": "torchvision.ops.MLP",
                 "in_channels": 1152,
-                "hidden_channels": [384, 3],
+                "hidden_channels": [384, 18],
                 "bias": false
               }
             }

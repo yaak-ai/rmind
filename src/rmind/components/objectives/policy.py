@@ -34,6 +34,8 @@ class PolicyObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
+        history_steps: int = 1,
+        action_horizon: int = 1,
     ) -> None:
         super().__init__()
 
@@ -41,6 +43,8 @@ class PolicyObjective(Objective):
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
+        self.history_steps: int = history_steps
+        self.action_horizon: int = action_horizon
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -50,11 +54,13 @@ class PolicyObjective(Objective):
         logits = self._compute_logits(episode=episode, embedding=embedding)
 
         def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:
+            # always return the first predicted step (b, 1, d) or (b, h, d) -> (b, 1)
+            first = x[:, :1, :]
             match nk:
                 case (Modality.CONTINUOUS, _):
-                    return x[..., 0]
+                    return first[..., 0]
                 case (Modality.DISCRETE, "turn_signal"):
-                    return non_zero_signal_with_threshold(x).class_idx
+                    return non_zero_signal_with_threshold(first).class_idx
                 case _:
                     raise NotImplementedError
 
@@ -63,9 +69,10 @@ class PolicyObjective(Objective):
     def _compute_logits(self, *, episode: Episode, embedding: Tensor) -> TensorTree:
         _b, _ = episode.input.batch_size
 
+        idx = self.history_steps - 1 if (self.training and self.action_horizon > 1) else -1
         embeddings = (
             episode
-            .index[-1]
+            .index[idx]
             .select(
                 (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
                 (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
@@ -93,7 +100,13 @@ class PolicyObjective(Objective):
             "i b 1 d -> b 1 (i d)",
         )
 
-        return self.heads(features)
+        logits = self.heads(features)
+        if self.training and self.action_horizon > 1:
+            return tree_map(
+                lambda x: rearrange(x, "b 1 (h d) -> b h d", h=self.action_horizon),
+                logits,
+            )
+        return logits
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
@@ -101,16 +114,34 @@ class PolicyObjective(Objective):
             embedding = self.norm(embedding)
 
         logits = self._compute_logits(episode=episode, embedding=embedding)
-        targets = tree_map(
-            lambda k: episode.get(k)[:, -1],
-            self.targets,
-            is_leaf=lambda x: isinstance(x, tuple),
-        )
 
-        losses = self.losses(
-            tree_map(Rearrange("b 1 d -> b d"), logits),
-            tree_map(Rearrange("b 1 -> b"), targets),
-        )  # ty:ignore[call-non-callable]
+        if self.training and self.action_horizon > 1:
+            targets = tree_map(
+                lambda k: episode.get(k)[:, self.history_steps:],
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+            losses = self.losses(
+                tree_map(Rearrange("b h d -> (b h) d"), logits),
+                tree_map(Rearrange("b h 1 -> (b h)"), targets),
+            )  # ty:ignore[call-non-callable]
+        else:
+            targets = tree_map(
+                lambda k: episode.get(k)[:, -1],
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+            losses = self.losses(
+                tree_map(
+                    lambda x: (
+                        rearrange(x, "b 1 (h d) -> b h d", h=self.action_horizon)[:, 0]
+                        if self.action_horizon > 1
+                        else rearrange(x, "b 1 d -> b d")
+                    ),
+                    logits,
+                ),
+                tree_map(Rearrange("b 1 -> b"), targets),
+            )  # ty:ignore[call-non-callable]
 
         return {"loss": losses}
 
