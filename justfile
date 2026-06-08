@@ -57,7 +57,7 @@ train-debug *ARGS: generate-config
         ++model.encoder.disable=true \
         {{ ARGS }}
 
-train-action *ARGS:
+train-action *ARGS: generate-config
     uv run rmind-train \
           --config-path {{ justfile_directory() }}/config \
           --config-name train.yaml \
