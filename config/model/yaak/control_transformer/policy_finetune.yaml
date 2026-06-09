@@ -19,6 +19,7 @@ hparams_jq: |
         "prediction_samples": ${oc.select:flow_prediction_samples,32},
         "chunk_delta_weight": ${oc.select:flow_chunk_delta_weight,0},
         "maneuver_thresholds": ${oc.select:flow_maneuver_thresholds,'null'},
+        "action_transform_stats": "${oc.select:flow_action_transform_stats,''}",
         "loss": {
           "_target_": "torch.nn.MSELoss"
         },
@@ -26,6 +27,7 @@ hparams_jq: |
           "_target_": "rmind.components.transformer.FlowActionDecoder",
           "condition_dim": ${encoder_embedding_dim},
           "dim_model": ${flow_decoder_embedding_dim},
+          "action_dim": ${oc.select:flow_action_dim,3},
           "action_horizon": ${action_horizon},
           "flow_sampling_steps": ${flow_sampling_steps},
           "flow_sampling_method": "${flow_sampling_method}",

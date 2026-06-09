@@ -57,6 +57,19 @@ flow_time_sampling: logit-normal
 # brake ~always 0 in [0,.30], steering in [-.94,.98]). Replace with data-driven
 # ones from `just thresholds ...` (writes a config-ready tuple).
 flow_maneuver_thresholds: [0.25, 0.05, 0.5]
+# Action transform: gas/brake -> signed-longitudinal merge + per-channel
+# Gaussianize (empirical CDF -> N(0,1)), so flow targets match its N(0,1) prior
+# — the principled fix for the raw actions' poor SNR (suspect 5). Invertible,
+# non-clipping (unlike pi0's q01/q99). The merge folds brake's ~always-0 point
+# mass into a clean signed `longitudinal = gas - brake` channel (model space is
+# then 2-d: longitudinal, steering), inverted to gas/brake at the I/O boundary.
+# OFF by default (identity). To enable, two steps:
+#   1) fit knots once: `just thresholds ... +thresholds.merge=true` writes
+#      action_norm.json (merged) alongside the maneuver tuple.
+#   2) point the transform at it AND tell the decoder it's 2-d:
+#        flow_action_transform_stats: /abs/path/to/action_norm.json
+#        flow_action_dim: 2
+# All reported metrics stay raw-space (3ch); maneuver_thresholds stay 3ch.
 flow_validation_seed: 2027
 
 # Short warmup / horizon so a tiny overfit run reaches a useful LR quickly.

@@ -12,6 +12,7 @@ from torch.nn import functional as F
 from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
+from rmind.components.objectives.action_transform import GaussianizeActionTransform
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
@@ -78,6 +79,7 @@ class FlowPolicyObjective(Objective):
         prediction_samples: int = 1,
         chunk_delta_weight: float = 0.0,
         maneuver_thresholds: tuple[float, ...] | None = None,
+        action_transform_stats: str | None = None,
     ) -> None:
         super().__init__()
 
@@ -85,17 +87,39 @@ class FlowPolicyObjective(Objective):
             msg = f"history_steps must be positive, got {history_steps}"
             raise ValueError(msg)
 
-        if len(action_keys) != decoder.action_dim:
-            msg = (
-                "action_keys must match decoder.action_dim, "
-                f"got {len(action_keys)} keys for action_dim={decoder.action_dim}"
+        # Build the action transform first: it defines raw_dim (I/O channel
+        # count, e.g. gas/brake/steering = 3) and model_dim (what the decoder /
+        # flow operate on, e.g. 2 after the gas/brake merge). Identity (None) =>
+        # raw_dim == model_dim == decoder.action_dim (fully backward compatible).
+        if not action_transform_stats:  # None or "" (config default) => identity
+            action_transform = None
+            raw_dim = decoder.action_dim
+        else:
+            action_transform = GaussianizeActionTransform.from_stats_file(
+                action_transform_stats
             )
+            if action_transform.action_keys != action_keys:
+                msg = (
+                    "action_transform stats action_keys "
+                    f"{action_transform.action_keys} != objective action_keys {action_keys}"
+                )
+                raise ValueError(msg)
+            if action_transform.model_dim != decoder.action_dim:
+                msg = (
+                    f"action_transform.model_dim {action_transform.model_dim} != "
+                    f"decoder.action_dim {decoder.action_dim} (set flow_action_dim to match)"
+                )
+                raise ValueError(msg)
+            raw_dim = action_transform.raw_dim
+
+        if len(action_keys) != raw_dim:
+            msg = f"action_keys must have {raw_dim} entries (raw_dim), got {len(action_keys)}"
             raise ValueError(msg)
 
-        if len(batch_action_paths) != decoder.action_dim:
+        if len(batch_action_paths) != raw_dim:
             msg = (
-                "batch_action_paths must match decoder.action_dim, "
-                f"got {len(batch_action_paths)} paths for action_dim={decoder.action_dim}"
+                f"batch_action_paths must have {raw_dim} entries (raw_dim), "
+                f"got {len(batch_action_paths)}"
             )
             raise ValueError(msg)
 
@@ -123,10 +147,10 @@ class FlowPolicyObjective(Objective):
             msg = f"chunk_delta_weight must be non-negative, got {chunk_delta_weight}"
             raise ValueError(msg)
 
-        if maneuver_thresholds is not None and len(maneuver_thresholds) != decoder.action_dim:
+        if maneuver_thresholds is not None and len(maneuver_thresholds) != raw_dim:
             msg = (
-                "maneuver_thresholds must match decoder.action_dim, got "
-                f"{len(maneuver_thresholds)} for action_dim={decoder.action_dim}"
+                "maneuver_thresholds must match raw action channels, got "
+                f"{len(maneuver_thresholds)} for raw_dim={raw_dim}"
             )
             raise ValueError(msg)
 
@@ -178,12 +202,17 @@ class FlowPolicyObjective(Objective):
                 torch.tensor(maneuver_thresholds, dtype=torch.float32),
                 persistent=False,
             )
+        # Invertible action transform (gas/brake merge + Gaussianize), built and
+        # validated above. Train the flow in model space; invert samples back to
+        # raw before any reported metric. None => identity. Registered as a
+        # submodule so its (non-persistent) knot buffers move with .to(device).
+        self.action_transform = action_transform
 
     @override
     def forward(self, *, episode: Episode, embedding: Tensor) -> TensorDict:
         condition_tokens = self._condition_tokens(episode=episode, embedding=embedding)
         return self._trajectory_to_tensordict(
-            self.decoder.sample(condition_tokens=condition_tokens)
+            self._to_raw_space(self.decoder.sample(condition_tokens=condition_tokens))
         )
 
     @override
@@ -233,18 +262,22 @@ class FlowPolicyObjective(Objective):
                 condition_tokens = condition_tokens[finite]
                 target_actions = target_actions[finite]
 
+        # The flow operates in transformed (model) space; raw targets are kept
+        # for raw-space metrics. With no transform, model space == raw space.
+        target_actions_model = self._to_model_space(target_actions)
+
         generator = self._validation_generator(device=target_actions.device)
         noise = torch.randn(
-            target_actions.shape,
-            dtype=target_actions.dtype,
-            device=target_actions.device,
+            target_actions_model.shape,
+            dtype=target_actions_model.dtype,
+            device=target_actions_model.device,
             generator=generator,
         )
         flow_time = self.sample_flow_time(
             self.flow_time_sampling,
-            target_actions.shape[0],
-            dtype=target_actions.dtype,
-            device=target_actions.device,
+            target_actions_model.shape[0],
+            dtype=target_actions_model.dtype,
+            device=target_actions_model.device,
             generator=generator,
             logit_mean=self.flow_time_logit_mean,
             logit_std=self.flow_time_logit_std,
@@ -254,8 +287,8 @@ class FlowPolicyObjective(Objective):
         flow_time_broadcast = flow_time.view(-1, 1, 1)
         noised_actions = (
             1.0 - flow_time_broadcast
-        ) * noise + flow_time_broadcast * target_actions
-        target_action_flow = target_actions - noise
+        ) * noise + flow_time_broadcast * target_actions_model
+        target_action_flow = target_actions_model - noise
 
         predicted_action_flow = self.decoder(
             condition_tokens=condition_tokens,
@@ -282,7 +315,7 @@ class FlowPolicyObjective(Objective):
                 noised_actions + (1.0 - flow_time_broadcast) * predicted_action_flow
             )
             chunk_delta_mse = torch.nn.functional.mse_loss(
-                implied_actions.diff(dim=1), target_actions.diff(dim=1)
+                implied_actions.diff(dim=1), target_actions_model.diff(dim=1)
             )
             metrics["chunk_delta_mse"] = chunk_delta_mse.detach()
             metrics["loss"] = flow_mse + self.chunk_delta_weight * chunk_delta_mse
@@ -321,9 +354,14 @@ class FlowPolicyObjective(Objective):
             # k iid samples). sample_l1_bo1 is the defensive floor (honest single
             # draw); the bo1 -> boN drop is the multimodality signal. sample_l1 is
             # kept as the full best-of-N for continuity.
-            samples = self._draw_samples(
-                condition_tokens=condition_tokens, generator=generator
-            )  # (N, B, H, A)
+            # Draw in model space, then invert to raw — all reported L1/maneuver
+            # metrics are raw-space (flow-space loss is not comparable across
+            # transforms; raw-space numbers decide).
+            samples = self._to_raw_space(
+                self._draw_samples(
+                    condition_tokens=condition_tokens, generator=generator
+                )
+            )  # (N, B, H, A) raw
             target = target_actions.to(dtype=samples.dtype).unsqueeze(0)
             per_sample_l1 = (samples - target).abs().flatten(start_dim=2).mean(dim=2)
             for k in self._sample_curve_ks():
@@ -393,9 +431,13 @@ class FlowPolicyObjective(Objective):
             # a period-`batch_size` artifact on the plotted predictions. The
             # global RNG advances across batches (run-level reproducibility comes
             # from seed_everything), so noise differs batch-to-batch.
-            prediction_actions = self.decoder.sample(
-                condition_tokens=condition_tokens,
-                noise=self._noise(condition_tokens=condition_tokens, generator=None),
+            prediction_actions = self._to_raw_space(
+                self.decoder.sample(
+                    condition_tokens=condition_tokens,
+                    noise=self._noise(
+                        condition_tokens=condition_tokens, generator=None
+                    ),
+                )
             )
 
         if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
@@ -483,6 +525,16 @@ class FlowPolicyObjective(Objective):
                 value = value[key]
             actions.append(value)
         return torch.stack(actions, dim=-1)
+
+    def _to_model_space(self, raw: Tensor) -> Tensor:
+        """Raw actions -> the space the decoder/flow operates in (Gaussianized)."""
+        return raw if self.action_transform is None else self.action_transform(raw)
+
+    def _to_raw_space(self, model: Tensor) -> Tensor:
+        """Decoder/flow-space actions -> raw, for raw-space metrics and outputs."""
+        if self.action_transform is None:
+            return model
+        return self.action_transform.inverse(model)
 
     def _target_slice(self) -> slice:
         start = self.history_steps

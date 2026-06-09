@@ -21,6 +21,8 @@ Knobs (`+thresholds.*`): quantile (recommended threshold = this quantile of
 1e-3), split (predict|val, default predict).
 """
 
+import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import hydra
@@ -87,12 +89,46 @@ def _collect_targets(cfg: DictConfig, *, split: str) -> tuple[np.ndarray, list[s
     return actions[finite], list(objective.action_keys)
 
 
+def _write_norm_stats(
+    actions: np.ndarray, keys: list[str], *, path: str, num_knots: int, merge: bool
+) -> None:
+    """Per-channel Gaussianize knots (in MODEL space): values at a quantile grid.
+
+    With merge, model space is (longitudinal = gas - brake, steering) — knots are
+    fit there. Knots are made strictly increasing (cummax + tiny ramp) so the
+    transform's searchsorted is well-defined even where the marginal has a flat
+    region (e.g. brake's point mass at 0, or longitudinal's coasting mass).
+    """
+    if merge:
+        if tuple(keys) != ("gas_pedal", "brake_pedal", "steering_angle"):
+            msg = f"merge requires keys gas/brake/steering, got {keys}"
+            raise ValueError(msg)
+        model = np.stack([actions[:, 0] - actions[:, 1], actions[:, 2]], axis=1)
+    else:
+        model = actions
+    grid = np.linspace(0.0, 1.0, num_knots)
+    knots: list[list[float]] = []
+    for c in range(model.shape[1]):
+        vals = np.quantile(model[:, c], grid)
+        vals = np.maximum.accumulate(vals) + 1e-6 * np.arange(num_knots)
+        knots.append([float(v) for v in vals])
+    Path(path).write_text(
+        json.dumps(
+            {"action_keys": keys, "merge": merge, "grid": grid.tolist(), "knots": knots}
+        )
+    )
+    logger.info("wrote Gaussianize knots", path=path, num_knots=num_knots, merge=merge)
+
+
 @hydra.main(version_base=None)
 def main(cfg: DictConfig) -> None:
     opts = cfg.get("thresholds") or {}
     quantile = float(opts.get("quantile", 0.90))
     active_eps = float(opts.get("active_eps", 1e-3))
     split = str(opts.get("split", "predict"))
+    norm_out = str(opts.get("norm_out", "action_norm.json"))
+    num_knots = int(opts.get("num_knots", 256))
+    merge = bool(opts.get("merge", False))
 
     actions, keys = _collect_targets(cfg, split=split)
     mag = np.abs(actions)
@@ -126,9 +162,13 @@ def main(cfg: DictConfig) -> None:
             + f" {rec:8.3f} {flagged * 100:6.1f}%"
         )
 
+    _write_norm_stats(actions, keys, path=norm_out, num_knots=num_knots, merge=merge)
+
     print(  # noqa: T201
         "\nConfig-ready (order = action_keys above):\n"
         f"flow_maneuver_thresholds: {recommended}\n"
+        f"flow_action_transform_stats: {norm_out!r}  # Gaussianize knots"
+        f"{' (merge: longitudinal+steering, set flow_action_dim=2)' if merge else ''}\n"
     )
 
 
