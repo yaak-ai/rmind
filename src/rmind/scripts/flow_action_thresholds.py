@@ -1,0 +1,136 @@
+"""Compute per-channel maneuver thresholds for the flow policy from data.
+
+The maneuver-L1 val metric flags "active" frames per channel as `|GT_c| >
+threshold_c`. gas/brake/steering have very different distributions (brake is
+~always 0, gas is bounded well below steering's ±1), so a single threshold for
+all channels is wrong — this prints a per-channel, data-derived tuple ready to
+paste into `flow_maneuver_thresholds`.
+
+It runs on CPU and never calls the model forward (only `_target_actions`, which
+is pure data indexing), so it does not contend for the GPU. It DOES read the
+dataset, so if a training run is live, give it an isolated rbyte cache to avoid
+a cache collision:
+
+    just thresholds inference=yaak/control_transformer/policy \\
+        model.artifact=yaak/rmind/model-e61ycirr:v9 \\
+        paths.rbyte.cache=/tmp/thresholds_cache \\
+        '+thresholds.quantile=0.90'
+
+Knobs (`+thresholds.*`): quantile (recommended threshold = this quantile of
+|action|, default 0.90), active_eps (|x| above this counts as "active", default
+1e-3), split (predict|val, default predict).
+"""
+
+from typing import TYPE_CHECKING, Any
+
+import hydra
+import numpy as np
+import torch
+from hydra.utils import instantiate
+from omegaconf import DictConfig
+from structlog import get_logger
+
+import rmind.components.objectives.flow_policy as flow_policy_module
+
+logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    import pytorch_lightning as pl
+
+QUANTILES = (0.80, 0.90, 0.95, 0.99)
+
+
+def _to_device(obj: Any, device: torch.device) -> Any:
+    if isinstance(obj, torch.Tensor):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _to_device(v, device) for k, v in obj.items()}
+    if hasattr(obj, "to"):
+        return obj.to(device)
+    return obj
+
+
+def _collect_targets(cfg: DictConfig, *, split: str) -> tuple[np.ndarray, list[str]]:
+    """Return (actions, action_keys): actions has shape (frames * horizon, A)."""
+    device = torch.device("cpu")
+
+    model: pl.LightningModule = instantiate(cfg.model).to(device).eval()
+    objective = model.objectives["policy"]
+    if not isinstance(objective, flow_policy_module.FlowPolicyObjective):
+        msg = f"policy objective is not a FlowPolicyObjective: {type(objective)}"
+        raise TypeError(msg)
+    horizon = objective.decoder.action_horizon
+
+    datamodule: pl.LightningDataModule = instantiate(cfg.datamodule)
+    if hasattr(datamodule, "setup"):
+        datamodule.setup(split)
+    loader = (
+        datamodule.val_dataloader()
+        if split == "val"
+        else datamodule.predict_dataloader()
+    )
+
+    chunks: list[torch.Tensor] = []
+    with torch.inference_mode():
+        for batch in loader:
+            batch = _to_device(batch, device)
+            actions = objective._target_actions(batch).float()  # (B, H, A)
+            if actions.shape[1] != horizon:
+                actions = actions[:, objective._target_slice()]
+            chunks.append(actions.reshape(-1, actions.shape[-1]).cpu())
+
+    actions = torch.cat(chunks).numpy()  # (frames*H, A)
+    finite = np.isfinite(actions).all(axis=1)
+    dropped = int((~finite).sum())
+    if dropped:
+        logger.warning("dropping non-finite rows", count=dropped)
+    return actions[finite], list(objective.action_keys)
+
+
+@hydra.main(version_base=None)
+def main(cfg: DictConfig) -> None:
+    opts = cfg.get("thresholds") or {}
+    quantile = float(opts.get("quantile", 0.90))
+    active_eps = float(opts.get("active_eps", 1e-3))
+    split = str(opts.get("split", "predict"))
+
+    actions, keys = _collect_targets(cfg, split=split)
+    mag = np.abs(actions)
+    n = actions.shape[0]
+    logger.info("collected target actions", frames_x_horizon=n, channels=keys)
+
+    recommended: list[float] = []
+    print(f"\nPer-channel action stats over {n} (frame x horizon) targets:")  # noqa: T201
+    print(  # noqa: T201
+        f"{'channel':>22} {'mean':>8} {'std':>8} {'%active':>8} "
+        + " ".join(f"q{int(q * 100):>2}".rjust(8) for q in QUANTILES)
+        + f" {'rec@q' + str(int(quantile * 100)):>8} {'%flag':>7}"
+    )
+    for c, key in enumerate(keys):
+        col, m = actions[:, c], mag[:, c]
+        active = m > active_eps
+        qs = [float(np.quantile(m, q)) for q in QUANTILES]
+        # Recommended threshold = the chosen quantile of |action|. For a sparse
+        # channel (e.g. brake) whose point mass at 0 exceeds (1 - quantile), that
+        # quantile is ~0 and useless — fall back to the same quantile among the
+        # ACTIVE values so the threshold still isolates real maneuvers.
+        rec = float(np.quantile(m, quantile))
+        if rec <= active_eps and active.any():
+            rec = float(np.quantile(m[active], quantile))
+        recommended.append(round(rec, 4))
+        flagged = float((m > rec).mean())
+        print(  # noqa: T201
+            f"{key:>22} {col.mean():8.3f} {col.std():8.3f} "
+            f"{active.mean() * 100:7.1f}% "
+            + " ".join(f"{q:8.3f}" for q in qs)
+            + f" {rec:8.3f} {flagged * 100:6.1f}%"
+        )
+
+    print(  # noqa: T201
+        "\nConfig-ready (order = action_keys above):\n"
+        f"flow_maneuver_thresholds: {recommended}\n"
+    )
+
+
+if __name__ == "__main__":
+    main()

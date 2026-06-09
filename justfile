@@ -71,6 +71,20 @@ fan +ARGS: generate-config
         --config-name predict.yaml \
         {{ ARGS }}
 
+# velocity-field / probability-flow trajectory visualization
+field +ARGS: generate-config
+    uv run python -m rmind.scripts.flow_field_viz \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        {{ ARGS }}
+
+# per-channel maneuver-L1 thresholds from data (prints a config-ready tuple)
+thresholds +ARGS: generate-config
+    uv run python -m rmind.scripts.flow_action_thresholds \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        {{ ARGS }}
+
 predict-policy-with-permutations +ARGS: generate-config
     uv run rmind-predict \
         --config-path {{ justfile_directory() }}/config \

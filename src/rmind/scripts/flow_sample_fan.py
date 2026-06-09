@@ -115,8 +115,12 @@ def _collect(
     sampling_steps: int | None = None,
     sampling_method: str | None = None,
     apply_ema: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Run the model over the predict dataloader; return (frame, gt, sample)."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Run the model over the predict dataloader.
+
+    Returns (frame, gt, sample, stride): gt has shape (F, horizon), sample
+    (F, N, horizon); stride is the frame spacing between episode timesteps.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     logger.debug("instantiating model", target=cfg.model._target_)
@@ -143,6 +147,7 @@ def _collect(
     frames: list[torch.Tensor] = []
     gts: list[torch.Tensor] = []
     samples: list[torch.Tensor] = []
+    stride: int | None = None
 
     with torch.inference_mode():
         for batch_idx, batch in enumerate(datamodule.predict_dataloader()):
@@ -184,25 +189,141 @@ def _collect(
             # it, else the conditioning frame (predict batches may carry
             # metadata for the history window only).
             if frame_idx.ndim > 1:
+                if stride is None and frame_idx.shape[1] > 1:
+                    stride = int(
+                        torch.diff(frame_idx[0].cpu()).median().item()
+                    )
                 t = min(objective.history_steps, frame_idx.shape[1] - 1)
                 frame_idx = frame_idx[:, t]
 
             frames.append(frame_idx.cpu().flatten())
-            gts.append(gt[:, 0, steer_idx].cpu())  # first-step steering
-            samples.append(trajectories[:, :, 0, steer_idx].cpu())  # (B, N)
+            gts.append(gt[:, :, steer_idx].cpu())  # (B, horizon) steering
+            samples.append(trajectories[:, :, :, steer_idx].cpu())  # (B, N, H)
             logger.debug("sampled batch", batch_idx=batch_idx, frames=batch_size)
 
     frame = torch.cat(frames).numpy()
-    gt = torch.cat(gts).numpy()
-    sample = torch.cat(samples).numpy()  # (F, N)
+    gt = torch.cat(gts).numpy()  # (F, H)
+    sample = torch.cat(samples).numpy()  # (F, N, H)
 
-    valid = ~np.isnan(gt)
+    valid = ~np.isnan(gt[:, 0])
     if (dropped := int((~valid).sum())) > 0:
         logger.warning("dropping NaN ground-truth frames", count=dropped)
     frame, gt, sample = frame[valid], gt[valid], sample[valid]
 
     order = np.argsort(frame)
-    return frame[order], gt[order], sample[order]
+    return frame[order], gt[order], sample[order], stride or 1
+
+
+def _plot_horizon(
+    frame: np.ndarray,
+    gt: np.ndarray,
+    sample: np.ndarray,
+    stride: int,
+    out_path: Path,
+    eps: float,
+    spike_threshold: float,
+) -> None:
+    """Horizon view: per-h mean predictions aligned to their target frames,
+    plus a target-aligned frame x horizon error heatmap. Answers lead-vs-lag:
+    an anticipating model bends at high h *before* a maneuver; a copycat's
+    h-traces are time-shifted copies of GT, each lagging by h steps."""
+    horizon = gt.shape[1]
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        row_heights=[0.65, 0.35],
+        vertical_spacing=0.05,
+    )
+    fig.add_trace(
+        go.Scattergl(
+            x=frame,
+            y=gt[:, 0],
+            mode="lines",
+            line={"color": "crimson", "width": 1.5},
+            name="gt",
+        ),
+        row=1,
+        col=1,
+    )
+    for h in range(horizon):
+        fig.add_trace(
+            go.Scattergl(
+                x=frame + h * stride,
+                y=np.nanmean(sample[:, :, h], axis=1),
+                mode="lines",
+                line={"width": 1},
+                opacity=0.85,
+                name=f"h={h + 1}",
+            ),
+            row=1,
+            col=1,
+        )
+
+    # Heatmap aligned by target frame: column = the frame being predicted,
+    # row h = the prediction issued h steps earlier.
+    z = np.full((horizon, len(frame)), np.nan)
+    for h in range(horizon):
+        target = frame + h * stride
+        pos = np.searchsorted(frame, target)
+        ok = (pos < len(frame)) & (
+            frame[np.clip(pos, 0, len(frame) - 1)] == target
+        )
+        err = np.nanmean(np.abs(sample[:, :, h] - gt[:, h][:, None]), axis=1)
+        z[h, pos[ok]] = err[ok]
+    fig.add_trace(
+        go.Heatmap(
+            x=frame,
+            y=[f"h={h + 1}" for h in range(horizon)],
+            z=z,
+            colorscale="Viridis",
+            zmin=0.0,
+            zmax=float(np.nanquantile(z, 0.98)),
+            colorbar={"title": "mean |err|", "len": 0.3, "y": 0.15},
+        ),
+        row=2,
+        col=1,
+    )
+    fig.update_yaxes(title_text="steering angle", row=1, col=1)
+    fig.update_yaxes(title_text="issued h steps early", row=2, col=1)
+    fig.update_xaxes(title_text="target frame", row=2, col=1)
+
+    hit = [
+        float(
+            np.nanmean(
+                (np.abs(sample[:, :, h] - gt[:, h][:, None]) <= eps).mean(
+                    axis=1
+                )[~np.isnan(gt[:, h])]
+            )
+        )
+        for h in range(horizon)
+    ]
+    fig.update_layout(
+        title=(
+            "horizon view (mean over draws, aligned to target frame) | "
+            f"hit@{eps:g} by h: "
+            + " ".join(f"{v:.0%}" for v in hit)
+        ),
+        height=750,
+        legend={"orientation": "h", "y": 1.06},
+    )
+    fig.write_html(out_path, include_plotlyjs="cdn")
+    logger.info("saved horizon figure", path=str(out_path))
+
+    for h in range(horizon):
+        err = np.abs(sample[:, :, h] - gt[:, h][:, None])
+        spike_h = _dilate(
+            np.abs(np.nan_to_num(gt[:, h])) > spike_threshold, 0
+        )
+        logger.info(
+            "horizon step",
+            h=h + 1,
+            l1=f"{np.nanmean(err):.4f}",
+            hit=f"{hit[h]:.1%}",
+            l1_spike=f"{np.nanmean(err[spike_h]):.4f}"
+            if spike_h.any()
+            else "n/a",
+        )
 
 
 @hydra.main(version_base=None)
@@ -219,6 +340,9 @@ def main(cfg: DictConfig) -> None:
     if data_path is not None:
         cached = np.load(str(data_path))
         frame, gt, sample = cached["frame"], cached["gt"], cached["sample"]
+        stride = int(cached["stride"]) if "stride" in cached.files else 1
+        if sample.ndim == 2:  # pre-horizon cache
+            sample, gt = sample[:, :, None], gt[:, None]
         num_samples = sample.shape[1]
         logger.info("replotting from cache", path=str(data_path))
     else:
@@ -238,7 +362,7 @@ def main(cfg: DictConfig) -> None:
                 method=sampling_method,
             )
         torch.set_float32_matmul_precision(cfg.matmul_precision)
-        frame, gt, sample = _collect(
+        frame, gt, sample, stride = _collect(
             cfg,
             num_samples=num_samples,
             sampling_steps=sampling_steps,
@@ -246,11 +370,14 @@ def main(cfg: DictConfig) -> None:
             apply_ema=bool(fan.get("ema", False)),
         )
         cache_path = out_path.with_suffix(".npz")
-        np.savez_compressed(cache_path, frame=frame, gt=gt, sample=sample)
+        np.savez_compressed(
+            cache_path, frame=frame, gt=gt, sample=sample, stride=stride
+        )
         logger.info("cached sampled data", path=str(cache_path))
 
-    abs_err = np.abs(sample - gt[:, None])  # (F, N)
-    spike = _dilate(np.abs(gt) > spike_threshold, spike_pad)
+    gt0, sample0 = gt[:, 0], sample[:, :, 0]  # first-step views for the fan
+    abs_err = np.abs(sample0 - gt0[:, None])  # (F, N)
+    spike = _dilate(np.abs(gt0) > spike_threshold, spike_pad)
     flat = ~spike
 
     if (nan_frames := int(np.isnan(sample).any(axis=1).sum())) > 0:
@@ -306,7 +433,7 @@ def main(cfg: DictConfig) -> None:
     fig.add_trace(
         go.Scattergl(
             x=np.repeat(frame, num_samples),
-            y=sample.ravel(),
+            y=sample0.ravel(),
             mode="markers",
             marker={"size": 2, "color": "rgba(31, 119, 180, 0.15)"},
             name="samples",
@@ -318,7 +445,7 @@ def main(cfg: DictConfig) -> None:
     fig.add_trace(
         go.Scattergl(
             x=frame,
-            y=gt,
+            y=gt0,
             mode="lines",
             line={"color": "crimson", "width": 1.5},
             name="gt",
@@ -356,6 +483,19 @@ def main(cfg: DictConfig) -> None:
 
     fig.write_html(out_path, include_plotlyjs="cdn")
     logger.info("saved figure", path=str(out_path))
+
+    if gt.shape[1] > 1:
+        _plot_horizon(
+            frame,
+            gt,
+            sample,
+            stride,
+            out_path.with_name(f"{out_path.stem}_horizon.html"),
+            eps_plot,
+            spike_threshold,
+        )
+    else:
+        logger.info("horizon outputs skipped (cache lacks horizon axis)")
 
 
 if __name__ == "__main__":
