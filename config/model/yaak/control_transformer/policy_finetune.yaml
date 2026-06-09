@@ -10,9 +10,15 @@ hparams_jq: |
         "_target_": "rmind.components.objectives.FlowPolicyObjective",
         "history_steps": ${history_steps},
         "flow_time_sampling": "${flow_time_sampling}",
+        "flow_time_logit_mean": ${oc.select:flow_time_logit_mean,0.0},
+        "flow_time_logit_std": ${oc.select:flow_time_logit_std,1.0},
+        "flow_time_beta_alpha": ${oc.select:flow_time_beta_alpha,1.5},
+        "flow_time_beta_s": ${oc.select:flow_time_beta_s,0.999},
         "validation_seed": ${flow_validation_seed},
         "validation_sample_metrics": true,
         "prediction_samples": ${oc.select:flow_prediction_samples,32},
+        "chunk_delta_weight": ${oc.select:flow_chunk_delta_weight,0},
+        "maneuver_thresholds": ${oc.select:flow_maneuver_thresholds,'null'},
         "loss": {
           "_target_": "torch.nn.MSELoss"
         },
@@ -23,6 +29,7 @@ hparams_jq: |
           "action_horizon": ${action_horizon},
           "flow_sampling_steps": ${flow_sampling_steps},
           "flow_sampling_method": "${flow_sampling_method}",
+          "rope": ${oc.select:flow_decoder_rope,1},
           "time_embedding_scale": 1000.0,
           "time_logit_scale": 0.25,
           "num_layers": 4,
