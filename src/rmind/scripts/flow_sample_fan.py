@@ -179,6 +179,10 @@ def _collect(
             trajectories = trajectories.float().reshape(
                 batch_size, num_samples, horizon, -1
             )
+            # Invert the action transform (e.g. gas/brake merge + Gaussianize) so
+            # samples are raw-space, matching the raw GT and steer_idx. Identity
+            # when no transform is configured.
+            trajectories = objective._to_raw_space(trajectories)
 
             gt = objective._target_actions(batch).float()
             if gt.shape[1] != horizon:
