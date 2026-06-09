@@ -300,12 +300,13 @@ class AdaLNCrossAttentionDecoderBlock(nn.Module):
 
     @override
     def forward(self, x: Tensor, context: Tensor, time_emb: Tensor) -> Tensor:
-        s_ca, b_ca, s_sa, b_sa, s_mlp, b_mlp = self.adaLN_modulation(time_emb).chunk(
-            6, dim=-1
-        )
-        s_ca, b_ca = s_ca.unsqueeze(1), b_ca.unsqueeze(1)
-        s_sa, b_sa = s_sa.unsqueeze(1), b_sa.unsqueeze(1)
-        s_mlp, b_mlp = s_mlp.unsqueeze(1), b_mlp.unsqueeze(1)
+        # time_emb is (B, time_dim) — one modulation broadcast over all slots —
+        # or (B, H, time_dim) for slot-conditioned AdaLN, giving a distinct
+        # scale/shift per slot. unsqueeze the slot axis only in the former case.
+        mods = self.adaLN_modulation(time_emb).chunk(6, dim=-1)
+        if time_emb.dim() == 2:
+            mods = [m.unsqueeze(1) for m in mods]
+        s_ca, b_ca, s_sa, b_sa, s_mlp, b_mlp = mods
 
         residual = x
         x_norm = (1 + s_ca) * self.cross_attn_norm(x) + b_ca
@@ -385,6 +386,7 @@ class FlowActionDecoder(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
         rope: bool = False,
+        slot_adaln: bool = False,
     ) -> None:
         super().__init__()
 
@@ -427,6 +429,20 @@ class FlowActionDecoder(nn.Module):
             nn.Linear(dim_model * 4, dim_model),
         )
         self.position_embedding = nn.Embedding(action_horizon, dim_model)
+        # Slot-conditioned AdaLN: a per-slot offset added to the time embedding
+        # that feeds every block's adaLN_modulation, so each slot gets its own
+        # scale/shift — routing slot identity through the one channel proven to
+        # train (flow-time modulation), unlike the additive position embedding
+        # which stayed at init. Zero-init => byte-identical to the time-only
+        # decoder at start (old checkpoints without this key rebuild unchanged);
+        # the loss learns the per-slot offsets.
+        self.slot_adaln = slot_adaln
+        if slot_adaln:
+            # nn.Embedding (not a bare Parameter) so SelectiveAdamW classifies it
+            # by module type — Embedding is weight-decay-blacklisted, like the
+            # position embedding. Zero-init => identity start.
+            self.slot_modulation = nn.Embedding(action_horizon, dim_model)
+            nn.init.zeros_(self.slot_modulation.weight)
         self.decoder = AdaLNCrossAttentionDecoder(
             dim_model=dim_model,
             num_layers=num_layers,
@@ -460,6 +476,13 @@ class FlowActionDecoder(nn.Module):
             device=noised_actions.device,
         )
         time_emb = self.time_mlp(self.time_embedding(flow_time_1d))
+        if self.slot_adaln:
+            # (B, time_dim) -> (B, H, time_dim): distinct modulation per slot.
+            slot_indices = torch.arange(
+                self.action_horizon, device=noised_actions.device
+            )
+            slot_emb = self.slot_modulation(slot_indices).to(time_emb.dtype)
+            time_emb = time_emb.unsqueeze(1) + slot_emb
 
         position_indices = torch.arange(
             self.action_horizon, device=noised_actions.device
