@@ -163,3 +163,6 @@ inference_results/
 
 # env
 .direnv
+.claude
+report
+*.png
