@@ -9,7 +9,7 @@ defaults:
   - /model: yaak/control_transformer/policy_finetune
   - /datamodule: yaak/overfit
   - /trainer: default
-  - /trainer/callbacks: finetune_ema
+  - /trainer/callbacks: finetune_flow
   - /paths: yaak/default
   - /wandb: yaak/rmind
   - _self_
@@ -24,7 +24,39 @@ flow_decoder_embedding_dim: 256
 # Deployment-time method/steps are chosen separately (see improvements doc).
 flow_sampling_steps: 32
 flow_sampling_method: heun
+# Rotary PE in the decoder's slot self-attention is ON by default for all
+# finetune runs (see policy_finetune.yaml); disable with flow_decoder_rope: 0
+# (jq needs 0/1, not true/false). Constructor default stays off so old
+# checkpoints (hparams without the key) rebuild exactly as trained.
+
+# Within-chunk delta loss: creates the gradient pressure for slot identity
+# that plain flow MSE lacks (its optimum is a constant chunk at the
+# mid-horizon value). Readouts: pe_drift should move off ~0, the horizon
+# lag profile (`just fan` *_horizon.html) should flatten from lag = h - 3
+# toward 0, chunk slope ratio -> 1. Weight scales the delta MSE
+# (GT deltas are ~0.01-0.05, so the raw term is ~1e-3 of the flow loss).
+flow_chunk_delta_weight: 10.0
+# Flow-time sampling density p(t) (t=0 noise, t=1 clean action). Acts as an
+# implicit per-t loss weight. Options + their tunable hparams:
+#   logit-normal (default): t = sigmoid(z*std + mean); skew toward data with
+#     `+flow_time_logit_mean=0.5` (mean>0 -> t=1), concentrate with `_std`.
+#   beta: pi0's p(t) = Beta((s-t)/s; alpha, 1) (arXiv:2410.24164) — skews toward
+#     the NOISY end (t=0) for alpha>1, which is what pi0 uses for action experts
+#     and which also strengthens the chunk-delta loss (its (1-t) factor stays
+#     large). Try `++flow_time_sampling=beta` (++ because it's already set
+#     below; alpha defaults 1.5, s 0.999, set via `+flow_time_beta_alpha=` /
+#     `+flow_time_beta_s=`).
+# The per-t flow-MSE buckets logged in val (policy/flow_mse_t*) show where the
+# field is worst — shape p(t) to match rather than guess.
 flow_time_sampling: logit-normal
+# Maneuver-L1: honest single-draw L1 on "active" frames per channel, where
+# |GT_c| exceeds a per-channel threshold (order = action_keys: gas, brake,
+# steering). Logged as policy/maneuver_l1/<key> (+ maneuver_frac/<key>) — the
+# scoreboard that rewards getting maneuvers right vs the mean-reverting
+# baseline. PROVISIONAL values below (from one-drive stats: gas in [0,.47],
+# brake ~always 0 in [0,.30], steering in [-.94,.98]). Replace with data-driven
+# ones from `just thresholds ...` (writes a config-ready tuple).
+flow_maneuver_thresholds: [0.25, 0.05, 0.5]
 flow_validation_seed: 2027
 
 # Short warmup / horizon so a tiny overfit run reaches a useful LR quickly.
@@ -37,6 +69,6 @@ action_horizon: 6
 sequence_length: 12
 
 trainer:
-  max_epochs: 400
+  max_epochs: 200
   check_val_every_n_epoch: 10
   log_every_n_steps: 10
