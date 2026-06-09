@@ -4,14 +4,17 @@ defaults:
   - /dataset/yaak/overfit@val.dataset
   - _self_
 
-# Overfit sanity datamodule: the same tiny single-drive dataset is used for both
-# train and val, so a healthy run should drive both train and val loss down.
+# Overfit sanity datamodule: the same tiny single-drive dataset (yaak/overfit)
+# is used for both train and val, so a healthy run should drive both train and
+# val loss down. NB: must NOT reference yaak/train — that dataset holds all
+# ~4586 drives for the multi-drive finetune and would materialize the whole
+# corpus here instead of overfitting one drive.
 _target_: rmind.datamodules.GenericDataModule
 train:
   _target_: rbyte.dataloader.TorchDataNodeDataLoader
   batch_size: 128
   shuffle: true
-  drop_last: false
+  drop_last: true
   collate_fn:
     _target_: rbyte.types.Batch.to_dict
     _partial_: true
@@ -23,7 +26,7 @@ val:
   _target_: rbyte.dataloader.TorchDataNodeDataLoader
   batch_size: 128
   shuffle: false
-  drop_last: false
+  drop_last: true
   collate_fn:
     _target_: rbyte.types.Batch.to_dict
     _partial_: true
