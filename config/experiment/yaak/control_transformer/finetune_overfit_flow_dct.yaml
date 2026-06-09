@@ -1,0 +1,42 @@
+# @package _global_
+
+# Chunk-DCT variant of the flow overfit experiment: Gaussianize + gas/brake
+# merge (the pg5lzmvk baseline transform) PLUS an orthonormal DCT-II over the
+# horizon axis with per-coefficient standardization.
+#
+# Problem it targets: the constant/mid-anchored chunk (every slot predicts the
+# ~t+3 action; fan lag profile = h - 3). Slots are ~90%+ correlated, so in slot
+# space within-chunk structure holds only its variance share of the flow MSE
+# (measured on this drive: 4.7% longitudinal / 12.4% steering, diluted further
+# by the unit-variance flow noise) — the constant chunk is the
+# gradient-rational optimum, which is why information-only levers (RoPE,
+# additive PE, slot-AdaLN) all failed to break it. After the DCT the slot axis
+# is frequency (k=0 chunk mean, k=1 slope, ...) and standardization makes every
+# coefficient unit-variance: within-chunk shape gets 5/6 of the loss weight
+# instead of ~5-12%. The inverse scales errors back DOWN by sigma_k, so raw
+# samples are robust to bad high-frequency predictions.
+#
+# The within-chunk delta loss is meaningless across DCT coefficients and is
+# superseded by the standardization; the objective force-disables it (warning)
+# — set to 0 here explicitly anyway.
+#
+# Readouts vs pg5lzmvk: fan lag profile flattens (h-3 -> 0), per-horizon spike
+# L1 loses the mid-anchor U-shape, chunk slope corr >> 0; concentration (flat /
+# spike hit@0.05) should hold near baseline.
+#
+# Stats: artifacts/action_norm_dct.json, written by
+#   just thresholds inference=yaak/control_transformer/policy \
+#     model.artifact=yaak/action-flow/model-pg5lzmvk:v199 \
+#     paths.rbyte.cache=/tmp/spectrum_cache \
+#     '+thresholds.merge=true' '+thresholds.dct=true' \
+#     '+thresholds.norm_out=artifacts/action_norm_dct.json'
+
+defaults:
+  - yaak/control_transformer/finetune_overfit_flow
+  - _self_
+
+# Repo-relative: `just train` runs from the justfile directory and hydra does
+# not chdir (version_base=None), so this resolves against the repo root.
+flow_action_transform_stats: artifacts/action_norm_dct.json
+flow_action_dim: 2
+flow_chunk_delta_weight: 0.0
