@@ -2,9 +2,12 @@ import math
 from typing import Literal, Self, final, override
 
 import torch
+import torch.nn.functional as F
+from einops import rearrange
 from pydantic import BaseModel, ConfigDict, model_validator, validate_call
 from torch import Tensor, nn
 
+from rmind.components.position_encoding import RotaryPositionalEmbeddings
 from rmind.components.transformer.feed_forward import MLPGLU
 from rmind.components.transformer.utils import run_layer_stack
 
@@ -186,6 +189,64 @@ class SinusoidalTimeEmbedding(nn.Module):
         return embedding
 
 
+class RotarySelfAttention(nn.Module):
+    """Self-attention with rotary position embeddings on queries/keys.
+
+    Unlike the additive learned position embedding (applied once at the
+    decoder input), rotary phases are injected into the attention logits of
+    every layer that uses this module, so slot identity is structurally
+    available at full strength and cannot be washed out by the residual
+    stream.
+    """
+
+    @validate_call
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float = 0.0,
+        max_seq_len: int = 64,
+        base: int = 10,
+    ) -> None:
+        super().__init__()
+
+        if embed_dim % num_heads != 0:
+            msg = f"embed_dim {embed_dim} not divisible by num_heads {num_heads}"
+            raise ValueError(msg)
+        head_dim = embed_dim // num_heads
+        if head_dim % 2 != 0:
+            msg = f"head_dim must be even for rotary embeddings, got {head_dim}"
+            raise ValueError(msg)
+
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.qkv_proj = nn.Linear(embed_dim, 3 * embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.rope = RotaryPositionalEmbeddings(
+            dim=head_dim, max_seq_len=max_seq_len, base=base
+        )
+
+        nn.init.xavier_uniform_(self.qkv_proj.weight)
+        nn.init.zeros_(self.qkv_proj.bias)
+        nn.init.xavier_uniform_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        q, k, v = rearrange(
+            self.qkv_proj(x), "b s (three h d) -> three b s h d", three=3,
+            h=self.num_heads,
+        )
+        q, k = self.rope(q), self.rope(k)
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2),
+            k.transpose(1, 2),
+            v.transpose(1, 2),
+            dropout_p=self.dropout if self.training else 0.0,
+        )
+        return self.out_proj(rearrange(out, "b h s d -> b s (h d)"))
+
+
 class AdaLNCrossAttentionDecoderBlock(nn.Module):
     @validate_call
     def __init__(  # noqa: PLR0913, PLR0917
@@ -197,6 +258,7 @@ class AdaLNCrossAttentionDecoderBlock(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
+        rope: bool = False,
     ) -> None:
         super().__init__()
 
@@ -210,11 +272,17 @@ class AdaLNCrossAttentionDecoderBlock(nn.Module):
         self.cross_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
 
         self.self_attn_norm = nn.LayerNorm(embedding_dim, elementwise_affine=False)
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim=embedding_dim,
-            num_heads=num_heads,
-            dropout=attn_dropout,
-            batch_first=True,
+        self.self_attn: nn.Module = (
+            RotarySelfAttention(
+                embed_dim=embedding_dim, num_heads=num_heads, dropout=attn_dropout
+            )
+            if rope
+            else nn.MultiheadAttention(
+                embed_dim=embedding_dim,
+                num_heads=num_heads,
+                dropout=attn_dropout,
+                batch_first=True,
+            )
         )
         self.self_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
 
@@ -248,9 +316,12 @@ class AdaLNCrossAttentionDecoderBlock(nn.Module):
 
         residual = x
         x_norm = (1 + s_sa) * self.self_attn_norm(x) + b_sa
-        self_attn_out, _ = self.self_attn(
-            query=x_norm, key=x_norm, value=x_norm, need_weights=False
-        )
+        if isinstance(self.self_attn, RotarySelfAttention):
+            self_attn_out = self.self_attn(x_norm)
+        else:
+            self_attn_out, _ = self.self_attn(
+                query=x_norm, key=x_norm, value=x_norm, need_weights=False
+            )
         x = residual + self.self_attn_resid_drop(self_attn_out)
 
         residual = x
@@ -269,6 +340,7 @@ class AdaLNCrossAttentionDecoder(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
+        rope: bool = False,
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
@@ -276,6 +348,7 @@ class AdaLNCrossAttentionDecoder(nn.Module):
                 embedding_dim=dim_model,
                 num_heads=num_heads,
                 time_dim=time_dim,
+                rope=rope,
                 attn_dropout=attn_dropout,
                 resid_dropout=resid_dropout,
                 mlp_dropout=mlp_dropout,
@@ -311,6 +384,7 @@ class FlowActionDecoder(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
+        rope: bool = False,
     ) -> None:
         super().__init__()
 
@@ -358,6 +432,7 @@ class FlowActionDecoder(nn.Module):
             num_layers=num_layers,
             num_heads=num_heads,
             time_dim=dim_model,
+            rope=rope,
             attn_dropout=attn_dropout,
             resid_dropout=resid_dropout,
             mlp_dropout=mlp_dropout,
