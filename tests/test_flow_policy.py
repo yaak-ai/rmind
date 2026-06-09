@@ -243,7 +243,48 @@ def test_flow_policy_eval_metrics_are_deterministic(
     assert "sample_l1" not in train_metrics
 
 
-@pytest.mark.parametrize("flow_time_sampling", ["uniform", "logit-normal"])
+@torch.inference_mode()
+def test_flow_policy_logs_per_t_flow_mse_in_eval(
+    device: torch.device,
+    embedding_dims: "EmbeddingDims",
+    episode: Episode,
+    encoder: TransformerEncoder,
+) -> None:
+    objective = FlowPolicyObjective(
+        history_steps=1,
+        flow_time_sampling="logit-normal",
+        validation_seed=123,
+        loss=_flow_policy_loss(),
+        decoder=FlowActionDecoder(
+            condition_dim=embedding_dims.encoder,
+            dim_model=32,
+            action_horizon=6,
+            num_layers=1,
+            num_heads=2,
+            flow_sampling_steps=2,
+        ),
+    ).to(device)
+    embedding = encoder(
+        src=episode.embeddings_flattened, mask=episode.attention_mask
+    )
+    batch = _flow_policy_batch(device=device)
+
+    objective.eval()
+    eval_metrics = objective.compute_metrics(
+        episode=episode, embedding=embedding, batch=batch
+    )
+    per_t_keys = [k for k in eval_metrics if k.startswith("flow_mse_t")]
+    assert per_t_keys, "expected per-t flow-MSE diagnostic buckets in eval metrics"
+    assert all(torch.isfinite(eval_metrics[k]).all() for k in per_t_keys)
+
+    objective.train()
+    train_metrics = objective.compute_metrics(
+        episode=episode, embedding=embedding, batch=batch
+    )
+    assert not [k for k in train_metrics if k.startswith("flow_mse_t")]
+
+
+@pytest.mark.parametrize("flow_time_sampling", ["uniform", "logit-normal", "beta"])
 def test_flow_policy_samples_configured_flow_time(
     device: torch.device, flow_time_sampling: str
 ) -> None:
@@ -264,6 +305,44 @@ def test_flow_policy_samples_configured_flow_time(
     assert torch.isfinite(flow_time).all()
     assert (flow_time >= 0.0).all()
     assert (flow_time <= 1.0).all()
+
+
+def test_flow_policy_beta_time_skews_toward_noise(device: torch.device) -> None:
+    # pi0's Beta((s-t)/s; alpha, 1) with alpha > 1 must concentrate mass near
+    # t=0 (the noisy end). Median should sit well below 0.5 and stay under the
+    # cutoff s.
+    flow_time = FlowPolicyObjective.sample_flow_time(
+        "beta",
+        4096,
+        dtype=torch.float32,
+        device=device,
+        beta_alpha=1.5,
+        beta_s=0.999,
+    )
+
+    assert (flow_time >= 0.0).all()
+    assert (flow_time <= 0.999).all()
+    assert flow_time.median() < 0.5
+    # alpha=1 degenerates to uniform on [0, s] (median ~ s/2 ~ 0.5).
+    uniform_like = FlowPolicyObjective.sample_flow_time(
+        "beta", 4096, dtype=torch.float32, device=device, beta_alpha=1.0
+    )
+    assert flow_time.median() < uniform_like.median()
+
+
+def test_flow_policy_time_sampling_respects_generator(device: torch.device) -> None:
+    # The fixed-seed validation generator must make every sampler reproducible
+    # (Beta via inverse-CDF, not torch.distributions which ignores `generator`).
+    for method in ("uniform", "logit-normal", "beta"):
+        gen_a = torch.Generator(device=device).manual_seed(0)
+        gen_b = torch.Generator(device=device).manual_seed(0)
+        a = FlowPolicyObjective.sample_flow_time(
+            method, 64, dtype=torch.float32, device=device, generator=gen_a
+        )
+        b = FlowPolicyObjective.sample_flow_time(
+            method, 64, dtype=torch.float32, device=device, generator=gen_b
+        )
+        assert torch.equal(a, b)
 
 
 def test_flow_policy_rejects_invalid_flow_time_sampling() -> None:
