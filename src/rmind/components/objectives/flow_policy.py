@@ -111,15 +111,6 @@ class FlowPolicyObjective(Objective):
                 )
                 raise ValueError(msg)
             raw_dim = action_transform.raw_dim
-            if (
-                action_transform.mixes_horizon
-                and action_transform.action_horizon != decoder.action_horizon
-            ):
-                msg = (
-                    f"action_transform dct horizon {action_transform.action_horizon} "
-                    f"!= decoder.action_horizon {decoder.action_horizon}"
-                )
-                raise ValueError(msg)
 
         if len(action_keys) != raw_dim:
             msg = f"action_keys must have {raw_dim} entries (raw_dim), got {len(action_keys)}"
@@ -183,24 +174,6 @@ class FlowPolicyObjective(Objective):
             logger.warning(
                 "disabling chunk_delta_weight: needs action_horizon >= 2",
                 action_horizon=decoder.action_horizon,
-                requested_weight=chunk_delta_weight,
-            )
-            chunk_delta_weight = 0.0
-        # With a horizon-mixing transform (chunk DCT), the model-space horizon
-        # axis is frequency — differencing adjacent coefficients supervises
-        # nothing coherent, and the DCT's per-coefficient standardization
-        # already gives within-chunk structure full loss weight (it supersedes
-        # the delta term). Force-disable rather than raise so a delta-carrying
-        # base config composes with the DCT experiment.
-        if (
-            chunk_delta_weight > 0
-            and action_transform is not None
-            and action_transform.mixes_horizon
-        ):
-            logger.warning(
-                "disabling chunk_delta_weight: action_transform mixes the "
-                "horizon axis (chunk DCT) — delta loss is meaningless there "
-                "and superseded by per-coefficient standardization",
                 requested_weight=chunk_delta_weight,
             )
             chunk_delta_weight = 0.0
