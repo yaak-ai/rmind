@@ -2,6 +2,7 @@ from .feature_permutation import FeaturePermutator
 from .freeze import ModuleFreezer
 from .loggers import (
     WandbAttentionMaskLogger,
+    WandbEmbeddingSimilarityLogger,
     WandbImageParamLogger,
     WandbPatchSimilarityLogger,
     WandbWaypointsLogger,
@@ -27,6 +28,7 @@ __all__ = [
     "SafeCallback",
     "TensorDictPredictionWriter",
     "WandbAttentionMaskLogger",
+    "WandbEmbeddingSimilarityLogger",
     "WandbImageParamLogger",
     "WandbPatchSimilarityLogger",
     "WandbWaypointsLogger",

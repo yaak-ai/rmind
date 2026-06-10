@@ -22,6 +22,12 @@
   apply:
     _target_: torchmetrics.functional.pairwise_cosine_similarity
     _partial_: true
+- _target_: rmind.callbacks.WandbEmbeddingSimilarityLogger
+  when: on_train_batch_end
+  every_n_batch: 100
+  key: waypoint_position_similarity
+  select:
+    - episode_builder.embeddings.context.waypoints.1.embedding.weight
 - _target_: rmind.callbacks.WandbWaypointsLogger
   when: on_train_batch_end
   every_n_batch: 100
