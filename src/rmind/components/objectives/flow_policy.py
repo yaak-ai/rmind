@@ -13,6 +13,7 @@ from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.action_transform import GaussianizeActionTransform
+from rmind.components.objectives.maneuver_weights import ManeuverLossWeights
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
@@ -80,6 +81,9 @@ class FlowPolicyObjective(Objective):
         chunk_delta_weight: float = 0.0,
         maneuver_thresholds: tuple[float, ...] | None = None,
         action_transform_stats: str | None = None,
+        lds_stats: str | None = None,
+        lds_alpha: float = 0.5,
+        lds_cap: float = 15.0,
     ) -> None:
         super().__init__()
 
@@ -208,6 +212,35 @@ class FlowPolicyObjective(Objective):
         # submodule so its (non-persistent) knot buffers move with .to(device).
         self.action_transform = action_transform
 
+        # Per-chunk maneuver loss weighting (LDS): reweight the flow loss from
+        # frequency toward importance (rare high-intensity maneuver chunks get
+        # more gradient; cruise ~1). Off when lds_stats is empty/None. The
+        # weight channels must match the model (loss) space, so validate against
+        # the transform's model_dim (or raw decoder dim when no transform).
+        if not lds_stats:  # None or "" (config default) => off
+            self.maneuver_weights = None
+        else:
+            self.maneuver_weights = ManeuverLossWeights.from_stats_file(
+                lds_stats, alpha=lds_alpha, cap=lds_cap
+            )
+            if self.maneuver_weights.model_dim != decoder.action_dim:
+                msg = (
+                    f"lds model_dim {self.maneuver_weights.model_dim} != "
+                    f"decoder.action_dim {decoder.action_dim}"
+                )
+                raise ValueError(msg)
+            model_keys = (
+                action_transform.model_action_keys
+                if action_transform is not None
+                else action_keys
+            )
+            if self.maneuver_weights.model_keys != tuple(model_keys):
+                msg = (
+                    f"lds model_keys {self.maneuver_weights.model_keys} != "
+                    f"model-space keys {tuple(model_keys)}"
+                )
+                raise ValueError(msg)
+
     @override
     def forward(self, *, episode: Episode, embedding: Tensor) -> TensorDict:
         condition_tokens = self._condition_tokens(episode=episode, embedding=embedding)
@@ -296,10 +329,24 @@ class FlowPolicyObjective(Objective):
             flow_time=flow_time,
         )
 
-        # flow_mse is always logged (stable curve across runs); `loss` adds the
-        # delta term on top when active. With delta off, loss == flow_mse.
+        # Per-chunk maneuver weight (LDS): (B, 1, model_dim) broadcast over
+        # slots, or None (uniform). Depends only on the clean target, so it is
+        # valid at every flow-time and weights both the flow and delta terms.
+        weight = self._maneuver_weight(target_actions)
+
+        # flow_mse is ALWAYS the unweighted mean (stable curve across runs, and
+        # comparable to the unweighted baselines); `loss` is the weighted +
+        # delta-augmented training objective. With LDS off and delta off,
+        # loss == flow_mse.
         flow_mse = self.loss(predicted_action_flow, target_action_flow)
-        metrics: Metrics = {"loss": flow_mse, "flow_mse": flow_mse.detach()}
+        metrics: Metrics = {"flow_mse": flow_mse.detach()}
+        if weight is None:
+            flow_term = flow_mse
+        else:
+            flow_se = (predicted_action_flow - target_action_flow).pow(2)
+            flow_term = (weight * flow_se).mean()
+            metrics["maneuver_weight_mean"] = weight.mean().detach()
+        metrics["loss"] = flow_term
         if self.chunk_delta_weight > 0:
             # Within-chunk delta loss: match the chunk's internal shape, not
             # just its level. The plain flow MSE is dominated by the shared
@@ -314,11 +361,16 @@ class FlowPolicyObjective(Objective):
             implied_actions = (
                 noised_actions + (1.0 - flow_time_broadcast) * predicted_action_flow
             )
-            chunk_delta_mse = torch.nn.functional.mse_loss(
-                implied_actions.diff(dim=1), target_actions_model.diff(dim=1)
-            )
+            delta_pred = implied_actions.diff(dim=1)
+            delta_target = target_actions_model.diff(dim=1)
+            if weight is None:
+                chunk_delta_mse = torch.nn.functional.mse_loss(delta_pred, delta_target)
+            else:
+                # Same per-chunk weight (broadcast over the H-1 slot-diffs) so
+                # the two loss terms stay on a consistent importance scale.
+                chunk_delta_mse = (weight * (delta_pred - delta_target).pow(2)).mean()
             metrics["chunk_delta_mse"] = chunk_delta_mse.detach()
-            metrics["loss"] = flow_mse + self.chunk_delta_weight * chunk_delta_mse
+            metrics["loss"] = flow_term + self.chunk_delta_weight * chunk_delta_mse
         if not self.training:
             # Relative drift of the slot position embeddings from their
             # reference (init for fresh runs): ~0 means the model is not
@@ -350,24 +402,19 @@ class FlowPolicyObjective(Objective):
                     hi = (i + 1) / FLOW_TIME_LOSS_BUCKETS
                     metrics[f"flow_mse_t{hi:.2f}"] = per_sample_se[in_bucket].mean().detach()
         if not self.training and self.validation_sample_metrics:
-            # Best-of-k L1 curve from one set of N draws (best-of-k = min over any
-            # k iid samples). sample_l1_bo1 is the defensive floor (honest single
-            # draw); the bo1 -> boN drop is the multimodality signal. sample_l1 is
-            # kept as the full best-of-N for continuity.
-            # Draw in model space, then invert to raw — all reported L1/maneuver
-            # metrics are raw-space (flow-space loss is not comparable across
-            # transforms; raw-space numbers decide).
+            # One honest draw per frame (deployment-realistic: at inference we
+            # take a single sample). Draw in model space, then invert to raw —
+            # all reported L1/maneuver metrics are raw-space (flow-space loss is
+            # not comparable across transforms; raw-space numbers decide). The
+            # best-of-N curve was removed: a single draw is the number that
+            # matters, and bo metrics flattered the model with oracle selection.
             samples = self._to_raw_space(
                 self._draw_samples(
                     condition_tokens=condition_tokens, generator=generator
                 )
-            )  # (N, B, H, A) raw
+            )  # (1, B, H, A) raw
             target = target_actions.to(dtype=samples.dtype).unsqueeze(0)
             per_sample_l1 = (samples - target).abs().flatten(start_dim=2).mean(dim=2)
-            for k in self._sample_curve_ks():
-                metrics[f"sample_l1_bo{k}"] = per_sample_l1[:k].min(dim=0).values.mean()
-            # sample_l1 is the honest single-draw floor (one forward sample), not
-            # the oracle best-of-N; the bo{k} keys carry the multimodality curve.
             metrics["sample_l1"] = per_sample_l1[0].mean()
 
             if self.maneuver_thresholds is not None:
@@ -484,16 +531,6 @@ class FlowPolicyObjective(Objective):
             dim=0,
         )
 
-    def _sample_curve_ks(self) -> list[int]:
-        # Powers of two up to N, always including 1 (defensive floor) and N.
-        ks: list[int] = []
-        k = 1
-        while k < self.prediction_samples:
-            ks.append(k)
-            k *= 2
-        ks.append(self.prediction_samples)
-        return ks
-
     def _noise(
         self, *, condition_tokens: Tensor, generator: torch.Generator | None
     ) -> Tensor:
@@ -535,6 +572,25 @@ class FlowPolicyObjective(Objective):
         if self.action_transform is None:
             return model
         return self.action_transform.inverse(model)
+
+    def _maneuver_weight(self, target_actions: Tensor) -> Tensor | None:
+        """Per-chunk LDS weight (B, 1, model_dim) broadcastable over slots, or
+        None when LDS is off.
+
+        The label is the peak |physical action| over the horizon per model
+        channel (longitudinal, steering) — peak-over-slots so a chunk's lead-in
+        is upweighted with its maneuver. Physical (pre-Gaussianize) space, since
+        the bins are fit there.
+        """
+        if self.maneuver_weights is None:
+            return None
+        phys = (
+            self.action_transform.physical_model(target_actions)
+            if self.action_transform is not None
+            else target_actions
+        )
+        label = phys.abs().amax(dim=1)  # (B, model_dim)
+        return self.maneuver_weights(label).unsqueeze(1)  # (B, 1, model_dim)
 
     def _target_slice(self) -> slice:
         start = self.history_steps

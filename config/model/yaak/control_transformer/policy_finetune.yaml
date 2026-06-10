@@ -16,10 +16,13 @@ hparams_jq: |
         "flow_time_beta_s": ${oc.select:flow_time_beta_s,0.999},
         "validation_seed": ${flow_validation_seed},
         "validation_sample_metrics": true,
-        "prediction_samples": ${oc.select:flow_prediction_samples,32},
+        "prediction_samples": ${oc.select:flow_prediction_samples,1},
         "chunk_delta_weight": ${oc.select:flow_chunk_delta_weight,0},
         "maneuver_thresholds": ${oc.select:flow_maneuver_thresholds,'null'},
         "action_transform_stats": "${oc.select:flow_action_transform_stats,''}",
+        "lds_stats": "${oc.select:flow_lds_stats,''}",
+        "lds_alpha": ${oc.select:flow_lds_alpha,0.5},
+        "lds_cap": ${oc.select:flow_lds_cap,15.0},
         "loss": {
           "_target_": "torch.nn.MSELoss"
         },

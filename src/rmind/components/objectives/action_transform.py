@@ -126,6 +126,16 @@ class GaussianizeActionTransform(nn.Module):
         ]
         return torch.stack(cols, dim=-1)
 
+    def physical_model(self, raw: Tensor) -> Tensor:
+        """Raw actions (..., raw_dim) -> physical model space (..., model_dim).
+
+        The gas/brake merge WITHOUT the Gaussianize step: the interpretable
+        (longitudinal, steering) values in physical units. Used for maneuver
+        importance labels, which must be binned in physical (not Gaussianized
+        z) space. Identity when merge is off.
+        """
+        return self._merge_raw(raw) if self.merge else raw
+
     def forward(self, raw: Tensor) -> Tensor:
         """Raw actions (..., raw_dim) -> Gaussianized model space (..., model_dim)."""
         model = self._merge_raw(raw) if self.merge else raw

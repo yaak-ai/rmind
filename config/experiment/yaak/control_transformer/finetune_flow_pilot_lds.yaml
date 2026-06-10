@@ -1,0 +1,38 @@
+# @package _global_
+
+# 30-drive pilot + maneuver LDS loss weighting (Yang et al., ICML 2021).
+#
+# Single change vs finetune_flow_pilot (the pg5lzmvk recipe at scale): reweight
+# the flow loss from frequency toward importance. The pilot measured the
+# residual that this targets — steering maneuver-L1 0.34 vs flat 0.012, a 28x
+# gap: the flow undercommits on the ~12% of frames that are real maneuvers
+# because the flat-dominated MSE (and, via the Gaussianize Jacobian, the
+# frequency-allocated raw precision) barely sees them.
+#
+# LDS upweights each chunk by (1/smoothed_density)^alpha of its peak |physical
+# action| (per model channel: longitudinal, steering), capped + mean-1
+# normalized so the loss scale — hence this run's LR/schedule — is unchanged.
+# Peak-over-horizon means a chunk's near-zero LEAD-IN is upweighted with its
+# maneuver. Weights multiply both the flow and chunk-delta terms.
+#
+# Scoreboard (single-change A/B vs the pilot): single-draw maneuver-L1 should
+# drop; flat hit@0.05 is ALLOWED to regress (cruise micro-precision is low-value
+# / partly irreducible). maneuver_weight_mean is logged as a sanity check (~1).
+#
+# Stats are PILOT-FIT and live in the same file as the Gaussianize knots; fit
+# the LDS section once (cheap, CPU) before the first run:
+#   just thresholds inference=yaak/control_transformer/policy \
+#     model.artifact=yaak/action-flow/model-pg5lzmvk:v199 \
+#     datamodule=yaak/train_pilot paths.rbyte.cache=/tmp/pilot_stats_cache \
+#     '+thresholds.split=train' '+thresholds.merge=true' '+thresholds.lds=true' \
+#     '+thresholds.norm_out=artifacts/action_norm_pilot.json'
+
+defaults:
+  - yaak/control_transformer/finetune_flow_pilot
+  - _self_
+
+# Maneuver LDS: presence of flow_lds_stats turns it on; alpha is the
+# aggressiveness knob (sweep 0.25 / 0.5 / 1.0), cap bounds the rare-bin weight.
+flow_lds_stats: artifacts/action_norm_pilot.json
+flow_lds_alpha: 0.5
+flow_lds_cap: 15.0
