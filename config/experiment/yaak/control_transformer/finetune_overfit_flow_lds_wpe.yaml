@@ -1,0 +1,37 @@
+# @package _global_
+
+# LDS overfit (the new baseline) + waypoint position embedding.
+#
+# = finetune_overfit_flow_lds (pg5lzmvk recipe + maneuver LDS) PLUS a learned
+# per-index waypoint position embedding. (Inherits the overfit base directly and
+# re-sets the LDS flags inline — chaining experiment->experiment two levels deep
+# trips a hydra relative-default path bug.)
+#
+# The PE tags each encoder-output waypoint condition token with its route-
+# sequence index so the decoder's cross-attention can use waypoint ORDER. The
+# encoder is factorized (RoPE on the temporal axis only) and its within-timestep
+# spatial attention has no positional encoding, so without this the 10 waypoints
+# reach the decoder as an unordered bag (order recoverable only from coordinate
+# values). The PE lives in the (trainable) objective because the encoder /
+# episode builder are frozen during flow finetune. Zero-init => identical at
+# start; the loss learns the offsets.
+#
+# Readout vs the LDS baseline (tqozevsv): does sample_l1 / maneuver_l1/steering
+# improve? If the route SEQUENCE carries signal the bag was missing, expect a
+# gain on turns; if the point SET already suffices, expect ~no change. This is
+# the clean way to answer "does waypoint order matter".
+
+defaults:
+  - yaak/control_transformer/finetune_overfit_flow
+  - _self_
+
+# Gaussianize+merge transform + maneuver LDS (the finetune_overfit_flow_lds set).
+flow_action_transform_stats: artifacts/action_norm_overfit.json
+flow_action_dim: 2
+flow_lds_stats: artifacts/action_norm_overfit.json
+flow_lds_alpha: 0.5
+flow_lds_cap: 15.0
+
+# Waypoint PE (1 = on; jq needs 1/0). waypoint_count must match the data (10).
+flow_waypoint_pe: 1
+flow_waypoint_count: 10

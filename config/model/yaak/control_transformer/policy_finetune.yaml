@@ -23,6 +23,8 @@ hparams_jq: |
         "lds_stats": "${oc.select:flow_lds_stats,''}",
         "lds_alpha": ${oc.select:flow_lds_alpha,0.5},
         "lds_cap": ${oc.select:flow_lds_cap,15.0},
+        "waypoint_pe": ${oc.select:flow_waypoint_pe,false},
+        "waypoint_count": ${oc.select:flow_waypoint_count,10},
         "loss": {
           "_target_": "torch.nn.MSELoss"
         },

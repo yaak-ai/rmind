@@ -84,6 +84,8 @@ class FlowPolicyObjective(Objective):
         lds_stats: str | None = None,
         lds_alpha: float = 0.5,
         lds_cap: float = 15.0,
+        waypoint_pe: bool = False,
+        waypoint_count: int = 10,
     ) -> None:
         super().__init__()
 
@@ -240,6 +242,27 @@ class FlowPolicyObjective(Objective):
                     f"model-space keys {tuple(model_keys)}"
                 )
                 raise ValueError(msg)
+
+        # Waypoint position embedding: the encoder is FACTORIZED (RoPE on the
+        # temporal axis only) and the within-timestep spatial attention has no
+        # positional encoding, so the route's waypoint SEQUENCE is invisible —
+        # the decoder cross-attends to the 10 waypoint tokens as an unordered
+        # bag. Tag each encoder-output waypoint token with a learned per-index
+        # embedding so the decoder can use route order. Added HERE (not in the
+        # encoder) because the episode builder + encoder are frozen during flow
+        # finetune; this lives in the trainable objective. Zero-init => identity
+        # at start (no-op until the loss learns the offsets); nn.Embedding so
+        # SelectiveAdamW weight-decay-excludes it, like the decoder's slot PE.
+        if not waypoint_pe:
+            self.waypoint_pos_embedding = None
+        else:
+            cond_dim = (
+                decoder.condition_projection.in_features
+                if isinstance(decoder.condition_projection, torch.nn.Linear)
+                else decoder.action_projection.out_features
+            )
+            self.waypoint_pos_embedding = torch.nn.Embedding(waypoint_count, cond_dim)
+            torch.nn.init.zeros_(self.waypoint_pos_embedding.weight)
 
     @override
     def forward(self, *, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -550,9 +573,21 @@ class FlowPolicyObjective(Objective):
             .select(*POLICY_CONDITION_TOKENS)
             .parse(embedding)
         )
-        return torch.cat(
-            [embeddings.get(path) for path in POLICY_CONDITION_TOKENS], dim=1
-        )
+        parts = [embeddings.get(path) for path in POLICY_CONDITION_TOKENS]
+        if self.waypoint_pos_embedding is not None:
+            # Add the per-index waypoint PE to the waypoint token block only.
+            wp_i = POLICY_CONDITION_TOKENS.index((Modality.CONTEXT, "waypoints"))
+            wp = parts[wp_i]  # (B, n_waypoints, dim)
+            n = wp.shape[1]
+            if n != self.waypoint_pos_embedding.num_embeddings:
+                msg = (
+                    f"waypoint_count {self.waypoint_pos_embedding.num_embeddings} != "
+                    f"actual waypoint tokens {n}"
+                )
+                raise ValueError(msg)
+            pos = torch.arange(n, device=wp.device)
+            parts[wp_i] = wp + self.waypoint_pos_embedding(pos).to(wp.dtype)
+        return torch.cat(parts, dim=1)
 
     def _target_actions(self, batch: Any) -> Tensor:
         actions: list[Tensor] = []
