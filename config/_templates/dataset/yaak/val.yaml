@@ -293,12 +293,24 @@ samples:
               SELECT
                 * EXCLUDE (
                   "meta/VehicleMotion/gear",
+                  "meta/VehicleMotion/brake_pedal_normalized",
                   waypoints_geom,
                   normalized_waypoints_geom,
                   ego_geom,
                   "waypoints/xy",
                   "headings_denoised/heading"
                 ),
+                -- Some vehicles (Niro106, Niro109, Niro110, Niro121, Niro124, Niro127, Niro132)
+                -- have a constant brake sensor offset of up to ~4 quantisation steps (< 0.05)
+                -- that reads as non-zero while the gas pedal is pressed. This is sensor noise,
+                -- not real braking. Clamp it to zero so the model does not learn to predict
+                -- spurious simultaneous brake+gas presses.
+                IF(
+                  "meta/VehicleMotion/brake_pedal_normalized" < 0.05
+                  AND "meta/VehicleMotion/gas_pedal_normalized" > 0.0,
+                  0.0,
+                  "meta/VehicleMotion/brake_pedal_normalized"
+                ) AS "meta/VehicleMotion/brake_pedal_normalized",
                 [
                   ST_X(ego_geom),
                   ST_Y(ego_geom)
@@ -379,6 +391,19 @@ samples:
                       AND list_max("meta/VehicleMotion/speed") >= 25.0
                       AND list_last("meta/VehicleMotion/speed") - list_first("meta/VehicleMotion/speed") >= -0.05 * list_avg("meta/VehicleMotion/speed")
                   )
+                  -- Drop episodes where any frame still has simultaneous non-zero gas
+                  -- AND brake after the Stage-6 clamp. This catches vehicles with a
+                  -- genuinely fluctuating brake signal (Niro101, Niro107, Niro112,
+                  -- Niro115, Niro128, Niro130, Niro131) where the clamp does not
+                  -- apply (brake > 0.05). Such conflicts are unrecoverable noise.
+                  AND len(list_filter(
+                      list_zip(
+                          "meta/VehicleMotion/gas_pedal_normalized",
+                          "meta/VehicleMotion/brake_pedal_normalized"
+                      ),
+                      x -> x[1] > (1.0 / 255 + 0.001)
+                           AND x[2] > (1.0 / 164 + 0.001)
+                  )) = 0
 
       - _target_: pipefunc.PipeFunc
         renames:
