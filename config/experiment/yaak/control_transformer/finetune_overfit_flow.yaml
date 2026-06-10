@@ -81,6 +81,12 @@ action_horizon: 6
 # history_steps + action_horizon
 sequence_length: 12
 
+# Checkpoint every 10th epoch and keep them all (save_top_k=-1): a sparse epoch
+# ladder for offline fan/eval, and 10x fewer per-epoch wandb artifact uploads
+# (log_model=all logs on each save) than the default every-epoch cadence.
+flow_checkpoint_every_n_epochs: 10
+flow_checkpoint_save_top_k: -1
+
 trainer:
   max_epochs: 200
   check_val_every_n_epoch: 10
