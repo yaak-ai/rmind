@@ -2,6 +2,7 @@
 _target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
 strict: false
+waypoint_decay: 0.0  # 0 = uniform mean (disabled); >0 = nearer waypoints weighted more
 hparams_jq: |
   .objectives = {
     "_target_": "rmind.components.containers.ModuleDict",
@@ -12,6 +13,7 @@ hparams_jq: |
           "_target_": "torch.nn.LayerNorm",
           "normalized_shape": 384
         },
+        "waypoint_decay": ${model.waypoint_decay},
         "heads": {
           "_target_": "rmind.components.containers.ModuleDict",
           "modules": {

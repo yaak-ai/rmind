@@ -123,6 +123,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         strict: bool | None = None,
         hparams_jq: Annotated[jq._Program, BeforeValidator(jq.compile)] | None = None,
         weights_only: bool | None = False,
+        waypoint_decay: float | None = None,  # consumed by hparams_jq interpolation
         **kwargs: Any,
     ) -> Self:  # ty:ignore[invalid-method-override]
         if hparams_jq is None:

@@ -34,6 +34,7 @@ class PolicyObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
+        waypoint_decay: float | None = None,
     ) -> None:
         super().__init__()
 
@@ -41,6 +42,7 @@ class PolicyObjective(Objective):
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
+        self.waypoint_decay: float | None = waypoint_decay
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -59,6 +61,14 @@ class PolicyObjective(Objective):
                     raise NotImplementedError
 
         return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
+
+    def _aggregate_waypoints(self, waypoints: Tensor) -> Tensor:
+        if self.waypoint_decay is None:
+            return waypoints.mean(dim=1, keepdim=True)
+        n = waypoints.shape[1]
+        weights = torch.exp(-torch.arange(n, device=waypoints.device) * self.waypoint_decay)
+        weights = weights / weights.sum()
+        return (waypoints * weights[None, :, None]).sum(dim=1, keepdim=True)
 
     def _compute_logits(self, *, episode: Episode, embedding: Tensor) -> TensorTree:
         _b, _ = episode.input.batch_size
@@ -84,8 +94,8 @@ class PolicyObjective(Objective):
             SummaryToken.OBSERVATION_SUMMARY,
         ))
 
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
+        waypoints = self._aggregate_waypoints(
+            embeddings.get((Modality.CONTEXT, "waypoints"))
         )
 
         features = rearrange(
@@ -176,8 +186,8 @@ class PolicyObjective(Objective):
                 SummaryToken.OBSERVATION_SUMMARY,
             ))
 
-            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                dim=1, keepdim=True
+            waypoints = self._aggregate_waypoints(
+                embeddings.get((Modality.CONTEXT, "waypoints"))
             )
 
             features = rearrange(
