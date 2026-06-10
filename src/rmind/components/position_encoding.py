@@ -1,3 +1,4 @@
+import math
 from typing import override
 
 import torch
@@ -70,3 +71,45 @@ class PatchPositionEmbedding2D(nn.Module):
             col_pos, "w d -> 1 w d"
         )
         return x + rearrange(pos_embed, "h w d -> (h w) d")
+
+
+class LearnedSequencePositionEmbedding(nn.Module):
+    """Adds a learnable position embedding to a fixed-length token sequence.
+
+    Expects inputs shaped `(..., n, d)` and adds a per-position embedding indexed
+    by the sequence position, broadcasting over the leading dims.
+    """
+
+    def __init__(self, num_positions: int, embedding_dim: int) -> None:
+        super().__init__()
+        self.embedding = Embedding(num_positions, embedding_dim)
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.embedding.weight
+
+
+class SinusoidalSequencePositionEmbedding(nn.Module):
+    """Adds a fixed sinusoidal (cosine) position embedding to a token sequence.
+
+    Expects inputs shaped `(..., n, d)` and adds the classic Transformer
+    sin/cos position embedding, broadcasting over the leading dims.
+    """
+
+    def __init__(
+        self, num_positions: int, embedding_dim: int, base: int = 10_000
+    ) -> None:
+        super().__init__()
+        position = torch.arange(num_positions).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, embedding_dim, 2) * (-math.log(base) / embedding_dim)
+        )
+        pos_embed = torch.zeros(num_positions, embedding_dim)
+        pos_embed[:, 0::2] = torch.sin(position * div_term)
+        pos_embed[:, 1::2] = torch.cos(position * div_term)
+        self.pos_embed: Tensor
+        self.register_buffer("pos_embed", pos_embed, persistent=False)
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.pos_embed
