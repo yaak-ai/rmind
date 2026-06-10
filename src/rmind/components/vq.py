@@ -49,6 +49,9 @@ class ResidualVQ(Module):
     def lookup(self, codes: Tensor) -> Tensor:
         return self.vq.get_output_from_indices(codes)
 
+    def codebook(self, level: int) -> Tensor:
+        return self.vq.layers[level]._codebook.embed.reshape(-1, self.dim)
+
     @torch.no_grad()
     def perplexity(self, codes: Tensor) -> Tensor:
         out: list[Tensor] = []
