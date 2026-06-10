@@ -25,3 +25,57 @@
     input_id: [meta, input_id, 0]
     time_stamp: [data, meta/ImageMetadata.cam_front_left/time_stamp, 0, -1]
     frame_idx: [data, meta/ImageMetadata.cam_front_left/frame_idx, 0, -1]
+- _target_: rmind.callbacks.PredictMetricsCallback
+  prediction_config:
+    objectives:
+      - score_l1
+      - score_signed_error
+      - prediction_std
+  cluster_fn:
+    _target_: rmind.utils.RuleBasedCluster
+    fields:
+      gas:
+        key: meta/VehicleMotion/gas_pedal_normalized
+        reduce: last
+      brake:
+        key: meta/VehicleMotion/brake_pedal_normalized
+        reduce: last
+      steer:
+        key: meta/VehicleMotion/steering_angle_normalized
+        reduce: last
+      dp_g:
+        key: meta/VehicleMotion/gas_pedal_normalized
+        reduce: last_diff
+      speed:
+        key: meta/VehicleMotion/speed
+        reduce: last
+    rules:
+      - name: highway
+        when: {speed: {ge: 70}}
+      - name: braking_turn
+        when: {brake: {ge: 0.02}, steer: {abs_ge: 0.05}}
+      - name: braking
+        when: {brake: {ge: 0.02}, steer: {abs_lt: 0.05}}
+      - name: cruise_turn
+        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, steer: {abs_ge: 0.05}}
+      - name: acceleration
+        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, dp_g: {ge: 0.01}}
+      - name: gas_release
+        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, dp_g: {lt: -0.01}}
+      - name: cruise
+        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, steer: {abs_lt: 0.05}, dp_g: {abs_lt: 0.01}}
+    default: idle_coast
+  cluster_metrics:
+    acceleration:
+      - policy/score_l1/value/continuous/gas_pedal
+      - policy/score_signed_error/value/continuous/gas_pedal
+    cruise_turn:
+      - policy/score_l1/value/continuous/steering_angle
+    braking_turn:
+      - policy/score_l1/value/continuous/brake_pedal
+      - policy/score_l1/value/continuous/steering_angle
+    braking:
+      - policy/score_l1/value/continuous/brake_pedal
+    highway:
+      - policy/score_l1/value/continuous/gas_pedal
+      - policy/score_signed_error/value/continuous/gas_pedal
