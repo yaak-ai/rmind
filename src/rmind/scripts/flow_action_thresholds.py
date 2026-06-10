@@ -18,7 +18,7 @@ a cache collision:
 
 Knobs (`+thresholds.*`): quantile (recommended threshold = this quantile of
 |action|, default 0.90), active_eps (|x| above this counts as "active", default
-1e-3), split (predict|val, default predict).
+1e-3), split (predict|val|train, default predict).
 """
 
 import json
@@ -66,11 +66,13 @@ def _collect_targets(cfg: DictConfig, *, split: str) -> tuple[np.ndarray, list[s
     datamodule: pl.LightningDataModule = instantiate(cfg.datamodule)
     if hasattr(datamodule, "setup"):
         datamodule.setup(split)
-    loader = (
-        datamodule.val_dataloader()
-        if split == "val"
-        else datamodule.predict_dataloader()
-    )
+    match split:
+        case "train":
+            loader = datamodule.train_dataloader()
+        case "val":
+            loader = datamodule.val_dataloader()
+        case _:
+            loader = datamodule.predict_dataloader()
 
     chunks: list[torch.Tensor] = []
     with torch.inference_mode():

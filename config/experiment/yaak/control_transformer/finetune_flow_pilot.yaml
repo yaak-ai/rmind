@@ -1,0 +1,69 @@
+# @package _global_
+
+# 30-drive pilot of the single-drive flow recipe (Gaussianize+merge transform,
+# delta(10)+RoPE, logit-normal, heun/32) — the pg5lzmvk winner taken to drive
+# diversity. Questions it answers:
+# - does the transform win transfer? (the Gaussianize knots are marginals — a
+#   30-drive fit stresses them far more than one drive's)
+# - generalization: train/val now disjoint (5-drive standard val set), so
+#   sample_l1 / hit rates are no longer memorization readouts.
+# - this is also where the EMA re-test belongs (gradients noisy at scale; the
+#   overfit verdict "EMA null" does not transfer) — run via
+#   trainer/callbacks=finetune_ema as a follow-up arm, not folded in here.
+#
+# Stats are PILOT-FIT (do not reuse the overfit drive's): fit them on the
+# pilot train split first —
+#   just thresholds inference=yaak/control_transformer/policy \
+#     model.artifact=yaak/action-flow/model-pg5lzmvk:v199 \
+#     datamodule=yaak/train_pilot paths.rbyte.cache=/tmp/pilot_stats_cache \
+#     '+thresholds.split=train' '+thresholds.merge=true' \
+#     '+thresholds.norm_out=artifacts/action_norm_pilot.json'
+# then paste the printed flow_maneuver_thresholds tuple below.
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune
+  - /datamodule: yaak/train_pilot
+  - /trainer: default
+  - /trainer/callbacks: finetune_flow
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+model:
+  artifact: yaak/rmind/model-e61ycirr:v9
+
+encoder_embedding_dim: 384
+flow_decoder_embedding_dim: 256
+flow_sampling_steps: 32
+flow_sampling_method: heun
+flow_chunk_delta_weight: 10.0
+flow_time_sampling: logit-normal
+flow_validation_seed: 2027
+
+# Transform: pilot-fit Gaussianize+merge knots (see header) — the pg5lzmvk
+# recipe, now the established baseline, taken to drive diversity.
+flow_action_transform_stats: artifacts/action_norm_pilot.json
+flow_action_dim: 2
+# Pilot-fit (q90 of |action| over the 30 train drives; metric-only). NB the
+# corpus-wide steering q90 (0.062) is far below the maneuver-heavy overfit
+# drive's (0.196): at scale most driving is straight, so q90 flags mild curves.
+# If maneuver_l1/steering should isolate real maneuvers, refit with
+# '+thresholds.quantile=0.95' (q95 = 0.163) and update here.
+flow_maneuver_thresholds: [0.2402, 0.2317, 0.062]
+
+# Schedule: complete the cosine (the 200ep overfit runs stopped mid-schedule —
+# v399's lesson). steps/epoch ~ 30x the overfit's; check the first epochs in
+# wandb and retune lr_training_steps ~= max_epochs * steps_per_epoch if the
+# estimate is off.
+lr_warmup_steps: 500
+lr_training_steps: 25000
+
+history_steps: 6
+action_horizon: 6
+# history_steps + action_horizon
+sequence_length: 12
+
+trainer:
+  max_epochs: 50
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 50
