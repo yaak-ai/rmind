@@ -11,13 +11,12 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils._pytree import MappingKey, tree_leaves, tree_map  # noqa: PLC2701
 
-from rmind.components import optimizers  # noqa: PLC0415
+from rmind.components import optimizers
 from rmind.components.objectives.base import Targets
 from rmind.components.vq import ResidualVQ
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 from rmind.utils.pytree import key_get_default
-
 
 
 class LRSchedulerHydraConfig(BaseModel):
@@ -90,7 +89,7 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
     @override
     def forward(self, action: Tensor) -> Tensor:
         *batch, action_dim = action.shape
-        z = self.encoder(action.reshape(-1, action_dim))
+        z = self.encoder(self._normalize(action).reshape(-1, action_dim))
         codes, _, _ = self.quantizer(z)
         return codes.reshape(*batch, self.quantizer.num_quantizers)
 
@@ -98,6 +97,22 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
         *batch, num_quantizers = codes.shape
         z_q = self.quantizer.lookup(codes.reshape(-1, num_quantizers))
         return self.decoder(z_q).reshape(*batch, -1)
+
+    @property
+    def _action_features(self) -> int:
+        return len(tree_leaves(self.targets, is_leaf=lambda x: isinstance(x, tuple)))
+
+    def _normalize(self, action: Tensor) -> Tensor:
+        """Normalize a raw stacked action vector via the built-in per-field normalizer."""
+        *batch, action_dim = action.shape
+        columns = iter(action.reshape(*batch, -1, self._action_features).unbind(-1))
+        structured = tree_map(
+            lambda _path: next(columns),
+            self.targets,
+            is_leaf=lambda x: isinstance(x, tuple),
+        )
+        normalized = self.input_transform[-1](structured)
+        return torch.stack(tree_leaves(normalized), dim=-1).reshape(*batch, action_dim)
 
     def _gather_actions(self, inputs: Any) -> Tensor:
         gathered = tree_map(
@@ -107,11 +122,7 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
-        # leaves are (B,) for single-timestep or (B, T) for a clip; stacking the
-        # action features then flattening gives one vector per sample:
-        #   single → (B, n_features);  clip → (B, T * n_features)
-        # so the whole clip is encoded as a single VQ token (set action_dim to T*n).
-        action = torch.stack(tree_leaves(gathered), dim=-1)  # (B, n) or (B, T, n)
+        action = torch.stack(tree_leaves(gathered), dim=-1)
         return action.reshape(action.shape[0], -1)
 
     def _step(self, batch: Any) -> tuple[Tensor, dict[str, Tensor]]:

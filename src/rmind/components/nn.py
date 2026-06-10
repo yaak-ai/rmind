@@ -3,7 +3,7 @@ from functools import partial
 from typing import Any, final, override
 
 import torch
-from pydantic import validate_call
+from pydantic import InstanceOf, validate_call
 from torch import Tensor, nn
 from torch.nn import Module
 from torch.utils._pytree import MappingKey, PyTree, tree_map  # noqa: PLC2701
@@ -109,6 +109,59 @@ class Remapper(Module):
             self._paths,
             is_leaf=lambda x: isinstance(x, tuple),
         )
+
+
+@final
+class Frozen(Module):
+    """Wrap a module so it never trains: params frozen and kept in eval mode."""
+
+    @validate_call
+    def __init__(self, *, module: InstanceOf[Module]) -> None:
+        super().__init__()
+
+        self.module = module.requires_grad_(False).eval()  # noqa: FBT003
+
+    @override
+    def train(self, mode: bool = True) -> "Frozen":  # noqa: FBT001, FBT002
+        super().train(mode)
+        self.module.eval()
+        return self
+
+    @override
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        return self.module(*args, **kwargs)
+
+
+@final
+class StackFields(Module):
+    """Gather ordered `paths` and stack them into one tensor under `out_key`.
+
+    Trailing singleton dims are squeezed; emits `None` when a field is absent.
+    """
+
+    @validate_call
+    def __init__(
+        self, *, paths: Mapping[str, tuple[str, ...]], out_key: str
+    ) -> None:
+        super().__init__()
+
+        self._paths = {
+            name: tuple(map(MappingKey, path)) for name, path in paths.items()
+        }
+        self.out_key = out_key
+
+    @override
+    def forward(self, input: PyTree) -> PyTree:
+        fields = [key_get_default(input, path, None) for path in self._paths.values()]
+
+        if any(value is None for value in fields):
+            return {**input, self.out_key: None}
+
+        stacked = torch.stack(
+            [value.squeeze(-1) if value.shape[-1] == 1 else value for value in fields],
+            dim=-1,
+        )
+        return {**input, self.out_key: stacked}
 
 
 def _module_wrapper(
