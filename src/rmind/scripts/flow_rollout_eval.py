@@ -144,6 +144,9 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
         return gt[0, 0].cpu().numpy()
 
     results: dict[str, list[tuple[int, float]]] = {"open": [], "recursive": []}
+    preds: dict[str, list[np.ndarray]] = {"open": [], "recursive": []}
+    n_sub = [0]
+    sub_delta = [0.0]
     for mode in ("open", "recursive"):
         torch.manual_seed(0)
         gen.manual_seed(0)
@@ -163,6 +166,8 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
                     for j in range(min(hist_steps, t_field)):
                         f = fidx[i] - (hist_steps - 1 - j) * stride
                         if f in pred_hist:
+                            n_sub[0] += 1
+                            sub_delta[0] += abs(float(field[0, j]) - float(pred_hist[f][c]))
                             field[0, j] = float(pred_hist[f][c])
                     row["data"][key] = field
             a = predict_first_action(row)
@@ -171,6 +176,7 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
                 depth = 0
                 continue
             gt = gt_first_action(row)
+            preds[mode].append(a)
             if np.isfinite(gt).all():
                 err = float(np.abs(a - gt)[2])  # steering first-step |err|
                 results[mode].append((depth, err))
@@ -191,6 +197,10 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
         o, n_o = sel["open"]
         r, _ = sel["recursive"]
         print(f"{f'{lo}-{hi}':>14} {o:10.4f} {r:10.4f} {r / o if o > 0 else float('nan'):7.2f} {n_o:6d}")  # noqa: T201
+    print(f"substitutions fired: {n_sub[0]} | mean |GT - substituted| {sub_delta[0] / max(n_sub[0], 1):.4f}")  # noqa: T201
+    if len(preds["open"]) == len(preds["recursive"]):
+        d = np.abs(np.stack(preds["open"]) - np.stack(preds["recursive"]))
+        print(f"elementwise |open - recursive| prediction delta: mean {d.mean():.6f} max {d.max():.6f} (steer: mean {d[:, 2].mean():.6f})")  # noqa: T201
     o_all = float(np.mean([e for _, e in results["open"]]))
     r_all = float(np.mean([e for _, e in results["recursive"]]))
     print(f"{'ALL':>14} {o_all:10.4f} {r_all:10.4f} {r_all / o_all:7.2f}")  # noqa: T201
