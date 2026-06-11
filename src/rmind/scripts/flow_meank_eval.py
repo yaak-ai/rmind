@@ -152,6 +152,75 @@ def _mode_aware_anchor(
     return anchor.numpy(), bimodal.numpy(), mode_sep.numpy()
 
 
+def _collect_cached(
+    cfg: DictConfig, *, cache_path: str, artifact: str, k: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
+    """Cached-checkpoint path: condition tokens from the feature cache (the
+    frozen encoder makes them checkpoint-independent), objective weights from a
+    FlowFeatureTrainer wandb artifact. Returns the same tuple as _collect, with
+    waypoints as NaN (not stored in the cache — the wpt-selector diagnostics
+    degrade to their meanK fallback)."""
+    import glob
+    import os
+
+    import wandb
+    from hydra.utils import instantiate
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+    cond = payload["cond"].float()  # (N, S, D)
+    gt = payload["target_actions"].float()
+    drives = np.array(payload["input_id"])
+
+    trainer_module = instantiate(cfg.model)
+    art = wandb.Api().artifact(artifact, type="model")
+    ck = next(
+        f for f in glob.glob(os.path.join(art.download(), "*")) if os.path.isfile(f)
+    )
+    sd = torch.load(ck, map_location="cpu", weights_only=False)["state_dict"]
+    trainer_module.load_state_dict(sd)
+    objective = trainer_module.objective.to(device).eval()
+    if not isinstance(objective, flow_policy_module.FlowPolicyObjective):
+        msg = f"cached artifact objective is not a FlowPolicyObjective: {type(objective)}"
+        raise TypeError(msg)
+    horizon = objective.decoder.action_horizon
+
+    samples: list[torch.Tensor] = []
+    chunk = 512
+    with torch.inference_mode():
+        for lo in range(0, cond.shape[0], chunk):
+            c = cond[lo : lo + chunk].to(device)
+            c_rep = c.repeat_interleave(k, dim=0)
+            with torch.autocast(
+                device.type, torch.bfloat16, enabled=device.type == "cuda"
+            ):
+                traj = objective.decoder.sample(
+                    condition_tokens=c_rep,
+                    noise=objective._noise(condition_tokens=c_rep, generator=None),
+                )
+            samples.append(
+                objective._to_raw_space(
+                    traj.float().reshape(c.shape[0], k, horizon, -1)
+                ).cpu()
+            )
+            if (lo // chunk) % 10 == 0:
+                logger.debug("sampled", frames=lo)
+
+    sample = torch.cat(samples).numpy()
+    gt = gt.numpy()
+    wp = np.full((gt.shape[0], 10, 2), np.nan, dtype=np.float32)
+    valid = np.isfinite(gt).all(axis=(1, 2)) & np.isfinite(sample).all(axis=(1, 2, 3))
+    if (dropped := int((~valid).sum())) > 0:
+        logger.warning("dropping non-finite frames", count=dropped)
+    return (
+        gt[valid],
+        sample[valid],
+        drives[valid],
+        wp[valid],
+        list(objective.action_keys),
+    )
+
+
 @hydra.main(version_base=None)
 def main(cfg: DictConfig) -> None:
     opts = cfg.get("meank") or {}
@@ -161,8 +230,16 @@ def main(cfg: DictConfig) -> None:
     mode_gap = float(opts.get("mode_gap", 0.15))
     mode_min_frac = float(opts.get("mode_min_frac", 0.125))
 
-    torch.set_float32_matmul_precision(cfg.matmul_precision)
-    gt, sample, drives, wp, keys = _collect(cfg, k=k)
+    torch.set_float32_matmul_precision(cfg.get("matmul_precision", "high"))
+    if opts.get("cache"):
+        gt, sample, drives, wp, keys = _collect_cached(
+            cfg,
+            cache_path=str(opts["cache"]),
+            artifact=str(opts["cached_artifact"]),
+            k=k,
+        )
+    else:
+        gt, sample, drives, wp, keys = _collect(cfg, k=k)
     f = gt.shape[0]
     logger.info("collected", frames=f, draws=k)
 
@@ -238,7 +315,10 @@ def main(cfg: DictConfig) -> None:
     c_full = corr(route_full, gt_ms, ok_r & np.isfinite(route_full))
     route = route_near if abs(c_near) >= abs(c_full) else route_full
     ok_r = np.isfinite(route) & np.isfinite(gt_ms)
-    a_fit, b_fit = np.polyfit(route[ok_r], gt_ms[ok_r], 1)
+    if int(ok_r.sum()) > 10:
+        a_fit, b_fit = np.polyfit(route[ok_r], gt_ms[ok_r], 1)
+    else:  # no waypoints (cached mode) -> selector falls back to meanK
+        a_fit, b_fit = 0.0, float("nan")
     steer_hat = a_fit * route + b_fit  # (F,) route-implied chunk-mean steering
     print(  # noqa: T201
         f"\nroute-turn signal: corr(near3, gt_steer)={c_near:.3f} "
