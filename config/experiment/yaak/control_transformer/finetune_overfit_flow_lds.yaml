@@ -39,3 +39,8 @@ flow_action_dim: 2
 flow_lds_stats: artifacts/action_norm_overfit.json
 flow_lds_alpha: 0.5
 flow_lds_cap: 15.0
+
+# Run tags (lever taxonomy; outcome tags like baseline/negative are set
+# post-hoc on wandb when the run is logged to Notion).
+wandb:
+  tags: [flow, overfit, gauss-merge, lds, delta-loss, rope]

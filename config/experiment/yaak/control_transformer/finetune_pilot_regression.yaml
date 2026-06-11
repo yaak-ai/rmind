@@ -43,3 +43,8 @@ trainer:
   max_epochs: 50
   check_val_every_n_epoch: 1
   log_every_n_steps: 50
+
+# Run tags (lever taxonomy; outcome tags like baseline/negative are set
+# post-hoc on wandb when the run is logged to Notion).
+wandb:
+  tags: [regression-head, pilot-30, gauss-merge]
