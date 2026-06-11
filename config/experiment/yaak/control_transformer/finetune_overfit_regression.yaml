@@ -1,0 +1,62 @@
+# @package _global_
+
+# Horizon-matched DETERMINISTIC regression baseline, overfit edition — the
+# "is flow earning its complexity?" control that the old last-step baseline
+# (finetune_overfit_baseline) could never provide.
+#
+# Matched to the flow overfit recipe in everything except the generative model:
+# same pretrained encoder (frozen), same condition tokens (summaries +
+# waypoints), same transformed model space (gas/brake merge + Gaussianize),
+# same raw-space metrics (sample_l1, maneuver_l1/*; same wandb keys, directly
+# comparable curves), capacity-matched decoder (4-layer cross-attention,
+# learned slot queries) — but a single deterministic forward trained with MSE
+# instead of an integrated flow. No LDS (compare against pg5lzmvk first; LDS
+# can be added via flow_lds_stats for the tqozevsv comparison).
+#
+# Readout vs the flow overfit runs (pg5lzmvk / tqozevsv) and the flow's
+# mean-of-K decomposition (flow_meank_eval):
+#   - regression ~= flow mean-of-K, >> flow single-draw  => flow's gap is
+#     sampling variance; deterministic readout is the cheap equivalent.
+#   - regression beats flow mean-of-K on spikes          => the flow's
+#     generative detour costs even conditional-mean accuracy.
+#   - flow single-draw beats regression on maneuvers     => distributional
+#     modeling earns its keep (strongest open-loop pro-flow evidence).
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune_regression
+  - /datamodule: yaak/overfit
+  - /trainer: default
+  - /trainer/callbacks: finetune_regression
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+model:
+  artifact: yaak/rmind/model-e61ycirr:v9
+
+encoder_embedding_dim: 384
+flow_decoder_embedding_dim: 256
+
+# Same transformed model space as the flow runs (pg5lzmvk recipe).
+flow_action_transform_stats: artifacts/action_norm_overfit.json
+flow_action_dim: 2
+# Same maneuver-L1 scoreboard (overfit-drive thresholds).
+flow_maneuver_thresholds: [0.2598, 0.2744, 0.1959]
+
+# Same schedule as the flow overfit runs.
+lr_warmup_steps: 50
+lr_training_steps: 3000
+
+history_steps: 6
+action_horizon: 6
+# history_steps + action_horizon
+sequence_length: 12
+
+# Same sparse checkpoint ladder as the flow overfit runs.
+flow_checkpoint_every_n_epochs: 10
+flow_checkpoint_save_top_k: -1
+
+trainer:
+  max_epochs: 200
+  check_val_every_n_epoch: 10
+  log_every_n_steps: 10

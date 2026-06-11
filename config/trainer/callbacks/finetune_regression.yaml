@@ -1,0 +1,19 @@
+---
+# Callbacks for the deterministic regression baseline: identical to
+# finetune_flow (frozen encoder — REQUIRED for the matched flow-vs-regression
+# comparison) minus the flow-specific position-embedding image logger (the
+# regression decoder has slot_queries, not position_embedding).
+- _target_: rmind.callbacks.LogitBiasSetter
+- _target_: rmind.callbacks.ModuleFreezer
+  paths:
+    - episode_builder
+    - encoder
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 5
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: ${oc.select:flow_checkpoint_every_n_epochs,1}
+  save_top_k: ${oc.select:flow_checkpoint_save_top_k,1}
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
+- _target_: rmind.callbacks.WandbAttentionMaskLogger
