@@ -64,4 +64,5 @@ trainer:
 # Run tags (lever taxonomy; outcome tags like baseline/negative are set
 # post-hoc on wandb when the run is logged to Notion).
 wandb:
+  project: action-flow
   tags: [regression-head, overfit, gauss-merge]

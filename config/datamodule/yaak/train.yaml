@@ -14,7 +14,6 @@ train:
     _target_: rbyte.types.Batch.to_dict
     _partial_: true
   pin_memory: true
-  drop_last: true
   num_workers: 2
   method: thread
 

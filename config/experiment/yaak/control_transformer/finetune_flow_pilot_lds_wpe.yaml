@@ -36,4 +36,5 @@ flow_waypoint_count: 10
 # Run tags (lever taxonomy; outcome tags like baseline/negative are set
 # post-hoc on wandb when the run is logged to Notion).
 wandb:
+  project: action-flow
   tags: [flow, pilot-30, gauss-merge, lds, delta-loss, rope, waypoint-pe]
