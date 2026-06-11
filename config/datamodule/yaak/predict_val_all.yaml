@@ -1,0 +1,20 @@
+---
+defaults:
+  - /dataset/yaak/val@predict.dataset
+  - _self_
+
+# Predict over ALL 5 held-out val drives (the full standard val set). Use for
+# multi-drive generalization numbers; yaak/predict_val is the single-drive
+# (Niro115) fast variant.
+_target_: rmind.datamodules.GenericDataModule
+predict:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 8
+  shuffle: false
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+
+  num_workers: 2
+  pin_memory: true
+  method: thread

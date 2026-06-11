@@ -68,7 +68,9 @@ def _to_device(obj: Any, device: torch.device) -> Any:
     return obj
 
 
-def _collect(cfg: DictConfig, *, k: int) -> tuple[np.ndarray, np.ndarray, list[str]]:
+def _collect(
+    cfg: DictConfig, *, k: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """Returns (gt (F,H,A), samples (F,K,H,A)) in RAW space, plus action keys."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model: pl.LightningModule = instantiate(cfg.model).to(device).eval()
@@ -84,6 +86,7 @@ def _collect(cfg: DictConfig, *, k: int) -> tuple[np.ndarray, np.ndarray, list[s
 
     gts: list[torch.Tensor] = []
     samples: list[torch.Tensor] = []
+    drive_ids: list[str] = []
     with torch.inference_mode():
         for batch_idx, batch in enumerate(datamodule.predict_dataloader()):
             batch = _to_device(batch, device)
@@ -113,15 +116,18 @@ def _collect(cfg: DictConfig, *, k: int) -> tuple[np.ndarray, np.ndarray, list[s
                 gt = gt[:, objective._target_slice()]
             gts.append(gt.cpu())
             samples.append(trajectories.cpu())
+            ids = batch["meta"]["input_id"]
+            drive_ids.extend(str(x) for x in (ids if isinstance(ids, list) else ids))
             if batch_idx % 50 == 0:
                 logger.debug("sampled", batch_idx=batch_idx)
 
     gt = torch.cat(gts).numpy()
     sample = torch.cat(samples).numpy()
+    drives = np.array(drive_ids)
     valid = np.isfinite(gt).all(axis=(1, 2)) & np.isfinite(sample).all(axis=(1, 2, 3))
     if (dropped := int((~valid).sum())) > 0:
         logger.warning("dropping non-finite frames", count=dropped)
-    return gt[valid], sample[valid], list(objective.action_keys)
+    return gt[valid], sample[valid], drives[valid], list(objective.action_keys)
 
 
 def _mode_aware_anchor(
@@ -151,7 +157,7 @@ def main(cfg: DictConfig) -> None:
     mode_min_frac = float(opts.get("mode_min_frac", 0.125))
 
     torch.set_float32_matmul_precision(cfg.matmul_precision)
-    gt, sample, keys = _collect(cfg, k=k)
+    gt, sample, drives, keys = _collect(cfg, k=k)
     f = gt.shape[0]
     logger.info("collected", frames=f, draws=k)
 
@@ -171,6 +177,38 @@ def main(cfg: DictConfig) -> None:
         sample, steer, gap_thr=mode_gap, min_frac=mode_min_frac
     )
     mode_err = np.abs(anchor - gt)  # (F, H, A)
+    from rmind.components.objectives.consensus import (
+        _members,
+        mode_aware_anchor,
+        split_modes,
+    )
+
+    s_t = torch.from_numpy(sample).float()
+    medoid_anchor, _, _ = mode_aware_anchor(
+        s_t, steer, gap_thr=mode_gap, min_frac=mode_min_frac, anchor="medoid"
+    )
+    medoid_err = np.abs(medoid_anchor.numpy() - gt)  # (F, H, A)
+
+    # Residual decomposition on the steering channel, per FRAME (mode choice is
+    # a per-frame decision): dominant- vs oracle-mode selection + coverage.
+    bm_t, order_t, left_t, _sep = split_modes(
+        s_t, steer, gap_thr=mode_gap, min_frac=mode_min_frac
+    )
+    kk_ = s_t.shape[1]
+    dom_anchor = anchor.copy()
+    min_anchor = anchor.copy()
+    for i in torch.nonzero(bm_t).flatten().tolist():
+        mm = _members(order_t, left_t, i, dominant=False, k=kk_)
+        min_anchor[i] = s_t[i, mm].mean(dim=0).numpy()
+    def frame_steer_l1(pred):  # (F, H, A) -> (F,) chunk-mean steering L1
+        return np.abs(pred[..., steer] - gt[..., steer]).mean(axis=1)
+    fe_dom = frame_steer_l1(dom_anchor)
+    fe_min = frame_steer_l1(min_anchor)
+    fe_oracle = np.where(bimodal, np.minimum(fe_dom, fe_min), fe_dom)
+    fe_single = np.abs(sample[..., steer] - gt[:, None, :, steer]).mean(axis=2).mean(axis=1)
+    fe_meank = frame_steer_l1(sample.mean(axis=1))
+    fe_medoid = frame_steer_l1(medoid_anchor.numpy())
+    fe_best = np.abs(sample[..., steer] - gt[:, None, :, steer]).mean(axis=2).min(axis=1)
 
     print(f"\nmean-of-K decomposition over {f} frames (K draws averaged, raw space)")  # noqa: T201
     for c, key in enumerate(keys):
@@ -232,6 +270,46 @@ def main(cfg: DictConfig) -> None:
             f"{em_k[bimodal].mean():.4f} vs mode-aware {es[bimodal].mean():.4f}"
             f" (single-draw {agg[1][..., steer][bimodal].mean():.4f})"
         )
+
+    # Residual decomposition (steering, spike FRAMES): where does the
+    # remaining error live? selection regret (dominant - oracle mode choice),
+    # within-mode error (oracle), coverage floor (best single draw).
+    print("\nresidual decomposition (steering chunk L1 on spike frames):")  # noqa: T201
+    def dec_row(name, fe, m):
+        print(f"  {name:16s} {fe[m].mean():.4f}" if m.any() else f"  {name:16s} n/a")  # noqa: T201
+    m_sp = spike_frame
+    for name, fe in (
+        ("single", fe_single), ("mean-of-K", fe_meank), ("mode (WTA)", fe_dom),
+        ("mode-medoid", fe_medoid), ("oracle-mode", fe_oracle),
+        ("best-draw", fe_best),
+    ):
+        dec_row(name, fe, m_sp)
+    if m_sp.any():
+        sel = fe_dom[m_sp].mean() - fe_oracle[m_sp].mean()
+        print(  # noqa: T201
+            f"  -> selection regret (dominant-oracle): {sel:.4f} | "
+            f"within-mode residual (oracle): {fe_oracle[m_sp].mean():.4f} | "
+            f"coverage floor (best draw): {fe_best[m_sp].mean():.4f}"
+        )
+
+    # Per-drive breakdown (held-out evals span multiple drives).
+    uniq = sorted(set(drives.tolist()))
+    if len(uniq) > 1 or True:
+        print("\nper-drive (steering, spike frames):")  # noqa: T201
+        print(  # noqa: T201
+            f"  {'drive':36s} {'frames':>6} {'spikeF':>6} {'bimod%':>7} "
+            f"{'single':>7} {'meanK':>7} {'mode':>7} {'oracle':>7}"
+        )
+        for d in uniq:
+            dm_ = drives == d
+            msp = dm_ & spike_frame
+            bi_pct = (bimodal & msp).sum() / max(msp.sum(), 1)
+            def v(fe):
+                return f"{fe[msp].mean():7.4f}" if msp.any() else "    n/a"
+            print(  # noqa: T201
+                f"  {d[:36]:36s} {int(dm_.sum()):6d} {int(msp.sum()):6d} "
+                f"{bi_pct:7.2%} {v(fe_single)} {v(fe_meank)} {v(fe_dom)} {v(fe_oracle)}"
+            )
 
 
 if __name__ == "__main__":

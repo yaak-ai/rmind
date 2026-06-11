@@ -27,26 +27,25 @@ MODE_GAP_THRESHOLD = 0.15
 MODE_MIN_FRACTION = 0.125
 
 
-def mode_aware_anchor(
+def split_modes(
     samples: Tensor,
     steer_idx: int,
     *,
     gap_thr: float = MODE_GAP_THRESHOLD,
     min_frac: float = MODE_MIN_FRACTION,
-) -> tuple[Tensor, Tensor, Tensor]:
-    """Winner-take-all consensus over draws.
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Largest-gap mode split of K draws per frame (at most 2 modes).
 
-    samples: (B, K, H, A) raw-space action chunks (K draws per frame).
-    steer_idx: index of the steering channel in A (the mode axis).
-
-    Returns (anchor (B, H, A), bimodal (B,) bool, mode_sep (B,) largest gap).
-    Frames whose draws contain non-finite values get a non-finite mean anchor
-    (consistent with single-draw behavior on poisoned conditions).
+    samples: (B, K, H, A) raw-space action chunks.
+    Returns (bimodal (B,) bool, order (B, K) sort indices on the signature,
+    left_n (B,) draws left of the split, mode_sep (B,) largest gap). For a
+    bimodal row, the dominant cluster is order[:left_n] when left_n >= K-left_n
+    else order[left_n:], the minority cluster the complement.
     """
     if samples.ndim != 4:  # noqa: PLR2004
         msg = f"samples must be (B, K, H, A), got {tuple(samples.shape)}"
         raise ValueError(msg)
-    b, k = samples.shape[:2]
+    k = samples.shape[1]
     sig = samples[..., steer_idx].mean(dim=2)  # (B, K) chunk-mean steering
     sig_sorted, order = torch.sort(sig, dim=1)
     gaps = sig_sorted.diff(dim=1)  # (B, K-1)
@@ -56,10 +55,62 @@ def mode_aware_anchor(
     bimodal = (
         (mode_sep > gap_thr) & (minority >= min_frac) & torch.isfinite(mode_sep)
     )
+    return bimodal, order, left_n, mode_sep
 
-    anchor = samples.mean(dim=1)  # (B, H, A) default: mean-of-K
+
+def _members(
+    order: Tensor, left_n: Tensor, i: int, *, dominant: bool, k: int
+) -> Tensor:
+    n_left = int(left_n[i])
+    left_is_dominant = n_left >= k - n_left
+    take_left = left_is_dominant == dominant
+    return order[i, :n_left] if take_left else order[i, n_left:]
+
+
+def mode_aware_anchor(
+    samples: Tensor,
+    steer_idx: int,
+    *,
+    gap_thr: float = MODE_GAP_THRESHOLD,
+    min_frac: float = MODE_MIN_FRACTION,
+    anchor: str = "mean",
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Winner-take-all consensus over draws.
+
+    samples: (B, K, H, A) raw-space action chunks (K draws per frame).
+    steer_idx: index of the steering channel in A (the mode axis).
+    anchor: "mean" = average the dominant cluster's chunks (lowest variance;
+        a synthetic chunk). "medoid" = the actual draw closest to that mean
+        (guaranteed model sample, dynamically coherent by construction; keeps
+        one draw's sampling noise). Unimodal frames use all K draws either way.
+
+    Returns (anchor (B, H, A), bimodal (B,) bool, mode_sep (B,) largest gap).
+    Frames whose draws contain non-finite values get a non-finite mean anchor
+    (consistent with single-draw behavior on poisoned conditions).
+    """
+    if anchor not in {"mean", "medoid"}:
+        msg = f"anchor must be 'mean' or 'medoid', got {anchor!r}"
+        raise ValueError(msg)
+    b, k = samples.shape[:2]
+    bimodal, order, left_n, mode_sep = split_modes(
+        samples, steer_idx, gap_thr=gap_thr, min_frac=min_frac
+    )
+
+    out = samples.mean(dim=1)  # (B, H, A) default: mean-of-K
     for i in torch.nonzero(bimodal).flatten().tolist():
-        n_left = int(left_n[i])
-        members = order[i, :n_left] if n_left >= k - n_left else order[i, n_left:]
-        anchor[i] = samples[i, members].mean(dim=0)
-    return anchor, bimodal, mode_sep
+        members = _members(order, left_n, i, dominant=True, k=k)
+        out[i] = samples[i, members].mean(dim=0)
+    if anchor == "medoid":
+        all_idx = torch.arange(k, device=samples.device)
+        for i in range(b):
+            members = (
+                _members(order, left_n, i, dominant=True, k=k)
+                if bool(bimodal[i])
+                else all_idx
+            )
+            member_chunks = samples[i, members]  # (M, H, A)
+            if not torch.isfinite(member_chunks).all():
+                continue  # keep the (non-finite) mean, mirroring single-draw
+            dists = (member_chunks - out[i]).flatten(1).norm(dim=1)
+            out[i] = member_chunks[dists.argmin()]
+    return out, bimodal, mode_sep

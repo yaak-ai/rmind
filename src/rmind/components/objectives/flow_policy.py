@@ -61,8 +61,10 @@ FLOW_TIME_SAMPLING_METHODS = {"uniform", "logit-normal", "beta"}
 # predict()-time readout policies: "single" = one honest draw (legacy);
 # "meank" = mean of predict_samples draws (variance reduction, mode-averaging);
 # "mode" = winner-take-all consensus (see consensus.py — commits to the
-# dominant mode; == meank on unimodal frames, the deployment recommendation).
-PREDICT_READOUTS = {"single", "meank", "mode"}
+# dominant mode; == meank on unimodal frames, the deployment recommendation);
+# "mode_medoid" = same selection, but the anchor is the actual draw closest to
+# the dominant-cluster mean (guaranteed model sample, dynamically coherent).
+PREDICT_READOUTS = {"single", "meank", "mode", "mode_medoid"}
 
 
 @final
@@ -561,7 +563,13 @@ class FlowPolicyObjective(Objective):
                         ),
                         len(self.action_keys) - 1,
                     )
-                    prediction_actions, _, _ = mode_aware_anchor(draws, steer_idx)
+                    prediction_actions, _, _ = mode_aware_anchor(
+                        draws,
+                        steer_idx,
+                        anchor="medoid"
+                        if self.predict_readout == "mode_medoid"
+                        else "mean",
+                    )
 
         if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
             if prediction_actions is None:
