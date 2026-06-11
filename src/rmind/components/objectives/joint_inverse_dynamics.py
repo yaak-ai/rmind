@@ -65,6 +65,7 @@ class JointInverseDynamicsObjective(Objective):
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         features = self._observation_summary(episode, embedding)[:, :-1]
         (tokenizer,) = tree_leaves(self.tokenizer)
+        (heads,) = tree_leaves(self.heads)  # one head per quantizer
 
         with torch.no_grad():
             codes = tree_map(
@@ -77,12 +78,12 @@ class JointInverseDynamicsObjective(Objective):
         loss = None
         for q in range(tokenizer.quantizer.num_quantizers):
             step = self.losses(
-                tree_map(lambda x: x.flatten(0, 1), self.heads(r)),
+                tree_map(lambda rq, q=q: heads[q](rq).flatten(0, 1), r),
                 tree_map(lambda c, q=q: c[..., q].flatten(), codes),
             )
             loss = step if loss is None else tree_map(torch.add, loss, step)
             codebook = tokenizer.quantizer.codebook(q)
-            # out-of-place: head(r) is saved for backward, so r must not be mutated
+            # out-of-place: heads[q](r) is saved for backward, so r must not be mutated
             r = tree_map(
                 lambda rq, c, q=q, cb=codebook: rq - F.embedding(c[..., q], cb),
                 r,
@@ -115,11 +116,12 @@ class JointInverseDynamicsObjective(Objective):
         if ObjectivePredictionKey.PREDICTION_VALUE in keys:
             features = self._observation_summary(episode, embedding)[:, :-1]
             (tokenizer,) = tree_leaves(self.tokenizer)
+            (heads,) = tree_leaves(self.heads)
 
             r = self.projection(features)
             codes: list[CodeTargets] = []
             for q in range(tokenizer.quantizer.num_quantizers):
-                code = tree_map(lambda x: x.argmax(dim=-1), self.heads(r))
+                code = tree_map(lambda rq, q=q: heads[q](rq).argmax(dim=-1), r)
                 codes.append(code)
                 codebook = tokenizer.quantizer.codebook(q)
                 r = tree_map(

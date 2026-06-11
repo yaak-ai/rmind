@@ -3,7 +3,7 @@ from typing import final
 import torch
 from torch import Tensor
 from torch.nn import Module
-from vector_quantize_pytorch import ResidualVQ as _ResidualVQ
+from vector_quantize_pytorch import ResidualVQ as RVQ
 
 
 @final
@@ -27,7 +27,7 @@ class ResidualVQ(Module):
         self.dim = dim
         self.codebook_size = codebook_size
         self.num_quantizers = num_quantizers
-        self.vq = _ResidualVQ(
+        self.vq = RVQ(
             dim=dim,
             num_quantizers=num_quantizers,
             codebook_size=codebook_size,
