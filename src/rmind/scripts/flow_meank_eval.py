@@ -127,32 +127,18 @@ def _collect(cfg: DictConfig, *, k: int) -> tuple[np.ndarray, np.ndarray, list[s
 def _mode_aware_anchor(
     sample: np.ndarray, steer_idx: int, *, gap_thr: float, min_frac: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Winner-take-all consensus over K draws, per frame.
+    """Numpy wrapper over the shared torch winner-take-all consensus
+    (rmind.components.objectives.consensus — the same code path predict() uses
+    with predict_readout=mode). Returns (anchor, bimodal, mode_sep)."""
+    from rmind.components.objectives.consensus import mode_aware_anchor
 
-    Clusters draws on chunk-mean steering via the largest gap in the sorted
-    values: a frame is BIMODAL when the largest gap exceeds `gap_thr` and the
-    minority side holds >= `min_frac` of draws (guards against outlier-driven
-    splits). Anchor = mean chunk over the dominant cluster's draws (full
-    channels); unimodal frames fall back to the all-draw mean (== mean-of-K).
-
-    Returns (anchor (F,H,A), bimodal (F,), mode_sep (F,) gap size).
-    """
-    f, k = sample.shape[:2]
-    sig = sample[..., steer_idx].mean(axis=2)  # (F, K) chunk-mean steering
-    order = np.argsort(sig, axis=1)
-    sig_sorted = np.take_along_axis(sig, order, axis=1)
-    gaps = np.diff(sig_sorted, axis=1)  # (F, K-1)
-    split = gaps.argmax(axis=1)  # index of largest gap
-    mode_sep = gaps[np.arange(f), split]
-    left_n = split + 1
-    minority = np.minimum(left_n, k - left_n) / k
-    bimodal = (mode_sep > gap_thr) & (minority >= min_frac)
-
-    anchor = sample.mean(axis=1)  # default: mean-of-K
-    for i in np.flatnonzero(bimodal):
-        members = order[i, : left_n[i]] if left_n[i] >= k - left_n[i] else order[i, left_n[i] :]
-        anchor[i] = sample[i, members].mean(axis=0)
-    return anchor, bimodal, mode_sep
+    anchor, bimodal, mode_sep = mode_aware_anchor(
+        torch.from_numpy(sample).float(),
+        steer_idx,
+        gap_thr=gap_thr,
+        min_frac=min_frac,
+    )
+    return anchor.numpy(), bimodal.numpy(), mode_sep.numpy()
 
 
 @hydra.main(version_base=None)

@@ -1,7 +1,17 @@
 _target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
 filename: model.ckpt
+# predict-time readout for FLOW checkpoints (injected into the saved hparams,
+# so it works on every existing artifact — pure inference, no retraining):
+#   flow_predict_readout=single (default) | meank | mode
+#   flow_predict_samples=K (draws for meank/mode, default 16)
+# "mode" = winner-take-all consensus (see objectives/consensus.py). Guarded on
+# the objective _target_, so non-flow (baseline/regression) ckpts are untouched.
 hparams_jq: |
   delpaths([
     ["objectives", "policy", "losses"]
   ])
+  | if ((.objectives.modules.policy._target_ // "") | endswith("FlowPolicyObjective")) then
+      .objectives.modules.policy.predict_readout = "${oc.select:flow_predict_readout,single}"
+      | .objectives.modules.policy.predict_samples = ${oc.select:flow_predict_samples,16}
+    else . end

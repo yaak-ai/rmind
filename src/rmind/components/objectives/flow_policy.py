@@ -13,6 +13,7 @@ from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.action_transform import GaussianizeActionTransform
+from rmind.components.objectives.consensus import mode_aware_anchor
 from rmind.components.objectives.maneuver_weights import ManeuverLossWeights
 from rmind.components.objectives.base import (
     Metrics,
@@ -57,6 +58,11 @@ FLOW_TIME_BETA_S = 0.999
 # field is least accurate, so p(t) can be shaped to match instead of guessed.
 FLOW_TIME_LOSS_BUCKETS = 8
 FLOW_TIME_SAMPLING_METHODS = {"uniform", "logit-normal", "beta"}
+# predict()-time readout policies: "single" = one honest draw (legacy);
+# "meank" = mean of predict_samples draws (variance reduction, mode-averaging);
+# "mode" = winner-take-all consensus (see consensus.py — commits to the
+# dominant mode; == meank on unimodal frames, the deployment recommendation).
+PREDICT_READOUTS = {"single", "meank", "mode"}
 
 
 @final
@@ -86,8 +92,19 @@ class FlowPolicyObjective(Objective):
         lds_cap: float = 15.0,
         waypoint_pe: bool = False,
         waypoint_count: int = 10,
+        predict_readout: str = "single",
+        predict_samples: int = 16,
     ) -> None:
         super().__init__()
+
+        if predict_readout not in PREDICT_READOUTS:
+            msg = f"predict_readout must be one of {PREDICT_READOUTS}, got {predict_readout!r}"
+            raise ValueError(msg)
+        if predict_samples <= 0:
+            msg = f"predict_samples must be positive, got {predict_samples}"
+            raise ValueError(msg)
+        self.predict_readout = predict_readout
+        self.predict_samples = predict_samples
 
         if history_steps <= 0:
             msg = f"history_steps must be positive, got {history_steps}"
@@ -494,21 +511,54 @@ class FlowPolicyObjective(Objective):
             condition_tokens = self._condition_tokens(
                 episode=episode, embedding=embedding
             )
-            # Single honest draw (one forward sample), matching the sample_l1
-            # metric — not an oracle best-of-N selection. Use the global RNG
-            # (generator=None): re-seeding a per-batch generator to a fixed seed
-            # makes the noise a function of within-batch position, which imprints
-            # a period-`batch_size` artifact on the plotted predictions. The
-            # global RNG advances across batches (run-level reproducibility comes
-            # from seed_everything), so noise differs batch-to-batch.
-            prediction_actions = self._to_raw_space(
-                self.decoder.sample(
-                    condition_tokens=condition_tokens,
-                    noise=self._noise(
-                        condition_tokens=condition_tokens, generator=None
-                    ),
+            # Readout policy (predict_readout):
+            #   single — one honest draw, matching the sample_l1 metric.
+            #   meank  — mean of predict_samples draws (variance reduction;
+            #            mode-AVERAGING: splits the difference on bimodal frames).
+            #   mode   — winner-take-all consensus (consensus.py): commit to the
+            #            dominant cluster; == meank on unimodal frames. Measured
+            #            held-out spike steering L1: single 0.62 / meank 0.53 /
+            #            mode 0.34 (77% of held-out spike frames are bimodal).
+            # All use the global RNG (generator=None): re-seeding per batch makes
+            # noise a function of within-batch position, which imprints a
+            # period-`batch_size` artifact on plotted predictions.
+            if self.predict_readout == "single":
+                prediction_actions = self._to_raw_space(
+                    self.decoder.sample(
+                        condition_tokens=condition_tokens,
+                        noise=self._noise(
+                            condition_tokens=condition_tokens, generator=None
+                        ),
+                    )
                 )
-            )
+            else:
+                draws = self._to_raw_space(
+                    torch.stack(
+                        [
+                            self.decoder.sample(
+                                condition_tokens=condition_tokens,
+                                noise=self._noise(
+                                    condition_tokens=condition_tokens,
+                                    generator=None,
+                                ),
+                            )
+                            for _ in range(self.predict_samples)
+                        ],
+                        dim=0,
+                    )
+                ).permute(1, 0, 2, 3)  # (B, K, H, A) raw
+                if self.predict_readout == "meank":
+                    prediction_actions = draws.mean(dim=1)
+                else:
+                    steer_idx = next(
+                        (
+                            i
+                            for i, key_ in enumerate(self.action_keys)
+                            if "steering" in key_
+                        ),
+                        len(self.action_keys) - 1,
+                    )
+                    prediction_actions, _, _ = mode_aware_anchor(draws, steer_idx)
 
         if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
             if prediction_actions is None:
