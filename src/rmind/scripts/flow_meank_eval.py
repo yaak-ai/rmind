@@ -14,6 +14,19 @@ is fine and the "flow can't overfit" gap is a sampling artifact — fixable at
 inference (aggregate draws) or irrelevant for a deterministic readout. If bias
 dominates, the flow genuinely hasn't fit the conditional.
 
+Also computes a MODE-AWARE readout and a multimodality census. Plain mean-of-K
+is a mode-averaging estimator: on a genuinely bimodal conditional (turn left XOR
+right) it splits the difference — the exact regression-to-the-mean failure flow
+exists to avoid. The mode-aware readout clusters the K draws on a 1-D maneuver
+signature (chunk-mean steering), commits to the DOMINANT cluster (draw count ~
+probability mass), and averages within it — identical to mean-of-K on unimodal
+frames, mode-committing on bimodal ones. This is sample-then-select as practiced
+in motion forecasting (MultiPath anchors, MTR/DenseTNT NMS, Trajectron++ "most
+likely" deployment; MDN take-dominant-component) and is ~Minimum-Bayes-Risk
+consensus decoding (Kumar & Byrne 2004) with hard clustering. The census reports
+how often the conditional is actually multimodal — with route waypoints in the
+conditioning, discrete modes should be rare at current scale; this measures it.
+
 Usage (mirrors `just fan`):
     uv run python -m rmind.scripts.flow_meank_eval \
         --config-path <repo>/config --config-name predict.yaml \
@@ -22,7 +35,9 @@ Usage (mirrors `just fan`):
         datamodule=yaak/predict_val '+meank.k=32'
 
 Options (+meank.*): k (draws, default 32), spike_threshold (|gt steering|,
-default 0.5), flat_threshold (default 0.05).
+default 0.5), flat_threshold (default 0.05), mode_gap (min separation in
+chunk-mean steering to declare two modes, default 0.15), mode_min_frac
+(minority cluster must hold at least this fraction of draws, default 0.125).
 """
 
 import multiprocessing as mp
@@ -109,12 +124,45 @@ def _collect(cfg: DictConfig, *, k: int) -> tuple[np.ndarray, np.ndarray, list[s
     return gt[valid], sample[valid], list(objective.action_keys)
 
 
+def _mode_aware_anchor(
+    sample: np.ndarray, steer_idx: int, *, gap_thr: float, min_frac: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Winner-take-all consensus over K draws, per frame.
+
+    Clusters draws on chunk-mean steering via the largest gap in the sorted
+    values: a frame is BIMODAL when the largest gap exceeds `gap_thr` and the
+    minority side holds >= `min_frac` of draws (guards against outlier-driven
+    splits). Anchor = mean chunk over the dominant cluster's draws (full
+    channels); unimodal frames fall back to the all-draw mean (== mean-of-K).
+
+    Returns (anchor (F,H,A), bimodal (F,), mode_sep (F,) gap size).
+    """
+    f, k = sample.shape[:2]
+    sig = sample[..., steer_idx].mean(axis=2)  # (F, K) chunk-mean steering
+    order = np.argsort(sig, axis=1)
+    sig_sorted = np.take_along_axis(sig, order, axis=1)
+    gaps = np.diff(sig_sorted, axis=1)  # (F, K-1)
+    split = gaps.argmax(axis=1)  # index of largest gap
+    mode_sep = gaps[np.arange(f), split]
+    left_n = split + 1
+    minority = np.minimum(left_n, k - left_n) / k
+    bimodal = (mode_sep > gap_thr) & (minority >= min_frac)
+
+    anchor = sample.mean(axis=1)  # default: mean-of-K
+    for i in np.flatnonzero(bimodal):
+        members = order[i, : left_n[i]] if left_n[i] >= k - left_n[i] else order[i, left_n[i] :]
+        anchor[i] = sample[i, members].mean(axis=0)
+    return anchor, bimodal, mode_sep
+
+
 @hydra.main(version_base=None)
 def main(cfg: DictConfig) -> None:
     opts = cfg.get("meank") or {}
     k = int(opts.get("k", 32))
     spike_thr = float(opts.get("spike_threshold", 0.5))
     flat_thr = float(opts.get("flat_threshold", 0.05))
+    mode_gap = float(opts.get("mode_gap", 0.15))
+    mode_min_frac = float(opts.get("mode_min_frac", 0.125))
 
     torch.set_float32_matmul_precision(cfg.matmul_precision)
     gt, sample, keys = _collect(cfg, k=k)
@@ -133,6 +181,11 @@ def main(cfg: DictConfig) -> None:
         if kk < k:
             agg[kk] = np.abs(sample[:, :kk].mean(axis=1) - gt)
 
+    anchor, bimodal, mode_sep = _mode_aware_anchor(
+        sample, steer, gap_thr=mode_gap, min_frac=mode_min_frac
+    )
+    mode_err = np.abs(anchor - gt)  # (F, H, A)
+
     print(f"\nmean-of-K decomposition over {f} frames (K draws averaged, raw space)")  # noqa: T201
     for c, key in enumerate(keys):
         print(f"\n  {key}:")  # noqa: T201
@@ -143,6 +196,12 @@ def main(cfg: DictConfig) -> None:
             print(  # noqa: T201
                 f"    {kk:>4} {e.mean():11.4f} {e[flat].mean():9.4f} {sp:9.4f}"
             )
+        em = mode_err[..., c]
+        spm = em[spike].mean() if spike.any() else float("nan")
+        print(  # noqa: T201
+            f"    mode {em.mean():11.4f} {em[flat].mean():9.4f} {spm:9.4f}"
+            "   <- winner-take-all consensus (MBR-style)"
+        )
         e1, ek = agg[1][..., c], agg[k][..., c]
         sp_tax = (
             (e1[spike].mean() - ek[spike].mean()) / e1[spike].mean()
@@ -153,6 +212,39 @@ def main(cfg: DictConfig) -> None:
             f"    variance tax (1 - meanK/single): overall "
             f"{(e1.mean() - ek.mean()) / e1.mean():5.1%} | spike {sp_tax:5.1%}"
             f"  -> bias floor (meanK) = deterministic-head-reachable error"
+        )
+
+    # Multimodality census: how often is the conditional ACTUALLY multimodal?
+    spike_frame = spike.any(axis=1)  # (F,) frame contains a spike slot
+    flat_frame = flat.all(axis=1)
+    print(  # noqa: T201
+        f"\nmultimodality census (gap>{mode_gap:g} in chunk-mean steering, "
+        f"minority>={mode_min_frac:.0%} of {k} draws):"
+    )
+    for name, m in (
+        ("all frames", np.ones(f, dtype=bool)),
+        ("flat frames", flat_frame),
+        ("spike frames", spike_frame),
+    ):
+        if not m.any():
+            continue
+        bi = bimodal & m
+        print(  # noqa: T201
+            f"  {name:14s} bimodal {bi.sum():5d}/{int(m.sum()):5d} "
+            f"({bi.mean() / max(m.mean(), 1e-12):6.2%})"
+            + (
+                f" | mode separation {mode_sep[bi].mean():.3f}"
+                if bi.any()
+                else ""
+            )
+        )
+    if bimodal.any():
+        es = mode_err[..., steer]
+        em_k = agg[k][..., steer]
+        print(  # noqa: T201
+            f"  on bimodal frames, steering L1: mean-of-K "
+            f"{em_k[bimodal].mean():.4f} vs mode-aware {es[bimodal].mean():.4f}"
+            f" (single-draw {agg[1][..., steer][bimodal].mean():.4f})"
         )
 
 
