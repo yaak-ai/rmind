@@ -75,13 +75,14 @@ class JointInverseDynamicsObjective(Objective):
             )  # {joint: {actions: (B, T-1, num_quantizers)}}
 
         r = self.projection(features)  # {joint: {actions: (B, T-1, latent)}}
-        loss = None
+        losses: dict[str, Tensor] = {}
         for q in range(tokenizer.quantizer.num_quantizers):
-            step = self.losses(
-                tree_map(lambda rq, q=q: heads[q](rq).flatten(0, 1), r),
-                tree_map(lambda c, q=q: c[..., q].flatten(), codes),
+            (losses[f"quantizer_{q}"],) = tree_leaves(
+                self.losses(
+                    tree_map(lambda rq, q=q: heads[q](rq).flatten(0, 1), r),
+                    tree_map(lambda c, q=q: c[..., q].flatten(), codes),
+                )
             )
-            loss = step if loss is None else tree_map(torch.add, loss, step)
             codebook = tokenizer.quantizer.codebook(q)
             # out-of-place: heads[q](r) is saved for backward, so r must not be mutated
             r = tree_map(
@@ -90,7 +91,7 @@ class JointInverseDynamicsObjective(Objective):
                 codes,
             )
 
-        return {"loss": loss}
+        return {"loss": losses}
 
     @override
     def predict(
