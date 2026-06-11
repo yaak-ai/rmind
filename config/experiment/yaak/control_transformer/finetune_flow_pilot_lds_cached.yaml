@@ -119,6 +119,14 @@ trainer:
       logging_interval: step
     - _target_: pytorch_lightning.callbacks.ModelSummary
       max_depth: 4
+    - _target_: rmind.callbacks.WandbImageParamLogger
+      when: on_validation_epoch_end
+      key: policy/position_embedding_cosine
+      select:
+        - [objectives, policy, decoder, position_embedding, weight]
+      apply:
+        _target_: torchmetrics.functional.pairwise_cosine_similarity
+        _partial_: true
 
 # Run tags (lever taxonomy; outcome tags set post-hoc when logged to Notion).
 wandb:
