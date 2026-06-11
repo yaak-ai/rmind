@@ -337,6 +337,31 @@ class FlowPolicyObjective(Objective):
                 condition_tokens = condition_tokens[finite]
                 target_actions = target_actions[finite]
 
+        return self.compute_metrics_from(
+            condition_tokens=condition_tokens, target_actions=target_actions
+        )
+
+    def compute_metrics_from(
+        self, *, condition_tokens: Tensor, target_actions: Tensor
+    ) -> Metrics:
+        """compute_metrics downstream of condition/target extraction.
+
+        Entry point for FEATURE-CACHED training (flow_cache_features.py +
+        FlowFeatureTrainer): the encoder is frozen in every finetune, so the
+        condition tokens per frame are deterministic constants — precompute
+        them once and train the (small) flow decoder directly from here,
+        skipping the JPEG -> ViT -> encoder recompute every step. Applies its
+        own non-finite guard (cached rows can carry NaN-waypoint poisoning;
+        no episode available here for culprit attribution).
+        """
+        finite = (
+            condition_tokens.flatten(1).isfinite().all(dim=1)
+            & target_actions.flatten(1).isfinite().all(dim=1)
+        )
+        if not bool(finite.all()) and bool(finite.any()):
+            condition_tokens = condition_tokens[finite]
+            target_actions = target_actions[finite]
+
         # The flow operates in transformed (model) space; raw targets are kept
         # for raw-space metrics. With no transform, model space == raw space.
         target_actions_model = self._to_model_space(target_actions)
