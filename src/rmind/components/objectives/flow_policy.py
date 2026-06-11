@@ -532,21 +532,24 @@ class FlowPolicyObjective(Objective):
                     )
                 )
             else:
+                # One BATCHED decoder pass over all K draws (B*K), like the fan/
+                # meank scripts — the encoder ran once upstream; only the small
+                # flow decoder sees the K-fold batch, so wall-clock barely grows.
+                k = self.predict_samples
+                cond_rep = condition_tokens.repeat_interleave(k, dim=0)
                 draws = self._to_raw_space(
-                    torch.stack(
-                        [
-                            self.decoder.sample(
-                                condition_tokens=condition_tokens,
-                                noise=self._noise(
-                                    condition_tokens=condition_tokens,
-                                    generator=None,
-                                ),
-                            )
-                            for _ in range(self.predict_samples)
-                        ],
-                        dim=0,
+                    self.decoder.sample(
+                        condition_tokens=cond_rep,
+                        noise=self._noise(
+                            condition_tokens=cond_rep, generator=None
+                        ),
+                    ).reshape(
+                        condition_tokens.shape[0],
+                        k,
+                        self.decoder.action_horizon,
+                        self.decoder.action_dim,
                     )
-                ).permute(1, 0, 2, 3)  # (B, K, H, A) raw
+                )  # (B, K, H, A) raw
                 if self.predict_readout == "meank":
                     prediction_actions = draws.mean(dim=1)
                 else:
