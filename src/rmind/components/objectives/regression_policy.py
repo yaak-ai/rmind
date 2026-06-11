@@ -228,6 +228,23 @@ class RegressionPolicyObjective(Objective):
                 condition_tokens = condition_tokens[finite]
                 target_actions = target_actions[finite]
 
+        return self.compute_metrics_from(
+            condition_tokens=condition_tokens, target_actions=target_actions
+        )
+
+    def compute_metrics_from(
+        self, *, condition_tokens: Tensor, target_actions: Tensor
+    ) -> Metrics:
+        """Metrics body downstream of condition/target extraction (feature-cached
+        training entry point, mirroring FlowPolicyObjective.compute_metrics_from)."""
+        finite = (
+            condition_tokens.flatten(1).isfinite().all(dim=1)
+            & target_actions.flatten(1).isfinite().all(dim=1)
+        )
+        if not bool(finite.all()) and bool(finite.any()):
+            condition_tokens = condition_tokens[finite]
+            target_actions = target_actions[finite]
+
         target_model = self._to_model_space(target_actions)
         pred_model = self.decoder(condition_tokens=condition_tokens)
 

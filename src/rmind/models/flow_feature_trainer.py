@@ -26,6 +26,7 @@ from structlog import get_logger
 from torch.nn import ModuleDict
 
 from rmind.components.objectives.flow_policy import FlowPolicyObjective
+from rmind.components.objectives.regression_policy import RegressionPolicyObjective
 
 logger = get_logger(__name__)
 
@@ -35,7 +36,7 @@ class FlowFeatureTrainer(pl.LightningModule):
     def __init__(
         self,
         *,
-        objective: InstanceOf[FlowPolicyObjective],
+        objective: InstanceOf[FlowPolicyObjective] | InstanceOf[RegressionPolicyObjective],
         optimizer: Any,
         lr_scheduler: Any | None = None,
         hist_dropout_p: float = 0.0,
@@ -52,7 +53,7 @@ class FlowFeatureTrainer(pl.LightningModule):
         self.hist_dropout_p = hist_dropout_p
 
     @property
-    def objective(self) -> FlowPolicyObjective:
+    def objective(self) -> FlowPolicyObjective | RegressionPolicyObjective:
         return self.objectives["policy"]
 
     def _condition(self, batch: dict, *, train: bool) -> torch.Tensor:
