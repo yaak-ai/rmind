@@ -70,7 +70,7 @@ def _to_device(obj: Any, device: torch.device) -> Any:
 
 def _collect(
     cfg: DictConfig, *, k: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """Returns (gt (F,H,A), samples (F,K,H,A)) in RAW space, plus action keys."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model: pl.LightningModule = instantiate(cfg.model).to(device).eval()
@@ -87,6 +87,7 @@ def _collect(
     gts: list[torch.Tensor] = []
     samples: list[torch.Tensor] = []
     drive_ids: list[str] = []
+    wpts: list[torch.Tensor] = []
     with torch.inference_mode():
         for batch_idx, batch in enumerate(datamodule.predict_dataloader()):
             batch = _to_device(batch, device)
@@ -118,16 +119,20 @@ def _collect(
             samples.append(trajectories.cpu())
             ids = batch["meta"]["input_id"]
             drive_ids.extend(str(x) for x in (ids if isinstance(ids, list) else ids))
+            # current-frame route waypoints (the conditioning timestep is the
+            # last history index)
+            wpts.append(batch["data"]["waypoints/xy_normalized"][:, -1].float().cpu())
             if batch_idx % 50 == 0:
                 logger.debug("sampled", batch_idx=batch_idx)
 
     gt = torch.cat(gts).numpy()
     sample = torch.cat(samples).numpy()
     drives = np.array(drive_ids)
+    wp = torch.cat(wpts).numpy()  # (F, n_wpts, 2); may contain NaN (route gaps)
     valid = np.isfinite(gt).all(axis=(1, 2)) & np.isfinite(sample).all(axis=(1, 2, 3))
     if (dropped := int((~valid).sum())) > 0:
         logger.warning("dropping non-finite frames", count=dropped)
-    return gt[valid], sample[valid], drives[valid], list(objective.action_keys)
+    return gt[valid], sample[valid], drives[valid], wp[valid], list(objective.action_keys)
 
 
 def _mode_aware_anchor(
@@ -157,7 +162,7 @@ def main(cfg: DictConfig) -> None:
     mode_min_frac = float(opts.get("mode_min_frac", 0.125))
 
     torch.set_float32_matmul_precision(cfg.matmul_precision)
-    gt, sample, drives, keys = _collect(cfg, k=k)
+    gt, sample, drives, wp, keys = _collect(cfg, k=k)
     f = gt.shape[0]
     logger.info("collected", frames=f, draws=k)
 
@@ -209,6 +214,57 @@ def main(cfg: DictConfig) -> None:
     fe_meank = frame_steer_l1(sample.mean(axis=1))
     fe_medoid = frame_steer_l1(medoid_anchor.numpy())
     fe_best = np.abs(sample[..., steer] - gt[:, None, :, steer]).mean(axis=2).min(axis=1)
+
+    # Waypoint-consistency selection — MEASURED NEGATIVE on the 5 val drives,
+    # kept as a documented diagnostic. The route-turn signal correlates with GT
+    # chunk steering at only ~-0.29 on spike frames (~-0.13 overall; per-
+    # waypoint lateral offsets ~0), far too weak to arbitrate between modes
+    # ~0.5 apart: wpt-mode 0.457 vs mass-selection 0.341. The model itself uses
+    # waypoints heavily (zeroing them shifts predictions ~3x baseline error),
+    # so the ROUTE info is real but a hand-crafted scalar extraction is too
+    # crude — selection needs a learned ranker or mass recalibration
+    # (history-dropout training).
+    seg = np.diff(wp, axis=1)  # (F, n-1, 2)
+    cross = seg[:, :-1, 0] * seg[:, 1:, 1] - seg[:, :-1, 1] * seg[:, 1:, 0]
+    dot = (seg[:, :-1] * seg[:, 1:]).sum(-1)
+    ang = np.arctan2(cross, dot)  # (F, n-2) signed turn per joint
+    route_near = ang[:, :3].sum(axis=1)  # near-term curvature (chunk-scale)
+    route_full = ang.sum(axis=1)
+    gt_ms = gt[..., steer].mean(axis=1)  # (F,) GT chunk-mean steering
+    ok_r = np.isfinite(route_near) & np.isfinite(gt_ms)
+    def corr(a, b, m):
+        return float(np.corrcoef(a[m], b[m])[0, 1]) if m.sum() > 10 else float("nan")
+    c_near = corr(route_near, gt_ms, ok_r)
+    c_full = corr(route_full, gt_ms, ok_r & np.isfinite(route_full))
+    route = route_near if abs(c_near) >= abs(c_full) else route_full
+    ok_r = np.isfinite(route) & np.isfinite(gt_ms)
+    a_fit, b_fit = np.polyfit(route[ok_r], gt_ms[ok_r], 1)
+    steer_hat = a_fit * route + b_fit  # (F,) route-implied chunk-mean steering
+    print(  # noqa: T201
+        f"\nroute-turn signal: corr(near3, gt_steer)={c_near:.3f} "
+        f"corr(full, gt_steer)={c_full:.3f} | using "
+        f"{'near3' if abs(c_near) >= abs(c_full) else 'full'}, fit a={a_fit:.3f} b={b_fit:.3f}"
+    )
+
+    ms_dom = dom_anchor[..., steer].mean(axis=1)
+    ms_min = min_anchor[..., steer].mean(axis=1)
+    pick_min = (
+        bimodal
+        & np.isfinite(steer_hat)
+        & (np.abs(ms_min - steer_hat) < np.abs(ms_dom - steer_hat))
+    )
+    wpt_mode_anchor = dom_anchor.copy()
+    wpt_mode_anchor[pick_min] = min_anchor[pick_min]
+    fe_wpt_mode = frame_steer_l1(wpt_mode_anchor)
+    # aggressive variant: pick the single draw matching the route signal, on
+    # bimodal frames only (elsewhere selection noise just hurts; use meanK).
+    draw_ms = sample[..., steer].mean(axis=2)  # (F, K)
+    pick_draw = np.abs(draw_ms - steer_hat[:, None]).argmin(axis=1)
+    fe_draw_pick = np.abs(
+        np.take_along_axis(sample[..., steer], pick_draw[:, None, None], axis=1)[:, 0]
+        - gt[..., steer]
+    ).mean(axis=1)
+    fe_wpt_draw = np.where(bimodal & np.isfinite(steer_hat), fe_draw_pick, fe_meank)
 
     print(f"\nmean-of-K decomposition over {f} frames (K draws averaged, raw space)")  # noqa: T201
     for c, key in enumerate(keys):
@@ -280,7 +336,8 @@ def main(cfg: DictConfig) -> None:
     m_sp = spike_frame
     for name, fe in (
         ("single", fe_single), ("mean-of-K", fe_meank), ("mode (WTA)", fe_dom),
-        ("mode-medoid", fe_medoid), ("oracle-mode", fe_oracle),
+        ("mode-medoid", fe_medoid), ("wpt-mode", fe_wpt_mode),
+        ("wpt-draw", fe_wpt_draw), ("oracle-mode", fe_oracle),
         ("best-draw", fe_best),
     ):
         dec_row(name, fe, m_sp)
@@ -298,7 +355,7 @@ def main(cfg: DictConfig) -> None:
         print("\nper-drive (steering, spike frames):")  # noqa: T201
         print(  # noqa: T201
             f"  {'drive':36s} {'frames':>6} {'spikeF':>6} {'bimod%':>7} "
-            f"{'single':>7} {'meanK':>7} {'mode':>7} {'oracle':>7}"
+            f"{'single':>7} {'meanK':>7} {'mode':>7} {'wptM':>7} {'oracle':>7}"
         )
         for d in uniq:
             dm_ = drives == d
@@ -308,7 +365,7 @@ def main(cfg: DictConfig) -> None:
                 return f"{fe[msp].mean():7.4f}" if msp.any() else "    n/a"
             print(  # noqa: T201
                 f"  {d[:36]:36s} {int(dm_.sum()):6d} {int(msp.sum()):6d} "
-                f"{bi_pct:7.2%} {v(fe_single)} {v(fe_meank)} {v(fe_dom)} {v(fe_oracle)}"
+                f"{bi_pct:7.2%} {v(fe_single)} {v(fe_meank)} {v(fe_dom)} {v(fe_wpt_mode)} {v(fe_oracle)}"
             )
 
 
