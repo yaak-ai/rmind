@@ -82,6 +82,9 @@ class PolicyObjective(Objective):
         use_observation_history: bool = True,
         trunk: InstanceOf[Module] | None = None,
         loss_weighting: LossWeighting | None = None,
+        use_waypoints: bool = True,
+        use_raw_waypoints: bool = False,
+        raw_waypoints_projection: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -94,6 +97,9 @@ class PolicyObjective(Objective):
         self.use_observation_history: bool = use_observation_history
         self.trunk: Module | None = trunk
         self.loss_weighting: LossWeighting | None = loss_weighting
+        self.use_waypoints: bool = use_waypoints
+        self.use_raw_waypoints: bool = use_raw_waypoints
+        self.raw_waypoints_projection: Module | None = raw_waypoints_projection
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -125,29 +131,37 @@ class PolicyObjective(Objective):
     def _compute_features(self, *, episode: Episode, embedding: Tensor) -> Tensor:
         third_key = self._third_feature_key()
 
-        keys = [
+        index_keys = [
             (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-            (Modality.CONTEXT, "waypoints"),
+            *([( Modality.CONTEXT, "waypoints")] if self.use_waypoints and not self.use_raw_waypoints else []),
             *([] if third_key is None else [third_key]),
         ]
-        embeddings = episode.index[-1].select(*keys).parse(embedding)
+        embeddings = episode.index[-1].select(*index_keys).parse(embedding)
 
         observation_summary = embeddings.get((
             Modality.SUMMARY,
             SummaryToken.OBSERVATION_SUMMARY,
         ))
 
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
-        )
+        if self.use_raw_waypoints:
+            raw = episode.input.get((Modality.CONTEXT, "waypoints"))[:, -1]  # [b, 10, 2]
+            waypoints = raw.flatten(start_dim=1).unsqueeze(1)  # [b, 1, 20]
+            if self.raw_waypoints_projection is not None:
+                waypoints = self.raw_waypoints_projection(waypoints)  # [b, 1, d]
+        elif self.use_waypoints:
+            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
+                dim=1, keepdim=True
+            )  # [b, 1, d]
+        else:
+            waypoints = None
 
         third = None if third_key is None else embeddings.get(third_key)
 
-        parts = (
-            [observation_summary, waypoints]
-            if third is None
-            else [observation_summary, third, waypoints]
-        )
+        parts = [
+            observation_summary,
+            *([] if third is None else [third]),
+            *([] if waypoints is None else [waypoints]),
+        ]
         features = rearrange(parts, "i b 1 d -> b 1 (i d)")
 
         if self.trunk is not None:

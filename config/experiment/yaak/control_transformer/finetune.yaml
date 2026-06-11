@@ -30,3 +30,6 @@ policy_activity_weight: 5.0
 
 # per-sample loss weighting strategy: "none" | "activity" (|target|) | "delta" (|target_t - target_{t-1}|)
 policy_loss_weighting: "none"
+
+policy_use_waypoints: 1
+policy_use_raw_waypoints: 0
