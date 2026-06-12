@@ -401,6 +401,129 @@ def _stage_eval(cfg: DictConfig, opts) -> None:  # noqa: PLR0915
     )
 
 
+# --------------------------------------------------------------------------- #
+# stage: temporal — zero-parameter selection via chunk-overlap consistency
+# --------------------------------------------------------------------------- #
+def _stage_temporal(cfg: DictConfig, opts) -> None:  # noqa: PLR0915
+    """Vote draws by agreement with the PREVIOUS step's prediction on the
+    overlapping horizon slots (receding-horizon coherence; cf. backward
+    coherence in Bidirectional Decoding, Liu et al. 2024). No parameters.
+
+    Variants: committed-anchored (sequential, errors can propagate) and
+    gt-anchored (previous chunk replaced by previous GT — the upper bound
+    separating "overlap signal is insufficient" from "error propagation").
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    bank = torch.load(str(opts["bank"]), map_location="cpu", weights_only=False)
+    cache = torch.load(str(opts["cache"]), map_location="cpu", weights_only=False)
+    objective = _load_cached_objective(cfg, str(bank["artifact"]), device)
+    steer = int(bank["steer_idx"])
+    gt = cache["target_actions"].float()
+    draws_m = bank["draws"]
+    n, k, horizon = draws_m.shape[0], draws_m.shape[1], draws_m.shape[2]
+
+    raw = torch.empty(n, k, horizon, gt.shape[-1])
+    with torch.inference_mode():
+        for lo in range(0, n, 1024):
+            raw[lo : lo + 1024] = objective._to_raw_space(
+                draws_m[lo : lo + 1024].to(device).float()
+            ).cpu()
+
+    gt_np, raw_np = gt.numpy(), raw.numpy()
+    frame = cache["frame_idx"][:, -1].numpy()  # current frame per row
+    drive = np.array(cache["input_id"])
+    valid = np.isfinite(gt_np).all(axis=(1, 2)) & np.isfinite(raw_np).all(
+        axis=(1, 2, 3)
+    )
+    gt_np, raw_np, frame, drive = gt_np[valid], raw_np[valid], frame[valid], drive[valid]
+
+    # drive-major temporal order
+    order = np.lexsort((frame, drive))
+    gt_np, raw_np, frame, drive = gt_np[order], raw_np[order], frame[order], drive[order]
+    same_prev = np.zeros(len(frame), dtype=bool)
+    same_prev[1:] = drive[1:] == drive[:-1]
+    stride = int(np.median(np.diff(frame)[same_prev[1:]]))
+    contig = same_prev & np.concatenate([[False], np.diff(frame) == stride])
+
+    # alignment check: does the previous row's GT chunk shifted by one slot
+    # match this row's GT? (validates that one row step == one horizon slot)
+    a = gt_np[:-1, 1:, steer][contig[1:]]
+    b = gt_np[1:, :-1, steer][contig[1:]]
+    align_err = float(np.abs(a - b).mean())
+    print(  # noqa: T201
+        f"temporal alignment: row stride {stride} frames, contiguous "
+        f"{contig.mean():.1%}, gt shift-1 overlap L1 {align_err:.4f}"
+    )
+
+    spike = (np.abs(gt_np[..., steer]) > 0.5).any(axis=1)
+    flat = (np.abs(gt_np[..., steer]) < 0.05).all(axis=1)
+
+    def steer_l1(pred):
+        return np.abs(pred[..., steer] - gt_np[..., steer]).mean(axis=1)
+
+    def gas_l1(pred):
+        return np.abs(pred[..., 0] - gt_np[..., 0]).mean(axis=1)
+
+    def row(name, pred):
+        fe, ge = steer_l1(pred), gas_l1(pred)
+        print(  # noqa: T201
+            f"  {name:26s} overall {fe.mean():.4f}  flat {fe[flat].mean():.4f}  "
+            f"SPIKE {fe[spike].mean():.4f}  | gas spike {ge[spike].mean():.4f}"
+        )
+
+    meank = raw_np.mean(axis=1)
+    print(f"\ntemporal-consistency table ({len(frame)} frames, K={k}):")  # noqa: T201
+    row("meanK (baseline)", meank)
+
+    # persistence: copy previous committed chunk shifted one slot (lag probe)
+    pers = meank.copy()
+    pers[1:][contig[1:]] = np.concatenate(
+        [meank[:-1, 1:], meank[:-1, -1:]], axis=1
+    )[contig[1:]]
+    row("persistence (shift meanK)", pers)
+
+    # per-frame cloud spread (steering): confidence proxy for gating
+    cloud_spread = raw_np[..., steer].std(axis=1).mean(axis=1)  # (F,)
+
+    def run(
+        anchor_committed: bool, temp: float, gate_spread: float | None = None
+    ) -> np.ndarray:
+        preds = np.empty_like(meank)
+        committed = None
+        prev_conf = False
+        for i in range(len(frame)):
+            use = contig[i] and committed is not None
+            if use and gate_spread is not None:
+                use = prev_conf  # only trust a confident previous cloud
+            if not use:
+                preds[i] = meank[i]
+            else:
+                anchor = committed if anchor_committed else gt_np[i - 1]
+                d = np.abs(
+                    raw_np[i][:, :-1, steer] - anchor[None, 1:, steer]
+                ).mean(axis=1)  # (K,) overlap disagreement
+                w = np.exp(-(d - d.min()) / temp)
+                w /= w.sum()
+                preds[i] = (raw_np[i] * w[:, None, None]).sum(axis=0)
+            committed = preds[i]
+            prev_conf = cloud_spread[i] < (gate_spread or np.inf)
+        return preds
+
+    for temp in (0.01, 0.02, 0.05, 0.1, 0.3):
+        row(f"committed-anchored T={temp:g}", run(True, temp))
+    for q in (25, 50, 75):
+        g = float(np.percentile(cloud_spread, q))
+        row(f"gated p{q} T=0.05", run(True, 0.05, gate_spread=g))
+    for temp in (0.01, 0.02, 0.05, 0.1, 0.3):
+        row(f"gt-anchored (bound) T={temp:g}", run(False, temp))
+
+    per_draw = np.abs(raw_np[..., steer] - gt_np[:, None, :, steer]).mean(axis=2)
+    best = np.take_along_axis(
+        raw_np, per_draw.argmin(axis=1)[:, None, None, None], axis=1
+    ).squeeze(1)
+    row("oracle best draw", best)
+
+
 @hydra.main(version_base=None)
 def main(cfg: DictConfig) -> None:
     opts = cfg.get("ranker") or {}
@@ -412,6 +535,8 @@ def main(cfg: DictConfig) -> None:
         _stage_train(opts)
     elif stage == "eval":
         _stage_eval(cfg, opts)
+    elif stage == "temporal":
+        _stage_temporal(cfg, opts)
     else:
         msg = f"unknown ranker stage: {stage}"
         raise ValueError(msg)
