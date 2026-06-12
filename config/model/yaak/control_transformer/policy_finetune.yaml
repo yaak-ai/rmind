@@ -19,6 +19,7 @@ hparams_jq: |
           "out_features": ${encoder_embedding_dim}
         } else null end),
         "loss_weighting": (if "${policy_loss_weighting}" != "none" then "${policy_loss_weighting}" else null end),
+        "dropout": (if ${policy_dropout_p} != 0 then {"_target_": "torch.nn.Dropout", "p": ${policy_dropout_p}} else null end),
         "trunk": (if ${policy_use_trunk} != 0 then {
           "_target_": "torchvision.ops.MLP",
           "in_channels": (if ((${policy_use_speed} != 0) or (${policy_use_action_summary} != 0) or (${policy_use_observation_history} != 0)) then 1152 else 768 end),

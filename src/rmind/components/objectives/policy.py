@@ -85,6 +85,7 @@ class PolicyObjective(Objective):
         use_waypoints: bool = True,
         use_raw_waypoints: bool = False,
         raw_waypoints_projection: InstanceOf[Module] | None = None,
+        dropout: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -100,6 +101,7 @@ class PolicyObjective(Objective):
         self.use_waypoints: bool = use_waypoints
         self.use_raw_waypoints: bool = use_raw_waypoints
         self.raw_waypoints_projection: Module | None = raw_waypoints_projection
+        self.dropout: Module | None = dropout
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -166,6 +168,9 @@ class PolicyObjective(Objective):
 
         if self.trunk is not None:
             features = self.trunk(features)
+
+        if self.dropout is not None:
+            features = self.dropout(features)
 
         return features
 
