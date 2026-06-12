@@ -62,12 +62,16 @@ class EncoderCachePopulator(Callback):
         """
         from rbyte.types import Batch  # noqa: PLC0415
 
+        # Populate is a one-time pass that decodes every frame (NFS JPEG) once;
+        # it is data-loader-bound, so use many workers + prefetch to keep the
+        # frozen encoder fed (2 workers starved the GPU to ~20-30% util).
         return type(dataloader)(
             dataset=dataloader.dataset,
             batch_size=getattr(dataloader, "batch_size", 1) or 1,
             shuffle=False,
             drop_last=False,
-            num_workers=2,
+            num_workers=16,
+            prefetch_factor=4,
             collate_fn=Batch.to_dict,
             method="thread",
         )
