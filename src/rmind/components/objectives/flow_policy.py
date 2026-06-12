@@ -90,7 +90,7 @@ class FlowPolicyObjective(Objective):
         maneuver_thresholds: tuple[float, ...] | None = None,
         action_transform_stats: str | None = None,
         lds_stats: str | None = None,
-        lds_alpha: float = 0.5,
+        lds_alpha: float | tuple[float, ...] = 0.5,
         lds_cap: float = 15.0,
         waypoint_pe: bool = False,
         waypoint_count: int = 10,

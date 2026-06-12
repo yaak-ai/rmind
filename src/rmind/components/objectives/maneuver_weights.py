@@ -60,7 +60,7 @@ class ManeuverLossWeights(nn.Module):
         emp: Tensor,
         smooth: Tensor,
         model_keys: tuple[str, ...],
-        alpha: float,
+        alpha: float | tuple[float, ...],
         cap: float,
     ) -> None:
         super().__init__()
@@ -77,7 +77,15 @@ class ManeuverLossWeights(nn.Module):
         if len(model_keys) != emp.shape[0]:
             msg = f"model_keys has {len(model_keys)} entries, expected {emp.shape[0]}"
             raise ValueError(msg)
-        if alpha < 0.0:
+        alphas = (
+            tuple(float(a) for a in alpha)
+            if isinstance(alpha, (tuple, list))
+            else (float(alpha),) * emp.shape[0]
+        )
+        if len(alphas) != emp.shape[0]:
+            msg = f"alpha must be scalar or one per channel ({emp.shape[0]}), got {alpha}"
+            raise ValueError(msg)
+        if any(a < 0.0 for a in alphas):
             msg = f"alpha must be non-negative, got {alpha}"
             raise ValueError(msg)
         if cap <= 1.0:
@@ -85,13 +93,14 @@ class ManeuverLossWeights(nn.Module):
             raise ValueError(msg)
 
         self.model_keys = tuple(model_keys)
-        self.alpha = float(alpha)
+        self.alpha = alphas  # per-channel exponents (steering-only LDS etc.)
         self.cap = float(cap)
 
         # Per-bin weight: (1/smooth)^alpha, capped, then mean-1 normalized over
         # the empirical distribution (E_emp[w] == 1 per channel) so the loss
         # scale is preserved and LR/schedule transfer from the unweighted run.
-        weight = (1.0 / smooth.clamp_min(_EPS)).pow(self.alpha).clamp_max(self.cap)
+        alpha_t = torch.tensor(alphas).unsqueeze(1)  # (C, 1)
+        weight = (1.0 / smooth.clamp_min(_EPS)).pow(alpha_t).clamp_max(self.cap)
         mean = (emp * weight).sum(dim=1, keepdim=True).clamp_min(_EPS)
         weight = weight / mean
 

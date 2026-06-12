@@ -83,8 +83,14 @@ oracle-mode 0.28, coverage floor 0.15. Full freedom to redirect the tree.
   val set mid-loop, alter logged results.
 
 ## State (update as the loop progresses)
-- exp counter: 08 (01-03 control reps; 04-05 lr null -> keep 1.6e-4;
-  06 lds_off + 07 lds_a025 training)
-- current best recipe: finetune_flow_pilot_lds_cached (control)
-- sigma: cross-seed 0.014 (controls: .3289/.3555/.3237/.3387); paired ~0.003
-- paired baseline: exp01 (wvn1a4t6, seed 1001) spike-meanK 0.3555
+- exp counter: 14 (next: histdrop-p sweep / logit skew / wpe on the
+  post-stack recipe, then Phase C architecture)
+- verdicts: 01-03 sigma; 04-05 lr null; 06-07 LDS keep@0.5 (gas protection);
+  08 DELTA-OFF WIN -0.028 (confirming); 09 steer-only-LDS ambiguous-drop;
+  10 delta=50 negative (dose-response 0->0.327, 10->0.356, 50->0.365);
+  11 beta-time ambiguous-drop (revisit on stack)
+- in flight: exp12 delta_off@seed1002 (confirm; paired baseline exp02=0.3237),
+  exp13 delta_off + lds[1.0,0.5] (gas recovery composition)
+- current best recipe: control; PENDING STACK: + chunk_delta_weight=0
+- sigma: cross-seed 0.014; paired ~0.003-0.006; keep bar paired>0.010
+- paired baselines: exp01@1001=0.3555, exp02@1002=0.3237
