@@ -40,12 +40,15 @@ oracle-mode 0.28, coverage floor 0.15. Full freedom to redirect the tree.
    Task relation -> https://app.notion.com/p/30bd658ccf87809c8941ca940bcca709.
 5. Decide (rules below), record, launch next.
 
-## Decision rules (pre-registered)
-- Primary: held-out spike steering chunk-L1 (meanK readout).
-- Guardrails: flat L1, aggregate L1, gas/brake L1 (no regression > 2 sigma).
-- sigma = run-to-run noise from Phase A seed replicates.
-- Keep iff primary improves > 2 sigma; ambiguous -> one replicate, decide.
-- Stack-on-win; replicate each new stack once.
+## Decision rules (pre-registered; amended after Phase A)
+- Primary: held-out spike steering chunk-L1 (meanK readout, SEEDED eval).
+- PAIRED DESIGN (Phase A finding): cross-seed sigma=0.014 but same-seed paired
+  deltas are ~0.003 (5x tighter). All levers run at seed 1001 and compare
+  against exp01 (control@1001 = 0.3555). Keep iff paired delta > 0.010
+  (~3x paired noise); wins confirmed at a second seed before stacking.
+- Guardrails: flat L1, aggregate L1, gas/brake L1 (no paired regression >0.010
+  equivalent scale).
+- Stack-on-win (after second-seed confirm); replicate each new stack once.
 
 ## Experiment tree (~35 slots, adaptive)
 - A. Calibration (4): 3 control seed replicates (-> sigma); lr 0.5x / 2x.
@@ -80,6 +83,8 @@ oracle-mode 0.28, coverage floor 0.15. Full freedom to redirect the tree.
   val set mid-loop, alter logged results.
 
 ## State (update as the loop progresses)
-- exp counter: 04 (exp01-03 = control replicates, running)
+- exp counter: 08 (01-03 control reps; 04-05 lr null -> keep 1.6e-4;
+  06 lds_off + 07 lds_a025 training)
 - current best recipe: finetune_flow_pilot_lds_cached (control)
-- sigma: TBD (Phase A)
+- sigma: cross-seed 0.014 (controls: .3289/.3555/.3237/.3387); paired ~0.003
+- paired baseline: exp01 (wvn1a4t6, seed 1001) spike-meanK 0.3555

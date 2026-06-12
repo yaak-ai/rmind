@@ -88,6 +88,7 @@ def _collect(
     samples: list[torch.Tensor] = []
     drive_ids: list[str] = []
     wpts: list[torch.Tensor] = []
+    torch.manual_seed(0)  # deterministic eval: same ckpt -> same numbers
     with torch.inference_mode():
         for batch_idx, batch in enumerate(datamodule.predict_dataloader()):
             batch = _to_device(batch, device)
@@ -187,6 +188,7 @@ def _collect_cached(
 
     samples: list[torch.Tensor] = []
     chunk = 512
+    torch.manual_seed(0)  # deterministic eval: same ckpt -> same numbers
     with torch.inference_mode():
         for lo in range(0, cond.shape[0], chunk):
             c = cond[lo : lo + chunk].to(device)
