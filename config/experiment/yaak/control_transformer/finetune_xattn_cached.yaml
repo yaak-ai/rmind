@@ -1,0 +1,30 @@
+# @package _global_
+
+# Cross-attention policy head fine-tune ("Approach A2") with encoder-output
+# caching. Identical to `finetune_cached` but swaps in the
+# `policy_finetune_xattn` model (CrossAttentionPolicyHead per action instead of
+# the concat->MLP head). Same cached tokens, so no cache change.
+#
+# Launch (set the checkpoint artifact + a fingerprint identifying the dataset):
+#   just train \
+#     experiment=yaak/control_transformer/finetune_xattn_cached \
+#     model.artifact=yaak/rmind/model-et584pft:v9 \
+#     encoder_cache_fingerprint=yaak-train-v1
+#
+# The fingerprint MUST change whenever the dataset definition (drives / frame
+# selection) changes, or a stale cache will be silently reused.
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune_xattn
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: finetune_cached
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+encoder_embedding_dim: 384
+
+# Persistent (reusable across runs) cache directory + dataset fingerprint.
+encoder_cache_fingerprint: ???
+encoder_cache_dir: ${paths.rbyte.cache}/encoder_cache/${encoder_cache_fingerprint}

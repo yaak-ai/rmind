@@ -27,26 +27,47 @@ from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
 @final
 class PolicyObjective(Objective):
     @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         norm: InstanceOf[Module] | None = None,
-        heads: InstanceOf[ModuleDict],
+        heads: InstanceOf[ModuleDict] | None = None,
+        cross_attn_heads: InstanceOf[ModuleDict] | None = None,
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
         waypoint_pooler: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
+        if (heads is None) == (cross_attn_heads is None):
+            msg = "Exactly one of `heads` or `cross_attn_heads` must be set."
+            raise ValueError(msg)
+
         self.norm: Module | None = norm
-        self.heads: ModuleDict = heads
+        # Default path: concat[obs_summary, obs_history, pooled_waypoints] -> MLP.
+        self.heads: ModuleDict | None = heads
+        # Cross-attention path ("Approach A2"): each action head is a
+        # ``CrossAttentionPolicyHead`` whose learned query cross-attends over the
+        # full token context cat([waypoints(n), obs_summary, obs_history]); this
+        # REPLACES the concat->MLP path when set. Mirrors the same tree structure
+        # (continuous/{gas,brake,steer}, discrete/turn_signal) so targets,
+        # ``tree_paths`` and ``named_apply`` are unchanged.
+        self.cross_attn_heads: ModuleDict | None = cross_attn_heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
         # How the per-waypoint tokens are reduced to the single token the head
         # consumes. ``None`` => mean (centroid; cannot represent curvature).
         # A pooler (e.g. WaypointTransformerPooler) is a drop-in [b,n,d]->[b,1,d]
         # replacement that can read path shape; it warm-starts to mean at step 0.
+        # Only used by the MLP path; the cross-attn path consumes raw waypoints.
         self.waypoint_pooler: Module | None = waypoint_pooler
+
+    @property
+    def _active_heads(self) -> ModuleDict:
+        """The ModuleDict actually producing logits (MLP or cross-attn)."""
+        if self.heads is not None:
+            return self.heads
+        return cast("ModuleDict", self.cross_attn_heads)
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -99,9 +120,20 @@ class PolicyObjective(Objective):
             SummaryToken.OBSERVATION_SUMMARY,
         ))
 
-        waypoints = self._aggregate_waypoints(
-            embeddings.get((Modality.CONTEXT, "waypoints"))
-        )
+        waypoints_raw = embeddings.get((Modality.CONTEXT, "waypoints"))
+
+        if self.cross_attn_heads is not None:
+            # Cross-attention context: the full token sequence (no pooling).
+            # cat([waypoints(n), obs_summary(1), obs_history(1)]) -> [b, n+2, d].
+            # The selected tokens are already normed upstream (forward /
+            # compute_metrics / predict apply ``self.norm`` to ``embedding``
+            # before this call), so no extra per-token norm here -- consistent
+            # with the MLP path.
+            return torch.cat(
+                [waypoints_raw, observation_summary, observation_history], dim=1
+            )
+
+        waypoints = self._aggregate_waypoints(waypoints_raw)
 
         return rearrange(
             [observation_summary, observation_history, waypoints],
@@ -109,7 +141,8 @@ class PolicyObjective(Objective):
         )
 
     def _compute_logits(self, *, episode: Episode, embedding: Tensor) -> TensorTree:
-        return self.heads(self._extract_features(episode=episode, embedding=embedding))
+        features = self._extract_features(episode=episode, embedding=embedding)
+        return self._active_heads(features)
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
@@ -148,7 +181,9 @@ class PolicyObjective(Objective):
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
-                value=episode.input.select(*self.heads.tree_paths()).squeeze(-1),
+                value=episode.input.select(*self._active_heads.tree_paths()).squeeze(
+                    -1
+                ),
                 timestep_indices=slice(None),
             )
 
@@ -171,9 +206,10 @@ class PolicyObjective(Objective):
                     embedding
                 )
 
-            features = self._extract_features(episode=episode, embedding=embedding)
-
-            logits = TensorDict(self.heads(features), batch_size=[b, 1])
+            logits = TensorDict(
+                self._compute_logits(episode=episode, embedding=embedding),  # ty:ignore[invalid-argument-type]
+                batch_size=[b, 1],
+            )
 
             timestep_indices = slice(-1, None)
 
