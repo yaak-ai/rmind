@@ -86,19 +86,28 @@ oracle-mode 0.28, coverage floor 0.15. Full freedom to redirect the tree.
   val set mid-loop, alter logged results.
 
 ## State (update as the loop progresses)
-- exp counter: 16 (Phase C in flight; Phase D ranker code next)
-- verdicts: 01-03 sigma; 04-05 lr null; 06-07 LDS keep@0.5 (gas protection);
-  08 delta-off "-0.028" DID NOT REPLICATE (see 12); 09 steer-only-LDS drop;
-  10 delta=50 negative (dose-response 0->0.327, 10->0.356, 50->0.365);
-  11 beta-time ambiguous-drop; 12 delta-off@1002 NULL (0.3276 vs 0.3237;
-  two-seed mean 0.3275 vs ctrl ~0.337 -> below bar; side-finding: delta-off
-  has near-zero seed variance — delta loss = gradient-noise source);
-  13 delta-off+lds[1.0,0.5] NEGATIVE (gas 0.0942, steer 0.3327 — both worse)
-- PHASE B CLOSED: nothing stacks. Recipe = control (LDS@0.5 already in it).
-- in flight: exp14 depth2@1001 (5zlun6y0, trained, evaling — NB eval/predict
-  need model.objective.decoder.num_layers=2 override to load the ckpt!),
-  exp15 depth8@1001 (1z6154xi, training; same: num_layers=8 at eval)
-- control panel (spike-meanK): 0.3555@1001, 0.3237@1002, 0.3289, 0.3387 ->
-  mean ~0.337, sigma 0.014. Lever verdicts vs this mean, two seeds, bar 0.015.
-- Phase C queue: width {128,512}, heads {2,8}, hidden mult 4, cond-AdaLN.
-  Phase D (ranker, MANDATORY) — write code during training windows.
+- exp counter: 31. PHASES B AND C CLOSED; Phase D (ranker) explored 16-30.
+- Phase B: nothing stacks; recipe = control (LDS@0.5 in it). Delta-off and
+  depth-8 both failed second-seed (the seed-1001 control 0.3555 is an unlucky
+  draw — EVERY lever "wins" paired against it; use panel mean ~0.337, two
+  seeds, bar 0.015).
+- Phase C: depth2 neg (0.3487), depth8 two-seed null (0.3274, 2x cost),
+  width512 neg (0.3525). Architecture is not the lever.
+- Phase D RESULTS (flow_ranker.py; banks in artifacts/ranker/):
+  * canonical ranker: w512/64ep/tau0.02, listwise spread-weighted, steering
+    label; readout softmax t=4 over K=32. Eval needs matching decoder
+    overrides for non-default ckpts.
+  * ROBUST WIN (all 3 control ckpts): overall L1 -5-8%, flat -10-20%, gas
+    neutral. CKPT-DEPENDENT: spike steering (-0.028 bj8r0jyp / +0.017
+    wvn1a4t6 / -0.008 o2znsjr4) — amplifies good decoders only.
+  * Anti-scaling: K 32->64->96(ensemble) monotonically worsens selection.
+  * Cross-ckpt transfer fails (calibration); retrain per ckpt (~1 min).
+  * Negatives: set-context feats, gas-aware label, hard mode-pick, ep256.
+- flow_cached_predict now supports +cpredict.readout=ranker
+  (+cpredict.ranker_ckpt, +cpredict.ranker_temp).
+- NEXT QUEUE: exp31 pre-registered test — per-ckpt ranker on depth8@1002
+  ckpt cibfm41y (meanK 0.3245, good decoder; predict spike WIN if
+  "amplifies good decoders" holds). exp32+ Phase E stratified-30 cache;
+  Phase F full-path overnight confirmation of control+ranker.
+- Loop report: reports/loop_manifest.json + loop_report.html (parquets:
+  exp01/exp02 meank, exp22 ranker-t4).

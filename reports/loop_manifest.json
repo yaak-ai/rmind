@@ -1,0 +1,41 @@
+{
+  "title": "flow action expert — autonomous loop (exp01–30), 5 held-out val drives",
+  "runs": [
+    {
+      "name": "exp01_control_s1001",
+      "parquet": "reports/parquets/exp01_control_s1001_meank.parquet",
+      "wandb": "https://wandb.ai/yaak/action-flow/runs/wvn1a4t6",
+      "tags": "pilot-30, flow, control, meanK readout",
+      "notes": "Control recipe @ seed 1001 — the unlucky seed draw (panel: 0.324–0.356, σ=0.014). Every lever 'wins' when paired against this run; that artifact cost exp08/exp15 their false wins.",
+      "verdict": "baseline",
+      "metrics": {"spike meanK (seeded)": 0.3555, "gas K32 spike (seeded)": 0.0741}
+    },
+    {
+      "name": "exp02_control_s1002",
+      "parquet": "reports/parquets/exp02_control_meank.parquet",
+      "wandb": "https://wandb.ai/yaak/action-flow/runs/bj8r0jyp",
+      "tags": "pilot-30, flow, control, meanK readout",
+      "notes": "Control recipe @ seed 1002 — best control draw; the decoder used for the ranker line below. Phase B (10 loss-side levers) and Phase C (depth 2/8, width 512) produced NOTHING that beats the control panel mean by >0.015 at two seeds.",
+      "verdict": "baseline",
+      "metrics": {"spike meanK (seeded)": 0.3237, "gas K32 spike (seeded)": 0.0826}
+    },
+    {
+      "name": "regression_head (pre-loop ref)",
+      "parquet": "reports/parquets/lxojkbrh_single.parquet",
+      "wandb": "https://wandb.ai/yaak/action-flow/runs/lxojkbrh",
+      "tags": "pilot-30, regression-head, deterministic",
+      "notes": "Horizon-matched deterministic regression baseline (pre-loop, June 11). Wins flats/aggregate; loses steering maneuvers to flow+selection readouts.",
+      "verdict": "baseline",
+      "metrics": {}
+    },
+    {
+      "name": "exp22_control+ranker_t4",
+      "parquet": "reports/parquets/exp22_control_ranker_t4.parquet",
+      "wandb": "https://wandb.ai/yaak/action-flow/runs/bj8r0jyp",
+      "tags": "pilot-30, flow, ranker readout (w512/64ep/tau0.02, softmax t=4, K=32)",
+      "notes": "Same decoder as exp02 + learned draw ranker as the readout. Two-bank seeded eval: spike 0.2963 vs meanK 0.3247 (−0.028), overall −5%, flat −10%, gas neutral. Caveat from exp28/29: the spike gain is checkpoint-dependent (amplifies good decoders); the overall/flat gain replicates on all 3 control checkpoints.",
+      "verdict": "positive",
+      "metrics": {"spike ranker t4 (2-bank mean)": 0.2963, "oracle mode (ref)": 0.2718, "oracle draw (ref)": 0.1437}
+    }
+  ]
+}
