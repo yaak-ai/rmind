@@ -195,8 +195,14 @@ def _stage_train(opts) -> None:  # noqa: PLR0915
     cache = torch.load(str(opts["cache"]), map_location="cpu", weights_only=False)
     cond_all = cache["cond"]  # (N, S, D) fp16
     draws_all, l1_all = bank["draws"], bank["l1"]  # (N,K,H,A) fp16, (N,K,C)
-    target_channel = int(opts.get("target_channel", bank["steer_idx"]))
-    labels_all = l1_all[..., target_channel]  # (N, K) raw-space steering chunk L1
+    if opts.get("label_weights") is not None:
+        # weighted multi-channel label, e.g. [0.25,0,1] = steer + 0.25*gas
+        lw = torch.tensor([float(x) for x in opts["label_weights"]])
+        target_channel = -1
+        labels_all = (l1_all * lw).sum(-1)  # (N, K)
+    else:
+        target_channel = int(opts.get("target_channel", bank["steer_idx"]))
+        labels_all = l1_all[..., target_channel]  # (N, K) steering chunk L1
 
     epochs = int(opts.get("epochs", 8))
     lr = float(opts.get("lr", 3e-4))
@@ -330,8 +336,8 @@ def _stage_eval(cfg: DictConfig, opts) -> None:  # noqa: PLR0915
     print(f"\nranker selection table ({valid.sum()} frames, K={k}):")  # noqa: T201
     row("meanK (baseline)", raw_np.mean(axis=1))
     order = np.argsort(-sc, axis=1)  # best score first
-    for m in (1, 2, 4, 8, 16):
-        if m > k:
+    for m in (1, 2, 4, 8, 16, 32):
+        if m >= k:
             continue
         top = np.take_along_axis(
             raw_np, order[:, :m, None, None], axis=1
@@ -351,17 +357,30 @@ def _stage_eval(cfg: DictConfig, opts) -> None:  # noqa: PLR0915
     row("oracle best draw", best)
     bimodal, order_m, left_n, _ = split_modes(torch.from_numpy(raw_np), steer)
     bimodal_np, order_np, left_np = bimodal.numpy(), order_m.numpy(), left_n.numpy()
-    anchors = []
+    anchors, ranked_anchors = [], []
     for i in range(raw_np.shape[0]):
         if not bimodal_np[i]:
             anchors.append(raw_np[i].mean(axis=0))
+            ranked_anchors.append(raw_np[i].mean(axis=0))
             continue
-        a = raw_np[i][order_np[i, : left_np[i]]].mean(axis=0)
-        b = raw_np[i][order_np[i, left_np[i] :]].mean(axis=0)
+        ia, ib = order_np[i, : left_np[i]], order_np[i, left_np[i] :]
+        a, b = raw_np[i][ia].mean(axis=0), raw_np[i][ib].mean(axis=0)
         ea = np.abs(a[:, steer] - gt_np[i, :, steer]).mean()
         eb = np.abs(b[:, steer] - gt_np[i, :, steer]).mean()
         anchors.append(a if ea <= eb else b)
+        # ranker-as-mode-selector: pick the cluster with higher mean score
+        ranked_anchors.append(a if sc[i][ia].mean() >= sc[i][ib].mean() else b)
     row("oracle mode anchor", np.stack(anchors))
+    row("ranker mode anchor", np.stack(ranked_anchors))
+    bi_sp = bimodal_np & spike
+    if bi_sp.any():
+        ora = steer_l1(np.stack(anchors))
+        rkr = steer_l1(np.stack(ranked_anchors))
+        agree = (ora[bi_sp] == rkr[bi_sp]).mean()
+        print(  # noqa: T201
+            f"  mode-pick agreement with oracle on bimodal spike frames: "
+            f"{agree:.1%} ({int(bi_sp.sum())} frames)"
+        )
 
     # how good is the ranker as a classifier of the best draw?
     top1 = order[:, 0]

@@ -15,7 +15,10 @@ config/dashboard/default.yaml) — from the feature cache + objective weights:
                                                                 array[f32,H]
 
 Works for both FlowPolicyObjective (readouts: single | meank | mode |
-mode_medoid) and RegressionPolicyObjective (deterministic; readout ignored).
+mode_medoid | ranker) and RegressionPolicyObjective (deterministic; readout
+ignored). readout=ranker needs +cpredict.ranker_ckpt (a flow_ranker.py train
+checkpoint) and uses its softmax-weighted readout (+cpredict.ranker_temp,
+default 4.0).
 
 Usage:
     uv run python -m rmind.scripts.flow_cached_predict \
@@ -62,6 +65,16 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
     readout = str(opts.get("readout", "single"))
     k = int(opts.get("samples", 16))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ranker = None
+    ranker_temp = float(opts.get("ranker_temp", 4.0))
+    if readout == "ranker":
+        from rmind.scripts.flow_ranker import DrawRanker
+
+        rk = torch.load(
+            str(opts["ranker_ckpt"]), map_location="cpu", weights_only=False
+        )
+        ranker = DrawRanker(**rk["config"]).to(device).eval()
+        ranker.load_state_dict(rk["state_dict"])
     torch.set_float32_matmul_precision(cfg.get("matmul_precision", "high"))
 
     payload = torch.load(cache_path, map_location="cpu", weights_only=False)
@@ -109,7 +122,7 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
                     )
                 else:
                     c_rep = c.repeat_interleave(k, dim=0)
-                    draws = objective._to_raw_space(
+                    traj_m = (
                         objective.decoder.sample(
                             condition_tokens=c_rep,
                             noise=objective._noise(
@@ -124,8 +137,13 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
                             objective.decoder.action_dim,
                         )
                     )
+                    draws = objective._to_raw_space(traj_m)
                     if readout == "meank":
                         p = draws.mean(dim=1)
+                    elif readout == "ranker":
+                        scores = ranker(c.float(), traj_m)  # (B, K)
+                        w = torch.softmax(scores / ranker_temp, dim=1)
+                        p = (draws * w[:, :, None, None]).sum(dim=1)
                     else:
                         p, _, _ = mode_aware_anchor(
                             draws,
