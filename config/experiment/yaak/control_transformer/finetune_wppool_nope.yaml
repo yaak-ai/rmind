@@ -1,0 +1,18 @@
+# @package _global_
+#
+# Policy fine-tune with the transformer waypoint pooler, NO head-side index PE.
+# Pair with a PT encoder that already injected waypoint position (e.g.
+# model-dtmtr8xu, winter-fire-240) so the encoder-output waypoint tokens already
+# carry order and a head-side PE would be redundant.
+# Pass the PT checkpoint at launch: `model.artifact=yaak/rmind/model-<id>:<v>`.
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune_wppool_nope
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: finetune
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+encoder_embedding_dim: 384
