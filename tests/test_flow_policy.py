@@ -17,7 +17,6 @@ from rmind.components.objectives.flow_policy import DEFAULT_ACTION_KEYS
 from rmind.components.optimizers import SelectiveAdamW
 from rmind.components.transformer import FlowActionDecoder, TransformerEncoder
 from rmind.components.transformer.decoder import FlowSamplingMethod
-from rmind.scripts.flow_oracle import trace_sample_path
 
 if TYPE_CHECKING:
     from tests.conftest import EmbeddingDims
@@ -116,33 +115,6 @@ def test_flow_action_decoder_supports_min_even_time_embedding_dim() -> None:
     assert action_flow.shape == (1, 2, 3)
 
 
-@torch.inference_mode()
-@pytest.mark.parametrize("sampling_method", ["euler", "midpoint", "heun"])
-def test_flow_oracle_trace_matches_decoder_sample(
-    device: torch.device, sampling_method: FlowSamplingMethod
-) -> None:
-    decoder = FlowActionDecoder(
-        condition_dim=16,
-        dim_model=16,
-        action_horizon=4,
-        flow_sampling_steps=3,
-        flow_sampling_method=sampling_method,
-        num_layers=1,
-        num_heads=2,
-        attn_dropout=0.0,
-        resid_dropout=0.0,
-        mlp_dropout=0.0,
-    ).to(device)
-    decoder.eval()
-    condition_tokens = torch.randn(2, 2, 16, device=device)
-    noise = torch.randn(2, 4, 3, device=device)
-
-    path = trace_sample_path(decoder=decoder, condition=condition_tokens, noise=noise)
-    sample = decoder.sample(condition_tokens=condition_tokens, noise=noise)
-
-    assert_close(path[-1], sample)
-
-
 def test_flow_action_decoder_selective_adamw_compatible() -> None:
     decoder = FlowActionDecoder(
         condition_dim=16, dim_model=16, action_horizon=6, num_layers=1, num_heads=2
@@ -175,7 +147,7 @@ def test_flow_policy_loss_has_decoder_gradients(
             flow_sampling_steps=2,
         ),
     ).to(device)
-    embedding = encoder(src=episode.embeddings_unpacked, mask=episode.attention_mask)
+    embedding = encoder(src=episode.embeddings_flattened, mask=episode.attention_mask)
     embedding = embedding.detach()
     batch = _flow_policy_batch(device=device)
 
@@ -218,7 +190,7 @@ def test_flow_policy_eval_metrics_are_deterministic(
             flow_sampling_steps=2,
         ),
     ).to(device)
-    embedding = encoder(src=episode.embeddings_unpacked, mask=episode.attention_mask)
+    embedding = encoder(src=episode.embeddings_flattened, mask=episode.attention_mask)
     batch = _flow_policy_batch(device=device)
 
     objective.eval()
@@ -284,7 +256,7 @@ def test_flow_policy_logs_per_t_flow_mse_in_eval(
     assert not [k for k in train_metrics if k.startswith("flow_mse_t")]
 
 
-@pytest.mark.parametrize("flow_time_sampling", ["uniform", "logit-normal", "beta"])
+@pytest.mark.parametrize("flow_time_sampling", ["uniform", "logit-normal"])
 def test_flow_policy_samples_configured_flow_time(
     device: torch.device, flow_time_sampling: str
 ) -> None:
@@ -307,33 +279,9 @@ def test_flow_policy_samples_configured_flow_time(
     assert (flow_time <= 1.0).all()
 
 
-def test_flow_policy_beta_time_skews_toward_noise(device: torch.device) -> None:
-    # pi0's Beta((s-t)/s; alpha, 1) with alpha > 1 must concentrate mass near
-    # t=0 (the noisy end). Median should sit well below 0.5 and stay under the
-    # cutoff s.
-    flow_time = FlowPolicyObjective.sample_flow_time(
-        "beta",
-        4096,
-        dtype=torch.float32,
-        device=device,
-        beta_alpha=1.5,
-        beta_s=0.999,
-    )
-
-    assert (flow_time >= 0.0).all()
-    assert (flow_time <= 0.999).all()
-    assert flow_time.median() < 0.5
-    # alpha=1 degenerates to uniform on [0, s] (median ~ s/2 ~ 0.5).
-    uniform_like = FlowPolicyObjective.sample_flow_time(
-        "beta", 4096, dtype=torch.float32, device=device, beta_alpha=1.0
-    )
-    assert flow_time.median() < uniform_like.median()
-
-
 def test_flow_policy_time_sampling_respects_generator(device: torch.device) -> None:
-    # The fixed-seed validation generator must make every sampler reproducible
-    # (Beta via inverse-CDF, not torch.distributions which ignores `generator`).
-    for method in ("uniform", "logit-normal", "beta"):
+    # The fixed-seed validation generator must make every sampler reproducible.
+    for method in ("uniform", "logit-normal"):
         gen_a = torch.Generator(device=device).manual_seed(0)
         gen_b = torch.Generator(device=device).manual_seed(0)
         a = FlowPolicyObjective.sample_flow_time(
@@ -380,7 +328,7 @@ def test_flow_policy_predicts_trajectory_values(
             flow_sampling_steps=2,
         ),
     ).to(device)
-    embedding = encoder(src=episode.embeddings_unpacked, mask=episode.attention_mask)
+    embedding = encoder(src=episode.embeddings_flattened, mask=episode.attention_mask)
     batch = _flow_policy_batch(device=device)
 
     predictions = objective.predict(
