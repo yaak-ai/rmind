@@ -34,6 +34,7 @@ class PolicyObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
+        waypoint_pooler: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -41,6 +42,11 @@ class PolicyObjective(Objective):
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
+        # How the per-waypoint tokens are reduced to the single token the head
+        # consumes. ``None`` => mean (centroid; cannot represent curvature).
+        # A pooler (e.g. WaypointTransformerPooler) is a drop-in [b,n,d]->[b,1,d]
+        # replacement that can read path shape; it warm-starts to mean at step 0.
+        self.waypoint_pooler: Module | None = waypoint_pooler
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -60,9 +66,18 @@ class PolicyObjective(Objective):
 
         return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
 
-    def _compute_logits(self, *, episode: Episode, embedding: Tensor) -> TensorTree:
-        _b, _ = episode.input.batch_size
+    def _aggregate_waypoints(self, waypoints: Tensor) -> Tensor:
+        """Reduce per-waypoint tokens ``[b, n, d]`` to one token ``[b, 1, d]``."""
+        if self.waypoint_pooler is not None:
+            return self.waypoint_pooler(waypoints)
+        return waypoints.mean(dim=1, keepdim=True)
 
+    def _extract_features(self, *, episode: Episode, embedding: Tensor) -> Tensor:
+        """Assemble the head input from the encoder output.
+
+        Single source of truth shared by ``forward`` / ``compute_metrics`` /
+        ``predict`` so every head path consumes waypoints identically.
+        """
         embeddings = (
             episode
             .index[-1]
@@ -84,16 +99,17 @@ class PolicyObjective(Objective):
             SummaryToken.OBSERVATION_SUMMARY,
         ))
 
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
+        waypoints = self._aggregate_waypoints(
+            embeddings.get((Modality.CONTEXT, "waypoints"))
         )
 
-        features = rearrange(
+        return rearrange(
             [observation_summary, observation_history, waypoints],
             "i b 1 d -> b 1 (i d)",
         )
 
-        return self.heads(features)
+    def _compute_logits(self, *, episode: Episode, embedding: Tensor) -> TensorTree:
+        return self.heads(self._extract_features(episode=episode, embedding=embedding))
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
@@ -155,35 +171,7 @@ class PolicyObjective(Objective):
                     embedding
                 )
 
-            embeddings = (
-                episode
-                .index[-1]
-                .select(
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                    (Modality.CONTEXT, "waypoints"),
-                )
-                .parse(embedding)
-            )
-
-            observation_history = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_HISTORY,
-            ))
-
-            observation_summary = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_SUMMARY,
-            ))
-
-            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                dim=1, keepdim=True
-            )
-
-            features = rearrange(
-                [observation_summary, observation_history, waypoints],
-                "i b 1 d -> b 1 (i d)",
-            )
+            features = self._extract_features(episode=episode, embedding=embedding)
 
             logits = TensorDict(self.heads(features), batch_size=[b, 1])
 

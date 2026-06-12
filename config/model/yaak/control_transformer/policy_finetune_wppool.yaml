@@ -1,0 +1,105 @@
+---
+# Policy fine-tune with a transformer waypoint pooler (drop-in for mean):
+# the pooler reduces the 10 per-waypoint tokens to one [b,1,d] token, so the
+# head in_channels stays 1152. It warm-starts to mean exactly (zero-init
+# residuals) and is a genuine non-linear transformer (attention + per-token
+# MLP), so it can represent curvature -- unlike mean / a single attention pool.
+# use_index_pe: keep true when the PT encoder did NOT inject waypoint position;
+# set false when consuming a PE-pretrained encoder (then it is redundant).
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "waypoint_pooler": {
+          "_target_": "rmind.components.waypoint_pooler.WaypointTransformerPooler",
+          "dim": 384,
+          "depth": 2,
+          "num_heads": 6,
+          "num_waypoints": 10,
+          "mlp_ratio": 4,
+          "use_index_pe": true
+        },
+        "heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "torchvision.ops.MLP",
+                "in_channels": 1152,
+                "hidden_channels": [384, 2],
+                "bias": false
+              },
+              "brake_pedal": {
+                "_target_": "torchvision.ops.MLP",
+                "in_channels": 1152,
+                "hidden_channels": [384, 2],
+                "bias": false
+              },
+              "steering_angle": {
+                "_target_": "torchvision.ops.MLP",
+                "in_channels": 1152,
+                "hidden_channels": [384, 2],
+                "bias": false
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "torchvision.ops.MLP",
+                "in_channels": 1152,
+                "hidden_channels": [384, 3],
+                "bias": false
+              }
+            }
+          }
+        },
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          },
+          "discrete": {
+            "turn_signal": ["input", "discrete", "turn_signal"]
+          }
+        },
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": 25000,
+      "num_training_steps": 250000
+    }
+  }
