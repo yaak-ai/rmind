@@ -40,15 +40,18 @@ oracle-mode 0.28, coverage floor 0.15. Full freedom to redirect the tree.
    Task relation -> https://app.notion.com/p/30bd658ccf87809c8941ca940bcca709.
 5. Decide (rules below), record, launch next.
 
-## Decision rules (pre-registered; amended after Phase A)
+## Decision rules (pre-registered; amended after Phase A; RE-AMENDED after exp12)
 - Primary: held-out spike steering chunk-L1 (meanK readout, SEEDED eval).
-- PAIRED DESIGN (Phase A finding): cross-seed sigma=0.014 but same-seed paired
-  deltas are ~0.003 (5x tighter). All levers run at seed 1001 and compare
-  against exp01 (control@1001 = 0.3555). Keep iff paired delta > 0.010
-  (~3x paired noise); wins confirmed at a second seed before stacking.
-- Guardrails: flat L1, aggregate L1, gas/brake L1 (no paired regression >0.010
-  equivalent scale).
-- Stack-on-win (after second-seed confirm); replicate each new stack once.
+- exp12 BROKE the paired-design assumption: delta-off paired delta was -0.028
+  at seed 1001 but +0.004 at seed 1002 — lever x seed interaction >> the 0.003
+  paired noise measured on lr-nulls. Paired deltas from ONE seed are NOT
+  trustworthy for stack decisions.
+- CURRENT RULE: judge levers by the mean over >=2 seeds vs the control seed
+  panel mean (exp01-03 + exp02: mean ~0.337, SEM ~0.007). Stack iff two-seed
+  lever mean beats control mean by > 0.015. Single-seed results only triage
+  what earns a second seed (promising if paired delta > 0.010).
+- Guardrails unchanged: flat L1, aggregate L1, gas/brake L1.
+- Stack-on-win (two-seed confirmed); replicate each new stack once.
 
 ## Experiment tree (~35 slots, adaptive)
 - A. Calibration (4): 3 control seed replicates (-> sigma); lr 0.5x / 2x.
@@ -83,14 +86,19 @@ oracle-mode 0.28, coverage floor 0.15. Full freedom to redirect the tree.
   val set mid-loop, alter logged results.
 
 ## State (update as the loop progresses)
-- exp counter: 14 (next: histdrop-p sweep / logit skew / wpe on the
-  post-stack recipe, then Phase C architecture)
+- exp counter: 16 (Phase C in flight; Phase D ranker code next)
 - verdicts: 01-03 sigma; 04-05 lr null; 06-07 LDS keep@0.5 (gas protection);
-  08 DELTA-OFF WIN -0.028 (confirming); 09 steer-only-LDS ambiguous-drop;
+  08 delta-off "-0.028" DID NOT REPLICATE (see 12); 09 steer-only-LDS drop;
   10 delta=50 negative (dose-response 0->0.327, 10->0.356, 50->0.365);
-  11 beta-time ambiguous-drop (revisit on stack)
-- in flight: exp12 delta_off@seed1002 (confirm; paired baseline exp02=0.3237),
-  exp13 delta_off + lds[1.0,0.5] (gas recovery composition)
-- current best recipe: control; PENDING STACK: + chunk_delta_weight=0
-- sigma: cross-seed 0.014; paired ~0.003-0.006; keep bar paired>0.010
-- paired baselines: exp01@1001=0.3555, exp02@1002=0.3237
+  11 beta-time ambiguous-drop; 12 delta-off@1002 NULL (0.3276 vs 0.3237;
+  two-seed mean 0.3275 vs ctrl ~0.337 -> below bar; side-finding: delta-off
+  has near-zero seed variance — delta loss = gradient-noise source);
+  13 delta-off+lds[1.0,0.5] NEGATIVE (gas 0.0942, steer 0.3327 — both worse)
+- PHASE B CLOSED: nothing stacks. Recipe = control (LDS@0.5 already in it).
+- in flight: exp14 depth2@1001 (5zlun6y0, trained, evaling — NB eval/predict
+  need model.objective.decoder.num_layers=2 override to load the ckpt!),
+  exp15 depth8@1001 (1z6154xi, training; same: num_layers=8 at eval)
+- control panel (spike-meanK): 0.3555@1001, 0.3237@1002, 0.3289, 0.3387 ->
+  mean ~0.337, sigma 0.014. Lever verdicts vs this mean, two seeds, bar 0.015.
+- Phase C queue: width {128,512}, heads {2,8}, hidden mult 4, cond-AdaLN.
+  Phase D (ranker, MANDATORY) — write code during training windows.
