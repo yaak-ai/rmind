@@ -1,4 +1,5 @@
 from .feature_permutation import FeaturePermutator
+from .feature_reflection import FeatureReflector
 from .freeze import ModuleFreezer
 from .loggers import (
     WandbAttentionMaskLogger,
@@ -20,6 +21,7 @@ from .safe import SafeCallback
 __all__ = [
     "DataFramePredictionWriter",
     "FeaturePermutator",
+    "FeatureReflector",
     "LogitBiasSetter",
     "ModuleFreezer",
     "PredictMetricsCallback",

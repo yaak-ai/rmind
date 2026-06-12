@@ -1,0 +1,71 @@
+# @package _global_
+---
+defaults:
+  - /model: yaak/control_transformer/pretrained
+  - /datamodule: yaak/predict
+  - /paths: yaak/default
+  - _self_
+
+permutations:
+  baseline: []
+  waypoints:
+    - [data, waypoints/xy_normalized]
+
+reflections:
+  none: { features: [], index: 0 }
+  lateral: { features: [[data, waypoints/xy_normalized]], index: 0 }
+  longitudinal: { features: [[data, waypoints/xy_normalized]], index: 1 }
+
+permutation: baseline
+reflection: none
+
+model:
+  hparams_jq: |
+    delpaths([
+      ["objectives", "inverse_dynamics", "losses"],
+      ["objectives", "forward_dynamics", "losses"],
+      ["objectives", "memory_extraction", "losses"],
+      ["lr_scheduler"]
+    ])
+    | setpath(
+        ["episode_builder", "input_transform", "_args_", 0, "paths", "context", "waypoints"];
+        ["data", "waypoints/xy_normalized"]
+    )
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  _convert_: all
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  precision: "bf16-mixed"
+  logger: false
+  callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives:
+          - ground_truth
+          - prediction_value
+          - score_l1
+
+    - _target_: rmind.callbacks.FeaturePermutator
+      features: ${permutations.${permutation}}
+      seed: 42
+
+    - _target_: rmind.callbacks.FeatureReflector
+      features: ${reflections.${reflection}.features}
+      dim: -1
+      index: ${reflections.${reflection}.index}
+
+    - _target_: rmind.callbacks.DataFramePredictionWriter
+      write_interval: batch
+      path: ${hydra:run.dir}/predictions/${permutation}-${reflection}/{batch_idx:06}.parquet
+      select:
+        - [batch, meta, input_id]
+        - [batch, data, waypoints/xy_normalized]
+        - [inverse_dynamics, ground_truth, value]
+        - [inverse_dynamics, prediction_value, value]
+        - [inverse_dynamics, score_l1, value]
+      writer:
+        _target_: polars.DataFrame.write_parquet
+        _partial_: true

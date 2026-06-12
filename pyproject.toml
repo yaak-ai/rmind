@@ -133,6 +133,7 @@ ignore = [
 
 [tool.ruff.lint.extend-per-file-ignores]
 "tests/**/*.py" = ["S101", "S301", "S403"]
+"scripts/**/*.py" = ["INP001", "T201", "ANN001", "ANN202", "PLR0914"]
 
 [tool.ruff.lint.isort]
 split-on-trailing-comma = false
