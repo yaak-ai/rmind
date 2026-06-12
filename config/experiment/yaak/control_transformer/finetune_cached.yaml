@@ -1,0 +1,30 @@
+# @package _global_
+
+# Fine-tuning with encoder-output caching. Identical to `finetune` but swaps in
+# the `finetune_cached` callbacks (adds EncoderCachePopulator), which precompute
+# the frozen episode_builder(DINOv3)+encoder outputs once and skip them every
+# step thereafter.
+#
+# Launch (set the checkpoint artifact + a fingerprint identifying the dataset):
+#   just train \
+#     experiment=yaak/control_transformer/finetune_cached \
+#     model.artifact=yaak/rmind/model-et584pft:v9 \
+#     encoder_cache_fingerprint=yaak-train-v1
+#
+# The fingerprint MUST change whenever the dataset definition (drives / frame
+# selection) changes, or a stale cache will be silently reused.
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: finetune_cached
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+encoder_embedding_dim: 384
+
+# Persistent (reusable across runs) cache directory + dataset fingerprint.
+encoder_cache_fingerprint: ???
+encoder_cache_dir: ${paths.rbyte.cache}/encoder_cache/${encoder_cache_fingerprint}
