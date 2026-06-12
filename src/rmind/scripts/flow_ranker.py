@@ -96,7 +96,8 @@ def _stage_draws(cfg: DictConfig, opts) -> None:
     draws_model: list[Tensor] = []
     l1: list[Tensor] = []
     chunk = 256
-    torch.manual_seed(0)  # same discipline as flow_meank_eval: reproducible bank
+    # reproducible bank; override the seed to get an independent draw set
+    torch.manual_seed(int(opts.get("seed", 0)))
     with torch.inference_mode():
         for lo in range(0, cond.shape[0], chunk):
             c = cond[lo : lo + chunk].to(device)
@@ -147,8 +148,14 @@ class DrawRanker(nn.Module):
     """
 
     def __init__(self, *, cond_tokens: int = 12, cond_dim: int = 384,
-                 horizon: int = 6, action_dim: int = 2, width: int = 256) -> None:
+                 horizon: int = 6, action_dim: int = 2, width: int = 256,
+                 set_context: bool = False) -> None:
         super().__init__()
+        self.set_context = set_context
+        ha = horizon * action_dim
+        # with set context each draw also sees its deviation from the K-draw
+        # cloud mean and the cloud's per-dim std — selection is relative
+        draw_in = 3 * ha if set_context else ha
         self.cond_net = nn.Sequential(
             nn.LayerNorm(cond_tokens * cond_dim),
             nn.Linear(cond_tokens * cond_dim, width),
@@ -156,7 +163,7 @@ class DrawRanker(nn.Module):
             nn.Linear(width, width),
         )
         self.draw_net = nn.Sequential(
-            nn.Linear(horizon * action_dim, width),
+            nn.Linear(draw_in, width),
             nn.GELU(),
             nn.Linear(width, width),
         )
@@ -167,7 +174,14 @@ class DrawRanker(nn.Module):
     def forward(self, cond: Tensor, draws: Tensor) -> Tensor:
         """cond (B, S, D), draws (B, K, H, A) -> scores (B, K)."""
         c = self.cond_net(cond.flatten(1))  # (B, W)
-        d = self.draw_net(draws.flatten(2))  # (B, K, W)
+        d_in = draws.flatten(2)  # (B, K, H*A)
+        if self.set_context:
+            mu = d_in.mean(dim=1, keepdim=True)
+            sd = d_in.std(dim=1, keepdim=True)
+            d_in = torch.cat(
+                [d_in, d_in - mu, sd.expand_as(d_in)], dim=-1
+            )
+        d = self.draw_net(d_in)  # (B, K, W)
         c = c[:, None].expand_as(d)
         return self.head(torch.cat([c, d, c * d], dim=-1)).squeeze(-1)
 
@@ -199,9 +213,12 @@ def _stage_train(opts) -> None:  # noqa: PLR0915
     idx_all = torch.nonzero(valid).squeeze(1)
     logger.info("train frames", n=int(idx_all.numel()), dropped=int(n - idx_all.numel()))
 
+    width = int(opts.get("width", 256))
+    set_context = bool(opts.get("set_context", False))
     model = DrawRanker(
         cond_tokens=cond_all.shape[1], cond_dim=cond_all.shape[2],
-        horizon=draws_all.shape[2], action_dim=draws_all.shape[3],
+        horizon=draws_all.shape[2], action_dim=draws_all.shape[3], width=width,
+        set_context=set_context,
     ).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     steps_per_epoch = (idx_all.numel() + batch - 1) // batch
@@ -247,6 +264,8 @@ def _stage_train(opts) -> None:  # noqa: PLR0915
                 "cond_dim": int(cond_all.shape[2]),
                 "horizon": int(draws_all.shape[2]),
                 "action_dim": int(draws_all.shape[3]),
+                "width": width,
+                "set_context": set_context,
             },
             "target_channel": target_channel,
             "tau": tau,
@@ -278,7 +297,8 @@ def _stage_eval(cfg: DictConfig, opts) -> None:  # noqa: PLR0915
     n, k = draws_m.shape[0], draws_m.shape[1]
 
     scores = torch.empty(n, k)
-    raw = torch.empty_like(draws_m, dtype=torch.float32)
+    # raw space has one more channel than model space (longitudinal -> gas/brake)
+    raw = torch.empty(n, k, draws_m.shape[2], gt.shape[-1])
     with torch.inference_mode():
         for lo in range(0, n, 1024):
             d = draws_m[lo : lo + 1024].to(device).float()
@@ -317,9 +337,11 @@ def _stage_eval(cfg: DictConfig, opts) -> None:  # noqa: PLR0915
             raw_np, order[:, :m, None, None], axis=1
         ).mean(axis=1)
         row(f"ranker top-{m} mean", top)
-    w = np.exp(sc - sc.max(axis=1, keepdims=True))
-    w /= w.sum(axis=1, keepdims=True)
-    row("ranker softmax-wt", (raw_np * w[:, :, None, None]).sum(axis=1))
+    # softmax-weighted readouts: sharpness sweep (t<1 sharper, t>1 -> meanK)
+    for t in (0.25, 0.5, 1.0, 2.0, 4.0):
+        w = np.exp((sc - sc.max(axis=1, keepdims=True)) / t)
+        w /= w.sum(axis=1, keepdims=True)
+        row(f"ranker softmax t={t:g}", (raw_np * w[:, :, None, None]).sum(axis=1))
 
     # references: oracle draw (coverage), oracle mode (selection ceiling)
     per_draw = np.abs(raw_np[..., steer] - gt_np[:, None, :, steer]).mean(axis=2)
