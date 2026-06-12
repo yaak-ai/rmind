@@ -12,8 +12,6 @@ hparams_jq: |
         "flow_time_sampling": "${flow_time_sampling}",
         "flow_time_logit_mean": ${oc.select:flow_time_logit_mean,0.0},
         "flow_time_logit_std": ${oc.select:flow_time_logit_std,1.0},
-        "flow_time_beta_alpha": ${oc.select:flow_time_beta_alpha,1.5},
-        "flow_time_beta_s": ${oc.select:flow_time_beta_s,0.999},
         "validation_seed": ${flow_validation_seed},
         "validation_sample_metrics": true,
         "prediction_samples": ${oc.select:flow_prediction_samples,1},
@@ -23,8 +21,6 @@ hparams_jq: |
         "lds_stats": "${oc.select:flow_lds_stats,''}",
         "lds_alpha": ${oc.select:flow_lds_alpha,0.5},
         "lds_cap": ${oc.select:flow_lds_cap,15.0},
-        "waypoint_pe": ${oc.select:flow_waypoint_pe,0},
-        "waypoint_count": ${oc.select:flow_waypoint_count,10},
         "loss": {
           "_target_": "torch.nn.MSELoss"
         },
@@ -54,7 +50,7 @@ hparams_jq: |
     "interval": "step",
     "scheduler": {
       "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
-      "num_warmup_steps": ${lr_warmup_steps},
-      "num_training_steps": ${lr_training_steps}
+      "num_warmup_steps": ${oc.select:lr_warmup_steps,500},
+      "num_training_steps": ${oc.select:lr_training_steps,25000}
     }
   }

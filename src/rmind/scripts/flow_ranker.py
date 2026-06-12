@@ -152,14 +152,9 @@ class DrawRanker(nn.Module):
     """
 
     def __init__(self, *, cond_tokens: int = 12, cond_dim: int = 384,
-                 horizon: int = 6, action_dim: int = 2, width: int = 256,
-                 set_context: bool = False) -> None:
+                 horizon: int = 6, action_dim: int = 2, width: int = 256) -> None:
         super().__init__()
-        self.set_context = set_context
-        ha = horizon * action_dim
-        # with set context each draw also sees its deviation from the K-draw
-        # cloud mean and the cloud's per-dim std — selection is relative
-        draw_in = 3 * ha if set_context else ha
+        draw_in = horizon * action_dim
         self.cond_net = nn.Sequential(
             nn.LayerNorm(cond_tokens * cond_dim),
             nn.Linear(cond_tokens * cond_dim, width),
@@ -178,14 +173,7 @@ class DrawRanker(nn.Module):
     def forward(self, cond: Tensor, draws: Tensor) -> Tensor:
         """cond (B, S, D), draws (B, K, H, A) -> scores (B, K)."""
         c = self.cond_net(cond.flatten(1))  # (B, W)
-        d_in = draws.flatten(2)  # (B, K, H*A)
-        if self.set_context:
-            mu = d_in.mean(dim=1, keepdim=True)
-            sd = d_in.std(dim=1, keepdim=True)
-            d_in = torch.cat(
-                [d_in, d_in - mu, sd.expand_as(d_in)], dim=-1
-            )
-        d = self.draw_net(d_in)  # (B, K, W)
+        d = self.draw_net(draws.flatten(2))  # (B, K, W)
         c = c[:, None].expand_as(d)
         return self.head(torch.cat([c, d, c * d], dim=-1)).squeeze(-1)
 
@@ -199,14 +187,8 @@ def _stage_train(opts) -> None:  # noqa: PLR0915
     cache = torch.load(str(opts["cache"]), map_location="cpu", weights_only=False)
     cond_all = cache["cond"]  # (N, S, D) fp16
     draws_all, l1_all = bank["draws"], bank["l1"]  # (N,K,H,A) fp16, (N,K,C)
-    if opts.get("label_weights") is not None:
-        # weighted multi-channel label, e.g. [0.25,0,1] = steer + 0.25*gas
-        lw = torch.tensor([float(x) for x in opts["label_weights"]])
-        target_channel = -1
-        labels_all = (l1_all * lw).sum(-1)  # (N, K)
-    else:
-        target_channel = int(opts.get("target_channel", bank["steer_idx"]))
-        labels_all = l1_all[..., target_channel]  # (N, K) steering chunk L1
+    target_channel = int(opts.get("target_channel", bank["steer_idx"]))
+    labels_all = l1_all[..., target_channel]  # (N, K) steering chunk L1
 
     epochs = int(opts.get("epochs", 8))
     lr = float(opts.get("lr", 3e-4))
@@ -224,11 +206,9 @@ def _stage_train(opts) -> None:  # noqa: PLR0915
     logger.info("train frames", n=int(idx_all.numel()), dropped=int(n - idx_all.numel()))
 
     width = int(opts.get("width", 256))
-    set_context = bool(opts.get("set_context", False))
     model = DrawRanker(
         cond_tokens=cond_all.shape[1], cond_dim=cond_all.shape[2],
         horizon=draws_all.shape[2], action_dim=draws_all.shape[3], width=width,
-        set_context=set_context,
     ).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     steps_per_epoch = (idx_all.numel() + batch - 1) // batch
@@ -275,7 +255,6 @@ def _stage_train(opts) -> None:  # noqa: PLR0915
                 "horizon": int(draws_all.shape[2]),
                 "action_dim": int(draws_all.shape[3]),
                 "width": width,
-                "set_context": set_context,
             },
             "target_channel": target_channel,
             "tau": tau,
@@ -399,129 +378,6 @@ def _stage_eval(cfg: DictConfig, opts) -> None:  # noqa: PLR0915
         f"(chance {1 / k:.1%}); median oracle-rank of pick: "
         f"{np.median(rank_of_pick):.0f} overall, {np.median(rank_of_pick[spike]):.0f} spikes"
     )
-
-
-# --------------------------------------------------------------------------- #
-# stage: temporal — zero-parameter selection via chunk-overlap consistency
-# --------------------------------------------------------------------------- #
-def _stage_temporal(cfg: DictConfig, opts) -> None:  # noqa: PLR0915
-    """Vote draws by agreement with the PREVIOUS step's prediction on the
-    overlapping horizon slots (receding-horizon coherence; cf. backward
-    coherence in Bidirectional Decoding, Liu et al. 2024). No parameters.
-
-    Variants: committed-anchored (sequential, errors can propagate) and
-    gt-anchored (previous chunk replaced by previous GT — the upper bound
-    separating "overlap signal is insufficient" from "error propagation").
-    """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    bank = torch.load(str(opts["bank"]), map_location="cpu", weights_only=False)
-    cache = torch.load(str(opts["cache"]), map_location="cpu", weights_only=False)
-    objective = _load_cached_objective(cfg, str(bank["artifact"]), device)
-    steer = int(bank["steer_idx"])
-    gt = cache["target_actions"].float()
-    draws_m = bank["draws"]
-    n, k, horizon = draws_m.shape[0], draws_m.shape[1], draws_m.shape[2]
-
-    raw = torch.empty(n, k, horizon, gt.shape[-1])
-    with torch.inference_mode():
-        for lo in range(0, n, 1024):
-            raw[lo : lo + 1024] = objective._to_raw_space(
-                draws_m[lo : lo + 1024].to(device).float()
-            ).cpu()
-
-    gt_np, raw_np = gt.numpy(), raw.numpy()
-    frame = cache["frame_idx"][:, -1].numpy()  # current frame per row
-    drive = np.array(cache["input_id"])
-    valid = np.isfinite(gt_np).all(axis=(1, 2)) & np.isfinite(raw_np).all(
-        axis=(1, 2, 3)
-    )
-    gt_np, raw_np, frame, drive = gt_np[valid], raw_np[valid], frame[valid], drive[valid]
-
-    # drive-major temporal order
-    order = np.lexsort((frame, drive))
-    gt_np, raw_np, frame, drive = gt_np[order], raw_np[order], frame[order], drive[order]
-    same_prev = np.zeros(len(frame), dtype=bool)
-    same_prev[1:] = drive[1:] == drive[:-1]
-    stride = int(np.median(np.diff(frame)[same_prev[1:]]))
-    contig = same_prev & np.concatenate([[False], np.diff(frame) == stride])
-
-    # alignment check: does the previous row's GT chunk shifted by one slot
-    # match this row's GT? (validates that one row step == one horizon slot)
-    a = gt_np[:-1, 1:, steer][contig[1:]]
-    b = gt_np[1:, :-1, steer][contig[1:]]
-    align_err = float(np.abs(a - b).mean())
-    print(  # noqa: T201
-        f"temporal alignment: row stride {stride} frames, contiguous "
-        f"{contig.mean():.1%}, gt shift-1 overlap L1 {align_err:.4f}"
-    )
-
-    spike = (np.abs(gt_np[..., steer]) > 0.5).any(axis=1)
-    flat = (np.abs(gt_np[..., steer]) < 0.05).all(axis=1)
-
-    def steer_l1(pred):
-        return np.abs(pred[..., steer] - gt_np[..., steer]).mean(axis=1)
-
-    def gas_l1(pred):
-        return np.abs(pred[..., 0] - gt_np[..., 0]).mean(axis=1)
-
-    def row(name, pred):
-        fe, ge = steer_l1(pred), gas_l1(pred)
-        print(  # noqa: T201
-            f"  {name:26s} overall {fe.mean():.4f}  flat {fe[flat].mean():.4f}  "
-            f"SPIKE {fe[spike].mean():.4f}  | gas spike {ge[spike].mean():.4f}"
-        )
-
-    meank = raw_np.mean(axis=1)
-    print(f"\ntemporal-consistency table ({len(frame)} frames, K={k}):")  # noqa: T201
-    row("meanK (baseline)", meank)
-
-    # persistence: copy previous committed chunk shifted one slot (lag probe)
-    pers = meank.copy()
-    pers[1:][contig[1:]] = np.concatenate(
-        [meank[:-1, 1:], meank[:-1, -1:]], axis=1
-    )[contig[1:]]
-    row("persistence (shift meanK)", pers)
-
-    # per-frame cloud spread (steering): confidence proxy for gating
-    cloud_spread = raw_np[..., steer].std(axis=1).mean(axis=1)  # (F,)
-
-    def run(
-        anchor_committed: bool, temp: float, gate_spread: float | None = None
-    ) -> np.ndarray:
-        preds = np.empty_like(meank)
-        committed = None
-        prev_conf = False
-        for i in range(len(frame)):
-            use = contig[i] and committed is not None
-            if use and gate_spread is not None:
-                use = prev_conf  # only trust a confident previous cloud
-            if not use:
-                preds[i] = meank[i]
-            else:
-                anchor = committed if anchor_committed else gt_np[i - 1]
-                d = np.abs(
-                    raw_np[i][:, :-1, steer] - anchor[None, 1:, steer]
-                ).mean(axis=1)  # (K,) overlap disagreement
-                w = np.exp(-(d - d.min()) / temp)
-                w /= w.sum()
-                preds[i] = (raw_np[i] * w[:, None, None]).sum(axis=0)
-            committed = preds[i]
-            prev_conf = cloud_spread[i] < (gate_spread or np.inf)
-        return preds
-
-    for temp in (0.01, 0.02, 0.05, 0.1, 0.3):
-        row(f"committed-anchored T={temp:g}", run(True, temp))
-    for q in (25, 50, 75):
-        g = float(np.percentile(cloud_spread, q))
-        row(f"gated p{q} T=0.05", run(True, 0.05, gate_spread=g))
-    for temp in (0.01, 0.02, 0.05, 0.1, 0.3):
-        row(f"gt-anchored (bound) T={temp:g}", run(False, temp))
-
-    per_draw = np.abs(raw_np[..., steer] - gt_np[:, None, :, steer]).mean(axis=2)
-    best = np.take_along_axis(
-        raw_np, per_draw.argmin(axis=1)[:, None, None, None], axis=1
-    ).squeeze(1)
-    row("oracle best draw", best)
 
 
 @hydra.main(version_base=None)

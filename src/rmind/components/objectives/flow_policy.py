@@ -48,16 +48,11 @@ DEFAULT_BATCH_ACTION_PATHS: tuple[tuple[str, ...], ...] = (
 )
 FLOW_TIME_LOGIT_NORMAL_MEAN = 0.0
 FLOW_TIME_LOGIT_NORMAL_STD = 1.0
-# pi0's time-step distribution defaults (arXiv:2410.24164): p(t) =
-# Beta((s - t)/s; alpha, 1), which biases mass toward t -> 0 (the noisy end)
-# for alpha > 1. See sample_flow_time for the (generator-safe) sampler.
-FLOW_TIME_BETA_ALPHA = 1.5
-FLOW_TIME_BETA_S = 0.999
 # Number of equal-width flow-time buckets for the per-t flow-MSE diagnostic
 # logged in validation (flow_mse_t<edge>): shows WHERE on the trajectory the
 # field is least accurate, so p(t) can be shaped to match instead of guessed.
 FLOW_TIME_LOSS_BUCKETS = 8
-FLOW_TIME_SAMPLING_METHODS = {"uniform", "logit-normal", "beta"}
+FLOW_TIME_SAMPLING_METHODS = {"uniform", "logit-normal"}
 # predict()-time readout policies: "single" = one honest draw (legacy);
 # "meank" = mean of predict_samples draws (variance reduction, mode-averaging);
 # "mode" = winner-take-all consensus (see consensus.py — commits to the
@@ -81,8 +76,6 @@ class FlowPolicyObjective(Objective):
         flow_time_sampling: str = "uniform",
         flow_time_logit_mean: float = FLOW_TIME_LOGIT_NORMAL_MEAN,
         flow_time_logit_std: float = FLOW_TIME_LOGIT_NORMAL_STD,
-        flow_time_beta_alpha: float = FLOW_TIME_BETA_ALPHA,
-        flow_time_beta_s: float = FLOW_TIME_BETA_S,
         validation_seed: int = 0,
         validation_sample_metrics: bool = True,
         prediction_samples: int = 1,
@@ -90,10 +83,8 @@ class FlowPolicyObjective(Objective):
         maneuver_thresholds: tuple[float, ...] | None = None,
         action_transform_stats: str | None = None,
         lds_stats: str | None = None,
-        lds_alpha: float | tuple[float, ...] = 0.5,
+        lds_alpha: float = 0.5,
         lds_cap: float = 15.0,
-        waypoint_pe: bool = False,
-        waypoint_count: int = 10,
         predict_readout: str = "single",
         predict_samples: int = 16,
     ) -> None:
@@ -156,14 +147,6 @@ class FlowPolicyObjective(Objective):
             msg = f"flow_time_logit_std must be non-negative, got {flow_time_logit_std}"
             raise ValueError(msg)
 
-        if flow_time_beta_alpha <= 0:
-            msg = f"flow_time_beta_alpha must be positive, got {flow_time_beta_alpha}"
-            raise ValueError(msg)
-
-        if not 0.0 < flow_time_beta_s <= 1.0:
-            msg = f"flow_time_beta_s must be in (0, 1], got {flow_time_beta_s}"
-            raise ValueError(msg)
-
         if prediction_samples <= 0:
             msg = f"prediction_samples must be positive, got {prediction_samples}"
             raise ValueError(msg)
@@ -187,8 +170,6 @@ class FlowPolicyObjective(Objective):
         self.flow_time_sampling = flow_time_sampling
         self.flow_time_logit_mean = flow_time_logit_mean
         self.flow_time_logit_std = flow_time_logit_std
-        self.flow_time_beta_alpha = flow_time_beta_alpha
-        self.flow_time_beta_s = flow_time_beta_s
         self.validation_seed = validation_seed
         self.validation_sample_metrics = validation_sample_metrics
         # The within-chunk delta loss differences adjacent horizon slots, which
@@ -261,27 +242,6 @@ class FlowPolicyObjective(Objective):
                     f"model-space keys {tuple(model_keys)}"
                 )
                 raise ValueError(msg)
-
-        # Waypoint position embedding: the encoder is FACTORIZED (RoPE on the
-        # temporal axis only) and the within-timestep spatial attention has no
-        # positional encoding, so the route's waypoint SEQUENCE is invisible —
-        # the decoder cross-attends to the 10 waypoint tokens as an unordered
-        # bag. Tag each encoder-output waypoint token with a learned per-index
-        # embedding so the decoder can use route order. Added HERE (not in the
-        # encoder) because the episode builder + encoder are frozen during flow
-        # finetune; this lives in the trainable objective. Zero-init => identity
-        # at start (no-op until the loss learns the offsets); nn.Embedding so
-        # SelectiveAdamW weight-decay-excludes it, like the decoder's slot PE.
-        if not waypoint_pe:
-            self.waypoint_pos_embedding = None
-        else:
-            cond_dim = (
-                decoder.condition_projection.in_features
-                if isinstance(decoder.condition_projection, torch.nn.Linear)
-                else decoder.action_projection.out_features
-            )
-            self.waypoint_pos_embedding = torch.nn.Embedding(waypoint_count, cond_dim)
-            torch.nn.init.zeros_(self.waypoint_pos_embedding.weight)
 
     @override
     def forward(self, *, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -381,8 +341,6 @@ class FlowPolicyObjective(Objective):
             generator=generator,
             logit_mean=self.flow_time_logit_mean,
             logit_std=self.flow_time_logit_std,
-            beta_alpha=self.flow_time_beta_alpha,
-            beta_s=self.flow_time_beta_s,
         )
         flow_time_broadcast = flow_time.view(-1, 1, 1)
         noised_actions = (
@@ -660,19 +618,6 @@ class FlowPolicyObjective(Objective):
             .parse(embedding)
         )
         parts = [embeddings.get(path) for path in POLICY_CONDITION_TOKENS]
-        if self.waypoint_pos_embedding is not None:
-            # Add the per-index waypoint PE to the waypoint token block only.
-            wp_i = POLICY_CONDITION_TOKENS.index((Modality.CONTEXT, "waypoints"))
-            wp = parts[wp_i]  # (B, n_waypoints, dim)
-            n = wp.shape[1]
-            if n != self.waypoint_pos_embedding.num_embeddings:
-                msg = (
-                    f"waypoint_count {self.waypoint_pos_embedding.num_embeddings} != "
-                    f"actual waypoint tokens {n}"
-                )
-                raise ValueError(msg)
-            pos = torch.arange(n, device=wp.device)
-            parts[wp_i] = wp + self.waypoint_pos_embedding(pos).to(wp.dtype)
         return torch.cat(parts, dim=1)
 
     def _target_actions(self, batch: Any) -> Tensor:
@@ -739,8 +684,6 @@ class FlowPolicyObjective(Objective):
         generator: torch.Generator | None = None,
         logit_mean: float = FLOW_TIME_LOGIT_NORMAL_MEAN,
         logit_std: float = FLOW_TIME_LOGIT_NORMAL_STD,
-        beta_alpha: float = FLOW_TIME_BETA_ALPHA,
-        beta_s: float = FLOW_TIME_BETA_S,
     ) -> Tensor:
         # Convention: t=0 is noise, t=1 is the clean action (interpolant
         # x_t = (1-t)*noise + t*target). "Skew toward 0" therefore means more
@@ -760,23 +703,6 @@ class FlowPolicyObjective(Objective):
                     batch_size, dtype=dtype, device=device, generator=generator
                 )
                 return torch.sigmoid(z * logit_std + logit_mean)
-            case "beta":
-                # pi0's time-step distribution (arXiv:2410.24164):
-                #   p(t) = Beta((s - t)/s; alpha, 1)
-                # i.e. w = (s - t)/s ~ Beta(alpha, 1), so t = s * (1 - w). The
-                # rationale (pi0 sec. on flow matching): action prediction is
-                # most constrained / hardest at high noise, so concentrate
-                # supervision near t=0. alpha > 1 skews mass toward t=0; alpha=1
-                # is uniform on [0, s]. The second Beta parameter is fixed to 1
-                # because Beta(alpha, 1) has CDF w^alpha, making inverse-transform
-                # sampling w = U^(1/alpha) exact AND generator-aware
-                # (torch.distributions.Beta ignores `generator`, which would
-                # break the fixed-seed validation determinism).
-                u = torch.rand(
-                    batch_size, dtype=dtype, device=device, generator=generator
-                )
-                w = u.pow(1.0 / beta_alpha)
-                return beta_s * (1.0 - w)
             case _:
                 msg_0 = f"Invalid flow_time_sampling method: {flow_time_sampling}"
                 raise ValueError(msg_0)

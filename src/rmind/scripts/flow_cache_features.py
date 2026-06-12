@@ -9,13 +9,6 @@ This script computes them ONCE per dataset split and saves them; training then
 runs decoder-only from the cache (FlowFeatureTrainer), ~an order of magnitude
 faster per step and with no image IO at all.
 
-Two condition variants are saved per frame so ActionHistoryDropout-style
-training stays EXACT under caching:
-  - cond:       normal condition tokens
-  - cond_hist0: condition tokens with the action-history fields zeroed
-(the frozen encoder is a function, not a constant — zeroed inputs change the
-summaries, so the variant must be precomputed, not patched post-hoc).
-
 Validity: the cache is tied to the (frozen) encoder weights + the condition
 spec (POLICY_CONDITION_TOKENS); both are recorded in the file's metadata. Any
 flow checkpoint works as the model source — all finetunes share the pretrained
@@ -52,11 +45,6 @@ if TYPE_CHECKING:
 
 FRAME_IDX_KEY = "meta/ImageMetadata.cam_front_left/frame_idx"
 TIME_STAMP_KEY = "meta/ImageMetadata.cam_front_left/time_stamp"
-HIST_KEYS = (
-    "meta/VehicleMotion/gas_pedal_normalized",
-    "meta/VehicleMotion/brake_pedal_normalized",
-    "meta/VehicleMotion/steering_angle_normalized",
-)
 
 
 def _to_device(obj: Any, device: torch.device) -> Any:
@@ -103,21 +91,16 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
         loader = (
             datamodule.train_dataloader() if split == "train" else datamodule.val_dataloader()
         )
-        conds, conds0, targets, fidxs, ids = [], [], [], [], []
+        conds, targets, fidxs, ids = [], [], [], []
         tstamps: list[torch.Tensor] = []
         with torch.inference_mode():
             for batch_idx, batch in enumerate(loader):
                 batch = _to_device(batch, device)
                 cond = condition(batch)
-                b0 = {**batch, "data": {**batch["data"]}}
-                for k in HIST_KEYS:
-                    b0["data"][k] = torch.zeros_like(batch["data"][k])
-                cond0 = condition(b0)
                 gt = objective._target_actions(batch).float()
                 if gt.shape[1] != horizon:
                     gt = gt[:, objective._target_slice()]
                 conds.append(cond.half().cpu())
-                conds0.append(cond0.half().cpu())
                 targets.append(gt.cpu())
                 fidxs.append(batch["data"][FRAME_IDX_KEY].cpu())
                 tstamps.append(batch["data"][TIME_STAMP_KEY].cpu())
@@ -128,7 +111,6 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
 
         payload = {
             "cond": torch.cat(conds),          # (N, S, D) fp16
-            "cond_hist0": torch.cat(conds0),   # (N, S, D) fp16
             "target_actions": torch.cat(targets),  # (N, H, A) fp32 raw
             "frame_idx": torch.cat(fidxs),          # (N, T) full history window
             "time_stamp": torch.cat(tstamps),       # (N, T) epoch stamps (reye)

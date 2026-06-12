@@ -1,4 +1,3 @@
-from .action_history_dropout import ActionHistoryDropout
 from .ema import EMAWeights
 from .feature_permutation import FeaturePermutator
 from .freeze import ModuleFreezer
@@ -19,7 +18,6 @@ from .prediction_config import PredictionConfigSetter
 from .safe import SafeCallback
 
 __all__ = [
-    "ActionHistoryDropout",
     "DataFramePredictionWriter",
     "EMAWeights",
     "FeaturePermutator",

@@ -18,8 +18,7 @@
 #     model.artifact=yaak/action-flow/model-pg5lzmvk:v199 \
 #     '+cache.out_dir=artifacts/feature_cache/pilot'
 #
-# Knobs: flow_action_hist_dropout (exact under caching via the precomputed
-# hist0 variant; default 0 = off), flow_lds_alpha/cap (at-load, as usual).
+# Knobs: flow_lds_alpha/cap (at-load, as usual).
 # NB batch size is 1024 (vs 64 full-path) — schedule set for ~50ep at that size;
 # cached-vs-cached comparisons are clean, cached-vs-full are not step-matched.
 
@@ -32,7 +31,6 @@ model:
   _target_: rmind.models.flow_feature_trainer.FlowFeatureTrainer
   _recursive_: true
   _convert_: all
-  hist_dropout_p: ${oc.select:flow_action_hist_dropout,0.0}
   objective:
     _target_: rmind.components.objectives.FlowPolicyObjective
     history_steps: 6
