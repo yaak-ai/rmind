@@ -1,3 +1,4 @@
+from .encoder_cache import EncoderCachePopulator
 from .feature_permutation import FeaturePermutator
 from .feature_reflection import FeatureReflector
 from .freeze import ModuleFreezer
@@ -20,6 +21,7 @@ from .safe import SafeCallback
 
 __all__ = [
     "DataFramePredictionWriter",
+    "EncoderCachePopulator",
     "FeaturePermutator",
     "FeatureReflector",
     "LogitBiasSetter",

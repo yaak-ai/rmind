@@ -32,6 +32,8 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
+from rmind.components.encoder_cache import EncoderCache
+from rmind.components.episode import Episode
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
@@ -61,6 +63,10 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     optimizer: HydraConfig[Optimizer] | None = None
     lr_scheduler: LRSchedulerHydraConfig | None = None
     prediction_config: PredictionConfig
+
+    # set by EncoderCachePopulator once the cache is populated; gates the fast
+    # path that skips episode_builder (DINOv3) + encoder. None == default behavior.
+    encoder_cache: EncoderCache | None = None
 
     @validate_call
     def __init__(  # noqa: PLR0913
@@ -109,7 +115,27 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
         self.prediction_config = prediction_config
 
+        self.encoder_cache: EncoderCache | None = None
+
         self.save_hyperparameters(hparams)
+
+    def _episode_and_embedding(
+        self, batch: dict[str, Any], *, stage: str
+    ) -> tuple[Episode, torch.Tensor]:
+        """Build ``(episode, embedding)``, using the encoder cache when active.
+
+        Default path runs episode_builder (incl. DINOv3) + encoder. When the
+        cache is populated for this ``stage``, returns a synthetic episode +
+        compact embedding loaded from disk, skipping both frozen modules.
+        """
+        if self.encoder_cache is not None and self.encoder_cache.is_populated(stage):
+            return self.encoder_cache.build_cached(stage, batch, device=self.device)
+
+        episode = self.episode_builder(batch)
+        embedding = self.encoder(
+            src=episode.embeddings_flattened, mask=episode.attention_mask
+        )
+        return episode, embedding
 
     @override
     @_restricted_classmethod
@@ -177,10 +203,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> STEP_OUTPUT:
-        episode = self.episode_builder(batch)
-        embedding = self.encoder(
-            src=episode.embeddings_flattened, mask=episode.attention_mask
-        )
+        episode, embedding = self._episode_and_embedding(batch, stage="train")
 
         metrics = TensorDict({
             name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
@@ -217,10 +240,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
-        episode = self.episode_builder(batch)
-        embedding = self.encoder(
-            src=episode.embeddings_flattened, mask=episode.attention_mask
-        )
+        episode, embedding = self._episode_and_embedding(batch, stage="val")
         metrics = TensorDict({
             name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
@@ -250,10 +270,10 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
-        episode = self.episode_builder(batch)
-        embedding = self.encoder(
-            src=episode.embeddings_flattened, mask=episode.attention_mask
-        )
+        # During FT, PredictMetricsCallback drives this on train batches, so the
+        # train cache (if active) serves it; otherwise the default path runs.
+        stage = "train" if self.training else "predict"
+        episode, embedding = self._episode_and_embedding(batch, stage=stage)
         objectives_predictions = {
             name: objective.predict(
                 episode=episode,
