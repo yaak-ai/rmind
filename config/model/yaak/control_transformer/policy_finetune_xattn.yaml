@@ -1,0 +1,104 @@
+---
+# Cross-attention policy head fine-tune ("Approach A2").
+#
+# Identical to `policy_finetune.yaml` (same targets + losses + LayerNorm 384),
+# but REPLACES the concat([obs_summary, obs_history, pooled_waypoints]) -> MLP
+# head with a `CrossAttentionPolicyHead` per action: a learned query
+# cross-attends over the full token context cat([waypoints(10), obs_summary,
+# obs_history]) = [b, 12, 384]. The `output_projection` is zero-init so step-0
+# outputs are ~0 (mild, stable start; NOT mean-equivalent, unlike the pooler).
+#
+# Reads the same cached tokens (raw 10 waypoints + both summary tokens), so it
+# needs NO encoder-cache change.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "cross_attn_heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.cross_attention_head.CrossAttentionPolicyHead",
+                "dim_model": 384,
+                "out_dim": 2,
+                "num_layers": 2,
+                "num_heads": 4
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.cross_attention_head.CrossAttentionPolicyHead",
+                "dim_model": 384,
+                "out_dim": 2,
+                "num_layers": 2,
+                "num_heads": 4
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.cross_attention_head.CrossAttentionPolicyHead",
+                "dim_model": 384,
+                "out_dim": 2,
+                "num_layers": 2,
+                "num_heads": 4
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.cross_attention_head.CrossAttentionPolicyHead",
+                "dim_model": 384,
+                "out_dim": 3,
+                "num_layers": 2,
+                "num_heads": 4
+              }
+            }
+          }
+        },
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          },
+          "discrete": {
+            "turn_signal": ["input", "discrete", "turn_signal"]
+          }
+        },
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": 25000,
+      "num_training_steps": 250000
+    }
+  }
