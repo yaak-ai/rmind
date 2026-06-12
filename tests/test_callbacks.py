@@ -1,5 +1,5 @@
 import pickle
-from typing import override
+from typing import Any, override
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,12 +10,13 @@ from torch import nn
 
 from rmind.callbacks.freeze import ModuleFreezer
 from rmind.callbacks.loggers import waypoints as waypoints_logger
+from rmind.callbacks.loggers.foresight_metrics import WandbForesightMetricsLogger
 from rmind.callbacks.loggers.waypoints import WandbWaypointsLogger
 from rmind.callbacks.predict_metrics import PredictMetricsCallback
+from rmind.callbacks.safe import SafeCallback
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.models.control_transformer import PredictionConfig
 from rmind.utils.cluster import RuleBasedCluster
-from rmind.callbacks.safe import SafeCallback
 
 _RETRY_CALL_COUNT = 2
 
@@ -303,3 +304,127 @@ def test_predict_metrics_callback_swaps_prediction_config(
     assert fake_module.prediction_config is original_config, (
         "prediction_config should be restored after"
     )
+
+
+# ---------------------------------------------------------------------------
+# WandbForesightMetricsLogger
+# ---------------------------------------------------------------------------
+
+_FORESIGHT_SRC = "cam_front_left"
+_FORESIGHT_PRED_KEY = "embeddings_predict"
+_FORESIGHT_TGT_KEY = "embeddings_target"
+# Both metrics are bounded: R² ≤ 1, search accuracy ∈ [0, 1]. When pred truly
+# predicts target, both sit near 1, so we require > 0.9.
+_FORESIGHT_SIGNAL_MIN = 0.9
+# When pred and target are independent, both collapse toward their floor:
+#   - search accuracy → chance, ~1/n_patches (here 1/32 ≈ 0.03), since the
+#     nearest target patch to any pred patch is essentially uniform-random.
+#   - R² → ~0 in the population, but this probe is fit *in-sample* (no held-out
+#     split), so it can only overfit *upward*, never below 0. The inflation is
+#     ~n_features/n_samples (≈ d/n). The test feeds n ≫ d (n/d ≈ 190 here), so
+#     even the overfit R² stays well under 0.1.
+# 0.3 sits comfortably between the signal (~1) and noise (<0.1) regimes, so it
+# separates the two cases with margin to spare against seed-to-seed jitter.
+_FORESIGHT_CHANCE_MAX = 0.3
+
+
+class _StubTrainer:
+    sanity_checking = False
+    is_global_zero = True
+    current_epoch = 0
+    global_step = 0
+
+
+class _LoggingModule:
+    """Captures ``pl_module.log`` calls into a dict."""
+
+    def __init__(self) -> None:
+        self.logged: dict[str, float] = {}
+
+    def log(self, name: str, value: float, **_: object) -> None:
+        self.logged[name] = float(value)
+
+
+def _make_foresight_callback(**overrides: object) -> WandbForesightMetricsLogger:
+    kwargs: dict[str, Any] = {
+        "key": "foresight",
+        "image_sources": {_FORESIGHT_SRC: [_FORESIGHT_SRC]},
+        "embeddings_predict": [_FORESIGHT_PRED_KEY],
+        "embeddings_target": [_FORESIGHT_TGT_KEY],
+        "hot_quantile": 0.25,
+        # Surface impl errors instead of swallowing them in these tests.
+        "fail_gracefully": False,
+    }
+    kwargs.update(overrides)
+    return WandbForesightMetricsLogger(**kwargs)
+
+
+def _foresight_outputs(pred_last: torch.Tensor, tgt_last: torch.Tensor) -> dict:
+    """Wrap (B, P, d) embeddings into the (B, S=2, P, d) outputs the callback reads.
+
+    ``tgt_prev`` (the T-2 slot) is random so motion stratification has a
+    well-defined ranking; only the T-1 slot carries the pred→target signal.
+    """
+    b, p, d = pred_last.shape
+    pred_prev = torch.randn(b, p, d)
+    tgt_prev = torch.randn(b, p, d)
+    pred_seq = torch.stack([pred_prev, pred_last], dim=1)
+    tgt_seq = torch.stack([tgt_prev, tgt_last], dim=1)
+    return {
+        _FORESIGHT_PRED_KEY: {_FORESIGHT_SRC: pred_seq},
+        _FORESIGHT_TGT_KEY: {_FORESIGHT_SRC: tgt_seq},
+    }
+
+
+def _run_foresight(
+    cb: WandbForesightMetricsLogger, batches: list[dict]
+) -> dict[str, float]:
+    trainer = _StubTrainer()
+    module = _LoggingModule()
+    with patch(
+        "rmind.callbacks.loggers.foresight_metrics._get_wandb_loggers",
+        return_value=[object()],
+    ):
+        cb.on_validation_epoch_start(trainer, module)  # ty:ignore[invalid-argument-type]
+        for i, batch in enumerate(batches):
+            cb.on_validation_batch_end(trainer, module, batch, None, i)  # ty:ignore[invalid-argument-type]
+        cb.on_validation_epoch_end(trainer, module)  # ty:ignore[invalid-argument-type]
+    return module.logged
+
+
+def test_foresight_logger_recovers_signal() -> None:
+    """Identity pred→target ⇒ R² and search accuracy both ≈ 1."""
+    torch.manual_seed(0)
+    b, p, d = 8, 32, 4
+    # target == pred at T-1: a perfect linear probe and a perfect cross-patch
+    # search both fall out.
+    batches = [
+        _foresight_outputs(emb := torch.randn(b, p, d), emb.clone()) for _ in range(12)
+    ]
+
+    logged = _run_foresight(_make_foresight_callback(), batches)
+
+    assert logged[f"foresight/{_FORESIGHT_SRC}/r2_hot"] > _FORESIGHT_SIGNAL_MIN
+    assert logged[f"foresight/{_FORESIGHT_SRC}/search_hit_hot"] > _FORESIGHT_SIGNAL_MIN
+
+
+def test_foresight_logger_rejects_noise() -> None:
+    """Independent pred/target ⇒ R² (in-sample, n/d≫1) and search both ≈ chance."""
+    torch.manual_seed(0)
+    b, p, d = 8, 32, 4
+    batches = [
+        _foresight_outputs(torch.randn(b, p, d), torch.randn(b, p, d))
+        for _ in range(12)
+    ]
+
+    logged = _run_foresight(_make_foresight_callback(), batches)
+
+    assert logged[f"foresight/{_FORESIGHT_SRC}/r2_hot"] < _FORESIGHT_CHANCE_MAX
+    assert logged[f"foresight/{_FORESIGHT_SRC}/search_hit_hot"] < _FORESIGHT_CHANCE_MAX
+
+
+def test_foresight_logger_skips_nan_when_no_data() -> None:
+    """No valid batches ⇒ nothing logged (NaN epochs are skipped, not logged)."""
+    logged = _run_foresight(_make_foresight_callback(), [])
+
+    assert logged == {}

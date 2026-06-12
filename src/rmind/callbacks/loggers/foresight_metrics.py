@@ -13,14 +13,16 @@ the next-frame image embedding at motion-rich locations:
   ``argmin_q ||pred[p] - target[q]||²`` equals ``p`` (chance ~1/256).
   Complementary to R²; satisfied only by absolute spatial commitment.
 
-Motivation and definitions: see ``experiments/report_short.tex``
-(Sections 2.2--2.4) and the LeJEPA paper context in its Appendix A.
+Motivation, definitions, and the offline-probe results that justify this
+pair of metrics are written up in the foresight investigation:
+https://app.notion.com/p/Foresight-in-the-rmind-Control-Transformer-Does-the-Unsupervised-Last-Position-Predict-the-Future-37bd658ccf8780a3b298cc7c45304af2
 
 Notes:
 - We measure at the deepest FD position the artifacts buffer exposes
   (``last_embeddings[..., -1]``, which predicts img@T-1). The
   unsupervised T-1 slot the policy actually reads at serving is one
-  step further; per the report, the two positions behave near-identically.
+  step further; per the investigation linked above, the two positions
+  behave near-identically.
 - Stratification is computed from the temporal delta between the last
   two target frames in the FD artifacts buffer (img@T-2 vs img@T-1), so
   the callback needs no extra forward passes.
@@ -29,20 +31,22 @@ Notes:
   search counter keeps accumulating.
 """
 
+import math
 from typing import Annotated, Any, final
 
 import pytorch_lightning as pl
 import torch
 from pydantic import validate_call
-from pytorch_lightning.callbacks import Callback
 from torch import Tensor
 from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
+
+from rmind.callbacks.safe import SafeCallback
 
 from .common import _get_wandb_loggers
 
 
 @final
-class WandbForesightMetricsLogger(Callback):
+class WandbForesightMetricsLogger(SafeCallback):
     """See module docstring."""
 
     @validate_call
@@ -55,7 +59,12 @@ class WandbForesightMetricsLogger(Callback):
         embeddings_target: list[str | int],
         hot_quantile: Annotated[float, "fraction in (0, 1]"] = 0.05,
         max_hot_pairs: int = 50_000,
+        fail_gracefully: bool = True,
+        disable_on_error: bool = False,
     ) -> None:
+        super().__init__(
+            fail_gracefully=fail_gracefully, disable_on_error=disable_on_error
+        )
         if not 0.0 < hot_quantile <= 1.0:
             msg = f"hot_quantile must be in (0, 1], got {hot_quantile}"
             raise ValueError(msg)
@@ -118,8 +127,7 @@ class WandbForesightMetricsLogger(Callback):
     def _fit_r2(x: Tensor, y: Tensor) -> float:
         """Linear-probe R²(x → y) via lstsq with bias column, scalar SS form.
 
-        Mirrors klindtlab/lejepa-identifiability's ``bidirectional_r2`` and
-        the offline probe in ``experiments/foresight_cosine_probe.py``. The
+        Mirrors klindtlab/lejepa-identifiability's ``bidirectional_r2``. The
         fit is in-sample (no train/test split) — interpretable only when
         ``n_samples`` is well above ``n_features`` (rule of thumb: n/d ≳ 50).
         """
@@ -132,8 +140,45 @@ class WandbForesightMetricsLogger(Callback):
         ss_tot = ((y - y.mean(0)) ** 2).sum()
         return float((1 - ss_res / (ss_tot + 1e-12)).item())
 
-    @torch.no_grad()
     def on_validation_epoch_start(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
+        self._safe_call(
+            "on_validation_epoch_start",
+            self._on_validation_epoch_start,
+            trainer,
+            pl_module,
+        )
+
+    def on_validation_batch_end(  # noqa: PLR0913, PLR0917
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> None:
+        self._safe_call(
+            "on_validation_batch_end",
+            self._on_validation_batch_end,
+            trainer,
+            pl_module,
+            outputs,
+            batch,
+            batch_idx,
+            dataloader_idx,
+        )
+
+    def on_validation_epoch_end(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
+        self._safe_call(
+            "on_validation_epoch_end", self._on_validation_epoch_end, trainer, pl_module
+        )
+
+    @torch.no_grad()
+    def _on_validation_epoch_start(
         self,
         trainer: pl.Trainer,  # noqa: ARG002
         pl_module: pl.LightningModule,  # noqa: ARG002
@@ -141,7 +186,7 @@ class WandbForesightMetricsLogger(Callback):
         self._reset()
 
     @torch.no_grad()
-    def on_validation_batch_end(  # noqa: PLR0913, PLR0917
+    def _on_validation_batch_end(  # noqa: PLR0913, PLR0917
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
@@ -189,7 +234,7 @@ class WandbForesightMetricsLogger(Callback):
             self._search_total[src] += total
 
     @torch.no_grad()
-    def on_validation_epoch_end(
+    def _on_validation_epoch_end(
         self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
         if trainer.sanity_checking or not _get_wandb_loggers(pl_module):
@@ -208,13 +253,20 @@ class WandbForesightMetricsLogger(Callback):
                 if self._search_total[src] > 0
                 else float("nan")
             )
-            pl_module.log(
-                f"{self._key}/{src}/r2_hot", r2, sync_dist=False, rank_zero_only=True
-            )
-            pl_module.log(
-                f"{self._key}/{src}/search_hit_hot",
-                search_acc,
-                sync_dist=False,
-                rank_zero_only=True,
-            )
+            # Skip NaN epochs (e.g. too few hot pairs to fit, or no patches
+            # gathered) rather than logging NaN to wandb.
+            if not math.isnan(r2):
+                pl_module.log(
+                    f"{self._key}/{src}/r2_hot",
+                    r2,
+                    sync_dist=False,
+                    rank_zero_only=True,
+                )
+            if not math.isnan(search_acc):
+                pl_module.log(
+                    f"{self._key}/{src}/search_hit_hot",
+                    search_acc,
+                    sync_dist=False,
+                    rank_zero_only=True,
+                )
         self._reset()
