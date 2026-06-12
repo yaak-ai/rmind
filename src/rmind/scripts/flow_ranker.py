@@ -84,6 +84,9 @@ def _stage_draws(cfg: DictConfig, opts) -> None:
     cache_path, artifact = str(opts["cache"]), str(opts["cached_artifact"])
     out, k = Path(str(opts["out"])), int(opts.get("k", 32))
 
+    # >1 widens the draw cloud (samples x0 ~ N(0, s^2)): coverage-vs-
+    # selection experiments; 1.0 = the decoder's native distribution
+    noise_scale = float(opts.get("noise_scale", 1.0))
     payload = torch.load(cache_path, map_location="cpu", weights_only=False)
     cond = payload["cond"].float()
     gt = payload["target_actions"].float()  # raw space (N, H, C)
@@ -107,7 +110,8 @@ def _stage_draws(cfg: DictConfig, opts) -> None:
             ):
                 traj = objective.decoder.sample(
                     condition_tokens=c_rep,
-                    noise=objective._noise(condition_tokens=c_rep, generator=None),
+                    noise=noise_scale
+                    * objective._noise(condition_tokens=c_rep, generator=None),
                 )
             traj = traj.float().reshape(c.shape[0], k, horizon, -1)
             raw = objective._to_raw_space(traj)
