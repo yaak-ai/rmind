@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     import pytorch_lightning as pl
 
 FRAME_IDX_KEY = "meta/ImageMetadata.cam_front_left/frame_idx"
+TIME_STAMP_KEY = "meta/ImageMetadata.cam_front_left/time_stamp"
 HIST_KEYS = (
     "meta/VehicleMotion/gas_pedal_normalized",
     "meta/VehicleMotion/brake_pedal_normalized",
@@ -103,6 +104,7 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
             datamodule.train_dataloader() if split == "train" else datamodule.val_dataloader()
         )
         conds, conds0, targets, fidxs, ids = [], [], [], [], []
+        tstamps: list[torch.Tensor] = []
         with torch.inference_mode():
             for batch_idx, batch in enumerate(loader):
                 batch = _to_device(batch, device)
@@ -114,13 +116,11 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
                 gt = objective._target_actions(batch).float()
                 if gt.shape[1] != horizon:
                     gt = gt[:, objective._target_slice()]
-                fi = batch["data"][FRAME_IDX_KEY]
-                if fi.ndim > 1:
-                    fi = fi[:, min(objective.history_steps, fi.shape[1] - 1)]
                 conds.append(cond.half().cpu())
                 conds0.append(cond0.half().cpu())
                 targets.append(gt.cpu())
-                fidxs.append(fi.cpu().flatten())
+                fidxs.append(batch["data"][FRAME_IDX_KEY].cpu())
+                tstamps.append(batch["data"][TIME_STAMP_KEY].cpu())
                 batch_ids = batch["meta"]["input_id"]
                 ids.extend(str(x) for x in batch_ids)
                 if batch_idx % 50 == 0:
@@ -130,7 +130,8 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0915
             "cond": torch.cat(conds),          # (N, S, D) fp16
             "cond_hist0": torch.cat(conds0),   # (N, S, D) fp16
             "target_actions": torch.cat(targets),  # (N, H, A) fp32 raw
-            "frame_idx": torch.cat(fidxs),
+            "frame_idx": torch.cat(fidxs),          # (N, T) full history window
+            "time_stamp": torch.cat(tstamps),       # (N, T) epoch stamps (reye)
             "input_id": ids,
             "meta": {
                 "model_artifact": str(cfg.model.get("artifact", "?")),
