@@ -78,6 +78,45 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         return super().forward(input=mean, target=target, var=var)
 
 
+class BetaNLLLoss(GaussianNLLLoss):
+    """β-NLL loss (Seitzer et al. 2022, https://arxiv.org/abs/2203.09168).
+
+    Identical to :class:`GaussianNLLLoss` but each sample's NLL is multiplied by
+    ``detach(var) ** beta``. This down-weights the variance's effect on the mean
+    gradient, interpolating between vanilla Gaussian NLL (``beta=0``) and an
+    MSE-like objective (``beta=1``), which avoids the variance-collapse /
+    overconfidence failure mode of heteroscedastic NLL.
+    """
+
+    def __init__(self, *args: Any, beta: float = 0.5, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+
+        self.beta: float = beta
+
+    @override
+    def forward(
+        self, input: Tensor, target: Tensor, var: Tensor | None = None
+    ) -> Tensor:
+        if var is not None:
+            raise ValueError
+
+        mean, log_var = input[..., 0], input[..., 1]
+        var = self.var_pos_function(log_var)
+
+        loss = F.gaussian_nll_loss(
+            mean, target, var, full=self.full, eps=self.eps, reduction="none"
+        )
+        loss = var.detach() ** self.beta * loss
+
+        match self.reduction:
+            case "mean":
+                return loss.mean()
+            case "sum":
+                return loss.sum()
+            case _:
+                return loss
+
+
 class GramAnchoringLoss(Module):
     """
     Gram-based anchoring loss for feature matching.

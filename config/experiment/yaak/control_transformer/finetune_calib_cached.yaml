@@ -1,0 +1,28 @@
+# @package _global_
+#
+# Calibration-robust fine-tune (Approach A4) WITH encoder-output caching.
+# Identical to `finetune_cached` but swaps the three continuous policy losses
+# (gas_pedal / brake_pedal / steering_angle) from GaussianNLLLoss to BetaNLLLoss
+# (beta=0.5), which stops the val-NLL divergence (variance collapse) without
+# hurting point-L1. Same frozen episode_builder+encoder as `finetune_cached`, so
+# it reuses the SAME cache -- use the same encoder_cache_fingerprint.
+#
+# Launch:
+#   just train \
+#     experiment=yaak/control_transformer/finetune_calib_cached \
+#     model.artifact=yaak/rmind/model-et584pft:v9 \
+#     encoder_cache_fingerprint=yaak-train-v1
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune_calib
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: finetune_cached
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+encoder_embedding_dim: 384
+
+encoder_cache_fingerprint: ???
+encoder_cache_dir: ${paths.rbyte.cache}/encoder_cache/${encoder_cache_fingerprint}
