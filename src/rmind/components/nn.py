@@ -176,3 +176,4 @@ def _module_wrapper(
 
 AtLeast3D = _module_wrapper(torch.atleast_3d, name="AtLeast3D")
 DiffLast = _module_wrapper(diff_last, name="DiffLast")
+Squeeze = _module_wrapper(torch.squeeze, name="Squeeze")
