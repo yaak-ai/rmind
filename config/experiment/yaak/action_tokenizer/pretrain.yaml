@@ -9,27 +9,13 @@ defaults:
   - /wandb: yaak/rmind
   - _self_
 
-timesteps: 6      # frames per action clip (1 or 6)
-stride: 10        # frame spacing within a clip → clip = [0, 10, 20, ...]
-action_space: 4   # action features per timestep
-action_dim:       # encoder-in / decoder-out width = action_space * timesteps
-  _target_: operator.mul
-  _args_:
-    - ${action_space}
-    - ${timesteps}
+action_clip: 6
+action_step: 10
+action_stride: 10
+clip_period: "${eval:'${action_step} * ${action_clip}'}i"
 
-# clip window span in frame units, as a polars "<n>i" string = stride * timesteps
-clip_period:
-  _target_: operator.add
-  _args_:
-    - _target_: builtins.str
-      _args_:
-        - _target_: operator.mul
-          _args_:
-            - ${stride}
-            - ${timesteps}
-    - "i"
-
+action_space: 4
+action_dim: "${eval:'${action_space} * ${action_clip}'}"
 action_hidden_dim: 128
 action_latent_dim: 384
 

@@ -32,7 +32,7 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: ${paths.rbyte.cache}/yaak/action_val/t${timesteps}s${stride}/samples
+  run_folder: ${paths.rbyte.cache}/yaak/action_val/t${action_clip}d${action_step}s${action_stride}/samples
   scheduling_strategy: eager
   return_results: false
   persist_memory: false
@@ -149,14 +149,9 @@ samples:
                 AND aligned."meta/VehicleMotion/brake_pedal_normalized" BETWEEN 0.0 AND 1.0
                 AND aligned."meta/VehicleMotion/steering_angle_normalized" BETWEEN -1.0 AND 1.0
                 AND COLUMNS(*) IS NOT NULL
-                -- decimate to every stride-th frame: clip frames land on [0, 10, 20, ...]
-                AND aligned."meta/ImageMetadata.cam_front_left/frame_idx" % ${stride} = 0
               ORDER BY
                 "meta/ImageMetadata.cam_front_left/time_stamp";
 
-      # clip of ${timesteps} timestep(s) spaced ${stride} frames apart -> list columns.
-      # window spans stride*timesteps frames; on the decimated grid that holds exactly
-      # ${timesteps} frames, so the len(...) check below drops clips straddling data gaps.
       - _target_: pipefunc.PipeFunc
         renames:
           input: filtered
@@ -165,10 +160,10 @@ samples:
         func:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
-          every: "${stride}i"
+          every: "${action_stride}i"
           period: ${clip_period}
           closed: left
-          gather_every: 1
+          gather_every: "${action_step}"
 
       - _target_: pipefunc.PipeFunc
         output_name: samples_cast
@@ -180,16 +175,17 @@ samples:
             _target_: rbyte.io.DuckDBDataFrameQuery
             query: |
               SELECT
-                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[${timesteps}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
-                  "meta/VehicleMotion/speed"::FLOAT[${timesteps}] AS "meta/VehicleMotion/speed",
-                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[${timesteps}] AS "meta/VehicleMotion/gas_pedal_normalized",
-                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[${timesteps}] AS "meta/VehicleMotion/brake_pedal_normalized",
-                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[${timesteps}] AS "meta/VehicleMotion/steering_angle_normalized",
-                  "meta/VehicleState/turn_signal"::INT8[${timesteps}] AS "meta/VehicleState/turn_signal",
+                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[${action_clip}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                  "meta/VehicleMotion/speed"::FLOAT[${action_clip}] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/gas_pedal_normalized",
+                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/brake_pedal_normalized",
+                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/steering_angle_normalized",
+                  "meta/VehicleState/turn_signal"::INT8[${action_clip}] AS "meta/VehicleState/turn_signal",
               FROM
                   samples
               WHERE
-                  len("meta/ImageMetadata.cam_front_left/frame_idx") = ${timesteps}
+                  len("meta/ImageMetadata.cam_front_left/frame_idx") = ${action_clip}
+                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == (${action_clip} - 1) * ${action_step}
 
       - _target_: pipefunc.PipeFunc
         renames:
