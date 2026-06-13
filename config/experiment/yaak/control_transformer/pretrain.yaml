@@ -15,7 +15,7 @@ encoder_embedding_dim: 384
 image_embedding_dim: 384
 
 episode_length: 6
-action_horizon: 6
+action_horizon: 1
 episode_step: 10
 episode_stride: 10
 clip_period: "${eval:'(${episode_length} + ${action_horizon} - 1) * ${episode_step}'}i"
