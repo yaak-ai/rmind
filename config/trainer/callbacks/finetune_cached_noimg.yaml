@@ -1,0 +1,87 @@
+- _target_: rmind.callbacks.LogitBiasSetter
+- _target_: rmind.callbacks.ModuleFreezer
+  paths:
+    - episode_builder
+    - encoder
+# Precompute + cache frozen episode_builder(DINOv3)+encoder outputs, then skip
+# them during training. Valid ONLY while those modules stay frozen and the
+# checkpoint/dataset are unchanged; the cache is stamped and refuses to load on
+# mismatch. Runs after ModuleFreezer (setup) at on_fit_start.
+#
+# NO-IMAGE NOTE: this callbacks set is paired with `datamodule=yaak/train_noimg`,
+# whose batches carry NO decoded image. That only works when the cache is ALREADY
+# populated -- if `is_populated(stage)` is False, EncoderCachePopulator falls back
+# to running `episode_builder` on an image-less batch and crashes. Populate the
+# cache first with the normal (image) `finetune_cached` experiment, reusing the
+# same `encoder_cache_fingerprint`.
+- _target_: rmind.callbacks.EncoderCachePopulator
+  root: ${encoder_cache_dir}
+  checkpoint: ${model.artifact}
+  dataset_fingerprint: ${encoder_cache_fingerprint}
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 5
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
+# NOTE: WandbAttentionMaskLogger is omitted (cached synthetic episode carries no
+# attention_mask) AND WandbWaypointsLogger is omitted vs `finetune_cached.yaml`:
+# the latter plots predicted waypoints on the `data.cam_front_left` image, which
+# the no-image datamodule does not decode. PredictMetricsCallback below needs
+# only the CAN meta fields (kept by the no-image datamodule), so val metrics are
+# unaffected.
+- _target_: rmind.callbacks.PredictMetricsCallback
+  prediction_config:
+    objectives:
+      - score_l1
+      - score_signed_error
+      - prediction_std
+  cluster_fn:
+    _target_: rmind.utils.RuleBasedCluster
+    fields:
+      gas:
+        key: meta/VehicleMotion/gas_pedal_normalized
+        reduce: last
+      brake:
+        key: meta/VehicleMotion/brake_pedal_normalized
+        reduce: last
+      steer:
+        key: meta/VehicleMotion/steering_angle_normalized
+        reduce: last
+      dp_g:
+        key: meta/VehicleMotion/gas_pedal_normalized
+        reduce: last_diff
+      speed:
+        key: meta/VehicleMotion/speed
+        reduce: last
+    rules:
+      - name: highway
+        when: {speed: {ge: 70}}
+      - name: braking_turn
+        when: {brake: {ge: 0.02}, steer: {abs_ge: 0.05}}
+      - name: braking
+        when: {brake: {ge: 0.02}, steer: {abs_lt: 0.05}}
+      - name: cruise_turn
+        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, steer: {abs_ge: 0.05}}
+      - name: acceleration
+        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, dp_g: {ge: 0.01}}
+      - name: gas_release
+        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, dp_g: {lt: -0.01}}
+      - name: cruise
+        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, steer: {abs_lt: 0.05}, dp_g: {abs_lt: 0.01}}
+    default: idle_coast
+  cluster_metrics:
+    acceleration:
+      - policy/score_l1/value/continuous/gas_pedal
+      - policy/score_signed_error/value/continuous/gas_pedal
+    cruise_turn:
+      - policy/score_l1/value/continuous/steering_angle
+    braking_turn:
+      - policy/score_l1/value/continuous/brake_pedal
+      - policy/score_l1/value/continuous/steering_angle
+    braking:
+      - policy/score_l1/value/continuous/brake_pedal
+    highway:
+      - policy/score_l1/value/continuous/gas_pedal
+      - policy/score_signed_error/value/continuous/gas_pedal

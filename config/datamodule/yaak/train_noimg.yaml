@@ -1,0 +1,49 @@
+---
+# No-image datamodule for ENCODER-CACHED fine-tuning.
+#
+# Identical to `yaak/train` but sets `streams: null` on both the train and val
+# rbyte datasets, so `rbyte.Dataset.get_batch` skips the `cam_front_left` JPEG
+# decode (the dominant per-epoch cost). The `samples` pipeline is unchanged, so
+# `meta/sample_id`, the CAN/metadata fields the val metrics need, and the action
+# input targets are all still produced -- and the sample count/ordering (hence
+# `sample_id` assignment) is byte-identical to `yaak/train`.
+#
+# USE ONLY WITH AN ALREADY-POPULATED ENCODER CACHE. On the cached fast path
+# `ControlTransformer._episode_and_embedding` -> `EncoderCache.build_cached`
+# reads ONLY `meta/sample_id` from the batch (embeddings + targets come from the
+# cache), so the decoded pixels are genuinely unused. If the cache is NOT yet
+# populated, `EncoderCachePopulator` falls back to running `episode_builder` on a
+# batch that has no image tensor and crashes -- populate the cache first with the
+# normal (image) `finetune_cached` experiment.
+defaults:
+  - /dataset/yaak/train@train.dataset
+  - /dataset/yaak/val@val.dataset
+  - _self_
+
+_target_: rmind.datamodules.GenericDataModule
+train:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 64
+  shuffle: true
+  drop_last: true
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+  dataset:
+    streams: null
+
+val:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 32
+  shuffle: false
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+  dataset:
+    streams: null
