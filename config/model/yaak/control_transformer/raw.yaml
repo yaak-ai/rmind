@@ -87,28 +87,41 @@ episode_builder:
               _target_: rmind.components.nn.AtLeast3D
 
             gas_pedal_diff:
-              _target_: rmind.components.nn.DiffLast
-              append:
-                _target_: hydra.utils.get_object
-                path: math.nan
+              _target_: rmind.components.nn.Sequential
+              _args_:
+                # drop the action_horizon=1 chunk axis so DiffLast diffs over T
+                - _target_: rmind.components.nn.Squeeze
+                  dim: -1
+                - _target_: rmind.components.nn.DiffLast
+                  append:
+                    _target_: hydra.utils.get_object
+                    path: math.nan
 
             brake_pedal:
               _target_: rmind.components.nn.AtLeast3D
 
             brake_pedal_diff:
-              _target_: rmind.components.nn.DiffLast
-              append:
-                _target_: hydra.utils.get_object
-                path: math.nan
+              _target_: rmind.components.nn.Sequential
+              _args_:
+                - _target_: rmind.components.nn.Squeeze
+                  dim: -1
+                - _target_: rmind.components.nn.DiffLast
+                  append:
+                    _target_: hydra.utils.get_object
+                    path: math.nan
 
             steering_angle:
               _target_: rmind.components.nn.AtLeast3D
 
             steering_angle_diff:
-              _target_: rmind.components.nn.DiffLast
-              append:
-                _target_: hydra.utils.get_object
-                path: math.nan
+              _target_: rmind.components.nn.Sequential
+              _args_:
+                - _target_: rmind.components.nn.Squeeze
+                  dim: -1
+                - _target_: rmind.components.nn.DiffLast
+                  append:
+                    _target_: hydra.utils.get_object
+                    path: math.nan
 
           discrete:
             _target_: rmind.components.nn.AtLeast3D
