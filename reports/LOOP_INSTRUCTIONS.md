@@ -105,9 +105,28 @@ oracle-mode 0.28, coverage floor 0.15. Full freedom to redirect the tree.
   * Negatives: set-context feats, gas-aware label, hard mode-pick, ep256.
 - flow_cached_predict now supports +cpredict.readout=ranker
   (+cpredict.ranker_ckpt, +cpredict.ranker_temp).
-- NEXT QUEUE: exp31 pre-registered test — per-ckpt ranker on depth8@1002
-  ckpt cibfm41y (meanK 0.3245, good decoder; predict spike WIN if
-  "amplifies good decoders" holds). exp32+ Phase E stratified-30 cache;
-  Phase F full-path overnight confirmation of control+ranker.
+- exp31 falsified "amplifies good decoders"; exp32 strat dataset NULL
+  (0.3233/0.3598, mean 0.3416 ~ pilot 0.337); exp34 noise-widening NEGATIVE
+  (coverage ceilings improve, readout degrades 0.2985->0.3239->0.3702 —
+  artificial coverage = distractors); exp35 strat decoder = 2nd real ranker
+  win (-0.017, coverage 0.1429); exp36 delta-off decoder mild (-0.008,
+  coverage 0.1718); exp37 temporal-consistency voting NEGATIVE (committed
+  anchor propagates errors; confidence gate = bitwise meanK catch-22;
+  GT-anchored bound 0.156 quasi-tautological).
+- SYNTHESIS: native cloud coverage (oracle draw ~0.143 vs ~0.165+) predicts
+  the ranker spike win across 7 decoders; cannot be added artificially;
+  what makes a training run land at 0.143 is THE open question. Selection-
+  side levers exhausted — mode disambiguation must come from conditioning
+  (route-vs-history / copycat front). User dislikes the extra trainable
+  module; ranker stays an analysis instrument unless coverage is reliable.
+- exp33 full-path anchor DONE (jdt7mexr): spike-meanK 0.3668 vs cached@1001
+  0.3555 — delta +0.011 within seed-sigma, not step-matched. CACHED TRACK
+  CONFIRMED as faithful proxy; all loop conclusions stand.
+- LOOP CLOSED 2026-06-13 at 37 experiments. Final synthesis in the Notion
+  dev log. Recipe: control unchanged + meanK readout; optional per-ckpt
+  ranker (softmax t=4) when native coverage ~0.143. Next direction:
+  conditioning (route-vs-history / copycat), not readouts.
+- Codebase distilled to the best variant (commits 5db65a1, 7adfac3);
+  tests 134 green.
 - Loop report: reports/loop_manifest.json + loop_report.html (parquets:
-  exp01/exp02 meank, exp22 ranker-t4).
+  exp01/exp02 meank, exp22 ranker-t4, regression ref).
