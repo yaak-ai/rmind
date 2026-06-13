@@ -270,9 +270,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def predict_step(self, batch: dict[str, Any]) -> TensorDict:
-        # During FT, PredictMetricsCallback drives this on train batches, so the
-        # train cache (if active) serves it; otherwise the default path runs.
-        stage = "train" if self.training else "predict"
+        # PredictMetricsCallback drives this during validation (model in eval),
+        # so route to the populated cache by stage: "train" while training, else
+        # "val" (the validation cache). A true predict run has no encoder_cache
+        # attached, so the stage is moot and the default (episode_builder) path
+        # runs. Using "predict" here would miss the cache and call episode_builder
+        # on a no-image batch -> crash.
+        stage = "train" if self.training else "val"
         episode, embedding = self._episode_and_embedding(batch, stage=stage)
         objectives_predictions = {
             name: objective.predict(
