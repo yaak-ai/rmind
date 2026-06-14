@@ -42,15 +42,26 @@ class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
 
 class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
     def __init__(
-        self, *args: Any, logit_bias: Tensor | None = None, **kwargs: Any
+        self,
+        *args: Any,
+        logit_bias: Tensor | None = None,
+        weight: float = 1.0,
+        **kwargs: Any,
     ) -> None:
+        # NOTE: `weight` is captured here (keyword-only) and stored as
+        # `self.loss_weight` -- it is a scalar per-head loss multiplier, NOT the
+        # per-class weight Tensor of `CrossEntropyLoss`. It is deliberately NOT
+        # forwarded to `super().__init__`. The name `self.weight` is also avoided
+        # because `_WeightedLoss` registers a `weight` buffer (assigning a float
+        # there raises).
         super().__init__(*args, **kwargs)
 
         self.logit_bias: Tensor | None = logit_bias
+        self.loss_weight: float = weight
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
+        return self.loss_weight * super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
 
 
 class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
@@ -59,11 +70,15 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         *args: Any,
         # NOTE: use torch.ones_like to get vanilla MSE
         var_pos_function: Callable[[Tensor], Tensor] = torch.exp,
+        # scalar per-head loss multiplier (default 1.0 => no-op). Stored as
+        # `self.loss_weight` to mirror `LogitBiasCrossEntropyLoss`.
+        weight: float = 1.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
 
         self.var_pos_function: Callable[[Tensor], Tensor] = var_pos_function
+        self.loss_weight: float = weight
 
     @override
     def forward(
@@ -75,7 +90,7 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         mean, log_var = input[..., 0], input[..., 1]
         var = self.var_pos_function(log_var)
 
-        return super().forward(input=mean, target=target, var=var)
+        return self.loss_weight * super().forward(input=mean, target=target, var=var)
 
 
 class BetaNLLLoss(GaussianNLLLoss):
@@ -110,11 +125,11 @@ class BetaNLLLoss(GaussianNLLLoss):
 
         match self.reduction:
             case "mean":
-                return loss.mean()
+                return self.loss_weight * loss.mean()
             case "sum":
-                return loss.sum()
+                return self.loss_weight * loss.sum()
             case _:
-                return loss
+                return self.loss_weight * loss
 
 
 class GramAnchoringLoss(Module):

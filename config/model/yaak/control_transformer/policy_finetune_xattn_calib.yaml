@@ -1,0 +1,113 @@
+---
+# Cross-attention policy head fine-tune + calibration (xattn x calib).
+#
+# Identical to `policy_finetune_xattn.yaml` (same CrossAttentionPolicyHead per
+# action, LayerNorm 384, cached tokens) but with the calibration changes from
+# `policy_finetune_calib.yaml`: the three continuous heads use BetaNLLLoss
+# (beta=0.5) instead of GaussianNLLLoss.
+#
+# Per-head loss weights are baked into each loss below to fix the multi-task
+# imbalance: they are INVERSE-MAGNITUDE weights derived from the jolly-darkness
+# beta-NLL run, normalized to turn_signal=1:
+#   steering_angle=6.2, gas_pedal=2.4, brake_pedal=5.6, turn_signal=1.0
+# (The loss tree is summed UNWEIGHTED downstream, so the weight must live inside
+# each loss's `weight` field.)
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "cross_attn_heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.cross_attention_head.CrossAttentionPolicyHead",
+                "dim_model": 384,
+                "out_dim": 2,
+                "num_layers": 2,
+                "num_heads": 4
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.cross_attention_head.CrossAttentionPolicyHead",
+                "dim_model": 384,
+                "out_dim": 2,
+                "num_layers": 2,
+                "num_heads": 4
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.cross_attention_head.CrossAttentionPolicyHead",
+                "dim_model": 384,
+                "out_dim": 2,
+                "num_layers": 2,
+                "num_heads": 4
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.cross_attention_head.CrossAttentionPolicyHead",
+                "dim_model": 384,
+                "out_dim": 3,
+                "num_layers": 2,
+                "num_heads": 4
+              }
+            }
+          }
+        },
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          },
+          "discrete": {
+            "turn_signal": ["input", "discrete", "turn_signal"]
+          }
+        },
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.BetaNLLLoss",
+                "beta": 0.5,
+                "weight": 2.4
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.BetaNLLLoss",
+                "beta": 0.5,
+                "weight": 5.6
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.BetaNLLLoss",
+                "beta": 0.5,
+                "weight": 6.2
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss",
+                "weight": 1.0
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": 25000,
+      "num_training_steps": 250000
+    }
+  }
