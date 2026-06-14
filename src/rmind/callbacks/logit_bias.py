@@ -117,6 +117,9 @@ class LogitBiasSetter(Callback):
                     raise ValueError(msg) from None
                 else:
                     return last_linear_layer.out_features
+            case _ if hasattr(head, "output_projection"):
+                # CrossAttentionPolicyHead: out dim = its output projection (Linear).
+                return head.output_projection.out_features  # ty:ignore[unresolved-attribute]
             case _:
                 msg = f"Unsupported head type: {type(head)}"
                 raise NotImplementedError(msg)

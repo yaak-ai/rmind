@@ -44,15 +44,15 @@ class PolicyObjective(Objective):
             raise ValueError(msg)
 
         self.norm: Module | None = norm
-        # Default path: concat[obs_summary, obs_history, pooled_waypoints] -> MLP.
-        self.heads: ModuleDict | None = heads
-        # Cross-attention path ("Approach A2"): each action head is a
-        # ``CrossAttentionPolicyHead`` whose learned query cross-attends over the
-        # full token context cat([waypoints(n), obs_summary, obs_history]); this
-        # REPLACES the concat->MLP path when set. Mirrors the same tree structure
-        # (continuous/{gas,brake,steer}, discrete/turn_signal) so targets,
-        # ``tree_paths`` and ``named_apply`` are unchanged.
-        self.cross_attn_heads: ModuleDict | None = cross_attn_heads
+        # `self.heads` is ALWAYS the active action-head ModuleDict (same tree:
+        # continuous/{gas,brake,steer}, discrete/turn_signal), so external
+        # consumers (LogitBiasSetter, the optimizer, predict's tree_paths) keep
+        # working unchanged. `_cross_attn` only switches feature assembly: the
+        # cross-attention path ("Approach A2") uses CrossAttentionPolicyHead
+        # modules whose learned query cross-attends over the full token context
+        # cat([waypoints(n), obs_summary, obs_history]) instead of concat->MLP.
+        self._cross_attn: bool = cross_attn_heads is not None
+        self.heads: ModuleDict = cross_attn_heads if self._cross_attn else heads  # ty:ignore[invalid-assignment]
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
         # How the per-waypoint tokens are reduced to the single token the head
@@ -64,10 +64,8 @@ class PolicyObjective(Objective):
 
     @property
     def _active_heads(self) -> ModuleDict:
-        """The ModuleDict actually producing logits (MLP or cross-attn)."""
-        if self.heads is not None:
-            return self.heads
-        return cast("ModuleDict", self.cross_attn_heads)
+        """The active action-head ModuleDict (always ``self.heads``)."""
+        return self.heads
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -122,7 +120,7 @@ class PolicyObjective(Objective):
 
         waypoints_raw = embeddings.get((Modality.CONTEXT, "waypoints"))
 
-        if self.cross_attn_heads is not None:
+        if self._cross_attn:
             # Cross-attention context: the full token sequence (no pooling).
             # cat([waypoints(n), obs_summary(1), obs_history(1)]) -> [b, n+2, d].
             # The selected tokens are already normed upstream (forward /
