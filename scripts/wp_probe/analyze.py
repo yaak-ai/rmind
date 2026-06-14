@@ -57,10 +57,11 @@ def steer_l1(df: pl.DataFrame, col: str) -> np.ndarray:
     return a[:, 0] if a.ndim == NDIM_FLAT else a[:, :, 0].ravel()
 
 
-def gt_aligned(df: pl.DataFrame, col: str) -> np.ndarray:
-    g = stack(df, col)  # (N, T, 1)
-    # policy head predicts the last step; inverse-dynamics predicts steps 1..T-1.
-    return g[:, -1, 0] if g.shape[1] == 1 else g[:, 1:, 0].ravel()
+def gt_aligned(df: pl.DataFrame, col: str, objective: str) -> np.ndarray:
+    g = stack(df, col)  # (N, T, 1); T = full episode length
+    # Align gt to the prediction's timesteps: the policy head predicts ONLY the
+    # last step (-> N values); inverse-dynamics predicts steps 1..T-1 (-> N*(T-1)).
+    return g[:, -1, 0] if objective == "policy" else g[:, 1:, 0].ravel()
 
 
 def report(root: str, objective: str, models: list[str]) -> None:
@@ -80,8 +81,8 @@ def report(root: str, objective: str, models: list[str]) -> None:
     for m in models:
         b, p = load(root, m, "baseline-none"), load(root, m, "waypoints-none")
         lb, lp = steer_l1(b, l1_col), steer_l1(p, l1_col)
-        tb = np.abs(gt_aligned(b, gt_col)) >= TURN_THRESHOLD
-        tp = np.abs(gt_aligned(p, gt_col)) >= TURN_THRESHOLD
+        tb = np.abs(gt_aligned(b, gt_col, objective)) >= TURN_THRESHOLD
+        tp = np.abs(gt_aligned(p, gt_col, objective)) >= TURN_THRESHOLD
         da = 100 * (lp.mean() - lb.mean()) / lb.mean()
         dt = 100 * (lp[tp].mean() - lb[tb].mean()) / lb[tb].mean()
         print(
@@ -94,7 +95,7 @@ def report(root: str, objective: str, models: list[str]) -> None:
     for m in models:
         b, lat = load(root, m, "baseline-none"), load(root, m, "baseline-lateral")
         pb, pm = steer_pred(b, p_col), steer_pred(lat, p_col)
-        tm = np.abs(gt_aligned(b, gt_col)) >= TURN_THRESHOLD
+        tm = np.abs(gt_aligned(b, gt_col, objective)) >= TURN_THRESHOLD
         ct = np.corrcoef(pb[tm], pm[tm])[0, 1]
         ft = (np.sign(pb[tm]) != np.sign(pm[tm])).mean()
         ca = np.corrcoef(pb, pm)[0, 1]
