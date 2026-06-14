@@ -54,6 +54,7 @@ trainer:
       path: ${hydra:run.dir}/predictions/${permutation}-${reflection}/{batch_idx:06}.parquet
       select:
         - [batch, meta, input_id]
+        - [batch, meta, VehicleMotion/speed]  # for at-rest (speed<1) cold-start metric
         - [batch, data, waypoints/xy_normalized]
         - [policy, ground_truth, value]
         - [policy, prediction_value, value]
