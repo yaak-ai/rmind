@@ -1,0 +1,31 @@
+# @package _global_
+
+# Dropout variant of `finetune_seqtransformer_cached_noimg`: points the model at
+# `policy_finetune_seqtransformer_drop` (dropout=0.3 on all heads -- attention +
+# MLP). Otherwise identical -- same `yaak/train_noimg` datamodule and same losses/
+# weights/targets. Uses the `finetune_cached_noimg_norms` callbacks (adds
+# WeightGradNormLogger to track overfitting). Same cached tokens.
+#
+# USE ONLY WITH AN ALREADY-POPULATED ENCODER CACHE (see finetune_cached_noimg).
+#
+# Launch:
+#   uv run rmind-train \
+#     experiment=yaak/control_transformer/finetune_seqtransformer_drop_cached_noimg \
+#     model.artifact=yaak/rmind/model-et584pft:v9 \
+#     encoder_cache_fingerprint=yaak-train-v1 \
+#     paths.rbyte.cache=/nasa/max/rbyte_cache
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune_seqtransformer_drop
+  - /datamodule: yaak/train_noimg
+  - /trainer: default
+  - /trainer/callbacks: finetune_cached_noimg_norms
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+encoder_embedding_dim: 384
+
+# Persistent (reusable across runs) cache directory + dataset fingerprint.
+encoder_cache_fingerprint: ???
+encoder_cache_dir: ${paths.rbyte.cache}/encoder_cache/${encoder_cache_fingerprint}

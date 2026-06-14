@@ -13,13 +13,23 @@ class _Block(nn.Module):
     (see ``WaypointTransformerPooler``).
     """
 
-    def __init__(self, dim: int, num_heads: int, mlp_ratio: int) -> None:
+    def __init__(
+        self, dim: int, num_heads: int, mlp_ratio: int, dropout: float = 0.0
+    ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        self.attn = nn.MultiheadAttention(
+            dim, num_heads, dropout=dropout, batch_first=True
+        )
         self.norm2 = nn.LayerNorm(dim)
         mlp_out = nn.Linear(dim * mlp_ratio, dim)
+        # NOTE: keep the Sequential layout (mlp.0, mlp.2) byte-identical to the
+        # pre-dropout version so existing `_Block` state-dicts (shared with
+        # WaypointTransformerPooler) still load. Dropout is applied in forward,
+        # not inserted into the Sequential (which would renumber mlp_out).
         self.mlp = nn.Sequential(nn.Linear(dim, dim * mlp_ratio), nn.GELU(), mlp_out)
+        self.attn_dropout = nn.Dropout(dropout)
+        self.mlp_dropout = nn.Dropout(dropout)
         # zero-init the residual output projections => identity at step 0
         nn.init.zeros_(self.attn.out_proj.weight)
         nn.init.zeros_(self.attn.out_proj.bias)
@@ -29,8 +39,10 @@ class _Block(nn.Module):
     @override
     def forward(self, x: Tensor) -> Tensor:
         normed = self.norm1(x)
-        attended = x + self.attn(normed, normed, normed, need_weights=False)[0]
-        return attended + self.mlp(self.norm2(attended))
+        attended = x + self.attn_dropout(
+            self.attn(normed, normed, normed, need_weights=False)[0]
+        )
+        return attended + self.mlp_dropout(self.mlp(self.norm2(attended)))
 
 
 class WaypointTransformerPooler(nn.Module):

@@ -1,0 +1,124 @@
+---
+# VARIANT of `policy_finetune_seqtransformer.yaml`: input-mean skip connection
+# (skip=true) on all heads. Only the head kwargs change; losses/weights/targets/
+# lr_scheduler are identical.
+#
+# Self-attention transformer policy head fine-tune + calibration.
+#
+# Identical to `policy_finetune_xattn_calib.yaml` (same cross_attn path, LayerNorm
+# 384, BetaNLLLoss(beta=0.5) on continuous heads, cached tokens, per-head loss
+# weights) but swaps every head from CrossAttentionPolicyHead to
+# TransformerPolicyHead: a num_layers-deep self-attention transformer over the
+# full token sequence cat([waypoints(10), obs_summary, obs_history]) = [b, 12, 384]
+# with mean-pool readout and a zero-init output_projection. A more expressive
+# alternative to the learned-query cross-attention head.
+#
+# Per-head loss weights are baked into each loss below to fix the multi-task
+# imbalance: they are INVERSE-MAGNITUDE weights derived from the jolly-darkness
+# beta-NLL run, normalized to turn_signal=1:
+#   steering_angle=6.2, gas_pedal=2.4, brake_pedal=5.6, turn_signal=1.0
+# (The loss tree is summed UNWEIGHTED downstream, so the weight must live inside
+# each loss's `weight` field.)
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "cross_attn_heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.transformer_policy_head.TransformerPolicyHead",
+                "dim_model": 384,
+                "out_dim": 2,
+                "num_layers": 2,
+                "num_heads": 4,
+                "skip": true
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.transformer_policy_head.TransformerPolicyHead",
+                "dim_model": 384,
+                "out_dim": 2,
+                "num_layers": 2,
+                "num_heads": 4,
+                "skip": true
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.transformer_policy_head.TransformerPolicyHead",
+                "dim_model": 384,
+                "out_dim": 2,
+                "num_layers": 2,
+                "num_heads": 4,
+                "skip": true
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.transformer_policy_head.TransformerPolicyHead",
+                "dim_model": 384,
+                "out_dim": 3,
+                "num_layers": 2,
+                "num_heads": 4,
+                "skip": true
+              }
+            }
+          }
+        },
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          },
+          "discrete": {
+            "turn_signal": ["input", "discrete", "turn_signal"]
+          }
+        },
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.BetaNLLLoss",
+                "beta": 0.5,
+                "weight": 2.4
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.BetaNLLLoss",
+                "beta": 0.5,
+                "weight": 5.6
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.BetaNLLLoss",
+                "beta": 0.5,
+                "weight": 6.2
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss",
+                "weight": 1.0
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": 25000,
+      "num_training_steps": 250000
+    }
+  }

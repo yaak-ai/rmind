@@ -18,6 +18,7 @@ from .prediction import (
 )
 from .prediction_config import PredictionConfigSetter
 from .safe import SafeCallback
+from .weight_grad_norm import WeightGradNormLogger
 
 __all__ = [
     "DataFramePredictionWriter",
@@ -36,4 +37,5 @@ __all__ = [
     "WandbImageParamLogger",
     "WandbPatchSimilarityLogger",
     "WandbWaypointsLogger",
+    "WeightGradNormLogger",
 ]
