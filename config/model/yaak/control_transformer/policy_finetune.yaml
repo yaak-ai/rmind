@@ -13,6 +13,7 @@ hparams_jq: |
         "use_observation_history": (${policy_use_observation_history} != 0),
         "use_waypoints": (${policy_use_waypoints} != 0),
         "use_raw_waypoints": (${policy_use_raw_waypoints} != 0),
+        "relative_waypoints": (${policy_relative_waypoints} != 0),
         "raw_waypoints_projection": (if ${policy_use_raw_waypoints} != 0 then {
           "_target_": "rmind.components.nn.Linear",
           "in_features": 20,

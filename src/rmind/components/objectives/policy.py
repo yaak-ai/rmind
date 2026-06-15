@@ -84,6 +84,7 @@ class PolicyObjective(Objective):
         loss_weighting: LossWeighting | None = None,
         use_waypoints: bool = True,
         use_raw_waypoints: bool = False,
+        relative_waypoints: bool = False,
         raw_waypoints_projection: InstanceOf[Module] | None = None,
         dropout: InstanceOf[Module] | None = None,
     ) -> None:
@@ -100,6 +101,7 @@ class PolicyObjective(Objective):
         self.loss_weighting: LossWeighting | None = loss_weighting
         self.use_waypoints: bool = use_waypoints
         self.use_raw_waypoints: bool = use_raw_waypoints
+        self.relative_waypoints: bool = relative_waypoints
         self.raw_waypoints_projection: Module | None = raw_waypoints_projection
         self.dropout: Module | None = dropout
 
@@ -147,6 +149,8 @@ class PolicyObjective(Objective):
 
         if self.use_raw_waypoints:
             raw = episode.input.get((Modality.CONTEXT, "waypoints"))[:, -1]  # [b, 10, 2]
+            if self.relative_waypoints:
+                raw = torch.cat([raw[:, :1], raw[:, 1:] - raw[:, :-1]], dim=1)  # [b, 10, 2]
             waypoints = raw.flatten(start_dim=1).unsqueeze(1)  # [b, 1, 20]
             if self.raw_waypoints_projection is not None:
                 waypoints = self.raw_waypoints_projection(waypoints)  # [b, 1, d]

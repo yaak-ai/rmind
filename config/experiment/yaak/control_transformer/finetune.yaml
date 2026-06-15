@@ -33,6 +33,7 @@ policy_loss_weighting: "none"
 
 policy_use_waypoints: 1
 policy_use_raw_waypoints: 0
+policy_relative_waypoints: 0
 
 # dropout after trunk features — set p > 0 to enable, e.g. ++policy_dropout_p=0.1
 policy_dropout_p: 0
