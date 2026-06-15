@@ -166,3 +166,5 @@ inference_results/
 .claude
 report
 *.png
+/reports/parquets
+/reports
