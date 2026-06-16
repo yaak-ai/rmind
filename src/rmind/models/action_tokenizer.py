@@ -88,6 +88,8 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def forward(self, action: Tensor) -> Tensor:
+
+        action = action.flatten(-2, -1)
         *batch, action_dim = action.shape
         z = self.encoder(self._normalize(action).reshape(-1, action_dim))
         codes, _, _ = self.quantizer(z)

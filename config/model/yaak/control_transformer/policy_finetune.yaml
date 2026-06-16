@@ -3,79 +3,63 @@ _target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_ar
 artifact: ???
 strict: false
 hparams_jq: |
-  .objectives = {
+  .episode_builder.input_transform._args_ += [{
+    "_target_": "rmind.components.nn.SliceFields",
+    "dim": -1,
+    "index": 0,
+    "paths": [
+      ["continuous", "gas_pedal"],
+      ["continuous", "brake_pedal"],
+      ["continuous", "steering_angle"],
+      ["discrete", "turn_signal"]
+    ]
+  }]
+  | .episode_builder.tokenizers.modules.joint_actions = {
+    "_target_": "rmind.components.nn.Identity"
+  }
+  | .objectives = {
     "_target_": "rmind.components.containers.ModuleDict",
     "modules": {
       "policy": {
-        "_target_": "rmind.components.objectives.PolicyObjective",
+        "_target_": "rmind.components.objectives.joint_policy.JointPolicyObjective",
         "norm": {
           "_target_": "torch.nn.LayerNorm",
           "normalized_shape": 384
         },
-        "heads": {
-          "_target_": "rmind.components.containers.ModuleDict",
-          "modules": {
-            "continuous": {
-              "gas_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              },
-              "brake_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              },
-              "steering_angle": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              }
-            },
-            "discrete": {
-              "turn_signal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 3],
-                "bias": false
-              }
-            }
-          }
+        "tokenizer": {
+          "_target_": "rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact",
+          "artifact": "${action_tokenizer_artifact}",
+          "weights_only": false
         },
-        "targets": {
-          "continuous": {
-            "gas_pedal": ["input", "continuous", "gas_pedal"],
-            "brake_pedal": ["input", "continuous", "brake_pedal"],
-            "steering_angle": ["input", "continuous", "steering_angle"]
-          },
-          "discrete": {
-            "turn_signal": ["input", "discrete", "turn_signal"]
-          }
+        "projection": {
+          "_target_": "rmind.components.nn.Linear",
+          "in_features": 1152,
+          "out_features": 384,
+          "bias": false
+        },
+        "heads": {
+          "_target_": "torch.nn.ModuleList",
+          "_args_": [[
+            { "_target_": "rmind.components.nn.Linear", "in_features": 384, "out_features": 16, "bias": false },
+            { "_target_": "rmind.components.nn.Linear", "in_features": 384, "out_features": 16, "bias": false },
+            { "_target_": "rmind.components.nn.Linear", "in_features": 384, "out_features": 16, "bias": false },
+            { "_target_": "rmind.components.nn.Linear", "in_features": 384, "out_features": 16, "bias": false }
+          ]]
+        },
+        "offset_head": {
+          "_target_": "torchvision.ops.MLP",
+          "in_channels": 1152,
+          "hidden_channels": [384, 24],
+          "bias": false
         },
         "losses": {
           "_target_": "rmind.components.containers.ModuleDict",
           "modules": {
-            "continuous": {
-              "gas_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              },
-              "brake_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              },
-              "steering_angle": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              }
-            },
-            "discrete": {
-              "turn_signal": {
-                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
-              }
-            }
+            "code": { "_target_": "rmind.components.loss.FocalLoss" },
+            "offset": { "_target_": "torch.nn.L1Loss" }
           }
-        }
+        },
+        "chunk": ["input", "joint_actions"]
       }
     }
   }
