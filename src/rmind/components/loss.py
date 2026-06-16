@@ -30,27 +30,35 @@ class FocalLoss(Module):
 
 
 class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
+    logit_bias: Tensor | None
+
     def __init__(self, *, logit_bias: Tensor | None = None, gamma: float = 2.0) -> None:
         super().__init__(gamma=gamma)
 
-        self.logit_bias: Tensor | None = logit_bias
+        self.register_buffer("logit_bias", logit_bias)
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
+        if self.logit_bias is not None:
+            input = input + self.logit_bias
+        return super().forward(input, target)
 
 
 class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
+    logit_bias: Tensor | None
+
     def __init__(
         self, *args: Any, logit_bias: Tensor | None = None, **kwargs: Any
     ) -> None:
         super().__init__(*args, **kwargs)
 
-        self.logit_bias: Tensor | None = logit_bias
+        self.register_buffer("logit_bias", logit_bias)
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
+        if self.logit_bias is not None:
+            input = input + self.logit_bias
+        return super().forward(input, target)
 
 
 class GaussianNLLLoss(torch.nn.GaussianNLLLoss):

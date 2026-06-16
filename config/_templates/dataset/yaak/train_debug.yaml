@@ -420,3 +420,29 @@ samples:
           _target_: polars.DataFrame.with_row_index
           _partial_: true
           name: meta/sample_id
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_scored
+        renames:
+          df: samples_with_id
+        func:
+          _target_: rmind.utils.pipeline.left_join_parquet
+          _partial_: true
+          path: "${oc.select:scores_parquet,''}"
+          "on": "meta/sample_id"
+          right_on: "batch/data/meta/sample_id"
+          select:
+            - "policy/loss/value/continuous/gas_pedal"
+            - "policy/loss/value/continuous/brake_pedal"
+            - "policy/loss/value/continuous/steering_angle"
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_filtered
+        renames:
+          df: samples_scored
+        func:
+          _target_: rmind.utils.pipeline.drop_overrepresented_by_loss
+          _partial_: true
+          columns:
+            - "policy/loss/value/continuous/gas_pedal"
+            - "policy/loss/value/continuous/brake_pedal"
+            - "policy/loss/value/continuous/steering_angle"
+          max_bin_freq: "${oc.select:loss_max_bin_freq,0.02}"
