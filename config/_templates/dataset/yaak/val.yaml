@@ -49,11 +49,11 @@ samples:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324
 
-  executor:
-    _target_: concurrent.futures.ProcessPoolExecutor
-    mp_context:
-      _target_: multiprocessing.get_context
-      method: forkserver
+  # executor:
+  #   _target_: concurrent.futures.ProcessPoolExecutor
+  #   mp_context:
+  #     _target_: multiprocessing.get_context
+  #     method: forkserver
 
   storage: file_array
   run_folder: ${paths.rbyte.cache}/yaak/val/h${action_horizon}/samples
