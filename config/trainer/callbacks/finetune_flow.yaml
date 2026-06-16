@@ -1,0 +1,41 @@
+---
+# finetune callbacks + flow-policy diagnostics:
+# - position-embedding matrix logged as a wandb image every val epoch (the
+#   slot-identity probe: untrained PEs were the constant-chunk smoking gun;
+#   the scalar counterpart is the objective's `pe_drift` metric).
+# - NO EMA: on the single-drive overfit the weights are in steady slow descent
+#   (no SGD orbit to average), so the EMA shadow lags and understates a
+#   still-improving model by ~2-3pt — val must read raw weights here. EMA stays
+#   in `finetune_ema` for multi-drive training, where gradients are noisy and
+#   the orbit assumption holds.
+- _target_: rmind.callbacks.LogitBiasSetter
+- _target_: rmind.callbacks.ModuleFreezer
+  paths:
+    - episode_builder
+    - encoder
+# 6x6 cosine-similarity matrix between the slot position embeddings.
+# At init: ~identity (random vectors are near-orthogonal). If the model
+# learns slot identity, expect ordered structure (e.g. neighbors more
+# similar than distant slots); if it stays ~identity, the PEs are unused.
+- _target_: rmind.callbacks.WandbImageParamLogger
+  when: on_validation_epoch_end
+  key: policy/position_embedding_cosine
+  select:
+    - [objectives, policy, decoder, position_embedding, weight]
+  apply:
+    _target_: torchmetrics.functional.pairwise_cosine_similarity
+    _partial_: true
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 5
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  # Cadence + retention are overridable per-experiment. Default (1, save_top_k 1)
+  # = save/overwrite the latest each epoch, as before. The overfit base keeps
+  # every 10th epoch (every_n_epochs=10, save_top_k=-1) to cut the per-epoch
+  # wandb artifact uploads (log_model=all logs on each save) and to retain a
+  # sparse epoch ladder for offline fan/eval.
+  every_n_epochs: ${oc.select:flow_checkpoint_every_n_epochs,1}
+  save_top_k: ${oc.select:flow_checkpoint_save_top_k,1}
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
+- _target_: rmind.callbacks.WandbAttentionMaskLogger

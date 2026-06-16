@@ -1,0 +1,32 @@
+---
+defaults:
+  - /dataset/yaak/train_pilot@train.dataset
+  - /dataset/yaak/val@val.dataset
+  - _self_
+
+# 30-drive pilot: train on the train_pilot slice, validate on the standard
+# 5-drive val set (disjoint from the pilot slice).
+_target_: rmind.datamodules.GenericDataModule
+train:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 64
+  shuffle: true
+  drop_last: true
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+
+val:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 32
+  shuffle: false
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  drop_last: true
+  num_workers: 2
+  method: thread

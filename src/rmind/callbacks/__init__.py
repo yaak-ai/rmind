@@ -1,3 +1,4 @@
+from .ema import EMAWeights
 from .feature_permutation import FeaturePermutator
 from .freeze import ModuleFreezer
 from .loggers import (
@@ -19,6 +20,7 @@ from .safe import SafeCallback
 
 __all__ = [
     "DataFramePredictionWriter",
+    "EMAWeights",
     "FeaturePermutator",
     "LogitBiasSetter",
     "ModuleFreezer",

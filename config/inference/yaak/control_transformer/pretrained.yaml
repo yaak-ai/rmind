@@ -7,6 +7,8 @@ defaults:
   - /logger: yaak/rerun/prediction_pretrain
   - _self_
 
+sequence_length: 6
+
 model:
   hparams_jq: |
     delpaths([

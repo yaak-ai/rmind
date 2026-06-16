@@ -1,0 +1,37 @@
+# @package _global_
+
+# Overfit sanity check for the baseline Gaussian-head policy (PolicyObjective).
+# Same pretrained artifact, same single-drive dataset (train == val) as the flow
+# overfit run, so the two can be compared head-to-head. NOTE the two predict
+# different targets: the baseline regresses the action at the last observed
+# step, while the flow expert predicts the future action_horizon — so this is a
+# "can each memorize its own objective" check, not a like-for-like number. A
+# horizon-matched baseline (E1.2) is needed for a strict apples-to-apples L1.
+
+defaults:
+  - /model: yaak/control_transformer/policy_baseline
+  - /datamodule: yaak/overfit
+  - /trainer: default
+  - /trainer/callbacks: finetune
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+model:
+  artifact: yaak/rmind/model-e61ycirr:v9
+
+encoder_embedding_dim: 384
+
+# Short warmup so a tiny overfit run reaches a useful LR quickly.
+lr_warmup_steps: 50
+lr_training_steps: 3000
+
+history_steps: 6
+action_horizon: 6
+# history_steps + action_horizon
+sequence_length: 12
+
+trainer:
+  max_epochs: 400
+  check_val_every_n_epoch: 10
+  log_every_n_steps: 10

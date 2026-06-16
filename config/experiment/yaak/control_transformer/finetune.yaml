@@ -10,3 +10,16 @@ defaults:
   - _self_
 
 encoder_embedding_dim: 384
+flow_decoder_embedding_dim: 256
+flow_sampling_steps: 8
+flow_sampling_method: heun
+flow_time_sampling: logit-normal
+flow_validation_seed: 2027
+
+lr_warmup_steps: 25000
+lr_training_steps: 250000
+
+history_steps: 6
+action_horizon: 6
+# history_steps + action_horizon
+sequence_length: 12

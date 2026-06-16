@@ -7,74 +7,41 @@ hparams_jq: |
     "_target_": "rmind.components.containers.ModuleDict",
     "modules": {
       "policy": {
-        "_target_": "rmind.components.objectives.PolicyObjective",
-        "norm": {
-          "_target_": "torch.nn.LayerNorm",
-          "normalized_shape": 384
+        "_target_": "rmind.components.objectives.FlowPolicyObjective",
+        "history_steps": ${history_steps},
+        "flow_time_sampling": "${flow_time_sampling}",
+        "flow_time_logit_mean": ${oc.select:flow_time_logit_mean,0.0},
+        "flow_time_logit_std": ${oc.select:flow_time_logit_std,1.0},
+        "validation_seed": ${flow_validation_seed},
+        "validation_sample_metrics": true,
+        "prediction_samples": ${oc.select:flow_prediction_samples,1},
+        "chunk_delta_weight": ${oc.select:flow_chunk_delta_weight,0},
+        "maneuver_thresholds": ${oc.select:flow_maneuver_thresholds,'null'},
+        "action_transform_stats": "${oc.select:flow_action_transform_stats,''}",
+        "lds_stats": "${oc.select:flow_lds_stats,''}",
+        "lds_alpha": ${oc.select:flow_lds_alpha,0.5},
+        "lds_cap": ${oc.select:flow_lds_cap,15.0},
+        "loss": {
+          "_target_": "torch.nn.MSELoss"
         },
-        "heads": {
-          "_target_": "rmind.components.containers.ModuleDict",
-          "modules": {
-            "continuous": {
-              "gas_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              },
-              "brake_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              },
-              "steering_angle": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              }
-            },
-            "discrete": {
-              "turn_signal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 3],
-                "bias": false
-              }
-            }
-          }
-        },
-        "targets": {
-          "continuous": {
-            "gas_pedal": ["input", "continuous", "gas_pedal"],
-            "brake_pedal": ["input", "continuous", "brake_pedal"],
-            "steering_angle": ["input", "continuous", "steering_angle"]
-          },
-          "discrete": {
-            "turn_signal": ["input", "discrete", "turn_signal"]
-          }
-        },
-        "losses": {
-          "_target_": "rmind.components.containers.ModuleDict",
-          "modules": {
-            "continuous": {
-              "gas_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              },
-              "brake_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              },
-              "steering_angle": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              }
-            },
-            "discrete": {
-              "turn_signal": {
-                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
-              }
-            }
-          }
+        "decoder": {
+          "_target_": "rmind.components.transformer.FlowActionDecoder",
+          "condition_dim": ${encoder_embedding_dim},
+          "dim_model": ${flow_decoder_embedding_dim},
+          "action_dim": ${oc.select:flow_action_dim,3},
+          "action_horizon": ${action_horizon},
+          "flow_sampling_steps": ${flow_sampling_steps},
+          "flow_sampling_method": "${flow_sampling_method}",
+          "rope": ${oc.select:flow_decoder_rope,1},
+          "slot_adaln": ${oc.select:flow_decoder_slot_adaln,0},
+          "time_embedding_scale": 1000.0,
+          "time_logit_scale": 0.25,
+          "num_layers": 4,
+          "num_heads": 4,
+          "attn_dropout": 0.1,
+          "resid_dropout": 0.1,
+          "mlp_dropout": 0.1,
+          "hidden_layer_multiplier": 1
         }
       }
     }
@@ -83,7 +50,7 @@ hparams_jq: |
     "interval": "step",
     "scheduler": {
       "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
-      "num_warmup_steps": 25000,
-      "num_training_steps": 250000
+      "num_warmup_steps": ${oc.select:lr_warmup_steps,500},
+      "num_training_steps": ${oc.select:lr_training_steps,25000}
     }
   }

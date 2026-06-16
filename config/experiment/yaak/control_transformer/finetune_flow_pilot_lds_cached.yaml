@@ -1,0 +1,132 @@
+# @package _global_
+
+# FEATURE-CACHED pilot LDS training: decoder-only, ~order-of-magnitude faster.
+#
+# The encoder is frozen in every finetune, so the condition tokens per frame
+# are deterministic constants; flow_cache_features.py precomputes them (both
+# normal and action-history-zeroed variants) and this experiment trains the
+# 3M-param flow decoder directly from the cache — no images, no episode
+# builder, no encoder forward, no JPEG IO. Intended for lever SCREENING;
+# confirm winners on the full pipeline (cached ckpts have no encoder weights,
+# so they cannot run predict directly — stitch or retrain winners).
+#
+# Build the cache once (GPU, ~minutes; any flow ckpt works — the encoder is
+# identical across all finetunes):
+#   uv run python -m rmind.scripts.flow_cache_features \
+#     --config-path $PWD/config --config-name train.yaml \
+#     experiment=yaak/control_transformer/finetune_flow_pilot_lds \
+#     model.artifact=yaak/action-flow/model-pg5lzmvk:v199 \
+#     '+cache.out_dir=artifacts/feature_cache/pilot'
+#
+# Knobs: flow_lds_alpha/cap (at-load, as usual).
+# NB batch size is 1024 (vs 64 full-path) — schedule set for ~50ep at that size;
+# cached-vs-cached comparisons are clean, cached-vs-full are not step-matched.
+
+defaults:
+  - /trainer: default
+  - /wandb: yaak/rmind
+  - _self_
+
+model:
+  _target_: rmind.models.flow_feature_trainer.FlowFeatureTrainer
+  _recursive_: true
+  _convert_: all
+  objective:
+    _target_: rmind.components.objectives.FlowPolicyObjective
+    history_steps: 6
+    flow_time_sampling: logit-normal
+    validation_seed: 2027
+    validation_sample_metrics: true
+    prediction_samples: 1
+    chunk_delta_weight: 10.0
+    maneuver_thresholds: [0.2402, 0.2317, 0.062]
+    action_transform_stats: artifacts/action_norm_pilot.json
+    lds_stats: ${oc.select:flow_lds_stats,artifacts/action_norm_pilot.json}
+    lds_alpha: ${oc.select:flow_lds_alpha,0.5}
+    lds_cap: ${oc.select:flow_lds_cap,15.0}
+    loss:
+      _target_: torch.nn.MSELoss
+    decoder:
+      _target_: rmind.components.transformer.FlowActionDecoder
+      condition_dim: 384
+      dim_model: 256
+      action_dim: 2
+      action_horizon: 6
+      flow_sampling_steps: 32
+      flow_sampling_method: heun
+      rope: true
+      time_embedding_scale: 1000.0
+      time_logit_scale: 0.25
+      num_layers: 4
+      num_heads: 4
+      attn_dropout: 0.1
+      resid_dropout: 0.1
+      mlp_dropout: 0.1
+      hidden_layer_multiplier: 1
+  optimizer:
+    _target_: rmind.components.optimizers.SelectiveAdamW
+    _partial_: true
+    # Linear-scaling rule: full-path lr 1e-5 was tuned at bs 64; cached runs use
+    # bs 1024 (16x) -> lr 1.6e-4. Within-track A/Bs share this value.
+    lr: 1.6e-4
+    betas: [0.9, 0.95]
+    weight_decay: 0.1
+    weight_decay_module_blacklist:
+      - _target_: hydra.utils.get_class
+        path: torch.nn.Embedding
+      - _target_: hydra.utils.get_class
+        path: torch.nn.LayerNorm
+  lr_scheduler:
+    interval: step
+    scheduler:
+      _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+      _partial_: true
+      num_warmup_steps: 200
+      num_training_steps: 3500
+
+datamodule:
+  _target_: rmind.datamodules.GenericDataModule
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: rmind.datamodules.CachedFeaturesDataset
+      path: artifacts/feature_cache/pilot/train.pt
+    batch_size: 1024
+    shuffle: true
+    drop_last: true
+    num_workers: 4
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: rmind.datamodules.CachedFeaturesDataset
+      path: artifacts/feature_cache/pilot/val.pt
+    batch_size: 1024
+    shuffle: false
+    num_workers: 2
+
+trainer:
+  max_epochs: 50
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 50
+  callbacks:
+    - _target_: pytorch_lightning.callbacks.ModelCheckpoint
+      every_n_epochs: ${oc.select:flow_checkpoint_every_n_epochs,10}
+      save_top_k: ${oc.select:flow_checkpoint_save_top_k,-1}
+      save_on_train_epoch_end: True
+    - _target_: pytorch_lightning.callbacks.LearningRateMonitor
+      logging_interval: step
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 4
+    - _target_: rmind.callbacks.WandbImageParamLogger
+      when: on_validation_epoch_end
+      key: policy/position_embedding_cosine
+      select:
+        - [objectives, policy, decoder, position_embedding, weight]
+      apply:
+        _target_: torchmetrics.functional.pairwise_cosine_similarity
+        _partial_: true
+
+# Run tags (lever taxonomy; outcome tags set post-hoc when logged to Notion).
+wandb:
+  project: action-flow
+  tags: [flow, pilot-30, gauss-merge, lds, delta-loss, rope, cached]

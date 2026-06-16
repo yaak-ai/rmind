@@ -1,0 +1,94 @@
+# @package _global_
+
+# CACHED deterministic regression baseline (pilot): the flow-vs-heads held-out
+# control on the feature-cached path. Same cache, same batch/schedule as the
+# cached flow arms (cached-vs-cached comparisons only); capacity-matched
+# RegressionActionDecoder; MSE in the same transformed model space; same
+# metrics. No LDS (matched to the plain recipe). Standalone config — the
+# objective node must be replaced wholesale, not merged over the flow one.
+
+defaults:
+  - /trainer: default
+  - /wandb: yaak/rmind
+  - _self_
+
+model:
+  _target_: rmind.models.flow_feature_trainer.FlowFeatureTrainer
+  _recursive_: true
+  _convert_: all
+  hist_dropout_p: ${oc.select:flow_action_hist_dropout,0.0}
+  objective:
+    _target_: rmind.components.objectives.RegressionPolicyObjective
+    history_steps: 6
+    maneuver_thresholds: [0.2402, 0.2317, 0.062]
+    action_transform_stats: artifacts/action_norm_pilot.json
+    decoder:
+      _target_: rmind.components.objectives.RegressionActionDecoder
+      condition_dim: 384
+      dim_model: 256
+      action_dim: 2
+      action_horizon: 6
+      num_layers: 4
+      num_heads: 4
+      attn_dropout: 0.1
+      resid_dropout: 0.1
+      mlp_dropout: 0.1
+      hidden_layer_multiplier: 1
+  optimizer:
+    _target_: rmind.components.optimizers.SelectiveAdamW
+    _partial_: true
+    # Linear-scaling rule: full-path lr 1e-5 was tuned at bs 64; cached runs use
+    # bs 1024 (16x) -> lr 1.6e-4. Within-track A/Bs share this value.
+    lr: 1.6e-4
+    betas: [0.9, 0.95]
+    weight_decay: 0.1
+    weight_decay_module_blacklist:
+      - _target_: hydra.utils.get_class
+        path: torch.nn.Embedding
+      - _target_: hydra.utils.get_class
+        path: torch.nn.LayerNorm
+  lr_scheduler:
+    interval: step
+    scheduler:
+      _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+      _partial_: true
+      num_warmup_steps: 200
+      num_training_steps: 3500
+
+datamodule:
+  _target_: rmind.datamodules.GenericDataModule
+  train:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: rmind.datamodules.CachedFeaturesDataset
+      path: artifacts/feature_cache/pilot/train.pt
+    batch_size: 1024
+    shuffle: true
+    drop_last: true
+    num_workers: 4
+  val:
+    _target_: torch.utils.data.DataLoader
+    dataset:
+      _target_: rmind.datamodules.CachedFeaturesDataset
+      path: artifacts/feature_cache/pilot/val.pt
+    batch_size: 1024
+    shuffle: false
+    num_workers: 2
+
+trainer:
+  max_epochs: 50
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 50
+  callbacks:
+    - _target_: pytorch_lightning.callbacks.ModelCheckpoint
+      every_n_epochs: ${oc.select:flow_checkpoint_every_n_epochs,10}
+      save_top_k: ${oc.select:flow_checkpoint_save_top_k,-1}
+      save_on_train_epoch_end: True
+    - _target_: pytorch_lightning.callbacks.LearningRateMonitor
+      logging_interval: step
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 4
+
+wandb:
+  project: action-flow
+  tags: [regression-head, pilot-30, gauss-merge, cached]

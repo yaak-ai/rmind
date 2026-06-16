@@ -1,0 +1,21 @@
+---
+defaults:
+  - /dataset/yaak/val_eval@predict.dataset
+  - _self_
+
+# Predict over a single HELD-OUT val drive (Niro115). The standard yaak/predict
+# datamodule points at the overfit drive (Niro096), which is IN-SAMPLE for any
+# pilot/multi-drive model — generalization claims need this one instead:
+#   just predict ... datamodule=yaak/predict_val
+_target_: rmind.datamodules.GenericDataModule
+predict:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 8
+  shuffle: false
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+
+  num_workers: 2
+  pin_memory: true
+  method: thread

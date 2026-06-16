@@ -1,0 +1,51 @@
+# @package _global_
+
+# Horizon-matched DETERMINISTIC regression baseline at 30-drive pilot scale —
+# the held-out flow-vs-heads comparison. Matched to finetune_flow_pilot in
+# everything except the generative model (see finetune_overfit_regression for
+# the rationale and readout guide); control arms: 7d3y7ort (plain flow pilot),
+# ge4vfboq (flow+LDS pilot), both at ep49 held-out.
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune_regression
+  - /datamodule: yaak/train_pilot
+  - /trainer: default
+  - /trainer/callbacks: finetune_regression
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+model:
+  artifact: yaak/rmind/model-e61ycirr:v9
+
+encoder_embedding_dim: 384
+flow_decoder_embedding_dim: 256
+
+# Same pilot-fit transformed model space + maneuver scoreboard as the flow pilot.
+flow_action_transform_stats: artifacts/action_norm_pilot.json
+flow_action_dim: 2
+flow_maneuver_thresholds: [0.2402, 0.2317, 0.062]
+
+# Same schedule as the flow pilot.
+lr_warmup_steps: 500
+lr_training_steps: 25000
+
+history_steps: 6
+action_horizon: 6
+# history_steps + action_horizon
+sequence_length: 12
+
+# Sparse checkpoints (pilot logs every epoch otherwise).
+flow_checkpoint_every_n_epochs: 10
+flow_checkpoint_save_top_k: -1
+
+trainer:
+  max_epochs: 50
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 50
+
+# Run tags (lever taxonomy; outcome tags like baseline/negative are set
+# post-hoc on wandb when the run is logged to Notion).
+wandb:
+  project: action-flow
+  tags: [regression-head, pilot-30, gauss-merge]

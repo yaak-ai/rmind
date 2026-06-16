@@ -100,7 +100,7 @@ samples:
                 _target_: polars.Datetime
                 time_unit: us
               turn_signal:
-                _target_: polars.Int8
+                _target_: polars.Int64
 
             rbyte.io.yaak.proto.can_pb2.VehicleMotion:
               time_stamp:
@@ -356,7 +356,7 @@ samples:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
           every: 10i
-          period: 60i
+          period: ${sequence_length}0i
           closed: left
           gather_every: 10
 
@@ -370,21 +370,24 @@ samples:
             _target_: rbyte.io.DuckDBDataFrameQuery
             query: |
               SELECT
-                  "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[6] AS "meta/ImageMetadata.cam_front_left/time_stamp",
-                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[6] AS "meta/ImageMetadata.cam_front_left/frame_idx",
-                  "meta/VehicleMotion/speed"::FLOAT[6] AS "meta/VehicleMotion/speed",
-                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/gas_pedal_normalized",
-                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/brake_pedal_normalized",
-                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
-                  "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
-                  "meta/Gnss/xy"::FLOAT[2][6] AS "meta/Gnss/xy",
-                  "waypoints/xy_normalized"::FLOAT[2][10][6] AS "waypoints/xy_normalized",
-                  "waypoints/xy"::FLOAT[2][10][6] AS "waypoints/xy",
+                  "meta/ImageMetadata.cam_front_left/time_stamp"[1:${history_steps}]::TIMESTAMP[${history_steps}] AS "meta/ImageMetadata.cam_front_left/time_stamp",
+                  "meta/ImageMetadata.cam_front_left/frame_idx"[1:${history_steps}]::INT32[${history_steps}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                  "meta/VehicleMotion/speed"[1:${history_steps}]::FLOAT[${history_steps}] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/gas_pedal_normalized"[1:${history_steps}]::FLOAT[${history_steps}] AS "meta/VehicleMotion/gas_pedal_normalized",
+                  "meta/VehicleMotion/gas_pedal_normalized"[${sequence_length} - ${action_horizon} + 1:${sequence_length}]::FLOAT[${action_horizon}] AS "meta/VehicleMotion/gas_pedal_normalized_target",
+                  "meta/VehicleMotion/brake_pedal_normalized"[1:${history_steps}]::FLOAT[${history_steps}] AS "meta/VehicleMotion/brake_pedal_normalized",
+                  "meta/VehicleMotion/brake_pedal_normalized"[${sequence_length} - ${action_horizon} + 1:${sequence_length}]::FLOAT[${action_horizon}] AS "meta/VehicleMotion/brake_pedal_normalized_target",
+                  "meta/VehicleMotion/steering_angle_normalized"[1:${history_steps}]::FLOAT[${history_steps}] AS "meta/VehicleMotion/steering_angle_normalized",
+                  "meta/VehicleMotion/steering_angle_normalized"[${sequence_length} - ${action_horizon} + 1:${sequence_length}]::FLOAT[${action_horizon}] AS "meta/VehicleMotion/steering_angle_normalized_target",
+                  "meta/VehicleState/turn_signal"[1:${history_steps}]::BIGINT[${history_steps}] AS "meta/VehicleState/turn_signal",
+                  "meta/Gnss/xy"[1:${history_steps}]::FLOAT[2][${history_steps}] AS "meta/Gnss/xy",
+                  "waypoints/xy_normalized"[1:${history_steps}]::FLOAT[2][10][${history_steps}] AS "waypoints/xy_normalized",
+                  "waypoints/xy"[1:${history_steps}]::FLOAT[2][10][${history_steps}] AS "waypoints/xy",
               FROM
                   samples
               WHERE
-                  len("meta/ImageMetadata.cam_front_left/frame_idx") = 6
-                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 50
+                  len("meta/ImageMetadata.cam_front_left/frame_idx") = ${sequence_length}
+                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == (${sequence_length} - 1) * 10
                   AND NOT (
                       list_max("meta/VehicleMotion/gas_pedal_normalized") <= (1.0 / 255 + 0.001)
                       AND list_max("meta/VehicleMotion/brake_pedal_normalized") <= (1.0 / 164 + 0.001)

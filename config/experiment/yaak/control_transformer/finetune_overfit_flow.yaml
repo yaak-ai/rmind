@@ -1,0 +1,99 @@
+# @package _global_
+
+# Overfit sanity check for the flow-matching action expert.
+# Finetunes from a pretrained encoder artifact on a single drive (train == val)
+# to confirm the flow policy can memorize: train + val loss and sample_l1
+# should all collapse toward ~0.
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune
+  - /datamodule: yaak/overfit
+  - /trainer: default
+  - /trainer/callbacks: finetune_flow
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+model:
+  artifact: yaak/rmind/model-e61ycirr:v9
+
+encoder_embedding_dim: 384
+flow_decoder_embedding_dim: 256
+# heun/32 = converged exact flow of the learned field (sweep-verified):
+# val metrics measure field quality, unbiased by integrator truncation.
+# Deployment-time method/steps are chosen separately (see improvements doc).
+flow_sampling_steps: 32
+flow_sampling_method: heun
+# Rotary PE in the decoder's slot self-attention is ON by default for all
+# finetune runs (see policy_finetune.yaml); disable with flow_decoder_rope: 0
+# (jq needs 0/1, not true/false). Constructor default stays off so old
+# checkpoints (hparams without the key) rebuild exactly as trained.
+
+# Within-chunk delta loss: creates the gradient pressure for slot identity
+# that plain flow MSE lacks (its optimum is a constant chunk at the
+# mid-horizon value). Readouts: pe_drift should move off ~0, the horizon
+# lag profile (`just fan` *_horizon.html) should flatten from lag = h - 3
+# toward 0, chunk slope ratio -> 1. Weight scales the delta MSE
+# (GT deltas are ~0.01-0.05, so the raw term is ~1e-3 of the flow loss).
+flow_chunk_delta_weight: 10.0
+# Flow-time sampling density p(t) (t=0 noise, t=1 clean action). Acts as an
+# implicit per-t loss weight. Options + their tunable hparams:
+#   logit-normal (default): t = sigmoid(z*std + mean); skew toward data with
+#     `+flow_time_logit_mean=0.5` (mean>0 -> t=1), concentrate with `_std`.
+#   beta: pi0's p(t) = Beta((s-t)/s; alpha, 1) (arXiv:2410.24164) — skews toward
+#     the NOISY end (t=0) for alpha>1, which is what pi0 uses for action experts
+#     and which also strengthens the chunk-delta loss (its (1-t) factor stays
+#     large). Try `++flow_time_sampling=beta` (++ because it's already set
+#     below; alpha defaults 1.5, s 0.999, set via `+flow_time_beta_alpha=` /
+#     `+flow_time_beta_s=`).
+# The per-t flow-MSE buckets logged in val (policy/flow_mse_t*) show where the
+# field is worst — shape p(t) to match rather than guess.
+flow_time_sampling: logit-normal
+# Maneuver-L1: honest single-draw L1 on "active" frames per channel, where
+# |GT_c| exceeds a per-channel threshold (order = action_keys: gas, brake,
+# steering). Logged as policy/maneuver_l1/<key> (+ maneuver_frac/<key>) — the
+# scoreboard that rewards getting maneuvers right vs the mean-reverting
+# baseline. PROVISIONAL values below (from one-drive stats: gas in [0,.47],
+# brake ~always 0 in [0,.30], steering in [-.94,.98]). Replace with data-driven
+# ones from `just thresholds ...` (writes a config-ready tuple).
+flow_maneuver_thresholds: [0.25, 0.05, 0.5]
+# Action transform: gas/brake -> signed-longitudinal merge + per-channel
+# Gaussianize (empirical CDF -> N(0,1)), so flow targets match its N(0,1) prior
+# — the principled fix for the raw actions' poor SNR (suspect 5). Invertible,
+# non-clipping (unlike pi0's q01/q99). The merge folds brake's ~always-0 point
+# mass into a clean signed `longitudinal = gas - brake` channel (model space is
+# then 2-d: longitudinal, steering), inverted to gas/brake at the I/O boundary.
+# OFF by default (identity). To enable, two steps:
+#   1) fit knots once: `just thresholds ... +thresholds.merge=true` writes
+#      action_norm.json (merged) alongside the maneuver tuple.
+#   2) point the transform at it AND tell the decoder it's 2-d:
+#        flow_action_transform_stats: /abs/path/to/action_norm.json
+#        flow_action_dim: 2
+# All reported metrics stay raw-space (3ch); maneuver_thresholds stay 3ch.
+flow_validation_seed: 2027
+
+# Short warmup / horizon so a tiny overfit run reaches a useful LR quickly.
+lr_warmup_steps: 50
+lr_training_steps: 3000
+
+history_steps: 6
+action_horizon: 6
+# history_steps + action_horizon
+sequence_length: 12
+
+# Checkpoint every 10th epoch and keep them all (save_top_k=-1): a sparse epoch
+# ladder for offline fan/eval, and 10x fewer per-epoch wandb artifact uploads
+# (log_model=all logs on each save) than the default every-epoch cadence.
+flow_checkpoint_every_n_epochs: 10
+flow_checkpoint_save_top_k: -1
+
+trainer:
+  max_epochs: 200
+  check_val_every_n_epoch: 10
+  log_every_n_steps: 10
+
+# Run tags (lever taxonomy; outcome tags like baseline/negative are set
+# post-hoc on wandb when the run is logged to Notion).
+wandb:
+  project: action-flow
+  tags: [flow, overfit, delta-loss, rope]

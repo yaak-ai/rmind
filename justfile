@@ -1,5 +1,5 @@
 export HOSTNAME := `hostname`
-export PYTHONBREAKPOINT := "patdb.debug"
+export PYTHONBREAKPOINT := "pudb.debug"
 export PATDB_CODE_STYLE := "vim"
 export BETTER_EXCEPTIONS := "1"
 export LOVELY_TENSORS := "1"
@@ -43,7 +43,7 @@ generate-config:
         --ignore-unknown-comments \
         --strict
 
-train *ARGS: generate-config check-git
+train *ARGS: generate-config
     uv run rmind-train \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml \
@@ -60,6 +60,27 @@ train-debug *ARGS: generate-config
 
 predict +ARGS: generate-config
     uv run rmind-predict \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        {{ ARGS }}
+
+# sample-concentration diagnostic for the flow policy (fan plot + hit rates)
+fan +ARGS: generate-config
+    uv run python -m rmind.scripts.flow_sample_fan \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        {{ ARGS }}
+
+# velocity-field / probability-flow trajectory visualization
+field +ARGS: generate-config
+    uv run python -m rmind.scripts.flow_field_viz \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        {{ ARGS }}
+
+# per-channel maneuver-L1 thresholds from data (prints a config-ready tuple)
+thresholds +ARGS: generate-config
+    uv run python -m rmind.scripts.flow_action_thresholds \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml \
         {{ ARGS }}

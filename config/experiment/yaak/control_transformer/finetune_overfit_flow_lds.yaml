@@ -1,0 +1,47 @@
+# @package _global_
+
+# Single-drive overfit + maneuver LDS loss weighting (Yang et al., ICML 2021).
+#
+# Single change vs the pg5lzmvk recipe (Gaussianize+merge transform, delta+RoPE,
+# logit-normal, heun/32): reweight the flow loss from frequency toward
+# importance. Even on the memorize-one-drive overfit, pg5lzmvk undercommits on
+# maneuvers (spike mean-draw L1 ~0.16) — LDS upweights each chunk by
+# (1/smoothed_density)^alpha of its peak |physical action| (per model channel:
+# longitudinal, steering), capped + mean-1 normalized so the loss scale (hence
+# the inherited LR/schedule) is unchanged. Peak-over-horizon means a chunk's
+# near-zero LEAD-IN is upweighted with its maneuver. Weights multiply both the
+# flow and chunk-delta terms.
+#
+# Scoreboard vs plain overfit pg5lzmvk: single-draw maneuver-L1 (and spike
+# mean-draw L1) should drop; flat hit@0.05 may regress by design (cruise
+# micro-precision is low-value). maneuver_weight_mean is logged (~1 sanity).
+# Sweep aggressiveness with flow_lds_alpha=0.25 / 0.5 / 1.0 (applied at load, no
+# refit).
+#
+# Stats are OVERFIT-DRIVE-fit (Gaussianize knots + LDS densities in one file);
+# fit once before the first run:
+#   just thresholds inference=yaak/control_transformer/policy \
+#     model.artifact=yaak/action-flow/model-pg5lzmvk:v199 \
+#     paths.rbyte.cache=/tmp/overfit_stats_cache \
+#     '+thresholds.merge=true' '+thresholds.lds=true' \
+#     '+thresholds.norm_out=artifacts/action_norm_overfit.json'
+
+defaults:
+  - yaak/control_transformer/finetune_overfit_flow
+  - _self_
+
+# Gaussianize+merge transform (pg5lzmvk recipe; off by default in the base).
+flow_action_transform_stats: artifacts/action_norm_overfit.json
+flow_action_dim: 2
+
+# Maneuver LDS: presence of flow_lds_stats turns it on; alpha is the
+# aggressiveness knob, cap bounds the rare-bin weight.
+flow_lds_stats: artifacts/action_norm_overfit.json
+flow_lds_alpha: 0.5
+flow_lds_cap: 15.0
+
+# Run tags (lever taxonomy; outcome tags like baseline/negative are set
+# post-hoc on wandb when the run is logged to Notion).
+wandb:
+  project: action-flow
+  tags: [flow, overfit, gauss-merge, lds, delta-loss, rope]

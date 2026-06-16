@@ -1,0 +1,44 @@
+---
+# Horizon-matched deterministic regression baseline for the flow policy: same
+# pretrained encoder artifact, same condition tokens, same transformed model
+# space, same raw-space metrics — a single deterministic forward instead of an
+# integrated flow. The "is flow earning its complexity?" control.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.RegressionPolicyObjective",
+        "history_steps": ${history_steps},
+        "maneuver_thresholds": ${oc.select:flow_maneuver_thresholds,'null'},
+        "action_transform_stats": "${oc.select:flow_action_transform_stats,''}",
+        "lds_stats": "${oc.select:flow_lds_stats,''}",
+        "lds_alpha": ${oc.select:flow_lds_alpha,0.5},
+        "lds_cap": ${oc.select:flow_lds_cap,15.0},
+        "decoder": {
+          "_target_": "rmind.components.objectives.RegressionActionDecoder",
+          "condition_dim": ${encoder_embedding_dim},
+          "dim_model": ${flow_decoder_embedding_dim},
+          "action_dim": ${oc.select:flow_action_dim,3},
+          "action_horizon": ${action_horizon},
+          "num_layers": 4,
+          "num_heads": 4,
+          "attn_dropout": 0.1,
+          "resid_dropout": 0.1,
+          "mlp_dropout": 0.1,
+          "hidden_layer_multiplier": 1
+        }
+      }
+    }
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
+    }
+  }

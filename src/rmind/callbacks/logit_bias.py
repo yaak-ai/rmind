@@ -32,7 +32,11 @@ class LogitBiasSetter(Callback):
         losses: list[tuple[str, KeyPath, HasLogitBias]] = []
 
         for objective_key, objective in objectives.items():
-            for loss_keypath, loss in tree_flatten_with_path(objective.losses)[0]:
+            objective_losses = getattr(objective, "losses", None)
+            if objective_losses is None:
+                continue
+
+            for loss_keypath, loss in tree_flatten_with_path(objective_losses)[0]:
                 match loss:
                     case HasLogitBias(logit_bias=None):
                         losses.append((objective_key, loss_keypath, loss))

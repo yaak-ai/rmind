@@ -25,6 +25,7 @@ dependencies = [
   "numpy>2.3.0",
   "omegaconf>=2.3.0",
   "orjson>=3.10.12",
+  "plotly>=6.8.0",
   "polars>=1.38.1",
   "pydantic>=2.12.5",
   "pytorch-lightning>=2.6.0",
@@ -35,6 +36,7 @@ dependencies = [
   "torch>=2.11.0",
   "torchaudio>=2.11.0",
   "torchvision>=0.26.0",
+  "tqdm>=4.67.3",
 ]
 
 [project.urls]
@@ -43,6 +45,7 @@ repo = "https://github.com/yaak-ai/rmind"
 [project.scripts]
 rmind-check-git = "rmind.scripts.check_git:main"
 rmind-export-onnx = "rmind.scripts.export_onnx:main"
+rmind-flow-oracle = "rmind.scripts.flow_oracle:main"
 rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 
