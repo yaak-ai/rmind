@@ -6,7 +6,12 @@ import torch
 from pydantic import InstanceOf, validate_call
 from torch import Tensor, nn
 from torch.nn import Module
-from torch.utils._pytree import MappingKey, PyTree, tree_map  # noqa: PLC2701
+from torch.utils._pytree import (  # noqa: PLC2701
+    MappingKey,
+    PyTree,
+    tree_map,
+    tree_map_with_path,
+)
 
 from rmind.utils.functional import diff_last
 from rmind.utils.pytree import key_get_default
@@ -134,9 +139,12 @@ class Frozen(Module):
 
 @final
 class StackFields(Module):
-    """Gather ordered `paths` and stack them into one tensor under `out_key`.
+    """Gather ordered `paths` and stack them on a trailing axis under `out_key`.
 
-    Trailing singleton dims are squeezed; emits `None` when a field is absent.
+    Each field is `(..., chunk)` (chunk == 1 for the immediate action), so the
+    result is `(..., chunk, fields)` — e.g. `(B, T, 6, 4)` or `(B, T, 1, 4)`. The
+    chunk/field axes are flattened into the action vector downstream by the
+    `ActionTokenizer`. Emits `None` when a field is absent.
     """
 
     @validate_call
@@ -157,11 +165,38 @@ class StackFields(Module):
         if any(value is None for value in fields):
             return {**input, self.out_key: None}
 
-        stacked = torch.stack(
-            [value.squeeze(-1) if value.shape[-1] == 1 else value for value in fields],
-            dim=-1,
-        )
+        stacked = torch.stack(fields, dim=-1)
         return {**input, self.out_key: stacked}
+
+
+@final
+class SliceFields(Module):
+    """Narrow each path in `paths` to a length-1 slice along `dim` (keeps the axis).
+
+    Leaves all other fields untouched. Used to take the immediate action
+    `chunk[..., 0:1]` for the per-timestep tokens while `joint_actions` keeps the
+    full action chunk.
+    """
+
+    @validate_call
+    def __init__(
+        self, *, paths: list[tuple[str, ...]], dim: int = -1, index: int = 0
+    ) -> None:
+        super().__init__()
+
+        self._paths = {tuple(path) for path in paths}
+        self.dim = dim
+        self.index = index
+
+    @override
+    def forward(self, input: PyTree) -> PyTree:
+        def fn(key_path: Any, value: Any) -> Any:
+            names = tuple(entry.key for entry in key_path)
+            if names in self._paths and value is not None:
+                return value.narrow(self.dim, self.index, 1)
+            return value
+
+        return tree_map_with_path(fn, input)
 
 
 def _module_wrapper(

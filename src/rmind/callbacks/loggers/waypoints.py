@@ -28,6 +28,8 @@ logger = get_logger(__name__)
 
 NoneKey = (MappingKey(None),)
 
+_MIN_PLOT_RANGE = 100.0
+
 
 @final
 class WandbWaypointsLogger(SafeCallback):
@@ -200,15 +202,21 @@ class WandbWaypointsLogger(SafeCallback):
             x_center = x_min + x_range / 2
             y_center = y_min + y_range / 2
 
-            plot_range = max(x_range, y_range) * map_zoom_factor
+            plot_range = max(max(x_range, y_range) * map_zoom_factor, _MIN_PLOT_RANGE)
 
             ax.set_xlim(x_center - plot_range / 2, x_center + plot_range / 2)
             ax.set_ylim(y_center - plot_range / 2, y_center + plot_range / 2)
 
             try:
                 ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, crs=crs)  # ty:ignore[unresolved-attribute]
-            except requests.exceptions.RequestException as exc:
-                logger.warning("Failed to load tiles for basemap", error=str(exc))
+            except (
+                requests.exceptions.RequestException,
+                OverflowError,
+                ValueError,
+            ) as exc:
+                # OverflowError/ValueError: degenerate (zero-area) extent -> contextily's
+                # auto-zoom diverges; skip the basemap rather than crash the run
+                logger.warning("Failed to add basemap", error=str(exc))
 
             ax.set_axis_off()
             if ego_xy is not None:
