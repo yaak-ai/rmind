@@ -56,7 +56,7 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: ${paths.rbyte.cache}/yaak/val/samples
+  run_folder: ${paths.rbyte.cache}/yaak/val/h${action_horizon}/samples
   scheduling_strategy: eager
   return_results: false
   persist_memory: false
