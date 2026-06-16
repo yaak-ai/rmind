@@ -102,11 +102,23 @@ class PolicyObjective(Objective):
 
         logits = self.heads(features)
         if self.training and self.action_horizon > 1:
+            # MLP: (b, 1, h*d) → (b, h, d);  GRU: already (b, h, d)
             return tree_map(
-                lambda x: rearrange(x, "b 1 (h d) -> b h d", h=self.action_horizon),
+                lambda x: (
+                    rearrange(x, "b 1 (h d) -> b h d", h=self.action_horizon)
+                    if x.shape[1] == 1
+                    else x
+                ),
                 logits,
             )
-        return logits
+        # Inference: normalize to (b, 1, out_features) — first predicted step only
+        def _first_step(x: Tensor) -> Tensor:
+            if x.shape[1] > 1:  # GRU: (b, h, d) → (b, 1, d)
+                return x[:, :1]
+            if self.action_horizon > 1:  # MLP: (b, 1, h*d) → (b, 1, d)
+                return rearrange(x, "b 1 (h d) -> b h d", h=self.action_horizon)[:, :1]
+            return x
+        return tree_map(_first_step, logits)
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
@@ -131,15 +143,9 @@ class PolicyObjective(Objective):
                 self.targets,
                 is_leaf=lambda x: isinstance(x, tuple),
             )
+            # logits is (b, 1, out_features) after normalization in _compute_logits
             losses = self.losses(
-                tree_map(
-                    lambda x: (
-                        rearrange(x, "b 1 (h d) -> b h d", h=self.action_horizon)[:, 0]
-                        if self.action_horizon > 1
-                        else rearrange(x, "b 1 d -> b d")
-                    ),
-                    logits,
-                ),
+                tree_map(Rearrange("b 1 d -> b d"), logits),
                 tree_map(Rearrange("b 1 -> b"), targets),
             )  # ty:ignore[call-non-callable]
 
@@ -216,7 +222,17 @@ class PolicyObjective(Objective):
                 "i b 1 d -> b 1 (i d)",
             )
 
-            logits = TensorDict(self.heads(features), batch_size=[b, 1])
+            def _first_step(x: Tensor) -> Tensor:
+                if x.shape[1] > 1:  # GRU: (b, h, d) → (b, 1, d)
+                    return x[:, :1]
+                if self.action_horizon > 1:  # MLP: (b, 1, h*d) → (b, 1, d)
+                    return rearrange(x, "b 1 (h d) -> b h d", h=self.action_horizon)[:, :1]
+                return x
+
+            logits = TensorDict(
+                tree_map(_first_step, self.heads(features)),
+                batch_size=[b, 1],
+            )
 
             timestep_indices = slice(-1, None)
 

@@ -19,30 +19,34 @@ hparams_jq: |
           "modules": {
             "continuous": {
               "gas_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 12],
-                "bias": false
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1152,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
               },
               "brake_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 12],
-                "bias": false
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1152,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
               },
               "steering_angle": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 12],
-                "bias": false
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1152,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
               }
             },
             "discrete": {
               "turn_signal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 18],
-                "bias": false
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1152,
+                "hidden_size": 384,
+                "out_features": 3,
+                "num_steps": 6
               }
             }
           }

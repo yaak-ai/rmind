@@ -16,6 +16,7 @@ from torch.utils._pytree import (  # noqa: PLC2701
 )
 
 from rmind.components.loss import HasLogitBias
+from rmind.components.nn import GRUHead
 from rmind.models.control_transformer import ControlTransformer
 from rmind.utils.pytree import path_to_key
 
@@ -105,6 +106,8 @@ class LogitBiasSetter(Callback):
     @staticmethod
     def _get_out_features(head: torch.nn.Module) -> int:
         match head:
+            case GRUHead():
+                return head.output_proj.out_features
             case torch.nn.Linear():
                 return head.out_features
             case torch.nn.Sequential():
