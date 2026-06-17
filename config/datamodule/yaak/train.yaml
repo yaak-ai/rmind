@@ -1,6 +1,6 @@
 ---
 defaults:
-  - /dataset/yaak/val@train.dataset
+  - /dataset/yaak/train@train.dataset
   - /dataset/yaak/val@val.dataset
   - _self_
 
@@ -20,7 +20,7 @@ train:
 val:
   _target_: rbyte.dataloader.TorchDataNodeDataLoader
   batch_size: 32
-  shuffle: false
+  shuffle: true
   collate_fn:
     _target_: rbyte.types.Batch.to_dict
     _partial_: true

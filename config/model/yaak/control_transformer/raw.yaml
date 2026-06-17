@@ -59,6 +59,15 @@ episode_builder:
           discrete:
             turn_signal: [data, meta/VehicleState/turn_signal]
 
+      - _target_: rmind.components.nn.ChunkFields
+        episode_length: ${episode_length}
+        action_horizon: ${action_horizon}
+        unfold_paths:
+          - [continuous, gas_pedal]
+          - [continuous, brake_pedal]
+          - [continuous, steering_angle]
+          - [discrete, turn_signal]
+
       - _target_: rmind.components.containers.ModuleDict
         modules:
           image:

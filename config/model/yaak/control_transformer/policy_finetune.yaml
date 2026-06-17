@@ -14,6 +14,24 @@ hparams_jq: |
       ["discrete", "turn_signal"]
     ]
   }]
+  | .episode_builder.input_transform._args_ = (
+      .episode_builder.input_transform._args_
+      | if any(.[]; ._target_ == "rmind.components.nn.ChunkFields")
+        then map(if ._target_ == "rmind.components.nn.ChunkFields"
+                 then .action_horizon = ${action_horizon} else . end)
+        else [.[0]] + [{
+               "_target_": "rmind.components.nn.ChunkFields",
+               "episode_length": ${episode_length},
+               "action_horizon": ${action_horizon},
+               "unfold_paths": [
+                 ["continuous", "gas_pedal"],
+                 ["continuous", "brake_pedal"],
+                 ["continuous", "steering_angle"],
+                 ["discrete", "turn_signal"]
+               ]
+             }] + .[1:]
+        end
+    )
   | .episode_builder.tokenizers.modules.joint_actions = {
     "_target_": "rmind.components.nn.Identity"
   }
@@ -40,16 +58,16 @@ hparams_jq: |
         "heads": {
           "_target_": "torch.nn.ModuleList",
           "_args_": [[
-            { "_target_": "rmind.components.nn.Linear", "in_features": 384, "out_features": 16, "bias": false },
-            { "_target_": "rmind.components.nn.Linear", "in_features": 384, "out_features": 16, "bias": false },
-            { "_target_": "rmind.components.nn.Linear", "in_features": 384, "out_features": 16, "bias": false },
-            { "_target_": "rmind.components.nn.Linear", "in_features": 384, "out_features": 16, "bias": false }
+            { "_target_": "torchvision.ops.MLP", "in_channels": 384, "hidden_channels": [512, 512, 16] },
+            { "_target_": "torchvision.ops.MLP", "in_channels": 384, "hidden_channels": [512, 512, 16] },
+            { "_target_": "torchvision.ops.MLP", "in_channels": 384, "hidden_channels": [512, 512, 16] },
+            { "_target_": "torchvision.ops.MLP", "in_channels": 384, "hidden_channels": [512, 512, 16] }
           ]]
         },
         "offset_head": {
           "_target_": "torchvision.ops.MLP",
           "in_channels": 1152,
-          "hidden_channels": [384, 24],
+          "hidden_channels": [512, 24],
           "bias": false
         },
         "losses": {
