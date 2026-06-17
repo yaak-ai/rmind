@@ -18,7 +18,11 @@ episode_length: 6
 action_horizon: 1
 episode_step: 10
 episode_stride: 10
-clip_period: "${eval:'(${episode_length} + ${action_horizon} - 1) * ${episode_step}'}i"
+# clip_horizon is the dataset build horizon (max over PT/FT) so the built dataset
+# is shared: PT slices it to immediate actions (action_horizon=1), FT to chunks.
+clip_horizon: 6
+clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
+clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 
 speed_bins: 512
 gas_pedal_bins: 255

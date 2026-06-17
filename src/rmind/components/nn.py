@@ -199,6 +199,55 @@ class SliceFields(Module):
         return tree_map_with_path(fn, input)
 
 
+@final
+class ChunkFields(Module):
+    """Build per-timestep action chunks from a flat time axis.
+
+    Inputs span a fixed flat window over the time axis (`dim`) sized for the
+    largest horizon, so the build is shared across configs. Each path in
+    `unfold_paths` is unfolded into a sliding window of length `action_horizon`
+    (step 1) and then truncated to the first `episode_length` windows, yielding
+    `(..., episode_length, action_horizon)` — the action chunk starting at each of
+    the `episode_length` timesteps. Every other field is narrowed to the first
+    `episode_length` steps, dropping the tail kept only to form the chunks.
+
+    For `action_horizon == 1` this yields `(..., episode_length, 1)`, i.e. the
+    immediate action per timestep.
+    """
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        episode_length: int,
+        action_horizon: int,
+        unfold_paths: list[tuple[str, ...]],
+        dim: int = 1,
+    ) -> None:
+        super().__init__()
+
+        self.episode_length = episode_length
+        self.action_horizon = action_horizon
+        self._unfold_paths = {tuple(path) for path in unfold_paths}
+        self.dim = dim
+
+    @override
+    def forward(self, input: PyTree) -> PyTree:
+        def fn(key_path: Any, value: Any) -> Any:
+            if value is None:
+                return value
+
+            names = tuple(entry.key for entry in key_path)
+            if names in self._unfold_paths:
+                return value.unfold(self.dim, self.action_horizon, 1).narrow(
+                    self.dim, 0, self.episode_length
+                )
+
+            return value.narrow(self.dim, 0, self.episode_length)
+
+        return tree_map_with_path(fn, input)
+
+
 def _module_wrapper(
     fn: Callable[..., Tensor], *, name: str | None = None
 ) -> type[nn.Module]:
