@@ -34,6 +34,7 @@ class PolicyObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
+        waypoint_window: tuple[int, int] | None = None,
     ) -> None:
         super().__init__()
 
@@ -41,6 +42,7 @@ class PolicyObjective(Objective):
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
+        self.waypoint_window: tuple[int, int] | None = waypoint_window
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -84,9 +86,11 @@ class PolicyObjective(Objective):
             SummaryToken.OBSERVATION_SUMMARY,
         ))
 
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
-        )
+        wp = embeddings.get((Modality.CONTEXT, "waypoints"))
+        if self.waypoint_window is not None:
+            start, end = self.waypoint_window
+            wp = wp[:, start:end, :]
+        waypoints = wp.mean(dim=1, keepdim=True)
 
         features = rearrange(
             [observation_summary, observation_history, waypoints],

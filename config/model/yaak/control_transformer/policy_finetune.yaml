@@ -12,6 +12,7 @@ hparams_jq: |
           "_target_": "torch.nn.LayerNorm",
           "normalized_shape": 384
         },
+        "waypoint_window": [3,6],
         "heads": {
           "_target_": "rmind.components.containers.ModuleDict",
           "modules": {
