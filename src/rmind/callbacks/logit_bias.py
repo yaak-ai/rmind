@@ -87,7 +87,8 @@ class LogitBiasSetter(Callback):
                 ),
                 input,
             )
-            labels = pl_module.episode_builder.tokenizers(input)  # ty:ignore[call-non-callable]
+            tokenizer_input = {k: v for k, v in input.items() if k in pl_module.episode_builder.tokenizers}
+            labels = pl_module.episode_builder.tokenizers(tokenizer_input)  # ty:ignore[call-non-callable]
 
         for objective_key, loss_keypath, loss in losses:
             logger.debug(

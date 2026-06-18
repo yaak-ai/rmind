@@ -61,6 +61,18 @@ hparams_jq: |
             "turn_signal": ["input", "discrete", "turn_signal"]
           }
         },
+        "trajectory_head": {
+          "_target_": "rmind.components.nn.GRUTrajectoryHead",
+          "in_features": 1152,
+          "hidden_size": 384,
+          "num_steps": 6
+        },
+        "trajectory_loss": {
+          "_target_": "rmind.components.loss.GaussianNLLLoss"
+        },
+        "trajectory_loss_weight": 0.1,
+        "xy_key": ["input", "trajectory", "xy"],
+        "heading_key": ["input", "trajectory", "heading"],
         "losses": {
           "_target_": "rmind.components.containers.ModuleDict",
           "modules": {
@@ -84,6 +96,13 @@ hparams_jq: |
         }
       }
     }
+  }
+  | .episode_builder.input_transform._args_[0].paths.trajectory = {
+    "xy": ["data", "meta/Gnss/xy"],
+    "heading": ["data", "headings_denoised/heading"]
+  }
+  | .episode_builder.input_transform._args_[1].modules.trajectory = {
+    "_target_": "torch.nn.Identity"
   }
   | .lr_scheduler = {
     "interval": "step",

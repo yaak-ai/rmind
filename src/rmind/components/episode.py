@@ -115,7 +115,10 @@ class EpisodeBuilder(Module):
     @override
     def forward(self, batch: TensorTree) -> Episode:
         input = self.input_transform(batch)
-        input_tokens = self.tokenizers(input)
+        # Pass only keys known to the tokenizers — extra passthrough keys (e.g. trajectory)
+        # are kept in episode.input for downstream use but skipped during tokenization.
+        tokenizer_input = {k: v for k, v in input.items() if k in self.tokenizers}
+        input_tokens = self.tokenizers(tokenizer_input)
 
         first_leaf = next(
             leaf for leaf in tree_leaves(input_tokens) if leaf is not None

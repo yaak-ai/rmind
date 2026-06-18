@@ -35,6 +35,43 @@ def diff_last(input: Tensor, n: int = 1, *, append: float | None = None) -> Tens
     return torch.diff(input, n=n, dim=-1, append=append_)
 
 
+def build_local_trajectory(
+    xy: Tensor,
+    heading_deg: Tensor,
+    *,
+    history_steps: int,
+) -> Tensor:
+    """Build a local trajectory from absolute UTM positions and headings.
+
+    Takes the positions at steps [history_steps:] and expresses them in the
+    ego-local frame at step [history_steps - 1], matching the convention used
+    in dataset preprocessing (translate to ego, rotate counterclockwise by heading).
+
+    Args:
+        xy: (batch, T, 2) absolute UTM positions.
+        heading_deg: (batch, T, 1) heading in degrees.
+        history_steps: number of history steps; the reference frame is at
+            step [history_steps - 1].
+
+    Returns:
+        (batch, T - history_steps, 2) positions in the ego-local frame.
+    """
+    ref_xy = xy[:, history_steps - 1]                              # (batch, 2)
+    ref_heading = heading_deg[:, history_steps - 1].squeeze(-1)  # (batch,) degrees
+    future_xy = xy[:, history_steps:]                    # (batch, n_future, 2)
+
+    delta = future_xy - ref_xy.unsqueeze(1)              # (batch, n_future, 2)
+    theta = torch.deg2rad(ref_heading)
+    cos_t = theta.cos().unsqueeze(1)                     # (batch, 1)
+    sin_t = theta.sin().unsqueeze(1)
+
+    dx, dy = delta[..., 0], delta[..., 1]
+    x_local = dx * cos_t - dy * sin_t
+    y_local = dx * sin_t + dy * cos_t
+
+    return torch.stack([x_local, y_local], dim=-1)       # (batch, n_future, 2)
+
+
 class SignalWithThresholdResult(NamedTuple):
     class_idx: Tensor
     prob: Tensor

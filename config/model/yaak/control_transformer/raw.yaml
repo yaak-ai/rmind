@@ -59,6 +59,10 @@ episode_builder:
           discrete:
             turn_signal: [data, meta/VehicleState/turn_signal]
 
+          trajectory:
+            xy: [data, meta/Gnss/xy]
+            heading: [data, headings_denoised/heading]
+
       - _target_: rmind.components.containers.ModuleDict
         modules:
           image:
@@ -114,6 +118,9 @@ episode_builder:
             _target_: rmind.components.nn.AtLeast3D
 
           context:
+            _target_: torch.nn.Identity
+
+          trajectory:
             _target_: torch.nn.Identity
 
   tokenizers:
