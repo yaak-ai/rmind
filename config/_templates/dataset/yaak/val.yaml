@@ -297,8 +297,7 @@ samples:
                   waypoints_geom,
                   normalized_waypoints_geom,
                   ego_geom,
-                  "waypoints/xy",
-                  "headings_denoised/heading"
+                  "waypoints/xy"
                 ),
                 -- Some vehicles (Niro106, Niro109, Niro110, Niro121, Niro124, Niro127, Niro132)
                 -- have a constant brake sensor offset of up to ~4 quantisation steps (< 0.05)
@@ -379,6 +378,7 @@ samples:
                   "meta/VehicleMotion/steering_angle_normalized"::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
                   "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
                   "meta/Gnss/xy"::FLOAT[2][6] AS "meta/Gnss/xy",
+                  "headings_denoised/heading"::FLOAT[6] AS "headings_denoised/heading",
                   "waypoints/xy_normalized"::FLOAT[2][10][6] AS "waypoints/xy_normalized",
                   "waypoints/xy"::FLOAT[2][10][6] AS "waypoints/xy",
               FROM
