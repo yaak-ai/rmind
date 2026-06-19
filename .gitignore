@@ -162,3 +162,9 @@ inference_results/
 
 # env
 .direnv
+/.claude
+/report
+/reports
+/screenshots
+/pedal_copress_dist.png
+/sine_plot.png

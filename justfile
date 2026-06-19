@@ -64,6 +64,22 @@ predict +ARGS: generate-config
         --config-name predict.yaml \
         {{ ARGS }}
 
+# fit the flow policy's action-normalization stats from data (Gaussianize knots
+# + optional maneuver-LDS densities -> the action_norm json consumed at init)
+action-norm +ARGS: generate-config
+    uv run python -m rmind.scripts.flow_action_norm \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        {{ ARGS }}
+
+# export the flow policy's deterministic inference graph to ONNX / pt2
+# (emits K action-chunk draws; the winner-take-all readout is host-side)
+export-policy +ARGS: generate-config
+    uv run python -m rmind.scripts.flow_export \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        {{ ARGS }}
+
 predict-policy-with-permutations +ARGS: generate-config
     uv run rmind-predict \
         --config-path {{ justfile_directory() }}/config \

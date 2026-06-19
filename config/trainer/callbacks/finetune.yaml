@@ -3,6 +3,14 @@
   paths:
     - episode_builder
     - encoder
+- _target_: rmind.callbacks.WandbImageParamLogger
+  when: on_validation_epoch_end
+  key: policy/position_embedding_cosine
+  select:
+    - [objectives, policy, decoder, position_embedding, weight]
+  apply:
+    _target_: torchmetrics.functional.pairwise_cosine_similarity
+    _partial_: true
 - _target_: pytorch_lightning.callbacks.ModelSummary
   max_depth: 5
 - _target_: pytorch_lightning.callbacks.ModelCheckpoint
@@ -30,7 +38,6 @@
     objectives:
       - score_l1
       - score_signed_error
-      - prediction_std
   cluster_fn:
     _target_: rmind.utils.RuleBasedCluster
     fields:
@@ -51,19 +58,26 @@
         reduce: last
     rules:
       - name: highway
-        when: {speed: {ge: 70}}
+        when: { speed: { ge: 70 } }
       - name: braking_turn
-        when: {brake: {ge: 0.02}, steer: {abs_ge: 0.05}}
+        when: { brake: { ge: 0.02 }, steer: { abs_ge: 0.05 } }
       - name: braking
-        when: {brake: {ge: 0.02}, steer: {abs_lt: 0.05}}
+        when: { brake: { ge: 0.02 }, steer: { abs_lt: 0.05 } }
       - name: cruise_turn
-        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, steer: {abs_ge: 0.05}}
+        when:
+          { gas: { ge: 0.05 }, brake: { lt: 0.02 }, steer: { abs_ge: 0.05 } }
       - name: acceleration
-        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, dp_g: {ge: 0.01}}
+        when: { gas: { ge: 0.05 }, brake: { lt: 0.02 }, dp_g: { ge: 0.01 } }
       - name: gas_release
-        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, dp_g: {lt: -0.01}}
+        when: { gas: { ge: 0.05 }, brake: { lt: 0.02 }, dp_g: { lt: -0.01 } }
       - name: cruise
-        when: {gas: {ge: 0.05}, brake: {lt: 0.02}, steer: {abs_lt: 0.05}, dp_g: {abs_lt: 0.01}}
+        when:
+          {
+            gas: { ge: 0.05 },
+            brake: { lt: 0.02 },
+            steer: { abs_lt: 0.05 },
+            dp_g: { abs_lt: 0.01 },
+          }
     default: idle_coast
   cluster_metrics:
     acceleration:

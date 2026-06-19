@@ -14,6 +14,10 @@ num_layers: 8
 encoder_embedding_dim: 384
 image_embedding_dim: 384
 
+history_steps: 6
+action_horizon: 6
+sequence_length: ${history_steps} # flat window; pretrain doesn't use the action chunk
+
 speed_bins: 512
 gas_pedal_bins: 255
 brake_pedal_bins: 165

@@ -7,6 +7,11 @@ defaults:
   - /logger: yaak/rerun/prediction_policy
   - _self_
 
+# Predict-time readout, injected into the saved hparams by /model finetuned.
+# Override at the CLI, e.g. flow_predict_readout=mode flow_predict_samples=32.
+flow_predict_readout: single
+flow_predict_samples: 16
+
 trainer:
   _target_: pytorch_lightning.Trainer
   _convert_: all
@@ -21,7 +26,6 @@ trainer:
         objectives:
           - ground_truth
           - prediction_value
-          - prediction_std
           - prediction_probs
           - score_l1
           - score_logprob
@@ -38,7 +42,7 @@ trainer:
 
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
-      path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
+      path: ${hydra:run.dir}/predictions/${model.artifact}/{batch_idx:06}.parquet
       select:
         - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
         - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
@@ -46,7 +50,6 @@ trainer:
         - [batch, meta, input_id]
         - [policy, ground_truth, value]
         - [policy, prediction_value, value]
-        - [policy, prediction_std, value]
         - [policy, prediction_probs, value]
         - [policy, score_l1, value]
         - [policy, score_logprob, value]

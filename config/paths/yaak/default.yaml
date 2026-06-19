@@ -1,3 +1,5 @@
 data: /nasa/drives/yaak/data
 rbyte:
   cache: /nasa/team-space/${oc.env:USER}/.rbyte_cache/${oc.env:HOSTNAME}
+action_norm_dir: /nasa/team-space/artifacts/action_norm
+action_norm_stats: ${paths.action_norm_dir}/action_norm.json

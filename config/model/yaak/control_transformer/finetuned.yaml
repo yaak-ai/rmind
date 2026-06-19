@@ -1,7 +1,23 @@
 _target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
 filename: model.ckpt
+# Predict-time readout, injected into the saved hparams so it works on existing
+# artifacts (pure inference, no retraining). Reads flow_predict_readout
+# (single|mode) / flow_predict_samples, defaulted by the inference config:
+# SingleReadout or AxisModeReadout consensus (components/readout.py). Guarded on
+# the objective _target_ so non-flow ckpts are untouched. lds_weights is
+# train-only, so it's dropped here (the objective then builds no LDS module).
 hparams_jq: |
   delpaths([
-    ["objectives", "policy", "losses"]
+    ["objectives", "modules", "policy", "lds_weights"]
   ])
+  | if ((.objectives.modules.policy._target_ // "") | endswith("PolicyObjective")) then
+      .objectives.modules.policy.readout = (
+        if "${flow_predict_readout}" == "mode" then {
+          "_target_": "rmind.components.readout.AxisModeReadout",
+          "num_samples": ${flow_predict_samples}
+        } else {
+          "_target_": "rmind.components.readout.SingleReadout"
+        } end
+      )
+    else . end
