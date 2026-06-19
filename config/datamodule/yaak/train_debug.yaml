@@ -2,6 +2,7 @@
 defaults:
   - /dataset/yaak/train_debug@train.dataset
   - /dataset/yaak/train_debug@val.dataset
+  - /dataset/yaak/train_debug@predict.dataset
   - _self_
 
 _target_: rmind.datamodules.GenericDataModule
@@ -18,6 +19,17 @@ train:
   method: thread
 
 val:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 2
+  shuffle: false
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+
+predict:
   _target_: rbyte.dataloader.TorchDataNodeDataLoader
   batch_size: 2
   shuffle: false

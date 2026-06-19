@@ -33,6 +33,10 @@ trainer:
           - prediction_diff_hist
           - ground_truth_diff_hist
 
+    - _target_: rmind.callbacks.RerunPredictionWriter
+      write_interval: batch
+      logger: ${logger}
+
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
       path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
