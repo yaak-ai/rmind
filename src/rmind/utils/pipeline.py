@@ -16,12 +16,20 @@ def left_join_parquet(
     """
     if not path:
         return df
-    key = [right_on] if isinstance(right_on, str) else (list(right_on) if right_on is not None else ([on] if isinstance(on, str) else list(on)))
+    key = (
+        [right_on]
+        if isinstance(right_on, str)
+        else (
+            list(right_on)
+            if right_on is not None
+            else ([on] if isinstance(on, str) else list(on))
+        )
+    )
     right = plr.read_parquet(path, columns=key + select if select is not None else None)
     if right_on is not None:
         on_list = [on] if isinstance(on, str) else list(on)
         right_on_list = [right_on] if isinstance(right_on, str) else list(right_on)
-        right = right.rename(dict(zip(right_on_list, on_list)))
+        right = right.rename(dict(zip(right_on_list, on_list, strict=False)))
     return df.join(right, on=on, how="left")
 
 
@@ -48,8 +56,11 @@ def drop_overrepresented_by_loss(
 
     scores = df.select(score.alias(score_col))[score_col]
     finite = scores.filter(scores.is_finite())
-    lo = float(finite.quantile(0.001))
-    hi = float(finite.quantile(0.999))
+    q_lo = finite.quantile(0.001)
+    q_hi = finite.quantile(0.999)
+    if q_lo is None or q_hi is None:
+        return df
+    lo, hi = float(q_lo), float(q_hi)
     breaks = [lo + (hi - lo) * i / n_bins for i in range(1, n_bins)]
 
     return (

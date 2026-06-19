@@ -40,7 +40,7 @@ class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         if self.logit_bias is not None:
-            input = input + self.logit_bias
+            input += self.logit_bias
         return super().forward(input, target)
 
 
@@ -57,7 +57,7 @@ class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         if self.logit_bias is not None:
-            input = input + self.logit_bias
+            input += self.logit_bias
         return super().forward(input, target)
 
 

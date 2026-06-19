@@ -262,7 +262,7 @@ class PolicyObjective(Objective):
                         case (Modality.CONTINUOUS, _):
                             mean = x[..., 0]
                             std = torch.sqrt(torch.exp(x[..., 1]))
-                            gt = episode.input[action_type][:, -1]
+                            gt = cast("Tensor", episode.input[action_type][:, -1])
                             return -torch.log(gauss_prob(gt, mean=mean, std=std))
 
                         case (Modality.DISCRETE, "turn_signal"):
@@ -475,33 +475,36 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := ObjectivePredictionKey.LOSS) in keys:
-                if self.losses is not None and self.targets is not None:
-                    targets = tree_map(
-                        lambda k: episode.get(k)[:, -1],
-                        self.targets,
-                        is_leaf=lambda x: isinstance(x, tuple),
+            if (
+                (key := ObjectivePredictionKey.LOSS) in keys
+                and self.losses is not None
+                and self.targets is not None
+            ):
+                targets = tree_map(
+                    lambda k: episode.get(k)[:, -1],
+                    self.targets,
+                    is_leaf=lambda x: isinstance(x, tuple),
+                )
+                reductions = {
+                    name: m.reduction  # type: ignore[attr-defined]
+                    for name, m in self.losses.named_modules()
+                    if hasattr(m, "reduction")
+                }
+                for name, m in self.losses.named_modules():
+                    if name in reductions:
+                        m.reduction = "none"  # type: ignore[attr-defined]
+                try:
+                    losses = self.losses(
+                        tree_map(Rearrange("b 1 d -> b d"), raw_logits),
+                        tree_map(Rearrange("b 1 -> b"), targets),
                     )
-                    reductions = {
-                        name: m.reduction  # type: ignore[attr-defined]
-                        for name, m in self.losses.named_modules()
-                        if hasattr(m, "reduction")
-                    }
+                finally:
                     for name, m in self.losses.named_modules():
                         if name in reductions:
-                            m.reduction = "none"  # type: ignore[attr-defined]
-                    try:
-                        losses = self.losses(
-                            tree_map(Rearrange("b 1 d -> b d"), raw_logits),
-                            tree_map(Rearrange("b 1 -> b"), targets),
-                        )  # ty:ignore[call-non-callable]
-                    finally:
-                        for name, m in self.losses.named_modules():
-                            if name in reductions:
-                                m.reduction = reductions[name]  # type: ignore[attr-defined]
-                    predictions[key] = Prediction(
-                        value=TensorDict(losses, batch_size=[b]),
-                        timestep_indices=timestep_indices,
-                    )
+                            m.reduction = reductions[name]  # type: ignore[attr-defined]
+                predictions[key] = Prediction(
+                    value=TensorDict(losses, batch_size=[b]),
+                    timestep_indices=timestep_indices,
+                )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
