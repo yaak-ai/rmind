@@ -5,7 +5,6 @@ from torch.utils._pytree import (  # noqa: PLC2701
     KeyPath,
     MappingKey,
     PyTree,
-    key_get,
     tree_flatten_with_path,
 )
 
@@ -23,11 +22,16 @@ def path_to_key[K, T](path: tuple[MappingKey[K, T], ...]) -> tuple[K, ...]:
     return tuple(elem.key for elem in path)
 
 
-def key_get_default(obj: Any, kp: KeyPath, default: object) -> Any:
+def key_get_default(
+    obj: Any, kp: tuple[MappingKey[Any, Any], ...], default: object
+) -> Any:
+    # Index via `MappingKey.key` rather than torch's `key_get`, whose `MappingKey.get(obj)` method call dynamo can't trace under export (torch>=2.12).
     try:
-        return key_get(obj, kp)
+        for k in kp:
+            obj = obj[k.key]
     except KeyError:
         return default
+    return obj
 
 
 def unflatten_keys(data: Mapping[tuple[Any, ...], Any]) -> dict[Any, Any]:

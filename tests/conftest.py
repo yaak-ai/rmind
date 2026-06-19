@@ -65,12 +65,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session", autouse=True)  # noqa: RUF076
 def _seed_everything() -> None:
     pl.seed_everything(42, workers=True, verbose=True)
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session", autouse=True)  # noqa: RUF076
 def _set_float32_matmul_precision() -> Generator[None, Any, None]:
     prev = torch.get_float32_matmul_precision()
     torch.set_float32_matmul_precision("high")
