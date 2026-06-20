@@ -3,7 +3,7 @@ from collections.abc import Set as AbstractSet
 from typing import final, override
 
 import torch
-import torch.nn.functional as F
+from einops import rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
@@ -29,11 +29,10 @@ class JointInverseDynamicsObjective(Objective):
     """
 
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         *,
         tokenizer: InstanceOf[ModuleDict],
-        projection: InstanceOf[ModuleDict],
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict],
         targets: CodeTargets,
@@ -42,7 +41,6 @@ class JointInverseDynamicsObjective(Objective):
         super().__init__()
 
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
-        self.projection = projection
         self.heads = heads
         self.losses = losses
         self.targets: CodeTargets = targets
@@ -65,30 +63,27 @@ class JointInverseDynamicsObjective(Objective):
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         features = self._observation_summary(episode, embedding)[:, :-1]
         (tokenizer,) = tree_leaves(self.tokenizer)
-        (heads,) = tree_leaves(self.heads)  # one head per quantizer
+        g = tokenizer.quantizer.num_quantizers
 
         with torch.no_grad():
             codes = tree_map(
                 lambda path: episode.get(path)[:, 1:],
                 self.targets,
                 is_leaf=lambda x: isinstance(x, tuple),
-            )  # {joint: {actions: (B, T-1, num_quantizers)}}
+            )
 
-        r = self.projection(features)  # {joint: {actions: (B, T-1, latent)}}
+        logits = tree_map(
+            lambda lg: rearrange(lg, "b t (g c) -> b t g c", g=g),
+            self.heads(features),
+        )
+
         losses: dict[str, Tensor] = {}
-        for q in range(tokenizer.quantizer.num_quantizers):
+        for q in range(g):
             (losses[f"quantizer_{q}"],) = tree_leaves(
                 self.losses(
-                    tree_map(lambda rq, q=q: heads[q](rq).flatten(0, 1), r),
+                    tree_map(lambda lg, q=q: lg[..., q, :].flatten(0, 1), logits),
                     tree_map(lambda c, q=q: c[..., q].flatten(), codes),
                 )
-            )
-            codebook = tokenizer.quantizer.codebook(q)
-            # out-of-place: heads[q](r) is saved for backward, so r must not be mutated
-            r = tree_map(
-                lambda rq, c, q=q, cb=codebook: rq - F.embedding(c[..., q], cb),
-                r,
-                codes,
             )
 
         return {"loss": losses}
@@ -117,19 +112,13 @@ class JointInverseDynamicsObjective(Objective):
         if ObjectivePredictionKey.PREDICTION_VALUE in keys:
             features = self._observation_summary(episode, embedding)[:, :-1]
             (tokenizer,) = tree_leaves(self.tokenizer)
-            (heads,) = tree_leaves(self.heads)
+            g = tokenizer.quantizer.num_quantizers
 
-            r = self.projection(features)
-            codes: list[CodeTargets] = []
-            for q in range(tokenizer.quantizer.num_quantizers):
-                code = tree_map(lambda rq, q=q: heads[q](rq).argmax(dim=-1), r)
-                codes.append(code)
-                codebook = tokenizer.quantizer.codebook(q)
-                r = tree_map(
-                    lambda rq, c, cb=codebook: rq - F.embedding(c, cb), r, code
-                )
-
-            value = tree_map(lambda *cs: torch.stack(cs, dim=-1), *codes)
+            # joint head: argmax each quantizer's categorical -> codes (B, T-1, G)
+            value = tree_map(
+                lambda lg: rearrange(lg, "b t (g c) -> b t g c", g=g).argmax(dim=-1),
+                self.heads(features),
+            )
             predictions[ObjectivePredictionKey.PREDICTION_VALUE] = Prediction(
                 value=TensorDict(value), timestep_indices=slice(1, None)
             )

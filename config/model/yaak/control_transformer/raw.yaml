@@ -387,38 +387,14 @@ objectives:
           joint:
             actions:
               _target_: rmind.components.loss.FocalLoss
-      projection:
+      heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
           joint:
             actions:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${encoder_embedding_dim}
-              bias: False
-      heads:  # one classifier per quantizer (each scores against its own codebook)
-        _target_: rmind.components.containers.ModuleDict
-        modules:
-          joint:
-            actions:
-              _target_: torch.nn.ModuleList
-              _args_:
-                - - _target_: rmind.components.nn.Linear
-                    in_features: ${encoder_embedding_dim}
-                    out_features: 16
-                    bias: False
-                  - _target_: rmind.components.nn.Linear
-                    in_features: ${encoder_embedding_dim}
-                    out_features: 16
-                    bias: False
-                  - _target_: rmind.components.nn.Linear
-                    in_features: ${encoder_embedding_dim}
-                    out_features: 16
-                    bias: False
-                  - _target_: rmind.components.nn.Linear
-                    in_features: ${encoder_embedding_dim}
-                    out_features: 16
-                    bias: False
+              _target_: torchvision.ops.MLP
+              in_channels: ${encoder_embedding_dim}
+              hidden_channels: [384, 384, 64]
       targets:
         joint:
           actions: [input_tokens, joint_actions]
