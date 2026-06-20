@@ -49,26 +49,15 @@ hparams_jq: |
           "artifact": "${action_tokenizer_artifact}",
           "weights_only": false
         },
-        "projection": {
-          "_target_": "rmind.components.nn.Linear",
-          "in_features": 1152,
-          "out_features": 384,
-          "bias": false
-        },
-        "heads": {
-          "_target_": "torch.nn.ModuleList",
-          "_args_": [[
-            { "_target_": "torchvision.ops.MLP", "in_channels": 384, "hidden_channels": [512, 512, 16] },
-            { "_target_": "torchvision.ops.MLP", "in_channels": 384, "hidden_channels": [512, 512, 16] },
-            { "_target_": "torchvision.ops.MLP", "in_channels": 384, "hidden_channels": [512, 512, 16] },
-            { "_target_": "torchvision.ops.MLP", "in_channels": 384, "hidden_channels": [512, 512, 16] }
-          ]]
+        "code_head": {
+          "_target_": "torchvision.ops.MLP",
+          "in_channels": 1152,
+          "hidden_channels": [1024, 1024, 64]
         },
         "offset_head": {
           "_target_": "torchvision.ops.MLP",
           "in_channels": 1152,
-          "hidden_channels": [512, 24],
-          "bias": false
+          "hidden_channels": [1024, 1024, 1536]
         },
         "losses": {
           "_target_": "rmind.components.containers.ModuleDict",
