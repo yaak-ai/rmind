@@ -1,10 +1,10 @@
 # @package _global_
 ---
 defaults:
-  - /model: yaak/control_transformer/finetuned
+  - /model: yaak/control_transformer/pretrained
   - /datamodule: yaak/predict
   - /paths: yaak/default
-  - /logger: yaak/rerun/prediction_policy
+  - /logger: yaak/rerun/prediction_pretrain
   - _self_
 
 trainer:
@@ -29,7 +29,9 @@ trainer:
         - [batch, data, meta/sample_id]
         - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
         - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
-        - [policy, loss, value]
+        - [inverse_dynamics, loss, value]
+        - [forward_dynamics, loss, value]
+        - [memory_extraction, loss, value]
       writer:
         _target_: polars.DataFrame.write_parquet
         _partial_: true

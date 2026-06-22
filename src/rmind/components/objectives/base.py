@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
 from collections.abc import Set as AbstractSet
+from contextlib import contextmanager
 from enum import StrEnum, auto, unique
 from typing import Any, Never, NotRequired, TypedDict
 
@@ -42,6 +43,24 @@ class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]
 class Metrics(TypedDict):
     loss: TensorTree | None
     _artifacts: NotRequired[TensorTree]
+
+
+@contextmanager
+def reduction_none(module: Module) -> Generator[None, None, None]:
+    saved = {
+        name: m.reduction  # type: ignore[attr-defined]
+        for name, m in module.named_modules()
+        if hasattr(m, "reduction")
+    }
+    for name, m in module.named_modules():
+        if name in saved:
+            m.reduction = "none"  # type: ignore[attr-defined]
+    try:
+        yield
+    finally:
+        for name, m in module.named_modules():
+            if name in saved:
+                m.reduction = saved[name]  # type: ignore[attr-defined]
 
 
 def _not_implemented(*_args: Any, **_kwargs: Any) -> Never:

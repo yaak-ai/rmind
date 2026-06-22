@@ -32,7 +32,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
     """
 
     @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         path: str,
@@ -40,6 +40,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
         select: Sequence[str | tuple[str, ...]] | None = None,
         separator: str = "/",
         write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "batch",
+        final_path: str | None = None,
     ) -> None:
         super().__init__(write_interval=write_interval)
 
@@ -48,6 +49,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
         self._select = select
         self._separator = separator
         self._written_paths: list[str] = []
+        self._final_path = Path(final_path) if final_path else None
 
     @override
     def write_on_batch_end(
@@ -103,4 +105,10 @@ class DataFramePredictionWriter(BasePredictionWriter):
         output_path = parent_dir.with_suffix(".parquet")
         plr.scan_parquet(self._written_paths).sink_parquet(output_path)
         shutil.rmtree(parent_dir)
+
+        if self._final_path is not None:
+            self._final_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(output_path, self._final_path)
+            output_path = self._final_path
+
         logger.info("wrote predictions", path=output_path.as_posix())

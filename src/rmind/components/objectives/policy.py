@@ -20,6 +20,7 @@ from rmind.components.objectives.base import (
     ObjectivePredictionKey,
     Prediction,
     Targets,
+    reduction_none,
 )
 from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
 
@@ -485,23 +486,11 @@ class PolicyObjective(Objective):
                     self.targets,
                     is_leaf=lambda x: isinstance(x, tuple),
                 )
-                reductions = {
-                    name: m.reduction  # type: ignore[attr-defined]
-                    for name, m in self.losses.named_modules()
-                    if hasattr(m, "reduction")
-                }
-                for name, m in self.losses.named_modules():
-                    if name in reductions:
-                        m.reduction = "none"  # type: ignore[attr-defined]
-                try:
+                with reduction_none(self.losses):
                     losses = self.losses(
                         tree_map(Rearrange("b 1 d -> b d"), raw_logits),
                         tree_map(Rearrange("b 1 -> b"), targets),
                     )
-                finally:
-                    for name, m in self.losses.named_modules():
-                        if name in reductions:
-                            m.reduction = reductions[name]  # type: ignore[attr-defined]
                 predictions[key] = Prediction(
                     value=TensorDict(losses, batch_size=[b]),
                     timestep_indices=timestep_indices,
