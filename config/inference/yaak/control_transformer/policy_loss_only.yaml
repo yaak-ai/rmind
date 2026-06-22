@@ -1,0 +1,37 @@
+# @package _global_
+---
+defaults:
+  - /model: yaak/control_transformer/finetuned
+  - /datamodule: yaak/predict
+  - /paths: yaak/default
+  - /logger: yaak/rerun/prediction_policy
+  - _self_
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  _convert_: all
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  precision: "bf16-mixed"
+  logger: false
+  callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives:
+          - loss
+
+    - _target_: rmind.callbacks.DataFramePredictionWriter
+      write_interval: batch
+      path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
+      final_path: ${oc.select:scores_output}
+      select:
+        - [batch, data, meta/sample_id]
+        - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+        - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+        - [policy, loss, value]
+      writer:
+        _target_: polars.DataFrame.write_parquet
+        _partial_: true
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 5

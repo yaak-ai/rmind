@@ -297,8 +297,7 @@ samples:
                   waypoints_geom,
                   normalized_waypoints_geom,
                   ego_geom,
-                  "waypoints/xy",
-                  "headings_denoised/heading"
+                  "waypoints/xy"
                 ),
                 -- Some vehicles (Niro106, Niro109, Niro110, Niro121, Niro124, Niro127, Niro132)
                 -- have a constant brake sensor offset of up to ~4 quantisation steps (< 0.05)
@@ -306,7 +305,8 @@ samples:
                 -- not real braking. Clamp it to zero so the model does not learn to predict
                 -- spurious simultaneous brake+gas presses.
                 IF(
-                  "meta/VehicleMotion/brake_pedal_normalized" < 0.05
+                  ${oc.select:clamp_brake_pedal,1} = 1
+                  AND "meta/VehicleMotion/brake_pedal_normalized" < 0.05
                   AND "meta/VehicleMotion/gas_pedal_normalized" > 0.0,
                   0.0,
                   "meta/VehicleMotion/brake_pedal_normalized"
@@ -378,6 +378,7 @@ samples:
                   "meta/VehicleMotion/steering_angle_normalized"::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
                   "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
                   "meta/Gnss/xy"::FLOAT[2][6] AS "meta/Gnss/xy",
+                  "headings_denoised/heading"::FLOAT[6] AS "headings_denoised/heading",
                   "waypoints/xy_normalized"::FLOAT[2][10][6] AS "waypoints/xy_normalized",
                   "waypoints/xy"::FLOAT[2][10][6] AS "waypoints/xy",
               FROM
@@ -396,14 +397,15 @@ samples:
                   -- genuinely fluctuating brake signal (Niro101, Niro107, Niro112,
                   -- Niro115, Niro128, Niro130, Niro131) where the clamp does not
                   -- apply (brake > 0.05). Such conflicts are unrecoverable noise.
-                  AND len(list_filter(
+                  -- Disable with: +drop_pedal_conflict_episodes=0
+                  AND (${oc.select:drop_pedal_conflict_episodes,1} = 0 OR len(list_filter(
                       list_zip(
                           "meta/VehicleMotion/gas_pedal_normalized",
                           "meta/VehicleMotion/brake_pedal_normalized"
                       ),
                       x -> x[1] > (1.0 / 255 + 0.001)
                            AND x[2] > (1.0 / 164 + 0.001)
-                  )) = 0
+                  )) = 0)
 
       - _target_: pipefunc.PipeFunc
         renames:

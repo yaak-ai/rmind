@@ -20,6 +20,7 @@ from rmind.components.objectives.base import (
     ObjectivePredictionKey,
     Prediction,
     Targets,
+    reduction_none,
 )
 
 
@@ -103,7 +104,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         }
 
     @override
-    def predict(
+    def predict(  # noqa: C901, PLR0914
         self,
         *,
         episode: Episode,
@@ -130,6 +131,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             ObjectivePredictionKey.SCORE_LOGPROB,
             ObjectivePredictionKey.SCORE_L1,
             ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
+            ObjectivePredictionKey.LOSS,
         }:
             index = episode.index[:-1]  # all but last timestep
             observation_keys = self.heads.tree_paths()
@@ -241,6 +243,39 @@ class ForwardDynamicsPredictionObjective(Objective):
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
                     embedding
+                )
+
+            if (
+                (key := ObjectivePredictionKey.LOSS) in keys
+                and self.losses is not None
+                and self.targets is not None
+            ):
+                targets = tree_map(
+                    lambda k: episode.get(k)[:, 1:],
+                    self.targets,
+                    is_leaf=lambda x: isinstance(x, tuple),
+                )
+                with reduction_none(self.losses):
+                    losses = self.losses(
+                        tree_map(
+                            Rearrange("b t s d -> (b t s) d"),
+                            self.heads(
+                                features_projected,
+                                is_leaf=lambda x: (
+                                    isinstance(x, dict)
+                                    and "query" in x
+                                    and "context" in x
+                                ),
+                            ),
+                        ),
+                        tree_map(Rearrange("b t s ... -> (b t s) ..."), targets),
+                    )
+                predictions[key] = Prediction(
+                    value=TensorDict(
+                        tree_map(lambda x: x.reshape(b, t - 1), losses),
+                        batch_size=[b, t - 1],
+                    ),
+                    timestep_indices=timestep_indices,
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

@@ -176,6 +176,19 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         return model.to(device)  # ty:ignore[invalid-return-type, unresolved-attribute]
 
     @override
+    def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        # `logit_bias` buffers are None at init (excluded from state_dict) but
+        # get set to tensors by LogitBiasSetter.on_fit_start during training.
+        # Pre-register them from the checkpoint so load_state_dict(strict=True)
+        # doesn't reject them as unexpected keys.
+        for key, value in checkpoint.get("state_dict", {}).items():
+            if key.endswith(".logit_bias") and isinstance(value, torch.Tensor):
+                module_path = key[: -len(".logit_bias")]
+                self.get_submodule(module_path).register_buffer(
+                    "logit_bias", torch.empty_like(value)
+                )
+
+    @override
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> STEP_OUTPUT:
         episode = self.episode_builder(batch)
         embedding = self.encoder(

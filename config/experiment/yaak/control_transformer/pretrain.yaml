@@ -3,6 +3,7 @@
 defaults:
   - /model: yaak/control_transformer/raw
   - /datamodule: yaak/train
+  - /resampling: pretrained
   - /trainer: default
   - /trainer/callbacks: pretrain
   - /paths: yaak/default

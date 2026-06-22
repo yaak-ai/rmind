@@ -1,0 +1,11 @@
+select:
+  - "policy/loss/value/continuous/gas_pedal"
+  - "policy/loss/value/continuous/brake_pedal"
+  - "policy/loss/value/continuous/steering_angle"
+  - "policy/loss/value/discrete/turn_signal"
+
+columns:
+  - "policy/loss/value/continuous/gas_pedal"
+  - "policy/loss/value/continuous/brake_pedal"
+  - "policy/loss/value/continuous/steering_angle"
+  - "policy/loss/value/discrete/turn_signal"

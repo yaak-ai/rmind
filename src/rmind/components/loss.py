@@ -30,27 +30,35 @@ class FocalLoss(Module):
 
 
 class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
+    logit_bias: Tensor | None
+
     def __init__(self, *, logit_bias: Tensor | None = None, gamma: float = 2.0) -> None:
         super().__init__(gamma=gamma)
 
-        self.logit_bias: Tensor | None = logit_bias
+        self.register_buffer("logit_bias", logit_bias)
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
+        if self.logit_bias is not None:
+            input += self.logit_bias
+        return super().forward(input, target)
 
 
 class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
+    logit_bias: Tensor | None
+
     def __init__(
         self, *args: Any, logit_bias: Tensor | None = None, **kwargs: Any
     ) -> None:
         super().__init__(*args, **kwargs)
 
-        self.logit_bias: Tensor | None = logit_bias
+        self.register_buffer("logit_bias", logit_bias)
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
+        if self.logit_bias is not None:
+            input += self.logit_bias
+        return super().forward(input, target)
 
 
 class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
@@ -98,6 +106,7 @@ class GramAnchoringLoss(Module):
         self.weight_sim: float = weight_sim
         self.weight_gram: float = weight_gram
         self.patches: int = patches
+        self.reduction: str = "mean"
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
@@ -119,15 +128,19 @@ class GramAnchoringLoss(Module):
         weights /= weights.sum(dim=1, keepdim=True) + eps
 
         patch_loss = F.mse_loss(input_view, target_view, reduction="none").mean(dim=-1)
-        sim_loss = (weights * patch_loss).sum(dim=1).mean()
+        sim_per_sample = (weights * patch_loss).sum(dim=1)
 
         if self.weight_gram <= 0:
-            return self.weight_sim * sim_loss
+            per_sample = self.weight_sim * sim_per_sample
+        else:
+            # Gram on L2-normed features weighted by patch uniqueness.
+            gram_pred = torch.einsum("bpd,bqd->bpq", input_n, input_n)
+            gram_gt = torch.einsum("bpd,bqd->bpq", target_n, target_n)
+            pair_weights = torch.einsum("bp,bq->bpq", weights, weights)  # (bt, p, p)
+            per_sample = self.weight_sim * sim_per_sample + self.weight_gram * (
+                pair_weights * (gram_pred - gram_gt).pow(2)
+            ).sum(dim=(1, 2))
 
-        # Gram on L2-normed features weighted by patch uniqueness.
-        gram_pred = torch.einsum("bpd,bqd->bpq", input_n, input_n)
-        gram_gt = torch.einsum("bpd,bqd->bpq", target_n, target_n)
-        pair_weights = torch.einsum("bp,bq->bpq", weights, weights)  # (bt, p, p)
-        gram_loss = (pair_weights * (gram_pred - gram_gt).pow(2)).sum(dim=(1, 2)).mean()
-
-        return self.weight_sim * sim_loss + self.weight_gram * gram_loss
+        if self.reduction == "none":
+            return per_sample
+        return per_sample.mean()

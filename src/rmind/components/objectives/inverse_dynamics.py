@@ -19,6 +19,7 @@ from rmind.components.objectives.base import (
     ObjectivePredictionKey,
     Prediction,
     Targets,
+    reduction_none,
 )
 
 
@@ -161,5 +162,28 @@ class InverseDynamicsPredictionObjective(Objective):
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
                     embedding
                 )
+
+        if (
+            (key := ObjectivePredictionKey.LOSS) in keys
+            and self.losses is not None
+            and self.targets is not None
+        ):
+            targets = tree_map(
+                lambda k: episode.get(k)[:, 1:],
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+            with reduction_none(self.losses):
+                losses = self.losses(
+                    tree_map(Rearrange("b t 1 d -> (b t) d"), self.heads(features)),
+                    tree_map(Rearrange("b t 1 -> (b t)"), targets),
+                )
+            predictions[key] = Prediction(
+                value=TensorDict(
+                    tree_map(lambda x: x.reshape(b, t - 1), losses),
+                    batch_size=[b, t - 1],
+                ),
+                timestep_indices=slice(1, None),
+            )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

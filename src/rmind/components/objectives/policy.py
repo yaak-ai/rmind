@@ -20,6 +20,7 @@ from rmind.components.objectives.base import (
     ObjectivePredictionKey,
     Prediction,
     Targets,
+    reduction_none,
 )
 from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
 
@@ -149,6 +150,7 @@ class PolicyObjective(Objective):
             ObjectivePredictionKey.PREDICTION_DIFF_HIST,
             ObjectivePredictionKey.GROUND_TRUTH_DIFF_HIST,
             ObjectivePredictionKey.SCORE_SIGNED_ERROR,
+            ObjectivePredictionKey.LOSS,
         }:
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
@@ -185,7 +187,8 @@ class PolicyObjective(Objective):
                 "i b 1 d -> b 1 (i d)",
             )
 
-            logits = TensorDict(self.heads(features), batch_size=[b, 1])
+            raw_logits = self.heads(features)
+            logits = TensorDict(raw_logits, batch_size=[b, 1])
 
             timestep_indices = slice(-1, None)
 
@@ -260,7 +263,8 @@ class PolicyObjective(Objective):
                         case (Modality.CONTINUOUS, _):
                             mean = x[..., 0]
                             std = torch.sqrt(torch.exp(x[..., 1]))
-                            return -torch.log(gauss_prob(mean, mean=mean, std=std))
+                            gt = cast("Tensor", episode.input[action_type][:, -1])
+                            return -torch.log(gauss_prob(gt, mean=mean, std=std))
 
                         case (Modality.DISCRETE, "turn_signal"):
                             gt = episode.input[action_type][:, -1]
@@ -469,6 +473,26 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
+                    timestep_indices=timestep_indices,
+                )
+
+            if (
+                (key := ObjectivePredictionKey.LOSS) in keys
+                and self.losses is not None
+                and self.targets is not None
+            ):
+                targets = tree_map(
+                    lambda k: episode.get(k)[:, -1],
+                    self.targets,
+                    is_leaf=lambda x: isinstance(x, tuple),
+                )
+                with reduction_none(self.losses):
+                    losses = self.losses(
+                        tree_map(Rearrange("b 1 d -> b d"), raw_logits),
+                        tree_map(Rearrange("b 1 -> b"), targets),
+                    )
+                predictions[key] = Prediction(
+                    value=TensorDict(losses, batch_size=[b]),
                     timestep_indices=timestep_indices,
                 )
 
