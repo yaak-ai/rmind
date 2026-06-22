@@ -10,7 +10,6 @@ from tensordict import TensorClass, TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import (  # noqa: PLC2701
-    MappingKey,
     tree_leaves,
     tree_map,
     tree_map_with_path,
@@ -23,7 +22,7 @@ from rmind.components.mask import (
     FactorizedAttentionMaskBuilder,
     TorchAttentionMaskLegend,
 )
-from rmind.utils.pytree import unflatten_keys
+from rmind.utils.pytree import path_to_key, unflatten_keys
 
 logger = get_logger(__name__)
 
@@ -95,11 +94,9 @@ class EpisodeBuilder(Module):
         self.register_buffer("_attention_mask_spatial", None, persistent=False)
         self.register_buffer("_attention_mask_temporal", None, persistent=False)
         role_idx_by_type_modality: dict[tuple[str, str], int] = {}
-        self._role_idx_by_path: dict[tuple[MappingKey, MappingKey], int] = {
-            (
-                MappingKey(token.modality.value),
-                MappingKey(token.name),  # https://github.com/yaak-ai/rmind/issues/204
-            ): role_idx_by_type_modality.setdefault(
+        # Plain (modality, name) keys, not `MappingKey`: keeps `_build_role_embeddings` torch.export-able (torch>=2.12).
+        self._role_idx_by_path: dict[tuple[str, str], int] = {
+            (token.modality.value, token.name): role_idx_by_type_modality.setdefault(
                 (token.type.value, token.modality.value), len(role_idx_by_type_modality)
             )
             for token in timestep
@@ -232,13 +229,13 @@ class EpisodeBuilder(Module):
         return tree_map_with_path(
             lambda path, leaf: (
                 repeat(
-                    role_embeddings[self._role_idx_by_path[path]],
+                    role_embeddings[self._role_idx_by_path[keys]],
                     "d -> b t n d",
                     b=leaf.shape[0],
                     t=t,
                     n=leaf.shape[-2],
                 )
-                if path in self._role_idx_by_path
+                if (keys := path_to_key(path)) in self._role_idx_by_path
                 else torch.zeros_like(leaf)
             ),
             embeddings,

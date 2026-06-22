@@ -25,15 +25,19 @@ if TYPE_CHECKING:
     from tests.conftest import EmbeddingDims
 
 
-@pytest.fixture(autouse=True, scope="session")
+@pytest.fixture(autouse=True, scope="session")  # noqa: RUF076
 def _soft_pending_unbacked() -> None:
     # tensordict's _device_recorder and _CONSTRUCTORS are global dicts mutated
     # during export tracing (dynamo side-effect). This creates a spurious
     # "pending unbacked symbol u0" error even though the exported graph is valid.
     # Demote to warning so torch.export tests are not falsely blocked.
+    import logging  # noqa: PLC0415
+
     import torch.fx.experimental._config as _fx_config  # noqa: PLC0415, PLC2701
 
     _fx_config.soft_pending_unbacked_not_found_error = True  # ty:ignore[invalid-assignment]
+    # ...then mute the now-harmless demoted warning (it's a logging record, not a warning).
+    logging.getLogger("torch.fx.experimental.symbolic_shapes").setLevel(logging.ERROR)
 
 
 @pytest.fixture
