@@ -80,7 +80,7 @@ class MemoryExtractionObjective(Objective):
         tokenizers: ModuleDict | None = None,
         **kwargs: Any,
     ) -> TensorDict:
-        predictions: dict[ObjectivePredictionKey, Prediction | TensorDict] = {}
+        predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
         if self.norm is not None:
@@ -153,8 +153,12 @@ class MemoryExtractionObjective(Objective):
                     tree_map(Rearrange("b t 1 d -> (b t) d"), self.heads(features)),
                     tree_map(Rearrange("b t -> (b t)"), targets),
                 )
-            predictions[key] = TensorDict(
-                tree_map(lambda x: x.reshape(b, t - 1), losses), batch_size=[b, t - 1]
+            predictions[key] = Prediction(
+                value=TensorDict(
+                    tree_map(lambda x: x.reshape(b, t - 1), losses),
+                    batch_size=[b, t - 1],
+                ),
+                timestep_indices=timestep_indices,
             )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

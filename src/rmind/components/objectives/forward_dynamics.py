@@ -116,7 +116,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        predictions: dict[ObjectivePredictionKey, Prediction | TensorDict] = {}
+        predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
@@ -270,9 +270,12 @@ class ForwardDynamicsPredictionObjective(Objective):
                         ),
                         tree_map(Rearrange("b t s ... -> (b t s) ..."), targets),
                     )
-                predictions[key] = TensorDict(
-                    tree_map(lambda x: x.reshape(b, t - 1), losses),
-                    batch_size=[b, t - 1],
+                predictions[key] = Prediction(
+                    value=TensorDict(
+                        tree_map(lambda x: x.reshape(b, t - 1), losses),
+                        batch_size=[b, t - 1],
+                    ),
+                    timestep_indices=timestep_indices,
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
