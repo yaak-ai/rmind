@@ -52,7 +52,13 @@ def drop_overrepresented_by_loss(
     max_bin_size = max(1, int(len(df) * max_bin_freq))
 
     score_col, bin_col, rank_col = "_score_", "_bin_", "_rank_"
-    score = plr.mean_horizontal([plr.col(c) for c in columns])
+
+    def _scalar_expr(c: str) -> plr.Expr:
+        return (
+            plr.col(c).arr.mean() if isinstance(df.schema[c], plr.Array) else plr.col(c)
+        )
+
+    score = plr.mean_horizontal([_scalar_expr(c) for c in columns])
 
     scores = df.select(score.alias(score_col))[score_col]
     finite = scores.filter(scores.is_finite())

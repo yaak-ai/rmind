@@ -1,0 +1,21 @@
+select:
+  - "inverse_dynamics/loss/value/continuous/gas_pedal"
+  - "inverse_dynamics/loss/value/continuous/brake_pedal"
+  - "inverse_dynamics/loss/value/continuous/steering_angle"
+  - "inverse_dynamics/loss/value/discrete/turn_signal"
+  - "forward_dynamics/loss/value/continuous/speed"
+  - "forward_dynamics/loss/value/foresight/cam_front_left"
+  - "memory_extraction/loss/value/continuous/gas_pedal_diff"
+  - "memory_extraction/loss/value/continuous/brake_pedal_diff"
+  - "memory_extraction/loss/value/continuous/steering_angle_diff"
+
+columns:
+  - "inverse_dynamics/loss/value/continuous/gas_pedal"
+  - "inverse_dynamics/loss/value/continuous/brake_pedal"
+  - "inverse_dynamics/loss/value/continuous/steering_angle"
+  - "inverse_dynamics/loss/value/discrete/turn_signal"
+  - "forward_dynamics/loss/value/continuous/speed"
+  - "forward_dynamics/loss/value/foresight/cam_front_left"
+  - "memory_extraction/loss/value/continuous/gas_pedal_diff"
+  - "memory_extraction/loss/value/continuous/brake_pedal_diff"
+  - "memory_extraction/loss/value/continuous/steering_angle_diff"

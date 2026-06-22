@@ -432,10 +432,7 @@ samples:
           path: "${oc.select:scores_parquet,''}"
           "on": "meta/sample_id"
           right_on: "batch/data/meta/sample_id"
-          select:
-            - "policy/loss/value/continuous/gas_pedal"
-            - "policy/loss/value/continuous/brake_pedal"
-            - "policy/loss/value/continuous/steering_angle"
+          select: ${resampling.select}
       - _target_: pipefunc.PipeFunc
         output_name: samples_filtered
         renames:
@@ -443,8 +440,5 @@ samples:
         func:
           _target_: rmind.utils.pipeline.drop_overrepresented_by_loss
           _partial_: true
-          columns:
-            - "policy/loss/value/continuous/gas_pedal"
-            - "policy/loss/value/continuous/brake_pedal"
-            - "policy/loss/value/continuous/steering_angle"
+          columns: ${resampling.columns}
           max_bin_freq: "${oc.select:loss_max_bin_freq,1}"

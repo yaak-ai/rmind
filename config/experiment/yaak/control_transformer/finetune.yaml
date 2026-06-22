@@ -3,6 +3,7 @@
 defaults:
   - /model: yaak/control_transformer/policy_finetune
   - /datamodule: yaak/train
+  - /resampling: policy
   - /trainer: default
   - /trainer/callbacks: finetune
   - /paths: yaak/default
