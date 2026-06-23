@@ -2,7 +2,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import onnxruntime as ort
-from pydantic import FilePath, validate_call
+import torch
+from pydantic import FilePath, InstanceOf, validate_call
 from structlog import get_logger
 from torch import Tensor
 
@@ -15,7 +16,7 @@ class OnnxInferenceBackend:
         self,
         *,
         path: FilePath | bytes,
-        sess_options: object | None = None,
+        sess_options: InstanceOf[ort.SessionOptions] | None = None,
         providers: Sequence[str | tuple[str, dict[Any, Any]]] | None = None,
         provider_options: Sequence[dict[Any, Any]] | None = None,
         **kwargs: object,
@@ -63,6 +64,7 @@ class OnnxInferenceBackend:
             raise RuntimeError(msg)
 
         input_np = {k: v.cpu().numpy() for k, v in input.items()}
-        output = self._session.run(self._output_names, input_np)
+        output_np = self._session.run(self._output_names, input_np)
+        output = [torch.from_numpy(x) for x in output_np]
 
         return dict(zip(self._output_names, output, strict=True))

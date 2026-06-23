@@ -159,6 +159,12 @@ files.exclude = ["uv.lock"]
 [tool.ty.rules]
 unused-ignore-comment = "warn"
 
+[[tool.ty.overrides]]
+include = ["src/rmind/inference/backends/tensorrt.py"]
+
+[tool.ty.overrides.analysis]
+allowed-unresolved-imports = ["tensorrt"]
+
 [tool.uv]
 constraint-dependencies = [
   "gitpython>=3.1.47",

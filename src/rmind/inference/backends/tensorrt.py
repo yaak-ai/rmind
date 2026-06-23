@@ -1,7 +1,7 @@
 from collections.abc import Mapping
-from importlib import import_module
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
+import tensorrt as trt
 import torch
 from pydantic import AfterValidator, FilePath, InstanceOf, validate_call
 from structlog import get_logger
@@ -35,14 +35,6 @@ class TensorRTInferenceBackend:
         self._output_tensor_info = []
 
     def on_predict_start(self) -> None:
-        try:
-            trt = import_module("tensorrt")
-        except ModuleNotFoundError as exc:
-            if exc.name != "tensorrt":
-                raise
-            msg = "TensorRT inference requires the Linux-only `tensorrt-cu13` extra"
-            raise RuntimeError(msg) from exc
-
         logger.debug("deserializing TensorRT engine", device=self._device)
         trt_logger = trt.Logger(trt.Logger.WARNING)  # ty:ignore[unresolved-attribute]
         runtime = trt.Runtime(trt_logger)  # ty:ignore[unresolved-attribute]
