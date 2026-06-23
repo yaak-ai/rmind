@@ -45,6 +45,11 @@ class PolicyObjective(Objective):
         trajectory_loss_weight: float = 1.0,
         xy_key: tuple[str, ...] = ("input", "trajectory", "xy"),
         heading_key: tuple[str, ...] = ("input", "trajectory", "heading"),
+        feature_keys: list[tuple[str, ...]] = [  # noqa: B006
+            (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
+            (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+            (Modality.CONTEXT, "waypoints"),
+        ],
     ) -> None:
         super().__init__()
 
@@ -59,6 +64,7 @@ class PolicyObjective(Objective):
         self.trajectory_loss_weight: float = trajectory_loss_weight
         self.xy_key: tuple[str, ...] = xy_key
         self.heading_key: tuple[str, ...] = heading_key
+        self.feature_keys: list[tuple[str, ...]] = feature_keys
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -94,32 +100,13 @@ class PolicyObjective(Objective):
         embeddings = (
             episode
             .index[idx]
-            .select(
-                (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                (Modality.CONTEXT, "waypoints"),
-            )
+            .select(*self.feature_keys)
             .parse(embedding)
         )
 
-        observation_history = embeddings.get((
-            Modality.SUMMARY,
-            SummaryToken.OBSERVATION_HISTORY,
-        ))
+        parts = [embeddings.get(k).mean(dim=1, keepdim=True) for k in self.feature_keys]
 
-        observation_summary = embeddings.get((
-            Modality.SUMMARY,
-            SummaryToken.OBSERVATION_SUMMARY,
-        ))
-
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
-        )
-
-        features = rearrange(
-            [observation_summary, observation_history, waypoints],
-            "i b 1 d -> b 1 (i d)",
-        )
+        features = rearrange(parts, "i b 1 d -> b 1 (i d)")
 
         traj_logits: Tensor | None = None
         h_traj: Tensor | None = None
