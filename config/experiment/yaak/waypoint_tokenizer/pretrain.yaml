@@ -1,0 +1,29 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/waypoint_tokenizer/raw
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: action_tokenizer
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+# dataset clip geometry — waypoints live in the standard train/val datasets
+# (waypoints/xy_normalized). Every timestep's path is one tokenizer example.
+episode_step: 10
+episode_stride: 10
+clip_horizon: 6
+episode_length: 6
+clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
+clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
+
+# waypoint path geometry / tokenizer capacity
+num_waypoints: 10
+waypoint_dim: 2
+waypoint_input_dim: "${eval:'${num_waypoints} * ${waypoint_dim}'}"
+waypoint_hidden_dim: 128
+waypoint_latent_dim: 64
+
+codebook_size: 16
+num_quantizers: 2

@@ -65,6 +65,17 @@ train-action *ARGS: generate-config
           datamodule=yaak/action_train \
           {{ ARGS }}
 
+# train a residual-VQ tokenizer on waypoints and visualize the codebooks
+tokenize-waypoints *ARGS: generate-config
+    uv run python {{ justfile_directory() }}/scripts/waypoint_tokenizer.py {{ ARGS }}
+
+train-waypoint *ARGS: generate-config
+    uv run rmind-train \
+          --config-path {{ justfile_directory() }}/config \
+          --config-name train.yaml \
+          experiment=yaak/waypoint_tokenizer/pretrain \
+          {{ ARGS }}
+
 predict +ARGS: generate-config
     uv run rmind-predict \
         --config-path {{ justfile_directory() }}/config \
