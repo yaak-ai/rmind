@@ -59,6 +59,15 @@ train-debug *ARGS: generate-config
         ++model.encoder.disable=true \
         {{ ARGS }}
 
+train-waypoints *ARGS: generate-config
+    uv run \
+        --extra train \
+        rmind-train \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name train.yaml \
+        experiment=yaak/waypoints/pretrain \
+        {{ ARGS }}
+
 predict +ARGS: generate-config
     uv run \
         --extra train --extra predict \

@@ -167,7 +167,10 @@ episode_builder:
 
       context:
         waypoints:
-          _target_: rmind.components.nn.Identity
+          _target_: rmind.models.waypoints_tokenizer.WaypointsLatentTokenizer
+          tokenizer:
+            _target_: rmind.models.waypoints_tokenizer.WaypointsTokenizer.load_from_wandb_artifact
+            artifact: ${waypoints_tokenizer_artifact}
 
   embeddings:
     _target_: rmind.components.containers.ModuleDict
@@ -205,9 +208,7 @@ episode_builder:
 
       context:
         waypoints:
-          _target_: rmind.components.nn.Linear
-          in_features: 2
-          out_features: ${encoder_embedding_dim}
+          _target_: rmind.components.nn.Identity
 
       discrete:
         turn_signal:
@@ -268,7 +269,7 @@ episode_builder:
       context:
         waypoints:
           _target_: rmind.components.nn.Linear
-          in_features: ${encoder_embedding_dim}
+          in_features: ${encoder_embedding_dim} # set to waypoint_latent_dim if != encoder_embedding_dim
           out_features: ${encoder_embedding_dim}
 
       discrete:

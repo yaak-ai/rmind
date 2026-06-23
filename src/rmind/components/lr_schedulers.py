@@ -1,7 +1,18 @@
 import math
+from typing import ClassVar, Literal
 
 import torch
-from torch.optim.lr_scheduler import LambdaLR
+from pydantic import BaseModel, ConfigDict
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
+
+from rmind.config import HydraConfig
+
+
+class LRSchedulerHydraConfig(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    interval: Literal["epoch", "step"]
+    scheduler: HydraConfig[LRScheduler]
 
 
 def get_cosine_schedule_with_warmup(

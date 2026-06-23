@@ -1,4 +1,4 @@
-from typing import Annotated, Any, ClassVar, Literal, Self, override
+from typing import Annotated, Any, ClassVar, Self, override
 
 import jq  # ty:ignore[unresolved-import]
 import pytorch_lightning as pl
@@ -28,24 +28,17 @@ from structlog import get_logger
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import LRScheduler
 
 from rmind.components.base import TensorTree
 from rmind.components.containers import ModuleDict
+from rmind.components.lr_schedulers import LRSchedulerHydraConfig
 from rmind.components.objectives.base import ObjectivePredictionKey
-from rmind.config import HydraConfig
+from rmind.config import HydraConfig, init_hydra_param
 from rmind.utils._wandb import LoadableFromArtifact
 
 logger = get_logger(__name__)
 
 INTERNAL_STEP_OUTPUT_KEY = "_internal"
-
-
-class LRSchedulerHydraConfig(BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
-
-    interval: Literal["epoch", "step"]
-    scheduler: HydraConfig[LRScheduler]
 
 
 class PredictionConfig(BaseModel):
@@ -77,34 +70,20 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     ) -> None:
         super().__init__()
 
-        hparams = {}
+        hparams: dict[str, Any] = {}
 
-        if isinstance(episode_builder, HydraConfig):
-            hparams["episode_builder"] = episode_builder.model_dump()
-            episode_builder = episode_builder.instantiate()
-
-        self.episode_builder = episode_builder
-
-        if isinstance(encoder, HydraConfig):
-            hparams["encoder"] = encoder.model_dump()
-            encoder = encoder.instantiate()
-
-        self.encoder: HydraConfig[Module] | InstanceOf[Module] = encoder
-
-        if isinstance(objectives, HydraConfig):
-            hparams["objectives"] = objectives.model_dump()
-            objectives = objectives.instantiate()
-
-        self.objectives = objectives
+        self.episode_builder = init_hydra_param(
+            hparams, "episode_builder", episode_builder
+        )
+        self.encoder = init_hydra_param(hparams, "encoder", encoder)
+        self.objectives = init_hydra_param(hparams, "objectives", objectives)
 
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
-
         self.optimizer: HydraConfig[Optimizer] | None = optimizer
 
         if lr_scheduler is not None:
             hparams["lr_scheduler"] = lr_scheduler.model_dump()
-
         self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
 
         self.prediction_config = prediction_config

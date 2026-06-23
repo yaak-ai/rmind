@@ -84,9 +84,7 @@ class PolicyObjective(Objective):
             SummaryToken.OBSERVATION_SUMMARY,
         ))
 
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
-        )
+        waypoints = embeddings.get((Modality.CONTEXT, "waypoints"))
 
         features = rearrange(
             [observation_summary, observation_history, waypoints],
@@ -175,9 +173,7 @@ class PolicyObjective(Objective):
                 SummaryToken.OBSERVATION_SUMMARY,
             ))
 
-            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                dim=1, keepdim=True
-            )
+            waypoints = embeddings.get((Modality.CONTEXT, "waypoints"))
 
             features = rearrange(
                 [observation_summary, observation_history, waypoints],

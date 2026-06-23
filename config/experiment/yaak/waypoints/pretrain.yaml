@@ -1,0 +1,24 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/waypoints/raw
+  - /datamodule: yaak/waypoints/train
+  - /trainer: default
+  - /trainer/callbacks: waypoints
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+wandb:
+  project: waypoints-tokenizer
+
+waypoint_stride: 1
+
+num_waypoints: 10
+waypoint_dim: 2
+waypoint_input_dim: 20 # num_waypoints * waypoint_dim
+waypoint_hidden_dim: 128
+waypoint_latent_dim: 384
+
+codebook_size: 32
+num_quantizers: 4

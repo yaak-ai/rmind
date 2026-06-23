@@ -9,6 +9,8 @@ defaults:
   - /wandb: yaak/rmind
   - _self_
 
+waypoints_tokenizer_artifact: ???
+
 num_heads: 4
 num_layers: 8
 encoder_embedding_dim: 384
