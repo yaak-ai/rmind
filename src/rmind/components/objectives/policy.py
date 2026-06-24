@@ -125,15 +125,14 @@ class PolicyObjective(Objective):
     ) -> TensorDict:
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
 
-        b, _t = episode.input.batch_size
+        b, t = episode.input.batch_size
 
         if self.norm is not None:
             embedding = self.norm(embedding)
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
-                value=episode.input.select(*self.heads.tree_paths()).squeeze(-1),
-                timestep_indices=slice(None),
+                value=episode.input.select(*self.heads.tree_paths()).squeeze(-1)
             )
 
         if keys & {
@@ -187,7 +186,8 @@ class PolicyObjective(Objective):
 
             logits = TensorDict(self.heads(features), batch_size=[b, 1])
 
-            timestep_indices = slice(-1, None)
+            timestep_index = slice(-1, None)
+            time_index = torch.arange(t).expand(b, -1)[:, timestep_index]
 
             if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
 
@@ -205,7 +205,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.PREDICTION_STD) in keys:
@@ -225,7 +225,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
@@ -248,7 +248,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_LOGPROB) in keys:
@@ -276,7 +276,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_L1) in keys:
@@ -302,7 +302,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_L1_REL) in keys:
@@ -332,7 +332,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_SIGNED_ERROR) in keys:
@@ -357,7 +357,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.PREDICTION_DIFF_PREV) in keys:
@@ -386,7 +386,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.GROUND_TRUTH_DIFF_PREV) in keys:
@@ -412,7 +412,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.PREDICTION_DIFF_HIST) in keys:
@@ -442,7 +442,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.GROUND_TRUTH_DIFF_HIST) in keys:
@@ -469,7 +469,7 @@ class PolicyObjective(Objective):
 
                 predictions[key] = Prediction(
                     value=logits.named_apply(fn, nested_keys=True),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

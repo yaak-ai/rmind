@@ -20,17 +20,13 @@ sync:
 setup: sync
     prek install --overwrite
 
-format *ARGS:
-    uv run ruff format {{ ARGS }}
-
-lint *ARGS:
-    uv run ruff check {{ ARGS }}
+check:
+    uv format --check
+    uv run ruff check
+    uv check
 
 check-git:
     uv run rmind-check-git
-
-typecheck *ARGS:
-    uv run ty check {{ ARGS }}
 
 prek *ARGS:
     prek --all-files {{ ARGS }}
@@ -44,13 +40,18 @@ generate-config:
         --strict
 
 train *ARGS: generate-config check-git
-    uv run rmind-train \
+    uv run \
+        --extra train \
+        rmind-train \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml \
         {{ ARGS }}
 
 train-debug *ARGS: generate-config
-    WANDB_MODE=disabled uv run rmind-train \
+    WANDB_MODE=disabled \
+    uv run \
+        --extra train \
+        rmind-train \
         --config-path {{ justfile_directory() }}/config \
         --config-name train.yaml \
         experiment=yaak/control_transformer/pretrain \
@@ -59,13 +60,17 @@ train-debug *ARGS: generate-config
         {{ ARGS }}
 
 predict +ARGS: generate-config
-    uv run rmind-predict \
+    uv run \
+        --extra train --extra predict \
+        rmind-predict \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml \
         {{ ARGS }}
 
 predict-policy-with-permutations +ARGS: generate-config
-    uv run rmind-predict \
+    uv run \
+        --extra train --extra predict \
+        rmind-predict \
         --config-path {{ justfile_directory() }}/config \
         --config-name predict.yaml \
         --multirun \
@@ -74,16 +79,20 @@ predict-policy-with-permutations +ARGS: generate-config
         {{ ARGS }}
 
 test *ARGS: generate-config
-    uv run pytest --capture=no -v {{ ARGS }}
+    uv run \
+        --all-extras --group test \
+        pytest --capture=no -v {{ ARGS }}
 
 # refresh recorded test snapshots (e.g. training_step_losses.json)
 update-snapshots:
     uv run python -m tests.scripts.update_snapshots
 
 export-onnx *ARGS: generate-config
-    uv run --group export rmind-export-onnx \
+    uv run \
+        --extra export \
+        rmind-export-onnx \
         --config-path {{ justfile_directory() }}/config \
-        --config-name export/onnx.yaml \
+        --config-name export_onnx.yaml \
         {{ ARGS }}
 
 onnxvis *ARGS:

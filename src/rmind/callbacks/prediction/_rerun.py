@@ -31,11 +31,10 @@ class RerunPredictionWriter(BasePredictionWriter):
         dataloader_idx: int,
     ) -> None:
         data = (
-            prediction
-            .to_tensordict(retain_none=True)
-            .update({"batch": TensorDict(batch)})  # ty:ignore[invalid-argument-type]
-            .auto_batch_size_(1)
+            TensorDict(batch=batch, prediction=prediction)
+            .apply(lambda x: x.float() if x.is_floating_point() else x)
+            .auto_batch_size_(1)  # ty:ignore[unresolved-attribute]
             .lock_()
-        ).apply(lambda x: x.float() if x.is_floating_point() else x)
+        )
 
         self._logger.log(data)

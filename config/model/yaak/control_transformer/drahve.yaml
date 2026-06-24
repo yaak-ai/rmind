@@ -1,0 +1,12 @@
+---
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+filename: model.ckpt
+map_location: cpu
+strict: false
+hparams_jq: |
+  delpaths([paths | select(.. | type == "string" and endswith("_diff"))])
+  | setpath(
+    ["episode_builder", "input_transform", "_args_", 1, "modules", "image"];
+    {"_target_": "torch.nn.Identity"}
+  )

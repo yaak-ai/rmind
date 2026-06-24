@@ -1,0 +1,5 @@
+---
+defaults:
+  - /model/yaak/control_transformer@_here_: inference_wrapper
+  - override /model/yaak/control_transformer/inference_backend@backend: onnx
+  - _self_
