@@ -10,3 +10,5 @@ defaults:
   - _self_
 
 encoder_embedding_dim: 384
+
+trajectory_loss_weight: 0.1

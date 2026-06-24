@@ -74,7 +74,7 @@ hparams_jq: |
         "trajectory_loss": {
           "_target_": "rmind.components.loss.GaussianNLLLoss"
         },
-        "trajectory_loss_weight": 0.1,
+        "trajectory_loss_weight": ${trajectory_loss_weight},
         "xy_key": ["input", "trajectory", "xy"],
         "heading_key": ["input", "trajectory", "heading"],
         "losses": {
