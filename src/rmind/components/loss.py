@@ -86,6 +86,28 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         return super().forward(input=mean, target=target, var=var)
 
 
+class ActivityWeightedGaussianNLLLoss(GaussianNLLLoss):
+    """GaussianNLLLoss with per-sample weights proportional to target magnitude.
+
+    Samples where the control is actively engaged (high brake, large steer, etc.)
+    receive higher gradient weight, counteracting zero-inflation in the dataset.
+    """
+
+    def __init__(self, *args: Any, activity_weight: float = 5.0, **kwargs: Any) -> None:
+        kwargs["reduction"] = "none"
+        super().__init__(*args, **kwargs)
+        self.activity_weight = activity_weight
+
+    @override
+    def forward(
+        self, input: Tensor, target: Tensor, var: Tensor | None = None
+    ) -> Tensor:
+        per_sample = super().forward(input, target, var)  # [B]
+        weights = 1.0 + self.activity_weight * target.abs()  # [B]
+        weights /= weights.mean()  # keep loss scale stable
+        return (weights * per_sample).mean()
+
+
 class GramAnchoringLoss(Module):
     """
     Gram-based anchoring loss for feature matching.

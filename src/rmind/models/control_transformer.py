@@ -6,7 +6,7 @@ import torch
 from deepdiff import DeepDiff
 from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
 from lightning_utilities.core.rank_zero import rank_zero_warn
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -37,6 +37,16 @@ from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 
 logger = get_logger(__name__)
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 INTERNAL_STEP_OUTPUT_KEY = "_internal"
 
@@ -122,10 +132,18 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         hparams_file: _PATH | None = None,
         strict: bool | None = None,
         hparams_jq: Annotated[jq._Program, BeforeValidator(jq.compile)] | None = None,
+        hparams_merge: Annotated[
+            dict[str, Any] | None,
+            BeforeValidator(
+                lambda v: OmegaConf.to_container(v, resolve=False, throw_on_missing=False)
+                if isinstance(v, DictConfig)
+                else v
+            ),
+        ] = None,
         weights_only: bool | None = False,
         **kwargs: Any,
     ) -> Self:  # ty:ignore[invalid-method-override]
-        if hparams_jq is None:
+        if hparams_jq is None and hparams_merge is None:
             return super().load_from_checkpoint(
                 checkpoint_path=checkpoint_path,
                 map_location=map_location,
@@ -147,7 +165,13 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         hparams_container = OmegaConf.to_container(
             OmegaConf.create(hparams), resolve=False, throw_on_missing=False
         )
-        hparams_container_updated = hparams_jq.input_value(hparams_container).first()
+        hparams_container_updated = hparams_container
+
+        if hparams_jq is not None:
+            hparams_container_updated = hparams_jq.input_value(hparams_container_updated).first()
+
+        if hparams_merge is not None:
+            hparams_container_updated = _deep_merge(hparams_container_updated, hparams_merge)
 
         for diff in (
             DeepDiff(hparams_container, hparams_container_updated, view="tree")
