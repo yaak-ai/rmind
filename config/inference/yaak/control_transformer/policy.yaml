@@ -42,7 +42,6 @@ trainer:
         - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
         - [batch, data, meta/VehicleMotion/speed]
         - [batch, data, meta/Gnss/xy]
-        - [batch, data, headings_denoised/heading]
         - [batch, meta, input_id]
         - [batch, data, waypoints/xy_normalized]
         - [batch, data, waypoints/xy]

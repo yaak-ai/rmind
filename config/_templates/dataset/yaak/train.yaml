@@ -947,7 +947,8 @@ samples:
                   waypoints_geom,
                   normalized_waypoints_geom,
                   ego_geom,
-                  "waypoints/xy"
+                  "waypoints/xy",
+                  "headings_denoised/heading"
                 ),
                 -- Some vehicles (Niro106, Niro109, Niro110, Niro121, Niro124, Niro127, Niro132)
                 -- have a constant brake sensor offset of up to ~4 quantisation steps (< 0.05)
@@ -1020,17 +1021,16 @@ samples:
             _target_: rbyte.io.DuckDBDataFrameQuery
             query: |
               SELECT
-                  "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[11] AS "meta/ImageMetadata.cam_front_left/time_stamp",
-                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[11] AS "meta/ImageMetadata.cam_front_left/frame_idx",
-                  "meta/VehicleMotion/speed"::FLOAT[11] AS "meta/VehicleMotion/speed",
-                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[11] AS "meta/VehicleMotion/gas_pedal_normalized",
-                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[11] AS "meta/VehicleMotion/brake_pedal_normalized",
-                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[11] AS "meta/VehicleMotion/steering_angle_normalized",
-                  "meta/VehicleState/turn_signal"::INT8[11] AS "meta/VehicleState/turn_signal",
-                  "meta/Gnss/xy"::FLOAT[2][11] AS "meta/Gnss/xy",
-                  "headings_denoised/heading"::FLOAT[11] AS "headings_denoised/heading",
-                  "waypoints/xy_normalized"::FLOAT[2][10][11] AS "waypoints/xy_normalized",
-                  "waypoints/xy"::FLOAT[2][10][11] AS "waypoints/xy",
+                  "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[6] AS "meta/ImageMetadata.cam_front_left/time_stamp",
+                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[6] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                  "meta/VehicleMotion/speed"::FLOAT[6] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/gas_pedal_normalized",
+                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/brake_pedal_normalized",
+                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
+                  "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
+                  "meta/Gnss/xy"::FLOAT[2][6] AS "meta/Gnss/xy",
+                  "waypoints/xy_normalized"::FLOAT[2][10][6] AS "waypoints/xy_normalized",
+                  "waypoints/xy"::FLOAT[2][10][6] AS "waypoints/xy",
               FROM
                   samples
               WHERE
