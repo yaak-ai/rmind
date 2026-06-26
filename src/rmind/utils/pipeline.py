@@ -38,7 +38,7 @@ def drop_overrepresented_by_loss(
     Bins are equal-width over the [p001, p999] range of the mean loss across columns.
     No-op if any of the specified columns are missing from df.
     """
-    if any(c not in df.columns for c in columns) or max_bin_freq == 1:
+    if any(c not in df.columns for c in columns):
         return df
 
     max_bin_size = max(1, int(len(df) * max_bin_freq))
