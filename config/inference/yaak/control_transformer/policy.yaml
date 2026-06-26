@@ -23,7 +23,6 @@ trainer:
           - prediction_value
           - prediction_std
           - prediction_probs
-          - loss
           - score_l1
           - score_logprob
           - score_signed_error
@@ -33,11 +32,14 @@ trainer:
           - prediction_diff_hist
           - ground_truth_diff_hist
 
+    - _target_: rmind.callbacks.RerunPredictionWriter
+      write_interval: batch
+      logger: ${logger}
+
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
       path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
       select:
-        - [batch, data, meta/sample_id]
         - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
         - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
         - [batch, data, meta/VehicleMotion/speed]
@@ -46,7 +48,6 @@ trainer:
         - [policy, prediction_value, value]
         - [policy, prediction_std, value]
         - [policy, prediction_probs, value]
-        - [policy, loss, value]
         - [policy, score_l1, value]
         - [policy, score_logprob, value]
         - [policy, score_l1_rel, value]

@@ -31,9 +31,6 @@ class ObjectivePredictionKey(StrEnum):
     PREDICTION_DIFF_HIST = auto()
     GROUND_TRUTH_DIFF_HIST = auto()
     SCORE_SIGNED_ERROR = auto()
-    LOSS = auto()
-    TRAJECTORY_VALUE = auto()
-    TRAJECTORY_GT = auto()
 
 
 class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]

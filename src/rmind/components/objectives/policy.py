@@ -243,9 +243,6 @@ class PolicyObjective(Objective):
             ObjectivePredictionKey.PREDICTION_DIFF_HIST,
             ObjectivePredictionKey.GROUND_TRUTH_DIFF_HIST,
             ObjectivePredictionKey.SCORE_SIGNED_ERROR,
-            ObjectivePredictionKey.LOSS,
-            ObjectivePredictionKey.TRAJECTORY_VALUE,
-            ObjectivePredictionKey.TRAJECTORY_GT,
         }:
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
@@ -255,7 +252,27 @@ class PolicyObjective(Objective):
             raw_logits, traj_logits, _ = self._compute_logits(
                 episode=episode, embedding=embedding
             )
-            logits = TensorDict(raw_logits, batch_size=[b, 1])
+
+            observation_history = embeddings.get((
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_HISTORY,
+            ))
+
+            observation_summary = embeddings.get((
+                Modality.SUMMARY,
+                SummaryToken.OBSERVATION_SUMMARY,
+            ))
+
+            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
+                dim=1, keepdim=True
+            )
+
+            features = rearrange(
+                [observation_summary, observation_history, waypoints],
+                "i b 1 d -> b 1 (i d)",
+            )
+
+            logits = TensorDict(self.heads(features), batch_size=[b, 1])
 
             timestep_indices = slice(-1, None)
 
@@ -330,8 +347,7 @@ class PolicyObjective(Objective):
                         case (Modality.CONTINUOUS, _):
                             mean = x[..., 0]
                             std = torch.sqrt(torch.exp(x[..., 1]))
-                            gt = episode.input[action_type][:, -1]
-                            return -torch.log(gauss_prob(gt, mean=mean, std=std))
+                            return -torch.log(gauss_prob(mean, mean=mean, std=std))
 
                         case (Modality.DISCRETE, "turn_signal"):
                             gt = episode.input[action_type][:, -1]
@@ -543,58 +559,6 @@ class PolicyObjective(Objective):
                     timestep_indices=timestep_indices,
                 )
 
-            if (key := ObjectivePredictionKey.LOSS) in keys:
-                if self.losses is not None and self.targets is not None:
-                    targets = tree_map(
-                        lambda k: episode.get(k)[:, -1],
-                        self.targets,
-                        is_leaf=lambda x: isinstance(x, tuple),
-                    )
-                    reductions = {
-                        name: m.reduction  # type: ignore[attr-defined]
-                        for name, m in self.losses.named_modules()
-                        if hasattr(m, "reduction")
-                    }
-                    for name, m in self.losses.named_modules():
-                        if name in reductions:
-                            m.reduction = "none"  # type: ignore[attr-defined]
-                    try:
-                        losses = self.losses(
-                            tree_map(Rearrange("b 1 d -> b d"), raw_logits),
-                            tree_map(Rearrange("b 1 -> b"), targets),
-                        )  # ty:ignore[call-non-callable]
-                    finally:
-                        for name, m in self.losses.named_modules():
-                            if name in reductions:
-                                m.reduction = reductions[name]  # type: ignore[attr-defined]
-                    predictions[key] = Prediction(
-                        value=TensorDict(losses, batch_size=[b]),
-                        timestep_indices=timestep_indices,
-                    )
 
-            if (key := ObjectivePredictionKey.TRAJECTORY_VALUE) in keys:
-                if traj_logits is not None:
-                    # traj_logits: (b, steps, 4) = [mean_x, logvar_x, mean_y, logvar_y]
-                    predictions[key] = Prediction(
-                        value=TensorDict(
-                            {"xy": traj_logits[..., [0, 2]]},  # (b, steps, 2) means
-                            batch_size=[b],
-                        ),
-                        timestep_indices=timestep_indices,
-                    )
-
-            if (key := ObjectivePredictionKey.TRAJECTORY_GT) in keys:
-                xy = episode.get(self.xy_key, default=None)
-                heading = episode.get(self.heading_key, default=None)
-                if xy is not None and heading is not None:
-                    traj_gt = build_local_trajectory(
-                        xy=xy,
-                        heading_deg=heading,
-                        history_steps=self.history_steps,
-                    )  # (b, steps, 2)
-                    predictions[key] = Prediction(
-                        value=TensorDict({"xy": traj_gt}, batch_size=[b]),
-                        timestep_indices=timestep_indices,
-                    )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
