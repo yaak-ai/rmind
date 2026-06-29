@@ -1,7 +1,7 @@
 FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates git \
+        curl ca-certificates git build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # uv
@@ -16,6 +16,8 @@ RUN curl -sSfL https://github.com/carvel-dev/ytt/releases/latest/download/ytt-li
         -o /usr/local/bin/ytt && chmod +x /usr/local/bin/ytt
 
 WORKDIR /app
+
+RUN git config --global --add safe.directory /app
 
 # dependency layer — cached as long as uv.lock doesn't change
 COPY pyproject.toml uv.lock ./
