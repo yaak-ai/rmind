@@ -37,7 +37,12 @@ class WaypointsTokenizer(pl.LightningModule, LoadableFromArtifact):
         vq_weight: float = 5.0,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
+        **_legacy_hparams: Any,
     ) -> None:
+        # HOTFIX: `**_legacy_hparams` swallows (and ignores) `__init__` kwargs saved
+        # by older tokenizer checkpoints but absent from this model -- e.g.
+        # `normalize` (a normalization submodule) and `commitment_weight`. Their
+        # leftover state_dict entries are dropped by `strict=False` on load.
         super().__init__()
 
         hparams: dict[str, Any] = {}
@@ -78,12 +83,15 @@ class WaypointsTokenizer(pl.LightningModule, LoadableFromArtifact):
         checkpoint_path: _PATH,
         *,
         map_location: _MAP_LOCATION_TYPE = None,
-        strict: bool | None = None,
+        strict: bool | None = False,
         weights_only: bool | None = False,
         **kwargs: Any,
     ) -> Self:  # ty:ignore[invalid-method-override]
         # `weights_only` defaults to False because the checkpoint's saved hparams
-        # contain non-tensor objects; everything else is the base behavior.
+        # contain non-tensor objects.
+        # HOTFIX: `strict` defaults to False so artifacts whose state_dict carries
+        # extra keys absent from this model (e.g. a `normalization` submodule added
+        # in a newer tokenizer) still load instead of raising on unexpected keys.
         return super().load_from_checkpoint(
             checkpoint_path,
             map_location=map_location,
@@ -174,7 +182,10 @@ class WaypointsLatentTokenizer(Module):
     this module -- see `config/trainer/callbacks`.
     """
 
-    def __init__(self, *, tokenizer: WaypointsTokenizer) -> None:
+    def __init__(self, *, tokenizer: WaypointsTokenizer, **_legacy_kwargs: Any) -> None:
+        # HOTFIX: `**_legacy_kwargs` swallows kwargs saved by older checkpoints but
+        # no longer used here -- e.g. `freeze`, now handled by the `ModuleFreezer`
+        # callback (see the class docstring) rather than this module.
         super().__init__()
         self.tokenizer = tokenizer
 
