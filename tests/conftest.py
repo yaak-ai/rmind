@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 import pytorch_lightning as pl
 import torch
-from einops.layers.torch import Rearrange
+from einops.layers.torch import Rearrange, Reduce
 from rbyte.types import Batch
 from tensordict import TensorDict
 from torch.nn import LayerNorm, Linear, Module
@@ -314,7 +314,14 @@ def episode_builder(
                 "brake_pedal_diff": None,
                 "steering_angle_diff": None,
             },
-            Modality.CONTEXT: {"waypoints": Linear(2, embedding_dims.encoder)},
+            Modality.CONTEXT: {
+                "waypoints": Sequential(
+                    Linear(2, embedding_dims.encoder),
+                    # collapse the per-frame path to one token, mirroring the
+                    # single-token output of the production waypoints tokenizer
+                    Reduce("... n d -> ... 1 d", "mean"),
+                )
+            },
             Modality.DISCRETE: {"turn_signal": Embedding(3, embedding_dims.encoder)},
             Modality.SUMMARY: Embedding(3, embedding_dims.encoder),
             Modality.FORESIGHT: Embedding(64, embedding_dims.encoder),
@@ -771,7 +778,14 @@ def build_snapshot_modules(
                         "brake_pedal_diff": None,
                         "steering_angle_diff": None,
                     },
-                    Modality.CONTEXT: {"waypoints": Linear(2, embedding_dims.encoder)},
+                    Modality.CONTEXT: {
+                        "waypoints": Sequential(
+                            Linear(2, embedding_dims.encoder),
+                            # collapse the per-frame path to one token, mirroring the
+                            # single-token output of the production waypoints tokenizer
+                            Reduce("... n d -> ... 1 d", "mean"),
+                        )
+                    },
                     Modality.DISCRETE: {
                         "turn_signal": Embedding(3, embedding_dims.encoder)
                     },

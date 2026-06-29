@@ -10,13 +10,13 @@ from optree import tree_all, tree_map
 from pytest_lazy_fixtures import lf
 from rbyte.types import Batch
 from tensordict import TensorDict
-from torch.nn import LayerNorm, Module
+from torch.nn import Identity, LayerNorm, Module
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 
 from rmind.callbacks.logit_bias import LogitBiasSetter
 from rmind.components.containers import ModuleDict
-from rmind.components.nn import Embedding
+from rmind.components.nn import Embedding, Linear
 from rmind.components.objectives import (
     ForwardDynamicsPredictionObjective,
     InverseDynamicsPredictionObjective,
@@ -24,9 +24,11 @@ from rmind.components.objectives import (
     PolicyObjective,
 )
 from rmind.components.objectives.base import ObjectivePredictionKey
+from rmind.components.vq import ResidualVQ
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
+from rmind.models.waypoints_tokenizer import WaypointsTokenizer
 
 if TYPE_CHECKING:
     from tests.conftest import EmbeddingDims, NumBins
@@ -131,10 +133,32 @@ def control_transformer(
 
 @pytest.fixture
 def model_yaak_control_transformer_raw(
-    request: pytest.FixtureRequest,
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> ControlTransformer:
     embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
     num_bins: NumBins = request.getfixturevalue("num_bins")
+
+    # The raw config loads the waypoints tokenizer from a wandb artifact; return a
+    # locally-constructed one instead so the model instantiates offline.
+    def _local_tokenizer(_cls: type, *_args: Any, **_kwargs: Any) -> WaypointsTokenizer:
+        return WaypointsTokenizer(
+            input_transform=Identity(),
+            encoder=Linear(20, embedding_dims.encoder),
+            quantizer=ResidualVQ(
+                dim=embedding_dims.encoder,
+                codebook_size=8,
+                num_quantizers=3,
+                kmeans_init=False,
+            ),
+            decoder=Linear(embedding_dims.encoder, 20),
+            waypoints=("waypoints",),
+            num_waypoints=10,
+            waypoint_dim=2,
+        )
+
+    monkeypatch.setattr(
+        WaypointsTokenizer, "load_from_wandb_artifact", classmethod(_local_tokenizer)
+    )
 
     with initialize(version_base=None, config_path=CONFIG_PATH):
         cfg = compose(
@@ -148,6 +172,7 @@ def model_yaak_control_transformer_raw(
                 f"+gas_pedal_bins={num_bins.gas_pedal}",
                 f"+brake_pedal_bins={num_bins.brake_pedal}",
                 f"+steering_angle_bins={num_bins.steering_angle}",
+                "+waypoints_tokenizer_artifact=local",
             ],
         )
 

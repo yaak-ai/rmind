@@ -6,8 +6,8 @@ import pytest
 import torch
 from pytest_lazy_fixtures import lf
 from torch import Tensor
-from torch.nn import LayerNorm, Module
-from torch.testing import assert_close
+from torch.nn import Identity, LayerNorm, Linear, Module
+from torch.testing import assert_close, make_tensor
 from torch.utils._pytree import (  # noqa: PLC2701
     keystr,
     tree_flatten_with_path,
@@ -19,7 +19,12 @@ from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder
 from rmind.components.objectives.policy import PolicyObjective
+from rmind.components.vq import ResidualVQ
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
+from rmind.models.waypoints_tokenizer import (
+    WaypointsLatentTokenizer,
+    WaypointsTokenizer,
+)
 
 if TYPE_CHECKING:
     from tests.conftest import EmbeddingDims
@@ -133,6 +138,45 @@ def control_transformer(
     ).to(device)
 
 
+@pytest.fixture
+def residual_vq(device: torch.device) -> ResidualVQ:
+    return ResidualVQ(dim=16, codebook_size=8, num_quantizers=3).to(device).eval()
+
+
+@pytest.fixture
+def residual_vq_input(device: torch.device) -> Tensor:
+    return make_tensor((4, 16), dtype=torch.float, device=device, low=-1.0, high=1.0)
+
+
+@pytest.fixture
+def waypoints_latent_tokenizer(device: torch.device) -> WaypointsLatentTokenizer:
+    tokenizer = WaypointsTokenizer(
+        input_transform=Identity(),  # unused by `encode`
+        encoder=Linear(20, 16),  # num_waypoints * waypoint_dim -> latent dim
+        quantizer=ResidualVQ(dim=16, codebook_size=8, num_quantizers=3),
+        decoder=Linear(16, 20),  # unused by `encode`
+        waypoints=("waypoints",),
+        num_waypoints=10,
+        waypoint_dim=2,
+    )
+    return WaypointsLatentTokenizer(tokenizer=tokenizer).to(device).eval()
+
+
+@pytest.fixture
+def waypoints_input(device: torch.device) -> Tensor:
+    return make_tensor(
+        (1, 6, 10, 2), dtype=torch.float, device=device, low=0.0, high=1.0
+    )
+
+
+def test_waypoints_latent_tokenizer_shape(
+    waypoints_latent_tokenizer: WaypointsLatentTokenizer, waypoints_input: Tensor
+) -> None:
+    # encodes a per-frame waypoint path into a single latent token per frame
+    out = waypoints_latent_tokenizer(waypoints_input)
+    assert out.shape == (1, 6, 1, 16)
+
+
 def test_episode(episode: Episode, episode_export: Episode) -> None:
     assert_close(episode, episode_export)
 
@@ -237,8 +281,16 @@ def test_episode_builder_warms_attention_mask_cache(
         (lf("episode_builder"), (lf("batch_dict"),)),
         (lf("policy_objective"), (lf("episode_export"), lf("policy_embedding_export"))),
         (lf("control_transformer"), (lf("batch_dict"),)),
+        (lf("residual_vq"), (lf("residual_vq_input"),)),
+        (lf("waypoints_latent_tokenizer"), (lf("waypoints_input"),)),
     ],
-    ids=["episode_builder", "policy_objective", "control_transformer"],
+    ids=[
+        "episode_builder",
+        "policy_objective",
+        "control_transformer",
+        "residual_vq",
+        "waypoints_latent_tokenizer",
+    ],
 )
 @torch.inference_mode()
 def test_torch_export(module: Module, args: tuple[Any]) -> None:
@@ -266,8 +318,15 @@ def test_torch_export_dynamic_shapes(
 
 @pytest.mark.parametrize(
     ("module", "args"),
-    [(lf("control_transformer"), (lf("batch_dict"),))],
-    ids=["control_transformer"],
+    [
+        (lf("control_transformer"), (lf("batch_dict"),)),
+        # regression: the residual-VQ codebook's kmeans-init runs a data-dependent
+        # `if self.initted` branch that torch.export can't trace; ResidualVQ gates
+        # it on the Python `training` flag so export (and thus ONNX) works.
+        (lf("residual_vq"), (lf("residual_vq_input"),)),
+        (lf("waypoints_latent_tokenizer"), (lf("waypoints_input"),)),
+    ],
+    ids=["control_transformer", "residual_vq", "waypoints_latent_tokenizer"],
 )
 @torch.inference_mode()
 def test_onnx_export(module: Module, args: tuple[Any]) -> None:

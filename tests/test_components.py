@@ -14,6 +14,7 @@ from rmind.components.mask import (
 from rmind.components.nn import Sequential
 from rmind.components.norm import Scaler, UniformBinner
 from rmind.components.transformer import TransformerEncoder
+from rmind.components.vq import ResidualVQ
 
 
 def test_scaler(device: torch.device) -> None:
@@ -66,6 +67,33 @@ def test_sequential(device: torch.device) -> None:
     x_rt = module.invert(module(x))
 
     assert_close(x_rt, x)
+
+
+def test_residual_vq(device: torch.device) -> None:
+    codebook_size, num_quantizers = 8, 3
+    vq = ResidualVQ(
+        dim=16, codebook_size=codebook_size, num_quantizers=num_quantizers
+    ).to(device)
+
+    # kmeans-init the codebooks on a first training-mode pass, then quantize.
+    vq.train()
+    _ = vq(make_tensor((128, 16), dtype=torch.float, device=device, low=-1.0, high=1.0))
+    vq.eval()
+
+    z = make_tensor((32, 16), dtype=torch.float, device=device, low=-1.0, high=1.0)
+    codes, z_q, commit = vq(z)
+
+    assert codes.shape == (32, num_quantizers)
+    assert int(codes.min()) >= 0
+    assert int(codes.max()) < codebook_size
+    assert z_q.shape == (32, 16)
+    assert_close(z_q, vq.lookup(codes))  # quantized output is the looked-up codes
+    assert commit.ndim == 0  # commitment loss reduced to a scalar
+
+    perplexity = vq.perplexity(codes)
+    assert perplexity.shape == (num_quantizers,)
+    assert int(perplexity.min()) >= 1  # exp(entropy) in [1, codebook_size]
+    assert perplexity.max() <= codebook_size + 1e-4
 
 
 def test_gram_anchoring_loss_zero_for_matching_features(device: torch.device) -> None:
