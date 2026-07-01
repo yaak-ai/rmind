@@ -105,7 +105,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         }
 
     @override
-    def predict(
+    def predict(  # noqa: PLR0914
         self,
         *,
         episode: Episode,
@@ -122,8 +122,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
-                value=episode.input.select(*self.heads.tree_paths(), strict=False),
-                timestep_indices=slice(None),
+                value=episode.input.select(*self.heads.tree_paths(), strict=False)
             )
 
         if keys & {
@@ -180,7 +179,8 @@ class ForwardDynamicsPredictionObjective(Objective):
             )
 
             # all but first
-            timestep_indices = slice(1, None)
+            timestep_index = slice(1, None)
+            time_index = torch.arange(t).expand(b, -1)[:, timestep_index]
 
             if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
@@ -193,7 +193,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                             nested_keys=True,
                         )
                     ),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
@@ -201,11 +201,12 @@ class ForwardDynamicsPredictionObjective(Objective):
                     value=logits.exclude(Modality.FORESIGHT).apply(
                         lambda x: x.softmax(dim=-1)
                     ),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_LOGPROB) in keys:
                 """Finds log prob of the correct token at each timestep."""
+
                 predictions[key] = Prediction(
                     value=(
                         logits
@@ -214,11 +215,11 @@ class ForwardDynamicsPredictionObjective(Objective):
                         .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[unresolved-attribute]
                         .apply(  # ty:ignore[unresolved-attribute]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                            episode.input_tokens[:, timestep_indices],  # ty:ignore[invalid-argument-type]
+                            episode.input_tokens[:, timestep_index],  # ty:ignore[invalid-argument-type]
                         )
                         .apply(lambda x: -torch.log(x))  # ty:ignore[unresolved-attribute]
                     ),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_L1) in keys:
@@ -233,11 +234,11 @@ class ForwardDynamicsPredictionObjective(Objective):
                         )
                         .apply(  # ty:ignore[unresolved-attribute]
                             lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                            episode.input[:, timestep_indices],  # ty:ignore[invalid-argument-type]
+                            episode.input[:, timestep_index],  # ty:ignore[invalid-argument-type]
                             nested_keys=True,
                         )
                     ),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:

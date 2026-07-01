@@ -338,7 +338,7 @@ def test_flow_policy_predicts_trajectory_values(
 
     for key in list(predictions.keys()):
         prediction = cast("Prediction", predictions[key])
-        assert prediction.timestep_indices == slice(1, 7)
+        assert torch.equal(prediction.time_index, torch.arange(1, 7).expand(2, -1))
         assert isinstance(prediction.value, TensorDict)
         continuous_prediction = cast(
             "TensorDict", prediction.value[Modality.CONTINUOUS]

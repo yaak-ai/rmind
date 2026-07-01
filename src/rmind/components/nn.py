@@ -93,6 +93,16 @@ class Remapper(Module):
         return self._paths
 
     @override
+    def extra_repr(self) -> str:
+        return str(
+            tree_map(
+                lambda path: tuple(x.key for x in path),
+                self._paths,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+        )
+
+    @override
     def forward(self, input: PyTree) -> PyTree:
         return tree_map(
             lambda path: key_get_default(input, path, None),

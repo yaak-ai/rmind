@@ -301,22 +301,29 @@ class PolicyObjective(Objective):
             else None
         )
 
+        # Per-frame indices of the predicted action chunk, matching the
+        # `time_index` convention the other objectives use for sparse timestep-wise
+        # predictions. Unlike them, the chunk covers FUTURE slots
+        # (history_steps .. history_steps + horizon) that may extend past the input
+        # sequence length, so index the slot range directly rather than arange(t).
+        b = episode.input.batch_size[0]
         slot = self._target_slice()
+        time_index = torch.arange(slot.start, slot.stop).expand(b, -1)
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         if key.GROUND_TRUTH in keys and target is not None:
             predictions[key.GROUND_TRUTH] = Prediction(
-                value=self._trajectory_to_tensordict(target), timestep_indices=slot
+                value=self._trajectory_to_tensordict(target), time_index=time_index
             )
         if key.PREDICTION_VALUE in keys and predicted is not None:
             predictions[key.PREDICTION_VALUE] = Prediction(
-                value=self._trajectory_to_tensordict(predicted), timestep_indices=slot
+                value=self._trajectory_to_tensordict(predicted), time_index=time_index
             )
         if key.SCORE_L1 in keys and predicted is not None and target is not None:
             predictions[key.SCORE_L1] = Prediction(
                 value=self._trajectory_to_tensordict(
                     F.l1_loss(predicted, target, reduction="none")
                 ),
-                timestep_indices=slot,
+                time_index=time_index,
             )
         if (
             key.SCORE_SIGNED_ERROR in keys
@@ -325,7 +332,7 @@ class PolicyObjective(Objective):
         ):
             predictions[key.SCORE_SIGNED_ERROR] = Prediction(
                 value=self._trajectory_to_tensordict(predicted - target),
-                timestep_indices=slot,
+                time_index=time_index,
             )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

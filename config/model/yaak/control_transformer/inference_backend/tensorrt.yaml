@@ -1,0 +1,4 @@
+---
+_target_: rmind.inference.backends.TensorRTInferenceBackend
+path: ???
+device: cuda

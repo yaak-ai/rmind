@@ -96,8 +96,7 @@ class InverseDynamicsPredictionObjective(Objective):
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             predictions[key] = Prediction(
-                value=episode.input.select(*self.heads.tree_paths()),
-                timestep_indices=slice(None),
+                value=episode.input.select(*self.heads.tree_paths())
             )
 
         if keys & {
@@ -110,7 +109,8 @@ class InverseDynamicsPredictionObjective(Objective):
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
 
             # head predicts action_{i+1} from summary_i; predictions live at timesteps 1..t-1
-            timestep_indices = slice(1, None)
+            timestep_index = slice(1, None)
+            time_index = torch.arange(t).expand(b, -1)[:, timestep_index]
 
             if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
                 predictions[key] = Prediction(
@@ -118,13 +118,13 @@ class InverseDynamicsPredictionObjective(Objective):
                         lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
                         nested_keys=True,
                     ),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
                 predictions[key] = Prediction(
                     value=logits.apply(lambda x: x.softmax(dim=-1)),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_LOGPROB) in keys:
@@ -135,11 +135,11 @@ class InverseDynamicsPredictionObjective(Objective):
                         .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[unresolved-attribute]
                         .apply(  # ty:ignore[unresolved-attribute]
                             lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                            episode.input_tokens[:, timestep_indices],  # ty:ignore[invalid-argument-type]
+                            episode.input_tokens[:, timestep_index],  # ty:ignore[invalid-argument-type]
                         )
                         .apply(lambda x: -torch.log(x))  # ty:ignore[unresolved-attribute]
                     ),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SCORE_L1) in keys:
@@ -153,11 +153,11 @@ class InverseDynamicsPredictionObjective(Objective):
                         )
                         .apply(  # ty:ignore[unresolved-attribute]
                             lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                            episode.input[:, timestep_indices],  # ty:ignore[invalid-argument-type]
+                            episode.input[:, timestep_index],  # ty:ignore[invalid-argument-type]
                             nested_keys=True,
                         )
                     ),
-                    timestep_indices=timestep_indices,
+                    time_index=time_index,
                 )
 
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:

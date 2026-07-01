@@ -13,25 +13,29 @@ schema:
   #@ for camera in cameras:
   batch/(@=camera@)/time_stamp:
     _target_: rerun.TimeColumn
-    timestamp: [batch, data, meta/ImageMetadata.(@=camera@)/time_stamp]
+    columns:
+      timestamp: [batch, data, meta/ImageMetadata.(@=camera@)/time_stamp]
     dtype: datetime64[us]
 
   batch/(@=camera@)/frame_idx:
     _target_: rerun.TimeColumn
-    sequence: [batch, data, meta/ImageMetadata.(@=camera@)/frame_idx]
+    columns:
+      sequence: [batch, data, meta/ImageMetadata.(@=camera@)/frame_idx]
 
   batch/(@=camera@):
     - _target_: rerun.Image.columns
-      buffer: [batch, data, (@=camera@)]
+      columns:
+        buffer: [batch, data, (@=camera@)]
 
     - static: true
       _target_: rerun.Image.from_fields
-      format:
-        _target_: rerun.components.ImageFormat
-        height: 324
-        width: 576
-        color_model: RGB
-        channel_datatype: u8
+      fields:
+        format:
+          _target_: rerun.components.ImageFormat
+          height: 324
+          width: 576
+          color_model: RGB
+          channel_datatype: u8
   #@ end
 
   #@ for key in [
@@ -42,7 +46,8 @@ schema:
   #@ ]:
   batch/(@=key@):
     - _target_: rerun.Scalars.columns
-      scalars: [batch, data, (@=key@)]
+      columns:
+        scalars: [batch, data, (@=key@)]
 
     - static: true
       _target_: rerun.SeriesLines
@@ -68,12 +73,16 @@ schema:
   #@      for key in keys:
   (@=key_objective@)/(@=key_prediction@)/(@=modality@)/(@=key@):
     - _target_: rerun.Scalars.columns
-      scalars: [(@=key_objective@), (@=key_prediction@), value, (@=modality@), (@=key@)]
-      indices: [(@=key_objective@), (@=key_prediction@), timestep_indices]
+      columns:
+        scalars: [prediction, (@=key_objective@), (@=key_prediction@), value, (@=modality@), (@=key@)]
+      #@ if/end key_prediction != "ground_truth" or key_objective == "memory_extraction":
+      time_index:
+        path: [prediction, (@=key_objective@), (@=key_prediction@), time_index]
 
     - static: true
       _target_: rerun.SeriesLines
-      names: (@=key_prediction@)/(@=key@)
+      fields:
+        names: (@=key_prediction@)/(@=key@)
   #@      end
   #@    end
   #@  end
