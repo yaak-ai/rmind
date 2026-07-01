@@ -9,11 +9,11 @@ from matplotlib.patches import Patch
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 from structlog import get_logger
 from torch import Tensor
-from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
 from rmind.components.base import TokenType
 from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
+from wandb import Image
 
 from .common import _figure_to_rgba, _get_wandb_loggers
 
@@ -35,9 +35,7 @@ def _subscript(n: int) -> str:
 def visualize_attention_mask(  # noqa: PLR0914
     mask: Tensor, timestep_meta: tuple[TokenMeta, ...], index: dict, num_timesteps: int
 ) -> plt.Figure:
-    """
-    CODEX GENERATED
-    """
+    """CODEX GENERATED."""
     # Build block definitions: (label, token_type, num_tokens)
     blocks: list[tuple[str, TokenType, int]] = []
     for t in range(num_timesteps):

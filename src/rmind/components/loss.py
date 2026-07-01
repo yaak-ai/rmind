@@ -79,8 +79,7 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
 
 
 class GramAnchoringLoss(Module):
-    """
-    Gram-based anchoring loss for feature matching.
+    """Gram-based anchoring loss for feature matching.
     Based on DINOv3 implementation:
     https://github.com/facebookresearch/dinov3/blob/main/dinov3/loss/gram_loss.py
     Uses target-driven within-frame patch uniqueness weights.

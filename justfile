@@ -103,6 +103,15 @@ export-onnx *ARGS: generate-config
         --config-name export_onnx.yaml \
         {{ ARGS }}
 
+convert-models model engine:
+    trtexec \
+        --onnx="{{ model }}" \
+        --saveEngine="{{ engine }}" \
+        --skipInference \
+        --avgTiming=16 \
+        --memPoolSize=workspace:24G \
+        --builderOptimizationLevel=5
+
 onnxvis *ARGS:
     uvx --python 3.12 --with=ai-edge-model-explorer --from=model-explorer-onnx onnxvis {{ ARGS }}
 

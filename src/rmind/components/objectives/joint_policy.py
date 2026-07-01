@@ -47,16 +47,29 @@ class JointPolicyObjective(Objective):
         self.norm: Module | None = norm
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
         self.code_head = code_head  # features -> (G*C) code logits
-        self.offset_head = offset_head  # features -> (G*C*action_dim): offset per (quantizer, code)
+        self.offset_head = (
+            offset_head  # features -> (G*C*action_dim): offset per (quantizer, code)
+        )
         self.losses = losses  # {"code": ..., "offset": ...}
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
 
     @override
-    def train(self, mode: bool = True) -> "JointPolicyObjective":  # noqa: FBT001, FBT002
+    def train(self, mode: bool = True) -> "JointPolicyObjective":
         super().train(mode)
         self.tokenizer.eval()
         return self
+
+    @override
+    def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
+        features = self._features(episode, embedding)
+        _, codes, offset = self._predict(features)
+
+        chunk = (self.tokenizer.invert(codes) + offset).unflatten(
+            -1,
+            (-1, self.tokenizer._action_features),  # noqa: SLF001
+        )
+        return TensorDict({"joint_actions": chunk})
 
     def _features(self, episode: Episode, embedding: Tensor) -> Tensor:
         if self.norm is not None:
@@ -90,8 +103,7 @@ class JointPolicyObjective(Objective):
         )
 
     def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        """VQ-BeT joint code prediction with a code-conditioned offset.
-        """
+        """VQ-BeT joint code prediction with a code-conditioned offset."""
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
 
@@ -155,18 +167,27 @@ class JointPolicyObjective(Objective):
     ) -> TensorDict:
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         tokenizer = self.tokenizer
-        timestep_indices = slice(-1, None)
+        timestep_index = slice(-1, None)
 
         action_space = tokenizer._action_features  # noqa: SLF001
+        b, t = episode.input.batch_size
+        time_index = torch.arange(t, device=embedding.device).expand(b, -1)[
+            :, timestep_index
+        ]
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             chunk = tokenizer._normalize(  # noqa: SLF001
                 episode.get(self.chunk)[:, -1].flatten(-2, -1)
             ).unflatten(-1, (-1, action_space))  # (b, action_horizon, action_space)
-            predictions[key] = Prediction(
-                value=TensorDict({"joint_actions": chunk}),
-                timestep_indices=timestep_indices,
-            )
+            actions = TensorDict({
+                "continuous": TensorDict({
+                    "gas_pedal": chunk[..., 0],
+                    "brake_pedal": chunk[..., 1],
+                    "steering_angle": chunk[..., 2],
+                }),
+                "discrete": TensorDict({"turn_signal": chunk[..., 3].long()}),
+            })
+            predictions[key] = Prediction(value=actions, time_index=time_index)
 
         if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
             features = self._features(episode, embedding)
@@ -175,9 +196,14 @@ class JointPolicyObjective(Objective):
             chunk = (tokenizer.invert(codes) + offset).unflatten(
                 -1, (-1, action_space)
             )  # (b, action_horizon, action_space)
-            predictions[key] = Prediction(
-                value=TensorDict({"joint_actions": chunk}),
-                timestep_indices=timestep_indices,
-            )
+            actions = TensorDict({
+                "continuous": TensorDict({
+                    "gas_pedal": chunk[..., 0],
+                    "brake_pedal": chunk[..., 1],
+                    "steering_angle": chunk[..., 2],
+                }),
+                "discrete": TensorDict({"turn_signal": chunk[..., 3].long()}),
+            })
+            predictions[key] = Prediction(value=actions, time_index=time_index)
 
         return TensorDict(predictions).auto_batch_size_(2)

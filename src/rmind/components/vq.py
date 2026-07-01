@@ -8,8 +8,7 @@ from vector_quantize_pytorch import ResidualVQ as RVQ
 
 @final
 class ResidualVQ(Module):
-    """Residual vector quantizer from VQ-BeT (https://arxiv.org/pdf/2403.03181).
-    """
+    """Residual vector quantizer from VQ-BeT (https://arxiv.org/pdf/2403.03181)."""
 
     def __init__(
         self,
@@ -56,9 +55,7 @@ class ResidualVQ(Module):
     def perplexity(self, codes: Tensor) -> Tensor:
         out: list[Tensor] = []
         for q, size in enumerate(self.codebook_sizes):
-            counts = torch.bincount(
-                codes[..., q].reshape(-1), minlength=size
-            ).float()
+            counts = torch.bincount(codes[..., q].reshape(-1), minlength=size).float()
             p = counts / counts.sum().clamp_min(1.0)
             entropy = -(p * p.clamp_min(1e-10).log()).sum()
             out.append(entropy.exp())

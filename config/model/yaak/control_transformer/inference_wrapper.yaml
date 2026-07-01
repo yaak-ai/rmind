@@ -42,6 +42,7 @@ input_transform:
 
 output_transform:
   _target_: rmind.components.nn.Remapper
+  _convert_: none
   paths:
     policy:
       prediction_value:

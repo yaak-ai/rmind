@@ -3,3 +3,51 @@ defaults:
   - /model/yaak/control_transformer@_here_: inference_wrapper
   - override /model/yaak/control_transformer/inference_backend@backend: tensorrt
   - _self_
+
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: torch.nn.Sequential
+      _convert_: all
+      _args_:
+        - _target_: rmind.components.nn.Remapper
+          paths:
+            cam_front_left: [data, cam_front_left]
+            brake_pedal_normalized: [data, meta/VehicleMotion/brake_pedal_normalized]
+            gas_pedal_normalized: [data, meta/VehicleMotion/gas_pedal_normalized]
+            steering_angle_normalized: [data, meta/VehicleMotion/steering_angle_normalized]
+            speed: [data, meta/VehicleMotion/speed]
+            turn_signal: [data, meta/VehicleState/turn_signal]
+            waypoints_xy_normalized: [data, waypoints/xy_normalized]
+
+        - _target_: rmind.components.containers.ModuleDict
+          modules:
+            cam_front_left:
+              _target_: torch.nn.Identity
+            brake_pedal_normalized:
+              _target_: rmind.components.nn.AtLeast3D
+            gas_pedal_normalized:
+              _target_: rmind.components.nn.AtLeast3D
+            steering_angle_normalized:
+              _target_: rmind.components.nn.AtLeast3D
+            speed:
+              _target_: rmind.components.nn.AtLeast3D
+            turn_signal:
+              _target_: rmind.components.nn.AtLeast3D
+            waypoints_xy_normalized:
+              _target_: torch.nn.Identity
+
+    - _target_: rmind.components.nn.Remapper
+      paths:
+        batch_data_cam_front_left: [cam_front_left]
+        batch_data_meta_vehiclemotion_brake_pedal_normalized: [brake_pedal_normalized]
+        batch_data_meta_vehiclemotion_gas_pedal_normalized: [gas_pedal_normalized]
+        batch_data_meta_vehiclemotion_steering_angle_normalized: [steering_angle_normalized]
+        batch_data_meta_vehiclemotion_speed: [speed]
+        batch_data_meta_vehiclestate_turn_signal: [turn_signal]
+        batch_data_waypoints_xy_normalized: [waypoints_xy_normalized]
+
+output_transform:
+  _target_: rmind.components.nn.OnnxOutputUnpacker
+  _convert_: none

@@ -25,8 +25,7 @@ type CodeTargets = Mapping[str, Mapping[str, tuple[str, ...]]]
 
 @final
 class JointInverseDynamicsObjective(Objective):
-    """Inverse dynamics predicting a frozen tokenizer's joint residual-VQ codes.
-    """
+    """Inverse dynamics predicting a frozen tokenizer's joint residual-VQ codes."""
 
     @validate_call
     def __init__(
@@ -73,8 +72,7 @@ class JointInverseDynamicsObjective(Objective):
             )
 
         logits = tree_map(
-            lambda lg: rearrange(lg, "b t (g c) -> b t g c", g=g),
-            self.heads(features),
+            lambda lg: rearrange(lg, "b t (g c) -> b t g c", g=g), self.heads(features)
         )
 
         losses: dict[str, Tensor] = {}
@@ -101,9 +99,7 @@ class JointInverseDynamicsObjective(Objective):
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             gt = tree_map(
-                episode.get,
-                self.targets,
-                is_leaf=lambda x: isinstance(x, tuple),
+                episode.get, self.targets, is_leaf=lambda x: isinstance(x, tuple)
             )
             predictions[key] = Prediction(
                 value=TensorDict(gt), timestep_indices=slice(None)

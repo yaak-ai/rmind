@@ -11,8 +11,7 @@ def get_cosine_schedule_with_warmup(
     num_cycles: float = 0.5,
     last_epoch: int = -1,
 ) -> LambdaLR:
-    """
-    Returns a learning rate scheduler that first linearly increases the learning rate from 0.0 to the initial lr over `num_warmup_steps`, then decreases it to 0.0 following a cosine curve for the remaining `num_training_steps - num_warmup_steps` steps.
+    """Returns a learning rate scheduler that first linearly increases the learning rate from 0.0 to the initial lr over `num_warmup_steps`, then decreases it to 0.0 following a cosine curve for the remaining `num_training_steps - num_warmup_steps` steps.
 
     This implementation is adapted from Hugging Face's Transformers:
     https://github.com/huggingface/transformers/blob/d79b2d981f28b2730d402244ac3c2e9a8c054eee/src/transformers/optimization.py#L141
@@ -26,6 +25,7 @@ def get_cosine_schedule_with_warmup(
 
     Returns:
         torch.optim.lr_scheduler.LambdaLR: Configured learning rate scheduler.
+
     """
 
     def linear_warmup(current_step: int) -> float:

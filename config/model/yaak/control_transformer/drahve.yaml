@@ -7,6 +7,6 @@ strict: false
 hparams_jq: |
   delpaths([paths | select(.. | type == "string" and endswith("_diff"))])
   | setpath(
-    ["episode_builder", "input_transform", "_args_", 1, "modules", "image"];
+    ["episode_builder", "input_transform", "_args_", 2, "modules", "image"];
     {"_target_": "torch.nn.Identity"}
   )

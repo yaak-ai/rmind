@@ -58,7 +58,7 @@ predict = [
   "rbyte[video,visualize]",
   "torchcodec",  # transitive dependency of rbyte; only here so we can configure [tool.uv.sources.torchcodec] (https://github.com/astral-sh/uv/issues/8253)
   "onnxruntime>=1.27.0",
-  "tensorrt-cu13==10.14.1.48.post1; sys_platform == 'linux'",
+  "tensorrt-cu12==11.1.0.106; sys_platform == 'linux'",
 ]
 train = [
   "contextily>=1.6.2",

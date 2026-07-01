@@ -4,6 +4,7 @@ from typing import Any, final, override
 
 import torch
 from pydantic import InstanceOf, validate_call
+from tensordict import TensorDict
 from torch import Tensor, nn
 from torch.nn import Module
 from torch.utils._pytree import (  # noqa: PLC2701
@@ -127,7 +128,7 @@ class Frozen(Module):
         self.module = module.requires_grad_(False).eval()  # noqa: FBT003
 
     @override
-    def train(self, mode: bool = True) -> "Frozen":  # noqa: FBT001, FBT002
+    def train(self, mode: bool = True) -> "Frozen":
         super().train(mode)
         self.module.eval()
         return self
@@ -148,9 +149,7 @@ class StackFields(Module):
     """
 
     @validate_call
-    def __init__(
-        self, *, paths: Mapping[str, tuple[str, ...]], out_key: str
-    ) -> None:
+    def __init__(self, *, paths: Mapping[str, tuple[str, ...]], out_key: str) -> None:
         super().__init__()
 
         self._paths = {
@@ -271,3 +270,31 @@ def _module_wrapper(
 AtLeast3D = _module_wrapper(torch.atleast_3d, name="AtLeast3D")
 DiffLast = _module_wrapper(diff_last, name="DiffLast")
 Squeeze = _module_wrapper(torch.squeeze, name="Squeeze")
+
+
+@final
+class OnnxOutputUnpacker(Module):
+    """Unpack ONNX model output (joint_actions) into individual action components."""
+
+    def __init__(self, **_kwargs: Any) -> None:
+        super().__init__()
+
+    @override
+    def forward(self, input: dict[str, Tensor]) -> dict:
+        joint_actions = input["policy.joint_actions"]
+        return {
+            "policy": {
+                "prediction_value": {
+                    "value": TensorDict({
+                        "continuous": TensorDict({
+                            "gas_pedal": joint_actions[..., 0],
+                            "brake_pedal": joint_actions[..., 1],
+                            "steering_angle": joint_actions[..., 2],
+                        }),
+                        "discrete": TensorDict({
+                            "turn_signal": joint_actions[..., 3].long()
+                        }),
+                    })
+                }
+            }
+        }
