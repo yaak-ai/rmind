@@ -80,6 +80,13 @@ test *ARGS: generate-config
 update-snapshots:
     uv run python -m tests.scripts.update_snapshots
 
+benchmark-onnx *ARGS: generate-config
+    LD_LIBRARY_PATH="$(find /nix/store -maxdepth 1 -name '*gcc-15*-lib' -type d -print -quit 2>/dev/null)/lib:${LD_LIBRARY_PATH:-}" \
+    uv run --group benchmark rmind-benchmark-onnx \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name benchmark_onnx.yaml \
+        {{ ARGS }}
+
 export-onnx *ARGS: generate-config
     uv run --group export rmind-export-onnx \
         --config-path {{ justfile_directory() }}/config \
