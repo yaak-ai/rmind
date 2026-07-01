@@ -41,6 +41,51 @@
         };
       };
 
+    devShells.aarch64-linux.default =
+      # Jetson (JetPack) target. CUDA is provided by the system (apt:
+      # nvidia-jetpack), not nixpkgs, so we wire the system driver/runtime
+      # libs into LD_LIBRARY_PATH for uv-installed wheels (torch, etc.).
+      with import nixpkgs { system = "aarch64-linux"; };
+      let
+        systemCudaPath = lib.concatStringsSep ":" [
+          "/usr/local/cuda/lib64"
+          "/usr/lib/aarch64-linux-gnu/nvidia"
+          "/usr/lib/aarch64-linux-gnu/tegra"
+        ];
+        uvLibraryPath = lib.makeLibraryPath [
+          stdenv.cc.cc.lib
+          zlib
+          openssl
+          libffi
+          ffmpeg
+        ];
+        uvWrapped = writeShellScriptBin "uv" ''
+          export LD_LIBRARY_PATH="${uvLibraryPath}:${systemCudaPath}''${NIX_LD_LIBRARY_PATH:+:''${NIX_LD_LIBRARY_PATH}}"
+          exec ${lib.getExe uv} "$@"
+        '';
+      in
+      mkShell {
+        packages = [
+          nushell
+          git
+          git-lfs
+          uvWrapped
+          ytt
+          just
+          prek
+          skim
+          openssl
+          ffmpeg
+        ];
+
+        env = {
+          UV_PYTHON = "${python312}/bin/python";
+          UV_NO_MANAGED_PYTHON = "1";
+          UV_PYTHON_DOWNLOADS = "never";
+          TRITON_LIBCUDA_PATH = "/usr/lib/aarch64-linux-gnu/nvidia"; # for TorchInductor (JetPack driver)
+        };
+      };
+
     devShells.aarch64-darwin.default =
       with import nixpkgs { system = "aarch64-darwin"; };
       let
