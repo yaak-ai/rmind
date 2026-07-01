@@ -26,6 +26,9 @@
             ++ lib.optional stdenv.isDarwin [ ffmpeg ];
 
             shellHook = lib.strings.concatLines [
+              (lib.optionalString stdenv.isLinux "export LD_LIBRARY_PATH=${
+                pkgs.lib.makeLibraryPath [ pkgs.gcc.cc.lib ]
+              }:$LD_LIBRARY_PATH")
               (lib.optionalString stdenv.isDarwin "export DYLD_FALLBACK_LIBRARY_PATH=${
                 pkgs.lib.makeLibraryPath [ pkgs.ffmpeg ]
               }")
