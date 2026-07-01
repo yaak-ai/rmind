@@ -440,12 +440,12 @@ def test_flow_export_compare_matches_saved_onnx(
     batch_dict: TensorTree,
     tmp_path: "Path",
 ) -> None:
-    """The comparator's saved-file round-trip: export to a .onnx on disk, reload
-    via ONNX Runtime, feed identical inputs through the positional mapping used by
-    flow_export_compare, and confirm ORT matches eager. Guards both the on-disk
-    artifact and the input-name/order contract the edge host relies on."""
-    import onnxruntime as ort  # noqa: PLC0415
-
+    """The comparator's saved-file round-trip: export to a .onnx on disk with the
+    shared `input_names`, reload it through drahve's `OnnxInferenceBackend`, feed
+    by name, and confirm ORT matches eager. Guards the on-disk artifact and the
+    name-based input contract the edge host relies on."""
+    from rmind.inference.backends import OnnxInferenceBackend  # noqa: PLC0415
+    from rmind.scripts.flow_export import input_names  # noqa: PLC0415
     from rmind.scripts.flow_export_compare import build_feed  # noqa: PLC0415
 
     exportable = flow_control_transformer.eval().exportable_policy().eval()
@@ -466,11 +466,11 @@ def test_flow_export_compare_matches_saved_onnx(
         dynamo=True,
         optimize=False,
         verify=False,
+        input_names=input_names(example_args),
         output_names=["action_draws"],
     )
 
-    session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-    (onnx_draws,) = session.run(None, build_feed(session, example_args))
-    assert_close(
-        torch.as_tensor(onnx_draws).float(), eager.cpu().float(), rtol=1e-2, atol=1e-3
-    )
+    backend = OnnxInferenceBackend(path=onnx_path, providers=["CPUExecutionProvider"])
+    backend.on_predict_start()
+    onnx_draws = backend.forward(build_feed(example_args))["action_draws"]
+    assert_close(onnx_draws.float(), eager.cpu().float(), rtol=1e-2, atol=1e-3)

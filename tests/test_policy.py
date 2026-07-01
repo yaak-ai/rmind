@@ -338,6 +338,7 @@ def test_flow_policy_predicts_trajectory_values(
 
     for key in list(predictions.keys()):
         prediction = cast("Prediction", predictions[key])
+        assert prediction.time_index is not None
         assert torch.equal(prediction.time_index, torch.arange(1, 7).expand(2, -1))
         assert isinstance(prediction.value, TensorDict)
         continuous_prediction = cast(

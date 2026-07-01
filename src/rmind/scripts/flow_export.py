@@ -43,7 +43,9 @@ import torch.fx.experimental._config as _fx_config  # noqa: PLC2701
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 from structlog import get_logger
+from torch import Tensor
 from torch.nn import Module
+from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
 
 from rmind.components.objectives.policy import PolicyObjective
 from rmind.components.transformer import FlowActionDecoder
@@ -55,6 +57,29 @@ from rmind.utils.patch import monkeypatched
 _fx_config.soft_pending_unbacked_not_found_error = True  # ty:ignore[invalid-assignment]
 
 logger = get_logger(__name__)
+
+
+def input_names(example_args: tuple[Any, ...]) -> list[str]:
+    """Stable ONNX input names for `(batch, noise)`, in flattened graph order.
+
+    Names each batch tensor by its dotted key path (e.g. `data.cam_front_left`)
+    and the flow noise `noise`. `torch.export` flattens the args in this order, so
+    passing these as `input_names` makes the graph self-documenting and lets the
+    comparator feed by name — computed identically on both sides, so they always
+    agree without relying on positional order.
+    """
+    names: list[str] = []
+    for arg in example_args:
+        leaves, _ = tree_flatten_with_path(arg)
+        tensor_leaves = [(kp, x) for kp, x in leaves if isinstance(x, Tensor)]
+        if len(tensor_leaves) == 1 and not tensor_leaves[0][0]:
+            names.append("noise")  # bare tensor arg (the flow noise)
+        else:
+            names.extend(
+                ".".join(str(k.key) for k in kp if hasattr(k, "key"))
+                for kp, _ in tensor_leaves
+            )
+    return names
 
 
 def _apply_sampler_overrides(opts: Any, decoder: FlowActionDecoder) -> None:
@@ -77,7 +102,7 @@ def _apply_sampler_overrides(opts: Any, decoder: FlowActionDecoder) -> None:
     if "flow_sampling_method" in opts:
         method = str(opts["flow_sampling_method"])
         decoder._validate_sampling_method(method)  # noqa: SLF001
-        decoder.flow_sampling_method = method
+        decoder.flow_sampling_method = method  # ty:ignore[invalid-assignment]
     logger.info(
         "sampler config",
         flow_sampling_steps=decoder.flow_sampling_steps,
@@ -120,7 +145,7 @@ def build_exportable(cfg: DictConfig) -> tuple[Module, tuple[Any, ...]]:
         batch, draws, objective.decoder.action_horizon, objective.decoder.action_dim
     )
     dummy_batch = instantiate(cfg.input, _recursive_=True, _convert_="all")
-    exportable = model.exportable_policy().eval()  # ty:ignore[unresolved-attribute]
+    exportable = model.exportable_policy().eval()
 
     # Warm the (non-trace-friendly) attention-mask cache before torch.export; an
     # eager forward must run first (see episode.py). Two passes mirror the
@@ -167,6 +192,7 @@ def main(cfg: DictConfig) -> None:
             f=str(out),
             dynamo=True,
             opset_version=opset,
+            input_names=input_names(example_args),
             output_names=["action_draws"],
             external_data=external_data,
             optimize=optimize,

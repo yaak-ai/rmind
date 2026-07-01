@@ -32,9 +32,11 @@ import onnxruntime as ort
 import torch
 from omegaconf import DictConfig
 from structlog import get_logger
+from torch import Tensor
 from torch.utils._pytree import tree_flatten, tree_map  # noqa: PLC2701
 
-from rmind.scripts.flow_export import build_exportable
+from rmind.inference.backends import OnnxInferenceBackend
+from rmind.scripts.flow_export import build_exportable, input_names
 
 logger = get_logger(__name__)
 
@@ -46,7 +48,7 @@ def _graph_noise_shape(onnx_path: Path) -> list[int | None] | None:
 
     Read cheaply from the ONNX proto (no session, no weights). K (and batch) are
     frozen into the artifact at export, so the eager side must build noise to
-    match — otherwise the shape guard in `build_feed` trips.
+    match — otherwise ONNX Runtime rejects the feed on shape mismatch.
     """
     model = onnx.load(str(onnx_path), load_external_data=False)
     inputs = list(model.graph.input)
@@ -63,8 +65,8 @@ def _match_noise_shape_to_graph(cfg: DictConfig, onnx_path: Path) -> None:
     """Set cfg.export.{batch,draws} to the saved graph's frozen noise dims.
 
     K (draws) and batch are baked into the artifact at export, so the eager side
-    must build noise to match regardless of the config defaults — otherwise the
-    shape guard in `build_feed` trips.
+    must build noise to match regardless of the config defaults — otherwise ONNX
+    Runtime rejects the feed on shape mismatch.
     """
     shape = _graph_noise_shape(onnx_path)
     if shape is None or len(shape) != _NOISE_RANK:
@@ -84,35 +86,17 @@ def _match_noise_shape_to_graph(cfg: DictConfig, onnx_path: Path) -> None:
     cfg.export.draws = graph_draws
 
 
-def build_feed(
-    session: ort.InferenceSession, example_args: tuple
-) -> dict[str, np.ndarray]:
-    """Map the eager example inputs onto the ONNX session inputs, positionally.
+def build_feed(example_args: tuple) -> dict[str, Tensor]:
+    """Name the flattened example inputs exactly as `flow_export.input_names` did
+    at export, so the ONNX graph's named inputs line up by name (not by position).
 
-    torch.onnx preserves the flattened example-arg order as the graph's input
-    order, so the pytree leaves line up 1:1 with `session.get_inputs()`. Concrete
-    (non-dynamic) dims are asserted per position, so a misalignment fails loudly
-    instead of silently comparing the wrong tensors.
-
-    Raises:
-        ValueError: on an input-count or concrete-shape mismatch.
+    Both sides compute the names from the same `input_names` helper, so they agree
+    without relying on the flattened order; ONNX Runtime then rejects any genuine
+    shape mismatch on `run`.
     """
     leaves, _ = tree_flatten(example_args)
-    tensors = [leaf for leaf in leaves if isinstance(leaf, torch.Tensor)]
-    inputs = session.get_inputs()
-    if len(inputs) != len(tensors):
-        msg = f"ONNX expects {len(inputs)} inputs, built {len(tensors)}"
-        raise ValueError(msg)
-
-    feed: dict[str, np.ndarray] = {}
-    for inp, tensor in zip(inputs, tensors, strict=True):
-        arr = tensor.detach().cpu().numpy()
-        for got, want in zip(arr.shape, inp.shape, strict=False):
-            if isinstance(want, int) and got != want:
-                msg = f"input {inp.name!r}: shape {arr.shape} != graph {inp.shape}"
-                raise ValueError(msg)
-        feed[inp.name] = arr
-    return feed
+    tensors = [leaf for leaf in leaves if isinstance(leaf, Tensor)]
+    return dict(zip(input_names(example_args), tensors, strict=True))
 
 
 def _action_channels(exportable: torch.nn.Module, width: int) -> list[str]:
@@ -229,12 +213,13 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0914
     exportable.to("cpu")
 
     onnx_by_device: dict[str, np.ndarray] = {}
+    feed = build_feed(example_args)
     for device, provider in ort_by_device.items():
-        session = ort.InferenceSession(str(onnx_path), providers=[provider])
-        feed = build_feed(session, example_args)
-        onnx_by_device[device] = np.asarray(session.run(None, feed)[0])
+        backend = OnnxInferenceBackend(path=onnx_path, providers=[provider])
+        backend.on_predict_start()
+        onnx_by_device[device] = backend.forward(feed)["action_draws"].numpy()
         ms = _bench(
-            lambda session=session, feed=feed: session.run(None, feed),
+            lambda backend=backend: backend.forward(feed),
             warmup=warmup,
             iters=iters,
             cuda=False,

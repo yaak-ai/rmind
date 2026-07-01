@@ -467,7 +467,7 @@ class ExportablePolicy(Module):
     winner-take-all consensus in readout.py) runs host-side as postprocessing,
     deliberately OUTSIDE the graph — its data-dependent control flow (sort /
     nonzero / per-frame loops) doesn't belong in a static graph, and keeping it
-    host-side lets it be retuned without re-exporting. Noise is an INPUT (not
+    host-side lets it be re-tuned without re-exporting. Noise is an INPUT (not
     sampled internally) so the graph is a pure function of its inputs.
 
     Everything here lowers to ONNX: the sampler loop unrolls at the fixed step
