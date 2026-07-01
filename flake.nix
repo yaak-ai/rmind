@@ -113,6 +113,38 @@
             };
         };
 
+      devShells.aarch64-linux.default =
+        let
+          pkgs = import nixpkgs { system = "aarch64-linux"; };
+          uvWrapped = pkgs.writeShellScriptBin "uv" ''
+            export LD_LIBRARY_PATH="${
+              pkgs.lib.makeLibraryPath [
+                pkgs.stdenv.cc.cc.lib
+                pkgs.ffmpeg-headless
+              ]
+            }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            exec ${pkgs.uv}/bin/uv "$@"
+          '';
+        in
+        pkgs.mkShell {
+          packages = [
+            pkgs.git
+            pkgs.git-lfs
+            pkgs.python312
+            pkgs.ytt
+            pkgs.just
+            pkgs.jqp
+            pkgs.prek
+            uvWrapped
+          ];
+
+          shellHook = ''
+            export UV_PYTHON="${pkgs.python312}/bin/python3"
+            export UV_NO_MANAGED_PYTHON="1"
+            export UV_PYTHON_DOWNLOADS="never"
+          '';
+        };
+
       devShells.aarch64-darwin.default =
         let
           pkgs = import nixpkgs { system = "aarch64-darwin"; };

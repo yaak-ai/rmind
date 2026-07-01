@@ -134,11 +134,18 @@ class EpisodeBuilder(Module):
         })
         input_embeddings = self.embeddings(input_tokens)
         projected_embeddings = self.projections(input_embeddings)
+        # Compute lengths from the raw dict before TensorDict construction.
+        # TensorDict.get() returns tensors with only batch dims during torch.export
+        # tracing (make_fx), causing shape[2] to fail inside _build_index.
+        token_lengths = [
+            projected_embeddings[token.modality.value][token.name].shape[2]
+            for token in self.timestep
+        ]
         projected_td = TensorDict(
             projected_embeddings, batch_size=[b, t]
         ).filter_non_tensor_data()
 
-        index = self._build_index(projected_td, device=device)
+        index = self._build_index(projected_td, device=device, token_lengths=token_lengths)
 
         attention_mask = self._build_attention_mask(index=index, timestep=self.timestep)
 
@@ -207,14 +214,11 @@ class EpisodeBuilder(Module):
         return attention_mask
 
     def _build_index(
-        self, embeddings: TensorDict, *, device: torch.device
+        self, embeddings: TensorDict, *, device: torch.device, token_lengths: list[int]
     ) -> TensorTree:
         t = embeddings.batch_size[1]
 
-        lengths = [
-            embeddings.get((token.modality.value, token.name)).shape[2]
-            for token in self.timestep
-        ]
+        lengths = token_lengths
 
         timestep_length = sum(lengths)
         ranges = pairwise(accumulate(lengths, initial=0))

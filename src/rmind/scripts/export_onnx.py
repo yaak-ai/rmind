@@ -14,7 +14,9 @@ from structlog import get_logger
 from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
 
 from rmind.config import HydraConfig
+from rmind.utils.onnx_ops import GRU_CUSTOM_TABLE
 from rmind.utils.patch import monkeypatched
+
 
 # tensordict's global dicts mutated during export tracing cause a spurious
 # "pending unbacked symbol u0" error even though the exported graph is valid
@@ -39,6 +41,7 @@ class Config(BaseModel):
     artifacts_dir: Path = Path.cwd()
     input_names: Sequence[str] | None = None
     output_names: Sequence[str] | None = None
+    gru_custom_table: bool = False
 
 
 @hydra.main(version_base=None)
@@ -76,13 +79,23 @@ def main(cfg: DictConfig) -> None:
         ]
         logger.debug("inferred output_names", output_names=config.output_names)
 
-    logger.debug("torch exporting")
-    exported_program = torch.export.export(mod=model, args=tuple(args), strict=True)
+    if config.gru_custom_table:
+        logger.debug("torch exporting (gru_custom_table)")
+        exported_program = torch.export.export(mod=model, args=tuple(args), strict=False)
+        logger.debug("onnx exporting")
+        torch.onnx.export(
+            model=exported_program,
+            **config.model_dump(exclude={"model", "gru_custom_table"}),
+            custom_translation_table=GRU_CUSTOM_TABLE,
+        )
+    else:
+        logger.debug("torch exporting")
+        exported_program = torch.export.export(mod=model, args=tuple(args), strict=True)
 
-    logger.debug("onnx exporting")
-    model = torch.onnx.export(
-        model=exported_program, **config.model_dump(exclude={"model"})
-    )
+        logger.debug("onnx exporting")
+        model = torch.onnx.export(
+            model=exported_program, **config.model_dump(exclude={"model", "gru_custom_table"})
+        )
 
     logger.debug(
         "exported",

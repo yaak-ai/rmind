@@ -36,7 +36,7 @@ class ModuleDict(_ModuleDict):
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            k: v.to_dict() if isinstance(v, type(self)) else v
+            k: v.to_dict() if isinstance(v, ModuleDict) else v
             for k, v in self._modules.items()
         }
 
