@@ -57,7 +57,7 @@ hooks = [
 repo = "https://github.com/codespell-project/codespell"
 rev = "v2.4.2"
 hooks = [
-  { id = "codespell" },
+  { id = "codespell", args = ["--ignore-words-list=drivr"] },
 ]
 
 [[repos]]
