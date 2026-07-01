@@ -79,7 +79,7 @@ action-norm +ARGS: generate-config
 # ONNX / pt2 — input is the raw sensor batch, for edge deployment
 export-policy +ARGS: generate-config
     uv run \
-        --extra export --extra predict --extra train \
+        --extra export --extra train \
         python -m rmind.scripts.flow_export \
         --config-path {{ justfile_directory() }}/config \
         --config-name export/policy_onnx.yaml \
@@ -89,7 +89,7 @@ export-policy +ARGS: generate-config
 # (per-action-channel diff table + per-pass latency); same args as export-policy
 compare-policy-onnx +ARGS: generate-config
     uv run \
-        --extra export --extra predict --extra train \
+        --extra export --extra train \
         python -m rmind.scripts.flow_export_compare \
         --config-path {{ justfile_directory() }}/config \
         --config-name export/policy_onnx.yaml \

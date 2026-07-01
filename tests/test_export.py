@@ -472,5 +472,5 @@ def test_flow_export_compare_matches_saved_onnx(
 
     backend = OnnxInferenceBackend(path=onnx_path, providers=["CPUExecutionProvider"])
     backend.on_predict_start()
-    onnx_draws = backend.forward(build_feed(example_args))["action_draws"]
+    onnx_draws = backend.forward(build_feed(onnx_path, example_args))["action_draws"]
     assert_close(onnx_draws.float(), eager.cpu().float(), rtol=1e-2, atol=1e-3)

@@ -36,7 +36,7 @@ from torch import Tensor
 from torch.utils._pytree import tree_flatten, tree_map  # noqa: PLC2701
 
 from rmind.inference.backends import OnnxInferenceBackend
-from rmind.scripts.flow_export import build_exportable, input_names
+from rmind.scripts.flow_export import build_exportable
 
 logger = get_logger(__name__)
 
@@ -86,17 +86,20 @@ def _match_noise_shape_to_graph(cfg: DictConfig, onnx_path: Path) -> None:
     cfg.export.draws = graph_draws
 
 
-def build_feed(example_args: tuple) -> dict[str, Tensor]:
-    """Name the flattened example inputs exactly as `flow_export.input_names` did
-    at export, so the ONNX graph's named inputs line up by name (not by position).
+def build_feed(onnx_path: Path, example_args: tuple) -> dict[str, Tensor]:
+    """Feed dict keyed by the saved graph's OWN input names.
 
-    Both sides compute the names from the same `input_names` helper, so they agree
-    without relying on the flattened order; ONNX Runtime then rejects any genuine
-    shape mismatch on `run`.
+    Reads the input names from the artifact and zips them positionally with the
+    flattened example tensors — `torch.export` preserves the flattened arg order as
+    the graph input order, so this lines up regardless of how the artifact was
+    named at export (robust to pre/post-`input_names` exports). ONNX Runtime then
+    rejects any genuine shape mismatch on `run`.
     """
+    model = onnx.load(str(onnx_path), load_external_data=False)
+    names = [i.name for i in model.graph.input]
     leaves, _ = tree_flatten(example_args)
     tensors = [leaf for leaf in leaves if isinstance(leaf, Tensor)]
-    return dict(zip(input_names(example_args), tensors, strict=True))
+    return dict(zip(names, tensors, strict=True))
 
 
 def _action_channels(exportable: torch.nn.Module, width: int) -> list[str]:
@@ -213,7 +216,7 @@ def main(cfg: DictConfig) -> None:  # noqa: PLR0914
     exportable.to("cpu")
 
     onnx_by_device: dict[str, np.ndarray] = {}
-    feed = build_feed(example_args)
+    feed = build_feed(onnx_path, example_args)
     for device, provider in ort_by_device.items():
         backend = OnnxInferenceBackend(path=onnx_path, providers=[provider])
         backend.on_predict_start()
