@@ -72,7 +72,7 @@ check = [
 ]
 export = [
   "onnx>=1.22.0",
-  "onnxruntime>=1.27.0",
+  "onnxruntime-gpu>=1.27.0",
   "onnxscript>=0.7.0",
 ]
 test = [
@@ -95,9 +95,13 @@ DEP002 = [
   "torchvision",
 ]
 DEP003 = ["rmind"]
+# onnx/onnxruntime live in the `export` dependency group (optional, only for the
+# flow_export* scripts), so they read as dev deps when imported in src.
+DEP004 = ["onnx", "onnxruntime"]
 
 [tool.deptry.package_module_name_map]
 hydra-core = "hydra"
+onnxruntime-gpu = "onnxruntime"
 tensordict-nightly = "tensordict"
 pytorch-lightning = [
   "pytorch_lightning",
