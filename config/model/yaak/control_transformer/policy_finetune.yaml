@@ -8,73 +8,50 @@ hparams_jq: |
     "modules": {
       "policy": {
         "_target_": "rmind.components.objectives.PolicyObjective",
-        "norm": {
-          "_target_": "torch.nn.LayerNorm",
-          "normalized_shape": 384
-        },
-        "heads": {
-          "_target_": "rmind.components.containers.ModuleDict",
-          "modules": {
-            "continuous": {
-              "gas_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              },
-              "brake_pedal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              },
-              "steering_angle": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 2],
-                "bias": false
-              }
-            },
-            "discrete": {
-              "turn_signal": {
-                "_target_": "torchvision.ops.MLP",
-                "in_channels": 1152,
-                "hidden_channels": [384, 3],
-                "bias": false
-              }
-            }
-          }
-        },
+        "history_steps": ${history_steps},
         "targets": {
-          "continuous": {
-            "gas_pedal": ["input", "continuous", "gas_pedal"],
-            "brake_pedal": ["input", "continuous", "brake_pedal"],
-            "steering_angle": ["input", "continuous", "steering_angle"]
-          },
-          "discrete": {
-            "turn_signal": ["input", "discrete", "turn_signal"]
-          }
+          "gas_pedal": ["data", "meta/VehicleMotion/gas_pedal_normalized_target"],
+          "brake_pedal": ["data", "meta/VehicleMotion/brake_pedal_normalized_target"],
+          "steering_angle": ["data", "meta/VehicleMotion/steering_angle_normalized_target"]
         },
-        "losses": {
-          "_target_": "rmind.components.containers.ModuleDict",
-          "modules": {
-            "continuous": {
-              "gas_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              },
-              "brake_pedal": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              },
-              "steering_angle": {
-                "_target_": "rmind.components.loss.GaussianNLLLoss"
-              }
-            },
-            "discrete": {
-              "turn_signal": {
-                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
-              }
-            }
-          }
+        "condition_tokens": [
+          ["summary", "observation_summary"],
+          ["summary", "observation_history"],
+          ["context", "waypoints"]
+        ],
+        "flow_time_sampling": "logit-normal",
+        "action_transform": {
+          "_target_": "rmind.components.action_transform.build_action_transform",
+          "merge": true,
+          "stats_path": "${paths.action_norm_stats}"
+        },
+        "lds_weights": {
+          "_target_": "rmind.components.lds.build_lds_weights",
+          "stats_path": "${paths.action_norm_stats}",
+          "alpha": 0.5,
+          "cap": 15.0
+        },
+        "loss": {
+          "_target_": "rmind.components.loss.FlowMatchingLoss",
+          "chunk_delta_weight": 10.0
+        },
+        "decoder": {
+          "_target_": "rmind.components.transformer.FlowActionDecoder",
+          "condition_dim": ${encoder_embedding_dim},
+          "dim_model": 256,
+          "action_dim": 2,
+          "action_horizon": ${action_horizon},
+          "flow_sampling_steps": 32,
+          "flow_sampling_method": "heun",
+          "rope": true,
+          "time_embedding_scale": 1000.0,
+          "time_logit_scale": 0.25,
+          "num_layers": 4,
+          "num_heads": 4,
+          "attn_dropout": 0.1,
+          "resid_dropout": 0.1,
+          "mlp_dropout": 0.1,
+          "hidden_layer_multiplier": 1
         }
       }
     }

@@ -183,7 +183,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         )
 
         metrics = TensorDict({
-            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(
+                episode=episode, embedding=embedding, batch=batch
+            )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -222,7 +224,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             src=episode.embeddings_flattened, mask=episode.attention_mask
         )
         metrics = TensorDict({
-            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(
+                episode=episode, embedding=embedding, batch=batch
+            )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 
@@ -260,6 +264,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
                 embedding=embedding,
                 keys=frozenset(self.prediction_config.objectives),
                 tokenizers=self.episode_builder.tokenizers,
+                batch=batch,
             )  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         }
@@ -278,6 +283,40 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         }
 
         return TensorDict(outputs)  # ty:ignore[invalid-argument-type]
+
+    def exportable_policy(self, objective_name: str = "policy") -> Module:
+        """Deterministic full-pipeline inference graph for the flow policy.
+
+        Returns an `ExportableControlPolicy` chaining this model's episode
+        builder + encoder with the flow decoder tail:
+
+            forward(batch, noise (B,K,H,A_model)) -> raw action draws (B,K,H,A_raw)
+
+        Unlike `PolicyObjective.exportable()` (which starts from already-encoded
+        condition tokens), this consumes the raw sensor `batch`, so the perception
+        stack ships in the same artifact — the shape needed for edge deployment.
+
+        Raises:
+            TypeError: if the named objective is not a `PolicyObjective`.
+        """
+        from rmind.components.objectives.policy import (  # noqa: PLC0415
+            ExportableControlPolicy,
+            PolicyObjective,
+        )
+
+        objective = self.objectives[objective_name]
+        if not isinstance(objective, PolicyObjective):
+            msg = (
+                f"objective {objective_name!r} is not a PolicyObjective: "
+                f"{type(objective)}"
+            )
+            raise TypeError(msg)
+
+        return ExportableControlPolicy(
+            episode_builder=self.episode_builder,
+            encoder=self.encoder,
+            objective=objective,
+        )
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:

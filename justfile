@@ -67,6 +67,34 @@ predict +ARGS: generate-config
         --config-name predict.yaml \
         {{ ARGS }}
 
+# fit the flow policy's action-normalization stats from data (Gaussianize knots
+# + optional maneuver-LDS densities -> the action_norm json consumed at init)
+action-norm +ARGS: generate-config
+    uv run python -m rmind.scripts.flow_action_norm \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name predict.yaml \
+        {{ ARGS }}
+
+# export the full policy pipeline (episode builder + encoder + flow decoder) to
+# ONNX / pt2 — input is the raw sensor batch, for edge deployment
+export-policy +ARGS: generate-config
+    uv run \
+        --extra export --extra train \
+        python -m rmind.scripts.flow_export \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name export/policy_onnx.yaml \
+        {{ ARGS }}
+
+# check a saved policy ONNX matches the eager PyTorch model, on CPU and GPU
+# (per-action-channel diff table + per-pass latency); same args as export-policy
+compare-policy-onnx +ARGS: generate-config
+    uv run \
+        --extra export --extra train \
+        python -m rmind.scripts.flow_export_compare \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name export/policy_onnx.yaml \
+        {{ ARGS }}
+
 predict-policy-with-permutations +ARGS: generate-config
     uv run \
         --extra train --extra predict \

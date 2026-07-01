@@ -46,7 +46,9 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.patch_pos_embed: Module | None = patch_pos_embed
 
     @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+    def compute_metrics(
+        self, *, episode: Episode, embedding: Tensor, **_kwargs: Any
+    ) -> Metrics:
         if self.norm is not None:
             embedding = self.norm(embedding)
 

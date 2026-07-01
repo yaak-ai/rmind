@@ -6,6 +6,18 @@ defaults:
   - /paths: yaak/default
   - _self_
 
+# Predict-time readout, injected into the saved hparams by /model finetuned.
+# Override at the CLI, e.g. flow_predict_readout=mode flow_predict_samples=32.
+flow_predict_readout: single
+flow_predict_samples: 16
+
+# Dataset windowing — must match the finetune experiment the artifact was trained
+# with (the /datamodule predict dataset SQL slices the *_normalized_target action
+# chunk by these). Mirrors experiment/yaak/control_transformer/finetune.yaml.
+history_steps: 6
+action_horizon: 6
+sequence_length: ${add:${history_steps},${action_horizon}}
+
 permutations:
   baseline: []
   speed:
@@ -39,7 +51,6 @@ trainer:
         objectives:
           - ground_truth
           - prediction_value
-          - prediction_std
           - prediction_probs
           - score_l1
           - score_logprob
@@ -50,14 +61,13 @@ trainer:
 
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
-      path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}-${permutation}/{batch_idx:06}.parquet
+      path: ${hydra:run.dir}/predictions/${model.artifact}-${permutation}/{batch_idx:06}.parquet
       select:
         - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
         - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
         - [batch, meta, input_id]
         - [policy, ground_truth, value]
         - [policy, prediction_value, value]
-        - [policy, prediction_std, value]
         - [policy, prediction_probs, value]
         - [policy, score_l1, value]
         - [policy, score_logprob, value]

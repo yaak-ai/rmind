@@ -103,7 +103,10 @@ DEP002 = [
   "torchvision",
 ]
 DEP003 = ["rmind"]
+# onnx/onnxruntime/tensorrt are imported by the export/benchmark scripts but
+# declared in the optional `export`/`predict` extras, so they read as dev deps.
 DEP004 = [
+  "onnx",
   "onnxruntime",
   "tensorrt",
 ]

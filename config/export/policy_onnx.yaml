@@ -1,0 +1,25 @@
+# @package _global_
+# Full flow-policy inference graph for edge deployment: episode builder +
+# encoder + flow decoder in one artifact. Traced as
+#   forward(batch, noise[B,K,H,A_model]) -> raw action draws[B,K,H,A_raw]
+# (noise is a graph input; the winner-take-all readout stays host-side).
+#
+# Reuses drahve's export config (model artifact + dummy input batch) via the
+# `export` group; flow_export reads cfg.model and cfg.input.
+#
+# Usage:
+#   just export-policy model.artifact=yaak/rmind/model-<run>:vN \
+#       '+export.out=artifacts/policy.onnx' '+export.draws=32'
+#   just compare-policy-onnx model.artifact=... '+export.out=artifacts/policy.onnx'
+---
+defaults:
+  - yaak/control_transformer/finetuned
+  - _self_
+
+matmul_precision: high
+
+export:
+  out: ???
+  draws: 32
+  batch: 1
+  opset: 18
