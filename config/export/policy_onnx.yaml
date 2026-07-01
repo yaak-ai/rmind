@@ -1,0 +1,23 @@
+# @package _global_
+# Full flow-policy inference graph for edge deployment: episode builder +
+# encoder + flow decoder in one artifact. Traced as
+#   forward(batch, noise[B,K,H,A_model]) -> raw action draws[B,K,H,A_raw]
+# (noise is a graph input; the winner-take-all readout stays host-side).
+#
+# Usage:
+#   just export-policy model.artifact=yaak/action-flow/model-<run>:vN \
+#       '+export.out=artifacts/policy.onnx' '+export.draws=32'
+#   just compare-policy-onnx model.artifact=... '+export.out=artifacts/policy.onnx'
+---
+defaults:
+  - /model: yaak/control_transformer/export/finetuned
+  - /input: yaak/control_transformer/dummy
+  - _self_
+
+matmul_precision: high
+
+export:
+  out: ???
+  draws: 32
+  batch: 1
+  opset: 18

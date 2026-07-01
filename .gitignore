@@ -157,6 +157,8 @@ CLAUDE.md
 # artifacts
 inference_results/
 .rbyte_cache
+*.onnx
+*.pt2
 
 .dprint.json
 

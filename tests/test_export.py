@@ -18,10 +18,14 @@ from torchvision.ops import MLP
 from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder
+from rmind.components.loss import FlowMatchingLoss
 from rmind.components.objectives.policy import PolicyObjective
+from rmind.components.transformer import FlowActionDecoder
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from tests.conftest import EmbeddingDims
 
 
@@ -318,3 +322,155 @@ def test_onnx_inference(module: Module, args: tuple[Any]) -> None:
             atol=1e-3,
             msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
         )
+
+
+_FLOW_ACTION_TARGETS = {
+    "gas_pedal": ("data", "meta/VehicleMotion/gas_pedal_normalized_target"),
+    "brake_pedal": ("data", "meta/VehicleMotion/brake_pedal_normalized_target"),
+    "steering_angle": ("data", "meta/VehicleMotion/steering_angle_normalized_target"),
+}
+_FLOW_CONDITION_TOKENS = (
+    (Modality.SUMMARY, "observation_summary"),
+    (Modality.SUMMARY, "observation_history"),
+    (Modality.CONTEXT, "waypoints"),
+)
+
+
+@pytest.fixture
+def flow_control_transformer(
+    episode_builder: EpisodeBuilder,
+    encoder: Module,
+    device: torch.device,
+    request: pytest.FixtureRequest,
+) -> ControlTransformer:
+    """A ControlTransformer whose sole objective is the flow PolicyObjective,
+    wired to the shared episode builder + encoder (dims must line up)."""
+    embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
+    objective = PolicyObjective(
+        history_steps=1,
+        targets=_FLOW_ACTION_TARGETS,
+        condition_tokens=_FLOW_CONDITION_TOKENS,
+        loss=FlowMatchingLoss(),
+        decoder=FlowActionDecoder(
+            condition_dim=embedding_dims.encoder,
+            dim_model=32,
+            action_dim=3,
+            action_horizon=6,
+            flow_sampling_steps=2,
+            num_layers=1,
+            num_heads=2,
+            attn_dropout=0.0,
+            resid_dropout=0.0,
+            mlp_dropout=0.0,
+        ),
+    )
+    return ControlTransformer(
+        episode_builder=episode_builder,
+        encoder=encoder,
+        objectives=ModuleDict({"policy": objective}),
+        prediction_config=PredictionConfig(),
+    ).to(device)
+
+
+@torch.inference_mode()
+def test_exportable_control_policy_full_pipeline(
+    flow_control_transformer: ControlTransformer, batch_dict: TensorTree
+) -> None:
+    """The edge-deployment graph — raw sensor batch (+ noise) -> action draws,
+    with episode builder + encoder + flow tail in one module — torch.exports
+    cleanly, keeps the winner-take-all readout out of the graph, and the
+    exported program matches eager."""
+    exportable = flow_control_transformer.eval().exportable_policy().eval()
+
+    b = batch_dict["data"]["meta/VehicleMotion/speed"].shape[0]
+    k = 4
+    noise = torch.randn(
+        b, k, 6, 3, device=batch_dict["data"]["waypoints/xy_normalized"].device
+    )
+
+    eager = exportable(batch_dict, noise)  # also warms the attention-mask cache
+    assert eager.shape == (b, k, 6, 3)
+
+    program = torch.export.export(exportable, (batch_dict, noise), strict=True)
+
+    # the readout's data-dependent ops must stay host-side, not leak into the graph
+    targets = {str(n.target) for n in program.graph.nodes if n.op == "call_function"}
+    assert not [t for t in targets if "sort" in t or "nonzero" in t], (
+        "winner-take-all readout leaked into the export graph"
+    )
+
+    exported = program.module()(batch_dict, noise)
+    assert_close(exported, eager, rtol=1e-2, atol=1e-3)
+
+
+@torch.inference_mode()
+def test_exportable_control_policy_onnx(
+    flow_control_transformer: ControlTransformer, batch_dict: TensorTree
+) -> None:
+    """The full policy pipeline lowers to ONNX and ORT matches PyTorch eager —
+    the exact artifact `flow_export.py --full` produces for the edge device."""
+    exportable = flow_control_transformer.eval().exportable_policy().eval()
+
+    b = batch_dict["data"]["meta/VehicleMotion/speed"].shape[0]
+    noise = torch.randn(
+        b, 4, 6, 3, device=batch_dict["data"]["waypoints/xy_normalized"].device
+    )
+
+    eager = exportable(batch_dict, noise)  # warms the attention-mask cache
+
+    exported_program = torch.export.export(exportable, (batch_dict, noise), strict=True)
+    onnx_program = torch.onnx.export(
+        model=exported_program,
+        dynamo=True,
+        optimize=True,
+        verify=False,
+        output_names=["action_draws"],
+    )
+    assert onnx_program is not None
+
+    (onnx_draws,) = onnx_program(batch_dict, noise)
+    assert_close(
+        torch.as_tensor(onnx_draws).float(), eager.cpu().float(), rtol=1e-2, atol=1e-3
+    )
+
+
+@torch.inference_mode()
+def test_flow_export_compare_matches_saved_onnx(
+    flow_control_transformer: ControlTransformer,
+    batch_dict: TensorTree,
+    tmp_path: "Path",
+) -> None:
+    """The comparator's saved-file round-trip: export to a .onnx on disk, reload
+    via ONNX Runtime, feed identical inputs through the positional mapping used by
+    flow_export_compare, and confirm ORT matches eager. Guards both the on-disk
+    artifact and the input-name/order contract the edge host relies on."""
+    import onnxruntime as ort  # noqa: PLC0415
+
+    from rmind.scripts.flow_export_compare import build_feed  # noqa: PLC0415
+
+    exportable = flow_control_transformer.eval().exportable_policy().eval()
+
+    b = batch_dict["data"]["meta/VehicleMotion/speed"].shape[0]
+    noise = torch.randn(
+        b, 4, 6, 3, device=batch_dict["data"]["waypoints/xy_normalized"].device
+    )
+    example_args = (batch_dict, noise)
+
+    eager = exportable(*example_args)  # warms the attention-mask cache
+
+    exported_program = torch.export.export(exportable, example_args, strict=True)
+    onnx_path = tmp_path / "policy_full.onnx"
+    torch.onnx.export(
+        model=exported_program,
+        f=str(onnx_path),
+        dynamo=True,
+        optimize=False,
+        verify=False,
+        output_names=["action_draws"],
+    )
+
+    session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    (onnx_draws,) = session.run(None, build_feed(session, example_args))
+    assert_close(
+        torch.as_tensor(onnx_draws).float(), eager.cpu().float(), rtol=1e-2, atol=1e-3
+    )

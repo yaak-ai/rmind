@@ -18,7 +18,7 @@ from torch.nn import Module
 from torch.nn import functional as F
 
 from rmind.components.action_transform import ActionTransform
-from rmind.components.base import Modality
+from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.lds import LDSWeights
@@ -488,3 +488,45 @@ class ExportablePolicy(Module):
             else self.action_transform.inverse(traj)
         )
         return raw.reshape(b, k, h, raw.shape[-1])
+
+
+@final
+class ExportableControlPolicy(Module):
+    """Full raw-observation -> action-draws inference graph for the flow policy.
+
+    forward(batch, noise (B,K,H,A_model)) -> raw action draws (B,K,H,A_raw)
+
+    Chains the perception/encoding front-end (episode builder + encoder) with
+    the flow tail (`ExportablePolicy` = K decoder rollouts at fixed NFE + inverse
+    action transform). Where `ExportablePolicy` starts from the already-encoded
+    condition tokens, this takes the raw sensor `batch`, so the whole stack ships
+    as a single artifact for edge deployment. As with `ExportablePolicy`, noise
+    is an INPUT (the host supplies it) and the winner-take-all readout stays
+    host-side — only the deterministic tensor-in/tensor-out core is in the graph.
+
+    The episode builder caches its (non-trace-friendly) attention mask on the
+    first eager forward; that pass MUST run before torch.export so the cache is
+    warm — see `EpisodeBuilder._build_attention_mask` and the export scripts.
+
+    Build via `ControlTransformer.exportable_policy()`.
+    """
+
+    def __init__(
+        self, *, episode_builder: Module, encoder: Module, objective: PolicyObjective
+    ) -> None:
+        super().__init__()
+        self.episode_builder = episode_builder
+        self.encoder = encoder
+        self.objective = objective
+        self.tail = objective.exportable()
+
+    @override
+    def forward(self, batch: TensorTree, noise: Tensor) -> Tensor:
+        episode = self.episode_builder(batch)
+        embedding = self.encoder(
+            src=episode.embeddings_flattened, mask=episode.attention_mask
+        )
+        condition_tokens = self.objective._condition_tokens(  # noqa: SLF001
+            episode=episode, embedding=embedding
+        )
+        return self.tail(condition_tokens, noise)
