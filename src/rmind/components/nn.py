@@ -292,7 +292,10 @@ class OnnxOutputUnpacker(Module):
                             "steering_angle": joint_actions[..., 2],
                         }),
                         "discrete": TensorDict({
-                            "turn_signal": joint_actions[..., 3].long()
+                            "turn_signal": torch.bucketize(
+                                joint_actions[..., 3],
+                                torch.tensor([0.5, 1.5], device=joint_actions.device),
+                            )
                         }),
                     })
                 }

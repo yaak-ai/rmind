@@ -202,7 +202,12 @@ class JointPolicyObjective(Objective):
                     "brake_pedal": chunk[..., 1],
                     "steering_angle": chunk[..., 2],
                 }),
-                "discrete": TensorDict({"turn_signal": chunk[..., 3].long()}),
+                "discrete": TensorDict({
+                    "turn_signal": torch.bucketize(
+                        chunk[..., 3],
+                        torch.tensor([0.5, 1.5], device=chunk.device),
+                    )
+                }),
             })
             predictions[key] = Prediction(value=actions, time_index=time_index)
 
