@@ -15,8 +15,7 @@ logger = get_logger(__name__)
 
 @final
 class DataFramePredictionWriter(BasePredictionWriter):
-    """
-    ```yaml
+    """```yaml
     _target_: rmind.callbacks.DataFramePredictionWriter
     write_interval: batch
     path: ${hydra:run.dir}/predictions/{batch_idx}.parquet
@@ -28,7 +27,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
     writer:
         _target_: polars.DataFrame.write_parquet
         _partial_: true
-    ```
+    ```.
     """
 
     @validate_call

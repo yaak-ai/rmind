@@ -1,7 +1,7 @@
 # @package _global_
 ---
 defaults:
-  - /model: yaak/control_transformer/drahve
+  - /model: yaak/control_transformer/onnx
   - _self_
 
 drive_dir: ???
@@ -9,6 +9,14 @@ drive_dir: ???
 # match drahve timestamping behaviour
 time_index:
   index: "[:, 0]"
+
+# ONNX model was exported with these dimensions
+episode_length: 6
+clip_horizon: 0
+clip_length: 6
+episode_stride: 10
+episode_step: 10
+clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 
 datamodule:
   _target_: rmind.datamodules.GenericDataModule
@@ -308,7 +316,7 @@ datamodule:
                 _target_: rbyte.io.DataFrameGroupByDynamic
                 index_column: meta/ImageMetadata.cam_front_left/frame_idx
                 every: 10i
-                period: 110i
+                period: 60i
                 closed: left
                 gather_every: 10
 
@@ -322,21 +330,21 @@ datamodule:
                   _target_: rbyte.io.DuckDBDataFrameQuery
                   query: |
                     SELECT
-                        "meta/ImageMetadata.cam_front_left/time_stamp"[1:11]::TIMESTAMP[11] AS "meta/ImageMetadata.cam_front_left/time_stamp",
-                        "meta/ImageMetadata.cam_front_left/frame_idx"[1:11]::INT32[11] AS "meta/ImageMetadata.cam_front_left/frame_idx",
-                        "meta/VehicleMotion/speed"[1:11]::FLOAT[11] AS "meta/VehicleMotion/speed",
-                        "meta/Gnss/xy"[1:11]::FLOAT[2][11] AS "meta/Gnss/xy",
-                        "waypoints/xy_normalized"[1:11]::FLOAT[2][10][11] AS "waypoints/xy_normalized",
-                        "waypoints/xy"[1:11]::FLOAT[2][10][11] AS "waypoints/xy",
-                        "meta/VehicleMotion/gas_pedal_normalized"[1:11]::FLOAT[11] AS "meta/VehicleMotion/gas_pedal_normalized",
-                        "meta/VehicleMotion/brake_pedal_normalized"[1:11]::FLOAT[11] AS "meta/VehicleMotion/brake_pedal_normalized",
-                        "meta/VehicleMotion/steering_angle_normalized"[1:11]::FLOAT[11] AS "meta/VehicleMotion/steering_angle_normalized",
-                        "meta/VehicleState/turn_signal"[1:11]::BIGINT[11] AS "meta/VehicleState/turn_signal"
+                        "meta/ImageMetadata.cam_front_left/time_stamp"[1:6]::TIMESTAMP[6] AS "meta/ImageMetadata.cam_front_left/time_stamp",
+                        "meta/ImageMetadata.cam_front_left/frame_idx"[1:6]::INT32[6] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                        "meta/VehicleMotion/speed"[1:6]::FLOAT[6] AS "meta/VehicleMotion/speed",
+                        "meta/Gnss/xy"[1:6]::FLOAT[2][6] AS "meta/Gnss/xy",
+                        "waypoints/xy_normalized"[1:6]::FLOAT[2][10][6] AS "waypoints/xy_normalized",
+                        "waypoints/xy"[1:6]::FLOAT[2][10][6] AS "waypoints/xy",
+                        "meta/VehicleMotion/gas_pedal_normalized"[1:6]::FLOAT[6] AS "meta/VehicleMotion/gas_pedal_normalized",
+                        "meta/VehicleMotion/brake_pedal_normalized"[1:6]::FLOAT[6] AS "meta/VehicleMotion/brake_pedal_normalized",
+                        "meta/VehicleMotion/steering_angle_normalized"[1:6]::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
+                        "meta/VehicleState/turn_signal"[1:6]::BIGINT[6] AS "meta/VehicleState/turn_signal"
                     FROM
                         samples
                     WHERE
-                        len("meta/ImageMetadata.cam_front_left/frame_idx") = 11
-                        AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 100
+                        len("meta/ImageMetadata.cam_front_left/frame_idx") = 6
+                        AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 50
                         AND NOT (
                             list_max("meta/VehicleMotion/gas_pedal_normalized") <= (1.0 / 255 + 0.001)
                             AND list_max("meta/VehicleMotion/brake_pedal_normalized") <= (1.0 / 164 + 0.001)
@@ -445,25 +453,25 @@ trainer:
                 strips: [batch, data, waypoints/xy_normalized]
               time_index: ${time_index}
 
-          prediction/torch/gas_pedal_normalized:
+          prediction/onnx/gas_pedal_normalized:
             - _target_: rerun.Scalars.columns
               columns:
                 scalars: [prediction, policy, prediction_value, value, continuous, gas_pedal]
               time_index: ${time_index}
 
-          prediction/torch/brake_pedal_normalized:
+          prediction/onnx/brake_pedal_normalized:
             - _target_: rerun.Scalars.columns
               columns:
                 scalars: [prediction, policy, prediction_value, value, continuous, brake_pedal]
               time_index: ${time_index}
 
-          prediction/torch/steering_angle_normalized:
+          prediction/onnx/steering_angle_normalized:
             - _target_: rerun.Scalars.columns
               columns:
                 scalars: [prediction, policy, prediction_value, value, continuous, steering_angle]
               time_index: ${time_index}
 
-          prediction/torch/turn_signal:
+          prediction/onnx/turn_signal:
             - _target_: rerun.Scalars.columns
               columns:
                 scalars: [prediction, policy, prediction_value, value, discrete, turn_signal]

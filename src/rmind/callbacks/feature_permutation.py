@@ -14,14 +14,13 @@ logger = get_logger(__name__)
 
 
 class FeaturePermutator(Callback):
-    """
-    ```yaml
+    """```yaml
     _target_: rmind.callbacks.FeaturePermutator
     features:
       - [data, meta/VehicleMotion/speed]
       - [data, meta/VehicleMotion/steering_angle_normalized]
     seed: 42
-    ```
+    ```.
     """
 
     @validate_call

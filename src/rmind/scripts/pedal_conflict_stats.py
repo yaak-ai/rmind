@@ -1,5 +1,4 @@
-"""
-Counts episodes with simultaneous non-zero brake + gas pedal signals.
+"""Counts episodes with simultaneous non-zero brake + gas pedal signals.
 
 A frame where both gas_pedal_normalized > GAS_THRESH and
 brake_pedal_normalized > BRAKE_THRESH simultaneously is physically
@@ -128,8 +127,7 @@ def _mark_conflicts(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _episode_conflict_rate(df: pl.DataFrame, window: int = 6) -> tuple[int, int]:
-    """
-    Estimate how many sliding 6-frame episodes contain at least one conflict frame.
+    """Estimate how many sliding 6-frame episodes contain at least one conflict frame.
 
     The rbyte Stage-7 grouping creates windows of `window` consecutive camera
     frames. A window is flagged if any of its frames has a conflict.

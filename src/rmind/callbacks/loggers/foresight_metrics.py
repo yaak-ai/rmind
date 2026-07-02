@@ -29,6 +29,7 @@ Notes:
 - Stored buffers are capped at ``max_hot_pairs`` to bound CPU memory.
   Beyond the cap, additional batches are skipped for the R² fit; the
   search counter keeps accumulating.
+
 """
 
 import math

@@ -63,7 +63,13 @@ class OnnxInferenceBackend:
             msg = "ONNX inference session has not been initialized"
             raise RuntimeError(msg)
 
-        input_np = {k: v.cpu().numpy() for k, v in input.items()}
+        input_np = {}
+        for k, v in input.items():
+            np_val = v.cpu().numpy()
+            if k == "turn_signal" and np_val.dtype == "int64":
+                np_val = np_val.astype("int32")
+            input_np[k] = np_val
+
         output_np = self._session.run(self._output_names, input_np)
         output = [torch.from_numpy(x) for x in output_np]
 

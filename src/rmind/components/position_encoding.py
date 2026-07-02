@@ -8,10 +8,9 @@ from rmind.components.nn import Embedding
 
 
 class RotaryPositionalEmbeddings(nn.Module):
-    """
-    inspirations:
+    """inspirations:
     https://github.com/elefant-ai/open-p2p/blob/main/elefant/policy_model/pos_embed.py
-    https://github.com/meta-llama/llama/blob/main/llama/model.py
+    https://github.com/meta-llama/llama/blob/main/llama/model.py.
     """
 
     def __init__(self, dim: int, max_seq_len: int = 4096, base: int = 10_000) -> None:

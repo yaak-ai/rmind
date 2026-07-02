@@ -9,9 +9,9 @@ from pydantic import AfterValidator, validate_call
 from torch import Tensor
 from torch.nn.functional import cosine_similarity
 from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
-from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
+from wandb import Image
 
 from .common import (
     _bind_hook_arguments,

@@ -59,6 +59,14 @@ train-debug *ARGS: generate-config
         ++model.encoder.disable=true \
         {{ ARGS }}
 
+train-action *ARGS: generate-config
+    uv run rmind-train \
+          --config-path {{ justfile_directory() }}/config \
+          --config-name train.yaml \
+          experiment=yaak/action_tokenizer/pretrain \
+          datamodule=yaak/action_train \
+          {{ ARGS }}
+
 predict +ARGS: generate-config
     uv run \
         --extra train --extra predict \
@@ -94,6 +102,15 @@ export-onnx *ARGS: generate-config
         --config-path {{ justfile_directory() }}/config \
         --config-name export_onnx.yaml \
         {{ ARGS }}
+
+convert-models model engine:
+    trtexec \
+        --onnx="{{ model }}" \
+        --saveEngine="{{ engine }}" \
+        --skipInference \
+        --avgTiming=16 \
+        --memPoolSize=workspace:24G \
+        --builderOptimizationLevel=5
 
 onnxvis *ARGS:
     uvx --python 3.12 --with=ai-edge-model-explorer --from=model-explorer-onnx onnxvis {{ ARGS }}

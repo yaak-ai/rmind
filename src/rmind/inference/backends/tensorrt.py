@@ -70,7 +70,10 @@ class TensorRTInferenceBackend:
             msg = "TensorRT execution context has not been initialized"
             raise RuntimeError(msg)
 
-        input = {k: v.to(self._device).contiguous() for k, v in input.items()}
+        input = {
+            k: v.to(self._device, dtype=torch.int32 if k == "turn_signal" and v.dtype == torch.int64 else None).contiguous()
+            for k, v in input.items()
+        }
         output = {
             info.name: torch.empty(
                 info.shape,

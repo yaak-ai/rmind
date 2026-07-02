@@ -662,20 +662,8 @@
 _target_: rbyte.Dataset.from_config
 _recursive_: false
 _convert_: all
-streams:
-  cam_front_left:
-    index: meta/ImageMetadata.cam_front_left/frame_idx
-    sources:
-      #@ for/end drive_id in drives:
-      (@=drive_id@):
-        _target_: rbyte.io.PathTensorSource
-        path: "${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324/{:09d}.jpg"
-        decoder:
-          _target_: simplejpeg.decode_jpeg
-          _partial_: true
-          colorspace: rgb
-          fastdct: true
-          fastupsample: true
+# action-only: no video stream → no frame decode
+streams: {}
 
 samples:
   inputs:
@@ -687,18 +675,6 @@ samples:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/metadata.log
 
-    waypoints_path:
-      #@ for/end drive_id in drives:
-      - ${paths.data}/(@=drive_id@)/waypoints.json
-
-    headings_denoised_path:
-      #@ for/end drive_id in drives:
-      - ${paths.data}/(@=drive_id@)/headings_denoised.json
-
-    cam_front_left_path:
-      #@ for/end drive_id in drives:
-      - ${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324
-
   executor:
     _target_: concurrent.futures.ProcessPoolExecutor
     mp_context:
@@ -706,7 +682,7 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: ${paths.rbyte.cache}/yaak/train/clip${clip_length}/samples
+  run_folder: ${paths.rbyte.cache}/yaak/action_train/t${action_clip}d${action_step}s${action_stride}/samples
   scheduling_strategy: eager
   return_results: false
   persist_memory: false
@@ -750,7 +726,7 @@ samples:
                 _target_: polars.Datetime
                 time_unit: us
               turn_signal:
-                _target_: polars.Int64
+                _target_: polars.Int8
 
             rbyte.io.yaak.proto.can_pb2.VehicleMotion:
               time_stamp:
@@ -768,62 +744,12 @@ samples:
                 _target_: polars.Enum
                 categories: ["0", "1", "2", "3"]
 
-            rbyte.io.yaak.proto.sensor_pb2.Gnss:
-              time_stamp:
-                _target_: polars.Datetime
-                time_unit: us
-              latitude:
-                _target_: polars.Float32
-              longitude:
-                _target_: polars.Float32
-
-      - _target_: pipefunc.PipeFunc
-        output_name: waypoints_raw
-        mapspec: "waypoints_path[i] -> waypoints_raw[i]"
-        func:
-          _target_: makefun.create_function
-          func_signature: "build_waypoints(*, waypoints_path)"
-          func_impl:
-            _target_: rbyte.io.DuckDBDataFrameQuery
-            extensions: [spatial]
-            config:
-              TimeZone: UTC
-            query: |
-              SELECT TO_TIMESTAMP(timestamp)::TIMESTAMP AS timestamp,
-                     ST_AsWKB(ST_Transform(geom, 'EPSG:4326', 'EPSG:25832', always_xy := true)) AS geometry
-              FROM ST_Read($waypoints_path)
-
-      - _target_: pipefunc.PipeFunc
-        renames:
-          input: waypoints_raw
-        output_name: waypoints
-        mapspec: "waypoints_raw[i] -> waypoints[i]"
-        func:
-          _target_: rbyte.io.WaypointBuilder
-          length: 91
-          columns:
-            points: geometry
-            output: xy
-
-      - _target_: pipefunc.PipeFunc
-        output_name: headings_denoised
-        mapspec: "headings_denoised_path[i] -> headings_denoised[i]"
-        cache: true
-        func:
-          _target_: makefun.create_function
-          func_signature: "build_headings_denoised(*, headings_denoised_path)"
-          func_impl:
-            _target_: rbyte.io.DuckDBDataFrameQuery
-            query: |
-              SELECT make_timestamp(h.timestamp_us) AS timestamp, h.heading
-              FROM (SELECT unnest(headings) AS h FROM read_json_auto($headings_denoised_path))
-
       - _target_: pipefunc.PipeFunc
         output_name: aligned
-        mapspec: "meta[i], waypoints[i], headings_denoised[i] -> aligned[i]"
+        mapspec: "meta[i] -> aligned[i]"
         func:
           _target_: makefun.create_function
-          func_signature: "align(*, meta, waypoints, headings_denoised)"
+          func_signature: "align(*, meta)"
           func_impl:
             _target_: rbyte.io.DataFrameAligner
             separator: /
@@ -855,145 +781,24 @@ samples:
                       tolerance: 100ms
                       strategy: nearest
 
-                Gnss:
-                  key: time_stamp
-                  columns:
-                    latitude:
-                      method: asof
-                      tolerance: 500ms
-                      strategy: nearest
-                    longitude:
-                      method: asof
-                      tolerance: 500ms
-                      strategy: nearest
-
-              waypoints:
-                key: timestamp
-                columns:
-                  xy:
-                    method: asof
-                    strategy: forward
-
-              headings_denoised:
-                key: timestamp
-                columns:
-                  heading:
-                    method: asof
-                    strategy: nearest
-
-      - _target_: pipefunc.PipeFunc
-        renames:
-          path: cam_front_left_path
-        output_name: cam_front_left_meta
-        mapspec: "cam_front_left_path[i] -> cam_front_left_meta[i]"
-        cache: true
-        func:
-          _target_: rbyte.io.PathDataFrameBuilder
-          pattern: (?<frame_idx>\d+).jpg
-          fields:
-            frame_idx:
-              _target_: polars.Int32
-
       - _target_: pipefunc.PipeFunc
         output_name: filtered
-        mapspec: "aligned[i], cam_front_left_meta[i] -> filtered[i]"
+        mapspec: "aligned[i] -> filtered[i]"
         func:
           _target_: makefun.create_function
-          func_signature: "filter(*, aligned, cam_front_left_meta)"
+          func_signature: "filter(*, aligned)"
           func_impl:
             _target_: rbyte.io.DuckDBDataFrameQuery
-            extensions: [spatial]
             query: |
-              WITH
-                base_data AS (
-                  SELECT
-                    *,
-                    ST_Transform(
-                      ST_Point("meta/Gnss/longitude", "meta/Gnss/latitude"),
-                      'EPSG:4326', 'EPSG:25832', always_xy := true
-                    ) AS ego_geom,
-                    ST_GeomFromWKB("waypoints/xy") AS waypoints_geom
-                  FROM
-                    aligned
-                    SEMI JOIN cam_front_left_meta
-                    ON aligned."meta/ImageMetadata.cam_front_left/frame_idx"
-                    = cam_front_left_meta.frame_idx
-                  WHERE
-                    aligned."meta/VehicleMotion/gear" == '3'
-                    AND aligned."meta/VehicleMotion/speed" BETWEEN 0.0 AND 130.0
-                    AND aligned."meta/VehicleMotion/gas_pedal_normalized" BETWEEN 0.0 AND 1.0
-                    AND aligned."meta/VehicleMotion/brake_pedal_normalized" BETWEEN 0.0 AND 1.0
-                    AND aligned."meta/VehicleMotion/steering_angle_normalized" BETWEEN -1.0 AND 1.0
-                    AND COLUMNS(*) IS NOT NULL
-                ),
-                normalized_geometries AS (
-                  SELECT
-                    *,
-                    ST_Rotate(
-                      ST_Translate(
-                        waypoints_geom,
-                        - ST_X(ego_geom),
-                        - ST_Y(ego_geom)
-                      ),
-                      radians("headings_denoised/heading")
-                    ) AS normalized_waypoints_geom
-                  FROM
-                    base_data
-                )
-              SELECT
-                * EXCLUDE (
-                  "meta/VehicleMotion/gear",
-                  "meta/VehicleMotion/brake_pedal_normalized",
-                  waypoints_geom,
-                  normalized_waypoints_geom,
-                  ego_geom,
-                  "waypoints/xy",
-                  "headings_denoised/heading"
-                ),
-                -- Some vehicles (Niro106, Niro109, Niro110, Niro121, Niro124, Niro127, Niro132)
-                -- have a constant brake sensor offset of up to ~4 quantisation steps (< 0.05)
-                -- that reads as non-zero while the gas pedal is pressed. This is sensor noise,
-                -- not real braking. Clamp it to zero so the model does not learn to predict
-                -- spurious simultaneous brake+gas presses.
-                IF(
-                  "meta/VehicleMotion/brake_pedal_normalized" < 0.05
-                  AND "meta/VehicleMotion/gas_pedal_normalized" > 0.0,
-                  0.0,
-                  "meta/VehicleMotion/brake_pedal_normalized"
-                ) AS "meta/VehicleMotion/brake_pedal_normalized",
-                [
-                  ST_X(ego_geom),
-                  ST_Y(ego_geom)
-                ] AS "meta/Gnss/xy",
-                  (
-                  SELECT
-                    list(
-                      [ST_X(p.point_struct.geom), ST_Y(p.point_struct.geom)]
-                      ORDER BY
-                        p.point_struct.path
-                    )
-                  FROM
-                    UNNEST(ST_Dump(waypoints_geom)) AS p(point_struct)
-                  WHERE (p.point_struct.path[1] - 1) % 10 = 0
-                ) AS "waypoints/xy",
-                (
-                  SELECT
-                    list(
-                      [ST_X(p.point_struct.geom) / 100, ST_Y(p.point_struct.geom) / 100]
-                      ORDER BY
-                        p.point_struct.path
-                    )
-                  FROM
-                    UNNEST(ST_Dump(normalized_waypoints_geom)) AS p(point_struct)
-                  WHERE (p.point_struct.path[1] - 1) % 10 = 0
-                ) AS "waypoints/xy_normalized"
-              FROM
-                normalized_geometries
+              SELECT * EXCLUDE ("meta/VehicleMotion/gear")
+              FROM aligned
               WHERE
-                ST_Contains(
-                  ST_MakeEnvelope(-150, -150, 150, 150),
-                  normalized_waypoints_geom
-                )
+                aligned."meta/VehicleMotion/gear" == '3'
+                AND aligned."meta/VehicleMotion/speed" BETWEEN 0.0 AND 130.0
+                AND aligned."meta/VehicleMotion/gas_pedal_normalized" BETWEEN 0.0 AND 1.0
+                AND aligned."meta/VehicleMotion/brake_pedal_normalized" BETWEEN 0.0 AND 1.0
+                AND aligned."meta/VehicleMotion/steering_angle_normalized" BETWEEN -1.0 AND 1.0
+                AND COLUMNS(*) IS NOT NULL
               ORDER BY
                 "meta/ImageMetadata.cam_front_left/time_stamp";
 
@@ -1005,10 +810,10 @@ samples:
         func:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
-          every: "${episode_stride}i"
+          every: "${action_stride}i"
           period: ${clip_period}
           closed: left
-          gather_every: ${episode_step}
+          gather_every: "${action_step}"
 
       - _target_: pipefunc.PipeFunc
         output_name: samples_cast
@@ -1020,40 +825,17 @@ samples:
             _target_: rbyte.io.DuckDBDataFrameQuery
             query: |
               SELECT
-                  "meta/ImageMetadata.cam_front_left/time_stamp"[1:${clip_length}]::TIMESTAMP[${clip_length}] AS "meta/ImageMetadata.cam_front_left/time_stamp",
-                  "meta/ImageMetadata.cam_front_left/frame_idx"[1:${clip_length}]::INT32[${clip_length}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
-                  "meta/VehicleMotion/speed"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/speed",
-                  "meta/Gnss/xy"[1:${clip_length}]::FLOAT[2][${clip_length}] AS "meta/Gnss/xy",
-                  "waypoints/xy_normalized"[1:${clip_length}]::FLOAT[2][10][${clip_length}] AS "waypoints/xy_normalized",
-                  "waypoints/xy"[1:${clip_length}]::FLOAT[2][10][${clip_length}] AS "waypoints/xy",
-                  "meta/VehicleMotion/gas_pedal_normalized"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/gas_pedal_normalized",
-                  "meta/VehicleMotion/brake_pedal_normalized"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/brake_pedal_normalized",
-                  "meta/VehicleMotion/steering_angle_normalized"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/steering_angle_normalized",
-                  "meta/VehicleState/turn_signal"[1:${clip_length}]::BIGINT[${clip_length}] AS "meta/VehicleState/turn_signal",
+                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[${action_clip}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                  "meta/VehicleMotion/speed"::FLOAT[${action_clip}] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/gas_pedal_normalized",
+                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/brake_pedal_normalized",
+                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/steering_angle_normalized",
+                  "meta/VehicleState/turn_signal"::INT8[${action_clip}] AS "meta/VehicleState/turn_signal",
               FROM
                   samples
               WHERE
-                  len("meta/ImageMetadata.cam_front_left/frame_idx") = ${clip_length}
-                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == (${clip_length} - 1) * ${episode_step}
-                  AND NOT (
-                      list_max("meta/VehicleMotion/gas_pedal_normalized") <= (1.0 / 255 + 0.001)
-                      AND list_max("meta/VehicleMotion/brake_pedal_normalized") <= (1.0 / 164 + 0.001)
-                      AND list_max("meta/VehicleMotion/speed") >= 25.0
-                      AND list_last("meta/VehicleMotion/speed") - list_first("meta/VehicleMotion/speed") >= -0.05 * list_avg("meta/VehicleMotion/speed")
-                  )
-                  -- Drop episodes where any frame still has simultaneous non-zero gas
-                  -- AND brake after the Stage-6 clamp. This catches vehicles with a
-                  -- genuinely fluctuating brake signal (Niro101, Niro107, Niro112,
-                  -- Niro115, Niro128, Niro130, Niro131) where the clamp does not
-                  -- apply (brake > 0.05). Such conflicts are unrecoverable noise.
-                  AND len(list_filter(
-                      list_zip(
-                          "meta/VehicleMotion/gas_pedal_normalized",
-                          "meta/VehicleMotion/brake_pedal_normalized"
-                      ),
-                      x -> x[1] > (1.0 / 255 + 0.001)
-                           AND x[2] > (1.0 / 164 + 0.001)
-                  )) = 0
+                  len("meta/ImageMetadata.cam_front_left/frame_idx") = ${action_clip}
+                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == (${action_clip} - 1) * ${action_step}
 
       - _target_: pipefunc.PipeFunc
         renames:
