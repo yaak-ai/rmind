@@ -41,13 +41,3 @@ input_transform:
               _target_: rmind.components.nn.AtLeast3D
             waypoints_xy_normalized:
               _target_: torch.nn.Identity
-
-    - _target_: rmind.components.nn.Remapper
-      paths:
-        batch_data_cam_front_left: [cam_front_left]
-        batch_data_meta_vehiclemotion_brake_pedal_normalized: [brake_pedal_normalized]
-        batch_data_meta_vehiclemotion_gas_pedal_normalized: [gas_pedal_normalized]
-        batch_data_meta_vehiclemotion_steering_angle_normalized: [steering_angle_normalized]
-        batch_data_meta_vehiclemotion_speed: [speed]
-        batch_data_meta_vehiclestate_turn_signal: [turn_signal]
-        batch_data_waypoints_xy_normalized: [waypoints_xy_normalized]

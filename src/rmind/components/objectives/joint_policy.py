@@ -204,7 +204,7 @@ class JointPolicyObjective(Objective):
                 }),
                 "discrete": TensorDict({
                     "turn_signal": torch.bucketize(
-                        chunk[..., 3],
+                        chunk[..., 3] * 2,
                         torch.tensor([0.5, 1.5], device=chunk.device),
                     )
                 }),

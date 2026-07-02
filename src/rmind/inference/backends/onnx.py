@@ -66,10 +66,7 @@ class OnnxInferenceBackend:
         input_np = {}
         for k, v in input.items():
             np_val = v.cpu().numpy()
-            if (
-                k == "batch_data_meta_vehiclestate_turn_signal"
-                and np_val.dtype == "int64"
-            ):
+            if k == "turn_signal" and np_val.dtype == "int64":
                 np_val = np_val.astype("int32")
             input_np[k] = np_val
 
