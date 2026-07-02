@@ -4,17 +4,27 @@ Both backends can be active at once so their predictions are compared side by si
 Fixed run parameters (data_dir, start_frame, num_episodes, ...) live in
 config/benchmark_onnx.yaml — override just `onnx=` and/or `wandb_model=` per run.
 
+`wandb_model=` always requires `export=...` (e.g.
+export=yaak/control_transformer/finetuned): the PyTorch model is then loaded
+with the same hparams_jq used to produce the ONNX export, so both backends run
+architecturally identical, hparams_jq-stripped models on the same externally
+preprocessed input — see tests/test_benchmark_onnx_preprocessing.py for why
+that external preprocessing is equivalent to the original, unstripped one.
+
 Usage:
     # ONNX only (compare with drivr's benchmark_all_models.py)
     just benchmark-onnx onnx=~/rmind/outputs/.../model.onnx
 
     # wandb PyTorch only
-    just benchmark-onnx wandb_model=yaak/rmind/model-XXXXXXXX:vN
+    just benchmark-onnx \\
+        wandb_model=yaak/rmind/model-XXXXXXXX:vN \\
+        export=yaak/control_transformer/finetuned
 
     # Both side by side (ONNX vs torch, same batches)
     just benchmark-onnx \\
         onnx=~/rmind/outputs/.../model.onnx \\
-        wandb_model=yaak/rmind/model-XXXXXXXX:vN
+        wandb_model=yaak/rmind/model-XXXXXXXX:vN \\
+        export=yaak/control_transformer/finetuned
 """
 
 from __future__ import annotations
@@ -47,6 +57,12 @@ _ONNX_IMAGE_INPUT_NDIM = 5  # [B, T, C, H, W]
 _TARGET_LATENCY_MS = 100
 _MIN_BACKENDS_FOR_COMPARISON = 2
 _VALIDATION_TOLERANCE = 1e-3
+
+# Matches raw.yaml's Normalize step (applied via _normalize_cam in
+# _preprocess_image), which both the exported ONNX graph and the
+# hparams_jq-stripped PyTorch model no longer apply internally.
+_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
+_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
 
 # Lowercase batch_data_* keys — match drivr's naming for case-insensitive ONNX input matching
 _K_CAM = "batch_data_cam_front_left"
@@ -287,18 +303,49 @@ class _WaypointLoader:
 # ── Batch loading ─────────────────────────────────────────────────────────────
 
 
-def _preprocess_image(image: np.ndarray, image_size: tuple[int, int]) -> np.ndarray:
-    """HWC uint8 → resize → CHW float32 [0, 1]. Mirrors drivr's preprocess_image."""
-    from torchvision.transforms import functional as TF  # noqa: PLC0415
+# Matches raw.yaml's CenterCrop([320, 576]) step, applied after downscaling to
+# DEFAULT_IMAGE_SIZE (training's native JPEG frame resolution) and before the
+# final resize — see input_transform's image branch.
+_CENTER_CROP_SIZE = (320, 576)  # (H, W)
 
-    tensor = torch.from_numpy(image).permute(2, 0, 1).float().unsqueeze(0)
-    resized = TF.resize(
-        tensor,
-        list(image_size),
-        interpolation=TF.InterpolationMode.BILINEAR,
-        antialias=True,
-    )
-    return (resized / 255.0)[0].numpy()
+
+def _preprocess_image(image: np.ndarray, image_size: tuple[int, int]) -> np.ndarray:
+    """HWC uint8 → resize → center crop → resize → scale → normalize → CHW float32.
+
+    Mirrors raw.yaml's image input_transform end to end (Rearrange ->
+    CenterCrop([320, 576]) -> Resize -> ToDtype -> Normalize): downscale to
+    DEFAULT_IMAGE_SIZE approximates the offline extraction pipeline
+    (torchcodec.transforms.Resize, per rbyte's dataset config) that produced
+    training's fixed-size JPEG frames — not reproduced bit-exactly here — then
+    crop, resize, scale and normalize exactly as training does. Every backend
+    this benchmark runs is built from the hparams_jq-stripped config, so none
+    of them do this internally anymore — see
+    tests/test_benchmark_onnx_preprocessing.py for the equivalence proof.
+    """
+    from torchvision.transforms import v2 as T  # noqa: PLC0415
+
+    # The v2 *classes* (not torchvision.transforms.functional's functional API)
+    # — raw.yaml instantiates these same classes, and the two aren't numerically
+    # identical (functional.resize leaves a ~1/255-per-pixel rounding residual
+    # even with matching interpolation/antialias args, per
+    # tests/test_benchmark_onnx_preprocessing.py's investigation history).
+    resize_native = T.Resize(list(DEFAULT_IMAGE_SIZE))
+    crop = T.CenterCrop(list(_CENTER_CROP_SIZE))
+    resize_final = T.Resize(list(image_size))
+
+    # uint8 throughout crop/resize (matching ToDtype running *after* Resize in
+    # raw.yaml) to minimize rounding drift relative to the real pipeline.
+    tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0)  # uint8
+    native = resize_native(tensor)
+    cropped = crop(native)
+    resized = resize_final(cropped)
+    scaled = (resized.float() / 255.0)[0].numpy()  # CHW float32 [0, 1]
+    return _normalize_cam(scaled)
+
+
+def _normalize_cam(cam: np.ndarray) -> np.ndarray:
+    """ImageNet mean/std normalize a CHW float32 image in [0, 1]."""
+    return (cam - _IMAGENET_MEAN) / _IMAGENET_STD
 
 
 @dataclass
@@ -488,7 +535,7 @@ class _WandbBackend:
         self,
         artifact: str,
         *,
-        hparams_jq: str | None = None,
+        hparams_jq: str,
         strict: bool | None = None,
     ) -> None:
         from rmind.models.control_transformer import ControlTransformer  # noqa: PLC0415
@@ -497,9 +544,7 @@ class _WandbBackend:
         # torch.load trying to restore the checkpoint's original CUDA tensors when
         # hparams_jq is set (that path doesn't default map_location like Lightning's
         # own load_from_checkpoint does), which errors out on a CPU-only machine.
-        kwargs: dict[str, Any] = {"map_location": "cpu"}
-        if hparams_jq is not None:
-            kwargs["hparams_jq"] = hparams_jq
+        kwargs: dict[str, Any] = {"map_location": "cpu", "hparams_jq": hparams_jq}
         if strict is not None:
             kwargs["strict"] = strict
         self.model = ControlTransformer.load_from_wandb_artifact(
@@ -507,17 +552,7 @@ class _WandbBackend:
         ).eval()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = self.model.to(self.device)
-        self.image_size = DEFAULT_IMAGE_SIZE
-        # input_transform is stripped when hparams_jq is set (matching an ONNX export
-        # config), so the model then expects raw CHW input straight through, same as
-        # the ONNX backend — see the permute skip in run() below.
-        self.transform_stripped = hparams_jq is not None
-        logger.info(
-            "Wandb model loaded",
-            artifact=artifact,
-            device=self.device,
-            transform_stripped=self.transform_stripped,
-        )
+        logger.info("Wandb model loaded", artifact=artifact, device=self.device)
 
     def run(self, onnx_batch: dict[str, np.ndarray]) -> Predictions:
         dev = self.device
@@ -525,11 +560,10 @@ class _WandbBackend:
         def _t(arr: np.ndarray) -> torch.Tensor:
             return torch.from_numpy(arr).to(dev)
 
+        # hparams_jq (required, see __init__) strips the model's own image
+        # encoder Rearrange along with the rest of input_transform, so it now
+        # expects CHW straight through — same layout _K_CAM already has.
         cam = _t(onnx_batch[_K_CAM])
-        if not self.transform_stripped:
-            # The model's image encoder starts with Rearrange('... h w c -> ... c h w'),
-            # so it expects HWC input [B, T, H, W, C]. Our batch has CHW [B, T, C, H, W].
-            cam = cam.permute(0, 1, 3, 4, 2)  # [B, T, H, W, C]
 
         # Reconstruct the nested {"data": {...}} batch that ControlTransformer.forward expects
         batch: dict = {
@@ -795,9 +829,18 @@ class Config(BaseModel):
         return v if v is None or isinstance(v, list | tuple) else [v]
 
 
-def _validate_config(config: Config) -> None:
+def _validate_config(config: Config, *, hparams_jq: str | None) -> None:
     if not config.onnx and not config.wandb_model:
         msg = "At least one of onnx= or wandb_model= is required"
+        raise ValueError(msg)
+
+    if config.wandb_model and hparams_jq is None:
+        msg = (
+            "wandb_model= requires export=... (e.g. "
+            "export=yaak/control_transformer/finetuned) — the PyTorch model must "
+            "be loaded with the same hparams_jq as the ONNX export for the "
+            "comparison to be apples-to-apples. See module docstring."
+        )
         raise ValueError(msg)
 
     for fname in ("cam_front_left.pii.mp4", "metadata.log", "waypoints.json"):
@@ -821,13 +864,20 @@ def _build_backends(
         image_size = backend.image_size  # last ONNX wins if multiple
 
     wandb_artifacts = config.wandb_model or []
-    for idx, artifact in enumerate(wandb_artifacts):
-        label = (
-            "PyTorch Native"
-            if len(wandb_artifacts) == 1
-            else f"PyTorch Native {idx + 1}"
-        )
-        backends[label] = _WandbBackend(artifact, hparams_jq=hparams_jq, strict=strict)
+    if wandb_artifacts:
+        if hparams_jq is None:
+            # _validate_config should have already rejected this — defense in depth.
+            msg = "wandb_model= requires export=..."
+            raise ValueError(msg)
+        for idx, artifact in enumerate(wandb_artifacts):
+            label = (
+                "PyTorch Native"
+                if len(wandb_artifacts) == 1
+                else f"PyTorch Native {idx + 1}"
+            )
+            backends[label] = _WandbBackend(
+                artifact, hparams_jq=hparams_jq, strict=strict
+            )
 
     if config.image_size:
         image_size = config.image_size
@@ -915,7 +965,7 @@ def main(cfg: DictConfig) -> None:
     hparams_jq, strict = _resolve_export_hparams(cfg)
 
     config = Config(**OmegaConf.to_container(cfg, resolve=True))  # ty:ignore[invalid-argument-type]
-    _validate_config(config)
+    _validate_config(config, hparams_jq=hparams_jq)
 
     backends, image_size = _build_backends(config, hparams_jq=hparams_jq, strict=strict)
 
