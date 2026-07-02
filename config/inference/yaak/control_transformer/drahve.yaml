@@ -41,7 +41,11 @@ datamodule:
               device: cpu
               num_ffmpeg_threads: 0
               transforms:
-                - _target_: torchcodec.transforms.Resize
+                - _target_: torchvision.transforms.v2.Resize
+                  size: [324, 576]
+                - _target_: torchvision.transforms.v2.CenterCrop
+                  size: [320, 576]
+                - _target_: torchvision.transforms.v2.Resize
                   size: [256, 256]
 
       samples:
