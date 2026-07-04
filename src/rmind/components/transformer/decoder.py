@@ -1,10 +1,13 @@
 from typing import Self, final, override
 
+import torch
 from pydantic import BaseModel, ConfigDict, model_validator, validate_call
 from torch import Tensor, nn
 
 from rmind.components.transformer.feed_forward import MLPGLU
 from rmind.components.transformer.utils import run_layer_stack
+
+CLS_INIT_STD = 0.02
 
 
 class CrossAttentionDecoderBlock(nn.Module):
@@ -140,3 +143,31 @@ class CrossAttentionDecoderHead(nn.Module):
 
         decoded = self.decoder(query, context)
         return self.output_projection(decoded)
+
+
+@final
+class AttentionPoolHead(nn.Module):
+    """Pools a variable-length token sequence to a single token via a learned query.
+
+    Unlike mean-pooling, the query cross-attends over the tokens, so it can weigh
+    e.g. spatially relevant image patches instead of averaging all of them away.
+    """
+
+    def __init__(
+        self,
+        decoder: CrossAttentionDecoder,
+        embedding_dim: int,
+        patch_pos_embed: nn.Module | None = None,
+    ) -> None:
+        super().__init__()
+        self.decoder = decoder
+        self.patch_pos_embed = patch_pos_embed
+        self.query = nn.Parameter(torch.empty(1, 1, embedding_dim))
+        nn.init.trunc_normal_(self.query, std=CLS_INIT_STD)
+
+    @override
+    def forward(self, context: Tensor) -> Tensor:
+        if self.patch_pos_embed is not None:
+            context = self.patch_pos_embed(context)
+        query = self.query.expand(context.shape[0], -1, -1)
+        return self.decoder(query, context)

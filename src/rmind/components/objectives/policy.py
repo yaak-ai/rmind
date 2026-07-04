@@ -50,6 +50,7 @@ class PolicyObjective(Objective):
             (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
             (Modality.CONTEXT, "waypoints"),
         ],
+        feature_pool: InstanceOf[ModuleDict] | None = None,
     ) -> None:
         super().__init__()
 
@@ -65,6 +66,7 @@ class PolicyObjective(Objective):
         self.xy_key: tuple[str, ...] = xy_key
         self.heading_key: tuple[str, ...] = heading_key
         self.feature_keys: list[tuple[str, ...]] = feature_keys
+        self.feature_pool: ModuleDict | None = feature_pool
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -86,6 +88,13 @@ class PolicyObjective(Objective):
 
         return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
 
+    def _pool_feature(self, key: tuple[str, ...], x: Tensor) -> Tensor:
+        if self.feature_pool is not None and (
+            pool := self.feature_pool.get(key, default=None)
+        ) is not None:
+            return pool(x)
+        return x.mean(dim=1, keepdim=True)
+
     def _compute_logits(
         self, *, episode: Episode, embedding: Tensor
     ) -> tuple[TensorTree, Tensor | None, Tensor | None]:
@@ -104,7 +113,7 @@ class PolicyObjective(Objective):
             .parse(embedding)
         )
 
-        parts = [embeddings.get(k).mean(dim=1, keepdim=True) for k in self.feature_keys]
+        parts = [self._pool_feature(k, embeddings.get(k)) for k in self.feature_keys]
 
         features = rearrange(parts, "i b 1 d -> b 1 (i d)")
 
@@ -129,6 +138,7 @@ class PolicyObjective(Objective):
                 h_traj,
             )
         # Inference: normalize to (b, 1, out_features) — first predicted step only
+
         def _first_step(x: Tensor) -> Tensor:
             if x.shape[1] > 1:  # GRU: (b, h, d) → (b, 1, d)
                 return x[:, :1]
