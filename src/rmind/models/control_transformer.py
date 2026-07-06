@@ -1,3 +1,4 @@
+import re
 from typing import Annotated, Any, ClassVar, Literal, Self, override
 
 import jq  # ty:ignore[unresolved-import]
@@ -123,10 +124,11 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         hparams_file: _PATH | None = None,
         strict: bool | None = None,
         hparams_jq: Annotated[jq._Program, BeforeValidator(jq.compile)] | None = None,
+        state_dict_drop: list[str] | None = None,
         weights_only: bool | None = False,
         **kwargs: Any,
     ) -> Self:  # ty:ignore[invalid-method-override]
-        if hparams_jq is None:
+        if hparams_jq is None and not state_dict_drop:
             return super().load_from_checkpoint(
                 checkpoint_path=checkpoint_path,
                 map_location=map_location,
@@ -144,22 +146,31 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         # convert legacy checkpoints to the new format
         checkpoint = _pl_migrate_checkpoint(checkpoint, checkpoint_path=checkpoint_path)
 
-        hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
-        hparams_container = OmegaConf.to_container(
-            OmegaConf.create(hparams), resolve=False, throw_on_missing=False
-        )
-        hparams_container_updated = hparams_jq.input_value(hparams_container).first()
+        if hparams_jq is not None:
+            hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
+            hparams_container = OmegaConf.to_container(
+                OmegaConf.create(hparams), resolve=False, throw_on_missing=False
+            )
+            hparams_container_updated = hparams_jq.input_value(hparams_container).first()
 
-        for diff in (
-            DeepDiff(hparams_container, hparams_container_updated, view="tree")
-            .pretty()
-            .splitlines()
-        ):
-            logger.debug("hparams updated", diff=diff)
+            for diff in (
+                DeepDiff(hparams_container, hparams_container_updated, view="tree")
+                .pretty()
+                .splitlines()
+            ):
+                logger.debug("hparams updated", diff=diff)
 
-        checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = OmegaConf.create(
-            hparams_container_updated
-        )
+            checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = OmegaConf.create(
+                hparams_container_updated
+            )
+
+        if state_dict_drop:
+            # e.g. head swaps with changed out_features: drop the stale weights so
+            # they re-initialize instead of failing to load with a shape mismatch
+            pattern = re.compile("|".join(state_dict_drop))
+            for key in [k for k in checkpoint["state_dict"] if pattern.match(k)]:
+                del checkpoint["state_dict"][key]
+                logger.debug("state_dict key dropped", key=key)
 
         model = _load_state(cls, checkpoint, strict=strict, **kwargs)
         state_dict = checkpoint["state_dict"]

@@ -51,6 +51,7 @@ class PolicyObjective(Objective):
             (Modality.CONTEXT, "waypoints"),
         ],
         feature_pool: InstanceOf[ModuleDict] | None = None,
+        prediction_std_scale: dict[str, float] | None = None,
     ) -> None:
         super().__init__()
 
@@ -67,6 +68,7 @@ class PolicyObjective(Objective):
         self.heading_key: tuple[str, ...] = heading_key
         self.feature_keys: list[tuple[str, ...]] = feature_keys
         self.feature_pool: ModuleDict | None = feature_pool
+        self.prediction_std_scale: dict[str, float] = prediction_std_scale or {}
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -79,8 +81,18 @@ class PolicyObjective(Objective):
             # always return the first predicted step (b, 1, d) or (b, h, d) -> (b, 1)
             first = x[:, :1, :]
             match nk:
-                case (Modality.CONTINUOUS, _):
-                    return first[..., 0]
+                case (Modality.CONTINUOUS, name):
+                    mean = first[..., 0]
+                    # optimistic decoding: shift zero-inflated controls (e.g. gas)
+                    # off the between-modes mean by k standard deviations
+                    if (k := self.prediction_std_scale.get(name)) is not None:
+                        mean = mean + k * torch.sqrt(torch.exp(first[..., 1]))
+                    # hurdle head ([mean, log_var, gate], see HurdleGaussianNLLLoss):
+                    # emit the press magnitude only when the gate fires
+                    if first.shape[-1] == 3:  # noqa: PLR2004
+                        gate = torch.sigmoid(first[..., 2]) > 0.5  # noqa: PLR2004
+                        return torch.where(gate, mean, torch.zeros_like(mean))
+                    return mean
                 case (Modality.DISCRETE, "turn_signal"):
                     return non_zero_signal_with_threshold(first).class_idx
                 case _:
@@ -263,6 +275,12 @@ class PolicyObjective(Objective):
                 ) -> torch.Tensor:
                     match action_type:
                         case (Modality.CONTINUOUS, _):
+                            # hurdle head ([mean, log_var, gate]): gated magnitude
+                            if x.shape[-1] == 3:  # noqa: PLR2004
+                                gate = torch.sigmoid(x[..., 2]) > 0.5  # noqa: PLR2004
+                                return torch.where(
+                                    gate, x[..., 0], torch.zeros_like(x[..., 0])
+                                )
                             return x[..., 0]
                         case (Modality.DISCRETE, "turn_signal"):
                             return non_zero_signal_with_threshold(x).class_idx

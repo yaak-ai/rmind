@@ -13,3 +13,4 @@ encoder_embedding_dim: 384
 
 trajectory_loss_weight: 0.1
 activity_weight: 5
+gas_gate_weight: 1.0

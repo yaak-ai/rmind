@@ -13,6 +13,37 @@ class HasLogitBias(Protocol):
     logit_bias: Tensor | None
 
 
+class _LogitBiasBufferMixin(Module):
+    logit_bias: Tensor | None
+
+    @override
+    def _load_from_state_dict(
+        self,
+        state_dict: dict[str, Any],
+        prefix: str,
+        local_metadata: dict[str, Any],
+        strict: bool,
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+        error_msgs: list[str],
+    ) -> None:
+        # a logit_bias set during training (e.g. by LogitBiasSetter) is persisted
+        # in the checkpoint, but the buffer is registered as None on init and
+        # would otherwise be rejected as an unexpected key
+        if self.logit_bias is None and (key := f"{prefix}logit_bias") in state_dict:
+            self.logit_bias = torch.empty_like(state_dict[key])
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
+
 class FocalLoss(Module):
     """https://arxiv.org/pdf/1708.02002.pdf."""
 
@@ -29,7 +60,7 @@ class FocalLoss(Module):
         return ((1 - pt).pow(self.gamma) * ce_loss).mean()
 
 
-class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
+class LogitBiasFocalLoss(_LogitBiasBufferMixin, FocalLoss, HasLogitBias):
     logit_bias: Tensor | None
 
     def __init__(self, *, logit_bias: Tensor | None = None, gamma: float = 2.0) -> None:
@@ -40,11 +71,12 @@ class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         if self.logit_bias is not None:
-            input = input + self.logit_bias
+            # not in-place: callers may reuse the logits after loss computation
+            input = input + self.logit_bias  # noqa: PLR6104
         return super().forward(input, target)
 
 
-class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
+class LogitBiasCrossEntropyLoss(_LogitBiasBufferMixin, CrossEntropyLoss, HasLogitBias):
     logit_bias: Tensor | None
 
     def __init__(
@@ -57,7 +89,8 @@ class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         if self.logit_bias is not None:
-            input = input + self.logit_bias
+            # not in-place: callers may reuse the logits after loss computation
+            input = input + self.logit_bias  # noqa: PLR6104
         return super().forward(input, target)
 
 
@@ -84,6 +117,43 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         var = self.var_pos_function(log_var)
 
         return super().forward(input=mean, target=target, var=var)
+
+
+class HurdleGaussianNLLLoss(Module):
+    """Zero-inflated (hurdle) Gaussian NLL for point-mass-at-zero controls (e.g. gas).
+
+    Head output layout: [..., 0] = mean, [..., 1] = log_var (as GaussianNLLLoss),
+    [..., 2] = gate logit (press vs no-press). The Gaussian NLL is computed on
+    pressed samples only, so the mean models press magnitude instead of splitting
+    between the zero mode and the press mode.
+    """
+
+    def __init__(
+        self,
+        *,
+        gate_weight: float = 1.0,
+        press_threshold: float = 0.01,
+        var_pos_function: Callable[[Tensor], Tensor] = torch.exp,
+    ) -> None:
+        super().__init__()
+
+        self.gate_weight: float = gate_weight
+        self.press_threshold: float = press_threshold
+        self.var_pos_function: Callable[[Tensor], Tensor] = var_pos_function
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        mean, log_var, gate = input[..., 0], input[..., 1], input[..., 2]
+        press = target.abs() > self.press_threshold
+
+        gate_loss = F.binary_cross_entropy_with_logits(gate, press.float())
+
+        nll = F.gaussian_nll_loss(
+            mean, target, self.var_pos_function(log_var), reduction="none"
+        )
+        nll_press = (nll * press).sum() / press.sum().clamp(min=1)
+
+        return self.gate_weight * gate_loss + nll_press
 
 
 class ActivityWeightedGaussianNLLLoss(GaussianNLLLoss):

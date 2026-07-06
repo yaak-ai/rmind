@@ -1,0 +1,14 @@
+---
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+filename: model.ckpt
+map_location: cpu
+strict: false
+# prediction_std_scale: decode gas as mean + 1*std instead of mean — the Gaussian
+# head mean-splits the zero-inflated gas target at launch onsets (see anomaly_report.md)
+hparams_jq: |
+  delpaths([
+    paths | select(.. | type == "string" and endswith("_diff")),
+    ["episode_builder", "input_transform", "_args_", 1]
+  ])
+  | .objectives.modules.policy.prediction_std_scale = {"gas_pedal": 1.0}
