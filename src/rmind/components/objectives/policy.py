@@ -86,7 +86,7 @@ class PolicyObjective(Objective):
                     # optimistic decoding: shift zero-inflated controls (e.g. gas)
                     # off the between-modes mean by k standard deviations
                     if (k := self.prediction_std_scale.get(name)) is not None:
-                        mean = mean + k * torch.sqrt(torch.exp(first[..., 1]))
+                        mean += k * torch.sqrt(torch.exp(first[..., 1]))
                     # hurdle head ([mean, log_var, gate], see HurdleGaussianNLLLoss):
                     # emit the press magnitude only when the gate fires
                     if first.shape[-1] == 3:  # noqa: PLR2004
@@ -108,7 +108,7 @@ class PolicyObjective(Objective):
         return x.mean(dim=1, keepdim=True)
 
     def _compute_logits(
-        self, *, episode: Episode, embedding: Tensor
+        self, *, episode: Episode, embedding: Tensor, feature_idx: int | None = None
     ) -> tuple[TensorTree, Tensor | None, Tensor | None]:
         """Returns (action_logits, traj_logits, h_traj).
 
@@ -117,7 +117,10 @@ class PolicyObjective(Objective):
         """
         _b, _ = episode.input.batch_size
 
-        idx = self.history_steps - 1 if (self.training and self.action_horizon > 1) else -1
+        if feature_idx is not None:
+            idx = feature_idx
+        else:
+            idx = self.history_steps - 1 if (self.training and self.action_horizon > 1) else -1
         embeddings = (
             episode
             .index[idx]
@@ -218,7 +221,7 @@ class PolicyObjective(Objective):
         return {"loss": all_losses}
 
     @override
-    def predict(  # noqa: C901, PLR0912, PLR0915
+    def predict(  # noqa: C901, PLR0912, PLR0914, PLR0915
         self,
         episode: Episode,
         *,
@@ -256,17 +259,30 @@ class PolicyObjective(Objective):
             ObjectivePredictionKey.TRAJECTORY_VALUE,
             ObjectivePredictionKey.TRAJECTORY_GT,
         }:
+            # train-aligned scoring for horizon models: features at the last history
+            # tick, gt at the first horizon tick — the action that drives the car.
+            # (scoring against [:, -1] with features at -1 lags the target by one
+            # tick and leaks the target action into the model's context)
+            if self.action_horizon > 1:
+                feature_idx = self.history_steps - 1
+                gt_idx = self.history_steps
+            else:
+                feature_idx = -1
+                gt_idx = -1
+
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
-                    embedding
-                )
+                predictions[key] = episode.index.select(Modality.SUMMARY)[
+                    [feature_idx]
+                ].parse(embedding)
 
             raw_logits, traj_logits, _ = self._compute_logits(
-                episode=episode, embedding=embedding
+                episode=episode, embedding=embedding, feature_idx=feature_idx
             )
             logits = TensorDict(raw_logits, batch_size=[b, 1])
 
-            timestep_indices = slice(-1, None)
+            timestep_indices = (
+                slice(gt_idx, gt_idx + 1) if gt_idx >= 0 else slice(-1, None)
+            )
 
             if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
 
@@ -345,11 +361,11 @@ class PolicyObjective(Objective):
                         case (Modality.CONTINUOUS, _):
                             mean = x[..., 0]
                             std = torch.sqrt(torch.exp(x[..., 1]))
-                            gt = episode.input[action_type][:, -1]
+                            gt = episode.input[action_type][:, gt_idx]
                             return -torch.log(gauss_prob(gt, mean=mean, std=std))
 
                         case (Modality.DISCRETE, "turn_signal"):
-                            gt = episode.input[action_type][:, -1]
+                            gt = episode.input[action_type][:, gt_idx]
                             return F.cross_entropy(
                                 x.squeeze(1),
                                 gt.squeeze(1).long(),  # ty:ignore[unresolved-attribute]
@@ -370,7 +386,7 @@ class PolicyObjective(Objective):
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
                 ) -> torch.Tensor:
-                    gt = episode.input[action_type][:, -1]
+                    gt = episode.input[action_type][:, gt_idx]
                     match action_type:
                         case (Modality.CONTINUOUS, _):
                             return F.l1_loss(x[..., 0], gt, reduction="none")  # ty:ignore[invalid-argument-type]
@@ -399,7 +415,7 @@ class PolicyObjective(Objective):
                     gt_episode = cast(
                         "Tensor", episode.input[action_type]
                     )  # (b, ep_length, 1)
-                    gt = gt_episode[:, -1]  # (b, 1)
+                    gt = gt_episode[:, gt_idx]  # (b, 1)
                     match action_type:
                         case (Modality.CONTINUOUS, _):
                             prediction = x[..., 0]  # (b, 1)
@@ -426,7 +442,7 @@ class PolicyObjective(Objective):
                 def fn(
                     action_type: tuple[Modality, str], x: torch.Tensor
                 ) -> torch.Tensor:
-                    gt = episode.input[action_type][:, -1]
+                    gt = episode.input[action_type][:, gt_idx]
                     match action_type:
                         case (Modality.CONTINUOUS, _):
                             return x[..., 0] - gt  # ty:ignore[unsupported-operator]
@@ -454,7 +470,7 @@ class PolicyObjective(Objective):
                     gt_episode = cast(
                         "Tensor", episode.input[action_type]
                     )  # (b, ep_length, 1)
-                    gt_prev = gt_episode[:, -2]  # (b, 1)
+                    gt_prev = gt_episode[:, gt_idx - 1]  # (b, 1)
                     match action_type:
                         case (Modality.CONTINUOUS, _):
                             prediction = x[..., 0]  # (b, 1)
@@ -483,8 +499,8 @@ class PolicyObjective(Objective):
                     gt_episode = cast(
                         "Tensor", episode.input[action_type]
                     )  # (b, ep_length, 1)
-                    gt_prev = gt_episode[:, -2]  # (b, 1)
-                    gt = gt_episode[:, -1]  # (b, 1)
+                    gt_prev = gt_episode[:, gt_idx - 1]  # (b, 1)
+                    gt = gt_episode[:, gt_idx]  # (b, 1)
                     match action_type:
                         case (Modality.CONTINUOUS, _):
                             return gt - gt_prev
@@ -511,12 +527,13 @@ class PolicyObjective(Objective):
                     )  # (b, ep_length, 1)
                     match action_type:
                         case (Modality.CONTINUOUS, _):
-                            gt_hist = gt_episode.mean(dim=1)  # (b, 1)
+                            # history ticks only — never include the target itself
+                            gt_hist = gt_episode[:, :gt_idx].mean(dim=1)  # (b, 1)
                             prediction = x[..., 0]  # (b, 1)
                             return prediction - gt_hist
 
                         case (Modality.DISCRETE, "turn_signal"):
-                            gt_hist = torch.mode(gt_episode, dim=1).values  # (b, 1)
+                            gt_hist = torch.mode(gt_episode[:, :gt_idx], dim=1).values  # (b, 1)
                             prediction = non_zero_signal_with_threshold(
                                 x
                             ).class_idx  # (b, 1)
@@ -539,14 +556,15 @@ class PolicyObjective(Objective):
                     gt_episode = cast(
                         "Tensor", episode.input[action_type]
                     )  # (b, ep_length, 1)
-                    gt = gt_episode[:, -1]  # (b, 1)
+                    gt = gt_episode[:, gt_idx]  # (b, 1)
                     match action_type:
                         case (Modality.CONTINUOUS, _):
-                            gt_hist = gt_episode.mean(dim=1)  # (b, 1)
+                            # history ticks only — never include the target itself
+                            gt_hist = gt_episode[:, :gt_idx].mean(dim=1)  # (b, 1)
                             return gt - gt_hist
 
                         case (Modality.DISCRETE, "turn_signal"):
-                            gt_hist = torch.mode(gt_episode, dim=1).values
+                            gt_hist = torch.mode(gt_episode[:, :gt_idx], dim=1).values
                             return (gt != gt_hist).float()
 
                         case _:
@@ -561,7 +579,7 @@ class PolicyObjective(Objective):
             if (key := ObjectivePredictionKey.LOSS) in keys:
                 if self.losses is not None and self.targets is not None:
                     targets = tree_map(
-                        lambda k: episode.get(k)[:, -1],
+                        lambda k: episode.get(k)[:, gt_idx],
                         self.targets,
                         is_leaf=lambda x: isinstance(x, tuple),
                     )

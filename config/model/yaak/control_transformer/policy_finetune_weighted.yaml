@@ -1,14 +1,7 @@
 ---
-# policy_finetune_drop_history_weighted with a hurdle gas head: the Gaussian head
-# mean-splits the zero-inflated gas target at launch onsets (pred ~0.07 vs press
-# ~0.12-0.25, see anomaly_report.md), so gas gets [mean, log_var, gate_logit] and
-# HurdleGaussianNLLLoss. Warm-startable from a policy checkpoint (e.g.
-# model-xxdl5j0k:v9): state_dict_drop re-initializes only the 2->3 gas output_proj.
 _target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
 strict: false
-state_dict_drop:
-  - objectives\.policy\.heads\.continuous\.gas_pedal\.output_proj\.
 hparams_jq: |
   .objectives = {
     "_target_": "rmind.components.containers.ModuleDict",
@@ -17,10 +10,6 @@ hparams_jq: |
         "_target_": "rmind.components.objectives.PolicyObjective",
         "history_steps": 5,
         "action_horizon": 6,
-        "feature_keys": [
-          ["summary", "observation_summary"],
-          ["context", "waypoints"]
-        ],
         "norm": {
           "_target_": "torch.nn.LayerNorm",
           "normalized_shape": 384
@@ -31,21 +20,21 @@ hparams_jq: |
             "continuous": {
               "gas_pedal": {
                 "_target_": "rmind.components.nn.GRUHead",
-                "in_features": 768,
+                "in_features": 1152,
                 "hidden_size": 384,
-                "out_features": 3,
+                "out_features": 2,
                 "num_steps": 6
               },
               "brake_pedal": {
                 "_target_": "rmind.components.nn.GRUHead",
-                "in_features": 768,
+                "in_features": 1152,
                 "hidden_size": 384,
                 "out_features": 2,
                 "num_steps": 6
               },
               "steering_angle": {
                 "_target_": "rmind.components.nn.GRUHead",
-                "in_features": 768,
+                "in_features": 1152,
                 "hidden_size": 384,
                 "out_features": 2,
                 "num_steps": 6
@@ -54,7 +43,7 @@ hparams_jq: |
             "discrete": {
               "turn_signal": {
                 "_target_": "rmind.components.nn.GRUHead",
-                "in_features": 768,
+                "in_features": 1152,
                 "hidden_size": 384,
                 "out_features": 3,
                 "num_steps": 6
@@ -74,7 +63,7 @@ hparams_jq: |
         },
         "trajectory_head": {
           "_target_": "rmind.components.nn.GRUTrajectoryHead",
-          "in_features": 768,
+          "in_features": 1152,
           "hidden_size": 384,
           "num_steps": 6
         },
@@ -89,8 +78,8 @@ hparams_jq: |
           "modules": {
             "continuous": {
               "gas_pedal": {
-                "_target_": "rmind.components.loss.HurdleGaussianNLLLoss",
-                "gate_weight": ${gas_gate_weight}
+                "_target_": "rmind.components.loss.ActivityWeightedGaussianNLLLoss",
+                "activity_weight": ${activity_weight}
               },
               "brake_pedal": {
                 "_target_": "rmind.components.loss.ActivityWeightedGaussianNLLLoss",
@@ -122,7 +111,7 @@ hparams_jq: |
     "interval": "step",
     "scheduler": {
       "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
-      "num_warmup_steps": ${lr_warmup_steps},
-      "num_training_steps": ${lr_training_steps}
+      "num_warmup_steps": 25000,
+      "num_training_steps": 250000
     }
   }
