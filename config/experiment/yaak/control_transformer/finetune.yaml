@@ -14,6 +14,8 @@ encoder_embedding_dim: 384
 trajectory_loss_weight: 0.1
 activity_weight: 5
 gas_gate_weight: 1.0
+longitudinal_mode_loss_weight: 1.0
+longitudinal_press_threshold: 0.01
 # lr schedule for the hurdle finetune config; for short runs (limit_train_batches)
 # shrink these to match actual steps, else the run never leaves warmup
 lr_warmup_steps: 25000

@@ -173,6 +173,44 @@ class HurdleGaussianNLLLoss(Module):
         return self.gate_weight * gate_loss.mean() + nll_press
 
 
+class MaskedGaussianNLLLoss(Module):
+    """Gaussian NLL on actively-pressed samples only (|target| > press_threshold).
+
+    The magnitude half of a hurdle factorization: pairs with a separate
+    press/no-press classifier (e.g. PolicyObjective's longitudinal mode head),
+    so the mean models press magnitude instead of splitting between the zero
+    mode and the press mode. Head output layout as GaussianNLLLoss:
+    [..., 0] = mean, [..., 1] = log_var.
+    """
+
+    def __init__(
+        self,
+        *,
+        press_threshold: float = 0.01,
+        var_pos_function: Callable[[Tensor], Tensor] = torch.exp,
+        reduction: str = "mean",
+    ) -> None:
+        super().__init__()
+
+        self.press_threshold: float = press_threshold
+        self.var_pos_function: Callable[[Tensor], Tensor] = var_pos_function
+        self.reduction: str = reduction
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        mean, log_var = input[..., 0], input[..., 1]
+        press = target.abs() > self.press_threshold
+
+        nll = F.gaussian_nll_loss(
+            mean, target, self.var_pos_function(log_var), reduction="none"
+        )
+
+        if self.reduction == "none":
+            return nll * press
+
+        return (nll * press).sum() / press.sum().clamp(min=1)
+
+
 class ActivityWeightedGaussianNLLLoss(GaussianNLLLoss):
     """GaussianNLLLoss with per-sample weights proportional to target magnitude.
 
@@ -201,7 +239,7 @@ class ActivityWeightedGaussianNLLLoss(GaussianNLLLoss):
             reduction="none",
         )  # [B]
         weights = 1.0 + self.activity_weight * target.abs()  # [B]
-        weights = weights / weights.mean()  # keep loss scale stable
+        weights /= weights.mean()  # keep loss scale stable
         loss = weights * per_sample
 
         match self.reduction:
