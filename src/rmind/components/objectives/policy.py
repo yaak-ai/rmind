@@ -336,6 +336,9 @@ class PolicyObjective(Objective):
                 ) -> torch.Tensor:
                     match action_type:
                         case (Modality.CONTINUOUS, _):
+                            # hurdle head ([mean, log_var, gate]): gate probability
+                            if x.shape[-1] == 3:  # noqa: PLR2004
+                                return torch.sigmoid(x[..., 2])
                             mean = x[..., 0]
                             std = torch.sqrt(torch.exp(x[..., 1]))
                             return gauss_prob(mean, mean=mean, std=std)
