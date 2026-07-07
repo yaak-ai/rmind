@@ -1,3 +1,4 @@
+.git/
 tests/
 notebooks/
 wandb_logs/
@@ -17,7 +18,6 @@ prek.toml
 .ipynb_checkpoints/
 .pytest_cache/
 .ruff_cache/
-.rbyte_cache/
-.rbyte_cache_6step/
+.rbyte_cache*
 __pycache__/
 *.pyc
