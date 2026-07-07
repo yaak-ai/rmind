@@ -47,17 +47,25 @@ class _LogitBiasBufferMixin(Module):
 class FocalLoss(Module):
     """https://arxiv.org/pdf/1708.02002.pdf."""
 
-    def __init__(self, *, gamma: float = 2.0) -> None:
+    def __init__(self, *, gamma: float = 2.0, reduction: str = "mean") -> None:
         super().__init__()
 
         self.gamma: float = gamma
+        self.reduction: str = reduction
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         ce_loss = F.cross_entropy(input, target, reduction="none")
         pt = torch.exp(-ce_loss)
+        loss = (1 - pt).pow(self.gamma) * ce_loss
 
-        return ((1 - pt).pow(self.gamma) * ce_loss).mean()
+        match self.reduction:
+            case "none":
+                return loss
+            case "sum":
+                return loss.sum()
+            case _:
+                return loss.mean()
 
 
 class LogitBiasFocalLoss(_LogitBiasBufferMixin, FocalLoss, HasLogitBias):
@@ -134,26 +142,35 @@ class HurdleGaussianNLLLoss(Module):
         gate_weight: float = 1.0,
         press_threshold: float = 0.01,
         var_pos_function: Callable[[Tensor], Tensor] = torch.exp,
+        reduction: str = "mean",
     ) -> None:
         super().__init__()
 
         self.gate_weight: float = gate_weight
         self.press_threshold: float = press_threshold
         self.var_pos_function: Callable[[Tensor], Tensor] = var_pos_function
+        self.reduction: str = reduction
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         mean, log_var, gate = input[..., 0], input[..., 1], input[..., 2]
         press = target.abs() > self.press_threshold
 
-        gate_loss = F.binary_cross_entropy_with_logits(gate, press.float())
+        gate_loss = F.binary_cross_entropy_with_logits(
+            gate, press.float(), reduction="none"
+        )
 
         nll = F.gaussian_nll_loss(
             mean, target, self.var_pos_function(log_var), reduction="none"
         )
+
+        if self.reduction == "none":
+            return self.gate_weight * gate_loss + nll * press
+
+        # mean: NLL is averaged over pressed samples only, gate over all
         nll_press = (nll * press).sum() / press.sum().clamp(min=1)
 
-        return self.gate_weight * gate_loss + nll_press
+        return self.gate_weight * gate_loss.mean() + nll_press
 
 
 class ActivityWeightedGaussianNLLLoss(GaussianNLLLoss):
@@ -164,7 +181,6 @@ class ActivityWeightedGaussianNLLLoss(GaussianNLLLoss):
     """
 
     def __init__(self, *args: Any, activity_weight: float = 5.0, **kwargs: Any) -> None:
-        kwargs["reduction"] = "none"
         super().__init__(*args, **kwargs)
         self.activity_weight = activity_weight
 
@@ -172,10 +188,29 @@ class ActivityWeightedGaussianNLLLoss(GaussianNLLLoss):
     def forward(
         self, input: Tensor, target: Tensor, var: Tensor | None = None
     ) -> Tensor:
-        per_sample = super().forward(input, target, var)  # [B]
+        if var is not None:
+            raise ValueError
+
+        mean, log_var = input[..., 0], input[..., 1]
+        per_sample = F.gaussian_nll_loss(
+            mean,
+            target,
+            self.var_pos_function(log_var),
+            full=self.full,
+            eps=self.eps,
+            reduction="none",
+        )  # [B]
         weights = 1.0 + self.activity_weight * target.abs()  # [B]
-        weights /= weights.mean()  # keep loss scale stable
-        return (weights * per_sample).mean()
+        weights = weights / weights.mean()  # keep loss scale stable
+        loss = weights * per_sample
+
+        match self.reduction:
+            case "none":
+                return loss
+            case "sum":
+                return loss.sum()
+            case _:
+                return loss.mean()
 
 
 class GramAnchoringLoss(Module):
