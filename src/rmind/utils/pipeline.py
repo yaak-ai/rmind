@@ -1,3 +1,4 @@
+import numpy as np
 import polars as plr  # noqa: ICN001
 
 
@@ -23,6 +24,111 @@ def left_join_parquet(
         right_on_list = [right_on] if isinstance(right_on, str) else list(right_on)
         right = right.rename(dict(zip(right_on_list, on_list)))
     return df.join(right, on=on, how="left")
+
+
+def drop_overrepresented_still_zero(
+    df: plr.DataFrame,
+    *,
+    gas_column: str,
+    speed_column: str,
+    still_zero_keep_frac: float,
+    speed_max_kmh: float = 15.0,
+    speed_tick: int = 4,
+    gas_eps: float = 1e-6,
+    still_zero_seed: int = 0,
+) -> plr.DataFrame:
+    """Downsample windows where gas stays exactly zero for the whole window at low speed.
+
+    These windows outnumber launch onsets ~8:1 at launch-relevant states and pull the
+    Gaussian mean into the between-modes dead zone (mean-splitting). Capping them
+    rebalances press vs no-press at launch without touching the architecture.
+    Windows with any gas activity, or at speed >= speed_max_kmh (tick `speed_tick`,
+    the last history tick), are always kept. No-op if the columns are missing
+    (e.g. no scores_parquet joined) or keep_frac == 1.
+    """
+    if (
+        gas_column not in df.columns
+        or speed_column not in df.columns
+        or still_zero_keep_frac == 1
+    ):
+        return df
+
+    gas = df[gas_column].to_numpy().reshape(len(df), -1)
+    speed = df[speed_column].to_numpy().reshape(len(df), -1)
+    # null-joined rows become NaN -> not boring -> kept
+    boring = (np.nan_to_num(gas, nan=1.0) <= gas_eps).all(axis=1) & (
+        np.nan_to_num(speed[:, speed_tick], nan=np.inf) < speed_max_kmh
+    )
+    rng = np.random.default_rng(still_zero_seed)
+    keep = ~boring | (rng.random(len(df)) < still_zero_keep_frac)
+    return df.filter(plr.Series(keep))
+
+
+def drop_overrepresented_brake_hold(
+    df: plr.DataFrame,
+    *,
+    brake_column: str,
+    speed_column: str,
+    brake_hold_keep_frac: float,
+    speed_max_kmh: float = 15.0,
+    speed_tick: int = 4,
+    press_eps: float = 0.01,
+    brake_hold_seed: int = 1,
+) -> plr.DataFrame:
+    """Downsample windows where the brake is held for the entire window at low speed.
+
+    Launches in the data begin from a brake hold; held-brake stopped windows vastly
+    outnumber release transitions and teach the policy to ride the brake at launch
+    states (closed loop: predicted brake ~0.06 sits above rsim's 0.05 gas mutex).
+    Windows containing a release (brake drops below press_eps at any tick) are
+    always kept. No-op if the columns are missing or keep_frac == 1.
+    """
+    if (
+        brake_column not in df.columns
+        or speed_column not in df.columns
+        or brake_hold_keep_frac == 1
+    ):
+        return df
+
+    brake = df[brake_column].to_numpy().reshape(len(df), -1)
+    speed = df[speed_column].to_numpy().reshape(len(df), -1)
+    # null-joined rows become NaN -> comparison False -> not boring -> kept
+    boring = (np.nan_to_num(brake, nan=0.0) > press_eps).all(axis=1) & (
+        np.nan_to_num(speed[:, speed_tick], nan=np.inf) < speed_max_kmh
+    )
+    rng = np.random.default_rng(brake_hold_seed)
+    keep = ~boring | (rng.random(len(df)) < brake_hold_keep_frac)
+    return df.filter(plr.Series(keep))
+
+
+def drop_overrepresented_low_loss(
+    df: plr.DataFrame,
+    *,
+    loss_columns: list[str],
+    low_loss_keep_frac: float,
+    low_loss_quantile: float = 0.5,
+    low_loss_seed: int = 2,
+) -> plr.DataFrame:
+    """Downsample windows whose mean loss (over columns) is below the given quantile.
+
+    Hard-example mining — the flip side of drop_overrepresented_by_loss: instead of
+    flattening the loss histogram, concentrate training on what the reference
+    checkpoint gets wrong (for gas, that is exactly the launch-onset tail).
+    Rows with null/non-finite scores are kept. No-op if columns are missing or
+    keep_frac == 1.
+    """
+    if any(c not in df.columns for c in loss_columns) or low_loss_keep_frac == 1:
+        return df
+
+    score = df.select(
+        plr.mean_horizontal([plr.col(c) for c in loss_columns]).alias("_score_")
+    )["_score_"].to_numpy()
+    finite = score[np.isfinite(score)]
+    thr = float(np.quantile(finite, low_loss_quantile))
+    boring = np.nan_to_num(score, nan=np.inf) < thr
+    rng = np.random.default_rng(low_loss_seed)
+    keep = ~boring | (rng.random(len(df)) < low_loss_keep_frac)
+    return df.filter(plr.Series(keep))
 
 
 def drop_overrepresented_by_loss(

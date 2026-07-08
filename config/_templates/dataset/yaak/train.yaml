@@ -1088,6 +1088,9 @@ samples:
             - "policy/loss/value/continuous/gas_pedal"
             - "policy/loss/value/continuous/brake_pedal"
             - "policy/loss/value/continuous/steering_angle"
+            - "policy/ground_truth/value/continuous/gas_pedal"
+            - "policy/ground_truth/value/continuous/brake_pedal"
+            - "batch/data/meta/VehicleMotion/speed"
       - _target_: pipefunc.PipeFunc
         output_name: samples_filtered
         renames:
@@ -1100,3 +1103,34 @@ samples:
             - "policy/loss/value/continuous/brake_pedal"
             - "policy/loss/value/continuous/steering_angle"
           max_bin_freq: "${oc.select:loss_max_bin_freq,1}"
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_balanced
+        renames:
+          df: samples_filtered
+        func:
+          _target_: rmind.utils.pipeline.drop_overrepresented_still_zero
+          _partial_: true
+          gas_column: "policy/ground_truth/value/continuous/gas_pedal"
+          speed_column: "batch/data/meta/VehicleMotion/speed"
+          still_zero_keep_frac: "${oc.select:still_zero_keep_frac,1}"
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_brake_balanced
+        renames:
+          df: samples_balanced
+        func:
+          _target_: rmind.utils.pipeline.drop_overrepresented_brake_hold
+          _partial_: true
+          brake_column: "policy/ground_truth/value/continuous/brake_pedal"
+          speed_column: "batch/data/meta/VehicleMotion/speed"
+          brake_hold_keep_frac: "${oc.select:brake_hold_keep_frac,1}"
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_loss_mined
+        renames:
+          df: samples_brake_balanced
+        func:
+          _target_: rmind.utils.pipeline.drop_overrepresented_low_loss
+          _partial_: true
+          loss_columns:
+            - "policy/loss/value/continuous/gas_pedal"
+          low_loss_keep_frac: "${oc.select:low_loss_keep_frac,1}"
+          low_loss_quantile: "${oc.select:low_loss_quantile,0.5}"

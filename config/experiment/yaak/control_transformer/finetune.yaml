@@ -20,3 +20,12 @@ longitudinal_press_threshold: 0.01
 # shrink these to match actual steps, else the run never leaves warmup
 lr_warmup_steps: 25000
 lr_training_steps: 250000
+# E6 data rebalance filters (all need +scores_parquet for the joined gt/loss/speed
+# columns; 1.0 = no-op, filters chain and compose):
+# - still_zero: downsample windows with gas untouched all 11 ticks at low speed
+# - brake_hold: downsample windows with brake held all 11 ticks at low speed
+# - low_loss: hard-example mining, downsample windows below the gas-loss quantile
+still_zero_keep_frac: 1.0
+brake_hold_keep_frac: 1.0
+low_loss_keep_frac: 1.0
+low_loss_quantile: 0.5
