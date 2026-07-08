@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from tests.conftest import EmbeddingDims
 
 
-@pytest.fixture(autouse=True, scope="session")  # noqa: RUF076
+@pytest.fixture(autouse=True, scope="session")
 def _soft_pending_unbacked() -> None:
     # tensordict's _device_recorder and _CONSTRUCTORS are global dicts mutated
     # during export tracing (dynamo side-effect). This creates a spurious
