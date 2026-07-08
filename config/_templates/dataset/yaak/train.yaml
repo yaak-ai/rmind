@@ -1059,7 +1059,7 @@ samples:
                   -- gas" and only ever creeps. Down-sample static brake-hold windows
                   -- to atrest_keep_pct% (100 disables the cap). Launch windows are
                   -- structurally untouchable: a gas press anywhere in the clip
-                  -- (including the action horizon) fails list_max(gas) <= 0.1 and is
+                  -- (including the action horizon) fails list_max(gas) <= 0.02 and is
                   -- unconditionally kept, as is any window where the car moves
                   -- (list_max(speed) >= 2, e.g. easing into a stop). The decision
                   -- frame is the last observed timestep (episode_length, 1-based);
@@ -1072,7 +1072,7 @@ samples:
                       NOT (
                           "meta/VehicleMotion/speed"[${episode_length}] < 1.0
                           AND "meta/VehicleMotion/brake_pedal_normalized"[${episode_length}] > 0.1
-                          AND list_max("meta/VehicleMotion/gas_pedal_normalized") <= 0.1
+                          AND list_max("meta/VehicleMotion/gas_pedal_normalized") <= 0.02
                           AND list_max("meta/VehicleMotion/speed") < 2.0
                       )
                       OR (list_last("meta/ImageMetadata.cam_front_left/frame_idx") // 10) % 100 < ${atrest_keep_pct}
