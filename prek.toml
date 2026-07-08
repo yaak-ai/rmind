@@ -32,7 +32,7 @@ hooks = [
 
 [[repos]]
 repo = "https://github.com/astral-sh/ruff-pre-commit"
-rev = "v0.15.18"
+rev = "v0.15.20"
 hooks = [
   { id = "ruff-check", args = ["--fix"] },
   { id = "ruff-format" },
@@ -40,7 +40,7 @@ hooks = [
 
 [[repos]]
 repo = "https://github.com/astral-sh/ty-pre-commit"
-rev = "v0.0.52"
+rev = "v0.0.57"
 hooks = [
   { id = "ty" },
 ]

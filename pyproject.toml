@@ -51,6 +51,7 @@ export = [
   "onnx>=1.22.0",
   "onnxruntime>=1.27.0",
   "onnxscript>=0.7.0",
+  "wandb>=0.27.2",
 ]
 predict = [
   "wandb>=0.27.2",
@@ -77,8 +78,8 @@ dev = [
   "wat-inspector",
 ]
 check = [
-  "ruff>=0.15.18",
-  "ty>=0.0.52",
+  "ruff>=0.15.20",
+  "ty>=0.0.57",
 ]
 test = [
   "pytest>=9.0.2",

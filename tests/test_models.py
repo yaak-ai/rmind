@@ -105,11 +105,11 @@ def objectives(
 @pytest.fixture
 def optimizer() -> HydraConfig[Optimizer]:
     return HydraConfig[Optimizer](
-        target="rmind.components.optimizers.SelectiveAdamW",  # ty:ignore[invalid-argument-type]
-        lr=1e-5,  # ty:ignore[unknown-argument]
-        betas=[0.9, 0.95],  # ty:ignore[unknown-argument]
-        weight_decay=0.1,  # ty:ignore[unknown-argument]
-        weight_decay_module_blacklist=[Embedding, LayerNorm],  # ty:ignore[unknown-argument]
+        target="rmind.components.optimizers.SelectiveAdamW",
+        lr=1e-5,
+        betas=[0.9, 0.95],
+        weight_decay=0.1,
+        weight_decay_module_blacklist=[Embedding, LayerNorm],
     )
 
 

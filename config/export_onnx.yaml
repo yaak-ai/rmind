@@ -10,3 +10,5 @@ args:
 
 f: ${hydra:run.dir}/${model._target_}.onnx
 artifacts_dir: ${hydra:run.dir}
+
+upload_to_wandb: true
