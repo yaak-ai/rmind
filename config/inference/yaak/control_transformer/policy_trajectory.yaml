@@ -1,0 +1,74 @@
+# @package _global_
+---
+# Like policy.yaml, but also surfaces the trajectory head's predicted vs ground
+# truth local xy path (ObjectivePredictionKey.TRAJECTORY_VALUE/TRAJECTORY_GT),
+# which policy.yaml's select list omits. Scratch config for trajectory-quality
+# analysis; not wired into any other pipeline.
+defaults:
+  - /model: yaak/control_transformer/finetuned
+  - /datamodule: yaak/predict
+  - /paths: yaak/default
+  - /logger: yaak/rerun/prediction_policy
+  - _self_
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  _convert_: all
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  precision: "bf16-mixed"
+  logger: false
+  callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives:
+          - ground_truth
+          - prediction_value
+          - prediction_std
+          - prediction_probs
+          - loss
+          - score_l1
+          - score_logprob
+          - score_signed_error
+          - score_l1_rel
+          - prediction_diff_prev
+          - ground_truth_diff_prev
+          - prediction_diff_hist
+          - ground_truth_diff_hist
+          - trajectory_value
+          - trajectory_gt
+
+    - _target_: rmind.callbacks.DataFramePredictionWriter
+      write_interval: batch
+      path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
+      select:
+        - [batch, data, meta/sample_id]
+        - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+        - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+        - [batch, data, meta/VehicleMotion/speed]
+        - [batch, data, meta/Gnss/xy]
+        - [batch, data, headings_denoised/heading]
+        - [batch, meta, input_id]
+        - [batch, data, waypoints/xy_normalized]
+        - [batch, data, waypoints/xy]
+        - [policy, ground_truth, value]
+        - [policy, prediction_value, value]
+        - [policy, prediction_std, value]
+        - [policy, prediction_probs, value]
+        - [policy, loss, value]
+        - [policy, score_l1, value]
+        - [policy, score_logprob, value]
+        - [policy, score_l1_rel, value]
+        - [policy, score_signed_error, value]
+        - [policy, prediction_diff_prev, value]
+        - [policy, ground_truth_diff_prev, value]
+        - [policy, prediction_diff_hist, value]
+        - [policy, ground_truth_diff_hist, value]
+        - [policy, trajectory_value, value]
+        - [policy, trajectory_gt, value]
+      writer:
+        _target_: polars.DataFrame.write_parquet
+        _partial_: true
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 5

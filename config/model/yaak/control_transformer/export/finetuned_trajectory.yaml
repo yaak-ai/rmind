@@ -1,0 +1,16 @@
+---
+# export/finetuned.yaml, wrapped so the exported ONNX graph also emits the
+# policy objective's predicted trajectory (mean x/y per step) under the
+# output name `trajectory.xy` — see rmind.models.export.PolicyTrajectoryExportWrapper.
+_target_: rmind.models.export.PolicyTrajectoryExportWrapper
+model:
+  _target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+  artifact: ???
+  filename: model.ckpt
+  map_location: cpu
+  strict: false
+  hparams_jq: |
+    delpaths([
+      paths | select(.. | type == "string" and endswith("_diff")),
+      ["episode_builder", "input_transform", "_args_", 1]
+    ])
