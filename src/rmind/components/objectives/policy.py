@@ -24,6 +24,7 @@ from rmind.components.objectives.base import (
 )
 from rmind.utils.functional import (
     build_local_trajectory,
+    build_relative_trajectory,
     gauss_prob,
     non_zero_signal_with_threshold,
 )
@@ -50,6 +51,7 @@ class PolicyObjective(Objective):
         trajectory_head: InstanceOf[Module] | None = None,
         trajectory_loss: InstanceOf[Module] | None = None,
         trajectory_loss_weight: float = 1.0,
+        trajectory_target: Literal["absolute", "relative"] = "absolute",
         xy_key: tuple[str, ...] = ("input", "trajectory", "xy"),
         heading_key: tuple[str, ...] = ("input", "trajectory", "heading"),
         feature_keys: list[tuple[str, ...]] = [  # noqa: B006
@@ -77,6 +79,12 @@ class PolicyObjective(Objective):
         self.trajectory_head: Module | None = trajectory_head
         self.trajectory_loss: Module | None = trajectory_loss
         self.trajectory_loss_weight: float = trajectory_loss_weight
+        # "absolute": every horizon step vs one fixed frame anchored at
+        # [history_steps - 1] (build_local_trajectory) — foreshortens forward
+        # progress during a turn since it's measured against a stale heading.
+        # "relative": each step vs the previous step's own pose
+        # (build_relative_trajectory) — requires trajectory_head(predict_yaw=True).
+        self.trajectory_target: Literal["absolute", "relative"] = trajectory_target
         self.xy_key: tuple[str, ...] = xy_key
         self.heading_key: tuple[str, ...] = heading_key
         self.feature_keys: list[tuple[str, ...]] = feature_keys
@@ -180,7 +188,9 @@ class PolicyObjective(Objective):
     ) -> tuple[TensorTree, Tensor | None, Tensor | None, Tensor | None]:
         """Returns (action_logits, traj_logits, h_traj, mode_logits).
 
-        traj_logits: (b, num_steps, 4) = [mean_x, logvar_x, mean_y, logvar_y] or None.
+        traj_logits: (b, num_steps, 4) = [mean_x, logvar_x, mean_y, logvar_y], or
+            (b, num_steps, 6) with trailing [mean_yaw, logvar_yaw] when the
+            trajectory_head was built with predict_yaw=True, or None.
         h_traj:      (b, num_steps, hidden_size) GRU hidden states or None.
         mode_logits: (b, num_steps, 3) coast/gas/brake logits or None.
         keep_horizon: at inference, return all predicted steps (b, h, d) instead of
@@ -303,16 +313,29 @@ class PolicyObjective(Objective):
             and xy is not None
             and heading is not None
         ):
-            traj_gt = build_local_trajectory(
-                xy=xy, heading_deg=heading, history_steps=self.history_steps
-            )  # (b, num_steps, 2)
-            flat = rearrange(traj_logits, "b h d -> (b h) d")  # (b*steps, 4)
-            gt_x = rearrange(traj_gt[..., 0], "b h -> (b h)")  # (b*steps,)
-            gt_y = rearrange(traj_gt[..., 1], "b h -> (b h)")  # (b*steps,)
-            traj_loss = (
-                self.trajectory_loss(flat[..., :2], gt_x)
-                + self.trajectory_loss(flat[..., 2:], gt_y)
-            ) / 2  # ty:ignore[call-non-callable]
+            flat = rearrange(traj_logits, "b h d -> (b h) d")  # (b*steps, 4 or 6)
+            if self.trajectory_target == "relative":
+                traj_gt = build_relative_trajectory(
+                    xy=xy, heading_deg=heading, history_steps=self.history_steps
+                )  # (b, num_steps, 3) = dx, dy, dyaw
+                gt_x = rearrange(traj_gt[..., 0], "b h -> (b h)")
+                gt_y = rearrange(traj_gt[..., 1], "b h -> (b h)")
+                gt_yaw = rearrange(traj_gt[..., 2], "b h -> (b h)")
+                traj_loss = (
+                    self.trajectory_loss(flat[..., :2], gt_x)
+                    + self.trajectory_loss(flat[..., 2:4], gt_y)
+                    + self.trajectory_loss(flat[..., 4:6], gt_yaw)
+                ) / 3  # ty:ignore[call-non-callable]
+            else:
+                traj_gt = build_local_trajectory(
+                    xy=xy, heading_deg=heading, history_steps=self.history_steps
+                )  # (b, num_steps, 2)
+                gt_x = rearrange(traj_gt[..., 0], "b h -> (b h)")  # (b*steps,)
+                gt_y = rearrange(traj_gt[..., 1], "b h -> (b h)")  # (b*steps,)
+                traj_loss = (
+                    self.trajectory_loss(flat[..., :2], gt_x)
+                    + self.trajectory_loss(flat[..., 2:], gt_y)
+                ) / 2  # ty:ignore[call-non-callable]
             all_losses["trajectory"] = traj_loss * self.trajectory_loss_weight
 
         return {"loss": all_losses}
@@ -743,12 +766,14 @@ class PolicyObjective(Objective):
 
             if (key := ObjectivePredictionKey.TRAJECTORY_VALUE) in keys:
                 if traj_logits is not None:
-                    # traj_logits: (b, steps, 4) = [mean_x, logvar_x, mean_y, logvar_y]
+                    # traj_logits: (b, steps, 4) = [mean_x, logvar_x, mean_y, logvar_y],
+                    # or (b, steps, 6) with trailing [mean_yaw, logvar_yaw] when
+                    # trajectory_target == "relative"; xy means are always at [0, 2]
+                    value = {"xy": traj_logits[..., [0, 2]]}  # (b, steps, 2) means
+                    if self.trajectory_target == "relative":
+                        value["yaw"] = traj_logits[..., 4]  # (b, steps) mean dyaw
                     predictions[key] = Prediction(
-                        value=TensorDict(
-                            {"xy": traj_logits[..., [0, 2]]},  # (b, steps, 2) means
-                            batch_size=[b],
-                        ),
+                        value=TensorDict(value, batch_size=[b]),
                         timestep_indices=timestep_indices,
                     )
 
@@ -756,11 +781,18 @@ class PolicyObjective(Objective):
                 xy = episode.get(self.xy_key, default=None)
                 heading = episode.get(self.heading_key, default=None)
                 if xy is not None and heading is not None:
-                    traj_gt = build_local_trajectory(
-                        xy=xy, heading_deg=heading, history_steps=self.history_steps
-                    )  # (b, steps, 2)
+                    if self.trajectory_target == "relative":
+                        traj_gt = build_relative_trajectory(
+                            xy=xy, heading_deg=heading, history_steps=self.history_steps
+                        )  # (b, steps, 3) = dx, dy, dyaw
+                        value = {"xy": traj_gt[..., :2], "yaw": traj_gt[..., 2]}
+                    else:
+                        traj_gt = build_local_trajectory(
+                            xy=xy, heading_deg=heading, history_steps=self.history_steps
+                        )  # (b, steps, 2)
+                        value = {"xy": traj_gt}
                     predictions[key] = Prediction(
-                        value=TensorDict({"xy": traj_gt}, batch_size=[b]),
+                        value=TensorDict(value, batch_size=[b]),
                         timestep_indices=timestep_indices,
                     )
 

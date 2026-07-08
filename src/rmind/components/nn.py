@@ -129,12 +129,14 @@ DiffLast = _module_wrapper(diff_last, name="DiffLast")
 class GRUTrajectoryHead(Module):
     """Autoregressive GRU that predicts future trajectory waypoints step-by-step.
 
-    At each step the previously predicted (mean_x, mean_y) is fed back as input.
-    Returns both the per-step logits and the GRU hidden states so the companion
-    action heads can be conditioned on the trajectory's internal representations.
+    At each step the previously predicted means are fed back as input. Returns
+    both the per-step logits and the GRU hidden states so the companion action
+    heads can be conditioned on the trajectory's internal representations.
 
-    Output logits layout per step: [mean_x, logvar_x, mean_y, logvar_y] (4 values).
-    This matches GaussianNLLLoss which expects input[..., 0]=mean, input[..., 1]=logvar.
+    Output logits layout per step: [mean_x, logvar_x, mean_y, logvar_y] (4
+    values), or with `predict_yaw=True`: [mean_x, logvar_x, mean_y, logvar_y,
+    mean_yaw, logvar_yaw] (6 values). Either way this matches GaussianNLLLoss,
+    which expects input[..., 0]=mean, input[..., 1]=logvar per pair.
     """
 
     @validate_call
@@ -144,31 +146,36 @@ class GRUTrajectoryHead(Module):
         in_features: int,
         hidden_size: int,
         num_steps: int,
+        predict_yaw: bool = False,
     ) -> None:
         super().__init__()
         self.num_steps = num_steps
+        self.predict_yaw = predict_yaw
         self._hidden_size = hidden_size
+        pose_dim = 3 if predict_yaw else 2  # (x, y[, yaw])
         self.hidden_proj = Linear(in_features, hidden_size)
-        self.input_proj = Linear(2, hidden_size)           # embed prev (mean_x, mean_y)
+        self.input_proj = Linear(pose_dim, hidden_size)  # embed prev pose means
         self.gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
-        self.output_proj = Linear(hidden_size, 4)          # mean_x, logvar_x, mean_y, logvar_y
+        self.output_proj = Linear(hidden_size, 2 * pose_dim)
 
     @override
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         # x: (b, 1, in_features)
         b = x.size(0)
+        pose_dim = 3 if self.predict_yaw else 2
+        pose_idx = [0, 2, 4] if self.predict_yaw else [0, 2]
         h = self.hidden_proj(x[:, 0]).unsqueeze(0)        # (1, b, H)
-        prev_xy = torch.zeros(b, 2, device=x.device, dtype=x.dtype)
+        prev_pose = torch.zeros(b, pose_dim, device=x.device, dtype=x.dtype)
         preds, hs = [], []
         for _ in range(self.num_steps):
-            inp = self.input_proj(prev_xy).unsqueeze(1)    # (b, 1, H)
+            inp = self.input_proj(prev_pose).unsqueeze(1)  # (b, 1, H)
             out, h = self.gru(inp, h)                      # (b, 1, H), (1, b, H)
             hs.append(h[0])                                # (b, H)
-            logits = self.output_proj(out[:, 0])           # (b, 4)
-            prev_xy = logits[:, [0, 2]]                    # (b, 2) means only
+            logits = self.output_proj(out[:, 0])           # (b, 2 * pose_dim)
+            prev_pose = logits[:, pose_idx]                # (b, pose_dim) means only
             preds.append(logits)
         return torch.stack(preds, dim=1), torch.stack(hs, dim=1)
-        # (b, num_steps, 4),  (b, num_steps, H)
+        # (b, num_steps, 2 * pose_dim),  (b, num_steps, H)
 
 
 @final

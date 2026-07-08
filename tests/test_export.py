@@ -18,8 +18,10 @@ from torchvision.ops import MLP
 from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder
+from rmind.components.nn import GRUHead, GRUTrajectoryHead
 from rmind.components.objectives.policy import PolicyObjective
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
+from rmind.models.export import PolicyTrajectoryExportWrapper
 
 if TYPE_CHECKING:
     from tests.conftest import EmbeddingDims
@@ -93,6 +95,44 @@ def policy_objective(
 
 
 @pytest.fixture
+def policy_objective_with_trajectory(
+    device: torch.device, request: pytest.FixtureRequest
+) -> PolicyObjective:
+    """Like `policy_objective`, but with GRUHead action heads (which accept the
+    optional `h_traj` conditioning argument, unlike the plain MLP heads above)
+    and a GRUTrajectoryHead, so trajectory export has something to surface."""
+    embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
+    in_features = 3 * embedding_dims.encoder
+    hidden_size = 16
+    num_steps = 4
+
+    def gru_head(out_features: int) -> GRUHead:
+        return GRUHead(
+            in_features=in_features,
+            hidden_size=hidden_size,
+            out_features=out_features,
+            num_steps=num_steps,
+        )
+
+    return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
+        heads=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": gru_head(2),
+                    "brake_pedal": gru_head(2),
+                    "steering_angle": gru_head(2),
+                },
+                Modality.DISCRETE: {"turn_signal": gru_head(3)},
+            }
+        ),
+        trajectory_head=GRUTrajectoryHead(
+            in_features=in_features, hidden_size=hidden_size, num_steps=num_steps
+        ),
+    ).to(device)
+
+
+@pytest.fixture
 def encoder_eval(encoder: Module) -> Module:
     return encoder.eval()
 
@@ -125,6 +165,21 @@ def control_transformer(
         episode_builder=episode_builder,
         encoder=encoder,
         objectives=objectives,
+        prediction_config=PredictionConfig(),
+    ).to(device)
+
+
+@pytest.fixture
+def control_transformer_with_trajectory(
+    episode_builder: Module,
+    policy_objective_with_trajectory: Module,
+    encoder: Module,
+    device: torch.device,
+) -> ControlTransformer:
+    return ControlTransformer(
+        episode_builder=episode_builder,
+        encoder=encoder,
+        objectives=ModuleDict({"policy": policy_objective_with_trajectory}).to(device),
         prediction_config=PredictionConfig(),
     ).to(device)
 
@@ -300,6 +355,52 @@ def test_onnx_inference(module: Module, args: tuple[Any]) -> None:
         dynamo=True,
         optimize=True,
         verify=False,
+    )
+    assert onnx_program is not None
+
+    onnx_output = onnx_program(*args)
+    onnx_leaves, _ = tree_flatten_with_path(onnx_output)
+
+    for (kp, expected), (_, actual) in zip(eager_leaves, onnx_leaves, strict=True):
+        assert_close(
+            torch.as_tensor(actual).float(),
+            expected.cpu().float(),
+            rtol=1e-2,
+            atol=1e-3,
+            msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
+        )
+
+
+@torch.inference_mode()
+def test_onnx_export_trajectory_wrapper(
+    control_transformer_with_trajectory: ControlTransformer, batch_dict: TensorTree
+) -> None:
+    """PolicyObjective.forward() computes but drops traj_logits (see
+    PolicyObjective._compute_logits); PolicyTrajectoryExportWrapper recovers it
+    as a `trajectory.xy` output, matching predict()'s TRAJECTORY_VALUE branch.
+    """
+    module = PolicyTrajectoryExportWrapper(model=control_transformer_with_trajectory)
+    module = module.eval()
+    args = (batch_dict,)
+
+    eager_output = module(*args)
+    eager_leaves, _ = tree_flatten_with_path(eager_output)
+    output_paths = [tuple(mk.key for mk in kp) for kp, _ in eager_leaves]  # ty:ignore[unresolved-attribute]
+    assert ("trajectory", "xy") in output_paths
+
+    # GRUHead/GRUTrajectoryHead need the custom aten.gru translation table —
+    # the onnxscript torchlib default omits linear_before_reset and is ~10%
+    # off from PyTorch's GRU (see rmind.utils.onnx_ops.GRU_CUSTOM_TABLE).
+    from rmind.utils.onnx_ops import GRU_CUSTOM_TABLE  # noqa: PLC0415
+
+    exported_program = torch.export.export(module, args=args, strict=False)
+    onnx_program = torch.onnx.export(
+        model=exported_program,
+        external_data=False,
+        dynamo=True,
+        optimize=True,
+        verify=False,
+        custom_translation_table=GRU_CUSTOM_TABLE,
     )
     assert onnx_program is not None
 
