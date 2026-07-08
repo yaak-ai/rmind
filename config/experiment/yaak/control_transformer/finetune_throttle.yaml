@@ -1,0 +1,45 @@
+# @package _global_
+
+# Throttle-commanding rebalance fine-tune ("a path to commanding throttle").
+# Two deliberate deviations from the plain `finetune` experiment:
+#   1. atrest_keep_pct=5 — keep only 5% of static at-rest brake-hold windows
+#      (samples_cast cap in dataset/yaak/train.yaml). Projected to lift the
+#      at-rest->gas target fraction from ~1.4% (64:1 brake:gas) into the
+#      ~20-34% band that reliably unlocked launch in the CARLA experiments.
+#      Launch windows are structurally never dropped by the cap.
+#   2. finetune_unfrozen callbacks — episode builder + transformer encoder
+#      train (only DINOv3 backbone and action tokenizer stay frozen); frozen-
+#      encoder fine-tuning does not learn to launch from standstill.
+#
+# Invoke:
+#   just train experiment=yaak/control_transformer/finetune_throttle \
+#       model.artifact=yaak/rmind/model-<pretrain>:v9 \
+#       action_tokenizer_artifact=yaak/rmind/model-<tokenizer>:v9
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: finetune_unfrozen
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+encoder_embedding_dim: 384
+
+episode_length: 6
+action_horizon: 6
+episode_step: 10
+episode_stride: 10
+
+# clip_horizon is the dataset build horizon (max over PT/FT) so the built dataset
+# is shared: PT slices it to immediate actions (action_horizon=1), FT to chunks.
+clip_horizon: 6
+clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
+clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
+
+# Keep percentage for static at-rest brake-hold windows (samples_cast cap in
+# dataset/yaak/train.yaml). 5% projects to ~24% at-rest->gas (~3:1 brake:gas).
+atrest_keep_pct: 5
+
+action_tokenizer_artifact: ???
