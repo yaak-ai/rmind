@@ -1090,6 +1090,7 @@ samples:
             - "policy/loss/value/continuous/steering_angle"
             - "policy/ground_truth/value/continuous/gas_pedal"
             - "policy/ground_truth/value/continuous/brake_pedal"
+            - "policy/ground_truth/value/continuous/steering_angle"
             - "batch/data/meta/VehicleMotion/speed"
       - _target_: pipefunc.PipeFunc
         output_name: samples_filtered
@@ -1134,3 +1135,14 @@ samples:
             - "policy/loss/value/continuous/gas_pedal"
           low_loss_keep_frac: "${oc.select:low_loss_keep_frac,1}"
           low_loss_quantile: "${oc.select:low_loss_quantile,0.5}"
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_active_mined
+        renames:
+          df: samples_loss_mined
+        func:
+          _target_: rmind.utils.pipeline.drop_overrepresented_inactive
+          _partial_: true
+          gas_column: "policy/ground_truth/value/continuous/gas_pedal"
+          brake_column: "policy/ground_truth/value/continuous/brake_pedal"
+          steering_column: "policy/ground_truth/value/continuous/steering_angle"
+          active_control_keep_frac: "${oc.select:active_control_keep_frac,1}"

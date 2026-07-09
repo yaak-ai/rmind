@@ -25,7 +25,11 @@ lr_training_steps: 250000
 # - still_zero: downsample windows with gas untouched all 11 ticks at low speed
 # - brake_hold: downsample windows with brake held all 11 ticks at low speed
 # - low_loss: hard-example mining, downsample windows below the gas-loss quantile
+# - active_control: downsample windows with no active input anywhere in the
+#   window (gas/brake/steering all untouched) -- the idle/cruise/coast majority
+#   that crowds out launches, turns, and active braking
 still_zero_keep_frac: 1.0
 brake_hold_keep_frac: 1.0
 low_loss_keep_frac: 1.0
 low_loss_quantile: 0.5
+active_control_keep_frac: 1.0

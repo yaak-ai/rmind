@@ -1,0 +1,21 @@
+---
+# Phase 2 of the trajectory-first curriculum: warm-starts from phase 1's own
+# checkpoint (policy_finetune_drop_history_relative_traj.yaml trained with
+# trainer/callbacks=finetune_traj_priority), which already has the correct
+# objectives spec baked into its saved hparams (predict_yaw=True,
+# trajectory_target="relative", losses attached) -- no state_dict_drop needed,
+# nothing changes shape. Only the lr schedule is reset, for phase 2's own
+# budget. Pair with trainer/callbacks=finetune_pedal_priority, which freezes
+# objectives.policy.{norm,trajectory_head} and unfreezes the pedal heads.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+hparams_jq: |
+  .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
+    }
+  }

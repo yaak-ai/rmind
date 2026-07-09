@@ -131,6 +131,63 @@ def drop_overrepresented_low_loss(
     return df.filter(plr.Series(keep))
 
 
+def drop_overrepresented_inactive(
+    df: plr.DataFrame,
+    *,
+    gas_column: str,
+    brake_column: str,
+    steering_column: str,
+    active_control_keep_frac: float,
+    gas_range_eps: float = 0.05,
+    brake_eps: float = 0.01,
+    steering_range_eps: float = 0.05,
+    active_control_seed: int = 3,
+) -> plr.DataFrame:
+    """Downsample windows where nothing *changes* -- steady-state driving with
+    no active decision, at any speed.
+
+    "Boring" here means low variation, not low magnitude: holding highway
+    cruise at a constant, nonzero gas is just as passive as sitting idle at
+    gas=0 -- both windows require no decision. A raw "was any tick above eps"
+    test doesn't distinguish these (real pedal/steering signals are rarely
+    *exactly* flat for 11 ticks, so it barely filters anything -- see the
+    still_zero/brake_hold filters above for the genuinely-flat-at-low-speed
+    case this complements). So "boring" = gas and steering both stay within a
+    narrow band across the whole window (no launch, no turn) AND brake is
+    never pressed (a discrete press, not a ramp, so "ever above eps" is the
+    right test for it) -- i.e. no active decision anywhere in the window:
+    launching from a stop, a turn, an active brake application (a new state
+    because the driver did something proactively) -- exactly the transitions
+    the policy struggles with. Windows with any activity are always kept.
+    No-op if the columns are missing (e.g. no scores_parquet joined) or
+    keep_frac == 1.
+    """
+    required = (gas_column, brake_column, steering_column)
+    if any(c not in df.columns for c in required) or active_control_keep_frac == 1:
+        return df
+
+    gas = df[gas_column].to_numpy().reshape(len(df), -1)
+    brake = df[brake_column].to_numpy().reshape(len(df), -1)
+    steer = df[steering_column].to_numpy().reshape(len(df), -1)
+
+    # null-joined rows become NaN -> range/max become NaN -> comparison False -> not boring -> kept
+    gas_ = np.nan_to_num(gas, nan=np.nan)
+    steer_ = np.abs(np.nan_to_num(steer, nan=np.nan))
+    brake_ = np.nan_to_num(brake, nan=1.0)
+
+    gas_range = np.nanmax(gas_, axis=1) - np.nanmin(gas_, axis=1)
+    steer_range = np.nanmax(steer_, axis=1) - np.nanmin(steer_, axis=1)
+    brake_active = (brake_ > brake_eps).any(axis=1)
+
+    gas_steady = np.nan_to_num(gas_range, nan=np.inf) <= gas_range_eps
+    steer_steady = np.nan_to_num(steer_range, nan=np.inf) <= steering_range_eps
+
+    boring = gas_steady & steer_steady & ~brake_active
+    rng = np.random.default_rng(active_control_seed)
+    keep = ~boring | (rng.random(len(df)) < active_control_keep_frac)
+    return df.filter(plr.Series(keep))
+
+
 def drop_overrepresented_by_loss(
     df: plr.DataFrame,
     *,

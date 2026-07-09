@@ -115,7 +115,7 @@ hparams_jq: |
     "interval": "step",
     "scheduler": {
       "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
-      "num_warmup_steps": 25000,
-      "num_training_steps": 250000
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
     }
   }
