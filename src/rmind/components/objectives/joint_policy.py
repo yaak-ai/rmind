@@ -42,6 +42,7 @@ class JointPolicyObjective(Objective):
         norm: InstanceOf[Module] | None = None,
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
+        offset_scale: float | None = None,
     ) -> None:
         super().__init__()
 
@@ -55,6 +56,7 @@ class JointPolicyObjective(Objective):
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
+        self.offset_scale = offset_scale
 
     @override
     def train(self, mode: bool = True) -> "JointPolicyObjective":
@@ -122,6 +124,18 @@ class JointPolicyObjective(Objective):
         # https://arxiv.org/pdf/2403.03181 Figure 2.
         return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
 
+    def _offset(self, offsets: Tensor, codes: Tensor) -> Tensor:
+        """Gathered offset, optionally soft-bounded to (-offset_scale, offset_scale).
+
+        The bound is `scale * tanh(x / scale)`: identity for |x| << scale, so
+        enabling it on a cleanly-trained model preserves sub-cell offsets while
+        capping cross-cell excursions.
+        """
+        offset = self._gather_offset(offsets, codes)
+        if self.offset_scale is None:
+            return offset
+        return torch.tanh(offset / self.offset_scale) * self.offset_scale
+
     def _sample_codes(self, code_logits: Tensor) -> Tensor:
         if self.sample_codes:
             _, g, c = code_logits.shape
@@ -136,7 +150,7 @@ class JointPolicyObjective(Objective):
         """VQ-BeT joint code prediction with a code-conditioned offset."""
         code_logits, offsets = self._heads(features)
         codes = self._sample_codes(code_logits)
-        offset = self._gather_offset(offsets, codes)
+        offset = self._offset(offsets, codes)
 
         return code_logits, codes, offset
 
@@ -165,7 +179,7 @@ class JointPolicyObjective(Objective):
         # reconstruction as inference does it (decode sampled/argmax codes + offset
         # gathered at those codes); the frozen tokenizer makes invert() gradient-free
         codes = self._sample_codes(code_logits)
-        sampled_chunk = tokenizer.invert(codes) + self._gather_offset(offsets, codes)
+        sampled_chunk = tokenizer.invert(codes) + self._offset(offsets, codes)
         sampled_recon = self.losses["offset"](sampled_chunk.detach(), target)
 
         if self.teacher_force_offset:
@@ -173,7 +187,7 @@ class JointPolicyObjective(Objective):
             # code's offset entry only sees residuals of actions that quantized to it;
             # supervising at sampled codes lets the offset learn the conditional median
             # regardless of code, cancelling the code selection
-            predicted_chunk = tokenizer.invert(target_codes) + self._gather_offset(
+            predicted_chunk = tokenizer.invert(target_codes) + self._offset(
                 offsets, target_codes
             )
         else:

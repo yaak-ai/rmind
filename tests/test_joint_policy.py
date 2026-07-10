@@ -283,3 +283,44 @@ def test_metric_offset_sampled_recon(
     assert recon.ndim == 0
     assert not recon.requires_grad
     assert cast("dict[str, Tensor]", metrics["loss"])["offset"].requires_grad
+
+
+@pytest.mark.parametrize("device", [torch.device("cpu")])
+def test_offset_scale_off_is_identity(device: torch.device) -> None:
+    """offset_scale=None (default) leaves the gathered offset untouched."""
+    torch.manual_seed(7)
+    objective = _make_objective(device, sample_codes=False, teacher_force_offset=True)
+    assert objective.offset_scale is None
+
+    offsets = torch.randn(
+        BATCH_SIZE, NUM_QUANTIZERS, CODEBOOK_SIZE, ACTION_DIM, device=device
+    )
+    codes = torch.randint(0, CODEBOOK_SIZE, (BATCH_SIZE, NUM_QUANTIZERS), device=device)
+    torch.testing.assert_close(
+        objective._offset(offsets, codes),  # noqa: SLF001
+        objective._gather_offset(offsets, codes),  # noqa: SLF001
+        rtol=0,
+        atol=0,
+    )
+
+
+@pytest.mark.parametrize("device", [torch.device("cpu")])
+def test_offset_scale_bounds_and_preserves_small(device: torch.device) -> None:
+    """scale*tanh(x/scale): |out| < scale always; ~identity for |x| << scale."""
+    torch.manual_seed(7)
+    scale = 0.05
+    objective = _make_objective(device, sample_codes=False, teacher_force_offset=True)
+    objective.offset_scale = scale
+
+    codes = torch.randint(0, CODEBOOK_SIZE, (BATCH_SIZE, NUM_QUANTIZERS), device=device)
+
+    large = torch.randn(
+        BATCH_SIZE, NUM_QUANTIZERS, CODEBOOK_SIZE, ACTION_DIM, device=device
+    )
+    bounded = objective._offset(large, codes)  # noqa: SLF001
+    assert bounded.abs().max() <= scale  # fp32 tanh saturates to exactly 1
+
+    small = torch.full_like(large, 1e-4 / NUM_QUANTIZERS)
+    contained = objective._offset(small, codes)  # noqa: SLF001
+    raw = objective._gather_offset(small, codes)  # noqa: SLF001
+    torch.testing.assert_close(contained, raw, rtol=1e-3, atol=1e-7)
