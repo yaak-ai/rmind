@@ -60,6 +60,23 @@ class PolicyObjective(Objective):
             (Modality.CONTEXT, "waypoints"),
         ],
         feature_pool: InstanceOf[ModuleDict] | None = None,
+        # raw (pre-encoder, pre-fusion) features read straight off episode_builder's
+        # frozen embeddings — e.g. DINOv3 patch tokens before the (also frozen)
+        # cross-modal encoder gets to attend/pool over them. Observation audit
+        # (2026-07-09/10) found legible, static cues (e.g. a green light unchanged
+        # across the whole history window) that the gate still misses — this lets
+        # heads read the un-fused patches directly, in case the frozen encoder's
+        # pooling is what's discarding the cue, not DINOv3 itself.
+        raw_feature_keys: list[tuple[str, ...]] | None = None,
+        raw_feature_pool: InstanceOf[ModuleDict] | None = None,
+        # trainable side-copy vision encoder: an independently-initialized backbone
+        # (e.g. a second TimmBackbone) run on raw pixels from episode.input, kept
+        # OUTSIDE episode_builder/encoder so ModuleFreezer's frozen paths never touch
+        # it — trains purely off this objective's losses without risking the shared,
+        # frozen DINOv3+fusion-encoder path every other head still depends on.
+        trainable_image_key: tuple[str, ...] = (Modality.IMAGE, "cam_front_left"),
+        trainable_image_encoder: InstanceOf[Module] | None = None,
+        trainable_image_pool: InstanceOf[Module] | None = None,
         prediction_std_scale: dict[str, float] | None = None,
         gate_horizon_aggregate: Literal["first", "max"] = "first",
         gate_fire_threshold: float = 0.5,
@@ -97,6 +114,11 @@ class PolicyObjective(Objective):
         self.heading_key: tuple[str, ...] = heading_key
         self.feature_keys: list[tuple[str, ...]] = feature_keys
         self.feature_pool: ModuleDict | None = feature_pool
+        self.raw_feature_keys: list[tuple[str, ...]] = raw_feature_keys or []
+        self.raw_feature_pool: ModuleDict | None = raw_feature_pool
+        self.trainable_image_key: tuple[str, ...] = trainable_image_key
+        self.trainable_image_encoder: Module | None = trainable_image_encoder
+        self.trainable_image_pool: Module | None = trainable_image_pool
         self.prediction_std_scale: dict[str, float] = prediction_std_scale or {}
         # hurdle-gate decode: per-tick onset classification is weak (AUC ~0.72) and
         # fires in 1-tick bursts; "press within the predicted horizon" is easier and
@@ -201,11 +223,10 @@ class PolicyObjective(Objective):
             probs = probs[:, :1]
         return probs.argmax(dim=-1), probs
 
-    def _pool_feature(self, key: tuple[str, ...], x: Tensor) -> Tensor:
-        if (
-            self.feature_pool is not None
-            and (pool := self.feature_pool.get(key, default=None)) is not None
-        ):
+    def _pool_feature(
+        self, key: tuple[str, ...], x: Tensor, *, pool_dict: ModuleDict | None
+    ) -> Tensor:
+        if pool_dict is not None and (pool := pool_dict.get(key, default=None)) is not None:
             return pool(x)
         return x.mean(dim=1, keepdim=True)
 
@@ -242,7 +263,36 @@ class PolicyObjective(Objective):
             )
         embeddings = episode.index[idx].select(*self.feature_keys).parse(embedding)
 
-        parts = [self._pool_feature(k, embeddings.get(k)) for k in self.feature_keys]
+        parts = [
+            self._pool_feature(k, embeddings.get(k), pool_dict=self.feature_pool)
+            for k in self.feature_keys
+        ]
+
+        if self.raw_feature_keys:
+            # pre-encoder, pre-fusion features (e.g. frozen DINOv3 patch tokens)
+            # read directly off episode.input_embeddings — bypasses whatever the
+            # (also frozen) cross-modal encoder does to them
+            parts += [
+                self._pool_feature(
+                    k,
+                    episode.input_embeddings.get(k)[:, idx],
+                    pool_dict=self.raw_feature_pool,
+                )
+                for k in self.raw_feature_keys
+            ]
+
+        if self.trainable_image_encoder is not None:
+            # independent, trainable vision side-branch: runs on raw pixels from
+            # episode.input, entirely outside episode_builder/encoder, so it trains
+            # off this objective's losses alone without touching the frozen shared
+            # DINOv3+encoder path every other head still relies on
+            pixels = episode.input.get(self.trainable_image_key)[:, idx]
+            patch_tokens = self.trainable_image_encoder(pixels)
+            parts.append(
+                self.trainable_image_pool(patch_tokens)
+                if self.trainable_image_pool is not None
+                else patch_tokens.mean(dim=1, keepdim=True)
+            )
 
         features = rearrange(parts, "i b 1 d -> b 1 (i d)")
 

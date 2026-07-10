@@ -1,0 +1,204 @@
+---
+# Observation-audit follow-up, part 2 (2026-07-09/10): if the raw-dino diagnostic
+# (policy_finetune_drop_history_speed_patches_rawdino.yaml) does NOT move the
+# needle, that's evidence the launch cue isn't adequately preserved in DINOv3's
+# frozen features at all — no read-out trick recovers information the frozen
+# backbone never encoded saliently. This config tests the next lever: a SECOND,
+# independently-initialized copy of the vision backbone (same pretrained DINOv3
+# weights, fresh object) that trains off gas/brake/steering/trajectory losses
+# alone. It lives under objectives.policy, entirely outside episode_builder/
+# encoder, so ModuleFreezer's frozen paths never touch it — the original
+# DINOv3+fusion-encoder path stays exactly as frozen as in every other finetune,
+# and every other head is unaffected if this doesn't help.
+#
+# Cost note: this runs the vision backbone twice per forward pass (once frozen
+# for the main path, once trainable here) — real compute overhead, acceptable
+# for a diagnostic run.
+#
+# Built on top of the trained speed+patches baseline (yaak/alex-tmp/model-52imllxu:v9).
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: yaak/alex-tmp/model-52imllxu:v9
+strict: false
+# in_features grew 1536->1920 (one more 384-dim block: the trainable-vision
+# feature) — only hidden_proj (the head's first projection) is shape-incompatible
+# with the checkpoint; gru/output_proj/traj_proj/step_embed warm-start normally.
+state_dict_drop:
+  - objectives\.policy\.heads\..*\.hidden_proj\.
+  - objectives\.policy\.trajectory_head\.hidden_proj\.
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "history_steps": 5,
+        "action_horizon": 6,
+        "feature_keys": [
+          ["summary", "observation_summary"],
+          ["context", "waypoints"],
+          ["continuous", "speed"],
+          ["image", "cam_front_left"]
+        ],
+        "feature_pool": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "image": {
+              "cam_front_left": {
+                "_target_": "rmind.components.transformer.AttentionPoolHead",
+                "embedding_dim": 384,
+                "patch_pos_embed": {
+                  "_target_": "rmind.components.position_encoding.PatchPositionEmbedding2D",
+                  "grid_size": [16, 16],
+                  "embedding_dim": 384
+                },
+                "decoder": {
+                  "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+                  "dim_model": 384,
+                  "num_layers": 1,
+                  "num_heads": 4,
+                  "attn_dropout": 0.1,
+                  "resid_dropout": 0.1,
+                  "mlp_dropout": 0.1,
+                  "hidden_layer_multiplier": 1
+                }
+              }
+            }
+          }
+        },
+        "trainable_image_key": ["image", "cam_front_left"],
+        "trainable_image_encoder": {
+          "_target_": "torch.nn.Sequential",
+          "_args_": [
+            {
+              "_target_": "rmind.components.timm_backbone.TimmBackbone",
+              "model_name": "vit_small_patch16_dinov3.lvd1689m",
+              "out_indices": [10],
+              "img_size": [256, 256]
+            },
+            {
+              "_target_": "einops.layers.torch.Rearrange",
+              "pattern": "... c h w -> ... (h w) c"
+            }
+          ]
+        },
+        "trainable_image_pool": {
+          "_target_": "rmind.components.transformer.AttentionPoolHead",
+          "embedding_dim": 384,
+          "patch_pos_embed": {
+            "_target_": "rmind.components.position_encoding.PatchPositionEmbedding2D",
+            "grid_size": [16, 16],
+            "embedding_dim": 384
+          },
+          "decoder": {
+            "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+            "dim_model": 384,
+            "num_layers": 1,
+            "num_heads": 4,
+            "attn_dropout": 0.1,
+            "resid_dropout": 0.1,
+            "mlp_dropout": 0.1,
+            "hidden_layer_multiplier": 1
+          }
+        },
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1920,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1920,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1920,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1920,
+                "hidden_size": 384,
+                "out_features": 3,
+                "num_steps": 6
+              }
+            }
+          }
+        },
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          },
+          "discrete": {
+            "turn_signal": ["input", "discrete", "turn_signal"]
+          }
+        },
+        "trajectory_head": {
+          "_target_": "rmind.components.nn.GRUTrajectoryHead",
+          "in_features": 1920,
+          "hidden_size": 384,
+          "num_steps": 6
+        },
+        "trajectory_loss": {
+          "_target_": "rmind.components.loss.GaussianNLLLoss"
+        },
+        "trajectory_loss_weight": ${trajectory_loss_weight},
+        "xy_key": ["input", "trajectory", "xy"],
+        "heading_key": ["input", "trajectory", "heading"],
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .episode_builder.input_transform._args_[0].paths.trajectory = {
+    "xy": ["data", "meta/Gnss/xy"],
+    "heading": ["data", "headings_denoised/heading"]
+  }
+  | .episode_builder.input_transform._args_[1].modules.trajectory = {
+    "_target_": "torch.nn.Identity"
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": 25000,
+      "num_training_steps": 250000
+    }
+  }
