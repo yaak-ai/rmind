@@ -33,7 +33,7 @@ from rbyte.io import YaakMetadataDataFrameBuilder
 from rbyte.io.yaak.proto import can_pb2, sensor_pb2
 
 DATA_ROOT = Path("/nasa/drives/yaak/data")
-CONFIG_ROOT = Path(__file__).parents[4] / "rmind-main/config/_templates/dataset/yaak"
+CONFIG_ROOT = Path(__file__).parents[3] / "config/_templates/dataset/yaak"
 
 # One quantisation step above zero — matches existing idle-filter thresholds
 GAS_THRESH: float = 1.0 / 255 + 0.001  # ≈ 0.0049
@@ -199,14 +199,22 @@ def main(splits: dict[str, list[str]], workers: int = 8) -> None:
         n_drives = s.height
         n_conflict_drives = int(s["has_conflict"].sum())
         total_frames = int(s["frames"].sum())
-        int(s["conflict_frames"].sum())
+        conflict_frames = int(s["conflict_frames"].sum())
         total_ep = int(s["estimated_episodes"].sum())
-        int(s["estimated_conflict_episodes"].sum())
+        conflict_ep = int(s["estimated_conflict_episodes"].sum())
 
         print(f"\n[{split}]")  # noqa: T201
         print(f"  Drives with any conflict : {n_conflict_drives:>5} / {n_drives}")  # noqa: T201
         print(f"  Frames (quality-filtered): {total_frames:>10,}")  # noqa: T201
+        print(  # noqa: T201
+            f"  Conflict frames          : {conflict_frames:>10,}"
+            f"  ({conflict_frames / total_frames if total_frames else 0.0:.4%})"
+        )
         print(f"  Estimated episodes       : {total_ep:>10,}")  # noqa: T201
+        print(  # noqa: T201
+            f"  Conflict episodes        : {conflict_ep:>10,}"
+            f"  ({conflict_ep / total_ep if total_ep else 0.0:.4%})"
+        )
 
     print(f"\n{'Per-drive breakdown (conflict drives only)'!s}")  # noqa: T201
     conflicting = (
