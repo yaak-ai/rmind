@@ -682,7 +682,7 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: ${paths.rbyte.cache}/yaak/action_train/t${action_clip}d${action_step}s${action_stride}/samples
+  run_folder: ${paths.rbyte.cache}/yaak/action_train/t${action_clip}d${action_step}s${action_stride}/clean/samples
   scheduling_strategy: eager
   return_results: false
   persist_memory: false
@@ -790,7 +790,22 @@ samples:
           func_impl:
             _target_: rbyte.io.DuckDBDataFrameQuery
             query: |
-              SELECT * EXCLUDE ("meta/VehicleMotion/gear")
+              SELECT
+                * EXCLUDE (
+                  "meta/VehicleMotion/gear",
+                  "meta/VehicleMotion/brake_pedal_normalized"
+                ),
+                -- Some vehicles (Niro106, Niro109, Niro110, Niro121, Niro124, Niro127, Niro132)
+                -- have a constant brake sensor offset of up to ~4 quantisation steps (< 0.05)
+                -- that reads as non-zero while the gas pedal is pressed. This is sensor noise,
+                -- not real braking. Clamp it to zero so the model does not learn to predict
+                -- spurious simultaneous brake+gas presses.
+                IF(
+                  "meta/VehicleMotion/brake_pedal_normalized" < 0.05
+                  AND "meta/VehicleMotion/gas_pedal_normalized" > 0.0,
+                  0.0,
+                  "meta/VehicleMotion/brake_pedal_normalized"
+                ) AS "meta/VehicleMotion/brake_pedal_normalized"
               FROM aligned
               WHERE
                 aligned."meta/VehicleMotion/gear" == '3'
@@ -836,6 +851,19 @@ samples:
               WHERE
                   len("meta/ImageMetadata.cam_front_left/frame_idx") = ${action_clip}
                   AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == (${action_clip} - 1) * ${action_step}
+                  -- Drop episodes where any frame still has simultaneous non-zero gas
+                  -- AND brake after the Stage-6 clamp. This catches vehicles with a
+                  -- genuinely fluctuating brake signal (Niro101, Niro107, Niro112,
+                  -- Niro115, Niro128, Niro130, Niro131) where the clamp does not
+                  -- apply (brake > 0.05). Such conflicts are unrecoverable noise.
+                  AND len(list_filter(
+                      list_zip(
+                          "meta/VehicleMotion/gas_pedal_normalized",
+                          "meta/VehicleMotion/brake_pedal_normalized"
+                      ),
+                      x -> x[1] > (1.0 / 255 + 0.001)
+                           AND x[2] > (1.0 / 164 + 0.001)
+                  )) = 0
 
       - _target_: pipefunc.PipeFunc
         renames:
