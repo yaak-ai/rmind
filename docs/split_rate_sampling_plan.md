@@ -219,7 +219,7 @@ Overlapping phase-sibling windows share JPEG files on disk (rows carry only fram
 
 ## 6. Open questions for Max
 
-1. **Rate default:** 6 Hz/H=12 (this plan) vs 15 Hz/H=30 (stride 2; action_dim 120, ~2.5× tokenizer DoF, bigger offset head)? 6 Hz is the recommended start; 15 Hz is one knob away after the pipeline lands.
+1. **Rate default — RESOLVED 2026-07-10:** harsimrat's FAST/DCT analysis (Slack #eng-ml 2026-07-09) establishes a Nyquist floor of >=8 Hz for stopping->gas action content (k>=16 over 2 s -> ~4 Hz content). Default is therefore **15 Hz (action_sample_step: 2, H=30)** with images unchanged at 3 Hz; `action_lowpass: true` by default (band-limits the CAN-interpolated signal). Consequence: the M3 tokenizer capacity screen is mandatory (action_dim 120), offset_head out = 7,680. Exactly-8 Hz and 4 Hz images are both non-frame-snappable on 30 fps (strides 3.75/7.5) and stay rejected; 10 Hz actions + 5 Hz images (strides 3/6) is the documented fallback if 15 Hz overloads the tokenizer.
 1. **`rare_phases` default:** `[0,4,8]` (3×, 133 ms apart, conservative) vs all 5 (`[0,2,4,6,8]`)? The M2 diversity audit will inform, but the prior matters.
 1. **`action_lowpass`** on by default for the HF columns (rsim replay evidence is strong) or off for raw-signal fidelity? It changes both chunk targets and (via the derivation invariant) the canonical token values.
 1. **Rare predicate params:** `rare_speed_max=10 km/h`, `rare_gas_min=0.05` — confirm the launch-continuation band definition against the Notion plan before freezing.
