@@ -102,27 +102,39 @@ class JointPolicyObjective(Objective):
             [observation_summary, observation_history, waypoints], "i b 1 d -> b (i d)"
         )
 
-    def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        """VQ-BeT joint code prediction with a code-conditioned offset."""
+    def _heads(self, features: Tensor) -> tuple[Tensor, Tensor]:
+        """Code logits (b, g, c) and the full offset table (b, g, c, action_dim)."""
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
 
         code_logits = rearrange(self.code_head(features), "b (g c) -> b g c", g=g, c=c)
+        offsets = rearrange(
+            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
+        )
+        return code_logits, offsets
+
+    @staticmethod
+    def _gather_offset(offsets: Tensor, codes: Tensor) -> Tensor:
+        """Select each quantizer's offset at `codes` and sum over quantizers."""
+        index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
+        # https://arxiv.org/pdf/2403.03181 Figure 2.
+        return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
+
+    def _sample_codes(self, code_logits: Tensor) -> Tensor:
         if self.sample_codes:
-            codes = rearrange(
+            _, g, c = code_logits.shape
+            return rearrange(
                 torch.multinomial(code_logits.softmax(dim=-1).reshape(-1, c), 1),
                 "(b g) 1 -> b g",
                 g=g,
             )
-        else:
-            codes = code_logits.argmax(dim=-1)
+        return code_logits.argmax(dim=-1)
 
-        offsets = rearrange(
-            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
-        )
-        index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
-        # https://arxiv.org/pdf/2403.03181 Figure 2.
-        offset = offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
+    def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """VQ-BeT joint code prediction with a code-conditioned offset."""
+        code_logits, offsets = self._heads(features)
+        codes = self._sample_codes(code_logits)
+        offset = self._gather_offset(offsets, codes)
 
         return code_logits, codes, offset
 
@@ -204,8 +216,7 @@ class JointPolicyObjective(Objective):
                 }),
                 "discrete": TensorDict({
                     "turn_signal": torch.bucketize(
-                        chunk[..., 3] * 2,
-                        torch.tensor([0.5, 1.5], device=chunk.device),
+                        chunk[..., 3] * 2, torch.tensor([0.5, 1.5], device=chunk.device)
                     )
                 }),
             })
