@@ -1,0 +1,47 @@
+# @package _global_
+---
+# Like policy.yaml, but also surfaces speed_head's own Δspeed forecast vs
+# ground truth (ObjectivePredictionKey.SPEED_VALUE/SPEED_GT), which policy.yaml's
+# select list omits. Scratch config for validating the speed_delta model
+# (gas_stall_report.md §8a); not wired into any other pipeline.
+defaults:
+  - /model: yaak/control_transformer/finetuned
+  - /datamodule: yaak/predict
+  - /paths: yaak/default
+  - /logger: yaak/rerun/prediction_policy
+  - _self_
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  _convert_: all
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  precision: "bf16-mixed"
+  logger: false
+  callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives:
+          - ground_truth
+          - prediction_value
+          - speed_value
+          - speed_gt
+
+    - _target_: rmind.callbacks.DataFramePredictionWriter
+      write_interval: batch
+      path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
+      select:
+        - [batch, data, meta/sample_id]
+        - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+        - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+        - [batch, data, meta/VehicleMotion/speed]
+        - [policy, ground_truth, value]
+        - [policy, prediction_value, value]
+        - [policy, speed_value, value]
+        - [policy, speed_gt, value]
+      writer:
+        _target_: polars.DataFrame.write_parquet
+        _partial_: true
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 5

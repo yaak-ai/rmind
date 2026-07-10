@@ -34,6 +34,8 @@ class ObjectivePredictionKey(StrEnum):
     LOSS = auto()
     TRAJECTORY_VALUE = auto()
     TRAJECTORY_GT = auto()
+    SPEED_VALUE = auto()
+    SPEED_GT = auto()
 
 
 class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]

@@ -67,6 +67,14 @@ class PolicyObjective(Objective):
         longitudinal_mode_loss: InstanceOf[Module] | None = None,
         longitudinal_mode_loss_weight: float = 1.0,
         longitudinal_press_threshold: float = 0.01,
+        speed_head: InstanceOf[Module] | None = None,
+        speed_loss: InstanceOf[Module] | None = None,
+        speed_loss_weight: float = 0.1,
+        speed_key: tuple[str, ...] = ("input", "continuous", "speed"),
+        speed_scale: float = 50.0,
+        speed_delta_scale: float = 10.0,
+        pedal_heads: InstanceOf[ModuleDict] | None = None,
+        condition_steering_on_speed: bool = False,
     ) -> None:
         super().__init__()
 
@@ -102,13 +110,36 @@ class PolicyObjective(Objective):
         self.longitudinal_mode_loss: Module | None = longitudinal_mode_loss
         self.longitudinal_mode_loss_weight: float = longitudinal_mode_loss_weight
         self.longitudinal_press_threshold: float = longitudinal_press_threshold
+        # desired-speed inverse-dynamics decode: speed_head forecasts multi-step
+        # Δspeed (diff vs the conditioning tick, not absolute/relative — see
+        # gas_stall_report.md §8) from the same pooled features as the other
+        # heads; pedal_heads then map {Δspeed_pred (detached), current_speed} ->
+        # gas/brake, replacing the generic full-context `heads` entry for those
+        # two keys. Δspeed is a smooth, non-bimodal target (unlike raw gas/brake),
+        # aimed at sidestepping the AUC ceiling from the bimodal press decision.
+        self.speed_head: Module | None = speed_head
+        self.speed_loss: Module | None = speed_loss
+        self.speed_loss_weight: float = speed_loss_weight
+        self.speed_key: tuple[str, ...] = speed_key
+        # raw km/h values (~0-130 speed, ~±30 delta) are wildly out of scale next
+        # to the rest of the network's ~unit-scale, LayerNorm'd activations; a
+        # freshly-initialized head fed them directly explodes (loss ~1e7, seen
+        # in the first speed_delta training run, 2026-07-09). Divide down to a
+        # roughly unit-scale range before they touch any learned weights.
+        self.speed_scale: float = speed_scale
+        self.speed_delta_scale: float = speed_delta_scale
+        self.pedal_heads: ModuleDict | None = pedal_heads
+        # current_speed may not survive well into the pooled observation_summary
+        # (it's one scalar among many tokens); steering-angle-to-curvature
+        # mapping is speed-dependent (slip/dynamics), so give it explicitly.
+        self.condition_steering_on_speed: bool = condition_steering_on_speed
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        logits, _, _, mode_logits = self._compute_logits(
+        logits, _, _, mode_logits, _ = self._compute_logits(
             episode=episode, embedding=embedding, keep_horizon=True
         )
         mode = (
@@ -178,21 +209,24 @@ class PolicyObjective(Objective):
             return pool(x)
         return x.mean(dim=1, keepdim=True)
 
-    def _compute_logits(
+    def _compute_logits(  # noqa: PLR0914
         self,
         *,
         episode: Episode,
         embedding: Tensor,
         feature_idx: int | None = None,
         keep_horizon: bool = False,
-    ) -> tuple[TensorTree, Tensor | None, Tensor | None, Tensor | None]:
-        """Returns (action_logits, traj_logits, h_traj, mode_logits).
+    ) -> tuple[TensorTree, Tensor | None, Tensor | None, Tensor | None, Tensor | None]:
+        """Returns (action_logits, traj_logits, h_traj, mode_logits, speed_logits).
 
         traj_logits: (b, num_steps, 4) = [mean_x, logvar_x, mean_y, logvar_y], or
             (b, num_steps, 6) with trailing [mean_yaw, logvar_yaw] when the
             trajectory_head was built with predict_yaw=True, or None.
         h_traj:      (b, num_steps, hidden_size) GRU hidden states or None.
         mode_logits: (b, num_steps, 3) coast/gas/brake logits or None.
+        speed_logits: (b, num_steps, 2) = [mean_dv, logvar_dv] Δspeed forecast,
+            normalized by speed_delta_scale (diff vs. the conditioning tick —
+            see gas_stall_report.md §8), or None when speed_head is unset.
         keep_horizon: at inference, return all predicted steps (b, h, d) instead of
         only the first (b, 1, d); ignored in the training branch (already full).
         """
@@ -212,6 +246,24 @@ class PolicyObjective(Objective):
 
         features = rearrange(parts, "i b 1 d -> b 1 (i d)")
 
+        current_speed: Tensor | None = None
+        if self.speed_head is not None or self.condition_steering_on_speed:
+            # normalized (~unit scale); raw km/h would dwarf the rest of the
+            # network's LayerNorm'd activations (see speed_scale docstring)
+            current_speed = (
+                episode.get(self.speed_key).squeeze(-1)[:, idx] / self.speed_scale
+            )  # (b,)
+
+        speed_logits: Tensor | None = None
+        if self.speed_head is not None:
+            speed_logits = self.speed_head(features)  # (b, steps, 2), normalized Δspeed
+
+        heads_features = features
+        if self.condition_steering_on_speed:
+            heads_features = torch.cat(
+                [features, cast("Tensor", current_speed).view(-1, 1, 1)], dim=-1
+            )  # (b, 1, d+1)
+
         traj_logits: Tensor | None = None
         h_traj: Tensor | None = None
         if self.trajectory_head is not None:
@@ -219,12 +271,30 @@ class PolicyObjective(Objective):
                 features
             )  # (b, steps, 4), (b, steps, H)
 
-        logits = self.heads(features, h_traj)
+        logits = self.heads(heads_features, h_traj)
         mode_logits = (
-            self.longitudinal_mode_head(features, h_traj)
+            self.longitudinal_mode_head(heads_features, h_traj)
             if self.longitudinal_mode_head is not None
             else None
         )
+
+        if self.pedal_heads is not None:
+            speed_pred_mean = cast("Tensor", speed_logits)[..., :1].detach()  # (b, steps, 1)
+            steps = speed_pred_mean.shape[1]
+            current_speed_bcast = (
+                cast("Tensor", current_speed).view(-1, 1, 1).expand(-1, steps, 1)
+            )  # (b, steps, 1)
+            pedal_input = torch.cat(
+                [speed_pred_mean, current_speed_bcast], dim=-1
+            )  # (b, steps, 2)
+            pedal_logits = self.pedal_heads(pedal_input)  # {"continuous": {gas_pedal, brake_pedal}}
+            logits = {
+                **logits,
+                Modality.CONTINUOUS: {
+                    **logits.get(Modality.CONTINUOUS, {}),
+                    **pedal_logits[Modality.CONTINUOUS],
+                },
+            }
 
         def _to_steps(x: Tensor) -> Tensor:
             # MLP: (b, 1, h*d) → (b, h, d);  GRU: already (b, h, d)
@@ -238,6 +308,7 @@ class PolicyObjective(Objective):
                 traj_logits,
                 h_traj,
                 _to_steps(mode_logits) if mode_logits is not None else None,
+                _to_steps(speed_logits) if speed_logits is not None else None,
             )
         # Inference: normalize to (b, h, d) per-step layout, then keep all steps
         # or only the first depending on keep_horizon
@@ -251,6 +322,7 @@ class PolicyObjective(Objective):
             traj_logits,
             h_traj,
             _norm_steps(mode_logits) if mode_logits is not None else None,
+            _norm_steps(speed_logits) if speed_logits is not None else None,
         )
 
     @override
@@ -258,7 +330,7 @@ class PolicyObjective(Objective):
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        logits, traj_logits, _, mode_logits = self._compute_logits(
+        logits, traj_logits, _, mode_logits, speed_logits = self._compute_logits(
             episode=episode, embedding=embedding
         )
 
@@ -338,6 +410,30 @@ class PolicyObjective(Objective):
                 ) / 2  # ty:ignore[call-non-callable]
             all_losses["trajectory"] = traj_loss * self.trajectory_loss_weight
 
+        if (
+            speed_logits is not None
+            and self.speed_loss is not None
+            and self.training
+            and self.action_horizon > 1
+        ):
+            speed_raw = episode.get(self.speed_key).squeeze(-1)  # (b, t), km/h
+            current_speed = speed_raw[:, self.history_steps - 1]  # (b,)
+            future_speed = speed_raw[
+                :, self.history_steps : self.history_steps + self.action_horizon
+            ]  # (b, steps)
+            # diff repr. (see gas_stall_report.md §8), normalized to ~unit scale
+            # to match speed_head's output and what pedal_heads/steering consume
+            speed_delta_gt = (
+                future_speed - current_speed.unsqueeze(-1)
+            ) / self.speed_delta_scale  # (b, steps)
+            all_losses["speed"] = (
+                self.speed_loss(
+                    rearrange(speed_logits, "b h d -> (b h) d"),
+                    rearrange(speed_delta_gt, "b h -> (b h)"),
+                )
+                * self.speed_loss_weight
+            )  # ty:ignore[call-non-callable]
+
         return {"loss": all_losses}
 
     @override
@@ -357,8 +453,11 @@ class PolicyObjective(Objective):
             embedding = self.norm(embedding)
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
+            ground_truth_paths = self.heads.tree_paths() + (
+                self.pedal_heads.tree_paths() if self.pedal_heads is not None else ()
+            )
             predictions[key] = Prediction(
-                value=episode.input.select(*self.heads.tree_paths()).squeeze(-1),
+                value=episode.input.select(*ground_truth_paths).squeeze(-1),
                 timestep_indices=slice(None),
             )
 
@@ -378,6 +477,8 @@ class PolicyObjective(Objective):
             ObjectivePredictionKey.LOSS,
             ObjectivePredictionKey.TRAJECTORY_VALUE,
             ObjectivePredictionKey.TRAJECTORY_GT,
+            ObjectivePredictionKey.SPEED_VALUE,
+            ObjectivePredictionKey.SPEED_GT,
         }:
             # train-aligned scoring for horizon models: features at the last history
             # tick, gt at the first horizon tick — the action that drives the car.
@@ -395,11 +496,13 @@ class PolicyObjective(Objective):
                     [feature_idx]
                 ].parse(embedding)
 
-            raw_logits_full, traj_logits, _, mode_logits_full = self._compute_logits(
-                episode=episode,
-                embedding=embedding,
-                feature_idx=feature_idx,
-                keep_horizon=True,
+            raw_logits_full, traj_logits, _, mode_logits_full, speed_logits_full = (
+                self._compute_logits(
+                    episode=episode,
+                    embedding=embedding,
+                    feature_idx=feature_idx,
+                    keep_horizon=True,
+                )
             )
             # scoring keys use the first predicted step; the full horizon is kept
             # only for gate/mode aggregation (see _gate_prob, _longitudinal_mode)
@@ -791,6 +894,33 @@ class PolicyObjective(Objective):
                             xy=xy, heading_deg=heading, history_steps=self.history_steps
                         )  # (b, steps, 2)
                         value = {"xy": traj_gt}
+                    predictions[key] = Prediction(
+                        value=TensorDict(value, batch_size=[b]),
+                        timestep_indices=timestep_indices,
+                    )
+
+            if (key := ObjectivePredictionKey.SPEED_VALUE) in keys:
+                if speed_logits_full is not None:
+                    # denormalized back to km/h for direct interpretability
+                    value = {"delta": speed_logits_full[..., 0] * self.speed_delta_scale}
+                    predictions[key] = Prediction(
+                        value=TensorDict(value, batch_size=[b]),
+                        timestep_indices=timestep_indices,
+                    )
+
+            if (key := ObjectivePredictionKey.SPEED_GT) in keys:
+                speed_raw = episode.get(self.speed_key, default=None)
+                if speed_raw is not None:
+                    speed_raw = speed_raw.squeeze(-1)  # (b, t), km/h
+                    # only gt_idx itself is a genuine future tick in this window
+                    # (history_steps ticks of history + this single scored target,
+                    # confirmed against score_l1's own gt_idx-aligned computation —
+                    # ticks beyond gt_idx are NOT present here); a true multi-step
+                    # comparison against speed_head's full horizon needs joining
+                    # consecutive (1-tick-apart) predict rows' own gt_idx values.
+                    current_speed = speed_raw[:, feature_idx]
+                    target_speed = speed_raw[:, gt_idx]
+                    value = {"delta": (target_speed - current_speed).unsqueeze(-1)}  # (b, 1), km/h
                     predictions[key] = Prediction(
                         value=TensorDict(value, batch_size=[b]),
                         timestep_indices=timestep_indices,

@@ -1,0 +1,164 @@
+---
+# Option D from gas_stall_report.md §8: retarget the gas-stall problem away from
+# the bimodal press decision (AUC-capped at ~0.72-0.79, causes the mean-splitting
+# dead-zone). Adds a speed_head that forecasts multi-step Δspeed (diff vs the
+# conditioning tick, in km/h — validated as the best-behaved representation in
+# §8) from the same pooled features as the other heads, then decodes gas/brake
+# via a small inverse-dynamics MLP (pedal_heads) that sees ONLY
+# {Δspeed_pred (detached), current_speed} instead of the full 768-dim context —
+# forcing the press/no-press reasoning through the one signal §8 showed is
+# smooth and learnable well above naive persistence. steering_angle and
+# turn_signal keep full context but also get current_speed appended explicitly
+# (condition_steering_on_speed), since it may not survive well into the pooled
+# observation_summary and steering-to-curvature mapping is speed-dependent.
+#
+# Warm-start from the relative-trajectory checkpoint (phase 1/2 of the
+# trajectory pivot) so trajectory_head is already stable; only the
+# steering_angle/turn_signal input projections change shape (768->769, extra
+# current_speed channel) and need re-initializing. gas_pedal/brake_pedal move
+# from `heads` to the new `pedal_heads` entirely (no name collision with the
+# old checkpoint, so nothing to drop for them — strict=false just ignores the
+# old keys).
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+state_dict_drop:
+  - objectives\.policy\.heads\.continuous\.steering_angle\.hidden_proj\.
+  - objectives\.policy\.heads\.discrete\.turn_signal\.hidden_proj\.
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "history_steps": 5,
+        "action_horizon": 6,
+        "feature_keys": [
+          ["summary", "observation_summary"],
+          ["context", "waypoints"]
+        ],
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "steering_angle": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 769,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 769,
+                "hidden_size": 384,
+                "out_features": 3,
+                "num_steps": 6
+              }
+            }
+          }
+        },
+        "pedal_heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.nn.MLPHead",
+                "in_features": 2,
+                "hidden_size": 32,
+                "out_features": 2
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.nn.MLPHead",
+                "in_features": 2,
+                "hidden_size": 32,
+                "out_features": 2
+              }
+            }
+          }
+        },
+        "speed_head": {
+          "_target_": "rmind.components.nn.GRUHead",
+          "in_features": 768,
+          "hidden_size": 192,
+          "out_features": 2,
+          "num_steps": 6
+        },
+        "speed_loss": {
+          "_target_": "rmind.components.loss.GaussianNLLLoss"
+        },
+        "speed_loss_weight": ${speed_loss_weight},
+        "speed_key": ["input", "continuous", "speed"],
+        "condition_steering_on_speed": true,
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          },
+          "discrete": {
+            "turn_signal": ["input", "discrete", "turn_signal"]
+          }
+        },
+        "trajectory_head": {
+          "_target_": "rmind.components.nn.GRUTrajectoryHead",
+          "in_features": 768,
+          "hidden_size": 384,
+          "num_steps": 6,
+          "predict_yaw": true
+        },
+        "trajectory_loss": {
+          "_target_": "rmind.components.loss.GaussianNLLLoss"
+        },
+        "trajectory_loss_weight": ${trajectory_loss_weight},
+        "trajectory_target": "relative",
+        "xy_key": ["input", "trajectory", "xy"],
+        "heading_key": ["input", "trajectory", "heading"],
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.ActivityWeightedGaussianNLLLoss",
+                "activity_weight": ${activity_weight}
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.ActivityWeightedGaussianNLLLoss",
+                "activity_weight": ${activity_weight}
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.ActivityWeightedGaussianNLLLoss",
+                "activity_weight": ${activity_weight}
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .episode_builder.input_transform._args_[0].paths.trajectory = {
+    "xy": ["data", "meta/Gnss/xy"],
+    "heading": ["data", "headings_denoised/heading"]
+  }
+  | .episode_builder.input_transform._args_[1].modules.trajectory = {
+    "_target_": "torch.nn.Identity"
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
+    }
+  }

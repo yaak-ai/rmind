@@ -222,3 +222,28 @@ class GRUHead(Module):
             inp = inp + self.traj_proj(h_traj)                                # (b, steps, H)
         out, _ = self.gru(inp, h0)                                            # (b, steps, H)
         return self.output_proj(out)                                           # (b, steps, out_features)
+
+
+@final
+class MLPHead(Module):
+    """Pointwise per-step MLP decoder.
+
+    Unlike `GRUHead`, which generates its own per-step variation from a single
+    context vector, this expects an input that already varies per predicted
+    step (e.g. an inverse-dynamics decode conditioned on a companion head's
+    own multi-step forecast) and applies the same small MLP at every step.
+    """
+
+    @validate_call
+    def __init__(self, *, in_features: int, hidden_size: int, out_features: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            Linear(in_features, hidden_size),
+            nn.GELU(),
+            Linear(hidden_size, out_features),
+        )
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        # x: (b, steps, in_features) -> (b, steps, out_features)
+        return self.net(x)
