@@ -23,3 +23,7 @@ clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
 clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 
 action_tokenizer_artifact: ???
+
+# supervise the offset head at ground-truth codes (fix) instead of sampled codes
+# (pre-fix behavior, kept for A/B via teacher_force_offset=false)
+teacher_force_offset: true

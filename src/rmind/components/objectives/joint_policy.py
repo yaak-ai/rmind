@@ -41,6 +41,7 @@ class JointPolicyObjective(Objective):
         chunk: Path,
         norm: InstanceOf[Module] | None = None,
         sample_codes: bool = True,
+        teacher_force_offset: bool = True,
     ) -> None:
         super().__init__()
 
@@ -53,6 +54,7 @@ class JointPolicyObjective(Objective):
         self.losses = losses  # {"code": ..., "offset": ...}
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
+        self.teacher_force_offset = teacher_force_offset
 
     @override
     def train(self, mode: bool = True) -> "JointPolicyObjective":
@@ -150,7 +152,7 @@ class JointPolicyObjective(Objective):
                 chunk.flatten(-2, -1)
             )  # (b, action_dim): the GT action chunk the policy must reconstruct
 
-        code_logits, codes, offset = self._predict(features)
+        code_logits, offsets = self._heads(features)
 
         losses: dict[str, Tensor] = {}
 
@@ -160,13 +162,28 @@ class JointPolicyObjective(Objective):
                 code_logits[:, q, :], target_codes[:, q]
             )
 
-        # reconstruct the chunk as inference does (decode sampled codes + code-conditioned
-        # offset); the frozen tokenizer makes invert(codes) gradient-free, so this term
-        # trains only the offset head
-        predicted_chunk = tokenizer.invert(codes) + offset
+        # reconstruction as inference does it (decode sampled/argmax codes + offset
+        # gathered at those codes); the frozen tokenizer makes invert() gradient-free
+        codes = self._sample_codes(code_logits)
+        sampled_chunk = tokenizer.invert(codes) + self._gather_offset(offsets, codes)
+        sampled_recon = self.losses["offset"](sampled_chunk.detach(), target)
+
+        if self.teacher_force_offset:
+            # offset supervised at the GROUND-TRUTH codes (teacher forcing), so each
+            # code's offset entry only sees residuals of actions that quantized to it;
+            # supervising at sampled codes lets the offset learn the conditional median
+            # regardless of code, cancelling the code selection
+            predicted_chunk = tokenizer.invert(target_codes) + self._gather_offset(
+                offsets, target_codes
+            )
+        else:
+            predicted_chunk = sampled_chunk
+
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
-        return {"loss": losses}
+        # sampled-code reconstruction error (the pre-fix loss value), logged for
+        # comparability across the teacher-forcing A/B; carries no gradient
+        return {"loss": losses, "metric": {"offset_sampled_recon": sampled_recon}}
 
     @override
     def predict(
