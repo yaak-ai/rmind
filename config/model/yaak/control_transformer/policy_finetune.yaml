@@ -51,12 +51,12 @@ hparams_jq: |
         },
         "code_head": {
           "_target_": "torchvision.ops.MLP",
-          "in_channels": 1152,
+          "in_channels": 768,
           "hidden_channels": [1024, 1024, 64]
         },
         "offset_head": {
           "_target_": "torchvision.ops.MLP",
-          "in_channels": 1152,
+          "in_channels": 768,
           "hidden_channels": [1024, 1024, 1536]
         },
         "losses": {

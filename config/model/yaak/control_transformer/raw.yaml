@@ -411,14 +411,6 @@ objectives:
       projections:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          continuous:
-            speed:
-              _target_: torch.nn.LayerNorm
-              normalized_shape:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${encoder_embedding_dim}
           foresight:
             cam_front_left:
               _target_: torch.nn.Sequential
@@ -434,16 +426,6 @@ objectives:
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          continuous:
-            speed:
-              _target_: rmind.components.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${encoder_embedding_dim}
-              out_features: ${speed_bins}
-              bias: False
           foresight:
             cam_front_left:
               _target_: rmind.components.transformer.CrossAttentionDecoderHead
@@ -462,17 +444,12 @@ objectives:
                 out_features: ${image_embedding_dim}
 
       targets:
-        continuous:
-          speed: [input_tokens, continuous, speed]
         foresight:
           cam_front_left: [input_embeddings, image, cam_front_left]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          continuous:
-            speed:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
           foresight:
             cam_front_left:
               _target_: rmind.components.loss.GramAnchoringLoss

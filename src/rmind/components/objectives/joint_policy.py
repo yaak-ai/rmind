@@ -94,12 +94,9 @@ class JointPolicyObjective(Objective):
             Modality.SUMMARY,
             SummaryToken.OBSERVATION_SUMMARY,
         ))
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
-        )
 
         return rearrange(
-            [observation_summary, observation_history, waypoints], "i b 1 d -> b (i d)"
+            [observation_summary, observation_history], "i b 1 d -> b (i d)"
         )
 
     def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
@@ -138,7 +135,7 @@ class JointPolicyObjective(Objective):
                 chunk.flatten(-2, -1)
             )  # (b, action_dim): the GT action chunk the policy must reconstruct
 
-        code_logits, codes, offset = self._predict(features)
+        code_logits, _, _ = self._predict(features)
 
         losses: dict[str, Tensor] = {}
 
@@ -151,7 +148,9 @@ class JointPolicyObjective(Objective):
         # reconstruct the chunk as inference does (decode sampled codes + code-conditioned
         # offset); the frozen tokenizer makes invert(codes) gradient-free, so this term
         # trains only the offset head
-        predicted_chunk = tokenizer.invert(codes) + offset
+        predicted_chunk = tokenizer.invert(target_codes) + self._gather_offset(
+            offsets, target_codes
+        )
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
         return {"loss": losses}
@@ -204,8 +203,7 @@ class JointPolicyObjective(Objective):
                 }),
                 "discrete": TensorDict({
                     "turn_signal": torch.bucketize(
-                        chunk[..., 3] * 2,
-                        torch.tensor([0.5, 1.5], device=chunk.device),
+                        chunk[..., 3] * 2, torch.tensor([0.5, 1.5], device=chunk.device)
                     )
                 }),
             })

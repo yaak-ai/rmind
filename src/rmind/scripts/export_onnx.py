@@ -39,6 +39,30 @@ class Config(BaseModel):
     artifacts_dir: Path = Path.cwd()
     input_names: Sequence[str] | None = None
     output_names: Sequence[str] | None = None
+    onnx_artifact: str | None = None
+
+
+def _log_onnx_artifact(config: Config) -> None:
+    import wandb  # noqa: PLC0415
+
+    parts = config.onnx_artifact.split("/")
+    name_version = parts[-1]  # "model-2gqxhjod:v7"
+    name, _, version = name_version.partition(":")
+    artifact_name = f"{name}-{version}.onnx"  # "model-2gqxhjod-v7.onnx"
+    entity = parts[0] if len(parts) >= 3 else None
+    project = parts[1] if len(parts) >= 3 else None
+
+    run = wandb.run or wandb.init(entity=entity, project=project)
+    artifact = wandb.Artifact(name=artifact_name, type="model")
+    artifact.add_file(str(config.f.resolve()))
+    if config.external_data:
+        for p in config.artifacts_dir.iterdir():
+            if p != config.f and p.is_file():
+                artifact.add_file(str(p.resolve()))
+    run.log_artifact(artifact)
+    artifact.wait()
+    run.finish()
+    logger.info("logged wandb artifact", artifact=artifact_name)
 
 
 @hydra.main(version_base=None)
@@ -81,7 +105,7 @@ def main(cfg: DictConfig) -> None:
 
     logger.debug("onnx exporting")
     model = torch.onnx.export(
-        model=exported_program, **config.model_dump(exclude={"model"})
+        model=exported_program, **config.model_dump(exclude={"model", "onnx_artifact"})
     )
 
     logger.debug(
@@ -89,6 +113,9 @@ def main(cfg: DictConfig) -> None:
         model=config.f.resolve().as_posix(),
         artifacts=config.artifacts_dir.resolve().as_posix(),
     )
+
+    if config.onnx_artifact is not None:
+        _log_onnx_artifact(config)
 
 
 if __name__ == "__main__":

@@ -39,7 +39,7 @@ generate-config:
         --ignore-unknown-comments \
         --strict
 
-train *ARGS: generate-config check-git
+train *ARGS: generate-config
     uv run \
         --extra train \
         rmind-train \
