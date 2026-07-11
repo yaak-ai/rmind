@@ -11,6 +11,10 @@ defaults:
 
 encoder_embedding_dim: 384
 
+# peak LR for policy_finetune_drop_history_weighted.yaml's optimizer; 1e-5 matches
+# the original full-scale (10-epoch) run this policy was pretrained with -- override
+# for short, focused finetunes on a much smaller (post-filter) dataset
+optimizer_lr: 1e-5
 trajectory_loss_weight: 0.1
 speed_loss_weight: 0.1
 activity_weight: 5

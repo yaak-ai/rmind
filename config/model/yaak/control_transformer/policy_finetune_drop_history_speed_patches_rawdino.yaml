@@ -192,7 +192,12 @@ hparams_jq: |
     "interval": "step",
     "scheduler": {
       "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
-      "num_warmup_steps": 25000,
-      "num_training_steps": 250000
+      "num_warmup_steps": 2000,
+      "num_training_steps": 30000
     }
   }
+# schedule sized for a single ~30.8k-step epoch (1,971,464 train windows /
+# batch_size 64) — this is a warm-start diagnostic run, not the original
+# 10-epoch/250k-step baseline training. Matches the E6-era single-epoch
+# convention (see gas_stall_report.md) so it doesn't repeat the "0.15-epoch
+# runs never leave the 25k-step LR warmup" pitfall.

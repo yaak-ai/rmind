@@ -119,3 +119,4 @@ hparams_jq: |
       "num_training_steps": ${lr_training_steps}
     }
   }
+  | .optimizer.lr = ${optimizer_lr}
