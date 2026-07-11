@@ -41,6 +41,8 @@ class JointPolicyObjective(Objective):
         chunk: Path,
         norm: InstanceOf[Module] | None = None,
         sample_codes: bool = True,
+        teacher_force_offset: bool = True,
+        offset_scale: float | None = None,
     ) -> None:
         super().__init__()
 
@@ -53,6 +55,8 @@ class JointPolicyObjective(Objective):
         self.losses = losses  # {"code": ..., "offset": ...}
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
+        self.teacher_force_offset = teacher_force_offset
+        self.offset_scale = offset_scale
 
     @override
     def train(self, mode: bool = True) -> "JointPolicyObjective":
@@ -102,27 +106,51 @@ class JointPolicyObjective(Objective):
             [observation_summary, observation_history, waypoints], "i b 1 d -> b (i d)"
         )
 
-    def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        """VQ-BeT joint code prediction with a code-conditioned offset."""
+    def _heads(self, features: Tensor) -> tuple[Tensor, Tensor]:
+        """Code logits (b, g, c) and the full offset table (b, g, c, action_dim)."""
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
 
         code_logits = rearrange(self.code_head(features), "b (g c) -> b g c", g=g, c=c)
+        offsets = rearrange(
+            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
+        )
+        return code_logits, offsets
+
+    @staticmethod
+    def _gather_offset(offsets: Tensor, codes: Tensor) -> Tensor:
+        """Select each quantizer's offset at `codes` and sum over quantizers."""
+        index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
+        # https://arxiv.org/pdf/2403.03181 Figure 2.
+        return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
+
+    def _offset(self, offsets: Tensor, codes: Tensor) -> Tensor:
+        """Gathered offset, optionally soft-bounded to (-offset_scale, offset_scale).
+
+        The bound is `scale * tanh(x / scale)`: identity for |x| << scale, so
+        enabling it on a cleanly-trained model preserves sub-cell offsets while
+        capping cross-cell excursions.
+        """
+        offset = self._gather_offset(offsets, codes)
+        if self.offset_scale is None:
+            return offset
+        return torch.tanh(offset / self.offset_scale) * self.offset_scale
+
+    def _sample_codes(self, code_logits: Tensor) -> Tensor:
         if self.sample_codes:
-            codes = rearrange(
+            _, g, c = code_logits.shape
+            return rearrange(
                 torch.multinomial(code_logits.softmax(dim=-1).reshape(-1, c), 1),
                 "(b g) 1 -> b g",
                 g=g,
             )
-        else:
-            codes = code_logits.argmax(dim=-1)
+        return code_logits.argmax(dim=-1)
 
-        offsets = rearrange(
-            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
-        )
-        index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
-        # https://arxiv.org/pdf/2403.03181 Figure 2.
-        offset = offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
+    def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """VQ-BeT joint code prediction with a code-conditioned offset."""
+        code_logits, offsets = self._heads(features)
+        codes = self._sample_codes(code_logits)
+        offset = self._offset(offsets, codes)
 
         return code_logits, codes, offset
 
@@ -138,7 +166,7 @@ class JointPolicyObjective(Objective):
                 chunk.flatten(-2, -1)
             )  # (b, action_dim): the GT action chunk the policy must reconstruct
 
-        code_logits, codes, offset = self._predict(features)
+        code_logits, offsets = self._heads(features)
 
         losses: dict[str, Tensor] = {}
 
@@ -148,13 +176,28 @@ class JointPolicyObjective(Objective):
                 code_logits[:, q, :], target_codes[:, q]
             )
 
-        # reconstruct the chunk as inference does (decode sampled codes + code-conditioned
-        # offset); the frozen tokenizer makes invert(codes) gradient-free, so this term
-        # trains only the offset head
-        predicted_chunk = tokenizer.invert(codes) + offset
+        # reconstruction as inference does it (decode sampled/argmax codes + offset
+        # gathered at those codes); the frozen tokenizer makes invert() gradient-free
+        codes = self._sample_codes(code_logits)
+        sampled_chunk = tokenizer.invert(codes) + self._offset(offsets, codes)
+        sampled_recon = self.losses["offset"](sampled_chunk.detach(), target)
+
+        if self.teacher_force_offset:
+            # offset supervised at the GROUND-TRUTH codes (teacher forcing), so each
+            # code's offset entry only sees residuals of actions that quantized to it;
+            # supervising at sampled codes lets the offset learn the conditional median
+            # regardless of code, cancelling the code selection
+            predicted_chunk = tokenizer.invert(target_codes) + self._offset(
+                offsets, target_codes
+            )
+        else:
+            predicted_chunk = sampled_chunk
+
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
-        return {"loss": losses}
+        # sampled-code reconstruction error (the pre-fix loss value), logged for
+        # comparability across the teacher-forcing A/B; carries no gradient
+        return {"loss": losses, "metric": {"offset_sampled_recon": sampled_recon}}
 
     @override
     def predict(
@@ -204,8 +247,7 @@ class JointPolicyObjective(Objective):
                 }),
                 "discrete": TensorDict({
                     "turn_signal": torch.bucketize(
-                        chunk[..., 3] * 2,
-                        torch.tensor([0.5, 1.5], device=chunk.device),
+                        chunk[..., 3] * 2, torch.tensor([0.5, 1.5], device=chunk.device)
                     )
                 }),
             })

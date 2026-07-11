@@ -66,7 +66,8 @@ hparams_jq: |
             "offset": { "_target_": "torch.nn.L1Loss" }
           }
         },
-        "chunk": ["input", "joint_actions"]
+        "chunk": ["input", "joint_actions"],
+        "teacher_force_offset": ("${teacher_force_offset}" | ascii_downcase == "true")
       }
     }
   }
