@@ -1,7 +1,7 @@
 FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates build-essential \
+        curl ca-certificates build-essential libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 # uv
