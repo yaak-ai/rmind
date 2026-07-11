@@ -128,6 +128,7 @@ def collect(
     pred_conflicts: list[Tensor] = []
     gt_conflicts: list[Tensor] = []
     entropies: list[Tensor] = []
+    pedal_values: list[Tensor] = []  # (b, h, 4): pred gas/brake, gt gas/brake
 
     t0 = time.perf_counter()
     for batch_idx, tensors in enumerate(
@@ -150,6 +151,17 @@ def collect(
                 (gt[..., GAS_DIM] > GAS_THRESH) & (gt[..., BRAKE_DIM] > BRAKE_THRESH)
             ).cpu()
         )
+        pedal_values.append(
+            torch.stack(
+                [
+                    pred[..., GAS_DIM],
+                    pred[..., BRAKE_DIM],
+                    gt[..., GAS_DIM],
+                    gt[..., BRAKE_DIM],
+                ],
+                dim=-1,
+            ).cpu()
+        )
 
         probs = code_logits[:, 0, :].softmax(dim=-1)
         entropies.append(-(probs * probs.clamp_min(1e-12).log()).sum(dim=-1).cpu())
@@ -164,6 +176,7 @@ def collect(
         "pred_conflict": torch.cat(pred_conflicts),
         "gt_conflict": torch.cat(gt_conflicts),
         "entropy_q0": torch.cat(entropies),
+        "pedal_values": torch.cat(pedal_values),
     }
 
 
@@ -199,6 +212,32 @@ def summarize(collected: dict[str, Tensor]) -> dict[str, Any]:
     pred = _conflict_stats(collected["pred_conflict"])
     gt = _conflict_stats(collected["gt_conflict"])
     gt_floor = gt["frame_conflict_rate"]
+
+    # pedal activation rates + multi-threshold conflicts from raw values:
+    # a median-collapsed head suppresses minority-mode activations, so the
+    # predicted gas-activation rate falling below GT is the lock-in signature
+    vals = collected["pedal_values"]  # (n, h, 4): pred gas/brake, gt gas/brake
+    activation: dict[str, Any] = {}
+    for side, (gi, bi) in {"predicted": (0, 1), "ground_truth": (2, 3)}.items():
+        act = {}
+        for tname, (tg, tb) in {
+            "sensor": (GAS_THRESH, BRAKE_THRESH),
+            "t02": (0.02, 0.02),
+            "t05": (0.05, 0.05),
+        }.items():
+            gas_on = vals[..., gi] > tg
+            brake_on = vals[..., bi] > tb
+            act[tname] = {
+                "gas_frame_rate": float(gas_on.float().mean()),
+                "brake_frame_rate": float(brake_on.float().mean()),
+                "gas_rate_by_entropy_bucket": [
+                    float(gas_on[bucket_ids == b].float().mean())
+                    for b in range(N_BUCKETS)
+                ],
+                "conflict_frame_rate": float((gas_on & brake_on).float().mean()),
+            }
+        activation[side] = act
+
     return {
         "entropy_q0_quartile_edges_nats": [float(e) for e in edges],
         "entropy_q0_mean_nats": float(entropy.mean()),
@@ -207,6 +246,7 @@ def summarize(collected: dict[str, Tensor]) -> dict[str, Any]:
         "predicted_over_gt_frame_rate": (
             pred["frame_conflict_rate"] / gt_floor if gt_floor > 0 else None
         ),
+        "activation": activation,
     }
 
 
