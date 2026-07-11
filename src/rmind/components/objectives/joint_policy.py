@@ -123,8 +123,13 @@ class JointPolicyObjective(Objective):
 
         return code_logits, codes, offset
 
-    def _gather_offset(self, offsets: Tensor, codes: Tensor) -> Tensor:
+    def _gather_offset(self, features: Tensor, codes: Tensor) -> Tensor:
         """Select each quantizer's offset at `codes` and sum over quantizers."""
+        quantizer = self.tokenizer.quantizer
+        g, c = quantizer.num_quantizers, quantizer.codebook_size
+        offsets = rearrange(
+            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
+        )
         index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
         # https://arxiv.org/pdf/2403.03181 Figure 2.
         return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
@@ -155,7 +160,7 @@ class JointPolicyObjective(Objective):
         # offset); the frozen tokenizer makes invert(codes) gradient-free, so this term
         # trains only the offset head
         predicted_chunk = tokenizer.invert(target_codes) + self._gather_offset(
-            offsets, target_codes
+            features, target_codes
         )
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
