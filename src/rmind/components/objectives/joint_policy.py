@@ -123,6 +123,12 @@ class JointPolicyObjective(Objective):
 
         return code_logits, codes, offset
 
+    def _gather_offset(self, offsets: Tensor, codes: Tensor) -> Tensor:
+        """Select each quantizer's offset at `codes` and sum over quantizers."""
+        index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
+        # https://arxiv.org/pdf/2403.03181 Figure 2.
+        return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
+
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         features = self._features(episode, embedding)  # (b, feature_dim)
