@@ -9,11 +9,11 @@ from matplotlib.patches import Patch
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 from structlog import get_logger
 from torch import Tensor
+from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
 from rmind.components.base import TokenType
 from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
-from wandb import Image
 
 from .common import _figure_to_rgba, _get_wandb_loggers
 

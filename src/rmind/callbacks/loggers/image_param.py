@@ -7,9 +7,9 @@ from einops import rearrange
 from pydantic import AfterValidator, validate_call
 from tensordict import TensorDict
 from torch import Tensor
+from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
-from wandb import Image
 
 from .common import (
     BATCH_HOOKS,

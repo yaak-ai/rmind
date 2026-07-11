@@ -10,10 +10,10 @@ from pydantic import AfterValidator, validate_call
 from structlog import get_logger
 from torch import Tensor
 from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
+from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
 from rmind.utils.pytree import key_get_default
-from wandb import Image
 
 from .common import (
     BATCH_HOOKS,

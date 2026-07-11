@@ -71,7 +71,12 @@ class TensorRTInferenceBackend:
             raise RuntimeError(msg)
 
         input = {
-            k: v.to(self._device, dtype=torch.int32 if k == "turn_signal" and v.dtype == torch.int64 else None).contiguous()
+            k: v.to(
+                self._device,
+                dtype=torch.int32
+                if k == "turn_signal" and v.dtype == torch.int64
+                else None,
+            ).contiguous()
             for k, v in input.items()
         }
         output = {

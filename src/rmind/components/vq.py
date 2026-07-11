@@ -3,14 +3,14 @@ from typing import final
 import torch
 from torch import Tensor
 from torch.nn import Module
-from vector_quantize_pytorch import ResidualVQ as RVQ
+from vector_quantize_pytorch import ResidualVQ as RVQ  # noqa: N817
 
 
 @final
 class ResidualVQ(Module):
     """Residual vector quantizer from VQ-BeT (https://arxiv.org/pdf/2403.03181)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         dim: int,
@@ -49,7 +49,9 @@ class ResidualVQ(Module):
         return self.vq.get_output_from_indices(codes)
 
     def codebook(self, level: int) -> Tensor:
-        return self.vq.layers[level]._codebook.embed.reshape(-1, self.dim)
+        return self.vq.layers[level]._codebook.embed.reshape(  # noqa: SLF001
+            -1, self.dim
+        )
 
     @torch.no_grad()
     def perplexity(self, codes: Tensor) -> Tensor:
