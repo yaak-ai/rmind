@@ -42,4 +42,8 @@ clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 # dataset/yaak/train.yaml). 5% projects to ~24% at-rest->gas (~3:1 brake:gas).
 atrest_keep_pct: 5
 
+# Teacher-force the offset loss at GT codes (PR #258 fix); false = pre-fix
+# behavior, kept for A/B.
+teacher_force_offset: true
+
 action_tokenizer_artifact: ???
