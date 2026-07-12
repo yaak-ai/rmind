@@ -109,21 +109,20 @@ def collect(
     dataloader: Any,
     device: str | torch.device,
     max_batches: int | None,
+    *,
+    decoding: str = "argmax",
 ) -> dict[str, Tensor]:
     """Run the model over the split; return per-sample conflict masks and entropy.
 
     Returns CPU tensors: `pred_conflict` (n, horizon) bool, `gt_conflict`
     (n, horizon) bool, `entropy_q0` (n,) float (nats, over softmax of the
     q=0 code logits).
-
-    Raises:
-        RuntimeError: if the policy objective is not in argmax decoding mode.
     """
     policy = cast("JointPolicyObjective", model.objectives["policy"])
     tokenizer = cast("ActionTokenizer", policy.tokenizer)
-    if policy.sample_codes:
-        msg = "policy.sample_codes must be False (export-time argmax decoding)"
-        raise RuntimeError(msg)
+    # load_policy forces sample_codes=False; for the sampled-decoding variant we
+    # re-enable it here (seeded by the caller) to measure stochastic deployment
+    policy.sample_codes = decoding == "sampled"
 
     pred_conflicts: list[Tensor] = []
     gt_conflicts: list[Tensor] = []
@@ -135,7 +134,7 @@ def collect(
         iter_policy_tensors(model, dataloader, device=device, max_batches=max_batches)
     ):
         code_logits = tensors["code_logits"]  # (b, g, c)
-        codes = policy._sample_codes(code_logits)  # noqa: SLF001  # argmax
+        codes = policy._sample_codes(code_logits)  # noqa: SLF001  # per decoding mode
         offset = policy._gather_offset(tensors["offsets"], codes)  # noqa: SLF001
         pred = (tokenizer.invert(codes) + offset).unflatten(-1, (-1, 4))  # (b, 6, 4)
         gt = tensors["target"].unflatten(-1, (-1, 4))  # (b, 6, 4), normalized GT
@@ -286,6 +285,7 @@ def _log_wandb(results: dict[str, Any], out_path: Path) -> str:
 
 
 def main(args: argparse.Namespace) -> None:
+    torch.manual_seed(args.seed)
     model = load_policy(args.ckpt, args.device)
     policy = cast("JointPolicyObjective", model.objectives["policy"])
     tokenizer = cast("ActionTokenizer", policy.tokenizer)
@@ -307,11 +307,14 @@ def main(args: argparse.Namespace) -> None:
         + (f" (capped at {args.max_batches})" if args.max_batches else "")
     )
 
-    collected = collect(model, loader, args.device, args.max_batches)
+    collected = collect(
+        model, loader, args.device, args.max_batches, decoding=args.decoding
+    )
     results: dict[str, Any] = {
         "ckpt": str(args.ckpt),
         "split": args.split,
-        "decoding": "argmax (sample_codes=False, export parity)",
+        "decoding": args.decoding,
+        "seed": args.seed,
         "thresholds": {"gas": GAS_THRESH, "brake": BRAKE_THRESH},
         "normalization_check": normalization_check,
         **summarize(collected),
@@ -341,6 +344,8 @@ if __name__ == "__main__":
         "--split", default="val", choices=["train", "val", "train_debug"]
     )
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--decoding", choices=["argmax", "sampled"], default="argmax")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--max-batches", type=int, default=None)
