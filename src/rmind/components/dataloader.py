@@ -72,14 +72,12 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
         self._generator = generator
         self._seed = seed
         self._method: Literal["thread", "process"] = method
-        self._node_kwargs = {
-            "num_workers": num_workers,
-            "in_order": in_order,
-            "multiprocessing_context": multiprocessing_context,
-            "max_concurrent": max_concurrent,
-            "snapshot_frequency": snapshot_frequency,
-            "prebatch": prebatch,
-        }
+        self._num_workers = num_workers
+        self._in_order = in_order
+        self._multiprocessing_context = multiprocessing_context
+        self._max_concurrent = max_concurrent
+        self._snapshot_frequency = snapshot_frequency
+        self._prebatch = prebatch
         self._collate_fn = collate_fn
         self._pin_memory = pin_memory
         self._pin_memory_device = pin_memory_device
@@ -126,7 +124,7 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
                 )
                 raise ValueError(msg)
             self._distributed_sampler = DistributedSampler(
-                self._dataset,  # type: ignore[arg-type]
+                self._dataset,  # ty:ignore[invalid-argument-type]  # type: ignore[arg-type]
                 shuffle=bool(self._shuffle),
                 drop_last=self._drop_last,
                 seed=self._seed,
@@ -146,7 +144,9 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
             )
 
         self._sampler = BatchSampler(
-            sampler, batch_size=self._batch_size, drop_last=self._drop_last
+            sampler,  # ty:ignore[invalid-argument-type]
+            batch_size=self._batch_size,
+            drop_last=self._drop_last,
         )
 
         node = tn.SamplerWrapper(self._sampler)
@@ -154,15 +154,19 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
             source=node,
             map_fn=MapAndCollate(self._dataset, self._collate_fn or default_collate),
             method=self._method,
-            **self._node_kwargs,
+            num_workers=self._num_workers,
+            in_order=self._in_order,
+            multiprocessing_context=self._multiprocessing_context,
+            max_concurrent=self._max_concurrent,
+            snapshot_frequency=self._snapshot_frequency,
+            prebatch=self._prebatch,
         )
 
         if self._pin_memory:
             node = tn.PinMemory(node, pin_memory_device=self._pin_memory_device)
 
         node = tn.Prefetcher(
-            node,
-            prefetch_factor=self._node_kwargs["num_workers"] * self._prefetch_factor,
+            node, prefetch_factor=self._num_workers * self._prefetch_factor
         )
 
         self._loader = tn.Loader(node)
