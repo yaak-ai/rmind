@@ -8,6 +8,7 @@
 # rebalance plan). Adds at-rest clusters to the predict metrics so launch
 # behaviour is observable during training.
 - _target_: rmind.callbacks.LogitBiasSetter
+- _target_: rmind.components.dataloader.DistributedSamplerEpochSetter
 - _target_: rmind.callbacks.ModuleFreezer
   types:
     - rmind.components.timm_backbone.TimmBackbone
