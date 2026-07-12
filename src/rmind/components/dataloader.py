@@ -66,22 +66,70 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
         seed: int = 0,
     ) -> None:
         self._dataset = dataset
+        self._batch_size = batch_size
+        self._shuffle = shuffle
+        self._drop_last = drop_last
+        self._generator = generator
+        self._seed = seed
+        self._method: Literal["thread", "process"] = method
+        self._node_kwargs = {
+            "num_workers": num_workers,
+            "in_order": in_order,
+            "multiprocessing_context": multiprocessing_context,
+            "max_concurrent": max_concurrent,
+            "snapshot_frequency": snapshot_frequency,
+            "prebatch": prebatch,
+        }
+        self._collate_fn = collate_fn
+        self._pin_memory = pin_memory
+        self._pin_memory_device = pin_memory_device
+        self._prefetch_factor = prefetch_factor
 
-        distributed = (
-            torch.distributed.is_available() and torch.distributed.is_initialized()
-        )
+        self._distributed_sampler: DistributedSampler[Any] | None = None
+        self._sampler: BatchSampler | None = None
+        self._loader: tn.Loader[T] | None = None
+        self._built_distributed: bool | None = None
+
+    @staticmethod
+    def _distributed_now() -> bool:
+        return torch.distributed.is_available() and torch.distributed.is_initialized()
+
+    def _ensure_built(self) -> None:
+        # Rebuild if the process group appeared after a pre-DDP len()/iter()
+        # call — an unsharded graph under DDP silently degenerates the
+        # effective batch to a single rank's.
+        if self._loader is not None and (
+            self._built_distributed is False and self._distributed_now()
+        ):
+            logger.warning("rebuilding dataloader: process group appeared after build")
+            self._loader = None
+        if self._loader is None:
+            self._build()
+
+    def _build(self) -> None:
+        """Build the sampler + node graph on first use.
+
+        Deferred past __init__ because hydra instantiates the loader before
+        ``trainer.fit`` initializes the DDP process group; the sharding
+        decision must be taken at iteration time.
+
+        Raises:
+            ValueError: if ``method='process'`` is configured under DDP.
+        """
+        distributed = self._distributed_now()
+        self._built_distributed = distributed
         if distributed:
-            if method != "thread":
+            if self._method != "thread":
                 msg = (
                     "method='process' deadlocks under DDP (fork after CUDA init); "
                     "use method='thread'"
                 )
                 raise ValueError(msg)
             self._distributed_sampler = DistributedSampler(
-                dataset,  # type: ignore[arg-type]
-                shuffle=bool(shuffle),
-                drop_last=drop_last,
-                seed=seed,
+                self._dataset,  # type: ignore[arg-type]
+                shuffle=bool(self._shuffle),
+                drop_last=self._drop_last,
+                seed=self._seed,
             )
             sampler = self._distributed_sampler
             logger.info(
@@ -91,34 +139,31 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
                 shard_len=self._distributed_sampler.num_samples,
             )
         else:
-            self._distributed_sampler = None
-            sampler = (
-                RandomSampler(dataset, generator=generator)  # type: ignore[assignment]
-                if shuffle
-                else SequentialSampler(dataset)  # type: ignore[assignment]
+            sampler = (  # type: ignore[assignment]
+                RandomSampler(self._dataset, generator=self._generator)  # type: ignore[arg-type]
+                if self._shuffle
+                else SequentialSampler(self._dataset)  # type: ignore[arg-type]
             )
 
         self._sampler = BatchSampler(
-            sampler, batch_size=batch_size, drop_last=drop_last
+            sampler, batch_size=self._batch_size, drop_last=self._drop_last
         )
 
         node = tn.SamplerWrapper(self._sampler)
         node = tn.ParallelMapper(
             source=node,
-            map_fn=MapAndCollate(dataset, collate_fn or default_collate),
-            num_workers=num_workers,
-            in_order=in_order,
-            method=method,
-            multiprocessing_context=multiprocessing_context,
-            max_concurrent=max_concurrent,
-            snapshot_frequency=snapshot_frequency,
-            prebatch=prebatch,
+            map_fn=MapAndCollate(self._dataset, self._collate_fn or default_collate),
+            method=self._method,
+            **self._node_kwargs,
         )
 
-        if pin_memory:
-            node = tn.PinMemory(node, pin_memory_device=pin_memory_device)
+        if self._pin_memory:
+            node = tn.PinMemory(node, pin_memory_device=self._pin_memory_device)
 
-        node = tn.Prefetcher(node, prefetch_factor=num_workers * prefetch_factor)
+        node = tn.Prefetcher(
+            node,
+            prefetch_factor=self._node_kwargs["num_workers"] * self._prefetch_factor,
+        )
 
         self._loader = tn.Loader(node)
 
@@ -126,10 +171,16 @@ class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
         if self._distributed_sampler is not None:
             self._distributed_sampler.set_epoch(epoch)
 
+    @override
     def __iter__(self) -> LoaderIterator[T]:
+        self._ensure_built()
+        assert self._loader is not None  # noqa: S101
         return iter(self._loader)
 
+    @override
     def __len__(self) -> int:
+        self._ensure_built()
+        assert self._sampler is not None  # noqa: S101
         return len(self._sampler)
 
     @property
