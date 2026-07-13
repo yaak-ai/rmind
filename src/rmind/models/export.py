@@ -25,7 +25,9 @@ class PolicyTrajectoryExportWrapper(pl.LightningModule):
     never traces (ControlTransformer.predict_step(), not forward()). This
     wrapper recomputes that branch (mean x/y columns of traj_logits) alongside
     the normal forward() so it appears in the exported graph as
-    `trajectory.xy`.
+    `trajectory.xy`, plus `trajectory.yaw` ((b, steps) mean dyaw, radians) when
+    the trajectory head was built with predict_yaw=True (traj_logits has 6
+    columns instead of 4 — see GRUTrajectoryHead).
     """
 
     def __init__(self, *, model: ControlTransformer, policy_key: str = "policy") -> None:
@@ -53,9 +55,13 @@ class PolicyTrajectoryExportWrapper(pl.LightningModule):
             episode=episode, embedding=policy_embedding, keep_horizon=True
         )
         if traj_logits is not None:
-            # traj_logits is (b, steps, 4): mean_x, logvar_x, mean_y, logvar_y per
-            # step; keep the mean columns only, matching predict()'s TRAJECTORY_VALUE
-            outputs["trajectory"] = {"xy": traj_logits[..., [0, 2]]}
+            # traj_logits is (b, steps, 4): mean_x, logvar_x, mean_y, logvar_y, or
+            # (b, steps, 6) with trailing mean_yaw, logvar_yaw when predict_yaw=True;
+            # keep the mean columns only, matching predict()'s TRAJECTORY_VALUE
+            trajectory = {"xy": traj_logits[..., [0, 2]]}
+            if traj_logits.shape[-1] == 6:  # noqa: PLR2004
+                trajectory["yaw"] = traj_logits[..., 4]
+            outputs["trajectory"] = trajectory
 
         return TensorDict(outputs)
 
