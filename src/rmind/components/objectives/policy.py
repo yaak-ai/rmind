@@ -92,6 +92,7 @@ class PolicyObjective(Objective):
         speed_delta_scale: float = 10.0,
         pedal_heads: InstanceOf[ModuleDict] | None = None,
         condition_steering_on_speed: bool = False,
+        detach_h_traj: bool = False,
     ) -> None:
         super().__init__()
 
@@ -155,6 +156,11 @@ class PolicyObjective(Objective):
         # (it's one scalar among many tokens); steering-angle-to-curvature
         # mapping is speed-dependent (slip/dynamics), so give it explicitly.
         self.condition_steering_on_speed: bool = condition_steering_on_speed
+        # heads/longitudinal_mode_head are conditioned on h_traj (see forward);
+        # detaching stops their losses from also shaping the trajectory_head,
+        # isolating it to trajectory_loss only (same idea as the pedal_heads
+        # detach above, applied to the trajectory coupling instead of speed).
+        self.detach_h_traj: bool = detach_h_traj
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -320,6 +326,8 @@ class PolicyObjective(Objective):
             traj_logits, h_traj = self.trajectory_head(
                 features
             )  # (b, steps, 4), (b, steps, H)
+            if self.detach_h_traj:
+                h_traj = h_traj.detach()
 
         logits = self.heads(heads_features, h_traj)
         mode_logits = (
