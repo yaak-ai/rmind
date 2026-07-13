@@ -32,6 +32,7 @@ from rmind.components.nn import (
     AtLeast3D,
     DiffLast,
     Embedding,
+    GRUHead,
     Identity,
     Remapper,
     Sequential,
@@ -49,6 +50,7 @@ from rmind.components.position_encoding import (
 )
 from rmind.components.timm_backbone import TimmBackbone
 from rmind.components.transformer import (
+    AttentionPoolHead,
     CrossAttentionDecoder,
     CrossAttentionDecoderHead,
     TransformerEncoder,
@@ -596,6 +598,94 @@ def policy_objective(
                         bias=False,
                     )
                 },
+            }
+        ),
+        losses=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": GaussianNLLLoss(),
+                    "brake_pedal": GaussianNLLLoss(),
+                    "steering_angle": GaussianNLLLoss(),
+                },
+                Modality.DISCRETE: {
+                    "turn_signal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
+                },
+            }
+        ),
+        targets={
+            (modality := Modality.CONTINUOUS): {
+                "gas_pedal": ("input", modality, "gas_pedal"),
+                "brake_pedal": ("input", modality, "brake_pedal"),
+                "steering_angle": ("input", modality, "steering_angle"),
+            },
+            (modality := Modality.DISCRETE): {
+                "turn_signal": ("input", modality, "turn_signal")
+            },
+        },
+    ).to(device)
+
+
+@pytest.fixture(scope="module")
+def policy_objective_with_history_attn(
+    device: torch.device, embedding_dims: EmbeddingDims
+) -> PolicyObjective:
+    """Exercises history_feature_keys/history_feature_pool (attention over history).
+
+    history_steps=4, action_horizon=2 (matches the shared `episode` fixture's
+    t=6: history_steps + action_horizon == t) so both the fixed-idx training
+    branch (feature_idx = history_steps - 1) and compute_metrics'/predict's
+    target-slicing line up without shape mismatches. GRUHead (not plain MLP)
+    is used for `heads` since it accepts the h_traj=None passed unconditionally
+    by `self.heads(heads_features, h_traj)` when no trajectory_head is set.
+    """
+    logit_bias = torch.tensor(0)
+    history_steps = 4
+    action_horizon = 2
+    in_features = 4 * embedding_dims.encoder  # 3 feature_keys + 1 history_feature_keys
+
+    def gru_head(out_features: int) -> GRUHead:
+        return GRUHead(
+            in_features=in_features,
+            hidden_size=embedding_dims.encoder,
+            out_features=out_features,
+            num_steps=action_horizon,
+        )
+
+    return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
+        history_steps=history_steps,
+        action_horizon=action_horizon,
+        history_feature_keys=[(Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)],
+        history_feature_pool=ModuleDict(
+            modules={
+                Modality.SUMMARY: {
+                    SummaryToken.OBSERVATION_SUMMARY: AttentionPoolHead(
+                        decoder=CrossAttentionDecoder(
+                            dim_model=embedding_dims.encoder,
+                            num_layers=1,
+                            num_heads=2,
+                            attn_dropout=0.1,
+                            resid_dropout=0.1,
+                            mlp_dropout=0.1,
+                            hidden_layer_multiplier=1,
+                        ),
+                        embedding_dim=embedding_dims.encoder,
+                        patch_pos_embed=PatchPositionEmbedding2D(
+                            grid_size=(history_steps, 1),
+                            embedding_dim=embedding_dims.encoder,
+                        ),
+                    )
+                }
+            }
+        ),
+        heads=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": gru_head(2),
+                    "brake_pedal": gru_head(2),
+                    "steering_angle": gru_head(2),
+                },
+                Modality.DISCRETE: {"turn_signal": gru_head(3)},
             }
         ),
         losses=ModuleDict(

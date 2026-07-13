@@ -60,6 +60,20 @@ class PolicyObjective(Objective):
             (Modality.CONTEXT, "waypoints"),
         ],
         feature_pool: InstanceOf[ModuleDict] | None = None,
+        # multi-tick variant of feature_keys/feature_pool: instead of reading
+        # ONE tick's post-encoder embedding, attends (via a learned-query
+        # cross-attention pool, e.g. AttentionPoolHead) over the
+        # `history_steps` ticks ending at (and including) the same tick
+        # feature_keys reads. Opt-in: None/empty by default == identical
+        # behavior to today. A missing history_feature_pool entry for a given
+        # key falls back to plain mean-pooling (_pool_feature's existing
+        # behavior) -- but note that silently mean-pooling across a
+        # *multi-timestep* window collapses temporal order entirely, which
+        # defeats the point of this feature; always pair a
+        # history_feature_keys entry with a matching history_feature_pool
+        # entry in practice.
+        history_feature_keys: list[tuple[str, ...]] | None = None,
+        history_feature_pool: InstanceOf[ModuleDict] | None = None,
         # raw (pre-encoder, pre-fusion) features read straight off episode_builder's
         # frozen embeddings — e.g. DINOv3 patch tokens before the (also frozen)
         # cross-modal encoder gets to attend/pool over them. Observation audit
@@ -115,6 +129,8 @@ class PolicyObjective(Objective):
         self.heading_key: tuple[str, ...] = heading_key
         self.feature_keys: list[tuple[str, ...]] = feature_keys
         self.feature_pool: ModuleDict | None = feature_pool
+        self.history_feature_keys: list[tuple[str, ...]] = history_feature_keys or []
+        self.history_feature_pool: ModuleDict | None = history_feature_pool
         self.raw_feature_keys: list[tuple[str, ...]] = raw_feature_keys or []
         self.raw_feature_pool: ModuleDict | None = raw_feature_pool
         self.trainable_image_key: tuple[str, ...] = trainable_image_key
@@ -236,6 +252,38 @@ class PolicyObjective(Objective):
             return pool(x)
         return x.mean(dim=1, keepdim=True)
 
+    def _history_window_slice(self, idx: int, window: int) -> slice:
+        """Slice selecting the `window` ticks ending at (and including) tick `idx`.
+
+        `idx` here is always either a small non-negative int (history_steps - 1,
+        the fixed training/predict tick) or -1 (inference default) — the only
+        two values `_compute_logits`/`predict()` ever pass as `feature_idx`/`idx`.
+
+        - idx == -1: as a slice *stop*, -1 + 1 == 0 means "up to but excluding
+          index 0" (EMPTY), not "through the last tick" — Python's negative-
+          slice convention has no way to say "through the end" except
+          `stop=None`, so this is special-cased.
+        - idx <= -2: `idx + 1` stays negative and is still "N from the end" —
+          correct as-is, no special case needed.
+        - idx >= 0: `idx - window + 1` must be clamped to 0 ourselves. If left
+          negative, it gets reinterpreted as "N from the end" instead of
+          "clamp to sequence start" (e.g. idx=1, window=3 -> naive start=-1,
+          and index[-1:2] on a 5-tick index is EMPTY, not the 2 ticks
+          available) — so we clamp explicitly rather than let it silently
+          produce an empty/wrong window. With window == history_steps and
+          idx == history_steps - 1 (the only fixed-idx case this is ever
+          called with), start is always exactly 0 — no clamping actually
+          triggers in practice; the clamp is a defensive correctness
+          guarantee, not a normally-exercised path.
+        """
+        if idx >= 0:
+            start = max(idx - window + 1, 0)
+            stop = idx + 1
+        else:
+            start = idx - window + 1
+            stop = None if idx == -1 else idx + 1
+        return slice(start, stop)
+
     def _compute_logits(  # noqa: PLR0914
         self,
         *,
@@ -285,6 +333,23 @@ class PolicyObjective(Objective):
                     pool_dict=self.raw_feature_pool,
                 )
                 for k in self.raw_feature_keys
+            ]
+
+        if self.history_feature_keys:
+            history_embeddings = (
+                episode.index[self._history_window_slice(idx, self.history_steps)]
+                .select(*self.history_feature_keys)
+                .parse(embedding)
+            )
+            parts += [
+                self._pool_feature(
+                    k,
+                    # (b, t', n, d) -> (b, t'*n, d): t' <= history_steps ticks,
+                    # n tokens/tick for this key (n=1 for most SUMMARY keys).
+                    rearrange(history_embeddings.get(k), "b t n d -> b (t n) d"),
+                    pool_dict=self.history_feature_pool,
+                )
+                for k in self.history_feature_keys
             ]
 
         if self.trainable_image_encoder is not None:
