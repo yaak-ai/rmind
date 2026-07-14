@@ -69,8 +69,10 @@ def load_policy(
         TypeError: if `objectives['policy']` is not a `JointPolicyObjective`.
         ValueError: if the tokenizer quantizer geometry is not G=4, C=16.
     """
+    # strict=False: pre-decode-strategy checkpoints lack the chain_log_prior_*
+    # buffers (they default to zeros = uniform prior = plain argmax).
     model = ControlTransformer.load_from_checkpoint(
-        Path(ckpt_path), map_location="cpu", weights_only=False
+        Path(ckpt_path), map_location="cpu", weights_only=False, strict=False
     )
     model = model.to(torch.device(device)).eval().requires_grad_(requires_grad=False)
 

@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import Any, final, override
+from typing import Any, Literal, final, override
 
 import torch
 from einops import rearrange
@@ -43,6 +43,8 @@ class JointPolicyObjective(Objective):
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
+        decode_strategy: Literal["argmax", "chain_greedy", "heads"] = "argmax",
+        decode_beta: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -58,6 +60,28 @@ class JointPolicyObjective(Objective):
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
 
+        # inference-time code decoding (train/eval always argmax-or-sampled via
+        # _sample_codes; these govern forward/predict, i.e. the exported graph):
+        #   "argmax"       per-quantizer independent argmax (deployment default)
+        #   "chain_greedy" greedy coarse->fine argmax over
+        #                  log_softmax(logits_g) + decode_beta * log P(c_g | c_<g),
+        #                  with the empirical chain conditionals in `chain_log_prior_*`
+        #                  buffers (install via scripts.calibrate_decode_luts).
+        # Deterministic + export/TensorRT-clean. Stochastic decoding stays host-side
+        # off a "heads" export (see scripts/export_onnx --heads).
+        self.decode_strategy = decode_strategy
+        self.decode_beta = decode_beta
+        g = self.tokenizer.quantizer.num_quantizers
+        c = self.tokenizer.quantizer.codebook_size
+        # one chain-conditional table per quantizer level g: shape (c**g, c),
+        # indexed by the packed prefix (c_0..c_{g-1}); level 0 is (1, c). Registered
+        # (not trained) so they persist in the checkpoint once calibrated; default
+        # all-zeros = uniform prior = decode collapses to plain argmax until filled.
+        for level in range(g):
+            self.register_buffer(
+                f"chain_log_prior_{level}", torch.zeros(c**level, c), persistent=True
+            )
+
     @override
     def train(self, mode: bool = True) -> "JointPolicyObjective":
         super().train(mode)
@@ -67,8 +91,16 @@ class JointPolicyObjective(Objective):
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
         features = self._features(episode, embedding)
-        _, codes, offset = self._predict(features)
 
+        if self.decode_strategy == "heads":
+            # export the raw heads (deterministic, TensorRT-clean) so decode
+            # (incl. stochastic/entropy-gated sampling, which needs RNG that does
+            # not belong in a TRT engine) runs host-side in drivr on the small
+            # (b,G,C) logits + (b,G,C,action_dim) offset table.
+            code_logits, offsets = self._heads(features)
+            return TensorDict({"code_logits": code_logits, "offsets": offsets})
+
+        _, codes, offset = self._predict(features)
         chunk = (self.tokenizer.invert(codes) + offset).unflatten(
             -1,
             (-1, self.tokenizer._action_features),  # noqa: SLF001
@@ -146,10 +178,38 @@ class JointPolicyObjective(Objective):
             )
         return code_logits.argmax(dim=-1)
 
+    def _chain_greedy(self, code_logits: Tensor) -> Tensor:
+        """Greedy coarse->fine decode over the empirical chain conditionals.
+
+        c_g = argmax_c [ log_softmax(logits_g)_c + beta * log P(c | c_0..c_{g-1}) ]
+        with the chain priors in the `chain_log_prior_{g}` buffers (all-zeros =
+        uniform ⇒ this reduces exactly to per-quantizer argmax until calibrated).
+        Deterministic; the loop is over the fixed quantizer count so it unrolls
+        under torch.export, and each step is gather + argmax + add (TensorRT-clean).
+        """
+        _, g, c = code_logits.shape
+        logp = code_logits.log_softmax(dim=-1)
+        prefix = torch.zeros(
+            code_logits.shape[0], dtype=torch.long, device=code_logits.device
+        )
+        codes: list[Tensor] = []
+        for level in range(g):
+            prior = getattr(self, f"chain_log_prior_{level}")[prefix]  # (b, c)
+            code = (logp[:, level] + self.decode_beta * prior).argmax(dim=-1)
+            codes.append(code)
+            prefix = prefix * c + code
+        return torch.stack(codes, dim=1)
+
+    def _decode_codes(self, code_logits: Tensor) -> Tensor:
+        """Inference code decode (forward/predict, i.e. the exported graph)."""
+        if self.decode_strategy == "chain_greedy":
+            return self._chain_greedy(code_logits)
+        return self._sample_codes(code_logits)  # argmax (export) or sampled
+
     def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """VQ-BeT joint code prediction with a code-conditioned offset."""
         code_logits, offsets = self._heads(features)
-        codes = self._sample_codes(code_logits)
+        codes = self._decode_codes(code_logits)
         offset = self._offset(offsets, codes)
 
         return code_logits, codes, offset
