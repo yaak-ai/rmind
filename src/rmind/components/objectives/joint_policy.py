@@ -130,13 +130,26 @@ class JointPolicyObjective(Objective):
             Modality.SUMMARY,
             SummaryToken.OBSERVATION_SUMMARY,
         ))
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
-        )
 
-        return rearrange(
-            [observation_summary, observation_history, waypoints], "i b 1 d -> b (i d)"
+        # The policy head's input width decides whether the waypoints summary is
+        # concatenated: 3 tokens (3*d, waypoint-aware) vs 2 (2*d, "no waypoints in
+        # policy head" finetunes, e.g. feat/action-tokenizer @ ad93596). Detected
+        # from the code head so one code path exports both model families.
+        tokens = [observation_summary, observation_history]
+        d = observation_summary.shape[-1]
+        head_in = next(
+            m.in_features
+            for m in self.code_head.modules()
+            if isinstance(m, torch.nn.Linear)
         )
+        if head_in == 3 * d:
+            tokens.append(
+                embeddings.get((Modality.CONTEXT, "waypoints")).mean(
+                    dim=1, keepdim=True
+                )
+            )
+
+        return rearrange(tokens, "i b 1 d -> b (i d)")
 
     def _heads(self, features: Tensor) -> tuple[Tensor, Tensor]:
         """Code logits (b, g, c) and the full offset table (b, g, c, action_dim)."""
