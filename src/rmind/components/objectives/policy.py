@@ -51,6 +51,22 @@ class PolicyObjective(Objective):
         trajectory_head: InstanceOf[Module] | None = None,
         trajectory_loss: InstanceOf[Module] | None = None,
         trajectory_loss_weight: float = 1.0,
+        # P1 motion rebalancing: scale each window's trajectory loss by a
+        # band-pass triangular window on arc_len (distance the car travels over
+        # the horizon), peaking at the low-speed/launch regime. This targets the
+        # exact band the closed-loop stall lives in: stopped-stays-stopped
+        # windows (arc_len ~ 0) AND the cruising majority (arc_len large) both
+        # sit at baseline weight 1, while the launch band is up-weighted.
+        #   signal = clamp(1 - |arc_len - motion_peak| / motion_width, min=0)
+        #   weight = 1 + trajectory_motion_weight * signal   (mean-normalized)
+        # motion_peak/width are in meters over the horizon (~2 s @ 6 steps):
+        # a ~5-10 km/h launch that accelerates covers roughly 3-6 m, hence the
+        # 4 m default peak. 0.0 weight == disabled (plain mean, identical to
+        # before). Keeping stopped windows at baseline (not zero) preserves
+        # stop-holding; keeping cruising at baseline stops it from dominating.
+        trajectory_motion_weight: float = 0.0,
+        trajectory_motion_peak: float = 4.0,
+        trajectory_motion_width: float = 4.0,
         trajectory_target: Literal["absolute", "relative"] = "absolute",
         xy_key: tuple[str, ...] = ("input", "trajectory", "xy"),
         heading_key: tuple[str, ...] = ("input", "trajectory", "heading"),
@@ -119,6 +135,9 @@ class PolicyObjective(Objective):
         self.trajectory_head: Module | None = trajectory_head
         self.trajectory_loss: Module | None = trajectory_loss
         self.trajectory_loss_weight: float = trajectory_loss_weight
+        self.trajectory_motion_weight: float = trajectory_motion_weight
+        self.trajectory_motion_peak: float = trajectory_motion_peak
+        self.trajectory_motion_width: float = trajectory_motion_width
         # "absolute": every horizon step vs one fixed frame anchored at
         # [history_steps - 1] (build_local_trajectory) — foreshortens forward
         # progress during a turn since it's measured against a stale heading.
@@ -509,28 +528,53 @@ class PolicyObjective(Objective):
             and heading is not None
         ):
             flat = rearrange(traj_logits, "b h d -> (b h) d")  # (b*steps, 4 or 6)
+            num_steps = traj_logits.shape[1]
             if self.trajectory_target == "relative":
                 traj_gt = build_relative_trajectory(
                     xy=xy, heading_deg=heading, history_steps=self.history_steps
                 )  # (b, num_steps, 3) = dx, dy, dyaw
-                gt_x = rearrange(traj_gt[..., 0], "b h -> (b h)")
-                gt_y = rearrange(traj_gt[..., 1], "b h -> (b h)")
-                gt_yaw = rearrange(traj_gt[..., 2], "b h -> (b h)")
-                traj_loss = (
-                    self.trajectory_loss(flat[..., :2], gt_x)
-                    + self.trajectory_loss(flat[..., 2:4], gt_y)
-                    + self.trajectory_loss(flat[..., 4:6], gt_yaw)
-                ) / 3  # ty:ignore[call-non-callable]
+                channels = [(flat[..., :2], traj_gt[..., 0]),
+                            (flat[..., 2:4], traj_gt[..., 1]),
+                            (flat[..., 4:6], traj_gt[..., 2])]
+                # distance actually travelled over the horizon: sum of per-step
+                # relative displacements (rotation-invariant), meters
+                motion = traj_gt[..., :2].norm(dim=-1).sum(dim=1)  # (b,)
             else:
                 traj_gt = build_local_trajectory(
                     xy=xy, heading_deg=heading, history_steps=self.history_steps
                 )  # (b, num_steps, 2)
-                gt_x = rearrange(traj_gt[..., 0], "b h -> (b h)")  # (b*steps,)
-                gt_y = rearrange(traj_gt[..., 1], "b h -> (b h)")  # (b*steps,)
-                traj_loss = (
-                    self.trajectory_loss(flat[..., :2], gt_x)
-                    + self.trajectory_loss(flat[..., 2:], gt_y)
-                ) / 2  # ty:ignore[call-non-callable]
+                channels = [(flat[..., :2], traj_gt[..., 0]),
+                            (flat[..., 2:], traj_gt[..., 1])]
+                # absolute frame: positions vs the fixed anchor, so the terminal
+                # step's displacement is the horizon's net forward progress (m)
+                motion = traj_gt[..., :2].norm(dim=-1)[:, -1]  # (b,)
+
+            def _traj_nll() -> Tensor:
+                return sum(  # ty:ignore[invalid-return-type]
+                    self.trajectory_loss(pred, rearrange(g, "b h -> (b h)"))  # ty:ignore[call-non-callable]
+                    for pred, g in channels
+                ) / len(channels)
+
+            if self.trajectory_motion_weight > 0.0:
+                # P1 rebalancing: band-pass triangular window peaking at the
+                # low-speed/launch regime (see __init__); stopped and cruising
+                # both fall to baseline weight 1.
+                signal = (
+                    1.0
+                    - (motion - self.trajectory_motion_peak).abs()
+                    / self.trajectory_motion_width
+                ).clamp(min=0.0)  # (b,), triangle: 1 at peak, 0 outside peak±width
+                w = 1.0 + self.trajectory_motion_weight * signal  # (b,)
+                w = (w / w.mean()).repeat_interleave(num_steps)  # (b*steps,)
+                prev_reduction = self.trajectory_loss.reduction  # type: ignore[attr-defined]
+                self.trajectory_loss.reduction = "none"  # type: ignore[attr-defined]
+                try:
+                    per_step = _traj_nll()  # (b*steps,)
+                finally:
+                    self.trajectory_loss.reduction = prev_reduction  # type: ignore[attr-defined]
+                traj_loss = (w * per_step).mean()
+            else:
+                traj_loss = _traj_nll()
             all_losses["trajectory"] = traj_loss * self.trajectory_loss_weight
 
         if (

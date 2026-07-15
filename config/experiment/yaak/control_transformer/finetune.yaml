@@ -16,6 +16,15 @@ encoder_embedding_dim: 384
 # for short, focused finetunes on a much smaller (post-filter) dataset
 optimizer_lr: 1e-5
 trajectory_loss_weight: 0.1
+# P1 trajectory motion rebalancing (only read by *_motion model configs; 0.0 =
+# disabled/plain mean). Scales each window's trajectory loss by a band-pass
+# triangular window on horizon arc-length (meters), peaking at the low-speed/
+# launch regime: stopped-stays-stopped (~0 m) and the cruising majority (large
+# arc) both stay at baseline weight, only the launch band is up-weighted. peak/
+# width are meters over the ~2 s horizon (a 5-10 km/h launch covers ~3-6 m).
+trajectory_motion_weight: 0.0
+trajectory_motion_peak: 4.0
+trajectory_motion_width: 4.0
 speed_loss_weight: 0.1
 activity_weight: 5
 gas_gate_weight: 1.0
