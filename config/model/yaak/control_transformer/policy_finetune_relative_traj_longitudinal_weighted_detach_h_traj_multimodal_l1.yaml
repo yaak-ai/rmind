@@ -1,0 +1,160 @@
+---
+# Same as policy_finetune_relative_traj_longitudinal_weighted_detach_h_traj_multimodal,
+# but the L1 loss family (rmind.components.loss.L1Loss /
+# ActivityWeightedL1Loss) replaces GaussianNLLLoss everywhere a continuous
+# mean is regressed: losses.continuous.* (gas_pedal, brake_pedal,
+# steering_angle) use ActivityWeightedL1Loss (same activity_weight-based
+# up-weighting as before, just on |mean - target| instead of Gaussian NLL),
+# and trajectory_loss (head1's regression, incl. winner-takes-all mode
+# selection in _trajectory_nll_per_mode) uses plain L1Loss. Both read only the
+# mean channel of each head's [mean, log_var] output, so heads/out_features
+# are unchanged -- predict()'s PREDICTION_STD/PREDICTION_PROBS/SCORE_LOGPROB
+# still run, but their variance channel is now untrained noise (no gradient
+# reaches it) since L1 never reads it; only PREDICTION_VALUE/TRAJECTORY_VALUE
+# (the means) are meaningful for this config. The mode-selection classifiers
+# (longitudinal_mode_loss, trajectory_mode_loss) are unaffected -- they were
+# never Gaussian-based to begin with.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+state_dict_drop:
+  - objectives\.policy\.trajectory_head\.(input_proj|output_proj)\.
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "history_steps": 5,
+        "action_horizon": 6,
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1152,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1152,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1152,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 1152,
+                "hidden_size": 384,
+                "out_features": 3,
+                "num_steps": 6
+              }
+            }
+          }
+        },
+        "longitudinal_mode_head": {
+          "_target_": "rmind.components.nn.GRUHead",
+          "in_features": 1152,
+          "hidden_size": 384,
+          "out_features": 3,
+          "num_steps": 6
+        },
+        "longitudinal_mode_loss": {
+          "_target_": "torch.nn.CrossEntropyLoss"
+        },
+        "longitudinal_mode_loss_weight": ${longitudinal_mode_loss_weight},
+        "longitudinal_press_threshold": ${longitudinal_press_threshold},
+        "detach_h_traj": true,
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          },
+          "discrete": {
+            "turn_signal": ["input", "discrete", "turn_signal"]
+          }
+        },
+        "trajectory_head": {
+          "_target_": "rmind.components.nn.MultiModalGRUTrajectoryHead",
+          "in_features": 1152,
+          "hidden_size": 384,
+          "num_steps": 6,
+          "num_modes": 4,
+          "predict_yaw": true
+        },
+        "trajectory_loss": {
+          "_target_": "rmind.components.loss.L1Loss"
+        },
+        "trajectory_loss_weight": ${trajectory_loss_weight},
+        "trajectory_target": "relative",
+        "trajectory_mode_head": {
+          "_target_": "rmind.components.nn.MLPHead",
+          "in_features": 1152,
+          "hidden_size": 384,
+          "out_features": 4
+        },
+        "trajectory_mode_loss": {
+          "_target_": "torch.nn.CrossEntropyLoss"
+        },
+        "trajectory_mode_loss_weight": ${trajectory_mode_loss_weight},
+        "xy_key": ["input", "trajectory", "xy"],
+        "heading_key": ["input", "trajectory", "heading"],
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.ActivityWeightedL1Loss",
+                "activity_weight": ${activity_weight}
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.ActivityWeightedL1Loss",
+                "activity_weight": ${activity_weight}
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.ActivityWeightedL1Loss",
+                "activity_weight": ${activity_weight}
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .episode_builder.input_transform._args_[0].paths.trajectory = {
+    "xy": ["data", "meta/Gnss/xy"],
+    "heading": ["data", "headings_denoised/heading"]
+  }
+  | .episode_builder.input_transform._args_[1].modules.trajectory = {
+    "_target_": "torch.nn.Identity"
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
+    }
+  }

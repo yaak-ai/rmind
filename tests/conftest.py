@@ -34,6 +34,8 @@ from rmind.components.nn import (
     Embedding,
     GRUHead,
     Identity,
+    MLPHead,
+    MultiModalGRUTrajectoryHead,
     Remapper,
     Sequential,
 )
@@ -622,6 +624,88 @@ def policy_objective(
                 "turn_signal": ("input", modality, "turn_signal")
             },
         },
+    ).to(device)
+
+
+@pytest.fixture(scope="module")
+def policy_objective_multimodal(
+    device: torch.device, embedding_dims: EmbeddingDims
+) -> PolicyObjective:
+    """Winner-takes-all multi-modal trajectory: head1 proposes num_modes
+    candidates, head2 classifies which one wins. The shared `episode` fixture
+    has no trajectory xy/heading data, so this only exercises the no-GT
+    fallback path (mode_winner = argmax(mode_select_logits)) rather than the
+    GT-closest oracle winner -- still enough to cover shapes/wiring through
+    _compute_logits/compute_metrics/predict.
+    """
+    logit_bias = torch.tensor(0)
+    num_modes = 4
+
+    return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
+        heads=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": MLP(
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 2],
+                        bias=False,
+                    ),
+                    "brake_pedal": MLP(
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 2],
+                        bias=False,
+                    ),
+                    "steering_angle": MLP(
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 2],
+                        bias=False,
+                    ),
+                },
+                Modality.DISCRETE: {
+                    "turn_signal": MLP(
+                        3 * embedding_dims.encoder,
+                        [embedding_dims.encoder, 3],
+                        bias=False,
+                    )
+                },
+            }
+        ),
+        losses=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": GaussianNLLLoss(),
+                    "brake_pedal": GaussianNLLLoss(),
+                    "steering_angle": GaussianNLLLoss(),
+                },
+                Modality.DISCRETE: {
+                    "turn_signal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
+                },
+            }
+        ),
+        targets={
+            (modality := Modality.CONTINUOUS): {
+                "gas_pedal": ("input", modality, "gas_pedal"),
+                "brake_pedal": ("input", modality, "brake_pedal"),
+                "steering_angle": ("input", modality, "steering_angle"),
+            },
+            (modality := Modality.DISCRETE): {
+                "turn_signal": ("input", modality, "turn_signal")
+            },
+        },
+        trajectory_head=MultiModalGRUTrajectoryHead(
+            in_features=3 * embedding_dims.encoder,
+            hidden_size=embedding_dims.encoder,
+            num_steps=1,
+            num_modes=num_modes,
+        ),
+        trajectory_loss=GaussianNLLLoss(),
+        trajectory_mode_head=MLPHead(
+            in_features=3 * embedding_dims.encoder,
+            hidden_size=embedding_dims.encoder,
+            out_features=num_modes,
+        ),
+        trajectory_mode_loss=torch.nn.CrossEntropyLoss(),
     ).to(device)
 
 

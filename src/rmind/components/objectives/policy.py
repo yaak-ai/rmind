@@ -68,6 +68,13 @@ class PolicyObjective(Objective):
         trajectory_motion_peak: float = 4.0,
         trajectory_motion_width: float = 4.0,
         trajectory_target: Literal["absolute", "relative"] = "absolute",
+        # winner-takes-all multi-modal trajectory: pair a K-mode trajectory_head
+        # (MultiModalGRUTrajectoryHead) with trajectory_mode_head, a classifier
+        # over head1's K candidates ("which one will be chosen"). Both None ==
+        # today's single-mode behavior, unchanged. See _compute_logits.
+        trajectory_mode_head: InstanceOf[Module] | None = None,
+        trajectory_mode_loss: InstanceOf[Module] | None = None,
+        trajectory_mode_loss_weight: float = 1.0,
         xy_key: tuple[str, ...] = ("input", "trajectory", "xy"),
         heading_key: tuple[str, ...] = ("input", "trajectory", "heading"),
         feature_keys: list[tuple[str, ...]] = [  # noqa: B006
@@ -144,6 +151,12 @@ class PolicyObjective(Objective):
         # "relative": each step vs the previous step's own pose
         # (build_relative_trajectory) — requires trajectory_head(predict_yaw=True).
         self.trajectory_target: Literal["absolute", "relative"] = trajectory_target
+        # head2: classifies which of head1's K candidate trajectories wins.
+        # Trained against the GT-closest candidate (see _trajectory_nll_per_mode);
+        # at inference (no GT), its own argmax picks the winner instead.
+        self.trajectory_mode_head: Module | None = trajectory_mode_head
+        self.trajectory_mode_loss: Module | None = trajectory_mode_loss
+        self.trajectory_mode_loss_weight: float = trajectory_mode_loss_weight
         self.xy_key: tuple[str, ...] = xy_key
         self.heading_key: tuple[str, ...] = heading_key
         self.feature_keys: list[tuple[str, ...]] = feature_keys
@@ -202,7 +215,7 @@ class PolicyObjective(Objective):
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        logits, _, _, mode_logits, _ = self._compute_logits(
+        logits, _, _, mode_logits, _, _, _, _ = self._compute_logits(
             episode=episode, embedding=embedding, keep_horizon=True
         )
         mode = (
@@ -303,6 +316,54 @@ class PolicyObjective(Objective):
             stop = None if idx == -1 else idx + 1
         return slice(start, stop)
 
+    def _trajectory_gt(self, episode: Episode) -> Tensor | None:
+        """(b, num_steps, 2) absolute xy, or (b, num_steps, 3) relative (dx,
+        dy, dyaw), per self.trajectory_target. None if xy/heading unavailable.
+        """
+        xy = episode.get(self.xy_key, default=None)
+        heading = episode.get(self.heading_key, default=None)
+        if xy is None or heading is None:
+            return None
+        if self.trajectory_target == "relative":
+            return build_relative_trajectory(
+                xy=xy, heading_deg=heading, history_steps=self.history_steps
+            )
+        return build_local_trajectory(
+            xy=xy, heading_deg=heading, history_steps=self.history_steps
+        )
+
+    def _trajectory_nll_per_mode(self, traj_logits: Tensor, traj_gt: Tensor) -> Tensor:
+        """Per-(batch, mode) trajectory NLL, for winner-takes-all mode selection.
+
+        traj_logits: (b, num_modes, num_steps, 4|6). traj_gt: (b, num_steps, 2|3).
+        Returns (b, num_modes): self.trajectory_loss summed over steps and
+        channels (a constant per-mode normalization -- argmin over modes is
+        unaffected by summing vs. averaging).
+        """
+        gt = traj_gt.unsqueeze(1)  # (b, 1, num_steps, 2|3), broadcasts over modes
+        if self.trajectory_target == "relative":
+            channels = [
+                (traj_logits[..., :2], gt[..., 0]),
+                (traj_logits[..., 2:4], gt[..., 1]),
+                (traj_logits[..., 4:6], gt[..., 2]),
+            ]
+        else:
+            channels = [
+                (traj_logits[..., :2], gt[..., 0]),
+                (traj_logits[..., 2:], gt[..., 1]),
+            ]
+
+        loss = cast("Module", self.trajectory_loss)
+        prev_reduction = loss.reduction  # type: ignore[attr-defined]
+        loss.reduction = "none"  # type: ignore[attr-defined]
+        try:
+            per_step = sum(
+                loss(pred, target) for pred, target in channels
+            )  # (b, num_modes, num_steps)
+        finally:
+            loss.reduction = prev_reduction  # type: ignore[attr-defined]
+        return per_step.sum(dim=-1)  # (b, num_modes)
+
     def _compute_logits(  # noqa: PLR0914
         self,
         *,
@@ -310,17 +371,42 @@ class PolicyObjective(Objective):
         embedding: Tensor,
         feature_idx: int | None = None,
         keep_horizon: bool = False,
-    ) -> tuple[TensorTree, Tensor | None, Tensor | None, Tensor | None, Tensor | None]:
-        """Returns (action_logits, traj_logits, h_traj, mode_logits, speed_logits).
+    ) -> tuple[
+        TensorTree,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+    ]:
+        """Returns (action_logits, traj_logits, h_traj, mode_logits, speed_logits,
+        traj_logits_modes, mode_select_logits, mode_winner).
 
         traj_logits: (b, num_steps, 4) = [mean_x, logvar_x, mean_y, logvar_y], or
             (b, num_steps, 6) with trailing [mean_yaw, logvar_yaw] when the
-            trajectory_head was built with predict_yaw=True, or None.
+            trajectory_head was built with predict_yaw=True, or None. When
+            trajectory_head is multi-modal (MultiModalGRUTrajectoryHead), this
+            is already the winner-selected single candidate (see mode_winner
+            below) -- shape/semantics match the single-mode case exactly, so
+            every existing consumer of traj_logits/h_traj needs no changes.
         h_traj:      (b, num_steps, hidden_size) GRU hidden states or None.
+            Winner-selected in the multi-modal case, same reasoning as above.
         mode_logits: (b, num_steps, 3) coast/gas/brake logits or None.
         speed_logits: (b, num_steps, 2) = [mean_dv, logvar_dv] Δspeed forecast,
             normalized by speed_delta_scale (diff vs. the conditioning tick —
             see gas_stall_report.md §8), or None when speed_head is unset.
+        traj_logits_modes: (b, num_modes, num_steps, 4|6), all of head1's
+            candidate trajectories, or None when trajectory_head is absent or
+            single-mode.
+        mode_select_logits: (b, num_modes) head2's raw classification logits
+            over which candidate wins, or None.
+        mode_winner: (b,) winning mode index — the GT-closest candidate while
+            training (teacher-forced hard winner-takes-all; see
+            _trajectory_nll_per_mode), or argmax(mode_select_logits) otherwise
+            (matching what a real deployment does, with no GT available). None
+            unless trajectory_head is multi-modal.
         keep_horizon: at inference, return all predicted steps (b, h, d) instead of
         only the first (b, 1, d); ignored in the training branch (already full).
         """
@@ -406,10 +492,53 @@ class PolicyObjective(Objective):
 
         traj_logits: Tensor | None = None
         h_traj: Tensor | None = None
+        traj_logits_modes: Tensor | None = None
+        mode_select_logits: Tensor | None = None
+        mode_winner: Tensor | None = None
         if self.trajectory_head is not None:
             traj_logits, h_traj = self.trajectory_head(
                 features
-            )  # (b, steps, 4), (b, steps, H)
+            )  # (b, steps, 4|6), (b, steps, H); multi-modal head instead gives
+            # (b, num_modes, steps, 4|6), (b, num_modes, steps, H)
+
+            if traj_logits.dim() == 4:  # noqa: PLR2004
+                # winner-takes-all: head2 (trajectory_mode_head) decides which
+                # of head1's num_modes candidates the rest of the network
+                # commits to -- both the trajectory output itself and the
+                # h_traj hidden state that conditions the action heads below.
+                traj_logits_modes = traj_logits
+                if self.trajectory_mode_head is not None:
+                    mode_select_logits = self.trajectory_mode_head(features)[
+                        :, 0
+                    ]  # (b, num_modes)
+
+                traj_gt = self._trajectory_gt(episode)
+                if (
+                    self.training
+                    and self.action_horizon > 1
+                    and self.trajectory_loss is not None
+                    and traj_gt is not None
+                ):
+                    # oracle winner: the GT-closest candidate. Teacher-forces
+                    # each mode's gradient toward the samples it already fits
+                    # best (hard WTA) instead of every mode chasing one mean.
+                    nll = self._trajectory_nll_per_mode(traj_logits_modes, traj_gt)
+                    mode_winner = nll.argmin(dim=-1)
+                elif mode_select_logits is not None:
+                    # no GT (inference): defer to head2's own prediction, same
+                    # as a real deployment would.
+                    mode_winner = mode_select_logits.argmax(dim=-1)
+                else:
+                    mode_winner = torch.zeros(
+                        traj_logits_modes.shape[0],
+                        dtype=torch.long,
+                        device=traj_logits_modes.device,
+                    )
+
+                b_idx = torch.arange(mode_winner.shape[0], device=mode_winner.device)
+                traj_logits = traj_logits_modes[b_idx, mode_winner]  # (b, steps, 4|6)
+                h_traj = h_traj[b_idx, mode_winner]  # (b, steps, H)
+
             if self.detach_h_traj:
                 h_traj = h_traj.detach()
 
@@ -451,6 +580,9 @@ class PolicyObjective(Objective):
                 h_traj,
                 _to_steps(mode_logits) if mode_logits is not None else None,
                 _to_steps(speed_logits) if speed_logits is not None else None,
+                traj_logits_modes,
+                mode_select_logits,
+                mode_winner,
             )
         # Inference: normalize to (b, h, d) per-step layout, then keep all steps
         # or only the first depending on keep_horizon
@@ -465,6 +597,9 @@ class PolicyObjective(Objective):
             h_traj,
             _norm_steps(mode_logits) if mode_logits is not None else None,
             _norm_steps(speed_logits) if speed_logits is not None else None,
+            traj_logits_modes,
+            mode_select_logits,
+            mode_winner,
         )
 
     @override
@@ -472,9 +607,16 @@ class PolicyObjective(Objective):
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        logits, traj_logits, _, mode_logits, speed_logits = self._compute_logits(
-            episode=episode, embedding=embedding
-        )
+        (
+            logits,
+            traj_logits,
+            _,
+            mode_logits,
+            speed_logits,
+            _,
+            mode_select_logits,
+            mode_winner,
+        ) = self._compute_logits(episode=episode, embedding=embedding)
 
         if self.training and self.action_horizon > 1:
             targets = tree_map(
@@ -578,6 +720,18 @@ class PolicyObjective(Objective):
             all_losses["trajectory"] = traj_loss * self.trajectory_loss_weight
 
         if (
+            mode_select_logits is not None
+            and self.trajectory_mode_loss is not None
+            and mode_winner is not None
+        ):
+            # head2: classifies which of head1's candidates wins (see
+            # _trajectory_nll_per_mode for how mode_winner is picked)
+            all_losses["trajectory_mode"] = (
+                self.trajectory_mode_loss(mode_select_logits, mode_winner)
+                * self.trajectory_mode_loss_weight
+            )
+
+        if (
             speed_logits is not None
             and self.speed_loss is not None
             and self.training
@@ -644,6 +798,8 @@ class PolicyObjective(Objective):
             ObjectivePredictionKey.LOSS,
             ObjectivePredictionKey.TRAJECTORY_VALUE,
             ObjectivePredictionKey.TRAJECTORY_GT,
+            ObjectivePredictionKey.TRAJECTORY_MODES_VALUE,
+            ObjectivePredictionKey.TRAJECTORY_MODE_PROBS,
             ObjectivePredictionKey.SPEED_VALUE,
             ObjectivePredictionKey.SPEED_GT,
         }:
@@ -663,13 +819,20 @@ class PolicyObjective(Objective):
                     [feature_idx]
                 ].parse(embedding)
 
-            raw_logits_full, traj_logits, _, mode_logits_full, speed_logits_full = (
-                self._compute_logits(
-                    episode=episode,
-                    embedding=embedding,
-                    feature_idx=feature_idx,
-                    keep_horizon=True,
-                )
+            (
+                raw_logits_full,
+                traj_logits,
+                _,
+                mode_logits_full,
+                speed_logits_full,
+                traj_logits_modes,
+                mode_select_logits,
+                _mode_winner,
+            ) = self._compute_logits(
+                episode=episode,
+                embedding=embedding,
+                feature_idx=feature_idx,
+                keep_horizon=True,
             )
             # scoring keys use the first predicted step; the full horizon is kept
             # only for gate/mode aggregation (see _gate_prob, _longitudinal_mode)
@@ -1063,6 +1226,29 @@ class PolicyObjective(Objective):
                         value = {"xy": traj_gt}
                     predictions[key] = Prediction(
                         value=TensorDict(value, batch_size=[b]),
+                        timestep_indices=timestep_indices,
+                    )
+
+            if (key := ObjectivePredictionKey.TRAJECTORY_MODES_VALUE) in keys:
+                if traj_logits_modes is not None:
+                    # traj_logits_modes: (b, num_modes, steps, 4|6) -- all of
+                    # head1's candidates, same xy/yaw column convention as
+                    # TRAJECTORY_VALUE (which only keeps the winner)
+                    value = {"xy": traj_logits_modes[..., [0, 2]]}
+                    if self.trajectory_target == "relative":
+                        value["yaw"] = traj_logits_modes[..., 4]
+                    predictions[key] = Prediction(
+                        value=TensorDict(value, batch_size=[b]),
+                        timestep_indices=timestep_indices,
+                    )
+
+            if (key := ObjectivePredictionKey.TRAJECTORY_MODE_PROBS) in keys:
+                if mode_select_logits is not None:
+                    predictions[key] = Prediction(
+                        value=TensorDict(
+                            {"probs": mode_select_logits.softmax(dim=-1)},
+                            batch_size=[b],
+                        ),
                         timestep_indices=timestep_indices,
                     )
 

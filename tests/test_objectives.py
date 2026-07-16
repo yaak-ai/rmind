@@ -49,6 +49,7 @@ def test_history_window_slice_against_real_sequence(
         lf("memory_extraction_objective"),
         lf("policy_objective"),
         lf("policy_objective_with_history_attn"),
+        lf("policy_objective_multimodal"),
     ],
 )
 def test_compute_metrics(
@@ -66,6 +67,7 @@ def test_compute_metrics(
         lf("memory_extraction_objective"),
         lf("policy_objective"),
         lf("policy_objective_with_history_attn"),
+        lf("policy_objective_multimodal"),
     ],
 )
 @pytest.mark.parametrize(

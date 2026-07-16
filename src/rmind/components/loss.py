@@ -127,6 +127,55 @@ class GaussianNLLLoss(torch.nn.GaussianNLLLoss):
         return super().forward(input=mean, target=target, var=var)
 
 
+class L1Loss(Module):
+    """L1 loss for a continuous head, as a drop-in swap for GaussianNLLLoss.
+
+    Reads only the mean channel (input[..., 0]) of the standard [mean,
+    log_var] head output layout and ignores the rest -- so it plugs into a
+    `heads.continuous.*` config entry without changing the head's
+    out_features, and predict()'s PREDICTION_STD/PREDICTION_PROBS/
+    SCORE_LOGPROB (which read the same [mean, log_var] layout) keep working;
+    their variance channel just goes untrained (no gradient reaches it) since
+    this loss never reads it.
+    """
+
+    def __init__(self, reduction: str = "mean") -> None:
+        super().__init__()
+        self.reduction: str = reduction
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        return F.l1_loss(input[..., 0], target, reduction=self.reduction)
+
+
+class ActivityWeightedL1Loss(L1Loss):
+    """L1Loss with per-sample weights proportional to target magnitude.
+
+    Mirrors ActivityWeightedGaussianNLLLoss's rationale (samples where the
+    control is actively engaged get higher gradient weight, counteracting
+    zero-inflation in the dataset) for the L1 loss family.
+    """
+
+    def __init__(self, *args: Any, activity_weight: float = 5.0, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.activity_weight = activity_weight
+
+    @override
+    def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        per_sample = F.l1_loss(input[..., 0], target, reduction="none")  # [B]
+        weights = 1.0 + self.activity_weight * target.abs()  # [B]
+        weights /= weights.mean()  # keep loss scale stable
+        loss = weights * per_sample
+
+        match self.reduction:
+            case "none":
+                return loss
+            case "sum":
+                return loss.sum()
+            case _:
+                return loss.mean()
+
+
 class HurdleGaussianNLLLoss(Module):
     """Zero-inflated (hurdle) Gaussian NLL for point-mass-at-zero controls (e.g. gas).
 

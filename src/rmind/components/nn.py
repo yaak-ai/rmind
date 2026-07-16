@@ -3,6 +3,7 @@ from functools import partial
 from typing import Any, final, override
 
 import torch
+from einops import rearrange
 from pydantic import validate_call
 from torch import Tensor, nn
 from torch.nn import Module
@@ -176,6 +177,75 @@ class GRUTrajectoryHead(Module):
             preds.append(logits)
         return torch.stack(preds, dim=1), torch.stack(hs, dim=1)
         # (b, num_steps, 2 * pose_dim),  (b, num_steps, H)
+
+
+@final
+class MultiModalGRUTrajectoryHead(Module):
+    """Winner-takes-all multi-modal counterpart of GRUTrajectoryHead: predicts
+    `num_modes` candidate trajectories from a single shared autoregressive GRU
+    decoder, the candidates distinguished only by a learned per-mode embedding
+    added to the initial hidden state. `hidden_proj`/`input_proj`/`gru`/
+    `output_proj` match GRUTrajectoryHead's parameter names and shapes exactly
+    (the only new parameter is `mode_embed`), so a single-mode checkpoint
+    warm-starts directly under `strict=false` -- no `state_dict_drop` needed,
+    unlike a head whose I/O projections actually change shape.
+
+    Output layout as GRUTrajectoryHead, with an extra leading mode axis: (b,
+    num_modes, num_steps, 2*pose_dim). Which candidate is "the" prediction is
+    the caller's responsibility (see PolicyObjective's winner-takes-all
+    selection) -- this head only proposes candidates.
+    """
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        in_features: int,
+        hidden_size: int,
+        num_steps: int,
+        num_modes: int = 4,
+        predict_yaw: bool = False,
+    ) -> None:
+        super().__init__()
+        self.num_steps = num_steps
+        self.num_modes = num_modes
+        self.predict_yaw = predict_yaw
+        self._hidden_size = hidden_size
+        pose_dim = 3 if predict_yaw else 2  # (x, y[, yaw])
+        self.hidden_proj = Linear(in_features, hidden_size)
+        self.input_proj = Linear(pose_dim, hidden_size)  # embed prev pose means
+        self.gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
+        self.output_proj = Linear(hidden_size, 2 * pose_dim)
+        self.mode_embed = Embedding(num_modes, hidden_size)
+
+    @override
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        # x: (b, 1, in_features)
+        b, k = x.size(0), self.num_modes
+        pose_dim = 3 if self.predict_yaw else 2
+        pose_idx = [0, 2, 4] if self.predict_yaw else [0, 2]
+
+        base_h = self.hidden_proj(x[:, 0])  # (b, H)
+        mode_ids = torch.arange(k, device=x.device)
+        mode_h = self.mode_embed(mode_ids)  # (k, H)
+        h = rearrange(
+            base_h.unsqueeze(1) + mode_h.unsqueeze(0), "b k h -> 1 (b k) h"
+        )  # (1, b*k, H)
+
+        prev_pose = torch.zeros(b * k, pose_dim, device=x.device, dtype=x.dtype)
+        preds, hs = [], []
+        for _ in range(self.num_steps):
+            inp = self.input_proj(prev_pose).unsqueeze(1)  # (b*k, 1, H)
+            out, h = self.gru(inp, h)                      # (b*k, 1, H), (1, b*k, H)
+            hs.append(h[0])                                # (b*k, H)
+            logits = self.output_proj(out[:, 0])           # (b*k, 2*pose_dim)
+            prev_pose = logits[:, pose_idx]                # means only
+            preds.append(logits)
+
+        traj = rearrange(torch.stack(preds, dim=1), "(b k) s d -> b k s d", b=b, k=k)
+        h_traj = rearrange(torch.stack(hs, dim=1), "(b k) s h -> b k s h", b=b, k=k)
+        return traj, h_traj
+        # (b, num_modes, num_steps, 2*pose_dim), (b, num_modes, num_steps, H)
 
 
 @final

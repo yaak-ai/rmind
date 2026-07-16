@@ -34,6 +34,8 @@ class ObjectivePredictionKey(StrEnum):
     LOSS = auto()
     TRAJECTORY_VALUE = auto()
     TRAJECTORY_GT = auto()
+    TRAJECTORY_MODES_VALUE = auto()
+    TRAJECTORY_MODE_PROBS = auto()
     SPEED_VALUE = auto()
     SPEED_GT = auto()
 
