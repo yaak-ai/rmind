@@ -61,8 +61,8 @@ class TrainingQualityLogger(Callback):
                 continue
             g = self._group(name)
             grad = param.grad.detach()
-            grad_sq[g] = grad_sq[g] + grad.square().sum().cpu()
-            weight_sq[g] = weight_sq[g] + param.detach().square().sum().cpu()
+            grad_sq[g] += grad.square().sum().cpu()
+            weight_sq[g] += param.detach().square().sum().cpu()
             dead[g] += int((grad == 0).sum().item())
             numel[g] += grad.numel()
 
@@ -114,7 +114,8 @@ class TrainingQualityLogger(Callback):
             train_key = "train/" + key.removeprefix("val/")
             if self._train_loss_counts.get(train_key):
                 train_mean = (
-                    self._train_loss_sums[train_key] / self._train_loss_counts[train_key]
+                    self._train_loss_sums[train_key]
+                    / self._train_loss_counts[train_key]
                 )
                 gap = float(value) - train_mean
                 suffix = key.removeprefix("val/")
