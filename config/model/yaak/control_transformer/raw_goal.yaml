@@ -1,0 +1,74 @@
+defaults:
+  - yaak/control_transformer/raw@_here_
+  - _self_
+
+# Adds the goal-conditioned latent-foresight objective (#2) on top of the
+# standard pretraining objectives (inverse_dynamics, forward_dynamics,
+# memory_extraction remain as co-regularizers).
+#
+# For all within-episode timestep pairs (i, j), i < j:
+#   - latent foresight: summary_i + horizon(j-i) -> pooled DINOv3 latent_j (cosine)
+#   - goal-conditioned inverse dynamics: [summary_i, DINOv3 latent_j, horizon]
+#     -> action tokens at i+1 (CE per action field)
+#
+# ${latent_goal_*} variables are defined by the experiment config
+# (experiment/yaak/control_transformer/pretrain_goal.yaml).
+objectives:
+  modules:
+    latent_goal:
+      _target_: rmind.components.objectives.goal_foresight.GoalConditionedForesightObjective
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
+      horizon_embedding:
+        _target_: torch.nn.Embedding
+        num_embeddings: ${episode_length}
+        embedding_dim: ${latent_goal_horizon_dim}
+      foresight_head:
+        _target_: torchvision.ops.MLP
+        # summary + horizon embedding -> DINOv3 latent
+        in_channels: ${latent_goal_foresight_in}
+        hidden_channels: [384, "${image_embedding_dim}"]
+      inverse_heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            gas_pedal:
+              _target_: torchvision.ops.MLP
+              in_channels: ${latent_goal_inverse_in}
+              hidden_channels: [384, "${gas_pedal_bins}"]
+            brake_pedal:
+              _target_: torchvision.ops.MLP
+              in_channels: ${latent_goal_inverse_in}
+              hidden_channels: [384, "${brake_pedal_bins}"]
+            steering_angle:
+              _target_: torchvision.ops.MLP
+              in_channels: ${latent_goal_inverse_in}
+              hidden_channels: [384, "${steering_angle_bins}"]
+          discrete:
+            turn_signal:
+              _target_: torchvision.ops.MLP
+              in_channels: ${latent_goal_inverse_in}
+              hidden_channels: [384, 3]
+      targets:
+        continuous:
+          gas_pedal: [input_tokens, continuous, gas_pedal]
+          brake_pedal: [input_tokens, continuous, brake_pedal]
+          steering_angle: [input_tokens, continuous, steering_angle]
+        discrete:
+          turn_signal: [input_tokens, discrete, turn_signal]
+      losses:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            gas_pedal:
+              _target_: torch.nn.CrossEntropyLoss
+            brake_pedal:
+              _target_: torch.nn.CrossEntropyLoss
+            steering_angle:
+              _target_: torch.nn.CrossEntropyLoss
+          discrete:
+            turn_signal:
+              _target_: torch.nn.CrossEntropyLoss
+      foresight_weight: ${latent_goal_foresight_weight}
+      inverse_weight: ${latent_goal_inverse_weight}

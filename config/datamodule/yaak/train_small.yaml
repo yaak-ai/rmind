@@ -1,0 +1,31 @@
+---
+defaults:
+  - /dataset/yaak/train_small@train.dataset
+  - /dataset/yaak/val@val.dataset
+  - _self_
+
+# 10-drive train subset (disjoint from val drives) for short training-dynamics
+# runs; full-size builds OOM on a single dev box.
+_target_: rmind.datamodules.GenericDataModule
+train:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 32
+  shuffle: true
+  drop_last: true
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+
+val:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 32
+  shuffle: false
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread

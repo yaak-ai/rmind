@@ -1,0 +1,34 @@
+# @package _global_
+
+# Pretraining + goal-conditioned latent-foresight objective (#2).
+# Identical to `pretrain` except:
+#   - model raw_goal (adds the `latent_goal` objective)
+#   - callbacks pretrain_goal (adds TrainingQualityLogger)
+
+defaults:
+  - /model: yaak/control_transformer/raw_goal
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: pretrain_goal
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+num_heads: 4
+num_layers: 8
+encoder_embedding_dim: 384
+image_embedding_dim: 384
+
+speed_bins: 512
+gas_pedal_bins: 255
+brake_pedal_bins: 165
+steering_angle_bins: 961
+
+# latent_goal objective dims/weights (see model/yaak/control_transformer/raw_goal.yaml)
+episode_length: 6
+latent_goal_horizon_dim: 64
+latent_goal_foresight_in: 448 # encoder_embedding_dim + latent_goal_horizon_dim
+latent_goal_inverse_in: 832 # encoder_embedding_dim + image_embedding_dim + latent_goal_horizon_dim
+# auxiliary weights: visible in the dynamics without dominating the co-objectives
+latent_goal_foresight_weight: 1.0
+latent_goal_inverse_weight: 0.5

@@ -40,6 +40,8 @@ class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]
 
 class Metrics(TypedDict):
     loss: TensorTree | None
+    # logged (train/<objective>/metric/...) but excluded from the total loss
+    metric: NotRequired[TensorTree]
     _artifacts: NotRequired[TensorTree]
 
 
