@@ -26,10 +26,10 @@ class GoalConditionedForesightObjective(Objective):
     For every within-episode timestep pair (i, j), i < j:
 
     - **latent foresight**: from the (causal) OBSERVATION_SUMMARY embedding at
-      timestep `i` plus a horizon embedding for `j - i`, predict the patch-pooled
-      DINOv3 latent of the frame at timestep `j` (cosine loss). This is
-      *latent* multi-step foresight: no pixel/patch detail, only the compact
-      future scene state.
+      timestep `i` plus a horizon embedding for `j - i`, predict the
+      block-pooled (grid_pool x grid_pool) DINOv3 latent grid of the frame at
+      timestep `j` (cosine loss per block). This is *latent* multi-step
+      foresight: no pixel/patch detail, only a compact future scene state.
 
     - **goal-conditioned inverse dynamics**: from (summary_i, DINOv3 latent of
       the *goal* frame at `j`, horizon embedding), predict the next action
@@ -59,6 +59,7 @@ class GoalConditionedForesightObjective(Objective):
         horizon_embedding: InstanceOf[Embedding],
         norm: InstanceOf[Module] | None = None,
         image_key: str = "cam_front_left",
+        grid_pool: int = 2,
         foresight_weight: float = 1.0,
         inverse_weight: float = 1.0,
     ) -> None:
@@ -71,6 +72,10 @@ class GoalConditionedForesightObjective(Objective):
         self.targets: Targets = targets
         self.horizon_embedding = horizon_embedding
         self.image_key = image_key
+        # DINO latents are block-pooled to a (grid_pool x grid_pool) spatial grid:
+        # full-image mean-pooling was measured to destroy most action-relevant
+        # scene information (probe: pooled current-frame DINO ~= majority class)
+        self.grid_pool = grid_pool
         self.foresight_weight = foresight_weight
         self.inverse_weight = inverse_weight
 
@@ -102,29 +107,36 @@ class GoalConditionedForesightObjective(Objective):
         summaries = self._summaries(episode, embedding)  # (b, t, d)
         b, t, _ = summaries.shape
 
-        # frozen DINOv3 latents, patch-pooled: (b, t, d_img); action-free by construction
+        # frozen DINOv3 latents, block-pooled to a (g x g) grid then flattened:
+        # (b, t, g*g*d_img); action-free by construction
+        patches = episode.input_embeddings.get((Modality.IMAGE, self.image_key))
+        n, d_img = patches.shape[-2], patches.shape[-1]
+        side, g = int(n**0.5), self.grid_pool
+        block = side // g
         dino = (
-            episode.input_embeddings
-            .get((Modality.IMAGE, self.image_key))
-            .mean(dim=-2)
-            .detach()
+            patches.detach()
+            .view(b, t, g, block, g, block, d_img)
+            .mean(dim=(3, 5))
+            .reshape(b, t, g * g, d_img)
         )
 
         ii, jj = self._pairs(t, summaries.device)
         horizon = self.horizon_embedding(jj - ii).expand(b, -1, -1)  # (b, p, dh)
 
         src = summaries[:, ii]  # (b, p, d)
-        goal = dino[:, jj]  # (b, p, d_img)
+        goal = dino[:, jj]  # (b, p, g*g, d_img)
 
         # --- multi-step latent foresight ---------------------------------
-        foresight_pred = self.foresight_head(torch.cat([src, horizon], dim=-1))
+        foresight_pred = self.foresight_head(
+            torch.cat([src, horizon], dim=-1)
+        ).unflatten(-1, (g * g, d_img))
         foresight_loss = (
             1.0 - F.cosine_similarity(foresight_pred, goal, dim=-1)
         ).mean()
 
         # --- goal-conditioned inverse dynamics ---------------------------
         # predict action tokens at timestep i + 1 (as InverseDynamicsPredictionObjective)
-        inverse_features = torch.cat([src, goal, horizon], dim=-1)
+        inverse_features = torch.cat([src, goal.flatten(-2), horizon], dim=-1)
         losses: dict[str, Tensor | dict[str, Tensor]] = {
             "foresight": self.foresight_weight * foresight_loss
         }
@@ -145,7 +157,7 @@ class GoalConditionedForesightObjective(Objective):
             metrics = {
                 "summary_feature_std": last.std(dim=0).mean(),
                 "summary_effective_rank": self._effective_rank(last),
-                "foresight_pred_std": foresight_pred.flatten(0, 1).std(dim=0).mean(),
+                "foresight_pred_std": foresight_pred.flatten(0, 2).std(dim=0).mean(),
                 "foresight_cos_to_goal": 1.0 - foresight_loss.detach(),
             }
 

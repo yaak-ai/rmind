@@ -28,7 +28,7 @@ steering_angle_bins: 961
 episode_length: 6
 latent_goal_horizon_dim: 64
 latent_goal_foresight_in: 448 # encoder_embedding_dim + latent_goal_horizon_dim
-latent_goal_inverse_in: 832 # encoder_embedding_dim + image_embedding_dim + latent_goal_horizon_dim
+latent_goal_inverse_in: 1984 # encoder_embedding_dim + grid_pool^2*image_embedding_dim + latent_goal_horizon_dim
 # auxiliary weights: visible in the dynamics without dominating the co-objectives
 latent_goal_foresight_weight: 1.0
 latent_goal_inverse_weight: 0.5

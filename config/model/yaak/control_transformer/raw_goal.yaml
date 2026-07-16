@@ -28,7 +28,7 @@ objectives:
         _target_: torchvision.ops.MLP
         # summary + horizon embedding -> DINOv3 latent
         in_channels: ${latent_goal_foresight_in}
-        hidden_channels: [384, "${image_embedding_dim}"]
+        hidden_channels: [384, 1536] # grid_pool^2 * image_embedding_dim
       inverse_heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
