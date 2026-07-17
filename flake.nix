@@ -42,6 +42,8 @@
             skim
             openssl
             ffmpeg
+            cargo
+            rustc
           ];
           commonEnv = {
             UV_PYTHON = "${python312}/bin/python";
@@ -76,6 +78,15 @@
                     export LD_LIBRARY_PATH="${uvLibraryPath}''${LD_LIBRARY_PATH:+:''${LD_LIBRARY_PATH}}"
                     exec ${lib.getExe nixglhost} ${lib.getExe uv} "$@"
                   '';
+                  ubuntuShell = mkShell {
+                    packages = commonPackages ++ [
+                      nixglhost
+                      ubuntuUv
+                    ];
+                    env = commonEnv // {
+                      TRITON_LIBCUDA_PATH = "/lib/x86_64-linux-gnu"; # for TorchInductor
+                    };
+                  };
                 in
                 {
                   nixos = mkShell {
@@ -85,15 +96,8 @@
                     };
                   };
 
-                  ubuntu = mkShell {
-                    packages = commonPackages ++ [
-                      nixglhost
-                      ubuntuUv
-                    ];
-                    env = commonEnv // {
-                      TRITON_LIBCUDA_PATH = "/lib/x86_64-linux-gnu"; # for TorchInductor
-                    };
-                  };
+                  ubuntu = ubuntuShell;
+                  default = ubuntuShell;
                 };
             }
             .${system};
