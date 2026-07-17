@@ -50,3 +50,12 @@ brake_hold_keep_frac: 1.0
 low_loss_keep_frac: 1.0
 low_loss_quantile: 0.5
 active_control_keep_frac: 1.0
+
+# HistoryViewpointPerturbation (only read by *_viewpoint_aug model configs;
+# 0.0 = disabled). See rmind.components.augment and PolicyObjective's
+# dyaw_key/steering_correction_gain -- synthetic last-history-tick heading
+# offset + a matching trajectory/steering-angle GT correction.
+viewpoint_aug_probability: 0.0
+viewpoint_aug_max_degrees: 5.0
+steering_correction_gain: 0.0
+steering_correction_decay_steps: 2

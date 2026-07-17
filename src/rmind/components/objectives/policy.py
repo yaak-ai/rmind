@@ -130,6 +130,35 @@ class PolicyObjective(Objective):
         pedal_heads: InstanceOf[ModuleDict] | None = None,
         condition_steering_on_speed: bool = False,
         detach_h_traj: bool = False,
+        # steering-angle GT correction paired with HistoryViewpointPerturbation
+        # (rmind.components.augment): that augmentation's implicit trajectory
+        # correction (via the perturbed heading feeding build_relative_trajectory)
+        # only reaches the trajectory head. Left alone, the steering_angle action
+        # head is trained on the real, unperturbed recorded continuation for the
+        # same sample -- i.e. "don't correct" -- directly contradicting the
+        # trajectory head. dyaw_key=None (default) disables this entirely.
+        dyaw_key: tuple[str, ...] | None = None,
+        # normalized-steering-units * km/h per degree of dyaw; sign convention:
+        # dyaw follows `heading` (positive = compass/rightward), so a positive
+        # dyaw subtracts from steering_angle (steer left to recover) -- verified
+        # empirically (real-drive steering_angle/heading-rate correlation is
+        # positive, i.e. positive steering_angle == rightward turn). Divides by
+        # current speed (bicycle-model yaw rate ~ v * steer): empirically the
+        # degrees-of-heading-change-per-unit-steering slope scaled ~14x between
+        # ~15 km/h and ~120 km/h on real fleet data, so a speed-independent
+        # constant would be far too weak on the highway and far too strong at
+        # parking-lot speed. 1.5 is a rough starting point from that same fit
+        # (gain * speed_kmh landed around 1.2-2.0 across the 30-140 km/h range)
+        # -- treat as a tunable, not a derived constant.
+        steering_correction_gain: float = 0.0,
+        # future ticks over which the correction linearly decays to 0 (full
+        # strength at the first predicted step, since that's the step
+        # build_relative_trajectory's chain assigns the "undo the offset" delta
+        # to; zero by the time the model should be back on the recorded path)
+        steering_correction_decay_steps: int = 2,
+        # avoids a division blowup near-stationary, where the real-data fit was
+        # noisy/inconsistent anyway (see steering_correction_gain)
+        steering_correction_speed_floor: float = 5.0,
     ) -> None:
         super().__init__()
 
@@ -209,6 +238,59 @@ class PolicyObjective(Objective):
         # isolating it to trajectory_loss only (same idea as the pedal_heads
         # detach above, applied to the trajectory coupling instead of speed).
         self.detach_h_traj: bool = detach_h_traj
+        self.dyaw_key: tuple[str, ...] | None = dyaw_key
+        self.steering_correction_gain: float = steering_correction_gain
+        self.steering_correction_decay_steps: int = steering_correction_decay_steps
+        self.steering_correction_speed_floor: float = steering_correction_speed_floor
+
+    def _apply_steering_correction(
+        self, targets: TensorTree, *, episode: Episode
+    ) -> TensorTree:
+        """Nudges the steering-angle GT to agree with the trajectory head's
+        implicit "recover from the injected heading offset" target instead of
+        contradicting it with the real, unperturbed recorded continuation --
+        see `dyaw_key`/`steering_correction_gain` and
+        `rmind.components.augment.HistoryViewpointPerturbation`.
+        """
+        if self.dyaw_key is None or self.steering_correction_gain == 0.0:
+            return targets
+
+        dyaw = episode.get(self.dyaw_key, default=None)
+        speed = episode.get(self.speed_key, default=None)
+        if dyaw is None or speed is None:
+            return targets
+
+        steering = targets[Modality.CONTINUOUS]["steering_angle"]
+        single_step = steering.dim() == 2  # (b, 1): the last-tick-only path
+        if single_step:
+            steering = steering.unsqueeze(1)  # (b, 1, 1)
+        h = steering.shape[1]
+
+        n = min(self.steering_correction_decay_steps, h)
+        decay = torch.zeros(h, device=steering.device, dtype=steering.dtype)
+        if n > 0:
+            decay[:n] = torch.linspace(
+                1.0, 0.0, n + 1, device=steering.device, dtype=steering.dtype
+            )[:-1]
+
+        current_speed = (
+            speed[:, self.history_steps - 1].reshape(-1, 1).to(steering.dtype)
+        )
+        correction = (
+            -self.steering_correction_gain
+            * dyaw[:, 0].to(steering.dtype).reshape(-1, 1)
+            / current_speed.clamp(min=self.steering_correction_speed_floor)
+            * decay.unsqueeze(0)
+        ).unsqueeze(-1)  # (b, h, 1)
+
+        corrected = (steering + correction).clamp(-1.0, 1.0)
+        if single_step:
+            corrected = corrected.squeeze(1)
+
+        targets = dict(targets)
+        targets[Modality.CONTINUOUS] = dict(targets[Modality.CONTINUOUS])
+        targets[Modality.CONTINUOUS]["steering_angle"] = corrected
+        return targets
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -624,6 +706,7 @@ class PolicyObjective(Objective):
                 self.targets,
                 is_leaf=lambda x: isinstance(x, tuple),
             )
+            targets = self._apply_steering_correction(targets, episode=episode)
             losses = self.losses(
                 tree_map(Rearrange("b h d -> (b h) d"), logits),
                 tree_map(Rearrange("b h 1 -> (b h)"), targets),
@@ -634,6 +717,7 @@ class PolicyObjective(Objective):
                 self.targets,
                 is_leaf=lambda x: isinstance(x, tuple),
             )
+            targets = self._apply_steering_correction(targets, episode=episode)
             # logits is (b, 1, out_features) after normalization in _compute_logits
             losses = self.losses(
                 tree_map(Rearrange("b 1 d -> b d"), logits),
