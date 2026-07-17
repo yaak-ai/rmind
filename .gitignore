@@ -131,7 +131,7 @@ dmypy.json
 
 # Experiments
 artifacts
-wandb_logs/
+wandb*
 outputs/
 predictions/
 lightning_logs/
@@ -156,7 +156,7 @@ CLAUDE.md
 
 # artifacts
 inference_results/
-.rbyte_cache
+.rbyte_cache*
 
 .dprint.json
 
