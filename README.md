@@ -10,11 +10,15 @@ Foundation models for spatial intelligence.
 ### [`nix`](https://github.com/NixOS/nix)-based
 
 0. install [`nix`](https://github.com/NixOS/nix) if necessary
-1. enter the dev shell:
+1. enter an appropriate dev shell depending on host system:
 
 ```bash
-nix develop
+nix develop .#nixos
+nix develop .#ubuntu
 ```
+
+> [!TIP]
+> use [`direnv`](https://direnv.net/) to do this automatically via [`.envrc`](.envrc)
 
 2. setup the Python environment:
 

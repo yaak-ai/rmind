@@ -76,6 +76,8 @@ dev = [
   "patdb",
   "pudb>=2025.1.5",
   "wat-inspector",
+  { include-group = "check" },
+  { include-group = "test" },
 ]
 check = [
   "ruff>=0.15.20",
