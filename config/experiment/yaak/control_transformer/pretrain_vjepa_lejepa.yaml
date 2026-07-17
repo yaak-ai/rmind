@@ -1,0 +1,52 @@
+# @package _global_
+#
+# LeJEPA continue-training of the V-JEPA 2.1 ViT-L/16 encoder, UNFROZEN, on the
+# driving data. Warm-starts from the torch.hub V-JEPA init (VjepaBackbone) and
+# adapts it end-to-end while SIGReg (arXiv:2511.08544) keeps the embedding
+# distribution isotropic-Gaussian — the hypothesized stable regime that avoids
+# the naive-unfreeze overfit / effective-rank collapse.
+#
+# Delta vs experiment=yaak/control_transformer/pretrain_vjepa:
+#   - trainer/callbacks -> pretrain_vjepa_unfrozen_lejepa (no ModuleFreezer,
+#     + TrainingQualityLogger for the failure-mode readout)
+#   - model.objectives.modules.sigreg -> SIGRegObjective (lambda=0.05)
+#   - optimizer LR/weight-decay nudged toward LeJEPA guidance, but kept
+#     conservative for a warm-start (see note below).
+
+defaults:
+  - /model: yaak/control_transformer/raw_vjepa
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: pretrain_vjepa_unfrozen_lejepa
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+num_heads: 4
+num_layers: 8
+encoder_embedding_dim: 384
+image_embedding_dim: 1024
+
+speed_bins: 512
+gas_pedal_bins: 255
+brake_pedal_bins: 165
+steering_angle_bins: 961
+
+model:
+  objectives:
+    modules:
+      # LeJEPA anti-collapse term: L = L_pred + lambda * SIGReg(embedding).
+      # rmind sums objective losses, so lambda is folded into `weight`.
+      sigreg:
+        _target_: rmind.components.objectives.sigreg_objective.SIGRegObjective
+        weight: 0.05
+        num_slices: 1024
+        num_points: 17
+
+  # LeJEPA recommends AdamW lr 5e-4 / wd 5e-2 for from-scratch SSL. This is a
+  # WARM-START continue-train of a pretrained ViT-L, so we keep the encoder LR
+  # low to avoid clobbering the V-JEPA init; 5e-5 is a middle ground between the
+  # base 1e-5 and LeJEPA's 5e-4. Sweep [1e-5, 5e-5, 1e-4] if rank stays healthy.
+  optimizer:
+    lr: 5e-5
+    weight_decay: 5e-2

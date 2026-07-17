@@ -13,6 +13,7 @@ from .prediction import (
     TensorDictPredictionWriter,
 )
 from .prediction_config import PredictionConfigSetter
+from .training_quality import TrainingQualityLogger
 
 __all__ = [
     "DataFramePredictionWriter",
@@ -22,6 +23,7 @@ __all__ = [
     "PredictionConfigSetter",
     "RerunPredictionWriter",
     "TensorDictPredictionWriter",
+    "TrainingQualityLogger",
     "WandbAttentionMaskLogger",
     "WandbImageParamLogger",
     "WandbPatchSimilarityLogger",
