@@ -1,11 +1,11 @@
 #@yaml/text-templated-strings
 
 #@ drives = [
-#@     'Niro115-HQ/2023-05-16--10-47-33',
-#@     'Niro104-HQ/2022-12-20--13-57-20',
-#@     'Niro107-HQ/2023-05-12--12-05-15',
-#@     'Niro122-HQ/2023-04-05--12-06-39',
-#@     'Niro102-HQ/2022-12-03--11-30-20',
+#@     'Niro115-HQ/2023-05-29--05-45-26',
+#@     'Niro104-HQ/2023-04-09--14-55-33',
+#@     'Niro107-HQ/2023-05-26--11-19-35',
+#@     'Niro122-HQ/2023-05-25--14-01-50',
+#@     'Niro102-HQ/2023-05-03--11-36-27',
 #@ ]
 
 ---
@@ -26,6 +26,30 @@ streams:
           colorspace: rgb
           fastdct: true
           fastupsample: true
+
+  cam_left_forward:
+    index: meta/ImageMetadata.cam_left_forward/frame_idx
+    sources:
+      #@ for/end drive_id in drives:
+      (@=drive_id@):
+        _target_: rbyte.io.TorchCodecFrameSource
+        source: "${paths.tud_data}/(@=drive_id@)/cam_left_forward.pii.mp4"
+        dimension_order: NHWC
+        transforms:
+          - _target_: torchcodec.transforms.Resize
+            size: [324, 576]
+
+  cam_right_forward:
+    index: meta/ImageMetadata.cam_right_forward/frame_idx
+    sources:
+      #@ for/end drive_id in drives:
+      (@=drive_id@):
+        _target_: rbyte.io.TorchCodecFrameSource
+        source: "${paths.tud_data}/(@=drive_id@)/cam_right_forward.pii.mp4"
+        dimension_order: NHWC
+        transforms:
+          - _target_: torchcodec.transforms.Resize
+            size: [324, 576]
 
 samples:
   inputs:
@@ -48,6 +72,14 @@ samples:
     cam_front_left_path:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324
+
+    cam_left_forward_path:
+      #@ for/end drive_id in drives:
+      - ${paths.tud_data}/(@=drive_id@)/cam_left_forward.pii.mp4
+
+    cam_right_forward_path:
+      #@ for/end drive_id in drives:
+      - ${paths.tud_data}/(@=drive_id@)/cam_right_forward.pii.mp4
 
   executor:
     _target_: concurrent.futures.ProcessPoolExecutor
@@ -182,6 +214,22 @@ samples:
                 ImageMetadata.cam_front_left:
                   key: time_stamp
 
+                ImageMetadata.cam_left_forward:
+                  key: time_stamp
+                  columns:
+                    frame_idx:
+                      method: asof
+                      tolerance: 100ms
+                      strategy: nearest
+
+                ImageMetadata.cam_right_forward:
+                  key: time_stamp
+                  columns:
+                    frame_idx:
+                      method: asof
+                      tolerance: 100ms
+                      strategy: nearest
+
                 VehicleState:
                   key: time_stamp
                   columns:
@@ -245,11 +293,35 @@ samples:
               _target_: polars.Int32
 
       - _target_: pipefunc.PipeFunc
+        renames:
+          path: cam_left_forward_path
+        output_name: cam_left_forward_meta
+        mapspec: "cam_left_forward_path[i] -> cam_left_forward_meta[i]"
+        cache: true
+        func:
+          _target_: rbyte.io.VideoDataFrameBuilder
+          fields:
+            frame_idx:
+              _target_: polars.Int32
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          path: cam_right_forward_path
+        output_name: cam_right_forward_meta
+        mapspec: "cam_right_forward_path[i] -> cam_right_forward_meta[i]"
+        cache: true
+        func:
+          _target_: rbyte.io.VideoDataFrameBuilder
+          fields:
+            frame_idx:
+              _target_: polars.Int32
+
+      - _target_: pipefunc.PipeFunc
         output_name: filtered
-        mapspec: "aligned[i], cam_front_left_meta[i] -> filtered[i]"
+        mapspec: "aligned[i], cam_front_left_meta[i], cam_left_forward_meta[i], cam_right_forward_meta[i] -> filtered[i]"
         func:
           _target_: makefun.create_function
-          func_signature: "filter(*, aligned, cam_front_left_meta)"
+          func_signature: "filter(*, aligned, cam_front_left_meta, cam_left_forward_meta, cam_right_forward_meta)"
           func_impl:
             _target_: rbyte.io.DuckDBDataFrameQuery
             extensions: [spatial]
@@ -268,6 +340,14 @@ samples:
                     SEMI JOIN cam_front_left_meta
                     ON aligned."meta/ImageMetadata.cam_front_left/frame_idx"
                     = cam_front_left_meta.frame_idx
+                    SEMI JOIN cam_left_forward_meta
+                    ON aligned."meta/ImageMetadata.cam_left_forward/frame_idx"
+                    - (SELECT MIN("meta/ImageMetadata.cam_left_forward/frame_idx") FROM aligned)
+                    = cam_left_forward_meta.frame_idx
+                    SEMI JOIN cam_right_forward_meta
+                    ON aligned."meta/ImageMetadata.cam_right_forward/frame_idx"
+                    - (SELECT MIN("meta/ImageMetadata.cam_right_forward/frame_idx") FROM aligned)
+                    = cam_right_forward_meta.frame_idx
                   WHERE
                     aligned."meta/VehicleMotion/gear" == '3'
                     AND aligned."meta/VehicleMotion/speed" BETWEEN 0.0 AND 130.0
@@ -294,12 +374,24 @@ samples:
                 * EXCLUDE (
                   "meta/VehicleMotion/gear",
                   "meta/VehicleMotion/brake_pedal_normalized",
+                  "meta/ImageMetadata.cam_left_forward/frame_idx",
+                  "meta/ImageMetadata.cam_right_forward/frame_idx",
                   waypoints_geom,
                   normalized_waypoints_geom,
                   ego_geom,
                   "waypoints/xy",
                   "headings_denoised/heading"
                 ),
+                -- Anchor to this ride's own minimum recorded frame_idx to get a
+                -- 0-indexed video frame number (see cam_left_forward_meta/
+                -- cam_right_forward_meta SEMI JOINs above, which already guarantee
+                -- this is a valid, decodable frame for the corresponding mp4).
+                "meta/ImageMetadata.cam_left_forward/frame_idx"
+                  - (SELECT MIN("meta/ImageMetadata.cam_left_forward/frame_idx") FROM aligned)
+                  AS "meta/ImageMetadata.cam_left_forward/frame_idx",
+                "meta/ImageMetadata.cam_right_forward/frame_idx"
+                  - (SELECT MIN("meta/ImageMetadata.cam_right_forward/frame_idx") FROM aligned)
+                  AS "meta/ImageMetadata.cam_right_forward/frame_idx",
                 -- Some vehicles (Niro106, Niro109, Niro110, Niro121, Niro124, Niro127, Niro132)
                 -- have a constant brake sensor offset of up to ~4 quantisation steps (< 0.05)
                 -- that reads as non-zero while the gas pedal is pressed. This is sensor noise,
@@ -372,6 +464,8 @@ samples:
               SELECT
                   "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[6] AS "meta/ImageMetadata.cam_front_left/time_stamp",
                   "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[6] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                  "meta/ImageMetadata.cam_left_forward/frame_idx"::INT32[6] AS "meta/ImageMetadata.cam_left_forward/frame_idx",
+                  "meta/ImageMetadata.cam_right_forward/frame_idx"::INT32[6] AS "meta/ImageMetadata.cam_right_forward/frame_idx",
                   "meta/VehicleMotion/speed"::FLOAT[6] AS "meta/VehicleMotion/speed",
                   "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/gas_pedal_normalized",
                   "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/brake_pedal_normalized",

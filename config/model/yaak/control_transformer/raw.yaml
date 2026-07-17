@@ -8,6 +8,8 @@ episode_builder:
   _convert_: all
   timestep:
     - [observation, image, cam_front_left]
+    - [observation, image, cam_left_forward]
+    - [observation, image, cam_right_forward]
     - [observation, continuous, speed]
     - [observation, context, waypoints]
     - [special, foresight, cam_front_left]
@@ -42,6 +44,8 @@ episode_builder:
         paths:
           image:
             cam_front_left: [data, cam_front_left]
+            cam_left_forward: [data, cam_left_forward]
+            cam_right_forward: [data, cam_right_forward]
 
           continuous:
             speed: [data, meta/VehicleMotion/speed]
