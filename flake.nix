@@ -42,6 +42,8 @@
             skim
             openssl
             ffmpeg
+            cargo
+            rustc
           ];
           commonEnv = {
             UV_PYTHON = "${python312}/bin/python";
