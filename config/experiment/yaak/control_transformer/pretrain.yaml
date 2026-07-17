@@ -18,3 +18,9 @@ speed_bins: 512
 gas_pedal_bins: 255
 brake_pedal_bins: 165
 steering_angle_bins: 961
+
+# see pretrain_copycat_interventions.md #5; 0.0 = off (no-op)
+action_dependency_dropout: 0.0
+
+lr_warmup_steps: 25000
+lr_training_steps: 250000

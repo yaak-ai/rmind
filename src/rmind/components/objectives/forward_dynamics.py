@@ -35,6 +35,8 @@ class ForwardDynamicsPredictionObjective(Objective):
         targets: Targets | None = None,
         projections: InstanceOf[ModuleDict] | None = None,
         patch_pos_embed: InstanceOf[Module] | None = None,
+        action_dependency_dropout: float = 0.0,
+        action_dependency_dropout_keys: list[tuple[str, ...]] | None = None,
     ) -> None:
         super().__init__()
 
@@ -44,6 +46,38 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.targets: Targets | None = targets
         self.projections: ModuleDict | None = projections
         self.patch_pos_embed: Module | None = patch_pos_embed
+        self.action_dependency_dropout: float = action_dependency_dropout
+        self.action_dependency_dropout_keys: list[tuple[str, ...]] | None = (
+            action_dependency_dropout_keys
+        )
+
+    def _drop_action_dependency_shortcut(
+        self, *, observations: TensorDict, episode: Episode
+    ) -> TensorDict:
+        """Force `forward_dynamics` to route through `action_summary` on a
+        fraction of steps, by blanking out the current-speed observation
+        embedding (the copy-forward shortcut's input) with the same
+        content-free mask placeholder the foresight branch already uses as
+        a query. No-op unless training and `action_dependency_dropout > 0`
+        (see `pretrain_copycat_interventions.md` #5)."""
+        if not self.training or not self.action_dependency_dropout:
+            return observations
+
+        keys = self.action_dependency_dropout_keys
+        # all but last timestep, matching `index = episode.index[:-1]`
+        mask_embedding = episode.embeddings.get((Modality.UTILITY, "mask"))[:, :-1]
+
+        def fn(key: tuple[str, ...], obs: Tensor) -> Tensor:
+            if keys is not None and key not in keys:
+                return obs
+
+            drop = (
+                torch.rand(obs.shape[:-1], device=obs.device)
+                < self.action_dependency_dropout
+            )
+            return torch.where(drop.unsqueeze(-1), mask_embedding.expand_as(obs), obs)
+
+        return observations.named_apply(fn, nested_keys=True)  # ty:ignore[unresolved-attribute]
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
@@ -54,6 +88,9 @@ class ForwardDynamicsPredictionObjective(Objective):
 
         observation_keys = self.heads.tree_paths()
         observations = index.select(*observation_keys).parse(embedding)
+        observations = self._drop_action_dependency_shortcut(
+            observations=observations, episode=episode
+        )
         action_summary = (
             index
             .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))

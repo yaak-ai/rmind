@@ -45,6 +45,7 @@ episode_builder:
 
           continuous:
             speed: [data, meta/VehicleMotion/speed]
+            speed_diff: [data, meta/VehicleMotion/speed]
             gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
             gas_pedal_diff: [data, meta/VehicleMotion/gas_pedal_normalized]
             brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
@@ -82,6 +83,12 @@ episode_builder:
           continuous:
             speed:
               _target_: rmind.components.nn.AtLeast3D
+
+            speed_diff:
+              _target_: rmind.components.nn.DiffLast
+              append:
+                _target_: hydra.utils.get_object
+                path: math.nan
 
             gas_pedal:
               _target_: rmind.components.nn.AtLeast3D
@@ -127,6 +134,18 @@ episode_builder:
           _target_: rmind.components.norm.UniformBinner
           range: [0.0, 130.0]
           bins: ${speed_bins}
+
+        speed_diff:
+          # NOTE: per-tick (3 Hz) speed delta, km/h; +-20 covers realistic
+          # accel/decel events (see pretrain_copycat_interventions.md #1) with
+          # headroom, mu-law then gives fine resolution near the common ~0 case
+          _target_: rmind.components.nn.Sequential
+          _args_:
+            - _target_: rmind.components.norm.Scaler
+              in_range: [-20.0, 20.0]
+              out_range: [-1.0, 1.0]
+            - _target_: rmind.components.norm.MuLawEncoding
+              quantization_channels: ${speed_bins}
 
         gas_pedal:
           _target_: rmind.components.norm.UniformBinner
@@ -199,6 +218,7 @@ episode_builder:
           _target_: rmind.components.nn.Embedding
           num_embeddings: ${steering_angle_bins}
           embedding_dim: ${encoder_embedding_dim}
+        speed_diff: null
         gas_pedal_diff: null
         brake_pedal_diff: null
         steering_angle_diff: null
@@ -261,6 +281,7 @@ episode_builder:
           _target_: rmind.components.nn.Linear
           in_features: ${encoder_embedding_dim}
           out_features: ${encoder_embedding_dim}
+        speed_diff: null
         gas_pedal_diff: null
         brake_pedal_diff: null
         steering_angle_diff: null
@@ -387,6 +408,12 @@ objectives:
       # null is intentional: the speed projection LayerNorms its inputs and
       # foresight features pass through their own projection
       norm: null
+      # see pretrain_copycat_interventions.md #5: forces the speed head to
+      # route through action_summary on a fraction of steps instead of
+      # copy-forwarding current speed. 0.0 = no-op/off by default.
+      action_dependency_dropout: ${action_dependency_dropout}
+      action_dependency_dropout_keys:
+        - [continuous, speed]
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
@@ -472,6 +499,12 @@ objectives:
         _target_: rmind.components.containers.ModuleDict
         modules:
           continuous:
+            speed_diff:
+              _target_: rmind.components.nn.Linear
+              in_features: ${encoder_embedding_dim}
+              out_features: ${speed_bins}
+              bias: False
+
             gas_pedal_diff:
               _target_: rmind.components.nn.Linear
               in_features: ${encoder_embedding_dim}
@@ -492,6 +525,7 @@ objectives:
 
       targets:
         continuous:
+          speed_diff: [input_tokens, continuous, speed_diff]
           gas_pedal_diff: [input_tokens, continuous, gas_pedal_diff]
           brake_pedal_diff: [input_tokens, continuous, brake_pedal_diff]
           steering_angle_diff: [input_tokens, continuous, steering_angle_diff]
@@ -500,6 +534,9 @@ objectives:
         _target_: rmind.components.containers.ModuleDict
         modules:
           continuous:
+            speed_diff:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+
             gas_pedal_diff:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
 
@@ -525,5 +562,5 @@ lr_scheduler:
   interval: step
   scheduler:
     _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
-    num_warmup_steps: 25000
-    num_training_steps: 250000
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_training_steps}

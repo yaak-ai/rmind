@@ -1,0 +1,12 @@
+# Continue pretraining (`raw.yaml`'s three objectives, unchanged) from a
+# wandb checkpoint, patching in the (checkpoint-predates-this-code)
+# action_dependency_dropout knob on forward_dynamics.
+# See pretrain_copycat_interventions.md #5 / pretrain_stall_experiments.md.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: true
+hparams_jq: |
+  .objectives.forward_dynamics.action_dependency_dropout = ${action_dependency_dropout}
+  | .objectives.forward_dynamics.action_dependency_dropout_keys = [["continuous", "speed"]]
+  | .lr_scheduler.scheduler.num_warmup_steps = ${lr_warmup_steps}
+  | .lr_scheduler.scheduler.num_training_steps = ${lr_training_steps}
