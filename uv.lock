@@ -2318,6 +2318,10 @@ predict = [
 train = [
     { name = "contextily" },
     { name = "matplotlib" },
+    { name = "rbyte", extra = ["video", "visualize"] },
+    { name = "torchcodec", version = "0.14.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
+    { name = "torchcodec", version = "0.14.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin' and sys_platform != 'linux'" },
+    { name = "torchcodec", version = "0.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
     { name = "torchmetrics" },
     { name = "wandb" },
 ]
@@ -2367,6 +2371,7 @@ requires-dist = [
     { name = "pytorch-lightning", specifier = ">=2.6.5" },
     { name = "rbyte", extras = ["geo", "jpeg", "yaak"], specifier = "==0.38.1" },
     { name = "rbyte", extras = ["video", "visualize"], marker = "extra == 'predict'" },
+    { name = "rbyte", extras = ["video", "visualize"], marker = "extra == 'train'" },
     { name = "structlog", specifier = ">=26.1.0" },
     { name = "tensordict", specifier = ">=0.13.0" },
     { name = "tensorrt-cu13", marker = "sys_platform == 'linux' and extra == 'predict'", specifier = "==10.14.1.48.post1" },
@@ -2376,7 +2381,9 @@ requires-dist = [
     { name = "torchaudio", marker = "sys_platform != 'linux'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchaudio", marker = "sys_platform == 'linux'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchcodec", marker = "sys_platform == 'linux' and extra == 'predict'", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "torchcodec", marker = "sys_platform == 'linux' and extra == 'train'", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchcodec", marker = "sys_platform != 'linux' and extra == 'predict'", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torchcodec", marker = "sys_platform != 'linux' and extra == 'train'", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchmetrics", marker = "extra == 'train'", specifier = ">=1.9" },
     { name = "torchvision", marker = "sys_platform != 'linux'", specifier = ">=0.27.1", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchvision", marker = "sys_platform == 'linux'", specifier = ">=0.27.1", index = "https://download.pytorch.org/whl/cu130" },
