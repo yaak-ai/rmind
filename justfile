@@ -28,6 +28,13 @@ check:
 check-git:
     uv run rmind-check-git
 
+# build image tagged with HEAD commit; requires a clean, pushed tree so the tag is truthful
+docker-build *ARGS: check-git
+    docker build \
+        --build-arg COMMIT_SHA=$(git rev-parse HEAD) \
+        -t rmind:$(git rev-parse HEAD) \
+        {{ ARGS }} .
+
 prek *ARGS:
     prek --all-files {{ ARGS }}
 
@@ -40,6 +47,15 @@ generate-config:
         --strict
 
 train *ARGS: generate-config check-git
+    uv run \
+        --extra train \
+        rmind-train \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name train.yaml \
+        {{ ARGS }}
+
+# train without the git cleanliness check — for docker, where the image is pinned to a commit
+train-unsafe *ARGS: generate-config
     uv run \
         --extra train \
         rmind-train \
