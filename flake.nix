@@ -70,6 +70,8 @@
                 pkgs.just
                 pkgs.jqp
                 pkgs.prek
+                pkgs.cargo
+                pkgs.rustc
                 uvWrapped
 
                 # misc
@@ -135,6 +137,8 @@
             pkgs.just
             pkgs.jqp
             pkgs.prek
+            pkgs.cargo
+            pkgs.rustc
             uvWrapped
           ];
 
