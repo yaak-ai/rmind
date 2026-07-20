@@ -45,6 +45,7 @@ streams:
         _target_: rbyte.io.TorchCodecFrameSource
         source: "${paths.tud_data}/(@=drive_id@)/cam_left_forward.pii.mp4"
         dimension_order: NHWC
+        device: cuda
         transforms:
           - _target_: torchcodec.transforms.Resize
             size: [324, 576]
@@ -57,6 +58,7 @@ streams:
         _target_: rbyte.io.TorchCodecFrameSource
         source: "${paths.tud_data}/(@=drive_id@)/cam_right_forward.pii.mp4"
         dimension_order: NHWC
+        device: cuda
         transforms:
           - _target_: torchcodec.transforms.Resize
             size: [324, 576]
