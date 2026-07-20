@@ -116,14 +116,46 @@ samples:
               time_stamp:
                 _target_: polars.Datetime
                 time_unit: us
+              session_timestamp:
+                _target_: polars.UInt64
               speed:
+                _target_: polars.Float32
+              speed_dashboard:
+                _target_: polars.Float32
+              acceleration_x:
+                _target_: polars.Float64
+              acceleration_y:
+                _target_: polars.Float64
+              acceleration_z:
+                _target_: polars.Float64
+              wheel_speed_fr:
+                _target_: polars.Float32
+              wheel_speed_fl:
+                _target_: polars.Float32
+              wheel_speed_rr:
+                _target_: polars.Float32
+              wheel_speed_rl:
+                _target_: polars.Float32
+              steering_angle:
+                _target_: polars.Float32
+              steering_angle_normalized:
                 _target_: polars.Float32
               gas_pedal_normalized:
                 _target_: polars.Float32
               brake_pedal_normalized:
                 _target_: polars.Float32
-              steering_angle_normalized:
-                _target_: polars.Float32
+              instructor_pedals_used:
+                _target_: polars.Boolean
+              mileage:
+                _target_: polars.Float64
+              speed_limiter_enabled:
+                _target_: polars.Boolean
+              speed_limiter_target:
+                _target_: polars.UInt32
+              cruise_control_enabled:
+                _target_: polars.Boolean
+              cruise_control_target:
+                _target_: polars.UInt32
               gear:
                 _target_: polars.Enum
                 categories: ["0", "1", "2", "3"]
@@ -204,12 +236,56 @@ samples:
                   columns:
                     speed:
                       method: interp
+                    speed_dashboard:
+                      method: interp
+                    acceleration_x:
+                      method: interp
+                    acceleration_y:
+                      method: interp
+                    acceleration_z:
+                      method: interp
+                    wheel_speed_fr:
+                      method: interp
+                    wheel_speed_fl:
+                      method: interp
+                    wheel_speed_rr:
+                      method: interp
+                    wheel_speed_rl:
+                      method: interp
+                    steering_angle:
+                      method: interp
+                    steering_angle_normalized:
+                      method: interp
                     gas_pedal_normalized:
                       method: interp
                     brake_pedal_normalized:
                       method: interp
-                    steering_angle_normalized:
+                    mileage:
                       method: interp
+                    session_timestamp:
+                      method: asof
+                      tolerance: 100ms
+                      strategy: nearest
+                    instructor_pedals_used:
+                      method: asof
+                      tolerance: 100ms
+                      strategy: nearest
+                    speed_limiter_enabled:
+                      method: asof
+                      tolerance: 100ms
+                      strategy: nearest
+                    speed_limiter_target:
+                      method: asof
+                      tolerance: 100ms
+                      strategy: nearest
+                    cruise_control_enabled:
+                      method: asof
+                      tolerance: 100ms
+                      strategy: nearest
+                    cruise_control_target:
+                      method: asof
+                      tolerance: 100ms
+                      strategy: nearest
                     gear:
                       method: asof
                       tolerance: 100ms
@@ -370,9 +446,25 @@ samples:
                   "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[6] AS "meta/ImageMetadata.cam_front_left/time_stamp",
                   "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[6] AS "meta/ImageMetadata.cam_front_left/frame_idx",
                   "meta/VehicleMotion/speed"::FLOAT[6] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/speed_dashboard"::FLOAT[6] AS "meta/VehicleMotion/speed_dashboard",
+                  "meta/VehicleMotion/acceleration_x"::DOUBLE[6] AS "meta/VehicleMotion/acceleration_x",
+                  "meta/VehicleMotion/acceleration_y"::DOUBLE[6] AS "meta/VehicleMotion/acceleration_y",
+                  "meta/VehicleMotion/acceleration_z"::DOUBLE[6] AS "meta/VehicleMotion/acceleration_z",
+                  "meta/VehicleMotion/wheel_speed_fr"::FLOAT[6] AS "meta/VehicleMotion/wheel_speed_fr",
+                  "meta/VehicleMotion/wheel_speed_fl"::FLOAT[6] AS "meta/VehicleMotion/wheel_speed_fl",
+                  "meta/VehicleMotion/wheel_speed_rr"::FLOAT[6] AS "meta/VehicleMotion/wheel_speed_rr",
+                  "meta/VehicleMotion/wheel_speed_rl"::FLOAT[6] AS "meta/VehicleMotion/wheel_speed_rl",
+                  "meta/VehicleMotion/steering_angle"::FLOAT[6] AS "meta/VehicleMotion/steering_angle",
                   "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/gas_pedal_normalized",
                   "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/brake_pedal_normalized",
                   "meta/VehicleMotion/steering_angle_normalized"::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
+                  "meta/VehicleMotion/session_timestamp"::UBIGINT[6] AS "meta/VehicleMotion/session_timestamp",
+                  "meta/VehicleMotion/instructor_pedals_used"::BOOLEAN[6] AS "meta/VehicleMotion/instructor_pedals_used",
+                  "meta/VehicleMotion/mileage"::DOUBLE[6] AS "meta/VehicleMotion/mileage",
+                  "meta/VehicleMotion/speed_limiter_enabled"::BOOLEAN[6] AS "meta/VehicleMotion/speed_limiter_enabled",
+                  "meta/VehicleMotion/speed_limiter_target"::UINTEGER[6] AS "meta/VehicleMotion/speed_limiter_target",
+                  "meta/VehicleMotion/cruise_control_enabled"::BOOLEAN[6] AS "meta/VehicleMotion/cruise_control_enabled",
+                  "meta/VehicleMotion/cruise_control_target"::UINTEGER[6] AS "meta/VehicleMotion/cruise_control_target",
                   "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
                   "meta/Gnss/xy"::FLOAT[2][6] AS "meta/Gnss/xy",
                   "headings_denoised/heading"::FLOAT[6] AS "headings_denoised/heading",
