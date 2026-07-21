@@ -35,6 +35,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         targets: Targets | None = None,
         projections: InstanceOf[ModuleDict] | None = None,
         patch_pos_embed: InstanceOf[Module] | None = None,
+        target_encoder: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -44,6 +45,23 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.targets: Targets | None = targets
         self.projections: ModuleDict | None = projections
         self.patch_pos_embed: Module | None = patch_pos_embed
+        # Optional frozen re-encoder for the prediction target (spinoff 1.2:
+        # "better prediction target"). When set, each gathered target is passed
+        # through it (detached, no grad) so the foresight head is supervised
+        # against a richer representation than the per-frame DINOv3 patch tokens
+        # — e.g. a V-JEPA *video* encoder that carries motion single-frame DINO
+        # doesn't (see components.vjepa_backbone.VjepaVideoBackbone). The head's
+        # output width must match the encoder's output dim. Default None keeps
+        # the current DINOv3-input-embeddings target. NOTE: a V-JEPA-video target
+        # additionally needs a raw multi-frame source pointed at by `targets`
+        # (the episode's DINO-preprocessed frames won't match V-JEPA's 384 / own
+        # normalization) — that raw-frame plumbing lives on feat/vjepa-unfrozen-
+        # lejepa; here this is the wired, validated extension point.
+        self.target_encoder: Module | None = (
+            None
+            if target_encoder is None
+            else target_encoder.requires_grad_(False).eval()  # noqa: FBT003
+        )
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
@@ -91,6 +109,13 @@ class ForwardDynamicsPredictionObjective(Objective):
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
+        if self.target_encoder is not None:
+            with torch.no_grad():
+                targets = tree_map(
+                    lambda t: self.target_encoder(t).detach(),
+                    targets,
+                    is_leaf=lambda x: isinstance(x, Tensor),
+                )
 
         losses = self.losses(
             tree_map(Rearrange("b t s d -> (b t s) d"), logits),

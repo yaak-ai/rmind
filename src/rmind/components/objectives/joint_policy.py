@@ -45,6 +45,10 @@ class JointPolicyObjective(Objective):
         offset_scale: float | None = None,
         decode_strategy: Literal["argmax", "chain_greedy", "heads"] = "argmax",
         decode_beta: float = 1.0,
+        read_waypoints: bool | None = None,
+        foresight_attn: InstanceOf[Module] | None = None,
+        foresight_maxpool: bool = False,
+        foresight_key: str = "cam_front_left",
     ) -> None:
         super().__init__()
 
@@ -59,6 +63,29 @@ class JointPolicyObjective(Objective):
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
+
+        # Foresight readout for the policy head (spinoffs 1.1 / 2.4). Both are
+        # ADDITIVE: their outputs are concatenated onto [observation_summary,
+        # observation_history] in _features, never replacing them.
+        #   foresight_attn    (1.1): learned multi-query attention pooling over the
+        #                            256 foresight slots -> (b, num_queries * d).
+        #   foresight_maxpool (2.4): channel-wise max over the foresight slots ->
+        #                            (b, d), preserving onset peaks a single
+        #                            softmax-attention token averages away.
+        # read_waypoints=None keeps the legacy auto-detect (waypoint inclusion
+        # inferred from the code head's input width); it must be set explicitly
+        # once a foresight branch is enabled, since the head width is then no
+        # longer 2*d / 3*d. code/offset head in_channels must equal the assembled
+        # feature width (validated on first _features call).
+        self.read_waypoints = read_waypoints
+        self.foresight_attn: Module | None = foresight_attn
+        self.foresight_maxpool = foresight_maxpool
+        self.foresight_key = foresight_key
+        self._code_head_in: int = next(
+            m.in_features
+            for m in self.code_head.modules()
+            if isinstance(m, torch.nn.Linear)
+        )
 
         # inference-time code decoding (train/eval always argmax-or-sampled via
         # _sample_codes; these govern forward/predict, i.e. the exported graph):
@@ -111,45 +138,64 @@ class JointPolicyObjective(Objective):
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        embeddings = (
-            episode
-            .index[-1]
-            .select(
-                (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                (Modality.CONTEXT, "waypoints"),
-            )
-            .parse(embedding)
-        )
+        keys = [
+            (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+            (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
+            (Modality.CONTEXT, "waypoints"),
+        ]
+        use_foresight = self.foresight_attn is not None or self.foresight_maxpool
+        if use_foresight:
+            keys.append((Modality.FORESIGHT, self.foresight_key))
 
-        observation_history = embeddings.get((
-            Modality.SUMMARY,
-            SummaryToken.OBSERVATION_HISTORY,
-        ))
+        embeddings = episode.index[-1].select(*keys).parse(embedding)
+
         observation_summary = embeddings.get((
             Modality.SUMMARY,
             SummaryToken.OBSERVATION_SUMMARY,
-        ))
-
-        # The policy head's input width decides whether the waypoints summary is
-        # concatenated: 3 tokens (3*d, waypoint-aware) vs 2 (2*d, "no waypoints in
-        # policy head" finetunes, e.g. feat/action-tokenizer @ ad93596). Detected
-        # from the code head so one code path exports both model families.
-        tokens = [observation_summary, observation_history]
+        ))  # (b, 1, d)
+        observation_history = embeddings.get((
+            Modality.SUMMARY,
+            SummaryToken.OBSERVATION_HISTORY,
+        ))  # (b, 1, d)
         d = observation_summary.shape[-1]
-        head_in = next(
-            m.in_features
-            for m in self.code_head.modules()
-            if isinstance(m, torch.nn.Linear)
-        )
-        if head_in == 3 * d:
-            tokens.append(
-                embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                    dim=1, keepdim=True
-                )
-            )
 
-        return rearrange(tokens, "i b 1 d -> b (i d)")
+        # Waypoint inclusion: legacy path (read_waypoints=None, no foresight
+        # branch) infers it from the code head's input width — 3 tokens (3*d,
+        # waypoint-aware) vs 2 (2*d, "no waypoints in policy head" finetunes,
+        # e.g. feat/action-tokenizer @ ad93596) — so one code path serves both
+        # families. With a foresight branch the head width is no longer 2*d/3*d,
+        # so read_waypoints must be set explicitly in the config.
+        if self.read_waypoints is None:
+            read_waypoints = self._code_head_in == 3 * d
+        else:
+            read_waypoints = self.read_waypoints
+
+        parts: list[Tensor] = [
+            observation_summary.squeeze(1),
+            observation_history.squeeze(1),
+        ]  # each (b, d)
+        if read_waypoints:
+            parts.append(embeddings.get((Modality.CONTEXT, "waypoints")).mean(dim=1))
+        if use_foresight:
+            foresight = embeddings.get((
+                Modality.FORESIGHT,
+                self.foresight_key,
+            ))  # (b, n, d)
+            if self.foresight_attn is not None:
+                parts.append(self.foresight_attn(foresight))  # (b, num_queries * d)
+            if self.foresight_maxpool:
+                parts.append(foresight.amax(dim=1))  # (b, d)
+
+        features = torch.cat(parts, dim=-1)  # (b, W)
+        if features.shape[-1] != self._code_head_in:
+            msg = (
+                f"assembled policy-head width {features.shape[-1]} != code_head "
+                f"in_features {self._code_head_in}; set code/offset head "
+                f"in_channels to the assembled width (waypoints + foresight "
+                f"branches) or fix read_waypoints"
+            )
+            raise ValueError(msg)
+        return features
 
     def _heads(self, features: Tensor) -> tuple[Tensor, Tensor]:
         """Code logits (b, g, c) and the full offset table (b, g, c, action_dim)."""

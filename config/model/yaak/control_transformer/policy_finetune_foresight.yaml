@@ -1,0 +1,101 @@
+---
+# Finetune the VQ-BeT joint policy with a WIDENED foresight readout on the head:
+#   1.1  foresight_attn    — learned 4-query attention pool over the 256 foresight
+#                            slots (+4*384 = 1536)
+#   2.4  foresight_maxpool — channel-wise max over the foresight slots (+384),
+#                            preserving onset peaks the softmax summary averages
+# Both are ADDITIVE (concatenated onto observation_summary + observation_history
+# + waypoints), so the assembled head width is 3*384 + 1536 + 384 = 3072 and a
+# null result cleanly isolates "no incremental readout value".
+# FT-only: reads the encoder-output foresight slots of an existing PT checkpoint,
+# so no re-pretraining is needed. Ablate by dropping foresight_attn / setting
+# foresight_maxpool=false and reverting in_channels to 1152 (== policy_finetune).
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+hparams_jq: |
+  .episode_builder.input_transform._args_ += [{
+    "_target_": "rmind.components.nn.SliceFields",
+    "dim": -1,
+    "index": 0,
+    "paths": [
+      ["continuous", "gas_pedal"],
+      ["continuous", "brake_pedal"],
+      ["continuous", "steering_angle"],
+      ["discrete", "turn_signal"]
+    ]
+  }]
+  | .episode_builder.input_transform._args_ = (
+      .episode_builder.input_transform._args_
+      | if any(.[]; ._target_ == "rmind.components.nn.ChunkFields")
+        then map(if ._target_ == "rmind.components.nn.ChunkFields"
+                 then .action_horizon = ${action_horizon} else . end)
+        else [.[0]] + [{
+               "_target_": "rmind.components.nn.ChunkFields",
+               "episode_length": ${episode_length},
+               "action_horizon": ${action_horizon},
+               "unfold_paths": [
+                 ["continuous", "gas_pedal"],
+                 ["continuous", "brake_pedal"],
+                 ["continuous", "steering_angle"],
+                 ["discrete", "turn_signal"]
+               ]
+             }] + .[1:]
+        end
+    )
+  | .episode_builder.tokenizers.modules.joint_actions = {
+    "_target_": "rmind.components.nn.Identity"
+  }
+  | .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.joint_policy.JointPolicyObjective",
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "tokenizer": {
+          "_target_": "rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact",
+          "artifact": "${action_tokenizer_artifact}",
+          "weights_only": false
+        },
+        "read_waypoints": true,
+        "foresight_maxpool": true,
+        "foresight_key": "cam_front_left",
+        "foresight_attn": {
+          "_target_": "rmind.components.foresight_readout.ForesightAttentionPool",
+          "dim": 384,
+          "num_queries": 4,
+          "num_heads": 4
+        },
+        "code_head": {
+          "_target_": "torchvision.ops.MLP",
+          "in_channels": 3072,
+          "hidden_channels": [1024, 1024, 64]
+        },
+        "offset_head": {
+          "_target_": "torchvision.ops.MLP",
+          "in_channels": 3072,
+          "hidden_channels": [1024, 1024, 1536]
+        },
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "code": { "_target_": "rmind.components.loss.FocalLoss" },
+            "offset": { "_target_": "torch.nn.L1Loss" }
+          }
+        },
+        "chunk": ["input", "joint_actions"],
+        "teacher_force_offset": ("${teacher_force_offset}" | ascii_downcase == "true")
+      }
+    }
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": 25000,
+      "num_training_steps": 250000
+    }
+  }
