@@ -1,0 +1,15 @@
+# Warm-start (continue-pretrain) from the foresight-pretrained backbone
+# (2pwdfhzi) with the goal objective ADDED. The merged checkpoint carries main
+# raw_goal hparams + 2pwdfhzi encoder/embeddings/projections weights (encoder
+# 146/146 transferred); the latent_goal + inverse_dynamics heads start fresh.
+# Goal weights are read from ${latent_goal_*_weight} (experiment defaults 1.0/0.5).
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_checkpoint
+checkpoint_path: /tmp/claude-30035/-home-max-Code/e49adfec-c4ed-4b56-b379-7a981660aace/scratchpad/warmstart_2pwdfhzi_raw_goal.ckpt
+strict: true
+weights_only: false
+hparams_jq: |
+  .objectives.modules.latent_goal.foresight_weight = ${latent_goal_foresight_weight}
+  | .objectives.modules.latent_goal.inverse_weight = ${latent_goal_inverse_weight}
+  | .lr_scheduler.scheduler.num_warmup_steps = 100
+  | .lr_scheduler.scheduler.num_training_steps = 1700
+  | .optimizer.lr = 5e-5

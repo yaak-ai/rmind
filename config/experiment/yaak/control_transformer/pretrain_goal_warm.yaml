@@ -1,0 +1,32 @@
+# @package _global_
+
+# Continue-pretraining the foresight-pretrained backbone with the goal objective
+# added, warm-started from the merged 2pwdfhzi checkpoint. Used for the decisive
+# representation-adaptation A/B (goal-on vs goal-off via the weight overrides).
+
+defaults:
+  - /model: yaak/control_transformer/raw_goal_warm
+  - /datamodule: yaak/train_small
+  - /trainer: default
+  - /trainer/callbacks: pretrain_goal
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+num_heads: 4
+num_layers: 8
+encoder_embedding_dim: 384
+image_embedding_dim: 384
+
+speed_bins: 512
+gas_pedal_bins: 255
+brake_pedal_bins: 165
+steering_angle_bins: 961
+
+episode_length: 6
+latent_goal_horizon_dim: 64
+latent_goal_foresight_in: 448
+latent_goal_inverse_in: 1984
+# A/B: goal-on = 1.0 / 0.5 ; goal-off = 0.0 / 0.0 (override on CLI)
+latent_goal_foresight_weight: 1.0
+latent_goal_inverse_weight: 0.5
