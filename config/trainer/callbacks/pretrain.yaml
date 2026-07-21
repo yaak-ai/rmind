@@ -17,7 +17,6 @@
   key: similarity
   select:
     - [episode_builder, embeddings, continuous]
-    - [episode_builder, embeddings, discrete]
     - [episode_builder, role_encoding, weight]
   apply:
     _target_: torchmetrics.functional.pairwise_cosine_similarity
