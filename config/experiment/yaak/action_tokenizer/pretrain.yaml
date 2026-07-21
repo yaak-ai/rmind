@@ -9,10 +9,16 @@ defaults:
   - /wandb: yaak/rmind
   - _self_
 
-action_clip: 6
-action_step: 10
-action_stride: 10
-clip_period: "${eval:'${action_step} * ${action_clip}'}i"
+# Set BOTH the tokenizer size (action_clip) and the rate (action_step); the window derives.
+#   fps = 30 / action_step        window_seconds = action_clip * action_step / 30
+#   30 steps @ 15Hz (2s):  action_clip=30 action_step=2   (clip_frames=60)
+#   1 step  @ 5Hz  (0.2s): action_clip=1  action_step=6   (clip_frames=6)
+#   6 steps @ 3Hz  (2s):   action_clip=6  action_step=10  (default, clip_frames=60)
+action_clip: 6 # tokenizer timesteps: input is N x action_clip x 4
+action_step: 10 # frame stride @ 30fps native: fps = 30 / action_step
+action_stride: 10 # window overlap: start a new window every N frames
+clip_frames: "${eval:'${action_clip} * ${action_step}'}" # full-res window length in frames (DERIVED)
+clip_period: "${clip_frames}i"
 
 action_space: 4
 action_dim: "${eval:'${action_space} * ${action_clip}'}"

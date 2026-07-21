@@ -747,6 +747,7 @@ samples:
       - _target_: pipefunc.PipeFunc
         output_name: aligned
         mapspec: "meta[i] -> aligned[i]"
+        cache: true
         func:
           _target_: makefun.create_function
           func_signature: "align(*, meta)"
@@ -784,6 +785,7 @@ samples:
       - _target_: pipefunc.PipeFunc
         output_name: filtered
         mapspec: "aligned[i] -> filtered[i]"
+        cache: true
         func:
           _target_: makefun.create_function
           func_signature: "filter(*, aligned)"
@@ -807,17 +809,20 @@ samples:
           input: filtered
         output_name: samples
         mapspec: "filtered[i] -> samples[i]"
+        cache: true
         func:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
           every: "${action_stride}i"
           period: ${clip_period}
           closed: left
-          gather_every: "${action_step}"
+          gather_every: "1"                       # full-res: keep every frame (FAST needs the rich signal)
 
+      # full-resolution cast: keep all ${clip_frames} frames of the 2s window (for FAST)
       - _target_: pipefunc.PipeFunc
         output_name: samples_cast
         mapspec: "samples[i] -> samples_cast[i]"
+        cache: true
         func:
           _target_: makefun.create_function
           func_signature: "cast(*, samples)"
@@ -825,31 +830,113 @@ samples:
             _target_: rbyte.io.DuckDBDataFrameQuery
             query: |
               SELECT
-                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[${action_clip}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
-                  "meta/VehicleMotion/speed"::FLOAT[${action_clip}] AS "meta/VehicleMotion/speed",
-                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/gas_pedal_normalized",
-                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/brake_pedal_normalized",
-                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/steering_angle_normalized",
-                  "meta/VehicleState/turn_signal"::INT8[${action_clip}] AS "meta/VehicleState/turn_signal",
+                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[${clip_frames}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                  "meta/VehicleMotion/speed"::FLOAT[${clip_frames}] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[${clip_frames}] AS "meta/VehicleMotion/gas_pedal_normalized",
+                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[${clip_frames}] AS "meta/VehicleMotion/brake_pedal_normalized",
+                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[${clip_frames}] AS "meta/VehicleMotion/steering_angle_normalized",
+                  "meta/VehicleState/turn_signal"::INT8[${clip_frames}] AS "meta/VehicleState/turn_signal",
               FROM
                   samples
               WHERE
-                  len("meta/ImageMetadata.cam_front_left/frame_idx") = ${action_clip}
-                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == (${action_clip} - 1) * ${action_step}
+                  len("meta/ImageMetadata.cam_front_left/frame_idx") = ${clip_frames}
+                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == (${clip_frames} - 1) * 1
 
+      # FAST coefficients PER-DRIVE on the full-res signal (before aggregation -> low peak RAM)
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: samples_cast
+        output_name: samples_fast
+        mapspec: "samples_cast[i] -> samples_fast[i]"
+        cache: true
+        func:
+          _target_: rmind.io.fast.FASTBuilder
+          k: 4
+          gamma: 10.0
+          columns:
+            - meta/VehicleMotion/gas_pedal_normalized
+            - meta/VehicleMotion/brake_pedal_normalized
+            - meta/VehicleMotion/steering_angle_normalized
+
+      # downsample to ${action_clip}-step / ${action_step}-stride 3fps PER-DRIVE, keeping only the
+      # small DCT coeffs for binning and DROPPING the full-res FLOAT[${clip_frames}] arrays here so
+      # they never accumulate across all drives (this is the RAM fix).
+      # NOT cached: this step depends on action_clip/action_step, but pipefunc's cache key does not
+      # include the resolved DuckDB query, so caching collides across action_clip values.
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_ds
+        mapspec: "samples_fast[i] -> samples_ds[i]"
+        func:
+          _target_: makefun.create_function
+          func_signature: "downsample(*, samples_fast)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            query: |
+              SELECT
+                list_transform(range(0, ${action_clip}), x -> "meta/VehicleMotion/gas_pedal_normalized"[1 + x * ${action_step}])::FLOAT[${action_clip}]      AS "meta/VehicleMotion/gas_pedal_normalized",
+                list_transform(range(0, ${action_clip}), x -> "meta/VehicleMotion/brake_pedal_normalized"[1 + x * ${action_step}])::FLOAT[${action_clip}]    AS "meta/VehicleMotion/brake_pedal_normalized",
+                list_transform(range(0, ${action_clip}), x -> "meta/VehicleMotion/steering_angle_normalized"[1 + x * ${action_step}])::FLOAT[${action_clip}] AS "meta/VehicleMotion/steering_angle_normalized",
+                list_transform(range(0, ${action_clip}), x -> "meta/VehicleState/turn_signal"[1 + x * ${action_step}])::TINYINT[${action_clip}]              AS "meta/VehicleState/turn_signal",
+                list_transform(range(0, ${action_clip}), x -> "meta/VehicleMotion/speed"[1 + x * ${action_step}])::FLOAT[${action_clip}]                     AS "meta/VehicleMotion/speed",
+                "meta/VehicleMotion/gas_pedal_normalized/dct"      AS "meta/VehicleMotion/gas_pedal_normalized/dct",
+                "meta/VehicleMotion/brake_pedal_normalized/dct"    AS "meta/VehicleMotion/brake_pedal_normalized/dct",
+                "meta/VehicleMotion/steering_angle_normalized/dct" AS "meta/VehicleMotion/steering_angle_normalized/dct",
+              FROM samples_fast
+
+      # aggregate the (now small) 6-step + coeff rows across drives
       - _target_: pipefunc.PipeFunc
         renames:
           keys: input_id
-          values: samples_cast
+          values: samples_ds
         output_name: samples_aggregated
         func:
           _target_: rbyte.io.DataFrameConcater
           key_column: input_id
 
+      # bin on low-order coeffs (DC + trend/channel) -> count -> inverse-frequency keep (balance),
+      # then drop the coeff columns (only the 6-step actions + rarity go to training)
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_balanced
+        func:
+          _target_: makefun.create_function
+          func_signature: "balance(*, samples_aggregated)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            query: |
+              WITH keyed AS (
+                SELECT *,
+                  "meta/VehicleMotion/gas_pedal_normalized/dct"[1]      AS kg0,
+                  "meta/VehicleMotion/gas_pedal_normalized/dct"[2]      AS kg1,
+                  "meta/VehicleMotion/brake_pedal_normalized/dct"[1]    AS kb0,
+                  "meta/VehicleMotion/brake_pedal_normalized/dct"[2]    AS kb1,
+                  "meta/VehicleMotion/steering_angle_normalized/dct"[1] AS ks0,
+                  "meta/VehicleMotion/steering_angle_normalized/dct"[2] AS ks1,
+                FROM samples_aggregated
+              ),
+              counted AS (
+                SELECT *,
+                  COUNT(*) OVER (PARTITION BY kg0, kg1, kb0, kb1, ks0, ks1) AS bin_count,
+                  COUNT(*) OVER ()                                          AS total,
+                FROM keyed
+              )
+              SELECT
+                * EXCLUDE (
+                  kg0, kg1, kb0, kb1, ks0, ks1, bin_count, total,
+                  "meta/VehicleMotion/gas_pedal_normalized/dct",
+                  "meta/VehicleMotion/brake_pedal_normalized/dct",
+                  "meta/VehicleMotion/steering_angle_normalized/dct"
+                ),
+                -ln(bin_count::DOUBLE / total) AS "meta/rarity",
+                pow(1.0 / bin_count, 0.5)      AS "meta/weight",
+              FROM counted
+              -- NO row drop: keep every window + a per-window weight (inverse maneuver-freq^0.5).
+              -- WeightedDataNodeDataLoader oversamples rare maneuvers at load time via meta/weight,
+              -- so the epoch size is unchanged but rare windows are drawn more often.
+
       - _target_: pipefunc.PipeFunc
         output_name: samples_with_id
         renames:
-          self: samples_aggregated
+          self: samples_balanced
         func:
           _target_: polars.DataFrame.with_row_index
           _partial_: true

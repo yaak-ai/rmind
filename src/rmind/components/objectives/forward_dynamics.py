@@ -60,10 +60,19 @@ class ForwardDynamicsPredictionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
-        features: TensorDict = observations.apply(
-            lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
-                0
-            ]
+        observation_summary = (
+            index
+            .select(k_os := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
+            .parse(embedding)
+            .get(k_os)
+        )
+
+        def _context(key: tuple[Any, ...], obs: Tensor) -> Tensor:
+            content = observation_summary if Modality.FORESIGHT in key else obs
+            return pack([content, action_summary.broadcast_to(content.shape)], "b t p *")[0]
+
+        features: TensorDict = observations.named_apply(
+            _context, nested_keys=True, batch_size=observation_summary.shape[:2]
         )
         features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]
         _, _, n_patches, _ = episode.embeddings.get((
@@ -140,11 +149,18 @@ class ForwardDynamicsPredictionObjective(Objective):
                 .parse(embedding)
                 .get(k)
             )
+            # reconstruct FROM observation_summary (sole scene content source), not the foresight latent
+            observation_summary = (
+                index
+                .select(k_os := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
+                .parse(embedding)
+                .get(k_os)
+            )
 
+            # single-token context (see compute_metrics): no broadcast to n_patches needed
+            context = pack([observation_summary, action_summary], "b t p *")[0]  # (b, t, 1, 2d)
             features: TensorDict = observations.apply(
-                lambda obs: pack(
-                    [obs, action_summary.broadcast_to(obs.shape)], "b t p *"
-                )[0]
+                lambda _obs: context, batch_size=observation_summary.shape[:2]
             )
 
             features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]

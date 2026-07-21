@@ -6,9 +6,11 @@ defaults:
 
 _target_: rmind.datamodules.GenericDataModule
 train:
-  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  # weighted sampling: draw len(dataset) windows/epoch WITH REPLACEMENT ~ meta/weight,
+  # so rare maneuvers are oversampled without shrinking the epoch (no shuffle needed).
+  _target_: rmind.io.weighted_loader.WeightedDataNodeDataLoader
+  weight_key: meta/weight
   batch_size: 2048
-  shuffle: true
   drop_last: true
   collate_fn:
     _target_: rbyte.types.Batch.to_dict

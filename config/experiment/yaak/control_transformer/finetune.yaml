@@ -21,5 +21,8 @@ episode_stride: 10
 clip_horizon: 6
 clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
 clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
+dct_step: 2                                                    # DCT/binning grid: gather every N frames (2 -> 15Hz); must divide episode_step
+clip_frames: "${eval:'${clip_length} * ${episode_step} // ${dct_step}'}"       # 15Hz samples in the window (DCT signature)
+episode_ds_step: "${eval:'${episode_step} // ${dct_step}'}"    # stride to decimate the 15Hz grid down to the 3fps episode
 
 action_tokenizer_artifact: ???

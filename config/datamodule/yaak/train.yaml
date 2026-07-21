@@ -7,14 +7,14 @@ defaults:
 _target_: rmind.datamodules.GenericDataModule
 train:
   _target_: rbyte.dataloader.TorchDataNodeDataLoader
-  batch_size: 64
+  batch_size: 96
   shuffle: true
   drop_last: true
   collate_fn:
     _target_: rbyte.types.Batch.to_dict
     _partial_: true
   pin_memory: true
-  num_workers: 2
+  num_workers: 4
   method: thread
 
 val:
