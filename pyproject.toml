@@ -21,6 +21,7 @@ dependencies = [
   "hydra-core>=1.3.3",
   "jq>=1.11.0",
   "kornia>=0.8.2",
+  "makefun>=1.16.0",
   "more-itertools>=10.4.0",
   "numpy>2.3.0",
   "omegaconf>=2.3.0",
@@ -28,13 +29,13 @@ dependencies = [
   "polars>=1.41.2",
   "pydantic>=2.13.4",
   "pytorch-lightning>=2.6.5",
-  "rbyte[geo,jpeg,yaak]==0.38.1",
+  "rbyte==0.39.0",
   "structlog>=26.1.0",
   "tensordict>=0.13.0",
   "timm>=1.0.22",
   "torch>=2.12.1",
   "torchaudio>=2.11.0",
-  "torchvision>=0.27.1",
+  "torchvision>=0.27.1"
 ]
 
 [project.urls]
@@ -56,7 +57,7 @@ export = [
 predict = [
   "wandb>=0.27.2",
   "rbyte[video,visualize]",
-  "torchcodec",  # transitive dependency of rbyte; only here so we can configure [tool.uv.sources.torchcodec] (https://github.com/astral-sh/uv/issues/8253)
+  "torchcodec",  # transitive rbyte dep (https://github.com/astral-sh/uv/issues/8253)
   "onnxruntime>=1.27.0",
   "tensorrt-cu13==10.14.1.48.post1; sys_platform == 'linux'",
 ]
@@ -65,6 +66,11 @@ train = [
   "matplotlib>=3.10.3",
   "torchmetrics>=1.9",
   "wandb>=0.27.2",
+]
+yaak = [
+  "rbyte[jpeg,yaak]",
+  "ymmv",  # transitive private rbyte dep ((https://github.com/astral-sh/uv/issues/8253))
+  "m2df",  # transitive private rbyte dep ((https://github.com/astral-sh/uv/issues/8253))
 ]
 
 [dependency-groups]
@@ -96,6 +102,7 @@ build-backend = "hatchling.build"
 DEP001 = ["rmind"]
 DEP002 = [
   "funcy",
+  "makefun",
   "onnx",
   "onnxscript",
   "pytest",
@@ -104,6 +111,8 @@ DEP002 = [
   "torchcodec",
   "torchmetrics",
   "torchvision",
+  "ymmv",
+  "m2df",
 ]
 DEP003 = ["rmind"]
 DEP004 = [
@@ -175,6 +184,9 @@ constraint-dependencies = [
 ]
 
 [tool.uv.sources]
+m2df = { git = "ssh://git@github.com/yaak-ai/ydks.git", subdirectory = "crates/m2df" }
+ymmv = { git = "ssh://git@github.com/yaak-ai/ydks.git", subdirectory = "crates/ymmv" }
+
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
   { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
