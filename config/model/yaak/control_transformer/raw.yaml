@@ -401,9 +401,9 @@ objectives:
 
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
-      # null is intentional: the speed projection LayerNorms its inputs and
-      # foresight features pass through their own projection
-      norm: null
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
@@ -413,12 +413,7 @@ objectives:
         modules:
           continuous:
             speed:
-              _target_: torch.nn.LayerNorm
-              normalized_shape:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${encoder_embedding_dim}
+              _target_: torch.nn.Identity
           foresight:
             cam_front_left:
               _target_: torch.nn.Sequential
