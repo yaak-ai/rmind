@@ -132,6 +132,12 @@ class PolicyObjective(Objective):
         # action_dependency_dropout, applied here instead since that dropout
         # lives on a different objective. No-op at eval (self.training is False).
         raw_waypoints_dropout: float = 0.0,
+        # truncates raw_waypoints_key to just the nearest `raw_waypoints_horizon`
+        # points (of the num_points axis) before flattening, dropping the rest --
+        # e.g. 5 of 10 halves the raw waypoints contribution to `features` from
+        # num_points*2 to raw_waypoints_horizon*2 dims. None (default) keeps all
+        # num_points, unchanged from before this option existed.
+        raw_waypoints_horizon: int | None = None,
         # raw (un-embedded) speed, same idea as raw_waypoints_key -- for
         # checkpoints with no ("continuous", "speed") token at all, the raw
         # km/h value is read straight off episode.input, normalized by
@@ -225,6 +231,7 @@ class PolicyObjective(Objective):
         self.trainable_image_pool: Module | None = trainable_image_pool
         self.raw_waypoints_key: tuple[str, ...] | None = raw_waypoints_key
         self.raw_waypoints_dropout: float = raw_waypoints_dropout
+        self.raw_waypoints_horizon: int | None = raw_waypoints_horizon
         self.raw_speed_key: tuple[str, ...] | None = raw_speed_key
         self.raw_speed_dropout: float = raw_speed_dropout
         self.prediction_std_scale: dict[str, float] = prediction_std_scale or {}
@@ -404,6 +411,7 @@ class PolicyObjective(Objective):
         dropout: float,
         *,
         scale: float = 1.0,
+        horizon: int | None = None,
     ) -> Tensor:
         """Reads a raw (un-embedded) feature straight off episode.input at
         `idx`, flattens it to (b, 1, d), and -- in training only -- zeroes it
@@ -412,8 +420,13 @@ class PolicyObjective(Objective):
         raw_waypoints_key/raw_speed_key; `scale` divides out-of-scale raw
         physical units (e.g. km/h) down to roughly the rest of the network's
         unit-scale activations before it's ever concatenated onto `features`.
+        `horizon` (raw_waypoints_key only) keeps just the nearest `horizon`
+        points of the second-to-last axis (b, num_points, 2), dropping the
+        rest before flattening -- None keeps every point, unchanged.
         """
         x = episode.input.get(key)[:, idx] / scale  # (b, ...)
+        if horizon is not None:
+            x = x[:, :horizon]
         flat = x.reshape(x.shape[0], 1, -1)  # (b, 1, d)
         if self.training and dropout > 0.0:
             keep = (
@@ -615,7 +628,11 @@ class PolicyObjective(Objective):
                 [
                     features,
                     self._raw_dropout_feature(
-                        episode, self.raw_waypoints_key, idx, self.raw_waypoints_dropout
+                        episode,
+                        self.raw_waypoints_key,
+                        idx,
+                        self.raw_waypoints_dropout,
+                        horizon=self.raw_waypoints_horizon,
                     ),
                 ],
                 dim=-1,
