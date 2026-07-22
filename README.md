@@ -10,11 +10,10 @@ Foundation models for spatial intelligence.
 ### [`nix`](https://github.com/NixOS/nix)-based
 
 0. install [`nix`](https://github.com/NixOS/nix) if necessary
-1. enter an appropriate dev shell depending on host system:
+1. enter the dev shell:
 
 ```bash
-nix develop .#nixos
-nix develop .#ubuntu
+nix develop
 ```
 
 > [!TIP]

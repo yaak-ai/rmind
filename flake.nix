@@ -68,31 +68,30 @@
               x86_64-linux =
                 let
                   nixglhost = inputs'.nix-gl-host.packages.default;
-                  nixosUv = writeShellScriptBin "uv" ''
-                    export LD_LIBRARY_PATH="${uvLibraryPath}''${NIX_LD_LIBRARY_PATH:+:''${NIX_LD_LIBRARY_PATH}}"
-                    exec ${lib.getExe uv} "$@"
-                  '';
-                  ubuntuUv = writeShellScriptBin "uv" ''
+                  uvWrapped = writeShellScriptBin "uv" ''
+                    if [[ -e /etc/NIXOS ]]; then
+                      export LD_LIBRARY_PATH="${uvLibraryPath}''${NIX_LD_LIBRARY_PATH:+:''${NIX_LD_LIBRARY_PATH}}"
+                      exec ${lib.getExe uv} "$@"
+                    fi
+
                     export LD_LIBRARY_PATH="${uvLibraryPath}''${LD_LIBRARY_PATH:+:''${LD_LIBRARY_PATH}}"
                     exec ${lib.getExe nixglhost} ${lib.getExe uv} "$@"
                   '';
                 in
                 {
-                  nixos = mkShell {
-                    packages = commonPackages ++ [ nixosUv ];
-                    env = commonEnv // {
-                      TRITON_LIBCUDA_PATH = "/run/opengl-driver/lib"; # for TorchInductor
-                    };
-                  };
-
-                  ubuntu = mkShell {
+                  default = mkShell {
                     packages = commonPackages ++ [
                       nixglhost
-                      ubuntuUv
+                      uvWrapped
                     ];
-                    env = commonEnv // {
-                      TRITON_LIBCUDA_PATH = "/lib/x86_64-linux-gnu"; # for TorchInductor
-                    };
+                    env = commonEnv;
+                    shellHook = ''
+                      if [[ -e /etc/NIXOS ]]; then
+                        export TRITON_LIBCUDA_PATH=/run/opengl-driver/lib
+                      else
+                        export TRITON_LIBCUDA_PATH=/lib/x86_64-linux-gnu
+                      fi
+                    '';
                   };
                 };
             }
