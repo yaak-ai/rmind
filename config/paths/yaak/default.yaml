@@ -1,5 +1,6 @@
 ---
 data: /nasa/drives/yaak/data
 tud_data: /nasa/drives/tud/data
+alex_data: /nasa/alex/drives/yaak/data
 rbyte:
   cache: .rbyte_cache
