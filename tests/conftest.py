@@ -797,6 +797,142 @@ def policy_objective_with_history_attn(
     ).to(device)
 
 
+@pytest.fixture(scope="module")
+def policy_objective_raw_waypoints(
+    device: torch.device, embedding_dims: EmbeddingDims
+) -> PolicyObjective:
+    """Exercises raw_waypoints_key/raw_waypoints_dropout: feature_keys drops the
+    embedded waypoints token (as if the checkpoint had none, e.g.
+    alex/pt-no-speed-experiments) and instead concatenates the raw (un-embedded)
+    waypoints straight from episode.input -- 10 points * 2 (xy) = 20 dims (see
+    `make_batch`'s "waypoints/xy_normalized": (b, t, 10, 2)).
+    """
+    logit_bias = torch.tensor(0)
+    history_steps = 4
+    action_horizon = 2
+    in_features = 2 * embedding_dims.encoder + 20  # observation_summary/_history + raw waypoints
+
+    def gru_head(out_features: int) -> GRUHead:
+        return GRUHead(
+            in_features=in_features,
+            hidden_size=embedding_dims.encoder,
+            out_features=out_features,
+            num_steps=action_horizon,
+        )
+
+    return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
+        history_steps=history_steps,
+        action_horizon=action_horizon,
+        feature_keys=[
+            (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
+            (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+        ],
+        raw_waypoints_key=(Modality.CONTEXT, "waypoints"),
+        raw_waypoints_dropout=1.0,
+        heads=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": gru_head(2),
+                    "brake_pedal": gru_head(2),
+                    "steering_angle": gru_head(2),
+                },
+                Modality.DISCRETE: {"turn_signal": gru_head(3)},
+            }
+        ),
+        losses=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": GaussianNLLLoss(),
+                    "brake_pedal": GaussianNLLLoss(),
+                    "steering_angle": GaussianNLLLoss(),
+                },
+                Modality.DISCRETE: {
+                    "turn_signal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
+                },
+            }
+        ),
+        targets={
+            (modality := Modality.CONTINUOUS): {
+                "gas_pedal": ("input", modality, "gas_pedal"),
+                "brake_pedal": ("input", modality, "brake_pedal"),
+                "steering_angle": ("input", modality, "steering_angle"),
+            },
+            (modality := Modality.DISCRETE): {
+                "turn_signal": ("input", modality, "turn_signal")
+            },
+        },
+    ).to(device)
+
+
+@pytest.fixture(scope="module")
+def policy_objective_raw_speed(
+    device: torch.device, embedding_dims: EmbeddingDims
+) -> PolicyObjective:
+    """Exercises raw_speed_key/raw_speed_dropout: feature_keys drops the
+    embedded speed token (as if the checkpoint had none, e.g.
+    alex/pt-no-speed-experiments) and instead concatenates the raw
+    (un-embedded, speed_scale-normalized) speed straight from episode.input --
+    1 dim (see `make_batch`'s "meta/VehicleMotion/speed": (b, t)).
+    """
+    logit_bias = torch.tensor(0)
+    history_steps = 4
+    action_horizon = 2
+    in_features = 2 * embedding_dims.encoder + 1  # observation_summary/_history + raw speed
+
+    def gru_head(out_features: int) -> GRUHead:
+        return GRUHead(
+            in_features=in_features,
+            hidden_size=embedding_dims.encoder,
+            out_features=out_features,
+            num_steps=action_horizon,
+        )
+
+    return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
+        history_steps=history_steps,
+        action_horizon=action_horizon,
+        feature_keys=[
+            (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
+            (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+        ],
+        raw_speed_key=(Modality.CONTINUOUS, "speed"),
+        raw_speed_dropout=1.0,
+        heads=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": gru_head(2),
+                    "brake_pedal": gru_head(2),
+                    "steering_angle": gru_head(2),
+                },
+                Modality.DISCRETE: {"turn_signal": gru_head(3)},
+            }
+        ),
+        losses=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": GaussianNLLLoss(),
+                    "brake_pedal": GaussianNLLLoss(),
+                    "steering_angle": GaussianNLLLoss(),
+                },
+                Modality.DISCRETE: {
+                    "turn_signal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
+                },
+            }
+        ),
+        targets={
+            (modality := Modality.CONTINUOUS): {
+                "gas_pedal": ("input", modality, "gas_pedal"),
+                "brake_pedal": ("input", modality, "brake_pedal"),
+                "steering_angle": ("input", modality, "steering_angle"),
+            },
+            (modality := Modality.DISCRETE): {
+                "turn_signal": ("input", modality, "turn_signal")
+            },
+        },
+    ).to(device)
+
+
 @dataclass
 class SnapshotModules:
     model: ControlTransformer

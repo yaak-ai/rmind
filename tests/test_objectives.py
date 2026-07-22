@@ -2,8 +2,9 @@ import pytest
 import torch
 from pytest_lazy_fixtures import lf
 
+from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
-from rmind.components.episode import Episode
+from rmind.components.episode import Episode, EpisodeBuilder
 from rmind.components.objectives import PolicyObjective
 from rmind.components.objectives.base import Objective, ObjectivePredictionKey
 from rmind.components.transformer import TransformerEncoder
@@ -50,6 +51,8 @@ def test_history_window_slice_against_real_sequence(
         lf("policy_objective"),
         lf("policy_objective_with_history_attn"),
         lf("policy_objective_multimodal"),
+        lf("policy_objective_raw_waypoints"),
+        lf("policy_objective_raw_speed"),
     ],
 )
 def test_compute_metrics(
@@ -68,6 +71,8 @@ def test_compute_metrics(
         lf("policy_objective"),
         lf("policy_objective_with_history_attn"),
         lf("policy_objective_multimodal"),
+        lf("policy_objective_raw_waypoints"),
+        lf("policy_objective_raw_speed"),
     ],
 )
 @pytest.mark.parametrize(
@@ -95,3 +100,83 @@ def test_predict(  # noqa: PLR0913, PLR0917
     prediction_keys = set(predictions.keys())
     assert prediction_keys.issubset(keys)
     assert (len(prediction_keys) == 0) is expect_empty
+
+
+def test_raw_waypoints_dropout(
+    policy_objective_raw_waypoints: PolicyObjective,
+    episode_builder: EpisodeBuilder,
+    encoder: TransformerEncoder,
+    batch_dict: TensorTree,
+) -> None:
+    """raw_waypoints_dropout=1.0 (this fixture's setting) must zero the raw
+    waypoints vector during training -- two episodes differing only in
+    waypoints, but sharing one `embedding` tensor (so feature_keys' pooled
+    parts are identical and only the raw_waypoints_key path can differ), must
+    then produce identical logits -- but leave it untouched in eval mode,
+    where the same setup must produce different logits.
+    """
+    alt_dict = dict(batch_dict)
+    alt_dict["data"] = dict(batch_dict["data"])
+    alt_dict["data"]["waypoints/xy_normalized"] = torch.rand_like(
+        batch_dict["data"]["waypoints/xy_normalized"]
+    )
+
+    episode_a = episode_builder(batch_dict)
+    episode_b = episode_builder(alt_dict)
+    embedding = encoder(
+        src=episode_a.embeddings_flattened, mask=episode_a.attention_mask
+    )
+
+    def gas_pedal_logits(episode: Episode) -> torch.Tensor:
+        logits, *_ = policy_objective_raw_waypoints._compute_logits(  # noqa: SLF001
+            episode=episode, embedding=embedding
+        )
+        return logits[Modality.CONTINUOUS]["gas_pedal"]
+
+    try:
+        policy_objective_raw_waypoints.eval()
+        assert not torch.allclose(gas_pedal_logits(episode_a), gas_pedal_logits(episode_b))
+
+        policy_objective_raw_waypoints.train()
+        assert torch.allclose(gas_pedal_logits(episode_a), gas_pedal_logits(episode_b))
+    finally:
+        policy_objective_raw_waypoints.train()
+
+
+def test_raw_speed_dropout(
+    policy_objective_raw_speed: PolicyObjective,
+    episode_builder: EpisodeBuilder,
+    encoder: TransformerEncoder,
+    batch_dict: TensorTree,
+) -> None:
+    """Same as test_raw_waypoints_dropout, but for raw_speed_key/
+    raw_speed_dropout: two episodes differing only in speed, sharing one
+    `embedding` tensor, must produce identical logits under dropout=1.0
+    training but different logits in eval.
+    """
+    alt_dict = dict(batch_dict)
+    alt_dict["data"] = dict(batch_dict["data"])
+    alt_dict["data"]["meta/VehicleMotion/speed"] = torch.rand_like(
+        batch_dict["data"]["meta/VehicleMotion/speed"]
+    )
+
+    episode_a = episode_builder(batch_dict)
+    episode_b = episode_builder(alt_dict)
+    embedding = encoder(
+        src=episode_a.embeddings_flattened, mask=episode_a.attention_mask
+    )
+
+    def gas_pedal_logits(episode: Episode) -> torch.Tensor:
+        logits, *_ = policy_objective_raw_speed._compute_logits(  # noqa: SLF001
+            episode=episode, embedding=embedding
+        )
+        return logits[Modality.CONTINUOUS]["gas_pedal"]
+
+    try:
+        policy_objective_raw_speed.eval()
+        assert not torch.allclose(gas_pedal_logits(episode_a), gas_pedal_logits(episode_b))
+
+        policy_objective_raw_speed.train()
+        assert torch.allclose(gas_pedal_logits(episode_a), gas_pedal_logits(episode_b))
+    finally:
+        policy_objective_raw_speed.train()

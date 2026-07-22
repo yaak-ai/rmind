@@ -9,11 +9,11 @@ from matplotlib.patches import Patch
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 from structlog import get_logger
 from torch import Tensor
-from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
 from rmind.components.base import TokenType
 from rmind.components.episode import Episode, EpisodeBuilder, TokenMeta
+from wandb import Image
 
 from .common import _figure_to_rgba, _get_wandb_loggers
 
@@ -194,7 +194,9 @@ class WandbAttentionMaskLogger(SafeCallback):
         timestep_meta = episode_builder.timestep
 
         # Determine actual timesteps and clamp to vis limit
-        leaves = [v for mod in index.values() for v in mod.values()]
+        leaves = [
+            v for mod in index.values() if mod is not None for v in mod.values()
+        ]
         actual_t = leaves[0].shape[0] if leaves else 0
         n = min(self._num_vis_timesteps, actual_t)
         if n == 0:
@@ -204,6 +206,7 @@ class WandbAttentionMaskLogger(SafeCallback):
         sliced_index = {
             mod: {name: tensor[:n] for name, tensor in names.items()}
             for mod, names in index.items()
+            if names is not None
         }
 
         effective_attention_mask = episode.attention_mask.effective_allow(n)

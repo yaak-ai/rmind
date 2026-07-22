@@ -51,6 +51,14 @@ low_loss_keep_frac: 1.0
 low_loss_quantile: 0.5
 active_control_keep_frac: 1.0
 
+# raw (un-embedded) waypoints/speed modality dropout (only read by *_raw
+# model configs, e.g. for checkpoints with no waypoints/speed embedding at
+# all): fraction of samples per step whose raw vector is zeroed, so the heads
+# can't just always copy the route/speed instead of learning from
+# observation/history.
+raw_waypoints_dropout: 0.75
+raw_speed_dropout: 0.75
+
 # HistoryViewpointPerturbation (only read by *_viewpoint_aug model configs;
 # 0.0 = disabled). See rmind.components.augment and PolicyObjective's
 # dyaw_key/steering_correction_gain -- synthetic last-history-tick heading

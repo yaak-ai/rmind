@@ -26,13 +26,24 @@ def gauss_prob(
     return dist.cdf(x + x_eps / 2) - dist.cdf(x - x_eps / 2)
 
 
-def diff_last(input: Tensor, n: int = 1, *, append: float | None = None) -> Tensor:
+def diff_last(
+    input: Tensor,
+    n: int = 1,
+    *,
+    append: float | None = None,
+    prepend: float | None = None,
+) -> Tensor:
     append_ = (
         torch.tensor([append], device=input.device).expand(*input.shape[:-1], 1)
         if append is not None
         else None
     )
-    return torch.diff(input, n=n, dim=-1, append=append_)
+    prepend_ = (
+        torch.tensor([prepend], device=input.device).expand(*input.shape[:-1], 1)
+        if prepend is not None
+        else None
+    )
+    return torch.diff(input, n=n, dim=-1, append=append_, prepend=prepend_)
 
 
 def build_local_trajectory(

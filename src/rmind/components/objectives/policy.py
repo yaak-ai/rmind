@@ -1,5 +1,6 @@
 import operator
 from collections.abc import Set as AbstractSet
+from itertools import starmap
 from typing import Any, Literal, cast, final, override
 
 import torch
@@ -114,6 +115,31 @@ class PolicyObjective(Objective):
         trainable_image_key: tuple[str, ...] = (Modality.IMAGE, "cam_front_left"),
         trainable_image_encoder: InstanceOf[Module] | None = None,
         trainable_image_pool: InstanceOf[Module] | None = None,
+        # raw (un-embedded) waypoints, read straight off episode.input instead of
+        # through an embeddings/projections Linear -- for checkpoints whose
+        # episode_builder has no ("context", "waypoints") token at all (e.g.
+        # alex/pt-no-speed-experiments) there's nothing to pool via feature_keys,
+        # but the raw route xy is still useful signal. Flattened (num_points,
+        # xy) -> (num_points * 2) and concatenated onto `features` alongside the
+        # feature_keys parts, so it reaches heads/longitudinal_mode_head/
+        # trajectory_head exactly like a feature_keys entry would (adjust their
+        # in_features by +num_points*2). None (default) == disabled.
+        raw_waypoints_key: tuple[str, ...] | None = None,
+        # modality dropout, not elementwise: zeroes the *entire* flattened
+        # waypoints vector for a fraction of samples each training step, so the
+        # heads can't just always copy the route instead of learning from
+        # observation/history -- same rationale as forward_dynamics'
+        # action_dependency_dropout, applied here instead since that dropout
+        # lives on a different objective. No-op at eval (self.training is False).
+        raw_waypoints_dropout: float = 0.0,
+        # raw (un-embedded) speed, same idea as raw_waypoints_key -- for
+        # checkpoints with no ("continuous", "speed") token at all, the raw
+        # km/h value is read straight off episode.input, normalized by
+        # speed_scale (same as speed_head/condition_steering_on_speed), and
+        # concatenated onto `features` (+1 to every consumer's in_features).
+        # None (default) == disabled.
+        raw_speed_key: tuple[str, ...] | None = None,
+        raw_speed_dropout: float = 0.0,
         prediction_std_scale: dict[str, float] | None = None,
         gate_horizon_aggregate: Literal["first", "max"] = "first",
         gate_fire_threshold: float = 0.5,
@@ -197,6 +223,10 @@ class PolicyObjective(Objective):
         self.trainable_image_key: tuple[str, ...] = trainable_image_key
         self.trainable_image_encoder: Module | None = trainable_image_encoder
         self.trainable_image_pool: Module | None = trainable_image_pool
+        self.raw_waypoints_key: tuple[str, ...] | None = raw_waypoints_key
+        self.raw_waypoints_dropout: float = raw_waypoints_dropout
+        self.raw_speed_key: tuple[str, ...] | None = raw_speed_key
+        self.raw_speed_dropout: float = raw_speed_dropout
         self.prediction_std_scale: dict[str, float] = prediction_std_scale or {}
         # hurdle-gate decode: per-tick onset classification is weak (AUC ~0.72) and
         # fires in 1-tick bursts; "press within the predicted horizon" is easier and
@@ -366,6 +396,32 @@ class PolicyObjective(Objective):
             return pool(x)
         return x.mean(dim=1, keepdim=True)
 
+    def _raw_dropout_feature(
+        self,
+        episode: Episode,
+        key: tuple[str, ...],
+        idx: int,
+        dropout: float,
+        *,
+        scale: float = 1.0,
+    ) -> Tensor:
+        """Reads a raw (un-embedded) feature straight off episode.input at
+        `idx`, flattens it to (b, 1, d), and -- in training only -- zeroes it
+        for `dropout` fraction of samples (modality dropout, not elementwise,
+        so heads can't just always copy this input). Shared by
+        raw_waypoints_key/raw_speed_key; `scale` divides out-of-scale raw
+        physical units (e.g. km/h) down to roughly the rest of the network's
+        unit-scale activations before it's ever concatenated onto `features`.
+        """
+        x = episode.input.get(key)[:, idx] / scale  # (b, ...)
+        flat = x.reshape(x.shape[0], 1, -1)  # (b, 1, d)
+        if self.training and dropout > 0.0:
+            keep = (
+                torch.rand(flat.shape[0], 1, 1, device=flat.device) >= dropout
+            ).to(flat.dtype)
+            flat *= keep
+        return flat
+
     def _history_window_slice(self, idx: int, window: int) -> slice:
         """Slice selecting the `window` ticks ending at (and including) tick `idx`.
 
@@ -440,7 +496,7 @@ class PolicyObjective(Objective):
         loss.reduction = "none"  # type: ignore[attr-defined]
         try:
             per_step = sum(
-                loss(pred, target) for pred, target in channels
+                starmap(loss, channels)
             )  # (b, num_modes, num_steps)
         finally:
             loss.reduction = prev_reduction  # type: ignore[attr-defined]
@@ -553,6 +609,35 @@ class PolicyObjective(Objective):
             )
 
         features = rearrange(parts, "i b 1 d -> b 1 (i d)")
+
+        if self.raw_waypoints_key is not None:
+            features = torch.cat(
+                [
+                    features,
+                    self._raw_dropout_feature(
+                        episode, self.raw_waypoints_key, idx, self.raw_waypoints_dropout
+                    ),
+                ],
+                dim=-1,
+            )
+
+        if self.raw_speed_key is not None:
+            features = torch.cat(
+                [
+                    features,
+                    # raw km/h values would dwarf the rest of the network's
+                    # ~unit-scale, LayerNorm'd activations -- normalize the
+                    # same way as speed_head/condition_steering_on_speed
+                    self._raw_dropout_feature(
+                        episode,
+                        self.raw_speed_key,
+                        idx,
+                        self.raw_speed_dropout,
+                        scale=self.speed_scale,
+                    ),
+                ],
+                dim=-1,
+            )
 
         current_speed: Tensor | None = None
         if self.speed_head is not None or self.condition_steering_on_speed:
