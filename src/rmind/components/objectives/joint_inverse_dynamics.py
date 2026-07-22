@@ -32,6 +32,7 @@ class JointInverseDynamicsObjective(Objective):
         self,
         *,
         tokenizer: InstanceOf[ModuleDict],
+        decoder: InstanceOf[Module],
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict],
         targets: CodeTargets,
@@ -40,6 +41,7 @@ class JointInverseDynamicsObjective(Objective):
         super().__init__()
 
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        self.decoder = decoder
         self.heads = heads
         self.losses = losses
         self.targets: CodeTargets = targets
@@ -51,16 +53,17 @@ class JointInverseDynamicsObjective(Objective):
         self.tokenizer.eval()  # keep the frozen tokenizer's VQ EMA from updating
         return self
 
-    def _observation_summary(self, episode: Episode, embedding: Tensor) -> Tensor:
+    @override
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         if self.norm is not None:
             embedding = self.norm(embedding)
         k = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
-        # drop the singleton summary-token dim: (b, t, 1, d) -> (b, t, d)
-        return episode.index.select(k).parse(embedding).get(k).squeeze(-2)
-
-    @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
-        features = self._observation_summary(episode, embedding)[:, :-1]
+        obs_summary = episode.index.select(k).parse(embedding).get(k)  # (b, t, 64, d)
+        mask = episode.embeddings.get((Modality.UTILITY, "mask"))  # (b, t, 1, d)
+        # single mask query cross-attends the observation_summary latents
+        features = self.decoder({"query": mask, "context": obs_summary}).squeeze(-2)[
+            :, :-1
+        ]
         (tokenizer,) = tree_leaves(self.tokenizer)
         g = tokenizer.quantizer.num_quantizers
 
@@ -106,7 +109,14 @@ class JointInverseDynamicsObjective(Objective):
             )
 
         if ObjectivePredictionKey.PREDICTION_VALUE in keys:
-            features = self._observation_summary(episode, embedding)[:, :-1]
+            if self.norm is not None:
+                embedding = self.norm(embedding)
+            k = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
+            obs_summary = episode.index.select(k).parse(embedding).get(k)
+            mask = episode.embeddings.get((Modality.UTILITY, "mask"))
+            features = self.decoder({"query": mask, "context": obs_summary}).squeeze(
+                -2
+            )[:, :-1]
             (tokenizer,) = tree_leaves(self.tokenizer)
             g = tokenizer.quantizer.num_quantizers
 

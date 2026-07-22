@@ -31,7 +31,6 @@ class Index(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     continuous: TensorDict
     context: TensorDict
     discrete: TensorDict
-    foresight: TensorDict
     image: TensorDict
     summary: TensorDict
 

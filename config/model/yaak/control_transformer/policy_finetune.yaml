@@ -44,20 +44,38 @@ hparams_jq: |
           "_target_": "torch.nn.LayerNorm",
           "normalized_shape": 384
         },
+        "decoder": {
+          "_target_": "rmind.components.transformer.CrossAttentionDecoderHead",
+          "decoder": {
+            "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+            "dim_model": 384,
+            "num_layers": 2,
+            "num_heads": 4,
+            "attn_dropout": 0.1,
+            "resid_dropout": 0.1,
+            "mlp_dropout": 0.1,
+            "hidden_layer_multiplier": 1
+          },
+          "output_projection": {
+            "_target_": "rmind.components.nn.Linear",
+            "in_features": 384,
+            "out_features": 384
+          }
+        },
         "tokenizer": {
           "_target_": "rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact",
           "artifact": "${action_tokenizer_artifact}",
           "weights_only": false
         },
         "code_head": {
-          "_target_": "torchvision.ops.MLP",
-          "in_channels": 768,
-          "hidden_channels": [1024, 1024, 64]
+          "_target_": "rmind.components.nn.Linear",
+          "in_features": 384,
+          "out_features": 64
         },
         "offset_head": {
-          "_target_": "torchvision.ops.MLP",
-          "in_channels": 768,
-          "hidden_channels": [1024, 1024, 1536]
+          "_target_": "rmind.components.nn.Linear",
+          "in_features": 384,
+          "out_features": 1536
         },
         "losses": {
           "_target_": "rmind.components.containers.ModuleDict",

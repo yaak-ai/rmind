@@ -60,19 +60,11 @@ class ForwardDynamicsPredictionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
-        observation_summary = (
-            index
-            .select(k_os := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
-            .parse(embedding)
-            .get(k_os)
-        )
 
-        def _context(key: tuple[Any, ...], obs: Tensor) -> Tensor:
-            content = observation_summary if Modality.FORESIGHT in key else obs
-            return pack([content, action_summary.broadcast_to(content.shape)], "b t p *")[0]
-
-        features: TensorDict = observations.named_apply(
-            _context, nested_keys=True, batch_size=observation_summary.shape[:2]
+        features: TensorDict = observations.apply(
+            lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
+                0
+            ]
         )
         features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]
         _, _, n_patches, _ = episode.embeddings.get((
@@ -86,9 +78,9 @@ class ForwardDynamicsPredictionObjective(Objective):
         )
         if self.patch_pos_embed is not None:
             mask_tokens = self.patch_pos_embed(mask_tokens)
-        features_projected[Modality.FORESIGHT] = tree_map(
+        features_projected[Modality.SUMMARY] = tree_map(
             lambda x: {"query": mask_tokens, "context": x},
-            features_projected[Modality.FORESIGHT],
+            features_projected[Modality.SUMMARY],
         )
         logits = self.heads(
             features_projected,
@@ -142,27 +134,18 @@ class ForwardDynamicsPredictionObjective(Objective):
             index = episode.index[:-1]  # all but last timestep
             observation_keys = self.heads.tree_paths()
             observations = index.select(*observation_keys).parse(embedding)
-
             action_summary = (
                 index
                 .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
                 .parse(embedding)
                 .get(k)
             )
-            # reconstruct FROM observation_summary (sole scene content source), not the foresight latent
-            observation_summary = (
-                index
-                .select(k_os := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
-                .parse(embedding)
-                .get(k_os)
-            )
 
-            # single-token context (see compute_metrics): no broadcast to n_patches needed
-            context = pack([observation_summary, action_summary], "b t p *")[0]  # (b, t, 1, 2d)
             features: TensorDict = observations.apply(
-                lambda _obs: context, batch_size=observation_summary.shape[:2]
+                lambda obs: pack(
+                    [obs, action_summary.broadcast_to(obs.shape)], "b t p *"
+                )[0]
             )
-
             features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]
             _, _, n_patches, _ = episode.embeddings.get((
                 Modality.IMAGE,
@@ -177,9 +160,9 @@ class ForwardDynamicsPredictionObjective(Objective):
             if self.patch_pos_embed is not None:
                 mask_tokens = self.patch_pos_embed(mask_tokens)
 
-            features_projected[Modality.FORESIGHT] = tree_map(
+            features_projected[Modality.SUMMARY] = tree_map(
                 lambda x: {"query": mask_tokens, "context": x},
-                features_projected[Modality.FORESIGHT],
+                features_projected[Modality.SUMMARY],
             )
 
             logits = TensorDict(
@@ -200,7 +183,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 predictions[key] = Prediction(
                     value=(
                         logits
-                        .exclude(Modality.FORESIGHT)
+                        .exclude(Modality.SUMMARY)
                         .apply(lambda x: x.argmax(dim=-1))
                         .named_apply(  # ty:ignore[unresolved-attribute]
                             lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
@@ -212,7 +195,7 @@ class ForwardDynamicsPredictionObjective(Objective):
 
             if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
                 predictions[key] = Prediction(
-                    value=logits.exclude(Modality.FORESIGHT).apply(
+                    value=logits.exclude(Modality.SUMMARY).apply(
                         lambda x: x.softmax(dim=-1)
                     ),
                     time_index=time_index,
@@ -224,7 +207,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 predictions[key] = Prediction(
                     value=(
                         logits
-                        .exclude(Modality.FORESIGHT)
+                        .exclude(Modality.SUMMARY)
                         .apply(lambda x: x.softmax(dim=-1))
                         .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[unresolved-attribute]
                         .apply(  # ty:ignore[unresolved-attribute]
@@ -240,7 +223,7 @@ class ForwardDynamicsPredictionObjective(Objective):
                 predictions[key] = Prediction(
                     value=(
                         logits
-                        .exclude(Modality.FORESIGHT)
+                        .exclude(Modality.SUMMARY)
                         .apply(lambda x: x.argmax(dim=-1))
                         .named_apply(  # ty:ignore[unresolved-attribute]
                             lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]

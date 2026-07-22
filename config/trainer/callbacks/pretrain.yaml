@@ -41,7 +41,7 @@
   when: on_train_batch_end
   key: patch_similarities
   image_sources:
-    cam_front_left: [foresight, cam_front_left]
+    cam_front_left: [summary, observation_summary]
   embeddings_predict: [forward_dynamics, _artifacts, last_embeddings]
   embeddings_target: [forward_dynamics, _artifacts, last_targets]
   sample_id_path: [data, meta/sample_id]
@@ -51,7 +51,7 @@
   when: on_validation_batch_end
   key: patch_similarities
   image_sources:
-    cam_front_left: [foresight, cam_front_left]
+    cam_front_left: [summary, observation_summary]
   embeddings_predict: [forward_dynamics, _artifacts, last_embeddings]
   embeddings_target: [forward_dynamics, _artifacts, last_targets]
   sample_id_path: [data, meta/sample_id]
@@ -60,7 +60,7 @@
 - _target_: rmind.callbacks.WandbForesightMetricsLogger
   key: foresight
   image_sources:
-    cam_front_left: [foresight, cam_front_left]
+    cam_front_left: [summary, observation_summary]
   embeddings_predict: [forward_dynamics, _artifacts, last_embeddings]
   embeddings_target: [forward_dynamics, _artifacts, last_targets]
   hot_quantile: 0.05

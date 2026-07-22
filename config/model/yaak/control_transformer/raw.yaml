@@ -10,7 +10,6 @@ episode_builder:
     - [observation, image, cam_front_left]
     - [observation, continuous, speed]
     - [observation, context, waypoints]
-    - [special, foresight, cam_front_left]
     - [special, summary, observation_summary]
     - [special, summary, observation_history]
     - [action, continuous, gas_pedal]
@@ -20,16 +19,18 @@ episode_builder:
     - [special, summary, action_summary]
 
   special_tokens:
-    foresight:
-      cam_front_left:
+    summary:
+      # distinct ids into the shared summary embedding
+      observation_summary:
         _target_: builtins.range
         _args_:
-          - 256
-
-    summary:
-      observation_summary: [0]
-      observation_history: [1]
-      action_summary: [2]
+          - 64
+      observation_history:
+        _target_: builtins.range
+        _args_:
+          - 64
+          - 96
+      action_summary: [96]
 
     utility:
       mask: [0]
@@ -250,14 +251,9 @@ episode_builder:
           num_embeddings: 3
           embedding_dim: ${encoder_embedding_dim}
 
-      foresight:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: 256
-          embedding_dim: ${encoder_embedding_dim}
-
       summary:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 3
+        num_embeddings: 97
         embedding_dim: ${encoder_embedding_dim}
 
       utility:
@@ -310,11 +306,6 @@ episode_builder:
 
       discrete:
         turn_signal:
-          _target_: rmind.components.nn.Linear
-          in_features: ${encoder_embedding_dim}
-          out_features: ${encoder_embedding_dim}
-
-      foresight:
           _target_: rmind.components.nn.Linear
           in_features: ${encoder_embedding_dim}
           out_features: ${encoder_embedding_dim}
@@ -373,6 +364,21 @@ objectives:
       norm:
         _target_: torch.nn.LayerNorm
         normalized_shape: ${encoder_embedding_dim}
+      decoder:
+        _target_: rmind.components.transformer.CrossAttentionDecoderHead
+        decoder:
+          _target_: rmind.components.transformer.CrossAttentionDecoder
+          dim_model: ${encoder_embedding_dim}
+          num_layers: 2
+          num_heads: 4
+          attn_dropout: 0.1
+          resid_dropout: 0.1
+          mlp_dropout: 0.1
+          hidden_layer_multiplier: 1
+        output_projection:
+          _target_: rmind.components.nn.Linear
+          in_features: ${encoder_embedding_dim}
+          out_features: ${encoder_embedding_dim}
       tokenizer:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -392,9 +398,9 @@ objectives:
         modules:
           joint:
             actions:
-              _target_: torchvision.ops.MLP
-              in_channels: ${encoder_embedding_dim}
-              hidden_channels: [384, 384, 64]
+              _target_: rmind.components.nn.Linear
+              in_features: ${encoder_embedding_dim}
+              out_features: 64
       targets:
         joint:
           actions: [input_tokens, joint_actions]
@@ -414,8 +420,8 @@ objectives:
           continuous:
             speed:
               _target_: torch.nn.Identity
-          foresight:
-            cam_front_left:
+          summary:
+            observation_summary:
               _target_: torch.nn.Sequential
               _args_:
                 - _target_: rmind.components.nn.Linear
@@ -439,8 +445,8 @@ objectives:
                   - ${encoder_embedding_dim}
               out_features: ${speed_bins}
               bias: False
-          foresight:
-            cam_front_left:
+          summary:
+            observation_summary:
               _target_: rmind.components.transformer.CrossAttentionDecoderHead
               decoder:
                 _target_: rmind.components.transformer.CrossAttentionDecoder
@@ -459,8 +465,8 @@ objectives:
       targets:
         continuous:
           speed: [input_tokens, continuous, speed]
-        foresight:
-          cam_front_left: [input_embeddings, image, cam_front_left]
+        summary:
+          observation_summary: [input_embeddings, image, cam_front_left]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
@@ -468,8 +474,8 @@ objectives:
           continuous:
             speed:
               _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-          foresight:
-            cam_front_left:
+          summary:
+            observation_summary:
               _target_: rmind.components.loss.GramAnchoringLoss
               weight_sim: 1.0
               weight_gram: 100.0
@@ -480,6 +486,21 @@ objectives:
       norm:
         _target_: torch.nn.LayerNorm
         normalized_shape: ${encoder_embedding_dim}
+      decoder:
+        _target_: rmind.components.transformer.CrossAttentionDecoderHead
+        decoder:
+          _target_: rmind.components.transformer.CrossAttentionDecoder
+          dim_model: ${encoder_embedding_dim}
+          num_layers: 2
+          num_heads: 4
+          attn_dropout: 0.1
+          resid_dropout: 0.1
+          mlp_dropout: 0.1
+          hidden_layer_multiplier: 1
+        output_projection:
+          _target_: rmind.components.nn.Linear
+          in_features: ${encoder_embedding_dim}
+          out_features: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:

@@ -30,6 +30,7 @@ class MemoryExtractionObjective(Objective):
         self,
         *,
         norm: InstanceOf[Module] | None = None,
+        decoder: InstanceOf[Module],
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
@@ -37,6 +38,7 @@ class MemoryExtractionObjective(Objective):
         super().__init__()
 
         self.norm: Module | None = norm
+        self.decoder = decoder
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
@@ -46,13 +48,15 @@ class MemoryExtractionObjective(Objective):
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        features = (
+        obs_history = (
             episode
             .index[1:]
             .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY))
             .parse(embedding)
             .get(k)
         )
+        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:]
+        features = self.decoder({"query": mask, "context": obs_history})
 
         logits = self.heads(features)
 
@@ -102,13 +106,15 @@ class MemoryExtractionObjective(Objective):
             ObjectivePredictionKey.PREDICTION_PROBS,
             ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
-            features = (
+            obs_history = (
                 episode
                 .index[1:]
                 .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY))
                 .parse(embedding)
                 .get(k)
             )
+            mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:]
+            features = self.decoder({"query": mask, "context": obs_history})
 
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
 

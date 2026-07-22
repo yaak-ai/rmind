@@ -35,6 +35,7 @@ class JointPolicyObjective(Objective):
         self,
         *,
         tokenizer: InstanceOf[Module],
+        decoder: InstanceOf[Module],
         code_head: InstanceOf[Module],
         offset_head: InstanceOf[Module],
         losses: InstanceOf[ModuleDict],
@@ -46,6 +47,7 @@ class JointPolicyObjective(Objective):
 
         self.norm: Module | None = norm
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        self.decoder = decoder  # mask-query cross-attention pooler over latent sets
         self.code_head = code_head  # features -> (G*C) code logits
         self.offset_head = (
             offset_head  # features -> (G*C*action_dim): offset per (quantizer, code)
@@ -75,29 +77,17 @@ class JointPolicyObjective(Objective):
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        embeddings = (
-            episode
-            .index[-1]
-            .select(
-                (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                (Modality.CONTEXT, "waypoints"),
-            )
-            .parse(embedding)
-        )
+        last = episode.index[-1]
+        k_os = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
+        k_oh = (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY)
+        observation_summary = last.select(k_os).parse(embedding).get(k_os)  # (b, 64, d)
+        observation_history = last.select(k_oh).parse(embedding).get(k_oh)  # (b, 32, d)
 
-        observation_history = embeddings.get((
-            Modality.SUMMARY,
-            SummaryToken.OBSERVATION_HISTORY,
-        ))
-        observation_summary = embeddings.get((
-            Modality.SUMMARY,
-            SummaryToken.OBSERVATION_SUMMARY,
-        ))
-
-        return rearrange(
-            [observation_summary, observation_history], "i b 1 d -> b (i d)"
-        )
+        context = torch.cat(
+            [observation_summary, observation_history], dim=-2
+        )  # (b, 96, d)
+        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, -1]  # (b, 1, d)
+        return self.decoder({"query": mask, "context": context}).squeeze(-2)  # (b, d)
 
     def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """VQ-BeT joint code prediction with a code-conditioned offset."""
