@@ -16,6 +16,7 @@ from .prediction import (
 )
 from .prediction_config import PredictionConfigSetter
 from .safe import SafeCallback
+from .training_quality import TrainingQualityLogger
 
 __all__ = [
     "DataFramePredictionWriter",
@@ -27,6 +28,7 @@ __all__ = [
     "RerunPredictionWriter",
     "SafeCallback",
     "TensorDictPredictionWriter",
+    "TrainingQualityLogger",
     "WandbAttentionMaskLogger",
     "WandbForesightMetricsLogger",
     "WandbImageParamLogger",
