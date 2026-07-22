@@ -20,7 +20,6 @@ episode_builder:
 
   special_tokens:
     summary:
-      # distinct ids into the shared summary embedding
       observation_summary:
         _target_: builtins.range
         _args_:
@@ -33,7 +32,8 @@ episode_builder:
       action_summary: [96]
 
     utility:
-      mask: [0]
+      # one row per objective: 0=fwd_dyn 1=inv_dyn 2=memory 3=policy
+      mask: [0, 1, 2, 3]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -258,7 +258,7 @@ episode_builder:
 
       utility:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 1
+        num_embeddings: 4
         embedding_dim: ${encoder_embedding_dim}
 
       joint_actions: null

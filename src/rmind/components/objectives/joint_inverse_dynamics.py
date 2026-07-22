@@ -59,7 +59,9 @@ class JointInverseDynamicsObjective(Objective):
             embedding = self.norm(embedding)
         k = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
         obs_summary = episode.index.select(k).parse(embedding).get(k)  # (b, t, 64, d)
-        mask = episode.embeddings.get((Modality.UTILITY, "mask"))  # (b, t, 1, d)
+        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[
+            :, :, [1]
+        ]  # (b, t, 1, d)
         # single mask query cross-attends the observation_summary latents
         features = self.decoder({"query": mask, "context": obs_summary}).squeeze(-2)[
             :, :-1
@@ -113,7 +115,7 @@ class JointInverseDynamicsObjective(Objective):
                 embedding = self.norm(embedding)
             k = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
             obs_summary = episode.index.select(k).parse(embedding).get(k)
-            mask = episode.embeddings.get((Modality.UTILITY, "mask"))
+            mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, :, [1]]
             features = self.decoder({"query": mask, "context": obs_summary}).squeeze(
                 -2
             )[:, :-1]

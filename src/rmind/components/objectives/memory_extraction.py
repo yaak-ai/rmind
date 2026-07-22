@@ -55,7 +55,7 @@ class MemoryExtractionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
-        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:]
+        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [2]]
         features = self.decoder({"query": mask, "context": obs_history})
 
         logits = self.heads(features)
@@ -113,7 +113,7 @@ class MemoryExtractionObjective(Objective):
                 .parse(embedding)
                 .get(k)
             )
-            mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:]
+            mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [2]]
             features = self.decoder({"query": mask, "context": obs_history})
 
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])

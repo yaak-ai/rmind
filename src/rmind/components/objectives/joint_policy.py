@@ -86,7 +86,9 @@ class JointPolicyObjective(Objective):
         context = torch.cat(
             [observation_summary, observation_history], dim=-2
         )  # (b, 96, d)
-        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, -1]  # (b, 1, d)
+        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[
+            :, -1, [3]
+        ]  # (b, 1, d)
         return self.decoder({"query": mask, "context": context}).squeeze(-2)  # (b, d)
 
     def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:

@@ -72,7 +72,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             "cam_front_left",
         )).shape
         mask_tokens = repeat(
-            episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:],
+            episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [0]],
             "b t 1 d -> b t n d",
             n=n_patches,
         )
@@ -153,7 +153,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             )).shape
 
             mask_tokens = repeat(
-                episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:],
+                episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [0]],
                 "b t 1 d -> b t n d",
                 n=n_patches,
             )
