@@ -1,0 +1,146 @@
+---
+# Same as policy_finetune_attn_history_relative_traj_longitudinal_weighted_detach_h_traj_raw,
+# but WITHOUT longitudinal_mode_head/loss and WITHOUT activity-weighted
+# continuous losses (see policy_finetune.yaml vs policy_finetune_weighted.yaml
+# for the "weighted" = ActivityWeightedGaussianNLLLoss vs plain
+# GaussianNLLLoss distinction): no longitudinal_mode_head/longitudinal_mode_loss/
+# longitudinal_mode_loss_weight/longitudinal_press_threshold, and continuous
+# losses are plain GaussianNLLLoss (no activity_weight). detach_h_traj is kept
+# — it only controls whether h_traj is detached before conditioning
+# heads/longitudinal_mode_head, and is independent of whether
+# longitudinal_mode_head exists at all.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "history_steps": 5,
+        "action_horizon": 6,
+        "feature_keys": [
+          ["summary", "observation_summary"]
+        ],
+        "history_feature_keys": [
+          ["summary", "observation_summary"]
+        ],
+        "history_feature_pool": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "summary": {
+              "observation_summary": {
+                "_target_": "rmind.components.transformer.AttentionPoolHead",
+                "embedding_dim": 384,
+                "patch_pos_embed": {
+                  "_target_": "rmind.components.position_encoding.PatchPositionEmbedding2D",
+                  "grid_size": [5, 1],
+                  "embedding_dim": 384
+                },
+                "decoder": {
+                  "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+                  "dim_model": 384,
+                  "num_layers": 1,
+                  "num_heads": 4,
+                  "attn_dropout": 0.1,
+                  "resid_dropout": 0.1,
+                  "mlp_dropout": 0.1,
+                  "hidden_layer_multiplier": 1
+                }
+              }
+            }
+          }
+        },
+        "raw_waypoints_key": ["context", "waypoints"],
+        "raw_waypoints_dropout": ${raw_waypoints_dropout},
+        "raw_speed_key": ["continuous", "speed"],
+        "raw_speed_dropout": ${raw_speed_dropout},
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 789,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 789,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 789,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              }
+            }
+          }
+        },
+        "detach_h_traj": true,
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          }
+        },
+        "trajectory_head": {
+          "_target_": "rmind.components.nn.GRUTrajectoryHead",
+          "in_features": 789,
+          "hidden_size": 384,
+          "num_steps": 6,
+          "predict_yaw": true
+        },
+        "trajectory_loss": {
+          "_target_": "rmind.components.loss.GaussianNLLLoss"
+        },
+        "trajectory_loss_weight": ${trajectory_loss_weight},
+        "trajectory_target": "relative",
+        "xy_key": ["input", "trajectory", "xy"],
+        "heading_key": ["input", "trajectory", "heading"],
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .episode_builder.input_transform._args_[0].paths.trajectory = {
+    "xy": ["data", "meta/Gnss/xy"],
+    "heading": ["data", "headings_denoised/heading"]
+  }
+  | .episode_builder.input_transform._args_[1].modules.trajectory = {
+    "_target_": "torch.nn.Identity"
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
+    }
+  }

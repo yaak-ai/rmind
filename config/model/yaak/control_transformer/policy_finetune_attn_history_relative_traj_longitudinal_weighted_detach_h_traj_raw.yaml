@@ -1,0 +1,170 @@
+---
+# Joins policy_finetune_attn_history_relative_traj_longitudinal_weighted_detach_h_traj
+# and policy_finetune_relative_traj_longitudinal_weighted_detach_h_traj_raw:
+# for checkpoints pretrained on the alex/pt-no-speed-experiments branch (e.g.
+# yaak/alex-tmp/model-roh4tk8f:v2 — no speed/waypoints/turn_signal tokens at
+# all, see the "_raw" sibling's comment), feature_keys drops observation_history
+# too (same as this policy's drop_history_raw sibling), leaving just
+# [observation_summary] -- 1 part, 384-dim -- and that dropped
+# observation_history is instead replaced by a trainable, unfrozen read of the
+# last `history_steps` (5) ticks of observation_summary via a learned-query
+# cross-attention pool (AttentionPoolHead, same mechanism as the non-"_raw"
+# attn_history sibling) -- another 384-dim part. raw_speed_key/raw_waypoints_key
+# then concatenate their 1 + 20 raw dims on top (see the "_raw" sibling's
+# comment for why speed/waypoints survive as raw, un-embedded features on this
+# checkpoint family). Every GRUHead/trajectory_head/longitudinal_mode_head
+# in_features is 384 + 384 + 1 + 20 = 789 to match. No state_dict_drop needed
+# for the same reason as the "_raw"/drop_history_raw siblings: the checkpoint
+# is pretrain-only, no objectives.policy.* weights exist for strict:false to
+# conflict with. history_feature_pool.* is a brand-new key (not in the
+# checkpoint at all), so it needs no drop either.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "history_steps": 5,
+        "action_horizon": 6,
+        "feature_keys": [
+          ["summary", "observation_summary"]
+        ],
+        "history_feature_keys": [
+          ["summary", "observation_summary"]
+        ],
+        "history_feature_pool": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "summary": {
+              "observation_summary": {
+                "_target_": "rmind.components.transformer.AttentionPoolHead",
+                "embedding_dim": 384,
+                "patch_pos_embed": {
+                  "_target_": "rmind.components.position_encoding.PatchPositionEmbedding2D",
+                  "grid_size": [5, 1],
+                  "embedding_dim": 384
+                },
+                "decoder": {
+                  "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+                  "dim_model": 384,
+                  "num_layers": 1,
+                  "num_heads": 4,
+                  "attn_dropout": 0.1,
+                  "resid_dropout": 0.1,
+                  "mlp_dropout": 0.1,
+                  "hidden_layer_multiplier": 1
+                }
+              }
+            }
+          }
+        },
+        "raw_waypoints_key": ["context", "waypoints"],
+        "raw_waypoints_dropout": ${raw_waypoints_dropout},
+        "raw_speed_key": ["continuous", "speed"],
+        "raw_speed_dropout": ${raw_speed_dropout},
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 789,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 789,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 789,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              }
+            }
+          }
+        },
+        "longitudinal_mode_head": {
+          "_target_": "rmind.components.nn.GRUHead",
+          "in_features": 789,
+          "hidden_size": 384,
+          "out_features": 3,
+          "num_steps": 6
+        },
+        "longitudinal_mode_loss": {
+          "_target_": "torch.nn.CrossEntropyLoss"
+        },
+        "longitudinal_mode_loss_weight": ${longitudinal_mode_loss_weight},
+        "longitudinal_press_threshold": ${longitudinal_press_threshold},
+        "detach_h_traj": true,
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          }
+        },
+        "trajectory_head": {
+          "_target_": "rmind.components.nn.GRUTrajectoryHead",
+          "in_features": 789,
+          "hidden_size": 384,
+          "num_steps": 6,
+          "predict_yaw": true
+        },
+        "trajectory_loss": {
+          "_target_": "rmind.components.loss.GaussianNLLLoss"
+        },
+        "trajectory_loss_weight": ${trajectory_loss_weight},
+        "trajectory_target": "relative",
+        "xy_key": ["input", "trajectory", "xy"],
+        "heading_key": ["input", "trajectory", "heading"],
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.ActivityWeightedGaussianNLLLoss",
+                "activity_weight": ${activity_weight}
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.ActivityWeightedGaussianNLLLoss",
+                "activity_weight": ${activity_weight}
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.ActivityWeightedGaussianNLLLoss",
+                "activity_weight": ${activity_weight}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .episode_builder.input_transform._args_[0].paths.trajectory = {
+    "xy": ["data", "meta/Gnss/xy"],
+    "heading": ["data", "headings_denoised/heading"]
+  }
+  | .episode_builder.input_transform._args_[1].modules.trajectory = {
+    "_target_": "torch.nn.Identity"
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
+    }
+  }
