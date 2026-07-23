@@ -1,0 +1,29 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/control_transformer/pt_ft_attn_history_relative_traj_detach_h_traj_raw_l1
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: pretrain_finetune
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+# matches the actual yaak/alex-tmp/model-roh4tk8f PT run (num_layers=2
+# override), not experiment/pretrain's num_layers=8 default
+num_heads: 4
+num_layers: 2
+encoder_embedding_dim: 384
+image_embedding_dim: 384
+
+speed_bins: 512
+gas_pedal_bins: 255
+brake_pedal_bins: 165
+steering_angle_bins: 961
+
+# raw (un-embedded) waypoints/speed modality dropout for the policy
+# objective's raw_speed_key/raw_waypoints_key (see policy_finetune_*_raw.yaml)
+raw_waypoints_dropout: 0.75
+raw_speed_dropout: 0.75
+
+trajectory_loss_weight: 1.0
