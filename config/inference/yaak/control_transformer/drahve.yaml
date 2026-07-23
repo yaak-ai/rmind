@@ -49,7 +49,7 @@ datamodule:
         inputs:
           input_id: [drive]
           meta_path: ["${drive_dir}/metadata.log"]
-          waypoints_path: ["${drive_dir}/waypoints.json"]
+          route_path: ["${drive_dir}/map-matched.json"]
           cam_front_left_path: ["${drive_dir}/cam_front_left.pii.mp4"]
 
         parallel: false
@@ -69,13 +69,8 @@ datamodule:
               cache: true
               func:
                 _target_: rbyte.io.YaakMetadataDataFrameBuilder
-                fields:
-                  rbyte.io.yaak.proto.sensor_pb2.DriveSessionInfo:
-                    time_stamp:
-                      _target_: polars.Datetime
-                      time_unit: us
-
-                  rbyte.io.yaak.proto.sensor_pb2.ImageMetadata:
+                messages:
+                  ImageMetadata:
                     session_timestamp:
                       _target_: polars.UInt64
                     frame_idx:
@@ -92,7 +87,7 @@ datamodule:
                         - cam_right_backward
                         - cam_rear
 
-                  rbyte.io.yaak.proto.can_pb2.VehicleMotion:
+                  VehicleMotion:
                     session_timestamp:
                       _target_: polars.UInt64
                     speed:
@@ -104,21 +99,21 @@ datamodule:
                     steering_angle_normalized:
                       _target_: polars.Float32
 
-                  rbyte.io.yaak.proto.can_pb2.VehicleState:
+                  VehicleState:
                     session_timestamp:
                       _target_: polars.UInt64
                     turn_signal:
-                      _target_: polars.Int8
+                      _target_: polars.Int32
 
-                  rbyte.io.yaak.proto.sensor_pb2.Gnss:
+                  Gnss:
                     session_timestamp:
                       _target_: polars.UInt64
                     latitude:
-                      _target_: polars.Float32
+                      _target_: polars.Float64
                     longitude:
-                      _target_: polars.Float32
+                      _target_: polars.Float64
                     heading:
-                      _target_: polars.Float32
+                      _target_: polars.Float64
 
             - _target_: pipefunc.PipeFunc
               renames:
@@ -134,57 +129,96 @@ datamodule:
 
             - _target_: pipefunc.PipeFunc
               renames:
-                self: meta
-              output_name: drive_session_info
-              mapspec: "${.renames.self}[i] -> ${.output_name}[i]"
+                mapping: meta
+              output_name: gnss
+              mapspec: "${.renames.mapping}[i] -> ${.output_name}[i]"
               func:
-                _target_: hydra.utils.get_method
-                path: collections.abc.Mapping.get
-              bound:
-                key: DriveSessionInfo
+                _target_: rbyte.io.TreeItemGetter
+                key_path: [Gnss]
 
             - _target_: pipefunc.PipeFunc
-              output_name: waypoints_raw
-              mapspec: "waypoints_path[i], drive_session_info[i] -> ${.output_name}[i]"
+              output_name: route
+              mapspec: "route_path[i] -> ${.output_name}[i]"
               cache: true
               func:
                 _target_: makefun.create_function
-                func_signature: "build_waypoints(*, waypoints_path, drive_session_info)"
+                func_signature: "build_route(*, route_path)"
                 func_impl:
                   _target_: rbyte.io.DuckDBDataFrameQuery
                   extensions: [spatial]
                   config:
-                    TimeZone: "UTC"
+                    TimeZone: UTC
                   query: |
-                    WITH
-                      session AS (
-                        SELECT min(time_stamp)::TIMESTAMP AS time_stamp
-                        FROM drive_session_info
-                      ),
-                      waypoints AS (
-                        SELECT TO_TIMESTAMP(timestamp)::TIMESTAMP AS timestamp,
-                               ST_AsWKB(ST_Transform(geom, 'EPSG:4326', 'EPSG:25832', always_xy := true)) AS geometry
-                        FROM ST_Read($waypoints_path)
-                      )
+                    WITH coordinates AS (
+                      SELECT coordinate, ordinality
+                      FROM read_json_auto($route_path),
+                           UNNEST(features[1].geometry.coordinates) WITH ORDINALITY
+                             AS coordinates(coordinate, ordinality)
+                    ),
+                    route_metric AS (
+                      SELECT
+                        ST_Transform(
+                          ST_Point(coordinate[1], coordinate[2]),
+                          'EPSG:4326', 'EPSG:25832', always_xy := true
+                        ) AS geom,
+                        ordinality
+                      FROM coordinates
+                    )
                     SELECT
-                      timestamp,
-                      epoch_us(timestamp) - epoch_us(session.time_stamp) AS session_timestamp,
-                      geometry
-                    FROM waypoints
-                    CROSS JOIN session
-                    ORDER BY timestamp;
+                      ST_X(geom) AS easting,
+                      ST_Y(geom) AS northing
+                    FROM route_metric
+                    ORDER BY ordinality
+
+            - _target_: pipefunc.PipeFunc
+              output_name: gnss_metric
+              mapspec: "gnss[i] -> ${.output_name}[i]"
+              func:
+                _target_: makefun.create_function
+                func_signature: "build_gnss_metric(*, gnss)"
+                func_impl:
+                  _target_: rbyte.io.DuckDBDataFrameQuery
+                  extensions: [spatial]
+                  config:
+                    TimeZone: UTC
+                  query: |
+                    WITH projected AS (
+                      SELECT
+                        * EXCLUDE (latitude, longitude),
+                        ST_Transform(
+                          ST_Point(longitude, latitude),
+                          'EPSG:4326', 'EPSG:25832', always_xy := true
+                        ) AS geom
+                      FROM gnss
+                    )
+                    SELECT
+                      session_timestamp,
+                      ST_X(geom) AS easting,
+                      ST_Y(geom) AS northing,
+                      heading
+                    FROM projected
+                    WHERE COLUMNS(*) IS NOT NULL
+                    ORDER BY session_timestamp
 
             - _target_: pipefunc.PipeFunc
               renames:
-                input: waypoints_raw
+                gnss: gnss_metric
               output_name: waypoints
-              mapspec: "${.renames.input}[i] -> ${.output_name}[i]"
+              mapspec: "route[i], ${.renames.gnss}[i] -> ${.output_name}[i]"
               func:
-                _target_: rbyte.io.WaypointBuilder
-                length: 10
-                columns:
-                  points: geometry
-                  output: xy
+                _target_: rbyte.io.RouteMatchedWaypointGenerator
+                config:
+                  waypoint_offsets_m: [1, 11, 21, 31, 41, 51, 61, 71, 81, 91]
+                  search:
+                    preferred_match_radius_m: 100.0
+                    beam_width: 64
+                    max_backtrack_m: 5.0
+                    max_advance_m: 45.0
+                  weights:
+                    distance: 1.0
+                    route_heading: 5.0
+                    advance: 0.1
+                    backtrack: 25.0
 
             - _target_: pipefunc.PipeFunc
               output_name: aligned
@@ -241,7 +275,19 @@ datamodule:
                     waypoints:
                       key: session_timestamp
                       columns:
-                        xy:
+                        easting:
+                          method: asof
+                          strategy: backward
+
+                        northing:
+                          method: asof
+                          strategy: backward
+
+                        heading:
+                          method: asof
+                          strategy: backward
+
+                        waypoints/position:
                           method: asof
                           strategy: backward
 
@@ -259,8 +305,18 @@ datamodule:
                       base_data AS (
                         SELECT
                           *,
-                          ST_Transform(ST_Point("meta/Gnss/longitude", "meta/Gnss/latitude"), 'EPSG:4326', 'EPSG:25832', always_xy := true) AS ego_geom,
-                          ST_GeomFromWKB("waypoints/xy") AS waypoints_geom
+                          ST_Point("waypoints/easting", "waypoints/northing") AS ego_geom,
+                          ST_Collect(
+                            (
+                              SELECT list(
+                                ST_Point(position[1], position[2])
+                                ORDER BY ordinality
+                              )
+                              FROM UNNEST(
+                                CAST(aligned."waypoints/waypoints/position" AS DOUBLE[][])
+                              ) WITH ORDINALITY AS waypoint(position, ordinality)
+                            )
+                          ) AS waypoints_geom
                         FROM
                           aligned
                           SEMI JOIN cam_front_left_meta
@@ -284,7 +340,7 @@ datamodule:
                         ego_geom,
                         waypoints_geom,
                         normalized_waypoints_geom,
-                        "waypoints/xy",
+                        "waypoints/waypoints/position",
                       ),
                       [["meta/Gnss/latitude", "meta/Gnss/longitude"]] AS "meta/Gnss/lat_lon",
                       (
@@ -448,6 +504,22 @@ trainer:
             - _target_: rerun.LineStrips3D.columns
               columns:
                 strips: [batch, data, waypoints/xy_normalized]
+              time_index: ${time_index}
+
+          meta/Gnss/lat_lon:
+            - _target_: rerun.GeoPoints.columns
+              columns:
+                positions:
+                  path: [batch, data, meta/Gnss/lat_lon]
+                  index: "[:, 0, ...]"
+              time_index: ${time_index}
+
+          waypoints/WGS84:
+            - _target_: rerun.GeoPoints.columns
+              columns:
+                positions:
+                  path: [batch, data, waypoints/xy_viz]
+                  index: "[:, 0, ...]"
               time_index: ${time_index}
 
           prediction/gas_pedal_normalized:

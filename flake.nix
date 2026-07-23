@@ -1,9 +1,9 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable?shallow=1";
-    flake-parts.url = "github:hercules-ci/flake-parts?shallow=1";
+    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
     nix-gl-host = {
-      url = "github:numtide/nix-gl-host?shallow=1";
+      url = "github:numtide/nix-gl-host";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -34,19 +34,24 @@
           ];
           commonPackages = [
             nushell
+            gh
             git
             git-lfs
+            openssh
             ytt
             just
             prek
             skim
             openssl
             ffmpeg
+            cargo
+            rustc
           ];
           commonEnv = {
+            MATURIN_NO_INSTALL_RUST = "1";
+            PYO3_PYTHON = "${python312}/bin/python";
             UV_PYTHON = "${python312}/bin/python";
             UV_NO_MANAGED_PYTHON = "1";
-            UV_PYTHON_DOWNLOADS = "never";
           };
         in
         {

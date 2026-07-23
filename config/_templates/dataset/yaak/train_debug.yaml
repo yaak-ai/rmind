@@ -35,9 +35,9 @@ samples:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/metadata.log
 
-    waypoints_path:
+    route_path:
       #@ for/end drive_id in drives:
-      - ${paths.data}/(@=drive_id@)/waypoints.json
+      - ${paths.data}/(@=drive_id@)/map-matched.json
 
     headings_denoised_path:
       #@ for/end drive_id in drives:
@@ -74,8 +74,8 @@ samples:
         cache: true
         func:
           _target_: rbyte.io.YaakMetadataDataFrameBuilder
-          fields:
-            rbyte.io.yaak.proto.sensor_pb2.ImageMetadata:
+          messages:
+            ImageMetadata:
               time_stamp:
                 _target_: polars.Datetime
                 time_unit: us
@@ -93,14 +93,14 @@ samples:
                   - cam_right_backward
                   - cam_rear
 
-            rbyte.io.yaak.proto.can_pb2.VehicleState:
+            VehicleState:
               time_stamp:
                 _target_: polars.Datetime
                 time_unit: us
               turn_signal:
-                _target_: polars.Int8
+                _target_: polars.Int32
 
-            rbyte.io.yaak.proto.can_pb2.VehicleMotion:
+            VehicleMotion:
               time_stamp:
                 _target_: polars.Datetime
                 time_unit: us
@@ -116,42 +116,56 @@ samples:
                 _target_: polars.Enum
                 categories: ["0", "1", "2", "3"]
 
-            rbyte.io.yaak.proto.sensor_pb2.Gnss:
+            Gnss:
               time_stamp:
                 _target_: polars.Datetime
                 time_unit: us
               latitude:
-                _target_: polars.Float32
+                _target_: polars.Float64
               longitude:
-                _target_: polars.Float32
+                _target_: polars.Float64
 
       - _target_: pipefunc.PipeFunc
-        output_name: waypoints_raw
-        mapspec: "waypoints_path[i] -> waypoints_raw[i]"
+        output_name: route
+        mapspec: "route_path[i] -> route[i]"
         func:
           _target_: makefun.create_function
-          func_signature: "build_waypoints(*, waypoints_path)"
+          func_signature: "build_route(*, route_path)"
           func_impl:
             _target_: rbyte.io.DuckDBDataFrameQuery
             extensions: [spatial]
             config:
               TimeZone: UTC
             query: |
-              SELECT TO_TIMESTAMP(timestamp)::TIMESTAMP AS timestamp,
-                     ST_AsWKB(ST_Transform(geom, 'EPSG:4326', 'EPSG:25832', always_xy := true)) AS geometry
-              FROM ST_Read($waypoints_path)
+              WITH coordinates AS (
+                SELECT coordinate, ordinality
+                FROM read_json_auto($route_path),
+                     UNNEST(features[1].geometry.coordinates) WITH ORDINALITY
+                       AS coordinates(coordinate, ordinality)
+              ),
+              route_metric AS (
+                SELECT
+                  ST_Transform(
+                    ST_Point(coordinate[1], coordinate[2]),
+                    'EPSG:4326', 'EPSG:25832', always_xy := true
+                  ) AS geom,
+                  ordinality
+                FROM coordinates
+              )
+              SELECT
+                ST_X(geom) AS easting,
+                ST_Y(geom) AS northing
+              FROM route_metric
+              ORDER BY ordinality
 
       - _target_: pipefunc.PipeFunc
         renames:
-          input: waypoints_raw
-        output_name: waypoints
-        mapspec: "waypoints_raw[i] -> waypoints[i]"
+          mapping: meta
+        output_name: gnss
+        mapspec: "meta[i] -> gnss[i]"
         func:
-          _target_: rbyte.io.WaypointBuilder
-          length: 91
-          columns:
-            points: geometry
-            output: xy
+          _target_: rbyte.io.TreeItemGetter
+          key_path: [Gnss]
 
       - _target_: pipefunc.PipeFunc
         output_name: headings_denoised
@@ -167,11 +181,82 @@ samples:
               FROM (SELECT unnest(headings) AS h FROM read_json_auto($headings_denoised_path))
 
       - _target_: pipefunc.PipeFunc
-        output_name: aligned
-        mapspec: "meta[i], waypoints[i], headings_denoised[i] -> aligned[i]"
+        output_name: gnss_aligned
+        mapspec: "gnss[i], headings_denoised[i] -> gnss_aligned[i]"
         func:
           _target_: makefun.create_function
-          func_signature: "align(*, meta, waypoints, headings_denoised)"
+          func_signature: "align_gnss(*, gnss, headings_denoised)"
+          func_impl:
+            _target_: rbyte.io.DataFrameAligner
+            separator: /
+            fields:
+              gnss:
+                key: time_stamp
+
+              headings_denoised:
+                key: timestamp
+                columns:
+                  heading:
+                    method: asof
+                    strategy: nearest
+
+      - _target_: pipefunc.PipeFunc
+        output_name: gnss_metric
+        mapspec: "gnss_aligned[i] -> gnss_metric[i]"
+        func:
+          _target_: makefun.create_function
+          func_signature: "build_gnss_metric(*, gnss_aligned)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            extensions: [spatial]
+            config:
+              TimeZone: UTC
+            query: |
+              WITH projected AS (
+                SELECT
+                  "gnss/time_stamp" AS time_stamp,
+                  "headings_denoised/heading" AS heading,
+                  ST_Transform(
+                    ST_Point("gnss/longitude", "gnss/latitude"),
+                    'EPSG:4326', 'EPSG:25832', always_xy := true
+                  ) AS geom
+                FROM gnss_aligned
+                WHERE COLUMNS(*) IS NOT NULL
+              )
+              SELECT
+                time_stamp,
+                ST_X(geom) AS easting,
+                ST_Y(geom) AS northing,
+                heading
+              FROM projected
+              ORDER BY time_stamp
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          gnss: gnss_metric
+        output_name: waypoints
+        mapspec: "route[i], gnss_metric[i] -> waypoints[i]"
+        func:
+          _target_: rbyte.io.RouteMatchedWaypointGenerator
+          config:
+            waypoint_offsets_m: [1, 11, 21, 31, 41, 51, 61, 71, 81, 91]
+            search:
+              preferred_match_radius_m: 100.0
+              beam_width: 64
+              max_backtrack_m: 5.0
+              max_advance_m: 45.0
+            weights:
+              distance: 1.0
+              route_heading: 5.0
+              advance: 0.1
+              backtrack: 25.0
+
+      - _target_: pipefunc.PipeFunc
+        output_name: aligned
+        mapspec: "meta[i], waypoints[i] -> aligned[i]"
+        func:
+          _target_: makefun.create_function
+          func_signature: "align(*, meta, waypoints)"
           func_impl:
             _target_: rbyte.io.DataFrameAligner
             separator: /
@@ -216,17 +301,26 @@ samples:
                       strategy: nearest
 
               waypoints:
-                key: timestamp
+                key: time_stamp
                 columns:
-                  xy:
+                  easting:
                     method: asof
-                    strategy: forward
+                    tolerance: 500ms
+                    strategy: nearest
 
-              headings_denoised:
-                key: timestamp
-                columns:
+                  northing:
+                    method: asof
+                    tolerance: 500ms
+                    strategy: nearest
+
                   heading:
                     method: asof
+                    tolerance: 500ms
+                    strategy: nearest
+
+                  waypoints/position:
+                    method: asof
+                    tolerance: 500ms
                     strategy: nearest
 
       - _target_: pipefunc.PipeFunc
@@ -256,11 +350,21 @@ samples:
                 base_data AS (
                   SELECT
                     *,
-                    ST_Transform(
-                      ST_Point("meta/Gnss/longitude", "meta/Gnss/latitude"),
-                      'EPSG:4326', 'EPSG:25832', always_xy := true
+                    ST_Point(
+                      "waypoints/easting",
+                      "waypoints/northing"
                     ) AS ego_geom,
-                    ST_GeomFromWKB("waypoints/xy") AS waypoints_geom
+                    ST_Collect(
+                      (
+                        SELECT list(
+                          ST_Point(position[1], position[2])
+                          ORDER BY ordinality
+                        )
+                        FROM UNNEST(
+                          CAST(aligned."waypoints/waypoints/position" AS DOUBLE[][])
+                        ) WITH ORDINALITY AS waypoint(position, ordinality)
+                      )
+                    ) AS waypoints_geom
                   FROM
                     aligned
                     SEMI JOIN cam_front_left_meta
@@ -283,7 +387,7 @@ samples:
                         - ST_X(ego_geom),
                         - ST_Y(ego_geom)
                       ),
-                      radians("headings_denoised/heading")
+                      radians("waypoints/heading")
                     ) AS normalized_waypoints_geom
                   FROM
                     base_data
@@ -295,8 +399,8 @@ samples:
                   waypoints_geom,
                   normalized_waypoints_geom,
                   ego_geom,
-                  "waypoints/xy",
-                  "headings_denoised/heading"
+                  "waypoints/waypoints/position",
+                  "waypoints/heading"
                 ),
                 -- Some vehicles (Niro106, Niro109, Niro110, Niro121, Niro124, Niro127, Niro132)
                 -- have a constant brake sensor offset of up to ~4 quantisation steps (< 0.05)
@@ -322,7 +426,6 @@ samples:
                     )
                   FROM
                     UNNEST(ST_Dump(waypoints_geom)) AS p(point_struct)
-                  WHERE (p.point_struct.path[1] - 1) % 10 = 0
                 ) AS "waypoints/xy",
                 (
                   SELECT
@@ -333,7 +436,6 @@ samples:
                     )
                   FROM
                     UNNEST(ST_Dump(normalized_waypoints_geom)) AS p(point_struct)
-                  WHERE (p.point_struct.path[1] - 1) % 10 = 0
                 ) AS "waypoints/xy_normalized"
               FROM
                 normalized_geometries
