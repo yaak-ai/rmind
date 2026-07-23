@@ -17,6 +17,7 @@ class CrossAttentionDecoderBlock(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
+        self_attn: bool = True,
     ) -> None:
         super().__init__()
 
@@ -29,14 +30,17 @@ class CrossAttentionDecoderBlock(nn.Module):
         )
         self.cross_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
 
-        self.self_attn_norm = nn.LayerNorm(embedding_dim)
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim=embedding_dim,
-            num_heads=num_heads,
-            dropout=attn_dropout,
-            batch_first=True,
-        )
-        self.self_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
+        # self-attn is a no-op mixing step for a single query token; skip it there
+        self.use_self_attn = self_attn
+        if self_attn:
+            self.self_attn_norm = nn.LayerNorm(embedding_dim)
+            self.self_attn = nn.MultiheadAttention(
+                embed_dim=embedding_dim,
+                num_heads=num_heads,
+                dropout=attn_dropout,
+                batch_first=True,
+            )
+            self.self_attn_resid_drop = nn.Dropout(resid_dropout, inplace=False)
 
         self.mlp_norm = nn.LayerNorm(embedding_dim)
         self.mlp = MLPGLU(
@@ -54,12 +58,13 @@ class CrossAttentionDecoderBlock(nn.Module):
         )
         x = residual + self.cross_attn_resid_drop(cross_attn_out)
 
-        residual = x
-        x_norm = self.self_attn_norm(x)
-        self_attn_out, _ = self.self_attn(
-            query=x_norm, key=x_norm, value=x_norm, need_weights=False
-        )
-        x = residual + self.self_attn_resid_drop(self_attn_out)
+        if self.use_self_attn:
+            residual = x
+            x_norm = self.self_attn_norm(x)
+            self_attn_out, _ = self.self_attn(
+                query=x_norm, key=x_norm, value=x_norm, need_weights=False
+            )
+            x = residual + self.self_attn_resid_drop(self_attn_out)
 
         residual = x
         mlp_out = self.mlp(self.mlp_norm(x))
@@ -76,6 +81,7 @@ class CrossAttentionDecoder(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
+        self_attn: bool = True,
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
@@ -86,6 +92,7 @@ class CrossAttentionDecoder(nn.Module):
                 mlp_dropout=mlp_dropout,
                 resid_dropout=resid_dropout,
                 hidden_layer_multiplier=hidden_layer_multiplier,
+                self_attn=self_attn,
             )
             for _ in range(num_layers)
         ])

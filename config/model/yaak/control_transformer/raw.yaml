@@ -375,10 +375,9 @@ objectives:
           resid_dropout: 0.1
           mlp_dropout: 0.1
           hidden_layer_multiplier: 1
+          self_attn: false
         output_projection:
-          _target_: rmind.components.nn.Linear
-          in_features: ${encoder_embedding_dim}
-          out_features: ${encoder_embedding_dim}
+          _target_: torch.nn.Identity
       tokenizer:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -497,10 +496,9 @@ objectives:
           resid_dropout: 0.1
           mlp_dropout: 0.1
           hidden_layer_multiplier: 1
+          self_attn: false
         output_projection:
-          _target_: rmind.components.nn.Linear
-          in_features: ${encoder_embedding_dim}
-          out_features: ${encoder_embedding_dim}
+          _target_: torch.nn.Identity
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -510,13 +508,11 @@ objectives:
               in_features: ${encoder_embedding_dim}
               out_features: ${gas_pedal_bins}
               bias: False
-
             brake_pedal_diff:
               _target_: rmind.components.nn.Linear
               in_features: ${encoder_embedding_dim}
               out_features: ${brake_pedal_bins}
               bias: False
-
             steering_angle_diff:
               _target_: rmind.components.nn.Linear
               in_features: ${encoder_embedding_dim}
