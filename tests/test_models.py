@@ -104,7 +104,7 @@ def objectives(
 
 @pytest.fixture
 def optimizer() -> HydraConfig[Optimizer]:
-    return HydraConfig[Optimizer](
+    return HydraConfig[Optimizer](  # ty:ignore[missing-argument]
         target="rmind.components.optimizers.SelectiveAdamW",
         lr=1e-5,
         betas=[0.9, 0.95],

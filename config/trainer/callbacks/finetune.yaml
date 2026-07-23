@@ -1,4 +1,5 @@
 - _target_: rmind.callbacks.LogitBiasSetter
+- _target_: rmind.components.dataloader.DistributedSamplerEpochSetter
 - _target_: rmind.callbacks.ModuleFreezer
   paths:
     - episode_builder
