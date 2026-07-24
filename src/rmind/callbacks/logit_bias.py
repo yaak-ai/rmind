@@ -16,6 +16,7 @@ from torch.utils._pytree import (  # noqa: PLC2701
 )
 
 from rmind.components.loss import HasLogitBias
+from rmind.components.nn import GRUHead
 from rmind.models.control_transformer import ControlTransformer
 from rmind.utils.pytree import path_to_key
 
@@ -86,7 +87,8 @@ class LogitBiasSetter(Callback):
                 ),
                 input,
             )
-            labels = pl_module.episode_builder.tokenizers(input)  # ty:ignore[call-non-callable]
+            tokenizer_input = {k: v for k, v in input.items() if k in pl_module.episode_builder.tokenizers}
+            labels = pl_module.episode_builder.tokenizers(tokenizer_input)  # ty:ignore[call-non-callable]
 
         for objective_key, loss_keypath, loss in losses:
             logger.debug(
@@ -94,15 +96,19 @@ class LogitBiasSetter(Callback):
                 objective=objective_key,
                 loss_key=keystr(loss_keypath),
             )
-            loss_head = key_get(objectives[objective_key].heads, loss_keypath)
+            objective = objectives[objective_key]
+            action_horizon = getattr(objective, 'action_horizon', 1)
+            loss_head = key_get(objective.heads, loss_keypath)
             loss_labels = key_get(labels, loss_keypath)
-            minlength = self._get_out_features(loss_head)
+            minlength = self._get_out_features(loss_head) // action_horizon
             freq = torch.bincount(input=loss_labels, weights=None, minlength=minlength)
             loss.logit_bias = ((freq + 1) / freq.sum()).log()
 
     @staticmethod
     def _get_out_features(head: torch.nn.Module) -> int:
         match head:
+            case GRUHead():
+                return head.output_proj.out_features
             case torch.nn.Linear():
                 return head.out_features
             case torch.nn.Sequential():

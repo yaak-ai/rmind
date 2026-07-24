@@ -133,3 +133,95 @@ def _module_wrapper(
 
 AtLeast3D = _module_wrapper(torch.atleast_3d, name="AtLeast3D")
 DiffLast = _module_wrapper(diff_last, name="DiffLast")
+
+
+@final
+class GRUTrajectoryHead(Module):
+    """Autoregressive GRU that predicts future trajectory waypoints step-by-step.
+
+    At each step the previously predicted (mean_x, mean_y) is fed back as input.
+    Returns both the per-step logits and the GRU hidden states so the companion
+    action heads can be conditioned on the trajectory's internal representations.
+
+    Output logits layout per step: [mean_x, logvar_x, mean_y, logvar_y] (4 values).
+    This matches GaussianNLLLoss which expects input[..., 0]=mean, input[..., 1]=logvar.
+    """
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        in_features: int,
+        hidden_size: int,
+        num_steps: int,
+    ) -> None:
+        super().__init__()
+        self.num_steps = num_steps
+        self._hidden_size = hidden_size
+        self.hidden_proj = Linear(in_features, hidden_size)
+        self.input_proj = Linear(2, hidden_size)           # embed prev (mean_x, mean_y)
+        self.gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
+        self.output_proj = Linear(hidden_size, 4)          # mean_x, logvar_x, mean_y, logvar_y
+
+    @override
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        # x: (b, 1, in_features)
+        b = x.size(0)
+        h = self.hidden_proj(x[:, 0]).unsqueeze(0)        # (1, b, H)
+        prev_xy = torch.zeros(b, 2, device=x.device, dtype=x.dtype)
+        preds, hs = [], []
+        for _ in range(self.num_steps):
+            inp = self.input_proj(prev_xy).unsqueeze(1)    # (b, 1, H)
+            out, h = self.gru(inp, h)                      # (b, 1, H), (1, b, H)
+            hs.append(h[0])                                # (b, H)
+            logits = self.output_proj(out[:, 0])           # (b, 4)
+            prev_xy = logits[:, [0, 2]]                    # (b, 2) means only
+            preds.append(logits)
+        return torch.stack(preds, dim=1), torch.stack(hs, dim=1)
+        # (b, num_steps, 4),  (b, num_steps, H)
+
+
+@final
+class GRUHead(Module):
+    """GRU decoder that generates `num_steps` action predictions.
+
+    Context features are projected to the GRU initial hidden state; per-step
+    positional embeddings serve as inputs so each decoding step can specialize.
+    When `h_traj` is provided (from a companion GRUTrajectoryHead), it is
+    projected and added to the step embeddings before each GRU step.
+    """
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        in_features: int,
+        hidden_size: int,
+        out_features: int,
+        num_steps: int,
+    ) -> None:
+        super().__init__()
+        self.num_steps = num_steps
+        self.out_features = out_features
+        self._hidden_size = hidden_size
+        self.hidden_proj = Linear(in_features, hidden_size)
+        self.step_embed = nn.Embedding(num_steps, hidden_size)
+        self.traj_proj = Linear(hidden_size, hidden_size)  # trajectory conditioning
+        self.gru = nn.GRU(
+            input_size=hidden_size,
+            hidden_size=hidden_size,
+            batch_first=True,
+        )
+        self.output_proj = Linear(hidden_size, out_features)
+
+    @override
+    def forward(self, x: Tensor, h_traj: Tensor | None = None) -> Tensor:
+        # x: (b, 1, in_features);  h_traj: (b, num_steps, hidden_size) or None
+        b = x.size(0)
+        h0 = self.hidden_proj(x[:, 0]).unsqueeze(0)                          # (1, b, H)
+        step_ids = torch.arange(self.num_steps, device=x.device)
+        inp = self.step_embed(step_ids).unsqueeze(0).expand(b, -1, -1)       # (b, steps, H)
+        if h_traj is not None:
+            inp = inp + self.traj_proj(h_traj)                                # (b, steps, H)
+        out, _ = self.gru(inp, h0)                                            # (b, steps, H)
+        return self.output_proj(out)                                           # (b, steps, out_features)

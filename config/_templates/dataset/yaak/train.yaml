@@ -1108,7 +1108,7 @@ samples:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
           every: 10i
-          period: 60i
+          period: 110i
           closed: left
           gather_every: 10
 
@@ -1135,8 +1135,8 @@ samples:
               FROM
                   samples
               WHERE
-                  len("meta/ImageMetadata.cam_front_left/frame_idx") = 6
-                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 50
+                  len("meta/ImageMetadata.cam_front_left/frame_idx") = 11
+                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 100
                   AND NOT (
                       list_max("meta/VehicleMotion/gas_pedal_normalized") <= (1.0 / 255 + 0.001)
                       AND list_max("meta/VehicleMotion/brake_pedal_normalized") <= (1.0 / 164 + 0.001)

@@ -21,7 +21,11 @@ from rmind.components.objectives.base import (
     Prediction,
     Targets,
 )
-from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
+from rmind.utils.functional import (
+    build_local_trajectory,
+    gauss_prob,
+    non_zero_signal_with_threshold,
+)
 
 
 @final
@@ -34,6 +38,13 @@ class PolicyObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
+        history_steps: int = 1,
+        action_horizon: int = 1,
+        trajectory_head: InstanceOf[Module] | None = None,
+        trajectory_loss: InstanceOf[Module] | None = None,
+        trajectory_loss_weight: float = 1.0,
+        xy_key: tuple[str, ...] = ("input", "trajectory", "xy"),
+        heading_key: tuple[str, ...] = ("input", "trajectory", "heading"),
     ) -> None:
         super().__init__()
 
@@ -41,31 +52,48 @@ class PolicyObjective(Objective):
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
+        self.history_steps: int = history_steps
+        self.action_horizon: int = action_horizon
+        self.trajectory_head: Module | None = trajectory_head
+        self.trajectory_loss: Module | None = trajectory_loss
+        self.trajectory_loss_weight: float = trajectory_loss_weight
+        self.xy_key: tuple[str, ...] = xy_key
+        self.heading_key: tuple[str, ...] = heading_key
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        logits = self._compute_logits(episode=episode, embedding=embedding)
+        logits, _, _ = self._compute_logits(episode=episode, embedding=embedding)
 
         def fn(nk: tuple[str, ...], x: Tensor) -> Tensor:
+            # always return the first predicted step (b, 1, d) or (b, h, d) -> (b, 1)
+            first = x[:, :1, :]
             match nk:
                 case (Modality.CONTINUOUS, _):
-                    return x[..., 0]
+                    return first[..., 0]
                 case (Modality.DISCRETE, "turn_signal"):
-                    return non_zero_signal_with_threshold(x).class_idx
+                    return non_zero_signal_with_threshold(first).class_idx
                 case _:
                     raise NotImplementedError
 
         return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
 
-    def _compute_logits(self, *, episode: Episode, embedding: Tensor) -> TensorTree:
+    def _compute_logits(
+        self, *, episode: Episode, embedding: Tensor
+    ) -> tuple[TensorTree, Tensor | None, Tensor | None]:
+        """Returns (action_logits, traj_logits, h_traj).
+
+        traj_logits: (b, num_steps, 4) = [mean_x, logvar_x, mean_y, logvar_y] or None.
+        h_traj:      (b, num_steps, hidden_size) GRU hidden states or None.
+        """
         _b, _ = episode.input.batch_size
 
+        idx = self.history_steps - 1 if (self.training and self.action_horizon > 1) else -1
         embeddings = (
             episode
-            .index[-1]
+            .index[idx]
             .select(
                 (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
                 (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
@@ -93,26 +121,92 @@ class PolicyObjective(Objective):
             "i b 1 d -> b 1 (i d)",
         )
 
-        return self.heads(features)
+        traj_logits: Tensor | None = None
+        h_traj: Tensor | None = None
+        if self.trajectory_head is not None:
+            traj_logits, h_traj = self.trajectory_head(features)  # (b, steps, 4), (b, steps, H)
+
+        logits = self.heads(features, h_traj)
+        if self.training and self.action_horizon > 1:
+            # MLP: (b, 1, h*d) → (b, h, d);  GRU: already (b, h, d)
+            return (
+                tree_map(
+                    lambda x: (
+                        rearrange(x, "b 1 (h d) -> b h d", h=self.action_horizon)
+                        if x.shape[1] == 1
+                        else x
+                    ),
+                    logits,
+                ),
+                traj_logits,
+                h_traj,
+            )
+        # Inference: normalize to (b, 1, out_features) — first predicted step only
+        def _first_step(x: Tensor) -> Tensor:
+            if x.shape[1] > 1:  # GRU: (b, h, d) → (b, 1, d)
+                return x[:, :1]
+            if self.action_horizon > 1:  # MLP: (b, 1, h*d) → (b, 1, d)
+                return rearrange(x, "b 1 (h d) -> b h d", h=self.action_horizon)[:, :1]
+            return x
+        return tree_map(_first_step, logits), traj_logits, h_traj
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        logits = self._compute_logits(episode=episode, embedding=embedding)
-        targets = tree_map(
-            lambda k: episode.get(k)[:, -1],
-            self.targets,
-            is_leaf=lambda x: isinstance(x, tuple),
-        )
+        logits, traj_logits, _ = self._compute_logits(episode=episode, embedding=embedding)
 
-        losses = self.losses(
-            tree_map(Rearrange("b 1 d -> b d"), logits),
-            tree_map(Rearrange("b 1 -> b"), targets),
-        )  # ty:ignore[call-non-callable]
+        if self.training and self.action_horizon > 1:
+            targets = tree_map(
+                lambda k: episode.get(k)[:, self.history_steps:],
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+            losses = self.losses(
+                tree_map(Rearrange("b h d -> (b h) d"), logits),
+                tree_map(Rearrange("b h 1 -> (b h)"), targets),
+            )  # ty:ignore[call-non-callable]
+        else:
+            targets = tree_map(
+                lambda k: episode.get(k)[:, -1],
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+            # logits is (b, 1, out_features) after normalization in _compute_logits
+            losses = self.losses(
+                tree_map(Rearrange("b 1 d -> b d"), logits),
+                tree_map(Rearrange("b 1 -> b"), targets),
+            )  # ty:ignore[call-non-callable]
 
-        return {"loss": losses}
+        all_losses: dict = dict(losses)
+
+        xy = episode.get(self.xy_key)
+        heading = episode.get(self.heading_key)
+
+        if (
+            traj_logits is not None
+            and self.trajectory_loss is not None
+            and self.training
+            and self.action_horizon > 1
+            and xy is not None
+            and heading is not None
+        ):
+            traj_gt = build_local_trajectory(
+                xy=xy,
+                heading_deg=heading,
+                history_steps=self.history_steps,
+            )  # (b, num_steps, 2)
+            flat = rearrange(traj_logits, "b h d -> (b h) d")         # (b*steps, 4)
+            gt_x = rearrange(traj_gt[..., 0], "b h -> (b h)")         # (b*steps,)
+            gt_y = rearrange(traj_gt[..., 1], "b h -> (b h)")         # (b*steps,)
+            traj_loss = (
+                self.trajectory_loss(flat[..., :2], gt_x)
+                + self.trajectory_loss(flat[..., 2:], gt_y)
+            ) / 2  # ty:ignore[call-non-callable]
+            all_losses["trajectory"] = traj_loss * self.trajectory_loss_weight
+
+        return {"loss": all_losses}
 
     @override
     def predict(  # noqa: C901, PLR0912, PLR0915
@@ -154,15 +248,8 @@ class PolicyObjective(Objective):
                     embedding
                 )
 
-            embeddings = (
-                episode
-                .index[-1]
-                .select(
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                    (Modality.CONTEXT, "waypoints"),
-                )
-                .parse(embedding)
+            raw_logits, traj_logits, _ = self._compute_logits(
+                episode=episode, embedding=embedding
             )
 
             observation_history = embeddings.get((
@@ -471,5 +558,7 @@ class PolicyObjective(Objective):
                     value=logits.named_apply(fn, nested_keys=True),
                     time_index=time_index,
                 )
+
+
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
