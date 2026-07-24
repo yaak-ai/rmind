@@ -53,6 +53,7 @@ def test_history_window_slice_against_real_sequence(
         lf("policy_objective_multimodal"),
         lf("policy_objective_raw_waypoints"),
         lf("policy_objective_raw_speed"),
+        lf("policy_objective_with_fusion_pool"),
     ],
 )
 def test_compute_metrics(
@@ -73,6 +74,7 @@ def test_compute_metrics(
         lf("policy_objective_multimodal"),
         lf("policy_objective_raw_waypoints"),
         lf("policy_objective_raw_speed"),
+        lf("policy_objective_with_fusion_pool"),
     ],
 )
 @pytest.mark.parametrize(

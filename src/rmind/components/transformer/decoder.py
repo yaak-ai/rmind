@@ -147,10 +147,16 @@ class CrossAttentionDecoderHead(nn.Module):
 
 @final
 class AttentionPoolHead(nn.Module):
-    """Pools a variable-length token sequence to a single token via a learned query.
+    """Pools a variable-length token sequence to `num_queries` tokens via learned queries.
 
-    Unlike mean-pooling, the query cross-attends over the tokens, so it can weigh
-    e.g. spatially relevant image patches instead of averaging all of them away.
+    Unlike mean-pooling, the query/queries cross-attend over the tokens, so they can
+    weigh e.g. spatially relevant image patches instead of averaging all of them away.
+    `num_queries=1` (default) returns a single pooled token, `(b, 1, embedding_dim)`,
+    matching every existing use of this module exactly. `num_queries>1` returns
+    `(b, num_queries, embedding_dim)` -- multiple independent query slots that also
+    self-attend against each other inside `decoder`, letting them specialize instead
+    of collapsing to one token; flattening that into a single wide vector, if desired,
+    is the caller's responsibility.
     """
 
     def __init__(
@@ -158,11 +164,12 @@ class AttentionPoolHead(nn.Module):
         decoder: CrossAttentionDecoder,
         embedding_dim: int,
         patch_pos_embed: nn.Module | None = None,
+        num_queries: int = 1,
     ) -> None:
         super().__init__()
         self.decoder = decoder
         self.patch_pos_embed = patch_pos_embed
-        self.query = nn.Parameter(torch.empty(1, 1, embedding_dim))
+        self.query = nn.Parameter(torch.empty(1, num_queries, embedding_dim))
         nn.init.trunc_normal_(self.query, std=CLS_INIT_STD)
 
     @override

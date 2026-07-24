@@ -16,6 +16,7 @@ from torch.utils._pytree import tree_map  # noqa: PLC2701
 from rmind.components.base import Modality, SummaryToken, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
+from rmind.components.nn import FeatureFusionPool
 from rmind.components.objectives.base import (
     Metrics,
     Objective,
@@ -146,6 +147,18 @@ class PolicyObjective(Objective):
         # None (default) == disabled.
         raw_speed_key: tuple[str, ...] | None = None,
         raw_speed_dropout: float = 0.0,
+        # cross-attention feature fusion: replaces the pool-then-concatenate
+        # `features` construction above (feature_keys/raw_feature_keys/
+        # history_feature_keys/trainable_image/raw_waypoints_key/raw_speed_key)
+        # with one learned-query cross-attention over a token set built from
+        # the observation_summary history window (raw, unpooled -- one token
+        # per tick), raw_waypoints_key (one token per point instead of
+        # flattened), and raw_speed_key (one token). None (default) ==
+        # today's concatenation path, unchanged. When set, raw_waypoints_key/
+        # raw_speed_key are still read (via _raw_dropout_feature) but no
+        # longer concatenated onto `features` directly -- they're routed into
+        # fusion_pool instead. See FeatureFusionPool.
+        fusion_pool: InstanceOf[FeatureFusionPool] | None = None,
         prediction_std_scale: dict[str, float] | None = None,
         gate_horizon_aggregate: Literal["first", "max"] = "first",
         gate_fire_threshold: float = 0.5,
@@ -234,6 +247,7 @@ class PolicyObjective(Objective):
         self.raw_waypoints_horizon: int | None = raw_waypoints_horizon
         self.raw_speed_key: tuple[str, ...] | None = raw_speed_key
         self.raw_speed_dropout: float = raw_speed_dropout
+        self.fusion_pool: FeatureFusionPool | None = fusion_pool
         self.prediction_std_scale: dict[str, float] = prediction_std_scale or {}
         # hurdle-gate decode: per-tick onset classification is weak (AUC ~0.72) and
         # fires in 1-tick bursts; "press within the predicted horizon" is easier and
@@ -412,28 +426,36 @@ class PolicyObjective(Objective):
         *,
         scale: float = 1.0,
         horizon: int | None = None,
+        flatten: bool = True,
     ) -> Tensor:
         """Reads a raw (un-embedded) feature straight off episode.input at
-        `idx`, flattens it to (b, 1, d), and -- in training only -- zeroes it
-        for `dropout` fraction of samples (modality dropout, not elementwise,
-        so heads can't just always copy this input). Shared by
-        raw_waypoints_key/raw_speed_key; `scale` divides out-of-scale raw
-        physical units (e.g. km/h) down to roughly the rest of the network's
-        unit-scale activations before it's ever concatenated onto `features`.
-        `horizon` (raw_waypoints_key only) keeps just the nearest `horizon`
-        points of the second-to-last axis (b, num_points, 2), dropping the
-        rest before flattening -- None keeps every point, unchanged.
+        `idx`, and -- in training only -- zeroes it for `dropout` fraction of
+        samples (modality dropout, not elementwise, so heads can't just
+        always copy this input). Shared by raw_waypoints_key/raw_speed_key;
+        `scale` divides out-of-scale raw physical units (e.g. km/h) down to
+        roughly the rest of the network's unit-scale activations before it's
+        ever consumed by a head. `horizon` (raw_waypoints_key only) keeps
+        just the nearest `horizon` points of the second-to-last axis (b,
+        num_points, 2), dropping the rest -- None keeps every point,
+        unchanged. `flatten` (default True) reshapes to (b, 1, d) for the
+        concatenation path; `flatten=False` (fusion_pool path) keeps every
+        axis as-is (e.g. (b, num_points, 2), so each point can become its own
+        token) except it still guarantees a trailing feature axis -- a raw
+        scalar-per-tick key like speed (b,) becomes (b, 1), not (b,), so
+        callers can always rely on at least 2 dims.
         """
         x = episode.input.get(key)[:, idx] / scale  # (b, ...)
         if horizon is not None:
             x = x[:, :horizon]
-        flat = x.reshape(x.shape[0], 1, -1)  # (b, 1, d)
+        if flatten:
+            out = x.reshape(x.shape[0], 1, -1)  # (b, 1, d)
+        else:
+            out = x if x.dim() >= 2 else x.unsqueeze(-1)  # (b, ...) with trailing feature axis
         if self.training and dropout > 0.0:
-            keep = (
-                torch.rand(flat.shape[0], 1, 1, device=flat.device) >= dropout
-            ).to(flat.dtype)
-            flat *= keep
-        return flat
+            keep_shape = (out.shape[0],) + (1,) * (out.dim() - 1)
+            keep = (torch.rand(keep_shape, device=out.device) >= dropout).to(out.dtype)
+            out = out * keep
+        return out
 
     def _history_window_slice(self, idx: int, window: int) -> slice:
         """Slice selecting the `window` ticks ending at (and including) tick `idx`.
@@ -571,90 +593,126 @@ class PolicyObjective(Objective):
                 if (self.training and self.action_horizon > 1)
                 else -1
             )
-        embeddings = episode.index[idx].select(*self.feature_keys).parse(embedding)
-
-        parts = [
-            self._pool_feature(k, embeddings.get(k), pool_dict=self.feature_pool)
-            for k in self.feature_keys
-        ]
-
-        if self.raw_feature_keys:
-            # pre-encoder, pre-fusion features (e.g. frozen DINOv3 patch tokens)
-            # read directly off episode.input_embeddings — bypasses whatever the
-            # (also frozen) cross-modal encoder does to them
-            parts += [
-                self._pool_feature(
-                    k,
-                    episode.input_embeddings.get(k)[:, idx],
-                    pool_dict=self.raw_feature_pool,
-                )
-                for k in self.raw_feature_keys
-            ]
-
-        if self.history_feature_keys:
+        if self.fusion_pool is not None:
+            # cross-attention fusion path: build a token per observation_summary
+            # history tick + per raw waypoint + one raw_speed token, and let
+            # fusion_pool's learned query(ies) combine them, instead of pooling
+            # each source to one vector and concatenating (see FeatureFusionPool).
             history_embeddings = (
                 episode.index[self._history_window_slice(idx, self.history_steps)]
-                .select(*self.history_feature_keys)
+                .select((Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY))
                 .parse(embedding)
             )
-            parts += [
-                self._pool_feature(
-                    k,
-                    # (b, t', n, d) -> (b, t'*n, d): t' <= history_steps ticks,
-                    # n tokens/tick for this key (n=1 for most SUMMARY keys).
-                    rearrange(history_embeddings.get(k), "b t n d -> b (t n) d"),
-                    pool_dict=self.history_feature_pool,
-                )
-                for k in self.history_feature_keys
+            obs_summary_history = rearrange(
+                history_embeddings.get((Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)),
+                "b t n d -> b (t n) d",
+            )
+            raw_waypoints = self._raw_dropout_feature(
+                episode,
+                cast("tuple[str, ...]", self.raw_waypoints_key),
+                idx,
+                self.raw_waypoints_dropout,
+                horizon=self.raw_waypoints_horizon,
+                flatten=False,
+            )
+            raw_speed = self._raw_dropout_feature(
+                episode,
+                cast("tuple[str, ...]", self.raw_speed_key),
+                idx,
+                self.raw_speed_dropout,
+                scale=self.speed_scale,
+                flatten=False,
+            )
+            features = self.fusion_pool(
+                obs_summary_history=obs_summary_history,
+                raw_waypoints=raw_waypoints,
+                raw_speed=raw_speed,
+            )
+        else:
+            embeddings = episode.index[idx].select(*self.feature_keys).parse(embedding)
+
+            parts = [
+                self._pool_feature(k, embeddings.get(k), pool_dict=self.feature_pool)
+                for k in self.feature_keys
             ]
 
-        if self.trainable_image_encoder is not None:
-            # independent, trainable vision side-branch: runs on raw pixels from
-            # episode.input, entirely outside episode_builder/encoder, so it trains
-            # off this objective's losses alone without touching the frozen shared
-            # DINOv3+encoder path every other head still relies on
-            pixels = episode.input.get(self.trainable_image_key)[:, idx]
-            patch_tokens = self.trainable_image_encoder(pixels)
-            parts.append(
-                self.trainable_image_pool(patch_tokens)
-                if self.trainable_image_pool is not None
-                else patch_tokens.mean(dim=1, keepdim=True)
-            )
+            if self.raw_feature_keys:
+                # pre-encoder, pre-fusion features (e.g. frozen DINOv3 patch tokens)
+                # read directly off episode.input_embeddings — bypasses whatever the
+                # (also frozen) cross-modal encoder does to them
+                parts += [
+                    self._pool_feature(
+                        k,
+                        episode.input_embeddings.get(k)[:, idx],
+                        pool_dict=self.raw_feature_pool,
+                    )
+                    for k in self.raw_feature_keys
+                ]
 
-        features = rearrange(parts, "i b 1 d -> b 1 (i d)")
+            if self.history_feature_keys:
+                history_embeddings = (
+                    episode.index[self._history_window_slice(idx, self.history_steps)]
+                    .select(*self.history_feature_keys)
+                    .parse(embedding)
+                )
+                parts += [
+                    self._pool_feature(
+                        k,
+                        # (b, t', n, d) -> (b, t'*n, d): t' <= history_steps ticks,
+                        # n tokens/tick for this key (n=1 for most SUMMARY keys).
+                        rearrange(history_embeddings.get(k), "b t n d -> b (t n) d"),
+                        pool_dict=self.history_feature_pool,
+                    )
+                    for k in self.history_feature_keys
+                ]
 
-        if self.raw_waypoints_key is not None:
-            features = torch.cat(
-                [
-                    features,
-                    self._raw_dropout_feature(
-                        episode,
-                        self.raw_waypoints_key,
-                        idx,
-                        self.raw_waypoints_dropout,
-                        horizon=self.raw_waypoints_horizon,
-                    ),
-                ],
-                dim=-1,
-            )
+            if self.trainable_image_encoder is not None:
+                # independent, trainable vision side-branch: runs on raw pixels from
+                # episode.input, entirely outside episode_builder/encoder, so it trains
+                # off this objective's losses alone without touching the frozen shared
+                # DINOv3+encoder path every other head still relies on
+                pixels = episode.input.get(self.trainable_image_key)[:, idx]
+                patch_tokens = self.trainable_image_encoder(pixels)
+                parts.append(
+                    self.trainable_image_pool(patch_tokens)
+                    if self.trainable_image_pool is not None
+                    else patch_tokens.mean(dim=1, keepdim=True)
+                )
 
-        if self.raw_speed_key is not None:
-            features = torch.cat(
-                [
-                    features,
-                    # raw km/h values would dwarf the rest of the network's
-                    # ~unit-scale, LayerNorm'd activations -- normalize the
-                    # same way as speed_head/condition_steering_on_speed
-                    self._raw_dropout_feature(
-                        episode,
-                        self.raw_speed_key,
-                        idx,
-                        self.raw_speed_dropout,
-                        scale=self.speed_scale,
-                    ),
-                ],
-                dim=-1,
-            )
+            features = rearrange(parts, "i b 1 d -> b 1 (i d)")
+
+            if self.raw_waypoints_key is not None:
+                features = torch.cat(
+                    [
+                        features,
+                        self._raw_dropout_feature(
+                            episode,
+                            self.raw_waypoints_key,
+                            idx,
+                            self.raw_waypoints_dropout,
+                            horizon=self.raw_waypoints_horizon,
+                        ),
+                    ],
+                    dim=-1,
+                )
+
+            if self.raw_speed_key is not None:
+                features = torch.cat(
+                    [
+                        features,
+                        # raw km/h values would dwarf the rest of the network's
+                        # ~unit-scale, LayerNorm'd activations -- normalize the
+                        # same way as speed_head/condition_steering_on_speed
+                        self._raw_dropout_feature(
+                            episode,
+                            self.raw_speed_key,
+                            idx,
+                            self.raw_speed_dropout,
+                            scale=self.speed_scale,
+                        ),
+                    ],
+                    dim=-1,
+                )
 
         current_speed: Tensor | None = None
         if self.speed_head is not None or self.condition_steering_on_speed:

@@ -4,7 +4,7 @@ from typing import Any, final, override
 
 import torch
 from einops import rearrange
-from pydantic import validate_call
+from pydantic import InstanceOf, validate_call
 from torch import Tensor, nn
 from torch.nn import Module
 from torch.utils._pytree import MappingKey, PyTree, tree_map  # noqa: PLC2701
@@ -317,3 +317,73 @@ class MLPHead(Module):
     def forward(self, x: Tensor) -> Tensor:
         # x: (b, steps, in_features) -> (b, steps, out_features)
         return self.net(x)
+
+
+@final
+class FeatureFusionPool(Module):
+    """Fuses several heterogeneous feature sources into one pooled vector via
+    cross-attention instead of concatenation.
+
+    Each source contributes one or more `embedding_dim`-wide tokens: the
+    observation-summary history window contributes one (already-embedded)
+    token per tick, tagged with a tick-offset positional embedding; raw
+    waypoints are projected to `embedding_dim` and contribute one token per
+    point, tagged with a point-index positional embedding (necessary, since
+    the shared `waypoint_proj` has no other way to distinguish point order);
+    raw speed contributes a single projected token. Every token also gets a
+    shared per-source-type embedding, so the pool can tell sources apart even
+    where a positional embedding doesn't apply (e.g. the singleton speed
+    token). All tokens are concatenated into one sequence and pooled by
+    `pool` (an `AttentionPoolHead`, optionally with `num_queries>1`); a
+    multi-query `(b, num_queries, d)` output is flattened to `(b, 1,
+    num_queries*d)` so it's a drop-in replacement for a concatenated
+    `features` vector everywhere downstream.
+    """
+
+    _OBS_SUMMARY, _RAW_WAYPOINTS, _RAW_SPEED = range(3)
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        embedding_dim: int,
+        num_waypoints: int,
+        history_steps: int,
+        pool: InstanceOf[Module],
+    ) -> None:
+        super().__init__()
+        self.pool = pool
+        self.waypoint_proj = Linear(2, embedding_dim)
+        self.waypoint_pos_embed = Embedding(num_waypoints, embedding_dim)
+        self.speed_proj = Linear(1, embedding_dim)
+        self.history_pos_embed = Embedding(history_steps, embedding_dim)
+        self.source_type_embed = Embedding(3, embedding_dim)
+
+    @override
+    def forward(
+        self, *, obs_summary_history: Tensor, raw_waypoints: Tensor, raw_speed: Tensor
+    ) -> Tensor:
+        # obs_summary_history: (b, history_steps, d)
+        # raw_waypoints: (b, num_waypoints, 2)
+        # raw_speed: (b, 1)
+        history_ids = torch.arange(obs_summary_history.shape[1], device=obs_summary_history.device)
+        obs_summary_tokens = (
+            obs_summary_history
+            + self.history_pos_embed(history_ids)
+            + self.source_type_embed.weight[self._OBS_SUMMARY]
+        )
+
+        waypoint_ids = torch.arange(raw_waypoints.shape[1], device=raw_waypoints.device)
+        waypoint_tokens = (
+            self.waypoint_proj(raw_waypoints)
+            + self.waypoint_pos_embed(waypoint_ids)
+            + self.source_type_embed.weight[self._RAW_WAYPOINTS]
+        )
+
+        speed_tokens = self.speed_proj(raw_speed).unsqueeze(1) + self.source_type_embed.weight[
+            self._RAW_SPEED
+        ]  # (b, 1, d)
+
+        tokens = torch.cat([obs_summary_tokens, waypoint_tokens, speed_tokens], dim=1)
+        pooled = self.pool(tokens)  # (b, num_queries, d)
+        return rearrange(pooled, "b q d -> b 1 (q d)")

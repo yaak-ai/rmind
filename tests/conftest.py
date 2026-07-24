@@ -32,6 +32,7 @@ from rmind.components.nn import (
     AtLeast3D,
     DiffLast,
     Embedding,
+    FeatureFusionPool,
     GRUHead,
     Identity,
     MLPHead,
@@ -898,6 +899,89 @@ def policy_objective_raw_speed(
         ],
         raw_speed_key=(Modality.CONTINUOUS, "speed"),
         raw_speed_dropout=1.0,
+        heads=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": gru_head(2),
+                    "brake_pedal": gru_head(2),
+                    "steering_angle": gru_head(2),
+                },
+                Modality.DISCRETE: {"turn_signal": gru_head(3)},
+            }
+        ),
+        losses=ModuleDict(
+            modules={
+                Modality.CONTINUOUS: {
+                    "gas_pedal": GaussianNLLLoss(),
+                    "brake_pedal": GaussianNLLLoss(),
+                    "steering_angle": GaussianNLLLoss(),
+                },
+                Modality.DISCRETE: {
+                    "turn_signal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
+                },
+            }
+        ),
+        targets={
+            (modality := Modality.CONTINUOUS): {
+                "gas_pedal": ("input", modality, "gas_pedal"),
+                "brake_pedal": ("input", modality, "brake_pedal"),
+                "steering_angle": ("input", modality, "steering_angle"),
+            },
+            (modality := Modality.DISCRETE): {
+                "turn_signal": ("input", modality, "turn_signal")
+            },
+        },
+    ).to(device)
+
+
+@pytest.fixture(scope="module")
+def policy_objective_with_fusion_pool(
+    device: torch.device, embedding_dims: EmbeddingDims
+) -> PolicyObjective:
+    """Exercises fusion_pool: cross-attention token fusion instead of
+    pool-then-concatenate. Builds one token per observation_summary history
+    tick (history_steps=4) + one per raw waypoint (10, see make_batch's
+    "waypoints/xy_normalized": (b, t, 10, 2)) + one raw_speed token, pooled by
+    a 2-query AttentionPoolHead -> in_features = num_queries * encoder dim.
+    """
+    logit_bias = torch.tensor(0)
+    history_steps = 4
+    action_horizon = 2
+    num_queries = 2
+    in_features = num_queries * embedding_dims.encoder
+
+    def gru_head(out_features: int) -> GRUHead:
+        return GRUHead(
+            in_features=in_features,
+            hidden_size=embedding_dims.encoder,
+            out_features=out_features,
+            num_steps=action_horizon,
+        )
+
+    return PolicyObjective(
+        norm=LayerNorm(embedding_dims.encoder),
+        history_steps=history_steps,
+        action_horizon=action_horizon,
+        raw_waypoints_key=(Modality.CONTEXT, "waypoints"),
+        raw_speed_key=(Modality.CONTINUOUS, "speed"),
+        fusion_pool=FeatureFusionPool(
+            embedding_dim=embedding_dims.encoder,
+            num_waypoints=10,
+            history_steps=history_steps,
+            pool=AttentionPoolHead(
+                decoder=CrossAttentionDecoder(
+                    dim_model=embedding_dims.encoder,
+                    num_layers=1,
+                    num_heads=2,
+                    attn_dropout=0.1,
+                    resid_dropout=0.1,
+                    mlp_dropout=0.1,
+                    hidden_layer_multiplier=1,
+                ),
+                embedding_dim=embedding_dims.encoder,
+                num_queries=num_queries,
+            ),
+        ),
         heads=ModuleDict(
             modules={
                 Modality.CONTINUOUS: {
