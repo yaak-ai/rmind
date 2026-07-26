@@ -43,6 +43,7 @@ class JointPolicyObjective(Objective):
         norm: InstanceOf[Module] | None = None,
         sample_codes: bool = True,
         offset_decoder: InstanceOf[Module] | None = None,
+        offset_raw_features: bool = False,
     ) -> None:
         super().__init__()
 
@@ -60,6 +61,12 @@ class JointPolicyObjective(Objective):
         # gives the offset its own pooling of the same summary tokens, decoupled
         # from the code-optimized feature. None = original shared-feature behavior.
         self.offset_decoder: Module | None = offset_decoder
+        # Alternative to offset_decoder: feed the offset head the RAW flattened
+        # summary tokens (no learned pooling) — the reference (c0f959d) recipe,
+        # which reached ~0.008 with concatenated summaries + an MLP head. Ignored
+        # when offset_decoder is set. offset_head in_features must then be
+        # (n_summary_tokens * d).
+        self.offset_raw_features = offset_raw_features
         self.losses = losses  # {"code": ..., "offset": ...}
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
@@ -106,13 +113,22 @@ class JointPolicyObjective(Objective):
         return self.decoder({"query": query, "context": context}).squeeze(-2)  # (b, d)
 
     def _offset_features(self, episode: Episode, embedding: Tensor) -> Tensor:
-        """Feature the offset head reads: its own pooler if present, else shared."""
-        if self.offset_decoder is None:
-            return self._features(episode, embedding)
-        query, context = self._context(episode, embedding)
-        return self.offset_decoder(
-            {"query": query, "context": context}
-        ).squeeze(-2)  # (b, d)
+        """Feature the offset head reads.
+
+        - offset_decoder set: its own learned cross-attention pooling.
+        - offset_raw_features: the raw flattened summary tokens, no pooling
+          (reference recipe).
+        - neither: the shared code-decoder feature (original behavior).
+        """
+        if self.offset_decoder is not None:
+            query, context = self._context(episode, embedding)
+            return self.offset_decoder(
+                {"query": query, "context": context}
+            ).squeeze(-2)  # (b, d)
+        if self.offset_raw_features:
+            _, context = self._context(episode, embedding)  # (b, n_tokens, d)
+            return context.flatten(-2, -1)  # (b, n_tokens * d)
+        return self._features(episode, embedding)
 
     def _code_logits(self, features: Tensor) -> Tensor:
         quantizer = self.tokenizer.quantizer

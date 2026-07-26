@@ -1,0 +1,20 @@
+---
+# Arm C (reference-faithful): NO offset decoder — feed the offset head the RAW
+# flattened summary tokens (64 observation_summary + 32 observation_history = 96
+# tokens x 384 = 36864) through an MLP, mirroring the c0f959d reference recipe
+# (concatenated summaries + MLP head) that reached offset ~0.008. Tests whether
+# skipping the learned pooling entirely (offset sees the full un-pooled summary
+# features) beats giving it its own pooler (arms A/B). Offset-only freeze.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: yaak/rmind/model-jjwge599:v9
+strict: false
+hparams_jq: |
+  .objectives.modules.policy.offset_raw_features = true
+  | .objectives.modules.policy.offset_head = {
+      "_target_": "torchvision.ops.MLP",
+      "in_channels": 36864,
+      "hidden_channels": [512, 512, 1536]
+    }
+  | .lr_scheduler.scheduler.num_warmup_steps = 500
+  | .lr_scheduler.scheduler.num_training_steps = 15000
+  | .optimizer.lr = 1e-4

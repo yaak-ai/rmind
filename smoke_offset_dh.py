@@ -130,4 +130,19 @@ assert off_grad and oh_grad, (off_grad, oh_grad)
 assert not code_grad and not dec_grad, (code_grad, dec_grad)
 print("[freeze] offset-loss grad reaches offset_decoder+offset_head only (code/decoder frozen): OK")
 
+# reference-faithful arm: raw flattened summaries (no decoder) + MLP
+NT = 96  # 64 obs_summary + 32 obs_history tokens
+obj_raw = JointPolicyObjective(
+    tokenizer=Tok(), decoder=Pooler("code"), code_head=nn.Linear(D, G * C),
+    offset_head=nn.Sequential(nn.Linear(NT * D, 512), nn.GELU(), nn.Linear(512, G * C * ADIM)),
+    losses=RModuleDict(modules={"code": nn.CrossEntropyLoss(), "offset": nn.L1Loss()}),
+    chunk=("input", "joint_actions"), norm=nn.LayerNorm(D), sample_codes=False,
+    offset_decoder=None, offset_raw_features=True,
+)
+of_raw = obj_raw._offset_features(ep, emb)
+assert of_raw.shape == (B, NT * D), of_raw.shape
+m_raw = obj_raw.compute_metrics(episode=ep, embedding=emb)
+assert set(m_raw["loss"]) == {"code_0", "code_1", "code_2", "code_3", "offset"}
+print(f"[raw] offset_features {tuple(of_raw.shape)} (no decoder), compute_metrics OK")
+
 print("\nALL SMOKE CHECKS PASSED")
