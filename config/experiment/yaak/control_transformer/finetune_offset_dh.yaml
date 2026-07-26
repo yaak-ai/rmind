@@ -1,0 +1,28 @@
+# @package _global_
+# Offset-only continue-FT from young-dew-495 (jjwge599:v9): give the offset head
+# its own cross-attention pooler, freeze everything else. Arm A (Linear head) is
+# the default model; override model=yaak/control_transformer/offset_dh_mlp for arm B.
+defaults:
+  - /model: yaak/control_transformer/offset_dh_linear
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: finetune_offset_dh
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+encoder_embedding_dim: 384
+
+episode_length: 6
+action_horizon: 6
+episode_step: 10
+episode_stride: 10
+
+clip_horizon: 6
+clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
+clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
+dct_step: 2
+clip_frames: "${eval:'${clip_length} * ${episode_step} // ${dct_step}'}"
+episode_ds_step: "${eval:'${episode_step} // ${dct_step}'}"
+
+action_tokenizer_artifact: yaak/rmind/model-q3pli69o:v9

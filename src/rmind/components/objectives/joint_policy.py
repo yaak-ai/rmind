@@ -42,6 +42,7 @@ class JointPolicyObjective(Objective):
         chunk: Path,
         norm: InstanceOf[Module] | None = None,
         sample_codes: bool = True,
+        offset_decoder: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -52,6 +53,13 @@ class JointPolicyObjective(Objective):
         self.offset_head = (
             offset_head  # features -> (G*C*action_dim): offset per (quantizer, code)
         )
+        # Optional dedicated cross-attention pooler for the offset head. The
+        # shared `decoder` feature is dominated by the (much larger) code losses,
+        # so a single offset head reading it regresses sub-cell residuals toward
+        # their per-code median (elevated offset loss). A separate `offset_decoder`
+        # gives the offset its own pooling of the same summary tokens, decoupled
+        # from the code-optimized feature. None = original shared-feature behavior.
+        self.offset_decoder: Module | None = offset_decoder
         self.losses = losses  # {"code": ..., "offset": ...}
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
@@ -65,7 +73,8 @@ class JointPolicyObjective(Objective):
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
         features = self._features(episode, embedding)
-        _, codes, offset = self._predict(features)
+        offset_features = self._offset_features(episode, embedding)
+        _, codes, offset = self._predict(features, offset_features)
 
         chunk = (self.tokenizer.invert(codes) + offset).unflatten(
             -1,
@@ -73,7 +82,8 @@ class JointPolicyObjective(Objective):
         )
         return TensorDict({"joint_actions": chunk})
 
-    def _features(self, episode: Episode, embedding: Tensor) -> Tensor:
+    def _context(self, episode: Episode, embedding: Tensor) -> tuple[Tensor, Tensor]:
+        """Cross-attention (query, context) shared by the code + offset poolers."""
         if self.norm is not None:
             embedding = self.norm(embedding)
 
@@ -86,18 +96,50 @@ class JointPolicyObjective(Objective):
         context = torch.cat(
             [observation_summary, observation_history], dim=-2
         )  # (b, 96, d)
-        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[
+        query = episode.embeddings.get((Modality.UTILITY, "mask"))[
             :, -1, [3]
         ]  # (b, 1, d)
-        return self.decoder({"query": mask, "context": context}).squeeze(-2)  # (b, d)
+        return query, context
 
-    def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        """VQ-BeT joint code prediction with a code-conditioned offset."""
+    def _features(self, episode: Episode, embedding: Tensor) -> Tensor:
+        query, context = self._context(episode, embedding)
+        return self.decoder({"query": query, "context": context}).squeeze(-2)  # (b, d)
+
+    def _offset_features(self, episode: Episode, embedding: Tensor) -> Tensor:
+        """Feature the offset head reads: its own pooler if present, else shared."""
+        if self.offset_decoder is None:
+            return self._features(episode, embedding)
+        query, context = self._context(episode, embedding)
+        return self.offset_decoder(
+            {"query": query, "context": context}
+        ).squeeze(-2)  # (b, d)
+
+    def _code_logits(self, features: Tensor) -> Tensor:
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
+        return rearrange(self.code_head(features), "b (g c) -> b g c", g=g, c=c)
 
-        code_logits = rearrange(self.code_head(features), "b (g c) -> b g c", g=g, c=c)
+    def _offsets(self, offset_features: Tensor) -> Tensor:
+        quantizer = self.tokenizer.quantizer
+        g, c = quantizer.num_quantizers, quantizer.codebook_size
+        return rearrange(
+            self.offset_head(offset_features), "b (g c a) -> b g c a", g=g, c=c
+        )
+
+    @staticmethod
+    def _gather_offset(offsets: Tensor, codes: Tensor) -> Tensor:
+        """Select each quantizer's offset at `codes` and sum over quantizers."""
+        index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
+        # https://arxiv.org/pdf/2403.03181 Figure 2.
+        return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
+
+    def _predict(
+        self, features: Tensor, offset_features: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """VQ-BeT joint code prediction with a code-conditioned offset."""
+        code_logits = self._code_logits(features)
         if self.sample_codes:
+            _, g, c = code_logits.shape
             codes = rearrange(
                 torch.multinomial(code_logits.softmax(dim=-1).reshape(-1, c), 1),
                 "(b g) 1 -> b g",
@@ -106,29 +148,13 @@ class JointPolicyObjective(Objective):
         else:
             codes = code_logits.argmax(dim=-1)
 
-        offsets = rearrange(
-            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
-        )
-        index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
-        # https://arxiv.org/pdf/2403.03181 Figure 2.
-        offset = offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
-
+        offset = self._gather_offset(self._offsets(offset_features), codes)
         return code_logits, codes, offset
-
-    def _gather_offset(self, features: Tensor, codes: Tensor) -> Tensor:
-        """Select each quantizer's offset at `codes` and sum over quantizers."""
-        quantizer = self.tokenizer.quantizer
-        g, c = quantizer.num_quantizers, quantizer.codebook_size
-        offsets = rearrange(
-            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
-        )
-        index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
-        # https://arxiv.org/pdf/2403.03181 Figure 2.
-        return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         features = self._features(episode, embedding)  # (b, feature_dim)
+        offset_features = self._offset_features(episode, embedding)  # (b, feature_dim)
         tokenizer = self.tokenizer
 
         with torch.no_grad():
@@ -138,7 +164,7 @@ class JointPolicyObjective(Objective):
                 chunk.flatten(-2, -1)
             )  # (b, action_dim): the GT action chunk the policy must reconstruct
 
-        code_logits, _, _ = self._predict(features)
+        code_logits = self._code_logits(features)
 
         losses: dict[str, Tensor] = {}
 
@@ -148,11 +174,12 @@ class JointPolicyObjective(Objective):
                 code_logits[:, q, :], target_codes[:, q]
             )
 
-        # reconstruct the chunk as inference does (decode sampled codes + code-conditioned
-        # offset); the frozen tokenizer makes invert(codes) gradient-free, so this term
-        # trains only the offset head
+        # teacher-forced offset: gather at the GROUND-TRUTH codes so the offset
+        # learns each cell's true residual (never the sampled-code median). The
+        # frozen tokenizer makes invert(codes) gradient-free, so this term trains
+        # only the offset head (+ offset_decoder if present).
         predicted_chunk = tokenizer.invert(target_codes) + self._gather_offset(
-            features, target_codes
+            self._offsets(offset_features), target_codes
         )
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
@@ -193,7 +220,8 @@ class JointPolicyObjective(Objective):
 
         if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
             features = self._features(episode, embedding)
-            _, codes, offset = self._predict(features)
+            offset_features = self._offset_features(episode, embedding)
+            _, codes, offset = self._predict(features, offset_features)
 
             chunk = (tokenizer.invert(codes) + offset).unflatten(
                 -1, (-1, action_space)

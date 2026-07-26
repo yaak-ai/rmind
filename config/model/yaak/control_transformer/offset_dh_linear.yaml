@@ -1,0 +1,15 @@
+---
+# Offset-only continue-FT from young-dew-495 (jjwge599:v9), giving the offset its
+# OWN cross-attention pooler (offset_decoder = a fresh copy of the code decoder's
+# arch) instead of reading the code-optimized shared feature. Everything but the
+# offset branch is frozen (see callbacks/finetune_offset_dh). Arm A: keep the
+# reference Linear(384->1536) offset head (matches the runs that reach ~0.008).
+# Short LR schedule since only the small offset branch trains on frozen features.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: yaak/rmind/model-jjwge599:v9
+strict: false
+hparams_jq: |
+  .objectives.modules.policy.offset_decoder = .objectives.modules.policy.decoder
+  | .lr_scheduler.scheduler.num_warmup_steps = 500
+  | .lr_scheduler.scheduler.num_training_steps = 15000
+  | .optimizer.lr = 1e-4

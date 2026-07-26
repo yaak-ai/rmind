@@ -1,0 +1,18 @@
+---
+# Arm B of the offset A/B: same dedicated offset_decoder as offset_dh_linear, but
+# swap the offset head for a small MLP (capacity probe). Fresh under strict=False
+# (the checkpoint's Linear offset_head keys don't match the MLP). Tests whether
+# head capacity buys anything once the offset has its own feature path.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: yaak/rmind/model-jjwge599:v9
+strict: false
+hparams_jq: |
+  .objectives.modules.policy.offset_decoder = .objectives.modules.policy.decoder
+  | .objectives.modules.policy.offset_head = {
+      "_target_": "torchvision.ops.MLP",
+      "in_channels": 384,
+      "hidden_channels": [512, 512, 1536]
+    }
+  | .lr_scheduler.scheduler.num_warmup_steps = 500
+  | .lr_scheduler.scheduler.num_training_steps = 15000
+  | .optimizer.lr = 1e-4
