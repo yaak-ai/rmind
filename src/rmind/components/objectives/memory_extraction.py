@@ -42,7 +42,9 @@ class MemoryExtractionObjective(Objective):
         self.targets: Targets | None = targets
 
     @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+    def compute_metrics(
+        self, *, episode: Episode, embedding: Tensor, **_kwargs: Any
+    ) -> Metrics:
         if self.norm is not None:
             embedding = self.norm(embedding)
 

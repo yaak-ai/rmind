@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import final, override
+from typing import Any, final, override
 
 import torch
 import torch.nn.functional as F
@@ -41,7 +41,9 @@ class InverseDynamicsPredictionObjective(Objective):
         self.targets: Targets | None = targets
 
     @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+    def compute_metrics(
+        self, *, episode: Episode, embedding: Tensor, **_kwargs: Any
+    ) -> Metrics:
         if self.norm is not None:
             embedding = self.norm(embedding)
 
@@ -76,6 +78,7 @@ class InverseDynamicsPredictionObjective(Objective):
         embedding: Tensor,
         keys: AbstractSet[ObjectivePredictionKey],
         tokenizers: ModuleDict | None = None,
+        **_kwargs: Any,
     ) -> TensorDict:
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size

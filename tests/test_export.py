@@ -4,24 +4,22 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from pytest_lazy_fixtures import lf
 from torch import Tensor
-from torch.nn import LayerNorm, Module
+from torch.nn import Module
 from torch.testing import assert_close
-from torch.utils._pytree import (  # noqa: PLC2701
-    keystr,
-    tree_flatten_with_path,
-    tree_map,
-)
-from torchvision.ops import MLP
+from torch.utils._pytree import keystr, tree_flatten_with_path  # noqa: PLC2701
 
 from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder
+from rmind.components.loss import FlowMatchingLoss
 from rmind.components.objectives.policy import PolicyObjective
+from rmind.components.transformer import FlowActionDecoder
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from tests.conftest import EmbeddingDims
 
 
@@ -57,82 +55,6 @@ def episode_export(
         return episode_builder(batch_dict)
 
 
-@pytest.fixture
-def policy_objective(
-    device: torch.device, request: pytest.FixtureRequest
-) -> PolicyObjective:
-    embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
-
-    return PolicyObjective(
-        norm=LayerNorm(embedding_dims.encoder),
-        heads=ModuleDict(
-            modules={
-                Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(
-                        3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
-                        bias=False,
-                    ),
-                    "brake_pedal": MLP(
-                        3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
-                        bias=False,
-                    ),
-                    "steering_angle": MLP(
-                        3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
-                        bias=False,
-                    ),
-                },
-                Modality.DISCRETE: {
-                    "turn_signal": MLP(
-                        3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 3],
-                        bias=False,
-                    )
-                },
-            }
-        ),
-    ).to(device)
-
-
-@pytest.fixture
-def encoder_eval(encoder: Module) -> Module:
-    return encoder.eval()
-
-
-@pytest.fixture
-def policy_embedding(encoder_eval: Module, episode: Episode) -> Tensor:
-    return encoder_eval(src=episode.embeddings_flattened, mask=episode.attention_mask)
-
-
-@pytest.fixture
-def policy_embedding_export(encoder_eval: Module, episode_export: Episode) -> Tensor:
-    return encoder_eval(
-        src=episode_export.embeddings_flattened, mask=episode_export.attention_mask
-    )
-
-
-@pytest.fixture
-def objectives(policy_objective: Module, device: torch.device) -> ModuleDict:
-    return ModuleDict({"policy": policy_objective}).to(device)
-
-
-@pytest.fixture
-def control_transformer(
-    episode_builder: Module,
-    objectives: ModuleDict,
-    encoder: Module,
-    device: torch.device,
-) -> ControlTransformer:
-    return ControlTransformer(
-        episode_builder=episode_builder,
-        encoder=encoder,
-        objectives=objectives,
-        prediction_config=PredictionConfig(),
-    ).to(device)
-
-
 def test_episode(episode: Episode, episode_export: Episode) -> None:
     assert_close(episode, episode_export)
 
@@ -157,36 +79,23 @@ def _no_tf32_matmul() -> Generator[None, Any, None]:
     torch.set_float32_matmul_precision(prev)
 
 
-@pytest.mark.parametrize(
-    ("module", "args", "args_export"),
-    [
-        (lf("episode_builder"), (lf("batch_dict"),), (lf("batch_dict"),)),
-        (
-            lf("policy_objective"),
-            (lf("episode"), lf("policy_embedding")),
-            (lf("episode_export"), lf("policy_embedding_export")),
-        ),
-        (lf("control_transformer"), (lf("batch_dict"),), (lf("batch_dict"),)),
-    ],
-    ids=["episode_builder", "policy_objective", "control_transformer"],
-)
 @pytest.mark.usefixtures("_no_tf32_matmul")
 @torch.inference_mode()
 def test_torch_export_fake(
-    module: Module,
-    args: tuple[Any],
-    args_export: tuple[Any],
+    episode_builder: EpisodeBuilder,
+    batch_dict: TensorTree,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = module.eval()
+    """The episode builder's output is invariant to torch.compiler.is_exporting()."""
+    module = episode_builder.eval()
 
-    module_output = module(*args)
+    module_output = module(batch_dict)
     module_output_items, _ = tree_flatten_with_path(module_output)
 
     with monkeypatch.context() as m:
         m.setattr("torch.compiler._is_exporting_flag", True)
         # so we can breakpoint() inside export code paths
-        module_export_output = module(*args_export)
+        module_export_output = module(batch_dict)
 
     module_export_output_items, _ = tree_flatten_with_path(module_export_output)
 
@@ -195,13 +104,6 @@ def test_torch_export_fake(
     ):
         if not isinstance(expected, Tensor):
             continue
-
-        match expected, actual:
-            case (Tensor(shape=[]), int() | float()):
-                expected = expected.item()  # noqa: PLW2901
-
-            case _:
-                pass
 
         assert_close(
             actual,
@@ -231,90 +133,160 @@ def test_episode_builder_warms_attention_mask_cache(
         _ = episode_builder(batch_dict)
 
 
-@pytest.mark.parametrize(
-    ("module", "args"),
-    [
-        (lf("episode_builder"), (lf("batch_dict"),)),
-        (lf("policy_objective"), (lf("episode_export"), lf("policy_embedding_export"))),
-        (lf("control_transformer"), (lf("batch_dict"),)),
-    ],
-    ids=["episode_builder", "policy_objective", "control_transformer"],
+@torch.inference_mode()
+def test_torch_export(episode_builder: EpisodeBuilder, batch_dict: TensorTree) -> None:
+    module = episode_builder.eval()
+    module(batch_dict)  # warm internal caches (e.g. attention mask) before export
+    torch.export.export(module, args=(batch_dict,), strict=True)
+
+
+_FLOW_ACTION_TARGETS = {
+    "gas_pedal": ("data", "meta/VehicleMotion/gas_pedal_normalized_target"),
+    "brake_pedal": ("data", "meta/VehicleMotion/brake_pedal_normalized_target"),
+    "steering_angle": ("data", "meta/VehicleMotion/steering_angle_normalized_target"),
+}
+_FLOW_CONDITION_TOKENS = (
+    (Modality.SUMMARY, "observation_summary"),
+    (Modality.SUMMARY, "observation_history"),
+    (Modality.CONTEXT, "waypoints"),
 )
-@torch.inference_mode()
-def test_torch_export(module: Module, args: tuple[Any]) -> None:
-    module = module.eval()
-    module(*args)  # warm internal caches (e.g. attention mask) before export
-    torch.export.export(module, args=args, strict=True)
+
+
+@pytest.fixture
+def flow_control_transformer(
+    episode_builder: EpisodeBuilder,
+    encoder: Module,
+    device: torch.device,
+    request: pytest.FixtureRequest,
+) -> ControlTransformer:
+    """A ControlTransformer whose sole objective is the flow PolicyObjective,
+    wired to the shared episode builder + encoder (dims must line up)."""
+    embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
+    objective = PolicyObjective(
+        history_steps=1,
+        targets=_FLOW_ACTION_TARGETS,
+        condition_tokens=_FLOW_CONDITION_TOKENS,
+        loss=FlowMatchingLoss(),
+        decoder=FlowActionDecoder(
+            condition_dim=embedding_dims.encoder,
+            dim_model=32,
+            action_dim=3,
+            action_horizon=6,
+            flow_sampling_steps=2,
+            num_layers=1,
+            num_heads=2,
+            attn_dropout=0.0,
+            resid_dropout=0.0,
+            mlp_dropout=0.0,
+        ),
+    )
+    return ControlTransformer(
+        episode_builder=episode_builder,
+        encoder=encoder,
+        objectives=ModuleDict({"policy": objective}),
+        prediction_config=PredictionConfig(),
+    ).to(device)
 
 
 @torch.inference_mode()
-def test_torch_export_dynamic_shapes(
-    control_transformer: ControlTransformer, batch_dict: TensorTree
+def test_exportable_control_policy_full_pipeline(
+    flow_control_transformer: ControlTransformer, batch_dict: TensorTree
 ) -> None:
-    """Dynamic-shape export works with the tensordict#1003 patch applied."""
-    from rmind.utils.tensordict_export_patch import apply  # noqa: PLC0415
+    """The edge-deployment graph — raw sensor batch (+ noise) -> action draws,
+    with episode builder + encoder + flow tail in one module — torch.exports
+    cleanly, keeps the winner-take-all readout out of the graph, and the
+    exported program matches eager."""
+    exportable = flow_control_transformer.eval().exportable_policy().eval()
 
-    apply()
-    module = control_transformer.eval()
-    module(batch_dict)  # warm caches
-    batch_dim = torch.export.Dim("batch", min=1)
-    dynamic_shapes = (tree_map(lambda _: {0: batch_dim}, batch_dict),)
-    torch.export.export(
-        module, args=(batch_dict,), dynamic_shapes=dynamic_shapes, strict=True
+    b = batch_dict["data"]["meta/VehicleMotion/speed"].shape[0]
+    k = 4
+    noise = torch.randn(
+        b, k, 6, 3, device=batch_dict["data"]["waypoints/xy_normalized"].device
     )
 
+    eager = exportable(batch_dict, noise)  # also warms the attention-mask cache
+    assert eager.shape == (b, k, 6, 3)
 
-@pytest.mark.parametrize(
-    ("module", "args"),
-    [(lf("control_transformer"), (lf("batch_dict"),))],
-    ids=["control_transformer"],
-)
-@torch.inference_mode()
-def test_onnx_export(module: Module, args: tuple[Any]) -> None:
-    module = module.eval()
-    exported_program = torch.export.export(module, args=args, strict=True)
-    program = torch.onnx.export(
-        model=exported_program,
-        external_data=False,
-        dynamo=True,
-        optimize=True,
-        verify=True,
+    program = torch.export.export(exportable, (batch_dict, noise), strict=True)
+
+    # the readout's data-dependent ops must stay host-side, not leak into the graph
+    targets = {str(n.target) for n in program.graph.nodes if n.op == "call_function"}
+    assert not [t for t in targets if "sort" in t or "nonzero" in t], (
+        "winner-take-all readout leaked into the export graph"
     )
 
-    assert program is not None
+    exported = program.module()(batch_dict, noise)
+    assert_close(exported, eager, rtol=1e-2, atol=1e-3)
 
 
-@pytest.mark.parametrize(
-    ("module", "args"),
-    [(lf("control_transformer"), (lf("batch_dict"),))],
-    ids=["control_transformer"],
-)
 @torch.inference_mode()
-def test_onnx_inference(module: Module, args: tuple[Any]) -> None:
-    """ORT inference on the exported ONNX model must match PyTorch eager numerically."""
-    module = module.eval()
+def test_exportable_control_policy_onnx(
+    flow_control_transformer: ControlTransformer, batch_dict: TensorTree
+) -> None:
+    """The full policy pipeline lowers to ONNX and ORT matches PyTorch eager —
+    the exact artifact `flow_export.py --full` produces for the edge device."""
+    exportable = flow_control_transformer.eval().exportable_policy().eval()
 
-    eager_output = module(*args)
-    eager_leaves, _ = tree_flatten_with_path(eager_output)
+    b = batch_dict["data"]["meta/VehicleMotion/speed"].shape[0]
+    noise = torch.randn(
+        b, 4, 6, 3, device=batch_dict["data"]["waypoints/xy_normalized"].device
+    )
 
-    exported_program = torch.export.export(module, args=args, strict=True)
+    eager = exportable(batch_dict, noise)  # warms the attention-mask cache
+
+    exported_program = torch.export.export(exportable, (batch_dict, noise), strict=True)
     onnx_program = torch.onnx.export(
         model=exported_program,
-        external_data=False,
         dynamo=True,
         optimize=True,
         verify=False,
+        output_names=["action_draws"],
     )
     assert onnx_program is not None
 
-    onnx_output = onnx_program(*args)
-    onnx_leaves, _ = tree_flatten_with_path(onnx_output)
+    (onnx_draws,) = onnx_program(batch_dict, noise)
+    assert_close(
+        torch.as_tensor(onnx_draws).float(), eager.cpu().float(), rtol=1e-2, atol=1e-3
+    )
 
-    for (kp, expected), (_, actual) in zip(eager_leaves, onnx_leaves, strict=True):
-        assert_close(
-            torch.as_tensor(actual).float(),
-            expected.cpu().float(),
-            rtol=1e-2,
-            atol=1e-3,
-            msg=lambda msg, kp=kp: f"{msg}\nkeypath: {keystr(kp)}",
-        )
+
+@torch.inference_mode()
+def test_flow_export_compare_matches_saved_onnx(
+    flow_control_transformer: ControlTransformer,
+    batch_dict: TensorTree,
+    tmp_path: "Path",
+) -> None:
+    """The comparator's saved-file round-trip: export to a .onnx on disk with the
+    shared `input_names`, reload it through drahve's `OnnxInferenceBackend`, feed
+    by name, and confirm ORT matches eager. Guards the on-disk artifact and the
+    name-based input contract the edge host relies on."""
+    from rmind.inference.backends import OnnxInferenceBackend  # noqa: PLC0415
+    from rmind.scripts.flow_export import input_names  # noqa: PLC0415
+    from rmind.scripts.flow_export_compare import build_feed  # noqa: PLC0415
+
+    exportable = flow_control_transformer.eval().exportable_policy().eval()
+
+    b = batch_dict["data"]["meta/VehicleMotion/speed"].shape[0]
+    noise = torch.randn(
+        b, 4, 6, 3, device=batch_dict["data"]["waypoints/xy_normalized"].device
+    )
+    example_args = (batch_dict, noise)
+
+    eager = exportable(*example_args)  # warms the attention-mask cache
+
+    exported_program = torch.export.export(exportable, example_args, strict=True)
+    onnx_path = tmp_path / "policy_full.onnx"
+    torch.onnx.export(
+        model=exported_program,
+        f=str(onnx_path),
+        dynamo=True,
+        optimize=False,
+        verify=False,
+        input_names=input_names(example_args),
+        output_names=["action_draws"],
+    )
+
+    backend = OnnxInferenceBackend(path=onnx_path, providers=["CPUExecutionProvider"])
+    backend.on_predict_start()
+    onnx_draws = backend.forward(build_feed(onnx_path, example_args))["action_draws"]
+    assert_close(onnx_draws.float(), eager.cpu().float(), rtol=1e-2, atol=1e-3)

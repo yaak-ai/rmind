@@ -10,3 +10,6 @@ defaults:
   - _self_
 
 encoder_embedding_dim: 384
+history_steps: 6
+action_horizon: 6
+sequence_length: ${add:${history_steps},${action_horizon}}

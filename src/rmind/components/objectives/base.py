@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from collections.abc import Set as AbstractSet
 from enum import StrEnum, auto, unique
-from typing import Any, Never, NotRequired, TypedDict
+from typing import Any, Never
 
 from tensordict import TensorClass, TensorDict
 from torch import Tensor
@@ -19,7 +19,6 @@ type Targets = Mapping[Modality, Mapping[str, tuple[str, ...]]]
 @unique
 class ObjectivePredictionKey(StrEnum):
     PREDICTION_VALUE = auto()
-    PREDICTION_STD = auto()
     PREDICTION_PROBS = auto()
     SCORE_LOGPROB = auto()
     SCORE_L1 = auto()
@@ -38,9 +37,7 @@ class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]
     time_index: Tensor | None = None  # for timestep-wise sparse values
 
 
-class Metrics(TypedDict):
-    loss: TensorTree | None
-    _artifacts: NotRequired[TensorTree]
+type Metrics = MutableMapping[str, TensorTree | Tensor | None]
 
 
 def _not_implemented(*_args: Any, **_kwargs: Any) -> Never:
@@ -63,7 +60,9 @@ class Objective(Module, ABC):
         return getattr(self, name)
 
     @abstractmethod
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics: ...
+    def compute_metrics(
+        self, *, episode: Episode, embedding: Tensor, **kwargs: Any
+    ) -> Metrics: ...
 
     @abstractmethod
     def predict(
@@ -73,4 +72,5 @@ class Objective(Module, ABC):
         embedding: Tensor,
         keys: AbstractSet[ObjectivePredictionKey],
         tokenizers: ModuleDict | None = None,
+        **kwargs: Any,
     ) -> TensorDict: ...

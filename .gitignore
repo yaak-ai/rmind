@@ -157,8 +157,17 @@ CLAUDE.md
 # artifacts
 inference_results/
 .rbyte_cache
+*.onnx
+*.pt2
 
 .dprint.json
 
 # env
 .direnv
+/.claude
+/report
+/reports
+/screenshots
+/pedal_copress_dist.png
+/sine_plot.png
+/wandb/run-20260622_124202-catfl8nl/files/media/images

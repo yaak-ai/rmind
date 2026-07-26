@@ -10,7 +10,6 @@ from rbyte.types import Batch
 from tensordict import TensorDict
 from torch.nn import LayerNorm, Linear, Module
 from torch.testing import make_tensor
-from torchvision.ops import MLP
 from torchvision.transforms.v2 import CenterCrop, Normalize, Resize, ToDtype
 
 from rmind.components.base import (
@@ -22,11 +21,7 @@ from rmind.components.base import (
 )
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode, EpisodeBuilder
-from rmind.components.loss import (
-    GaussianNLLLoss,
-    GramAnchoringLoss,
-    LogitBiasCrossEntropyLoss,
-)
+from rmind.components.loss import GramAnchoringLoss, LogitBiasCrossEntropyLoss
 from rmind.components.mask import FactorizedCausalAttentionMaskBuilder
 from rmind.components.nn import (
     AtLeast3D,
@@ -41,7 +36,6 @@ from rmind.components.objectives import (
     ForwardDynamicsPredictionObjective,
     InverseDynamicsPredictionObjective,
     MemoryExtractionObjective,
-    PolicyObjective,
 )
 from rmind.components.position_encoding import (
     PatchPositionEmbedding2D,
@@ -562,67 +556,6 @@ def memory_extraction_objective(
     ).to(device)
 
 
-@pytest.fixture(scope="module")
-def policy_objective(
-    device: torch.device, embedding_dims: EmbeddingDims
-) -> PolicyObjective:
-    logit_bias = torch.tensor(0)
-
-    return PolicyObjective(
-        norm=LayerNorm(embedding_dims.encoder),
-        heads=ModuleDict(
-            modules={
-                Modality.CONTINUOUS: {
-                    "gas_pedal": MLP(
-                        3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
-                        bias=False,
-                    ),
-                    "brake_pedal": MLP(
-                        3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
-                        bias=False,
-                    ),
-                    "steering_angle": MLP(
-                        3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 2],
-                        bias=False,
-                    ),
-                },
-                Modality.DISCRETE: {
-                    "turn_signal": MLP(
-                        3 * embedding_dims.encoder,
-                        [embedding_dims.encoder, 3],
-                        bias=False,
-                    )
-                },
-            }
-        ),
-        losses=ModuleDict(
-            modules={
-                Modality.CONTINUOUS: {
-                    "gas_pedal": GaussianNLLLoss(),
-                    "brake_pedal": GaussianNLLLoss(),
-                    "steering_angle": GaussianNLLLoss(),
-                },
-                Modality.DISCRETE: {
-                    "turn_signal": LogitBiasCrossEntropyLoss(logit_bias=logit_bias)
-                },
-            }
-        ),
-        targets={
-            (modality := Modality.CONTINUOUS): {
-                "gas_pedal": ("input", modality, "gas_pedal"),
-                "brake_pedal": ("input", modality, "brake_pedal"),
-                "steering_angle": ("input", modality, "steering_angle"),
-            },
-            (modality := Modality.DISCRETE): {
-                "turn_signal": ("input", modality, "turn_signal")
-            },
-        },
-    ).to(device)
-
-
 @dataclass
 class SnapshotModules:
     model: ControlTransformer
@@ -1027,61 +960,6 @@ def build_snapshot_modules(
                                     "steering_angle_diff",
                                 ),
                             }
-                        },
-                    ).to(device),
-                    "policy_objective": PolicyObjective(
-                        norm=LayerNorm(embedding_dims.encoder),
-                        heads=ModuleDict(
-                            modules={
-                                Modality.CONTINUOUS: {
-                                    "gas_pedal": MLP(
-                                        3 * embedding_dims.encoder,
-                                        [embedding_dims.encoder, 2],
-                                        bias=False,
-                                    ),
-                                    "brake_pedal": MLP(
-                                        3 * embedding_dims.encoder,
-                                        [embedding_dims.encoder, 2],
-                                        bias=False,
-                                    ),
-                                    "steering_angle": MLP(
-                                        3 * embedding_dims.encoder,
-                                        [embedding_dims.encoder, 2],
-                                        bias=False,
-                                    ),
-                                },
-                                Modality.DISCRETE: {
-                                    "turn_signal": MLP(
-                                        3 * embedding_dims.encoder,
-                                        [embedding_dims.encoder, 3],
-                                        bias=False,
-                                    )
-                                },
-                            }
-                        ),
-                        losses=ModuleDict(
-                            modules={
-                                Modality.CONTINUOUS: {
-                                    "gas_pedal": GaussianNLLLoss(),
-                                    "brake_pedal": GaussianNLLLoss(),
-                                    "steering_angle": GaussianNLLLoss(),
-                                },
-                                Modality.DISCRETE: {
-                                    "turn_signal": LogitBiasCrossEntropyLoss(
-                                        logit_bias=logit_bias
-                                    )
-                                },
-                            }
-                        ),
-                        targets={
-                            (m := Modality.CONTINUOUS): {
-                                "gas_pedal": ("input", m, "gas_pedal"),
-                                "brake_pedal": ("input", m, "brake_pedal"),
-                                "steering_angle": ("input", m, "steering_angle"),
-                            },
-                            (m := Modality.DISCRETE): {
-                                "turn_signal": ("input", m, "turn_signal")
-                            },
                         },
                     ).to(device),
                 }

@@ -21,7 +21,6 @@ from rmind.components.objectives import (
     ForwardDynamicsPredictionObjective,
     InverseDynamicsPredictionObjective,
     MemoryExtractionObjective,
-    PolicyObjective,
 )
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
@@ -92,13 +91,11 @@ def objectives(
     inverse_dynamics_prediction_objective: InverseDynamicsPredictionObjective,
     forward_dynamics_prediction_objective: ForwardDynamicsPredictionObjective,
     memory_extraction_objective: MemoryExtractionObjective,
-    policy_objective: PolicyObjective,
 ) -> ModuleDict:
     return ModuleDict({
         "inverse_dynamics": inverse_dynamics_prediction_objective,
         "forward_dynamics": forward_dynamics_prediction_objective,
         "memory_extraction": memory_extraction_objective,
-        "policy_objective": policy_objective,
     })
 
 
@@ -181,11 +178,11 @@ def test_predict(
             raise AssertionError(msg)
 
     match prediction.to_dict():
-        case {"policy_objective": {"ground_truth": _}}:
+        case {"inverse_dynamics": {"ground_truth": _}}:
             pass
 
         case _:
-            msg = "missing `policy_objective.ground_truth` in prediction output"
+            msg = "missing `inverse_dynamics.ground_truth` in prediction output"
             raise AssertionError(msg)
 
 

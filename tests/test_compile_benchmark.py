@@ -14,6 +14,7 @@ and prints a summary table. The assertion only guards against severe regression
 
 import copy
 import time
+from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -31,6 +32,20 @@ N_WARMUP = 3
 N_BENCH = 10
 
 COMPILE_BACKENDS = ("inductor", "cudagraphs", "aot_eager")
+
+
+@pytest.fixture(autouse=True)
+def _reset_compile_state() -> Generator[None]:
+    """Reset torch.compile / dynamo global state after each benchmark.
+
+    These tests populate dynamo's global compiled-graph cache; left in place it
+    can corrupt unrelated later tests (e.g. checkpoint-resume hits a stale
+    inductor graph -> "Node ... was invalid, but is output"). This cross-test
+    leak was previously masked by test_export.py resetting dynamo in between;
+    the polluter now cleans up after itself.
+    """
+    yield
+    torch._dynamo.reset()  # noqa: SLF001
 
 
 def _probe(backend: str) -> bool:
@@ -100,8 +115,14 @@ def _time_encoder_steps(  # noqa: PLR0913
 
 
 @pytest.fixture(scope="module")
-def objectives(policy_objective: Any, device: torch.device) -> ModuleDict:
-    return ModuleDict({"policy": policy_objective}).to(device)
+def objectives(
+    inverse_dynamics_prediction_objective: Any, device: torch.device
+) -> ModuleDict:
+    # Any objective makes a valid ControlTransformer; this benchmark only times
+    # the encoder forward, so the objective choice is incidental.
+    return ModuleDict({"inverse_dynamics": inverse_dynamics_prediction_objective}).to(
+        device
+    )
 
 
 @pytest.fixture(scope="module")

@@ -6,6 +6,13 @@ defaults:
   - /paths: yaak/default
   - _self_
 
+# Dataset windowing for the /datamodule predict dataset. Mirrors the pretrain
+# experiment: a flat history window (sequence_length == history_steps), so no
+# future action chunk is sliced. Keeps the pretrained model's sampling unchanged.
+history_steps: 6
+action_horizon: 6
+sequence_length: ${history_steps}
+
 output_dir: ???
 
 trainer:

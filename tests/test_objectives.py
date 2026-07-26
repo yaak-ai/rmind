@@ -14,7 +14,6 @@ from rmind.components.transformer import TransformerEncoder
         lf("inverse_dynamics_prediction_objective"),
         lf("forward_dynamics_prediction_objective"),
         lf("memory_extraction_objective"),
-        lf("policy_objective"),
     ],
 )
 def test_compute_metrics(
@@ -30,7 +29,6 @@ def test_compute_metrics(
         lf("inverse_dynamics_prediction_objective"),
         lf("forward_dynamics_prediction_objective"),
         lf("memory_extraction_objective"),
-        lf("policy_objective"),
     ],
 )
 @pytest.mark.parametrize(
