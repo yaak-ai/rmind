@@ -127,11 +127,12 @@ class CrossAttentionDecoderHead(nn.Module):
         self.decoder = decoder
         self.output_projection = output_projection
 
-    @validate_call
     @override
-    def forward(self, input: Input) -> Tensor:
-        query = input.query
-        context = input.context
+    def forward(self, input: Input | dict[str, Tensor]) -> Tensor:
+        if isinstance(input, dict):
+            query, context = input["query"], input["context"]
+        else:
+            query, context = input.query, input.context
 
         if query.ndim == 4:  # noqa: PLR2004
             b, t, sq, d = query.shape
