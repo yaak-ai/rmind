@@ -27,6 +27,7 @@ from rmind.components.objectives.base import (
 from rmind.utils.functional import (
     build_local_trajectory,
     build_relative_trajectory,
+    compose_relative_trajectory,
     gauss_prob,
     non_zero_signal_with_threshold,
 )
@@ -1446,9 +1447,19 @@ class PolicyObjective(Objective):
                     # traj_logits: (b, steps, 4) = [mean_x, logvar_x, mean_y, logvar_y],
                     # or (b, steps, 6) with trailing [mean_yaw, logvar_yaw] when
                     # trajectory_target == "relative"; xy means are always at [0, 2]
-                    value = {"xy": traj_logits[..., [0, 2]]}  # (b, steps, 2) means
+                    xy = traj_logits[..., [0, 2]]  # (b, steps, 2) means
+                    value = {"xy": xy}
                     if self.trajectory_target == "relative":
-                        value["yaw"] = traj_logits[..., 4]  # (b, steps) mean dyaw
+                        yaw = traj_logits[..., 4]  # (b, steps) mean dyaw
+                        value["yaw"] = yaw
+                        # xy/yaw above are each step's own chained (dx, dy, dyaw) --
+                        # not directly plottable as a path (e.g. for rerun) without
+                        # composing them into the shared reference frame first
+                        value["xy_path"] = compose_relative_trajectory(
+                            torch.cat([xy, yaw.unsqueeze(-1)], dim=-1)
+                        )
+                    else:
+                        value["xy_path"] = xy
                     predictions[key] = Prediction(
                         value=TensorDict(value, batch_size=[b]),
                         timestep_indices=timestep_indices,
@@ -1462,12 +1473,16 @@ class PolicyObjective(Objective):
                         traj_gt = build_relative_trajectory(
                             xy=xy, heading_deg=heading, history_steps=self.history_steps
                         )  # (b, steps, 3) = dx, dy, dyaw
-                        value = {"xy": traj_gt[..., :2], "yaw": traj_gt[..., 2]}
+                        value = {
+                            "xy": traj_gt[..., :2],
+                            "yaw": traj_gt[..., 2],
+                            "xy_path": compose_relative_trajectory(traj_gt),
+                        }
                     else:
                         traj_gt = build_local_trajectory(
                             xy=xy, heading_deg=heading, history_steps=self.history_steps
                         )  # (b, steps, 2)
-                        value = {"xy": traj_gt}
+                        value = {"xy": traj_gt, "xy_path": traj_gt}
                     predictions[key] = Prediction(
                         value=TensorDict(value, batch_size=[b]),
                         timestep_indices=timestep_indices,

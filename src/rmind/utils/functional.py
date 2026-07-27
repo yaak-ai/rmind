@@ -132,6 +132,29 @@ def build_relative_trajectory(
     return torch.stack([x_local, y_local, dyaw], dim=-1)  # (batch, n_future, 3)
 
 
+def compose_relative_trajectory(rel: Tensor) -> Tensor:
+    """Integrate a `build_relative_trajectory`-style chain back into positions
+    in the shared reference frame (the frame of the tick preceding the chain).
+
+    Each step's (dx, dy) is expressed in the *previous* step's own pose (see
+    `build_relative_trajectory`), i.e. rotated by that pose's heading relative
+    to the reference. Composing into the reference frame needs the inverse
+    (`R(-theta)`) of that per-step rotation before accumulating.
+
+    Args:
+        rel: (..., steps, 3) = (dx, dy, dyaw_rad), chained.
+
+    Returns:
+        (..., steps, 2) positions in the reference frame.
+    """
+    dx, dy, dyaw = rel[..., 0], rel[..., 1], rel[..., 2]
+    theta = torch.cumsum(dyaw, dim=-1) - dyaw  # heading (rel. to ref) *before* each step
+    cos_t, sin_t = theta.cos(), theta.sin()
+    dx_ref = dx * cos_t + dy * sin_t
+    dy_ref = -dx * sin_t + dy * cos_t
+    return torch.cumsum(torch.stack([dx_ref, dy_ref], dim=-1), dim=-2)
+
+
 class SignalWithThresholdResult(NamedTuple):
     class_idx: Tensor
     prob: Tensor

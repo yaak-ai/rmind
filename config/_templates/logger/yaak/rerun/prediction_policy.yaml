@@ -44,7 +44,14 @@ schema:
 
   #@ predictions = {
   #@     "policy": {
-  #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"], "discrete": ["turn_signal"]}
+  #@         # discrete/turn_signal deliberately omitted: not every policy
+  #@         # checkpoint has a turn_signal head (e.g. one pretrained without
+  #@         # it), and rbyte's RerunLogger has no graceful-missing-key
+  #@         # fallback -- it hard KeyErrors on the first absent path, taking
+  #@         # every other panel down with it. turn_signal ground truth/
+  #@         # predictions still land in the prediction parquet (DataFramePredictionWriter
+  #@         # selects the whole "value" subtree), just not live-plotted here.
+  #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
   #@         for k in [
   #@             "ground_truth",
   #@             "prediction_value",
@@ -75,3 +82,43 @@ schema:
   #@    end
   #@  end
   #@ end
+
+  #@ # trajectory_value/trajectory_gt's "xy_path" is always a directly-plottable
+  #@ # local-frame path (points already composed into the shared reference
+  #@ # frame -- see PolicyObjective.predict()/compose_relative_trajectory),
+  #@ # unlike its "xy"/"yaw" siblings, which are raw per-step chain deltas
+  #@ # when trajectory_target="relative". All points of one window's path
+  #@ # share that window's reference-tick timestamp, so each shows up as one
+  #@ # fan of points at that moment on the timeline, not spread across it.
+  #@ trajectory_points = {
+  #@     "trajectory_value": {"color": [160, 32, 200], "radii": 0.05},
+  #@     "trajectory_gt": {"color": [32, 180, 90], "radii": 0.08},
+  #@ }
+  #@ for key_prediction, style in trajectory_points.items():
+  policy/(@=key_prediction@)/path:
+    - _target_: rerun.Points2D.columns
+      positions: [policy, (@=key_prediction@), value, xy_path]
+      indices: [policy, (@=key_prediction@), timestep_indices]
+
+    - static: true
+      _target_: rerun.Points2D.from_fields
+      colors: #@ style["color"]
+      radii: #@ style["radii"]
+  #@ end
+
+  #@ # route waypoints at the reference tick, already sliced from the raw
+  #@ # per-tick (b, 6, 10, 2) batch field and rescaled to meters by
+  #@ # RerunPredictionWriter's route_key/route_tick/route_scale (config-level,
+  #@ # since episode.get() can't see raw batch fields a checkpoint's own
+  #@ # episode_builder wasn't configured to remap -- see PolicyObjective's
+  #@ # raw_waypoints_key docstring). Shares trajectory_gt's reference-tick
+  #@ # timestamp so it lines up with trajectory_value/trajectory_gt.
+  batch/route_local:
+    - _target_: rerun.Points2D.columns
+      positions: [batch, data, route_local]
+      indices: [policy, trajectory_gt, timestep_indices]
+
+    - static: true
+      _target_: rerun.Points2D.from_fields
+      colors: [230, 140, 20]
+      radii: 0.03
