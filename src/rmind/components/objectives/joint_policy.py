@@ -44,6 +44,7 @@ class JointPolicyObjective(Objective):
         sample_codes: bool = True,
         offset_decoder: InstanceOf[Module] | None = None,
         offset_raw_features: bool = False,
+        output_heads: bool = False,
     ) -> None:
         super().__init__()
 
@@ -67,6 +68,11 @@ class JointPolicyObjective(Objective):
         # when offset_decoder is set. offset_head in_features must then be
         # (n_summary_tokens * d).
         self.offset_raw_features = offset_raw_features
+        # Export/serving mode: forward emits raw (code_logits, offsets) instead of
+        # the decoded action, so the host decodes (argmax over code_logits, gather
+        # offsets at those codes, invert(codes)+offset). No LUTs — this arch is
+        # argmax-only. Used by the "heads" ONNX export.
+        self.output_heads = output_heads
         self.losses = losses  # {"code": ..., "offset": ...}
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
@@ -81,6 +87,14 @@ class JointPolicyObjective(Objective):
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
         features = self._features(episode, embedding)
         offset_features = self._offset_features(episode, embedding)
+
+        if self.output_heads:
+            # raw heads for host-side decode (argmax + gather); no LUTs (argmax arch)
+            return TensorDict({
+                "code_logits": self._code_logits(features),  # (b, G, C)
+                "offsets": self._offsets(offset_features),  # (b, G, C, action_dim)
+            })
+
         _, codes, offset = self._predict(features, offset_features)
 
         chunk = (self.tokenizer.invert(codes) + offset).unflatten(
