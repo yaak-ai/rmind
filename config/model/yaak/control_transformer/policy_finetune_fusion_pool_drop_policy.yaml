@@ -1,0 +1,150 @@
+---
+# Same as policy_finetune_fusion_pool, for use with a checkpoint whose own
+# pretraining already included a PolicyObjective (a "joint" PT+FT pretrain
+# run, e.g. wandb tags PT,FT,joint,...) rather than a plain warm-startable
+# policy checkpoint. That PT policy is a different design (e.g. predict_yaw
+# trajectory_head: 3-dim pose / 6-step output vs this config's 2-dim / 4-step)
+# and hparams_jq below fully replaces `.objectives` with this FT's own policy
+# definition anyway -- so none of the PT's objectives.policy.* weights are
+# meant to be warm-started. state_dict_drop therefore drops the entire
+# objectives.policy.* subtree up front instead of enumerating the specific
+# shape-mismatched parts (which would differ per source PT and are not worth
+# reconciling for weights we don't want to reuse regardless).
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+state_dict_drop:
+  - objectives\.policy\.
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "history_steps": 5,
+        "action_horizon": 6,
+        "raw_waypoints_key": ["context", "waypoints"],
+        "raw_speed_key": ["continuous", "speed"],
+        "fusion_pool": {
+          "_target_": "rmind.components.nn.FeatureFusionPool",
+          "embedding_dim": 384,
+          "num_waypoints": 10,
+          "history_steps": 5,
+          "pool": {
+            "_target_": "rmind.components.transformer.AttentionPoolHead",
+            "embedding_dim": 384,
+            "num_queries": 2,
+            "decoder": {
+              "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+              "dim_model": 384,
+              "num_layers": 1,
+              "num_heads": 4,
+              "attn_dropout": 0.1,
+              "resid_dropout": 0.1,
+              "mlp_dropout": 0.1,
+              "hidden_layer_multiplier": 1
+            }
+          }
+        },
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 768,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 768,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 768,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 768,
+                "hidden_size": 384,
+                "out_features": 3,
+                "num_steps": 6
+              }
+            }
+          }
+        },
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          },
+          "discrete": {
+            "turn_signal": ["input", "discrete", "turn_signal"]
+          }
+        },
+        "trajectory_head": {
+          "_target_": "rmind.components.nn.GRUTrajectoryHead",
+          "in_features": 768,
+          "hidden_size": 384,
+          "num_steps": 6
+        },
+        "trajectory_loss": {
+          "_target_": "rmind.components.loss.GaussianNLLLoss"
+        },
+        "trajectory_loss_weight": ${trajectory_loss_weight},
+        "xy_key": ["input", "trajectory", "xy"],
+        "heading_key": ["input", "trajectory", "heading"],
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .episode_builder.input_transform._args_[0].paths.trajectory = {
+    "xy": ["data", "meta/Gnss/xy"],
+    "heading": ["data", "headings_denoised/heading"]
+  }
+  | .episode_builder.input_transform._args_[1].modules.trajectory = {
+    "_target_": "torch.nn.Identity"
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
+    }
+  }
