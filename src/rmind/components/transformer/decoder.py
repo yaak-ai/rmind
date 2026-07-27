@@ -127,11 +127,15 @@ class CrossAttentionDecoderHead(nn.Module):
         self.decoder = decoder
         self.output_projection = output_projection
 
-    @validate_call
     @override
-    def forward(self, input: Input) -> Tensor:
-        query = input.query
-        context = input.context
+    def forward(self, input: dict[str, Tensor]) -> Tensor:
+        # Plain dict access (all callers pass {"query", "context"} dicts) rather
+        # than pydantic @validate_call over `Input`: the pydantic_core coercion is
+        # a C extension torch.export/dynamo can't trace (breaks ONNX export of the
+        # decoder-heads policy), and it's per-forward overhead. Shapes are checked
+        # by the reshape/matmul below; `Input` is kept for eager-mode/documentation.
+        query = input["query"]
+        context = input["context"]
 
         if query.ndim == 4:  # noqa: PLR2004
             b, t, sq, d = query.shape
