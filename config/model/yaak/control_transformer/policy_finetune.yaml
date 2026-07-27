@@ -68,15 +68,16 @@ hparams_jq: |
           "artifact": "${action_tokenizer_artifact}",
           "weights_only": false
         },
+        "embedding_dim": 384,
         "code_head": {
-          "_target_": "rmind.components.nn.Linear",
-          "in_features": 384,
-          "out_features": 64
+          "_target_": "torchvision.ops.MLP",
+          "in_channels": 384,
+          "hidden_channels": [384, 64]
         },
         "offset_head": {
-          "_target_": "rmind.components.nn.Linear",
-          "in_features": 384,
-          "out_features": 1536
+          "_target_": "torchvision.ops.MLP",
+          "in_channels": 384,
+          "hidden_channels": [384, 1536]
         },
         "losses": {
           "_target_": "rmind.components.containers.ModuleDict",
