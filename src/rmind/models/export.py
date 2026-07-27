@@ -5,11 +5,13 @@ without touching production model or objective forward()/predict() code paths.
 from typing import final, override
 
 import pytorch_lightning as pl
+import torch
 from tensordict import TensorDict
 
 from rmind.components.base import Modality, TensorTree
 from rmind.components.objectives.policy import PolicyObjective
 from rmind.models.control_transformer import ControlTransformer
+from rmind.utils.functional import compose_relative_trajectory
 
 
 @final
@@ -27,7 +29,11 @@ class PolicyTrajectoryExportWrapper(pl.LightningModule):
     the normal forward() so it appears in the exported graph as
     `trajectory.xy`, plus `trajectory.yaw` ((b, steps) mean dyaw, radians) when
     the trajectory head was built with predict_yaw=True (traj_logits has 6
-    columns instead of 4 — see GRUTrajectoryHead).
+    columns instead of 4 — see GRUTrajectoryHead), and `trajectory.xy_path`
+    ((b, steps, 2)): `xy` composed into the shared reference frame when
+    trajectory_target == "relative" (each step's xy/yaw above are chained
+    deltas, not directly plottable as a path without this), or equal to `xy`
+    when trajectory_target == "absolute" (already in the shared frame).
 
     When trajectory_head is winner-takes-all multi-modal
     (MultiModalGRUTrajectoryHead + trajectory_mode_head), `trajectory.*` above
@@ -69,9 +75,16 @@ class PolicyTrajectoryExportWrapper(pl.LightningModule):
             # keep the mean columns only, matching predict()'s TRAJECTORY_VALUE.
             # When trajectory_head is multi-modal, this is already the
             # winner-selected candidate (see PolicyObjective._compute_logits).
-            trajectory = {"xy": traj_logits[..., [0, 2]]}
+            xy = traj_logits[..., [0, 2]]
+            trajectory = {"xy": xy}
             if traj_logits.shape[-1] == 6:  # noqa: PLR2004
-                trajectory["yaw"] = traj_logits[..., 4]
+                yaw = traj_logits[..., 4]
+                trajectory["yaw"] = yaw
+                trajectory["xy_path"] = compose_relative_trajectory(
+                    torch.cat([xy, yaw.unsqueeze(-1)], dim=-1)
+                )
+            else:
+                trajectory["xy_path"] = xy
             outputs["trajectory"] = trajectory
 
         if traj_logits_modes is not None:

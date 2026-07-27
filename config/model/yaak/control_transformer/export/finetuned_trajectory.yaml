@@ -11,6 +11,7 @@ model:
   strict: false
   hparams_jq: |
     delpaths([
-      paths | select(.. | type == "string" and endswith("_diff")),
-      ["episode_builder", "input_transform", "_args_", 1]
+      (paths | select(.. | type == "string" and endswith("_diff"))),
+      ["episode_builder", "input_transform", "_args_", 1],
+      (.objectives.modules | keys[] | select(. != "policy") | ["objectives", "modules", .])
     ])
