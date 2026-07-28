@@ -30,7 +30,7 @@ import re
 from pathlib import Path
 
 import polars as pl
-from rbyte.io import YaakMetadataDataFrameBuilder
+from rbyte.samples.yaak import YaakMetadataReader
 
 DATA_ROOT = Path("/nasa/drives/yaak/data")
 CONFIG_ROOT = Path(__file__).parents[4] / "rmind-main/config/_templates/dataset/yaak"
@@ -39,7 +39,7 @@ CONFIG_ROOT = Path(__file__).parents[4] / "rmind-main/config/_templates/dataset/
 GAS_THRESH: float = 1.0 / 255 + 0.001  # ≈ 0.0049
 BRAKE_THRESH: float = 1.0 / 164 + 0.001  # ≈ 0.0071
 
-BUILDER = YaakMetadataDataFrameBuilder(
+BUILDER = YaakMetadataReader(
     messages={  # ty:ignore[invalid-argument-type]
         "VehicleMotion": {
             "time_stamp": pl.Datetime(time_unit="us"),
