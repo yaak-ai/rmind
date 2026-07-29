@@ -55,14 +55,17 @@ class SelectiveAdamW(AdamW):
 
         weight_decay_param_whitelist = params.keys() - weight_decay_param_blacklist
 
+        # sorted: set iteration order is salted per process, and torch's
+        # Optimizer.load_state_dict maps saved state onto params POSITIONALLY --
+        # unsorted groups corrupt Adam moments on any cross-process resume
         param_groups = [
             {
                 "weight_decay": 0.0,
-                "params": [params[k] for k in weight_decay_param_blacklist],
+                "params": [params[k] for k in sorted(weight_decay_param_blacklist)],
             },
             {
                 "weight_decay": weight_decay,
-                "params": [params[k] for k in weight_decay_param_whitelist],
+                "params": [params[k] for k in sorted(weight_decay_param_whitelist)],
             },
         ]
 

@@ -149,9 +149,11 @@ optimizer:
     - _target_: hydra.utils.get_class
       path: torch.nn.LayerNorm
 
+# sized to the actual run budget: ~1.2k optimizer steps/epoch (76.7k clip11
+# samples @ batch 64) x 10 epochs -- one-epoch warmup, cosine to ~zero by the end
 lr_scheduler:
   interval: step
   scheduler:
     _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
-    num_warmup_steps: 25000
-    num_training_steps: 250000
+    num_warmup_steps: 1200
+    num_training_steps: 12000
