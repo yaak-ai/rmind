@@ -1,0 +1,46 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/patch_policy/raw
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: patch_policy
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+episode_length: 6
+action_horizon: 6
+episode_step: 10
+episode_stride: 10
+
+# clip_horizon is the dataset build horizon (max over PT/FT) so the built dataset
+# is shared with the control_transformer configs.
+clip_horizon: 6
+clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
+clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
+
+# frozen encoders
+image_encoder_name: vit_small_patch16_dinov3.lvd1689m
+image_resize: [256, 256] # 256 / patch 16 -> 16x16 = 256 patch tokens
+image_embedding_dim: 384
+num_patches: 256
+
+waypoints_tokenizer_artifact: yaak/waypoints-tokenizer/model-gzxgumtf:v9
+waypoint_latent_dim: 384
+
+action_tokenizer_artifact: yaak/rmind/model-y74asdtd:v9
+
+# policy trunk (https://arxiv.org/pdf/2607.18236 Table 9, Push-T)
+policy_embedding_dim: 512
+num_layers: 8
+num_heads: 8
+lr: 5e-5
+
+speed_bins: 512
+
+# supervise the offset head at ground-truth codes (the #258 fix)
+teacher_force_offset: true
+
+wandb:
+  tags: [patch_policy, dinov3]

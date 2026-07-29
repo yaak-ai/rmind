@@ -1,0 +1,157 @@
+_target_: rmind.models.patch_policy.PatchPolicy
+_recursive_: false
+_convert_: all
+
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: rmind.components.nn.Remapper
+      paths:
+        image:
+          cam_front_left: [data, cam_front_left]
+
+        continuous:
+          speed: [data, meta/VehicleMotion/speed]
+          gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
+          brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
+          steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
+
+        context:
+          waypoints: [data, waypoints/xy_normalized]
+
+        discrete:
+          turn_signal: [data, meta/VehicleState/turn_signal]
+
+    - _target_: rmind.components.nn.ChunkFields
+      episode_length: ${episode_length}
+      action_horizon: ${action_horizon}
+      unfold_paths:
+        - [continuous, gas_pedal]
+        - [continuous, brake_pedal]
+        - [continuous, steering_angle]
+        - [discrete, turn_signal]
+
+    - _target_: rmind.components.containers.ModuleDict
+      modules:
+        image:
+          _target_: torch.nn.Sequential
+          _args_:
+            - _target_: einops.layers.torch.Rearrange
+              pattern: "... h w c -> ... c h w"
+            - _target_: torchvision.transforms.v2.CenterCrop
+              size: [320, 576]
+            - _target_: torchvision.transforms.v2.Resize
+              size: ${image_resize}
+            - _target_: torchvision.transforms.v2.ToDtype
+              scale: true
+              dtype:
+                _target_: hydra.utils.get_object
+                path: torch.float32
+            - _target_: torchvision.transforms.v2.Normalize
+              mean: [0.485, 0.456, 0.406]
+              std: [0.229, 0.224, 0.225]
+
+        continuous:
+          _target_: rmind.components.nn.AtLeast3D
+
+        discrete:
+          _target_: rmind.components.nn.AtLeast3D
+
+        context:
+          _target_: torch.nn.Identity
+
+    - _target_: rmind.components.nn.StackFields
+      out_key: joint_actions
+      paths:
+        gas_pedal: [continuous, gas_pedal]
+        brake_pedal: [continuous, brake_pedal]
+        steering_angle: [continuous, steering_angle]
+        turn_signal: [discrete, turn_signal]
+
+image_encoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.timm_backbone.TimmBackbone
+      model_name: ${image_encoder_name}
+      out_indices: [10]
+      img_size: ${image_resize}
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... c h w -> ... (h w) c"
+
+goal_encoder:
+  _target_: rmind.models.waypoints_tokenizer.WaypointsTokenizer.load_from_wandb_artifact
+  artifact: ${waypoints_tokenizer_artifact}
+  weights_only: false
+
+# T x P x (D + G) -> policy width (https://arxiv.org/pdf/2607.18236 section 2.1)
+patch_projection:
+  _target_: rmind.components.nn.Linear
+  in_features: "${eval:'${image_embedding_dim} + ${waypoint_latent_dim}'}"
+  out_features: ${policy_embedding_dim}
+
+speed_tokenizer:
+  _target_: rmind.components.norm.UniformBinner
+  range: [0.0, 130.0]
+  bins: ${speed_bins}
+
+speed_embedding:
+  _target_: rmind.components.nn.Embedding
+  num_embeddings: ${speed_bins}
+  embedding_dim: ${policy_embedding_dim}
+
+encoder:
+  _target_: rmind.models.patch_policy.BlockCausalTransformer
+  dim_model: ${policy_embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  # episode_length frames x (num_patches + 1 speed token)
+  max_sequence_length: "${eval:'${episode_length} * (${num_patches} + 1)'}"
+
+tokenizer:
+  _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
+  artifact: ${action_tokenizer_artifact}
+  weights_only: false
+
+norm:
+  _target_: torch.nn.LayerNorm
+  normalized_shape: ${policy_embedding_dim}
+
+code_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels: [1024, 1024, 64] # 4 quantizers x 16 codes
+
+offset_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels: [1024, 1024, 1536] # 4 quantizers x 16 codes x 24 action dims
+
+losses:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    code:
+      _target_: rmind.components.loss.FocalLoss
+    offset:
+      _target_: torch.nn.L1Loss
+
+teacher_force_offset: ${teacher_force_offset}
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: ${lr}
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: 25000
+    num_training_steps: 250000

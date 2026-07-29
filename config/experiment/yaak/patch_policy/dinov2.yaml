@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - yaak/patch_policy/dinov3
+  - _self_
+
+# DINOv2 ViT-S/14 at 224x224 keeps the same 16x16 = 256 patch grid and 384 dim
+# as DINOv3 ViT-S/16 at 256x256, so only the encoder + input size change.
+image_encoder_name: vit_small_patch14_dinov2.lvd142m
+image_resize: [224, 224]
+
+wandb:
+  tags: [patch_policy, dinov2]
