@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - yaak/patch_policy/dinov3
+  - _self_
+
+# next encoder size up: DINOv3 ViT-B/16 (768-d patches; same 16x16 grid @256²,
+# also 12 layers, so out_indices [10] stays proportionally identical)
+image_encoder_name: vit_base_patch16_dinov3.lvd1689m
+image_embedding_dim: 768
+
+wandb:
+  tags: [patch_policy, dinov3_vitb]
