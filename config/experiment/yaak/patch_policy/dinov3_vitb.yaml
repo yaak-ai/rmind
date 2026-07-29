@@ -1,7 +1,7 @@
 # @package _global_
 
 defaults:
-  - yaak/patch_policy/dinov3
+  - /experiment/yaak/patch_policy/dinov3
   - _self_
 
 # next encoder size up: DINOv3 ViT-B/16 (768-d patches; same 16x16 grid @256²,
