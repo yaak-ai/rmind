@@ -35,7 +35,17 @@ action_tokenizer_artifact: yaak/rmind/model-y74asdtd:v9
 policy_embedding_dim: 512
 num_layers: 8
 num_heads: 8
-lr: 5e-5
+
+# batch 128 with linearly-scaled LR (baseline: 5e-5 @ 64). The clip11 train set
+# is ~1.97M samples (FT baseline zcglgth4: 308,038 steps @ batch 64 for 10
+# epochs) -> ~15.4k steps/epoch @ 128; cosine hits zero at the end of epoch 9.
+lr: 1e-4
+lr_warmup_steps: 12500
+lr_total_steps: 154000
+
+datamodule:
+  train:
+    batch_size: 128
 
 speed_bins: 512
 
