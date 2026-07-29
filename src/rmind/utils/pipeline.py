@@ -188,6 +188,118 @@ def drop_overrepresented_inactive(
     return df.filter(plr.Series(keep))
 
 
+def drop_episodes_by_first_waypoint_x(
+    df: plr.DataFrame,
+    *,
+    waypoint_column: str,
+    max_abs_x: float = 0.1,
+    enabled: bool = False,
+) -> plr.DataFrame:
+    """Drop episodes whose latest trajectory starts too far from the centerline."""
+    if not enabled or waypoint_column not in df.columns:
+        return df
+    waypoints = _waypoint_array(df, waypoint_column)
+    if waypoints.size == 0:
+        return df
+    first_x = np.abs(waypoints[:, -1, 0, 0])
+    return df.filter(plr.Series(first_x <= max_abs_x))
+
+
+def drop_episodes_by_last_waypoint_x(
+    df: plr.DataFrame,
+    *,
+    waypoint_column: str,
+    threshold: float,
+    ratio: float,
+    enabled: bool = False,
+    last_waypoint_seed: int = 4,
+) -> plr.DataFrame:
+    """Keep episodes with a sufficiently large final waypoint x coordinate.
+
+    The row is kept when any of these are true:
+    - abs(last_x) > threshold
+    - random() < ratio
+    - abs(last_x) > abs(N(0, threshold))
+
+    No-op when disabled or when the column is absent.
+    """
+    if not enabled or waypoint_column not in df.columns:
+        return df
+    rng = np.random.default_rng(last_waypoint_seed)
+    waypoints = _waypoint_array(df, waypoint_column)
+    if waypoints.size == 0:
+        return df
+    last_x = np.abs(waypoints[:, -1, -1, 0])
+    keep = (
+        (last_x > threshold)
+        | (rng.random(len(df)) < ratio)
+        | (last_x > np.abs(rng.normal(scale=threshold, size=len(df))))
+    )
+    return df.filter(plr.Series(keep))
+
+
+def take_first_waypoints(
+    df: plr.DataFrame,
+    *,
+    waypoint_column: str,
+    n_waypoints: int = 10,
+) -> plr.DataFrame:
+    """Trim the waypoint axis while preserving the sample's temporal axis."""
+    if waypoint_column not in df.columns or df.is_empty():
+        return df
+    waypoints = _waypoint_array(df, waypoint_column)
+    trimmed = waypoints[:, :, :n_waypoints, :]
+    return df.with_columns(plr.Series(waypoint_column, trimmed))
+
+
+def add_waypoint_noise(
+    input: plr.DataFrame,
+    *,
+    waypoint_column: str,
+    wp_noise_loc: float = 0.0,
+    wp_noise_scale: float = 0.0,
+    enabled: bool = False,
+    wp_noise_seed: int = 5,
+) -> plr.DataFrame:
+    """Add broadcasted Gaussian noise to the x coordinate of all waypoints.
+
+    One noise value is sampled per row and broadcast across all waypoints in that row.
+    No-op when disabled or when the column is absent.
+    """
+    if not enabled or waypoint_column not in input.columns or wp_noise_scale == 0:
+        return input
+
+    waypoints = _waypoint_array(input, waypoint_column)
+    if waypoints.size == 0:
+        return input
+
+    rng = np.random.default_rng(wp_noise_seed)
+    noise = rng.normal(
+        loc=wp_noise_loc,
+        scale=wp_noise_scale,
+        size=(len(waypoints), 1, 1),
+    )
+    waypoints = waypoints.copy()
+    waypoints[..., 0] += noise
+    return input.with_columns(plr.Series(waypoint_column, waypoints))
+
+
+def _waypoint_array(df: plr.DataFrame, waypoint_column: str) -> np.ndarray:
+    """Return waypoints as [sample, time, waypoint, coordinate]."""
+    waypoints = np.asarray(df[waypoint_column].to_numpy())
+    if waypoints.ndim == 1 and len(waypoints):
+        waypoints = np.stack(waypoints)
+    if waypoints.ndim == 3:
+        waypoints = waypoints[:, None, :, :]
+    if waypoints.ndim != 4 or (waypoints.size and waypoints.shape[-1] != 2):
+        raise ValueError(
+            f"{waypoint_column!r} must have shape "
+            "[sample, (time), waypoint, 2], "
+            f"got {waypoints.shape}"
+        )
+    return waypoints
+
+
 def drop_overrepresented_by_loss(
     df: plr.DataFrame,
     *,
