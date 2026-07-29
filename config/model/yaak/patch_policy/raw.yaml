@@ -149,11 +149,13 @@ optimizer:
     - _target_: hydra.utils.get_class
       path: torch.nn.LayerNorm
 
-# sized to the actual run budget: ~1.2k optimizer steps/epoch (76.7k clip11
-# samples @ batch 64) x 10 epochs -- one-epoch warmup, cosine to ~zero by the end
+# sized to the actual run budget: ~30.8k optimizer steps/epoch (measured on the
+# 10-epoch FT baseline zcglgth4: global_step 308,038 @ batch 64) -- warmup as in
+# the FT baseline, cosine reaching zero at the end of epoch 9. NOTE: the schedule
+# oscillates if trained past num_training_steps (the cosine comes back up).
 lr_scheduler:
   interval: step
   scheduler:
     _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
-    num_warmup_steps: 1200
-    num_training_steps: 12000
+    num_warmup_steps: 25000
+    num_training_steps: 308000
