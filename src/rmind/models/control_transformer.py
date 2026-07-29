@@ -182,8 +182,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             src=episode.embeddings_flattened, mask=episode.attention_mask
         )
 
+        extra = {"shuffle_labels": episode.shuffle_labels} if episode.shuffle_labels is not None else {}
         metrics = TensorDict({
-            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode=episode, embedding=embedding, **extra)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 

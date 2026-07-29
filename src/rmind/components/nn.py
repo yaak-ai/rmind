@@ -105,6 +105,59 @@ class TokenShuffler(Module):
         return embeddings
 
 
+@final
+class TrajectoryAugmentation(Module):
+    @validate_call
+    def __init__(self, modalities: Mapping[str, tuple[str, ...]]) -> None:
+        super().__init__()
+        self._modalities: dict[str, tuple[str, ...]] = dict(modalities)
+
+    @staticmethod
+    def _get(d: dict, path: tuple[str, ...]) -> Tensor:
+        for key in path:
+            d = d[key]
+        return d
+
+    @staticmethod
+    def _set(d: dict, path: tuple[str, ...], value: Tensor) -> None:
+        for key in path[:-1]:
+            d = d[key]
+        d[path[-1]] = value
+
+    @override
+    def forward(self, batch: dict) -> tuple[dict, Tensor]:
+        first_path = next(iter(self._modalities.values()))
+        b = self._get(batch, first_path).shape[0]
+        device = self._get(batch, first_path).device
+        labels = torch.zeros(b, device=device, dtype=torch.long)
+
+        if not self.training:
+            return batch, labels
+
+        n_pairs = b // 4
+        if n_pairs == 0:
+            return batch, labels
+
+        perm = torch.randperm(b, device=device)
+        pairs = perm[: 2 * n_pairs].reshape(n_pairs, 2)
+        modality_names = list(self._modalities.keys())
+        assignments = torch.randint(0, len(modality_names), (n_pairs,), device=device)
+
+        for m_idx, name in enumerate(modality_names):
+            pair_subset = pairs[assignments == m_idx]
+            if pair_subset.numel() == 0:
+                continue
+
+            path = self._modalities[name]
+            src = self._get(batch, path)
+            self._set(batch, path, src.clone())
+            self._get(batch, path)[pair_subset[:, 0]] = src[pair_subset[:, 1]]
+            self._get(batch, path)[pair_subset[:, 1]] = src[pair_subset[:, 0]]
+
+        labels[pairs.flatten()] = 1
+        return batch, labels
+
+
 type Paths = Mapping[str, tuple[str, ...] | Paths]
 
 

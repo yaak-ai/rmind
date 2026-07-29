@@ -10,7 +10,6 @@ from torch.nn import Module
 
 from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
-from rmind.components.nn import Embedding
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
     Metrics,
@@ -41,23 +40,21 @@ class JointPolicyObjective(Objective):
         offset_head: InstanceOf[Module],
         losses: InstanceOf[ModuleDict],
         chunk: Path,
-        embedding_dim: int,
         norm: InstanceOf[Module] | None = None,
         sample_codes: bool = True,
+        shuffle_head: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
         self.norm: Module | None = norm
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
-        self.decoder = decoder  # mask-query cross-attention pooler over latent sets
-        self.query_pos = Embedding(2, embedding_dim)
-        self.code_head = code_head  # features -> (G*C) code logits
-        self.offset_head = (
-            offset_head  # features -> (G*C*action_dim): offset per (quantizer, code)
-        )
-        self.losses = losses  # {"code": ..., "offset": ...}
+        self.decoder = decoder
+        self.code_head = code_head
+        self.offset_head = offset_head
+        self.losses = losses
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
+        self.shuffle_head: Module | None = shuffle_head
 
     @override
     def train(self, mode: bool = True) -> "JointPolicyObjective":
@@ -67,8 +64,8 @@ class JointPolicyObjective(Objective):
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
-        code_features, offset_features = self._features(episode, embedding)
-        _, codes, offset = self._predict(code_features, offset_features)
+        features = self._features(episode, embedding)
+        _, codes, offset = self._predict(features)
 
         chunk = (self.tokenizer.invert(codes) + offset).unflatten(
             -1,
@@ -82,26 +79,19 @@ class JointPolicyObjective(Objective):
 
         last = episode.index[-1]
         k_os = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
-        k_oh = (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY)
         observation_summary = last.select(k_os).parse(embedding).get(k_os)  # (b, 64, d)
-        observation_history = last.select(k_oh).parse(embedding).get(k_oh)  # (b, 32, d)
 
-        context = torch.cat(
-            [observation_summary, observation_history], dim=-2
-        )  # (b, 96, d)
         mask = episode.embeddings.get((Modality.UTILITY, "mask"))[
             :, -1, [3]
         ]  # (b, 1, d)
-        query = mask.expand(-1, 2, -1) + self.query_pos.weight  # (b, 2, d)
-        decoded = self.decoder({"query": query, "context": context})  # (b, 2, d)
-        return decoded[:, 0], decoded[:, 1]  # code_features, offset_features
+        return self.decoder({"query": mask, "context": observation_summary}).squeeze(-2)  # (b, d)
 
-    def _predict(self, code_features: Tensor, offset_features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """VQ-BeT joint code prediction with a code-conditioned offset."""
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
 
-        code_logits = rearrange(self.code_head(code_features), "b (g c) -> b g c", g=g, c=c)
+        code_logits = rearrange(self.code_head(features), "b (g c) -> b g c", g=g, c=c)
         if self.sample_codes:
             codes = rearrange(
                 torch.multinomial(code_logits.softmax(dim=-1).reshape(-1, c), 1),
@@ -112,28 +102,26 @@ class JointPolicyObjective(Objective):
             codes = code_logits.argmax(dim=-1)
 
         offsets = rearrange(
-            self.offset_head(offset_features), "b (g c a) -> b g c a", g=g, c=c
+            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
         )
         index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
-        # https://arxiv.org/pdf/2403.03181 Figure 2.
         offset = offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
 
         return code_logits, codes, offset
 
-    def _gather_offset(self, offset_features: Tensor, codes: Tensor) -> Tensor:
+    def _gather_offset(self, features: Tensor, codes: Tensor) -> Tensor:
         """Select each quantizer's offset at `codes` and sum over quantizers."""
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
         offsets = rearrange(
-            self.offset_head(offset_features), "b (g c a) -> b g c a", g=g, c=c
+            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
         )
         index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
-        # https://arxiv.org/pdf/2403.03181 Figure 2.
         return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
 
     @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
-        code_features, offset_features = self._features(episode, embedding)
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor, shuffle_labels: Tensor | None = None) -> Metrics:
+        features = self._features(episode, embedding)
         tokenizer = self.tokenizer
 
         with torch.no_grad():
@@ -143,23 +131,37 @@ class JointPolicyObjective(Objective):
                 chunk.flatten(-2, -1)
             )  # (b, action_dim): the GT action chunk the policy must reconstruct
 
-        code_logits, _, _ = self._predict(code_features, offset_features)
+        code_logits, _, _ = self._predict(features)
+
+        if shuffle_labels is not None:
+            keep = shuffle_labels == 0
+            code_logits_keep = code_logits[keep]
+            target_codes_keep = target_codes[keep]
+            features_keep = features[keep]
+            target_keep = target[keep]
+        else:
+            code_logits_keep = code_logits
+            target_codes_keep = target_codes
+            features_keep = features
+            target_keep = target
 
         losses: dict[str, Tensor] = {}
 
-        # per-quantizer classification against the ground-truth codes
         for q in range(tokenizer.quantizer.num_quantizers):
             losses[f"code_{q}"] = self.losses["code"](
-                code_logits[:, q, :], target_codes[:, q]
+                code_logits_keep[:, q, :], target_codes_keep[:, q]
             )
 
-        # reconstruct the chunk as inference does (decode sampled codes + code-conditioned
-        # offset); the frozen tokenizer makes invert(codes) gradient-free, so this term
-        # trains only the offset head
-        predicted_chunk = tokenizer.invert(target_codes) + self._gather_offset(
-            offset_features, target_codes
+        predicted_chunk = tokenizer.invert(target_codes_keep) + self._gather_offset(
+            features_keep, target_codes_keep
         )
-        losses["offset"] = self.losses["offset"](predicted_chunk, target)
+        losses["offset"] = self.losses["offset"](predicted_chunk, target_keep)
+
+        if shuffle_labels is not None and self.shuffle_head is not None:
+            shuffle_logits = self.shuffle_head(features).squeeze(-1)
+            losses["trajectory"] = torch.nn.functional.binary_cross_entropy_with_logits(
+                shuffle_logits, shuffle_labels.float()
+            )
 
         return {"loss": losses}
 
@@ -197,8 +199,8 @@ class JointPolicyObjective(Objective):
             predictions[key] = Prediction(value=actions, time_index=time_index)
 
         if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
-            code_features, offset_features = self._features(episode, embedding)
-            _, codes, offset = self._predict(code_features, offset_features)
+            features = self._features(episode, embedding)
+            _, codes, offset = self._predict(features)
 
             chunk = (tokenizer.invert(codes) + offset).unflatten(
                 -1, (-1, action_space)
