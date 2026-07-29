@@ -8,7 +8,7 @@ export RERUN_STRICT := "1"
 export WANDB_DIR := "wandb_logs"
 export TORCHDYNAMO_VERBOSE := "1"
 export PYTORCH_CUDA_ALLOC_CONF := "expandable_segments:True"
-export LD_LIBRARY_PATH := justfile_directory() / ".lib:/nix/store/chqq8mpmpyfi9kgsngya71akv5xicn03-gcc-15.2.0-lib/lib:" + env("LD_LIBRARY_PATH", "")
+export LD_LIBRARY_PATH := justfile_directory() / ".lib:" + env("LD_LIBRARY_PATH", "")
 
 # export PYTHONOPTIMIZE := "1" # incompatible w/ torch.export in 2.10
 

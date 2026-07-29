@@ -71,6 +71,7 @@ class EpisodeBuilder(Module):
         embeddings: InstanceOf[ModuleDict],
         projections: InstanceOf[ModuleDict],
         role_encoding: InstanceOf[Module],
+        token_shuffler: InstanceOf[Module],
         attention_mask_builder: InstanceOf[FactorizedAttentionMaskBuilder],
     ) -> None:
         super().__init__()
@@ -87,6 +88,7 @@ class EpisodeBuilder(Module):
         self.embeddings: ModuleDict = embeddings
         self.projections: ModuleDict = projections
         self.role_encoding: Module = role_encoding
+        self.token_shuffler: Module = token_shuffler
         self.attention_mask_builder: FactorizedAttentionMaskBuilder = (
             attention_mask_builder
         )
@@ -138,6 +140,7 @@ class EpisodeBuilder(Module):
         role_td = self._build_role_embeddings(projected_td, device=device)
 
         embeddings = projected_td.apply(torch.add, role_td)
+        embeddings = self.token_shuffler(embeddings)
 
         embeddings_flattened, _ = pack(
             [embeddings.get(k) for k in self._timestep_keys],  # ty:ignore[unresolved-attribute]

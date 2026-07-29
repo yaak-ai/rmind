@@ -17,7 +17,7 @@ from torch.utils._pytree import (  # noqa: PLC2701
 from rmind.utils.functional import diff_last
 from rmind.utils.pytree import key_get_default
 
-from .base import Invertible
+from .base import Invertible, TokenMeta
 
 default_weight_init_fn = partial(
     nn.init.trunc_normal_, mean=0.0, std=0.02, a=-0.04, b=0.04
@@ -77,6 +77,32 @@ class Identity(nn.Identity, Invertible):
     @override
     def invert(self, input: Tensor) -> Tensor:
         return input
+
+
+@final
+class TokenShuffler(Module):
+    @validate_call
+    def __init__(self, tokens: tuple[TokenMeta, ...]) -> None:
+        super().__init__()
+        self._keys: tuple[tuple[str, str], ...] = tuple(
+            (t.modality.value, t.name) for t in tokens
+        )
+
+    @override
+    def forward(self, embeddings: TensorDict) -> TensorDict:
+        if not self.training:
+            return embeddings
+
+        parts = [embeddings.get(k) for k in self._keys]
+        cat = torch.cat(parts, dim=2)
+        shuffled = cat[:, :, torch.randperm(cat.shape[2], device=cat.device)]
+
+        for k, chunk in zip(
+            self._keys, shuffled.split([p.shape[2] for p in parts], dim=2), strict=False
+        ):
+            embeddings.set(k, chunk)
+
+        return embeddings
 
 
 type Paths = Mapping[str, tuple[str, ...] | Paths]

@@ -327,6 +327,13 @@ episode_builder:
     num_embeddings: 8
     embedding_dim: ${encoder_embedding_dim}
 
+  token_shuffler:
+    _target_: rmind.components.nn.TokenShuffler
+    tokens:
+      - [observation, image, cam_front_left]
+      - [observation, continuous, speed]
+      - [observation, context, waypoints]
+
   attention_mask_builder:
     _target_: rmind.components.mask.FactorizedCausalAttentionMaskBuilder
 
