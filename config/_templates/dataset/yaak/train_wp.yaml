@@ -1078,7 +1078,7 @@ samples:
           _partial_: true
           waypoint_column: waypoints/xy_normalized
           max_abs_x: "${oc.select:first_waypoint_max_abs_x,0.1}"
-          enabled: "${oc.select:drop_first_waypoint_x,0}"
+          first_waypoint_filter_enabled: "${oc.select:drop_first_waypoint_x,0}"
 
       - _target_: pipefunc.PipeFunc
         renames:
@@ -1091,7 +1091,7 @@ samples:
           waypoint_column: waypoints/xy_normalized
           threshold: "${oc.select:last_waypoint_x_threshold,0.1}"
           ratio: "${oc.select:last_waypoint_x_ratio,0.0}"
-          enabled: "${oc.select:drop_last_waypoint_x,0}"
+          last_waypoint_filter_enabled: "${oc.select:drop_last_waypoint_x,0}"
 
       - _target_: pipefunc.PipeFunc
         renames:
@@ -1104,7 +1104,7 @@ samples:
           waypoint_column: waypoints/xy_normalized
           wp_noise_loc: "${oc.select:wp_noise_loc,0.0}"
           wp_noise_scale: "${oc.select:wp_noise_scale,0.0}"
-          enabled: "${oc.select:add_waypoint_noise,0}"
+          waypoint_noise_enabled: "${oc.select:add_waypoint_noise,0}"
 
       - _target_: pipefunc.PipeFunc
         renames:

@@ -193,10 +193,10 @@ def drop_episodes_by_first_waypoint_x(
     *,
     waypoint_column: str,
     max_abs_x: float = 0.1,
-    enabled: bool = False,
+    first_waypoint_filter_enabled: bool = False,
 ) -> plr.DataFrame:
     """Drop episodes whose latest trajectory starts too far from the centerline."""
-    if not enabled or waypoint_column not in df.columns:
+    if not first_waypoint_filter_enabled or waypoint_column not in df.columns:
         return df
     waypoints = _waypoint_array(df, waypoint_column)
     if waypoints.size == 0:
@@ -211,7 +211,7 @@ def drop_episodes_by_last_waypoint_x(
     waypoint_column: str,
     threshold: float,
     ratio: float,
-    enabled: bool = False,
+    last_waypoint_filter_enabled: bool = False,
     last_waypoint_seed: int = 4,
 ) -> plr.DataFrame:
     """Keep episodes with a sufficiently large final waypoint x coordinate.
@@ -223,7 +223,7 @@ def drop_episodes_by_last_waypoint_x(
 
     No-op when disabled or when the column is absent.
     """
-    if not enabled or waypoint_column not in df.columns:
+    if not last_waypoint_filter_enabled or waypoint_column not in df.columns:
         return df
     rng = np.random.default_rng(last_waypoint_seed)
     waypoints = _waypoint_array(df, waypoint_column)
@@ -258,7 +258,7 @@ def add_waypoint_noise(
     waypoint_column: str,
     wp_noise_loc: float = 0.0,
     wp_noise_scale: float = 0.0,
-    enabled: bool = False,
+    waypoint_noise_enabled: bool = False,
     wp_noise_seed: int = 5,
 ) -> plr.DataFrame:
     """Add broadcasted Gaussian noise to the x coordinate of all waypoints.
@@ -266,7 +266,11 @@ def add_waypoint_noise(
     One noise value is sampled per row and broadcast across all waypoints in that row.
     No-op when disabled or when the column is absent.
     """
-    if not enabled or waypoint_column not in input.columns or wp_noise_scale == 0:
+    if (
+        not waypoint_noise_enabled
+        or waypoint_column not in input.columns
+        or wp_noise_scale == 0
+    ):
         return input
 
     waypoints = _waypoint_array(input, waypoint_column)
