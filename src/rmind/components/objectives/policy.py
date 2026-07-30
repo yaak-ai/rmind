@@ -30,6 +30,7 @@ from rmind.utils.functional import (
     compose_relative_trajectory,
     gauss_prob,
     non_zero_signal_with_threshold,
+    route_convergence_signal,
 )
 
 # longitudinal mode classes: gas and brake share one softmax classifier so the
@@ -70,6 +71,37 @@ class PolicyObjective(Objective):
         trajectory_motion_weight: float = 0.0,
         trajectory_motion_peak: float = 4.0,
         trajectory_motion_width: float = 4.0,
+        # Route-following rebalancing: scale each window's trajectory loss by
+        # how much *closer* the car's realized GT path ends up to the route
+        # waypoints' polyline over the horizon, vs. where it started --
+        # windows where the car is already on the route (or moving away from
+        # it) sit at baseline weight; only actual convergence toward the
+        # route line is upweighted. Rationale: straight/already-on-route
+        # windows (the driving majority) trivially satisfy any degree of
+        # waypoint-conditioning and otherwise dominate the flat mean loss,
+        # drowning out the windows that actually test whether the model is
+        # grounding its prediction in the route.
+        #   route = polyline through [ego_origin, *route_waypoints_key ticks],
+        #           read at the reference tick (history_steps - 1), meters
+        #   dist(t) = point_to_polyline_distance(gt_xy(t), route)  for each
+        #             predicted step t, gt_xy in the same fixed ego frame
+        #             the route polyline is defined in
+        #   signal = tanh(clamp(dist(first) - dist(last), min=0) / trajectory_route_scale)
+        #   weight = 1 + trajectory_route_weight * signal   (mean-normalized)
+        # trajectory_route_scale is the convergence (meters, over the horizon)
+        # at which upweighting is ~63% saturated -- e.g. 1.0 m default assumes
+        # a lane-correction-scale convergence is "clearly route-following."
+        # Requires route_waypoints_key (None == disabled, identical to
+        # before, regardless of this weight). Combines with
+        # trajectory_motion_weight multiplicatively when both are set.
+        trajectory_route_weight: float = 0.0,
+        trajectory_route_scale: float = 1.0,
+        # raw route waypoints (b, t, num_points, 2), read at the reference
+        # tick and scaled to meters via route_waypoints_scale -- only used to
+        # build the polyline for trajectory_route_weight (see above); None
+        # (default) disables trajectory_route_weight regardless of its value.
+        route_waypoints_key: tuple[str, ...] | None = None,
+        route_waypoints_scale: float = 100.0,
         trajectory_target: Literal["absolute", "relative"] = "absolute",
         # winner-takes-all multi-modal trajectory: pair a K-mode trajectory_head
         # (MultiModalGRUTrajectoryHead) with trajectory_mode_head, a classifier
@@ -220,6 +252,10 @@ class PolicyObjective(Objective):
         self.trajectory_motion_weight: float = trajectory_motion_weight
         self.trajectory_motion_peak: float = trajectory_motion_peak
         self.trajectory_motion_width: float = trajectory_motion_width
+        self.trajectory_route_weight: float = trajectory_route_weight
+        self.trajectory_route_scale: float = trajectory_route_scale
+        self.route_waypoints_key: tuple[str, ...] | None = route_waypoints_key
+        self.route_waypoints_scale: float = route_waypoints_scale
         # "absolute": every horizon step vs one fixed frame anchored at
         # [history_steps - 1] (build_local_trajectory) — foreshortens forward
         # progress during a turn since it's measured against a stale heading.
@@ -455,7 +491,7 @@ class PolicyObjective(Objective):
         if self.training and dropout > 0.0:
             keep_shape = (out.shape[0],) + (1,) * (out.dim() - 1)
             keep = (torch.rand(keep_shape, device=out.device) >= dropout).to(out.dtype)
-            out = out * keep
+            out *= keep
         return out
 
     def _history_window_slice(self, idx: int, window: int) -> slice:
@@ -942,16 +978,44 @@ class PolicyObjective(Objective):
                     for pred, g in channels
                 ) / len(channels)
 
-            if self.trajectory_motion_weight > 0.0:
-                # P1 rebalancing: band-pass triangular window peaking at the
-                # low-speed/launch regime (see __init__); stopped and cruising
-                # both fall to baseline weight 1.
-                signal = (
-                    1.0
-                    - (motion - self.trajectory_motion_peak).abs()
-                    / self.trajectory_motion_width
-                ).clamp(min=0.0)  # (b,), triangle: 1 at peak, 0 outside peak±width
-                w = 1.0 + self.trajectory_motion_weight * signal  # (b,)
+            motion_active = self.trajectory_motion_weight > 0.0
+            route_waypoints = (
+                episode.get(self.route_waypoints_key, default=None)
+                if self.trajectory_route_weight > 0.0 and self.route_waypoints_key is not None
+                else None
+            )
+            route_active = route_waypoints is not None
+            if motion_active or route_active:
+                w = torch.ones_like(motion)
+                if motion_active:
+                    # P1 rebalancing: band-pass triangular window peaking at the
+                    # low-speed/launch regime (see __init__); stopped and cruising
+                    # both fall to baseline weight 1.
+                    signal = (
+                        1.0
+                        - (motion - self.trajectory_motion_peak).abs()
+                        / self.trajectory_motion_width
+                    ).clamp(min=0.0)  # (b,), triangle: 1 at peak, 0 outside peak±width
+                    w *= (1.0 + self.trajectory_motion_weight * signal)
+                if route_active:
+                    # Route-following rebalancing (see __init__): upweight
+                    # windows where the car's realized GT path ends up closer
+                    # to the route waypoints' polyline than where it started.
+                    route_frame_xy = (
+                        compose_relative_trajectory(traj_gt)
+                        if self.trajectory_target == "relative"
+                        else traj_gt[..., :2]
+                    )  # (b, num_steps, 2): fixed ego frame anchored at the
+                    # reference tick (history_steps - 1) -- the same frame the
+                    # route waypoints below are read in.
+                    route_vertices_wp = (
+                        route_waypoints[:, self.history_steps - 1]
+                        * self.route_waypoints_scale
+                    )  # (b, num_points, 2), meters
+                    signal = route_convergence_signal(
+                        route_frame_xy, route_vertices_wp, scale=self.trajectory_route_scale
+                    )
+                    w *= (1.0 + self.trajectory_route_weight * signal)
                 w = (w / w.mean()).repeat_interleave(num_steps)  # (b*steps,)
                 prev_reduction = self.trajectory_loss.reduction  # type: ignore[attr-defined]
                 self.trajectory_loss.reduction = "none"  # type: ignore[attr-defined]

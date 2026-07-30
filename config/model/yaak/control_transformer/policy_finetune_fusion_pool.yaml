@@ -11,6 +11,14 @@
 # re-initializes every head's/trajectory_head's hidden_proj (its input width
 # changed) -- fusion_pool itself is entirely new, so its weights have no
 # matching checkpoint keys either way and load fine under strict=false.
+#
+# Also wires trajectory_route_weight/trajectory_route_scale/
+# route_waypoints_key/route_waypoints_scale (weight 0.0 = disabled, see
+# finetune.yaml): upweights trajectory_loss on windows where the car's
+# recorded path ends up closer to the route waypoints' polyline than where
+# it started, so the loss isn't dominated by the straight/on-route majority
+# that trivially satisfies any amount of route-grounding. Reuses the same
+# ("context", "waypoints") path raw_waypoints_key already reads.
 _target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
 artifact: ???
 strict: false
@@ -112,6 +120,10 @@ hparams_jq: |
           "_target_": "rmind.components.loss.GaussianNLLLoss"
         },
         "trajectory_loss_weight": ${trajectory_loss_weight},
+        "trajectory_route_weight": ${trajectory_route_weight},
+        "trajectory_route_scale": ${trajectory_route_scale},
+        "route_waypoints_key": ["context", "waypoints"],
+        "route_waypoints_scale": ${route_waypoints_scale},
         "xy_key": ["input", "trajectory", "xy"],
         "heading_key": ["input", "trajectory", "heading"],
         "losses": {

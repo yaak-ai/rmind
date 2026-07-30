@@ -155,6 +155,66 @@ def compose_relative_trajectory(rel: Tensor) -> Tensor:
     return torch.cumsum(torch.stack([dx_ref, dy_ref], dim=-1), dim=-2)
 
 
+def point_to_polyline_distance(points: Tensor, vertices: Tensor) -> Tensor:
+    """Minimum Euclidean distance from each query point to a polyline.
+
+    Distance to each of the `v - 1` consecutive segments is the standard
+    point-to-segment distance (project onto the segment, clamp the
+    projection parameter to [0, 1] so it can't fall past either endpoint,
+    then measure to that clamped projection); the result is the min over
+    segments.
+
+    Args:
+        points: (..., q, 2) query points.
+        vertices: (..., v, 2) ordered polyline vertices, v >= 2. Broadcasts
+            against `points`' leading (batch) dims.
+
+    Returns:
+        (..., q) minimum distance from each query point to the polyline.
+    """
+    a = vertices[..., :-1, :].unsqueeze(-3)  # (..., 1, v-1, 2)
+    b = vertices[..., 1:, :].unsqueeze(-3)  # (..., 1, v-1, 2)
+    p = points.unsqueeze(-2)  # (..., q, 1, 2)
+
+    ab = b - a  # (..., 1, v-1, 2)
+    ab_len_sq = (ab * ab).sum(dim=-1).clamp(min=1e-12)  # (..., 1, v-1)
+    t = ((p - a) * ab).sum(dim=-1) / ab_len_sq  # (..., q, v-1)
+    t = t.clamp(0.0, 1.0).unsqueeze(-1)  # (..., q, v-1, 1)
+    proj = a + t * ab  # (..., q, v-1, 2)
+
+    return (p - proj).norm(dim=-1).min(dim=-1).values  # (..., q)
+
+
+def route_convergence_signal(
+    xy: Tensor, route_waypoints: Tensor, *, scale: float
+) -> Tensor:
+    """How much closer `xy` ends up to the route polyline than where it
+    started, tanh-saturated. See `PolicyObjective.trajectory_route_weight`.
+
+    The polyline is anchored at the frame's origin (e.g. the ego's own
+    position) before the first waypoint, so a route that starts a few meters
+    to the side is still "the route," not an unbounded ray.
+
+    Args:
+        xy: (..., num_steps, 2) trajectory positions, in the same frame as
+            `route_waypoints`.
+        route_waypoints: (..., num_points, 2) route waypoints, ordered near
+            to far, in that same frame.
+        scale: convergence (same units as xy/route_waypoints) at which the
+            tanh saturation is ~63%.
+
+    Returns:
+        (...,) tanh(clamp(dist(xy[0]) - dist(xy[-1]), min=0) / scale) -- 0
+        when `xy` doesn't get closer to the polyline over its span,
+        approaching 1 as it converges by `scale` or more.
+    """
+    origin = torch.zeros_like(route_waypoints[..., :1, :])
+    vertices = torch.cat([origin, route_waypoints], dim=-2)
+    dist = point_to_polyline_distance(xy, vertices)  # (..., num_steps)
+    convergence = (dist[..., 0] - dist[..., -1]).clamp(min=0.0)  # (...,)
+    return torch.tanh(convergence / scale)
+
+
 class SignalWithThresholdResult(NamedTuple):
     class_idx: Tensor
     prob: Tensor

@@ -25,6 +25,22 @@ trajectory_loss_weight: 0.1
 trajectory_motion_weight: 0.0
 trajectory_motion_peak: 4.0
 trajectory_motion_width: 4.0
+# Route-following rebalancing (only read by *_route model configs; 0.0 =
+# disabled/plain mean). Scales each window's trajectory loss up when the
+# car's *actual* recorded path ends up closer to the route waypoints'
+# polyline than where it started over the horizon -- windows already on the
+# route (or drifting away) sit at baseline; only real convergence toward the
+# route line is upweighted. Straight/on-route windows (the majority)
+# trivially satisfy any degree of route-grounding and otherwise dominate the
+# flat mean loss. trajectory_route_scale is the convergence (meters, over
+# the horizon) at which upweighting is ~63% saturated (tanh) -- 1.0 m
+# assumes a lane-correction-scale convergence is "clearly route-following."
+# route_waypoints_key (only read by *_route model configs) points at the raw
+# route input read to build that polyline; route_waypoints_scale converts it
+# to meters (waypoints/xy_normalized is scaled by 1/100).
+trajectory_route_weight: 0.0
+trajectory_route_scale: 1.0
+route_waypoints_scale: 100.0
 speed_loss_weight: 0.1
 activity_weight: 5
 gas_gate_weight: 1.0
