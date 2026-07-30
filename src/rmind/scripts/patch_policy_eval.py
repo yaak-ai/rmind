@@ -61,27 +61,44 @@ def evaluate(  # noqa: PLR0914
             teacher_chunk = tokenizer.invert(target_codes) + model._offset(  # noqa: SLF001
                 offsets, target_codes
             )
-            codes = model._sample_codes(code_logits)  # noqa: SLF001
-            sampled_chunk = tokenizer.invert(codes) + model._offset(offsets, codes)  # noqa: SLF001
+            # both decodings from the SAME logits: one multinomial draw (the
+            # inference path with sample_codes=true) and argmax (deterministic)
+            sampled_codes = model._sample_codes(code_logits)  # noqa: SLF001
+            sampled_chunk = tokenizer.invert(sampled_codes) + model._offset(  # noqa: SLF001
+                offsets, sampled_codes
+            )
+            argmax_codes = code_logits.argmax(dim=-1)
+            argmax_chunk = tokenizer.invert(argmax_codes) + model._offset(  # noqa: SLF001
+                offsets, argmax_codes
+            )
+
+        # per-quantizer code diagnostics: top-1 accuracy, probability mass on
+        # the GT code, and sampling entropy (nats; uniform over 16 = 2.77)
+        probs = code_logits.float().softmax(dim=-1)  # (b, t, g, c)
+        p_gt = probs.gather(-1, target_codes[..., None]).squeeze(-1)  # (b, t, g)
+        entropy = -(probs * probs.clamp_min(1e-10).log()).sum(dim=-1)  # (b, t, g)
+        accuracy = (argmax_codes == target_codes).float()  # (b, t, g)
 
         b, t = features.shape[:2]
         for pos in range(t):
+            values: dict[str, Tensor] = {}
             for q in range(num_quantizers):
-                key = f"t{pos}/code_{q}"
-                value = model.losses["code"](
+                values[f"t{pos}/code_{q}"] = model.losses["code"](
                     code_logits[:, pos, q, :].float(), target_codes[:, pos, q]
                 )
-                sums[key] = sums.get(key, torch.zeros((), device=device)) + value * b
-            for key, value in (
-                (
-                    f"t{pos}/offset",
-                    (teacher_chunk[:, pos] - target[:, pos]).abs().mean(),
-                ),
-                (
-                    f"t{pos}/sampled_recon",
-                    (sampled_chunk[:, pos] - target[:, pos]).abs().mean(),
-                ),
-            ):
+                values[f"t{pos}/acc_{q}"] = accuracy[:, pos, q].mean()
+                values[f"t{pos}/p_gt_{q}"] = p_gt[:, pos, q].mean()
+                values[f"t{pos}/entropy_{q}"] = entropy[:, pos, q].mean()
+            values[f"t{pos}/offset"] = (
+                (teacher_chunk[:, pos] - target[:, pos]).abs().mean()
+            )
+            values[f"t{pos}/sampled_recon"] = (
+                (sampled_chunk[:, pos] - target[:, pos]).abs().mean()
+            )
+            values[f"t{pos}/argmax_recon"] = (
+                (argmax_chunk[:, pos] - target[:, pos]).abs().mean()
+            )
+            for key, value in values.items():
                 sums[key] = sums.get(key, torch.zeros((), device=device)) + value * b
 
         count += b
@@ -144,32 +161,65 @@ def main() -> None:
 
     num_quantizers = model.tokenizer.quantizer.num_quantizers
     positions = sorted({int(k[1]) for k in results if k.startswith("t")})
-    header = (
-        ["pos(context)"]
-        + [f"code_{q}" for q in range(num_quantizers)]
-        + ["code_mean", "offset", "sampled_recon"]
-    )
+
+    def mean_over(prefixes: list[str], name: str) -> float:
+        return torch.stack([results[f"{p}/{name}"] for p in prefixes]).mean().item()
+
+    def q_mean(prefixes: list[str], stem: str) -> float:
+        return (
+            sum(mean_over(prefixes, f"{stem}_{q}") for q in range(num_quantizers))
+            / num_quantizers
+        )
+
     print(f"\ncheckpoint: {args.artifact or args.ckpt}")  # noqa: T201
     print(f"val samples: {int(results['num_samples'])}\n")  # noqa: T201
+
+    header = [
+        "pos(context)",
+        "code_focal",
+        "top1_acc",
+        "p_gt",
+        "entropy",
+        "offset",
+        "recon_sampled",
+        "recon_argmax",
+    ]
     print(" | ".join(f"{h:>13s}" for h in header))  # noqa: T201
 
-    def row(label: str, keys_prefix: list[str]) -> None:
-        codes = [
-            torch.stack([results[f"{p}/code_{q}"] for p in keys_prefix]).mean()
-            for q in range(num_quantizers)
-        ]
-        offset = torch.stack([results[f"{p}/offset"] for p in keys_prefix]).mean()
-        recon = torch.stack([results[f"{p}/sampled_recon"] for p in keys_prefix]).mean()
+    def row(label: str, prefixes: list[str]) -> None:
         cells = [f"{label:>13s}"] + [
-            f"{v.item():13.4f}"
-            for v in [*codes, torch.stack(codes).mean(), offset, recon]
+            f"{v:13.4f}"
+            for v in [
+                q_mean(prefixes, "code"),
+                q_mean(prefixes, "acc"),
+                q_mean(prefixes, "p_gt"),
+                q_mean(prefixes, "entropy"),
+                mean_over(prefixes, "offset"),
+                mean_over(prefixes, "sampled_recon"),
+                mean_over(prefixes, "argmax_recon"),
+            ]
         ]
         print(" | ".join(cells))  # noqa: T201
 
     for pos in positions:
         row(f"t={pos} ({pos + 1}f)", [f"t{pos}"])
     row("all (wandb)", [f"t{p}" for p in positions])
-    row("last (=bsln)", [f"t{positions[-1]}"])
+    last = [f"t{positions[-1]}"]
+    row("last (=bsln)", last)
+
+    print("\nper-quantizer @ last frame:")  # noqa: T201
+    print(  # noqa: T201
+        " | ".join(
+            f"{h:>13s}"
+            for h in ["quantizer", "code_focal", "top1_acc", "p_gt", "entropy"]
+        )
+    )
+    for q in range(num_quantizers):
+        cells = [f"{f'q{q}':>13s}"] + [
+            f"{mean_over(last, f'{stem}_{q}'):13.4f}"
+            for stem in ["code", "acc", "p_gt", "entropy"]
+        ]
+        print(" | ".join(cells))  # noqa: T201
 
 
 if __name__ == "__main__":
