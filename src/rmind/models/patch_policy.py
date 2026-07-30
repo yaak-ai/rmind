@@ -384,12 +384,23 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
-        return TensorDict({
-            "policy": {
-                "loss": losses,
-                "metric": {"offset_sampled_recon": sampled_recon},
-            }
-        })
+        # gradient-free LAST-FRAME metrics: the training losses above average over
+        # all T readouts (contexts of 1..T frames), whereas JointPolicyObjective
+        # only ever scores the newest frame -- these make the two comparable
+        with torch.no_grad():
+            metrics: dict[str, Tensor] = {"offset_sampled_recon": sampled_recon}
+            for q in range(tokenizer.quantizer.num_quantizers):
+                metrics[f"code_{q}_last"] = self.losses["code"](
+                    code_logits[:, -1, q, :], target_codes[:, -1, q]
+                )
+            metrics["offset_last"] = self.losses["offset"](
+                predicted_chunk[:, -1], target[:, -1]
+            )
+            metrics["offset_sampled_recon_last"] = self.losses["offset"](
+                sampled_chunk[:, -1].detach(), target[:, -1]
+            )
+
+        return TensorDict({"policy": {"loss": losses, "metric": metrics}})
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
         metrics = self._compute_metrics(batch)
