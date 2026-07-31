@@ -132,10 +132,12 @@ class BlockCausalTransformer(nn.Module):
 class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     """Patch Policy (https://arxiv.org/pdf/2607.18236) with a VQ-BeT action head.
 
-    Per frame: frozen ViT patch features `(P, D)` get the frozen waypoints-tokenizer
-    latent `g_t` (that frame's goal vector) concatenated to every patch token --
-    the paper's `T x P x (D + G)` scheme -- then projected to the policy width. An
-    embedded speed token is prepended, the `T x (P + 1)` sequence is flattened,
+    Per frame: frozen ViT patch features `(P, D)` -- concatenated across `cameras`
+    when more than one is configured, each camera contributing its own `P` patches
+    -- get the frozen waypoints-tokenizer latent `g_t` (that frame's goal vector)
+    concatenated to every patch token -- the paper's `T x P x (D + G)` scheme --
+    then projected to the policy width. An embedded speed token is prepended, the
+    `T x (P + 1)` sequence is flattened,
     given a learned 1D positional embedding, and run through a block-causal
     transformer (bidirectional intra-frame, causal inter-frame). Each frame's LAST
     patch token predicts that frame's action chunk with the VQ-BeT joint head from
@@ -160,7 +162,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         offset_head: HydraConfig[Module] | InstanceOf[Module],
         losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
-        image: Path = ("image", "cam_front_left"),
+        cameras: tuple[str, ...] = ("cam_front_left",),
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
         chunk: Path = ("joint_actions",),
@@ -214,7 +216,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
         self.norm: Module | None = init_hydra_param(hparams, "norm", norm)
 
-        self.image: Path = image
+        self.cameras: tuple[str, ...] = cameras
         self.speed: Path = speed
         self.waypoints: Path = waypoints
         self.chunk: Path = chunk
@@ -222,7 +224,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
         hparams |= {
-            "image": image,
+            "cameras": cameras,
             "speed": speed,
             "waypoints": waypoints,
             "chunk": chunk,
@@ -252,7 +254,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return self
 
     @staticmethod
-    def _get(inputs: Mapping[str, Any], path: Path) -> Tensor:
+    def _get(inputs: Mapping[str, Any], path: Path) -> Any:
         value = key_get_default(inputs, tuple(map(MappingKey, path)), None)
         if value is None:
             msg = f"input {path!r} missing from transformed batch"
@@ -263,15 +265,20 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`."""
         inputs = self.input_transform(batch)
 
-        images = self._get(inputs, self.image)  # (b, t, c, h, w)
+        image_by_camera = self._get(inputs, ("image",))  # {camera: (b, t, c, h, w)}
         speed = self._get(inputs, self.speed)  # (b, t, 1)
         waypoints = self._get(inputs, self.waypoints)  # (b, t, n, 2)
         chunk = self._get(inputs, self.chunk)  # (b, t, horizon, fields)
 
+        images = torch.stack(
+            [image_by_camera[camera] for camera in self.cameras], dim=2
+        )  # (b, t, cam, c, h, w)
+
         with torch.no_grad():
-            patches = self.image_encoder(images)  # (b, t, p, d_img)
+            patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
 
+        patches = rearrange(patches, "b t cam p d -> b t (cam p) d")
         _, _, num_patches, _ = patches.shape
         patches = torch.cat(
             [patches, goal.unsqueeze(-2).expand(-1, -1, num_patches, -1)], dim=-1

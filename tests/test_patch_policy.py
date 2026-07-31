@@ -91,7 +91,9 @@ class _GoalEncoderStub(Module):
         return self.encode(waypoints)
 
 
-def _make_model(*, teacher_force_offset: bool = True) -> PatchPolicy:
+def _make_model(
+    *, teacher_force_offset: bool = True, cameras: tuple[str, ...] = ("cam_front_left",)
+) -> PatchPolicy:
     return PatchPolicy(
         input_transform=Identity(),
         # tests feed pre-extracted patch features (b, t, p, d) directly
@@ -104,8 +106,9 @@ def _make_model(*, teacher_force_offset: bool = True) -> PatchPolicy:
             dim_model=POLICY_DIM,
             num_layers=2,
             num_heads=2,
-            max_sequence_length=EPISODE_LENGTH * (NUM_PATCHES + 1),
+            max_sequence_length=EPISODE_LENGTH * (len(cameras) * NUM_PATCHES + 1),
         ),
+        cameras=cameras,
         tokenizer=_make_tokenizer(),
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
         offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * ACTION_DIM]),
@@ -124,7 +127,7 @@ def _make_model(*, teacher_force_offset: bool = True) -> PatchPolicy:
     ).eval()
 
 
-def _make_batch() -> dict:
+def _make_batch(*, cameras: tuple[str, ...] = ("cam_front_left",)) -> dict:
     generator = torch.Generator().manual_seed(0)
     chunk = torch.rand(
         (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS), generator=generator
@@ -134,10 +137,11 @@ def _make_batch() -> dict:
     ).float()
     return {
         "image": {
-            "cam_front_left": torch.randn(
+            camera: torch.randn(
                 (BATCH_SIZE, EPISODE_LENGTH, NUM_PATCHES, IMAGE_DIM),
                 generator=generator,
             )
+            for camera in cameras
         },
         "continuous": {
             "speed": torch.rand((BATCH_SIZE, EPISODE_LENGTH, 1), generator=generator)
@@ -186,6 +190,29 @@ def test_features_and_metrics_shapes() -> None:
     for value in losses.values():
         assert value.isfinite()
     assert metrics["policy", "metric", "offset_sampled_recon"].isfinite()
+
+
+def test_multi_camera_stacks_patches_in_camera_order() -> None:
+    cameras = ("cam_front_left", "cam_left_forward", "cam_right_forward")
+    model = _make_model(cameras=cameras)
+    assert model.encoder.position_embedding.num_embeddings == EPISODE_LENGTH * (
+        len(cameras) * NUM_PATCHES + 1
+    )
+
+    batch = _make_batch(cameras=cameras)
+    features, chunk = model._features(batch)  # noqa: SLF001
+    assert features.shape == (BATCH_SIZE, EPISODE_LENGTH, POLICY_DIM)
+    assert chunk.shape == (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS)
+
+    # swap two cameras' images: same data, different camera identity -> must
+    # change the readout (patches are ordered/positioned by `cameras`)
+    swapped = {**batch, "image": {**batch["image"]}}
+    swapped["image"]["cam_left_forward"], swapped["image"]["cam_right_forward"] = (
+        batch["image"]["cam_right_forward"],
+        batch["image"]["cam_left_forward"],
+    )
+    swapped_features, _ = model._features(swapped)  # noqa: SLF001
+    assert not torch.allclose(features, swapped_features)
 
 
 def test_frozen_modules_receive_no_grad() -> None:
