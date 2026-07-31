@@ -38,7 +38,11 @@ import pytorch_lightning as pl
 import torch
 from pydantic import validate_call
 from torch import Tensor
-from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
+    MappingKey,
+    key_get,
+    tree_map,
+)
 
 from rmind.callbacks.safe import SafeCallback
 
@@ -50,7 +54,7 @@ class WandbForesightMetricsLogger(SafeCallback):
     """See module docstring."""
 
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         key: str,
@@ -150,7 +154,7 @@ class WandbForesightMetricsLogger(SafeCallback):
             pl_module,
         )
 
-    def on_validation_batch_end(  # noqa: PLR0913, PLR0917
+    def on_validation_batch_end(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
@@ -180,20 +184,20 @@ class WandbForesightMetricsLogger(SafeCallback):
     @torch.no_grad()
     def _on_validation_epoch_start(
         self,
-        trainer: pl.Trainer,  # noqa: ARG002
-        pl_module: pl.LightningModule,  # noqa: ARG002
+        trainer: pl.Trainer,  # ruff: ignore[unused-method-argument]
+        pl_module: pl.LightningModule,  # ruff: ignore[unused-method-argument]
     ) -> None:
         self._reset()
 
     @torch.no_grad()
-    def _on_validation_batch_end(  # noqa: PLR0913, PLR0917
+    def _on_validation_batch_end(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
         outputs: Any,
-        batch: Any,  # noqa: ARG002
-        batch_idx: int,  # noqa: ARG002
-        dataloader_idx: int = 0,  # noqa: ARG002
+        batch: Any,  # ruff: ignore[unused-method-argument]
+        batch_idx: int,  # ruff: ignore[unused-method-argument]
+        dataloader_idx: int = 0,  # ruff: ignore[unused-method-argument]
     ) -> None:
         if trainer.sanity_checking or not _get_wandb_loggers(pl_module):
             return
@@ -201,8 +205,8 @@ class WandbForesightMetricsLogger(SafeCallback):
             return
 
         try:
-            pred_full = key_get(outputs, self._embeddings_predict_path)
-            tgt_full = key_get(outputs, self._embeddings_target_path)
+            pred_full = key_get(outputs, self._embeddings_predict_path)  # ty: ignore[invalid-argument-type]
+            tgt_full = key_get(outputs, self._embeddings_target_path)  # ty: ignore[invalid-argument-type]
         except (KeyError, IndexError, TypeError):
             return
 
@@ -212,7 +216,7 @@ class WandbForesightMetricsLogger(SafeCallback):
                 tgt_seq: Tensor = key_get(tgt_full, path)
             except (KeyError, IndexError, TypeError):
                 continue
-            if pred_seq.ndim != 4 or pred_seq.shape[1] < 2:  # noqa: PLR2004
+            if pred_seq.ndim != 4 or pred_seq.shape[1] < 2:  # ruff: ignore[magic-value-comparison]
                 continue
 
             pred = pred_seq[:, -1].detach().float()

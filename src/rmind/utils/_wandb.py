@@ -7,7 +7,7 @@ class LoadableFromArtifact:
     def load_from_wandb_artifact(
         cls, artifact: str, filename: str = "model.ckpt", **kwargs: Any
     ) -> Self:
-        import wandb  # noqa: PLC0415
+        import wandb  # ruff: ignore[import-outside-top-level]
 
         run = wandb.run
         artifact_obj = (

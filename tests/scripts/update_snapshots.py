@@ -43,9 +43,9 @@ def main() -> None:
         SNAPSHOT_PATH.unlink(missing_ok=True)
         raise
 
-    print(f"Snapshot written to {SNAPSHOT_PATH}")  # noqa: T201
+    print(f"Snapshot written to {SNAPSHOT_PATH}")  # ruff: ignore[print]
     for k, v in sorted(metrics.items()):
-        print(f"  {k}: {v:.6g}")  # noqa: T201
+        print(f"  {k}: {v:.6g}")  # ruff: ignore[print]
 
 
 if __name__ == "__main__":

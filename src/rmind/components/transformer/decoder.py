@@ -9,7 +9,7 @@ from rmind.components.transformer.utils import run_layer_stack
 
 class CrossAttentionDecoderBlock(nn.Module):
     @validate_call
-    def __init__(  # noqa: PLR0913, PLR0917
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         embedding_dim: int,
         num_heads: int,
@@ -67,7 +67,7 @@ class CrossAttentionDecoderBlock(nn.Module):
 
 
 class CrossAttentionDecoder(nn.Module):
-    def __init__(  # noqa: PLR0913, PLR0917
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         dim_model: int,
         num_layers: int,
@@ -126,7 +126,7 @@ class CrossAttentionDecoderHead(nn.Module):
         query = input.query
         context = input.context
 
-        if query.ndim == 4:  # noqa: PLR2004
+        if query.ndim == 4:  # ruff: ignore[magic-value-comparison]
             b, t, sq, d = query.shape
             _, _, sc, _ = context.shape
 

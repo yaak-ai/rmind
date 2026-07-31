@@ -86,8 +86,8 @@ dev = [
   { include-group = "test" },
 ]
 check = [
-  "ruff>=0.15.20",
-  "ty>=0.0.57",
+  "ruff>=0.16.1",
+  "ty>=0.0.65",
 ]
 test = [
   "pytest>=9.0.2",
@@ -141,22 +141,26 @@ unsafe-fixes = true
 select = ["ALL"]
 fixable = ["ALL"]
 ignore = [
-  "A001",
-  "A002",
-  "ANN401",
-  "COM812",
+  "builtin-variable-shadowing",
+  "builtin-argument-shadowing",
+  "any-type",
+  "missing-trailing-comma",
   "CPY",
   "D",
-  "DOC201",
-  "E501",
-  "N812",
+  "docstring-missing-returns",
+  "line-too-long",
+  "lowercase-imported-as-non-lowercase",
   "PD",
-  "PLW0717",
+  "too-many-statements-in-try-clause",
   "TD",
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
-"tests/**/*.py" = ["S101", "S301", "S403"]
+"tests/**/*.py" = [
+  "assert",
+  "suspicious-pickle-usage",
+  "suspicious-pickle-import"
+]
 
 [tool.ruff.lint.isort]
 split-on-trailing-comma = false

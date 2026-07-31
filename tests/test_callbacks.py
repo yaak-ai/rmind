@@ -105,11 +105,11 @@ class FailingBatchCallback(SafeCallback):
 
     def _call(
         self,
-        trainer: pl.Trainer,  # noqa: ARG002
-        pl_module: pl.LightningModule,  # noqa: ARG002
-        outputs: object,  # noqa: ARG002
-        batch: object,  # noqa: ARG002
-        batch_idx: int,  # noqa: ARG002
+        trainer: pl.Trainer,  # ruff: ignore[unused-method-argument]
+        pl_module: pl.LightningModule,  # ruff: ignore[unused-method-argument]
+        outputs: object,  # ruff: ignore[unused-method-argument]
+        batch: object,  # ruff: ignore[unused-method-argument]
+        batch_idx: int,  # ruff: ignore[unused-method-argument]
     ) -> None:
         self.calls += 1
         raise RuntimeError(self.msg)
@@ -164,7 +164,7 @@ def test_waypoints_map_handles_basemap_http_error(
 
     monkeypatch.setattr(waypoints_logger.ctx, "add_basemap", raise_http_error)
 
-    image = WandbWaypointsLogger._plot_waypoints_on_map(  # noqa: SLF001
+    image = WandbWaypointsLogger._plot_waypoints_on_map(  # ruff: ignore[private-member-access]
         wpts_xy=torch.tensor([[392000.0, 5810000.0], [392010.0, 5810010.0]]),
         crs="EPSG:25832",
     )

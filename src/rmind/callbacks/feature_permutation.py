@@ -6,7 +6,7 @@ import torch
 from pydantic import validate_call
 from pytorch_lightning.callbacks import Callback
 from structlog import get_logger
-from torch.utils._pytree import MappingKey, key_get  # noqa: PLC2701
+from torch.utils._pytree import MappingKey, key_get  # ruff: ignore[import-private-name]
 
 from rmind.utils.pytree import path_to_key
 
@@ -56,9 +56,9 @@ class FeaturePermutator(Callback):
         dataloader_idx: int = 0,
     ) -> None:
         for path in self._paths:
-            tensor = key_get(batch, path)
+            tensor = key_get(batch, path)  # ty: ignore[invalid-argument-type]
             perm = torch.randperm(
                 tensor.shape[0], generator=self._generator, device=tensor.device
             )
             *prefix, last = path
-            key_get(batch, tuple(prefix))[last.key] = tensor[perm]
+            key_get(batch, tuple(prefix))[last.key] = tensor[perm]  # ty: ignore[invalid-argument-type]

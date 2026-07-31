@@ -1,5 +1,5 @@
 from pathlib import Path
-from subprocess import check_output  # noqa: S404
+from subprocess import check_output  # ruff: ignore[suspicious-subprocess-import]
 
 import hydra
 import pytorch_lightning as pl
@@ -45,7 +45,7 @@ def main(cfg: DictConfig) -> None:
         paths = {
             Path(path).resolve()
             for path in check_output(
-                ["git", "ls-files"],  # noqa: S607
+                ["git", "ls-files"],  # ruff: ignore[start-process-with-partial-path]
                 universal_newlines=True,
             ).splitlines()
         }

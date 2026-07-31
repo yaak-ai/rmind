@@ -6,7 +6,11 @@ import torch
 from pydantic import validate_call
 from torch import Tensor, nn
 from torch.nn import Module
-from torch.utils._pytree import MappingKey, PyTree, tree_map  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
+    MappingKey,
+    PyTree,
+    tree_map,
+)
 
 from rmind.utils.functional import diff_last
 from rmind.utils.pytree import key_get_default

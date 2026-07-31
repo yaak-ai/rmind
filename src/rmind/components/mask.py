@@ -1,7 +1,7 @@
 import operator
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import NamedTuple, Protocol, Self, final, override
+from typing import ClassVar, NamedTuple, Protocol, Self, final, override
 
 import torch
 from einops import rearrange
@@ -9,7 +9,10 @@ from tensordict import tensorclass
 from torch import Tensor
 from torch.nn import Module
 from torch.types import Number
-from torch.utils._pytree import tree_leaves, tree_map  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
+    tree_leaves,
+    tree_map,
+)
 
 from rmind.components.base import (
     Modality,
@@ -21,8 +24,8 @@ from rmind.components.base import (
 
 
 class AttentionMaskLegendProvider(Protocol):
-    DO_ATTEND: Number
-    DO_NOT_ATTEND: Number
+    DO_ATTEND: ClassVar[Number]
+    DO_NOT_ATTEND: ClassVar[Number]
 
 
 class AttentionMaskLegend(NamedTuple):
@@ -32,8 +35,8 @@ class AttentionMaskLegend(NamedTuple):
 
 @final
 class TorchAttentionMaskLegend:
-    DO_ATTEND = False
-    DO_NOT_ATTEND = True
+    DO_ATTEND: ClassVar[Number] = False
+    DO_NOT_ATTEND: ClassVar[Number] = True
 
 
 @tensorclass
@@ -137,7 +140,7 @@ class FactorizedAttentionMaskBuilder(Module, ABC):
 
 class CausalAttentionMaskBuilder(AttentionMaskBuilder):
     @override
-    def forward(  # noqa: PLR0914
+    def forward(  # ruff: ignore[too-many-locals]
         self,
         *,
         index: TensorTree,

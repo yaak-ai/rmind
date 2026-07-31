@@ -7,7 +7,7 @@ from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
-from torch.utils._pytree import tree_map  # noqa: PLC2701
+from torch.utils._pytree import tree_map  # ruff: ignore[import-private-name]
 
 from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict

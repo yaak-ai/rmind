@@ -81,7 +81,7 @@ class TensorDictPredictionWriter(BasePredictionWriter):
             self._writer(data, path.resolve().as_posix())
 
     @classmethod
-    def _patched_orjson_dumps(cls):  # noqa: ANN206
+    def _patched_orjson_dumps(cls):  # ruff: ignore[missing-return-type-class-method]
         # `TensorDict.memmap` uses `orjson.dumps` to serialize metadata,
         # which may contain StrEnum keys. `orjson.dumps` doesn't handle
         # those without the `orjson.OPT_NON_STR_KEYS` option set (see

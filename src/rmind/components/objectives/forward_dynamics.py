@@ -9,7 +9,7 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
-from torch.utils._pytree import tree_map  # noqa: PLC2701
+from torch.utils._pytree import tree_map  # ruff: ignore[import-private-name]
 
 from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
@@ -26,7 +26,7 @@ from rmind.components.objectives.base import (
 @final
 class ForwardDynamicsPredictionObjective(Objective):
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         norm: InstanceOf[Module] | None = None,
@@ -103,7 +103,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         }
 
     @override
-    def predict(  # noqa: PLR0914
+    def predict(  # ruff: ignore[too-many-locals]
         self,
         *,
         episode: Episode,

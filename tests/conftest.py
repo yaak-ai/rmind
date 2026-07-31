@@ -110,7 +110,7 @@ def embedding_dims() -> EmbeddingDims:
         if getattr(torch, device).is_available()
     ],
 )
-def device(request) -> torch.device:  # noqa: ANN001
+def device(request) -> torch.device:  # ruff: ignore[missing-type-function-argument]
     return torch.device(request.param)
 
 

@@ -9,7 +9,7 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
-from torch.utils._pytree import tree_map  # noqa: PLC2701
+from torch.utils._pytree import tree_map  # ruff: ignore[import-private-name]
 
 from rmind.components.base import Modality, SummaryToken, TensorTree
 from rmind.components.containers import ModuleDict
@@ -115,7 +115,7 @@ class PolicyObjective(Objective):
         return {"loss": losses}
 
     @override
-    def predict(  # noqa: C901, PLR0912, PLR0915
+    def predict(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         self,
         episode: Episode,
         *,

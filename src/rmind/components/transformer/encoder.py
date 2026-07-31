@@ -14,7 +14,7 @@ from rmind.components.transformer.utils import run_layer_stack
 
 class TransformerEncoder(nn.Module):
     @validate_call
-    def __init__(  # noqa: PLR0913, PLR0917
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         dim_model: int,
         num_layers: int,
@@ -55,7 +55,7 @@ class TransformerEncoder(nn.Module):
 
 
 class FactorizedTransformerEncoderBlock(nn.Module):
-    def __init__(  # noqa: PLR0913, PLR0917
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         embedding_dim: int,
         num_heads: int,

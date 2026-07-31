@@ -40,7 +40,7 @@ class PredictMetricsCallback(Callback):
         self._prev_prediction_config = cast(
             "PredictionConfig", pl_module.prediction_config
         )
-        pl_module.prediction_config = self._prediction_config  # ty: ignore[unresolved-attribute]
+        pl_module.prediction_config = self._prediction_config  # ty: ignore[invalid-assignment]
 
     @override
     @torch.no_grad()
@@ -103,7 +103,7 @@ class PredictMetricsCallback(Callback):
             hasattr(pl_module, "prediction_config")
             and self._prev_prediction_config is not None
         ):
-            pl_module.prediction_config = self._prev_prediction_config  # ty: ignore[unresolved-attribute]
+            pl_module.prediction_config = self._prev_prediction_config  # ty: ignore[invalid-assignment]
             self._prev_prediction_config = None
 
         metrics: dict[str, Tensor] = {}

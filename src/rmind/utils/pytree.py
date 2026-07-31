@@ -1,7 +1,7 @@
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from torch.utils._pytree import (  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
     KeyPath,
     MappingKey,
     PyTree,

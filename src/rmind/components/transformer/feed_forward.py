@@ -10,7 +10,7 @@ class MLPGLU(nn.Module):
         dim_model: int,
         dropout: float,
         hidden_layer_multiplier: int,
-        bias: bool = True,  # noqa: FBT001, FBT002
+        bias: bool = True,  # ruff: ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
     ) -> None:
         super().__init__()
         dim_mlp = hidden_layer_multiplier * dim_model
