@@ -1,0 +1,31 @@
+---
+defaults:
+  - /dataset/yaak/action_train@train.dataset
+  - /dataset/yaak/action_val@val.dataset
+  - _self_
+
+_target_: rmind.datamodules.GenericDataModule
+train:
+  # weighted sampling: draw len(dataset) windows/epoch WITH REPLACEMENT ~ meta/weight,
+  # so rare maneuvers are oversampled without shrinking the epoch (no shuffle needed).
+  _target_: rmind.io.weighted_loader.WeightedDataNodeDataLoader
+  weight_key: meta/weight
+  batch_size: 2048
+  drop_last: true
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+
+val:
+  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  batch_size: 2048
+  shuffle: false
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread

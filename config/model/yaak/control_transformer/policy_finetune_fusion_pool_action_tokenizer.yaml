@@ -1,0 +1,100 @@
+---
+# VQ-BeT action-chunk finetune on top of a fusion-pool feature path.
+#
+# Combines two lineages: the encoder/episode-builder come from a "joint" PT+FT
+# pretrain (wandb tags PT,FT,joint,... e.g. yaak/alex-tmp/model-y80dqyml:v9),
+# whose sequence embeds neither speed nor waypoints -- hence FeatureFusionPool,
+# which feeds those in raw alongside the observation_summary history window --
+# while the head is JointPolicyObjective: predict a frozen residual-VQ action
+# tokenizer's codes plus a code-conditioned offset, instead of per-field
+# Gaussian/CE heads.
+#
+# The pool emits num_queries*embedding_dim = 768 features, so code_head and
+# offset_head are 768-wide (vs 384 for the single-query mask-token path).
+#
+# As in policy_finetune_fusion_pool_drop_policy, that PT's own policy objective
+# is a different design entirely and none of its objectives.policy.* weights are
+# meant to be warm-started -- state_dict_drop removes the whole subtree rather
+# than enumerating shape mismatches (strict: false does not forgive those).
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+state_dict_drop:
+  - objectives\.policy\.
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.JointPolicyObjective",
+        "history_steps": 5,
+        "action_horizon": 6,
+        "action_paths": {
+          "gas_pedal": ["continuous", "gas_pedal"],
+          "brake_pedal": ["continuous", "brake_pedal"],
+          "steering_angle": ["continuous", "steering_angle"],
+          "turn_signal": ["discrete", "turn_signal"]
+        },
+        "raw_waypoints_key": ["context", "waypoints"],
+        "raw_speed_key": ["continuous", "speed"],
+        "raw_waypoints_dropout": ${raw_waypoints_dropout},
+        "raw_speed_dropout": ${raw_speed_dropout},
+        "fusion_pool": {
+          "_target_": "rmind.components.nn.FeatureFusionPool",
+          "embedding_dim": 384,
+          "num_waypoints": 10,
+          "history_steps": 5,
+          "pool": {
+            "_target_": "rmind.components.transformer.AttentionPoolHead",
+            "embedding_dim": 384,
+            "num_queries": 2,
+            "decoder": {
+              "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+              "dim_model": 384,
+              "num_layers": 1,
+              "num_heads": 4,
+              "attn_dropout": 0.1,
+              "resid_dropout": 0.1,
+              "mlp_dropout": 0.1,
+              "hidden_layer_multiplier": 1
+            }
+          }
+        },
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "tokenizer": {
+          "_target_": "rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact",
+          "artifact": "${action_tokenizer_artifact}",
+          "weights_only": false
+        },
+        "code_head": {
+          "_target_": "rmind.components.nn.Linear",
+          "in_features": 768,
+          "out_features": 64
+        },
+        "offset_head": {
+          "_target_": "rmind.components.nn.Linear",
+          "in_features": 768,
+          "out_features": 1536
+        },
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "code": { "_target_": "rmind.components.loss.FocalLoss" },
+            "offset": { "_target_": "torch.nn.L1Loss" }
+          }
+        }
+      }
+    }
+  }
+  | .optimizer.lr = ${optimizer_lr}
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
+    }
+  }
