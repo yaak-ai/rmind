@@ -1,5 +1,6 @@
 from itertools import pairwise
 
+import pytest
 import torch
 from torch.testing import assert_close, make_tensor
 
@@ -13,6 +14,7 @@ from rmind.components.mask import (
 )
 from rmind.components.nn import Sequential
 from rmind.components.norm import Scaler, UniformBinner
+from rmind.components.timm_backbone import TimmBackbone
 from rmind.components.transformer import TransformerEncoder
 
 
@@ -210,6 +212,49 @@ def test_index_unpacked_alignment(episode: Episode) -> None:
         expected.select(*recovered.keys(include_nested=True, leaves_only=True)),
         msg="index/unpacked misaligned",
     )
+
+
+def _foreign_encoder_checkpoint(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """A Depth-Anything-V2-shaped checkpoint built from `model`'s own weights.
+
+    The ViT encoder lives under a `pretrained.` prefix beside a `depth_head.*` DPT
+    head; `mask_token` has no timm counterpart; and `pos_embed` is at a larger native
+    grid (37x37 + cls) than the model's configured 16x16, so loading must resample it.
+    """
+    state_dict = model.state_dict()
+    dim = state_dict["pos_embed"].shape[-1]
+    checkpoint = {f"pretrained.{k}": v.clone() for k, v in state_dict.items()}
+    checkpoint["pretrained.pos_embed"] = torch.zeros(1, 37 * 37 + 1, dim)
+    checkpoint["pretrained.mask_token"] = torch.zeros(1, 1, dim)
+    checkpoint["depth_head.projects.0.weight"] = torch.zeros(4)
+    return checkpoint
+
+
+def test_load_prefixed_encoder_remaps_and_resamples() -> None:
+    # pretrained=False -> offline; norm_patch_tokens keeps model a vanilla ViT
+    backbone = TimmBackbone(
+        "vit_small_patch14_dinov2.lvd142m", img_size=[224, 224], norm_patch_tokens=True
+    )
+    checkpoint = _foreign_encoder_checkpoint(backbone.model)
+
+    # must load cleanly: DPT head + mask_token dropped, pos_embed resampled to fit
+    backbone.load_prefixed_encoder(checkpoint, "pretrained.")
+
+    # the resampled pos_embed must yield the model's 16x16 = 256 patch grid
+    with torch.no_grad():
+        out = backbone(torch.randn(1, 3, 224, 224))
+    assert out.shape == (1, 384, 16, 16)
+
+
+def test_load_prefixed_encoder_fails_loud_on_key_drift() -> None:
+    backbone = TimmBackbone(
+        "vit_small_patch14_dinov2.lvd142m", img_size=[224, 224], norm_patch_tokens=True
+    )
+    checkpoint = _foreign_encoder_checkpoint(backbone.model)
+    del checkpoint["pretrained.norm.weight"]  # simulate a renamed/missing key
+
+    with pytest.raises(RuntimeError, match="key mismatch"):
+        backbone.load_prefixed_encoder(checkpoint, "pretrained.")
 
 
 def test_encoder_no_inplace_ops(encoder: TransformerEncoder) -> None:

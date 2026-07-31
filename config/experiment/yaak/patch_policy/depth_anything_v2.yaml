@@ -1,0 +1,29 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2
+  - _self_
+
+# Depth-Anything-V2 (https://github.com/DepthAnything/Depth-Anything-V2): its ViT
+# encoder IS DINOv2 (ViT-S/14, register-free), fine-tuned end-to-end on depth. It
+# is NOT in timm's registry, so TimmBackbone overwrites the timm-pretrained weights
+# with the checkpoint's `pretrained.` sub-tree (dropping the `depth_head.*` DPT
+# head). Architecture, resize (224x224 -> 16x16 = 256 patches), and dim (384) match
+# the dinov2 arm exactly, so only the weights differ -- a clean A/B on depth-aware
+# vs semantic patch features.
+# NOTE: _args_ lists merge by replacement, so the Sequential is re-stated fully.
+model:
+  image_encoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: rmind.components.timm_backbone.TimmBackbone
+        model_name: ${image_encoder_name}
+        img_size: ${image_resize}
+        norm_patch_tokens: true
+        hf_repo_id: depth-anything/Depth-Anything-V2-Small
+        hf_filename: depth_anything_v2_vits.pth
+      - _target_: einops.layers.torch.Rearrange
+        pattern: "... c h w -> ... (h w) c"
+
+wandb:
+  tags: [patch_policy, depth_anything_v2]
