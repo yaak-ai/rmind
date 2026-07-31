@@ -9,7 +9,7 @@ from structlog import get_logger
 from tensordict import TensorClass, TensorDict
 from torch import Tensor
 from torch.nn import Module
-from torch.utils._pytree import (  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
     tree_leaves,
     tree_map,
     tree_map_with_path,
@@ -62,7 +62,7 @@ class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
 @final
 class EpisodeBuilder(Module):
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         timestep: tuple[TokenMeta, ...],

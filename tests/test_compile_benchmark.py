@@ -38,7 +38,7 @@ def _probe(backend: str) -> bool:
     try:
         compiled = torch.compile(lambda x: x + 1, backend=backend)
         compiled(torch.zeros(1))
-    except Exception:  # noqa: BLE001
+    except Exception:  # ruff: ignore[blind-except]
         return False
     return True
 
@@ -67,7 +67,7 @@ def _sync(device: torch.device) -> None:
         torch.mps.synchronize()
 
 
-def _time_encoder_steps(  # noqa: PLR0913
+def _time_encoder_steps(  # ruff: ignore[too-many-arguments]
     episode_builder: Module,
     encoder: Any,
     batch: dict[str, Any],
@@ -116,7 +116,7 @@ def control_transformer_eager(
     ).to(device)
 
 
-def test_compile_vs_eager_encoder(  # noqa: PLR0913, PLR0917
+def test_compile_vs_eager_encoder(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     control_transformer_eager: ControlTransformer,
     episode_builder: Module,
     objectives: ModuleDict,
@@ -166,7 +166,7 @@ def test_compile_vs_eager_encoder(  # noqa: PLR0913, PLR0917
     compiled_mean, compiled_std = stats(compiled_times)
     speedup = eager_mean / compiled_mean
 
-    print(  # noqa: T201
+    print(  # ruff: ignore[print]
         f"\n{'':=<60}\n"
         f"  Encoder benchmark  (backend={backend!r})\n"
         f"{'':=<60}\n"

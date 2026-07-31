@@ -7,7 +7,7 @@ from pydantic import InstanceOf, validate_call
 from pytorch_lightning.callbacks import Callback
 from structlog import get_logger
 from tensordict import TensorClass, TensorDict
-from torch.utils._pytree import (  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
     KeyPath,
     key_get,
     keystr,

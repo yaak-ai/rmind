@@ -5,7 +5,7 @@ from more_itertools import always_iterable
 from pydantic import InstanceOf, validate_call
 from torch.nn import Module
 from torch.nn import ModuleDict as _ModuleDict
-from torch.utils._pytree import (  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
     MappingKey,
     PyTree,
     _dict_flatten,
@@ -119,8 +119,8 @@ class ModuleDict(_ModuleDict):
 
 register_pytree_node(
     _ModuleDict,
-    flatten_fn=lambda x: _dict_flatten(x._modules),  # noqa: SLF001
-    flatten_with_keys_fn=lambda x: _dict_flatten_with_keys(x._modules),  # noqa: SLF001
+    flatten_fn=lambda x: _dict_flatten(x._modules),  # ruff: ignore[private-member-access]
+    flatten_with_keys_fn=lambda x: _dict_flatten_with_keys(x._modules),  # ruff: ignore[private-member-access]
     unflatten_fn=lambda values, context: _ModuleDict(
         modules=_dict_unflatten(values, context)
     ),
@@ -128,8 +128,8 @@ register_pytree_node(
 
 register_pytree_node(
     ModuleDict,
-    flatten_fn=lambda x: _dict_flatten(x._modules),  # noqa: SLF001
-    flatten_with_keys_fn=lambda x: _dict_flatten_with_keys(x._modules),  # noqa: SLF001
+    flatten_fn=lambda x: _dict_flatten(x._modules),  # ruff: ignore[private-member-access]
+    flatten_with_keys_fn=lambda x: _dict_flatten_with_keys(x._modules),  # ruff: ignore[private-member-access]
     unflatten_fn=lambda values, context: ModuleDict(
         modules=_dict_unflatten(values, context)
     ),

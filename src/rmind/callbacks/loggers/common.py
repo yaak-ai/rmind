@@ -11,7 +11,7 @@ from pytorch_lightning.loggers import WandbLogger
 
 def _validate_hook(value: str) -> str:
     if not callable(getattr(ModelHooks, value, None)):
-        raise ValueError  # noqa: TRY004
+        raise ValueError  # ruff: ignore[type-check-without-type-error]
 
     return value
 

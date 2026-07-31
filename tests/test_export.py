@@ -8,7 +8,7 @@ from pytest_lazy_fixtures import lf
 from torch import Tensor
 from torch.nn import LayerNorm, Module
 from torch.testing import assert_close
-from torch.utils._pytree import (  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
     keystr,
     tree_flatten_with_path,
     tree_map,
@@ -31,9 +31,9 @@ def _soft_pending_unbacked() -> None:
     # during export tracing (dynamo side-effect). This creates a spurious
     # "pending unbacked symbol u0" error even though the exported graph is valid.
     # Demote to warning so torch.export tests are not falsely blocked.
-    import logging  # noqa: PLC0415
+    import logging  # ruff: ignore[import-outside-top-level]
 
-    import torch.fx.experimental._config as _fx_config  # noqa: PLC0415, PLC2701
+    import torch.fx.experimental._config as _fx_config  # ruff: ignore[import-outside-top-level, import-private-name]
 
     _fx_config.soft_pending_unbacked_not_found_error = True  # ty:ignore[invalid-assignment]
     # ...then mute the now-harmless demoted warning (it's a logging record, not a warning).
@@ -198,7 +198,7 @@ def test_torch_export_fake(
 
         match expected, actual:
             case (Tensor(shape=[]), int() | float()):
-                expected = expected.item()  # noqa: PLW2901
+                expected = expected.item()  # ruff: ignore[redefined-loop-name]
 
             case _:
                 pass
@@ -252,7 +252,9 @@ def test_torch_export_dynamic_shapes(
     control_transformer: ControlTransformer, batch_dict: TensorTree
 ) -> None:
     """Dynamic-shape export works with the tensordict#1003 patch applied."""
-    from rmind.utils.tensordict_export_patch import apply  # noqa: PLC0415
+    from rmind.utils.tensordict_export_patch import (  # ruff: ignore[import-outside-top-level]
+        apply,
+    )
 
     apply()
     module = control_transformer.eval()

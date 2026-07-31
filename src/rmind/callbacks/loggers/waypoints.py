@@ -9,7 +9,11 @@ from einops import rearrange
 from pydantic import AfterValidator, validate_call
 from structlog import get_logger
 from torch import Tensor
-from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
+    MappingKey,
+    key_get,
+    tree_map,
+)
 from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
@@ -38,7 +42,7 @@ class WandbWaypointsLogger(SafeCallback):
         EGO_XY = auto()
 
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         data: dict[DataColumns, list[str | int]],
@@ -162,7 +166,7 @@ class WandbWaypointsLogger(SafeCallback):
             for i, (x, y) in enumerate(zip(wpts_x, wpts_y, strict=True)):
                 ax.annotate(str(i), (x, y), xytext=(5, 5), textcoords="offset points")
             ax.plot(0, 0, "ro")
-            ax.grid(True)  # noqa: FBT003
+            ax.grid(True)  # ruff: ignore[boolean-positional-value-in-call]
             ax.axis("equal")
             return Image(_figure_to_rgba(fig), caption=caption)
         finally:

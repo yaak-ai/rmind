@@ -15,13 +15,16 @@ from pydantic import (
     InstanceOf,
     validate_call,
 )
-from pytorch_lightning.core.saving import _load_state, pl_load  # noqa: PLC2701
+from pytorch_lightning.core.saving import (
+    _load_state,  # ruff: ignore[import-private-name]
+    pl_load,
+)
 from pytorch_lightning.utilities.migration.utils import (
-    _pl_migrate_checkpoint,  # noqa: PLC2701
+    _pl_migrate_checkpoint,  # ruff: ignore[import-private-name]
     pl_legacy_patch,
 )
 from pytorch_lightning.utilities.model_helpers import (
-    _restricted_classmethod,  # noqa: PLC2701
+    _restricted_classmethod,  # ruff: ignore[import-private-name]
 )
 from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from structlog import get_logger
@@ -63,7 +66,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     prediction_config: PredictionConfig
 
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         episode_builder: HydraConfig[Module] | InstanceOf[Module],
@@ -115,7 +118,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @_restricted_classmethod
     @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
     def load_from_checkpoint(
-        cls,  # noqa: N805
+        cls,  # ruff: ignore[invalid-first-argument-name-for-method]
         checkpoint_path: _PATH,
         *,
         map_location: _MAP_LOCATION_TYPE = None,
@@ -187,7 +190,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             for name, objective in self.objectives.items()
         })
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # ruff: ignore[in-dict-keys]
         loss_total = losses.sum(reduce=True)
         metrics["loss", "total"] = loss_total
 
@@ -226,7 +229,7 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
             for name, objective in self.objectives.items()
         })
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # ruff: ignore[in-dict-keys]
         loss_total = losses.sum(reduce=True)
         metrics["loss", "total"] = loss_total
 
@@ -282,7 +285,9 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
         if self.optimizer is not None:
-            from rmind.components import optimizers  # noqa: PLC0415
+            from rmind.components import (  # ruff: ignore[import-outside-top-level]
+                optimizers,
+            )
 
             match self.optimizer.target:
                 case optimizers.SelectiveAdamW:

@@ -39,13 +39,13 @@ def test_compute_metrics(
     ids=["no_keys", "all_keys"],
 )
 @torch.inference_mode()
-def test_predict(  # noqa: PLR0913, PLR0917
+def test_predict(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     objective: Objective,
     episode: Episode,
     tokenizers: ModuleDict,
     encoder: TransformerEncoder,
     keys: frozenset[ObjectivePredictionKey],
-    expect_empty: bool,  # noqa: FBT001
+    expect_empty: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
 ) -> None:
     predictions = objective.predict(
         episode=episode,

@@ -32,7 +32,7 @@ def _subscript(n: int) -> str:
     return "".join(_SUBSCRIPTS[int(d)] for d in str(n))
 
 
-def visualize_attention_mask(  # noqa: PLR0914
+def visualize_attention_mask(  # ruff: ignore[too-many-locals]
     mask: Tensor, timestep_meta: tuple[TokenMeta, ...], index: dict, num_timesteps: int
 ) -> plt.Figure:
     """
@@ -162,7 +162,7 @@ class WandbAttentionMaskLogger(SafeCallback):
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
         outputs: STEP_OUTPUT,
-        batch: Any,  # noqa: ARG002
+        batch: Any,  # ruff: ignore[unused-method-argument]
         batch_idx: int,
     ) -> None:
         loggers = _get_wandb_loggers(pl_module)

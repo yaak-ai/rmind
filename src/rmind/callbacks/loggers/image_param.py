@@ -23,7 +23,7 @@ from .common import (
 @final
 class WandbImageParamLogger(SafeCallback):
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         when: Annotated[str, AfterValidator(_validate_hook)],

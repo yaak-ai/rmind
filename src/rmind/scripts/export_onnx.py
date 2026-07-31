@@ -5,14 +5,16 @@ from typing import Annotated, Any, ClassVar, Literal
 
 import hydra
 import torch
-import torch.fx.experimental._config as _fx_config  # noqa: PLC2701
+import torch.fx.experimental._config as _fx_config  # ruff: ignore[import-private-name]
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from pydantic import AfterValidator, BaseModel, ConfigDict
 from pytorch_lightning import LightningModule
 from pytorch_lightning.utilities.model_summary.model_summary import ModelSummary
 from structlog import get_logger
-from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
+    tree_flatten_with_path,
+)
 
 from rmind.config import HydraConfig
 from rmind.utils.patch import monkeypatched
@@ -53,7 +55,7 @@ def _pkg_version(name: str) -> str | None:
 def _upload_to_wandb(config: Config) -> None:
     # Log the exported `.onnx` to the same wandb run that produced the source
     # checkpoint, so it lands as a sibling output artifact in the run's lineage.
-    import wandb  # noqa: PLC0415
+    import wandb  # ruff: ignore[import-outside-top-level]
 
     source_ref = getattr(config.model, "artifact", None)
     if source_ref is None:
@@ -129,7 +131,7 @@ def main(cfg: DictConfig) -> None:
     logger.debug("instantiating", target=config.model.target)
     args = instantiate(config.args, _recursive_=True, _convert_="all")
     model = config.model.instantiate().eval()
-    logger.debug(f"model summary:\n{ModelSummary(model)}")  # noqa: G004
+    logger.debug(f"model summary:\n{ModelSummary(model)}")  # ruff: ignore[logging-f-string]
 
     # Eager forward populates cached buffers (e.g. attention mask) that are not
     # trace-friendly. Must run before torch.export — see EpisodeBuilder._build_attention_mask_tensor.

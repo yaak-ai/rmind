@@ -4,7 +4,11 @@ import pytest
 import torch
 from torch import Tensor
 from torch.testing import assert_close, make_tensor
-from torch.utils._pytree import KeyPath, keystr, tree_map_with_path  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
+    KeyPath,
+    keystr,
+    tree_map_with_path,
+)
 
 from rmind.components.containers import ModuleDict
 

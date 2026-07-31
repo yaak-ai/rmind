@@ -3,7 +3,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal, final, override
 
-import polars as plr  # noqa: ICN001
+import polars as plr  # ruff: ignore[unconventional-import-alias]
 import pytorch_lightning as pl
 from pydantic import validate_call
 from pytorch_lightning.callbacks import BasePredictionWriter
@@ -80,7 +80,7 @@ class DataFramePredictionWriter(BasePredictionWriter):
 
         try:
             df = plr.from_numpy(data.to_struct_array())
-        except:  # noqa: E722
+        except:  # ruff: ignore[bare-except]
             df = plr.from_dict(data.numpy())
 
         path = Path(

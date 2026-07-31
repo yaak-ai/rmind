@@ -8,7 +8,11 @@ import torch
 from pydantic import AfterValidator, validate_call
 from torch import Tensor
 from torch.nn.functional import cosine_similarity
-from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
+    MappingKey,
+    key_get,
+    tree_map,
+)
 from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
@@ -24,7 +28,7 @@ from .common import (
 @final
 class WandbPatchSimilarityLogger(SafeCallback):
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         when: Annotated[str, AfterValidator(_validate_hook)],
@@ -64,7 +68,7 @@ class WandbPatchSimilarityLogger(SafeCallback):
         digest = hashlib.sha256(f"{sample_id}:{image_source_key}".encode()).digest()
         return int.from_bytes(digest[:4]) % num_patches
 
-    def _call(  # noqa: PLR0914
+    def _call(  # ruff: ignore[too-many-locals]
         self,
         trainer: pl.Trainer,
         pl_module: pl.LightningModule,
@@ -81,14 +85,14 @@ class WandbPatchSimilarityLogger(SafeCallback):
         batch: dict = bound_args.get("batch")  # ty:ignore[invalid-assignment]
         outputs = bound_args.get("outputs")
 
-        sample_ids = key_get(batch, self._sample_id_path)
+        sample_ids = key_get(batch, self._sample_id_path)  # ty: ignore[invalid-argument-type]
         mask = sample_ids % self._every_n_sample == 0
         if not mask.any():
             return
 
         matching_indices = mask.nonzero(as_tuple=False).flatten()
-        pred_emb_full = key_get(outputs, self._embeddings_predict_path)
-        gt_emb_full = key_get(outputs, self._embeddings_target_path)
+        pred_emb_full = key_get(outputs, self._embeddings_predict_path)  # ty: ignore[invalid-argument-type]
+        gt_emb_full = key_get(outputs, self._embeddings_target_path)  # ty: ignore[invalid-argument-type]
 
         for local_idx in matching_indices:
             sample_id = sample_ids[local_idx].item()
@@ -220,7 +224,7 @@ class WandbPatchSimilarityLogger(SafeCallback):
                         ha="center",
                         va="center",
                         fontsize=7,
-                        color="white" if val < 0.5 else "black",  # noqa: PLR2004
+                        color="white" if val < 0.5 else "black",  # ruff: ignore[magic-value-comparison]
                     )
 
             # Highlight reference patch

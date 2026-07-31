@@ -21,11 +21,11 @@ from __future__ import annotations
 import numbers
 from typing import Any
 
-import tensordict._pytree as _td_pytree  # noqa: PLC2701
+import tensordict._pytree as _td_pytree  # ruff: ignore[import-private-name]
 import torch
-import torch.utils._pytree as _torch_pytree  # noqa: PLC2701
-from tensordict.utils import _shape, is_compiling  # noqa: PLC2701
-from torch.utils._pytree import NodeDef  # noqa: PLC2701
+import torch.utils._pytree as _torch_pytree  # ruff: ignore[import-private-name]
+from tensordict.utils import _shape, is_compiling  # ruff: ignore[import-private-name]
+from torch.utils._pytree import NodeDef  # ruff: ignore[import-private-name]
 
 # Fix 1: _tensordict_flatten / _tensordict_unflatten
 #
@@ -43,9 +43,9 @@ def _flatten(d: Any) -> tuple[list[Any], dict]:
         keys, values = [], []
     ctx: dict = {
         "keys": keys,
-        "names": d.names if d._has_names() else None,  # noqa: SLF001
+        "names": d.names if d._has_names() else None,  # ruff: ignore[private-member-access]
         "device": d.device,
-        "constructor": _td_pytree._CONSTRUCTORS[type(d)],  # noqa: SLF001
+        "constructor": _td_pytree._CONSTRUCTORS[type(d)],  # ruff: ignore[private-member-access]
         "non_tensor_data": d.non_tensor_items(),
         "cls": type(d),
     }
@@ -99,10 +99,10 @@ def _unflatten(values: list[Any], ctx: dict) -> Any:
 # (e.g. batch_size=x.shape[0]) fell through to ValueError during compilation.
 
 
-def _patched_parse_batch_size(  # noqa: C901, PLR0911
+def _patched_parse_batch_size(  # ruff: ignore[complex-structure, too-many-return-statements]
     source: Any, batch_size: Any = None
 ) -> torch.Size:
-    from tensordict.base import TensorDictBase  # noqa: PLC0415
+    from tensordict.base import TensorDictBase  # ruff: ignore[import-outside-top-level]
 
     err = (
         "batch size was not specified when creating the TensorDict instance "
@@ -124,7 +124,7 @@ def _patched_parse_batch_size(  # noqa: C901, PLR0911
         raise ValueError
     try:
         return torch.Size(batch_size)
-    except Exception:  # noqa: BLE001
+    except Exception:  # ruff: ignore[blind-except]
         if batch_size is None:
             return torch.Size([])
         if isinstance(batch_size, numbers.Number):
@@ -139,8 +139,8 @@ _patched: dict[str, bool] = {}
 
 def apply() -> None:
     """Apply both tensordict#1003 fixes. Safe to call multiple times."""
-    from tensordict import TensorDict  # noqa: PLC0415
-    from tensordict.base import TensorDictBase  # noqa: PLC0415
+    from tensordict import TensorDict  # ruff: ignore[import-outside-top-level]
+    from tensordict.base import TensorDictBase  # ruff: ignore[import-outside-top-level]
 
     # Fix 1: pytree context
     for cls, nodedef in list(_torch_pytree.SUPPORTED_NODES.items()):
@@ -158,7 +158,7 @@ def apply() -> None:
 
     # Fix 2: _parse_batch_size scalar SymInt
     if not _patched.get("parse_batch_size"):
-        TensorDict._parse_batch_size = staticmethod(  # noqa: SLF001  # ty:ignore[invalid-assignment]
+        TensorDict._parse_batch_size = staticmethod(  # ruff: ignore[private-member-access]  # ty:ignore[invalid-assignment]
             _patched_parse_batch_size
         )
         _patched["parse_batch_size"] = True

@@ -1,10 +1,10 @@
-import subprocess  # noqa: S404
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 
 
 def check_git_clean() -> None:
 
     def has_diff(args: list[str]) -> bool:
-        result = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
+        result = subprocess.run(args, capture_output=True, text=True, check=False)  # ruff: ignore[subprocess-without-shell-equals-true]
         if result.returncode == 0:
             return False
         if result.returncode == 1:
@@ -17,7 +17,7 @@ def check_git_clean() -> None:
     has_staged_changes = has_diff(["git", "diff", "--cached", "--quiet"])
 
     result = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],  # noqa: S607
+        ["git", "ls-files", "--others", "--exclude-standard"],  # ruff: ignore[start-process-with-partial-path]
         capture_output=True,
         text=True,
         check=False,
@@ -25,7 +25,7 @@ def check_git_clean() -> None:
     has_untracked_files = bool(result.stdout.strip())
 
     result = subprocess.run(
-        ["git", "rev-list", "@{upstream}..HEAD"],  # noqa: S607
+        ["git", "rev-list", "@{upstream}..HEAD"],  # ruff: ignore[start-process-with-partial-path]
         capture_output=True,
         text=True,
         check=False,
@@ -36,7 +36,7 @@ def check_git_clean() -> None:
 
     if has_unstaged_changes or has_staged_changes or has_untracked_files:
         status = subprocess.run(
-            ["git", "status", "--short"],  # noqa: S607
+            ["git", "status", "--short"],  # ruff: ignore[start-process-with-partial-path]
             capture_output=True,
             text=True,
             check=True,
@@ -51,7 +51,7 @@ def check_git_clean() -> None:
 
     if has_unpushed_commits:
         result = subprocess.run(
-            ["git", "log", "@{upstream}..HEAD", "--oneline"],  # noqa: S607
+            ["git", "log", "@{upstream}..HEAD", "--oneline"],  # ruff: ignore[start-process-with-partial-path]
             capture_output=True,
             text=True,
             check=True,

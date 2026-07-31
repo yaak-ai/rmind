@@ -30,7 +30,7 @@ import re
 from pathlib import Path
 
 import polars as pl
-from rbyte.io import YaakMetadataDataFrameBuilder
+from rbyte.samples.yaak import YaakMetadataReader
 
 DATA_ROOT = Path("/nasa/drives/yaak/data")
 CONFIG_ROOT = Path(__file__).parents[4] / "rmind-main/config/_templates/dataset/yaak"
@@ -39,7 +39,7 @@ CONFIG_ROOT = Path(__file__).parents[4] / "rmind-main/config/_templates/dataset/
 GAS_THRESH: float = 1.0 / 255 + 0.001  # ≈ 0.0049
 BRAKE_THRESH: float = 1.0 / 164 + 0.001  # ≈ 0.0071
 
-BUILDER = YaakMetadataDataFrameBuilder(
+BUILDER = YaakMetadataReader(
     messages={  # ty:ignore[invalid-argument-type]
         "VehicleMotion": {
             "time_stamp": pl.Datetime(time_unit="us"),
@@ -170,7 +170,7 @@ def main(splits: dict[str, list[str]], workers: int = 8) -> None:
     ]
     total = len(all_tasks)
 
-    print(f"\nProcessing {total} drives with {workers} workers…")  # noqa: T201
+    print(f"\nProcessing {total} drives with {workers} workers…")  # ruff: ignore[print]
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
         for i, (args, result) in enumerate(
             zip(
@@ -186,14 +186,14 @@ def main(splits: dict[str, list[str]], workers: int = 8) -> None:
             else:
                 rows.append(result)
             if i % 50 == 0 or i == total:
-                print(f"  {i}/{total} processed, {len(missing)} missing so far")  # noqa: T201
+                print(f"  {i}/{total} processed, {len(missing)} missing so far")  # ruff: ignore[print]
 
     stats = pl.DataFrame(rows)
 
-    print(f"\n{'=' * 70}")  # noqa: T201
-    print("PEDAL CONFLICT STATISTICS")  # noqa: T201
-    print(f"  Gas threshold  : > {GAS_THRESH:.4f}  (1 bin above zero in 255-bin space)")  # noqa: T201
-    print(f"{'=' * 70}")  # noqa: T201
+    print(f"\n{'=' * 70}")  # ruff: ignore[print]
+    print("PEDAL CONFLICT STATISTICS")  # ruff: ignore[print]
+    print(f"  Gas threshold  : > {GAS_THRESH:.4f}  (1 bin above zero in 255-bin space)")  # ruff: ignore[print]
+    print(f"{'=' * 70}")  # ruff: ignore[print]
 
     for split in splits:
         s = stats.filter(pl.col("split") == split)
@@ -204,12 +204,12 @@ def main(splits: dict[str, list[str]], workers: int = 8) -> None:
         total_ep = int(s["estimated_episodes"].sum())
         int(s["estimated_conflict_episodes"].sum())
 
-        print(f"\n[{split}]")  # noqa: T201
-        print(f"  Drives with any conflict : {n_conflict_drives:>5} / {n_drives}")  # noqa: T201
-        print(f"  Frames (quality-filtered): {total_frames:>10,}")  # noqa: T201
-        print(f"  Estimated episodes       : {total_ep:>10,}")  # noqa: T201
+        print(f"\n[{split}]")  # ruff: ignore[print]
+        print(f"  Drives with any conflict : {n_conflict_drives:>5} / {n_drives}")  # ruff: ignore[print]
+        print(f"  Frames (quality-filtered): {total_frames:>10,}")  # ruff: ignore[print]
+        print(f"  Estimated episodes       : {total_ep:>10,}")  # ruff: ignore[print]
 
-    print(f"\n{'Per-drive breakdown (conflict drives only)'!s}")  # noqa: T201
+    print(f"\n{'Per-drive breakdown (conflict drives only)'!s}")  # ruff: ignore[print]
     conflicting = (
         stats
         .filter(pl.col("has_conflict"))
@@ -223,7 +223,7 @@ def main(splits: dict[str, list[str]], workers: int = 8) -> None:
         )
         .sort(["split", "conflict_frames"], descending=[False, True])
     )
-    print(conflicting)  # noqa: T201
+    print(conflicting)  # ruff: ignore[print]
 
 
 if __name__ == "__main__":

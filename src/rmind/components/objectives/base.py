@@ -7,7 +7,10 @@ from typing import Any, Never, NotRequired, TypedDict
 from tensordict import TensorClass, TensorDict
 from torch import Tensor
 from torch.nn import Module
-from torch.utils._pytree import Context, register_pytree_node  # noqa: PLC2701
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
+    Context,
+    register_pytree_node,
+)
 
 from rmind.components.base import Modality, TensorTree
 from rmind.components.containers import ModuleDict

@@ -52,5 +52,5 @@ class ModuleFreezer(Callback):
                     path=path,
                     params=frozen_params,
                 )
-            module.requires_grad_(False).eval()  # noqa: FBT003
+            module.requires_grad_(False).eval()  # ruff: ignore[boolean-positional-value-in-call]
             logger.info("froze module", path=path, type=type(module).__name__)

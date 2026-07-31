@@ -48,7 +48,7 @@ class HydraConfig[T](BaseModel):
         return target
 
     @field_serializer("target", when_used="always")
-    def serialize_target(self, target: Any, _info: SerializationInfo) -> str:  # noqa: PLR6301
+    def serialize_target(self, target: Any, _info: SerializationInfo) -> str:  # ruff: ignore[no-self-use]
         if (
             ismethod(target)
             and isinstance(target.__self__, type)
@@ -62,4 +62,4 @@ class HydraConfig[T](BaseModel):
             if isinstance(module, str) and isinstance(qualname, str):
                 return f"{module}.{qualname}"
 
-        return ImportString._serialize(target)  # noqa: SLF001
+        return ImportString._serialize(target)  # ruff: ignore[private-member-access]
