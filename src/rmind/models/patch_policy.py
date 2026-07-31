@@ -475,6 +475,19 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         )
         return model.eval()
 
+    @classmethod
+    def load_head_for_export(cls, artifact: str) -> "PatchPolicyHead":
+        """Head-only export for on-the-fly decoding (see `PatchPolicyHead`)."""
+        model = cls.load_from_wandb_artifact(
+            artifact, filename="model.ckpt", map_location="cpu", weights_only=False
+        ).eval()
+        return PatchPolicyHead(
+            norm=model.norm,
+            code_head=model.code_head,
+            offset_head=model.offset_head,
+            tokenizer=model.tokenizer,
+        ).eval()
+
     @staticmethod
     def _structure(chunk: Tensor) -> TensorDict:
         """Split a normalized `(b, horizon, action_features)` chunk into named fields."""
@@ -565,3 +578,64 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
         return {"optimizer": optimizer}
+
+
+@final
+class PatchPolicyHead(pl.LightningModule):
+    """The VQ-BeT head alone, for split deployment with on-the-fly decoding.
+
+    Consumes the trunk's readout token (the `BlockCausalTransformer` output at a
+    frame's last patch token, BEFORE `PatchPolicy.norm` -- the LayerNorm is part
+    of this module) plus caller-chosen codes, and emits everything a custom
+    decode strategy needs:
+
+    - ``code_logits`` `(b, g, c)`: pick codes however you like (argmax,
+      temperature sampling, entropy gating, ...) -- code selection is
+      deliberately OUTSIDE the graph;
+    - ``offsets`` `(b, g, c, action_dim)`: the full state-conditioned offset
+      table, for offset inspection or custom gathering;
+    - ``chunk`` `(b, horizon, action_features)`: `decode(codes) + offset@codes`
+      for the codes passed IN. Two-pass usage: run once (any codes) to read
+      logits, choose codes, run again to decode -- the head is a few MLPs, so a
+      second pass costs microseconds.
+    """
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        norm: InstanceOf[Module],
+        code_head: InstanceOf[Module],
+        offset_head: InstanceOf[Module],
+        tokenizer: InstanceOf[Module],
+    ) -> None:
+        super().__init__()
+        self.norm = norm
+        self.code_head = code_head
+        self.offset_head = offset_head
+        self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+
+    @override
+    def forward(self, inputs: Mapping[str, Tensor]) -> TensorDict:
+        features, codes = inputs["features"], inputs["codes"]
+        quantizer = self.tokenizer.quantizer
+        g, c = quantizer.num_quantizers, quantizer.codebook_size
+
+        features = self.norm(features)
+        code_logits = rearrange(
+            self.code_head(features), "... (g c) -> ... g c", g=g, c=c
+        )
+        offsets = rearrange(
+            self.offset_head(features), "... (g c a) -> ... g c a", g=g, c=c
+        )
+
+        offset = PatchPolicy._gather_offset(offsets, codes)  # noqa: SLF001
+        chunk = (self.tokenizer.invert(codes) + offset).unflatten(
+            -1,
+            (-1, self.tokenizer._action_features),  # noqa: SLF001
+        )
+        return TensorDict({
+            "code_logits": code_logits,
+            "offsets": offsets,
+            "chunk": chunk,
+        })
