@@ -476,6 +476,36 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return model.eval()
 
     @classmethod
+    def load_for_continuation(
+        cls, artifact: str, *, optimizer: Any, lr_scheduler: Any | None = None
+    ) -> "PatchPolicy":
+        """Warm-start continuation training from a finished run's checkpoint.
+
+        Loads weights AND saved hparams from the artifact, then replaces only
+        the optimization config: fresh optimizer state (Adam moments reset) and
+        the given LR/schedule. `lr_scheduler=None` -> constant LR, no warmup.
+        The replacement is written back into `hparams` so checkpoints saved by
+        the continuation run reload with the continuation settings.
+        """
+        if not isinstance(optimizer, HydraConfig):
+            optimizer = HydraConfig[Optimizer].model_validate(optimizer)
+        if lr_scheduler is not None and not isinstance(
+            lr_scheduler, LRSchedulerHydraConfig
+        ):
+            lr_scheduler = LRSchedulerHydraConfig.model_validate(lr_scheduler)
+
+        model = cls.load_from_wandb_artifact(
+            artifact, filename="model.ckpt", map_location="cpu", weights_only=False
+        )
+        model.optimizer = optimizer
+        model.lr_scheduler = lr_scheduler
+        model.hparams["optimizer"] = optimizer.model_dump()
+        model.hparams["lr_scheduler"] = (
+            lr_scheduler.model_dump() if lr_scheduler is not None else None
+        )
+        return model
+
+    @classmethod
     def load_head_for_export(cls, artifact: str) -> "PatchPolicyHead":
         """Head-only export for on-the-fly decoding (see `PatchPolicyHead`)."""
         model = cls.load_from_wandb_artifact(
