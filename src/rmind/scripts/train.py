@@ -1,15 +1,16 @@
+import os
 from pathlib import Path
 from subprocess import check_output  # noqa: S404
 
 import hydra
 import pytorch_lightning as pl
 import torch
-import wandb
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
 from structlog import get_logger
 
+import wandb
 from rmind.utils.precision import auto_precision
 
 logger = get_logger(__name__)
@@ -41,7 +42,8 @@ def main(cfg: DictConfig) -> None:
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # ty:ignore[invalid-argument-type]
             **cfg.wandb,
         )
-    ) is not None:
+    ) is not None and not os.environ.get("WANDB_GIT_COMMIT"):
+        # inside docker there is no .git; the run is tied to a commit via WANDB_GIT_COMMIT
         paths = {
             Path(path).resolve()
             for path in check_output(
