@@ -3,9 +3,11 @@
 # ONNX export for a map-context (dinov2_dinowm_maxspeed) PatchPolicy
 # checkpoint: the `finetuned` interface plus max speed as an EXPLICIT graph
 # input `data.meta/MapContext/max_speed` (1, 6, 1) float32 km/h per frame --
-# NaN = unknown, any negative (-1.0) = explicitly unlimited, else snapped to
-# the nearest of [5,10,20,30,40,50,60,70,80,90,100,110,120,130]. Serving that
-# has no map feed can send all-NaN (UNKNOWN, matches training-time dropout).
+# NaN = unknown, any negative (-1.0) = explicitly unlimited, <= 7 = WALK
+# (Schrittgeschwindigkeit; send 5.0 or 7.0), else snapped to the nearest of
+# [10,20,30,50,60,70,80,100,120,130] with exact ties snapping DOWN (40 -> 30)
+# and > 130 clamping to 130. Serving that has no map feed can send all-NaN
+# (UNKNOWN, matches training-time dropout).
 #
 #   just export-onnx export=yaak/patch_policy/finetuned_maxspeed \
 #       model.artifact=yaak/rmind/model-<run>:vN image_hw=224

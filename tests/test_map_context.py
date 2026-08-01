@@ -1,6 +1,9 @@
 """Unit tests for the optional max-speed conditioning token (map-context Arm M).
 
-Covers the shared 16-token vocabulary mapping (UNKNOWN/UNLIMITED/nearest),
+Covers the shared 13-token semantic vocabulary mapping (UNKNOWN/UNLIMITED/
+WALK/nearest-with-tie-down; the tokenizer is float-only, so the data-side
+join must translate OSM maxspeed=walk to a float <= 7, e.g. 7.0 as
+`overpass.parse_maxspeed_value` does),
 that models WITHOUT the token are byte-identical to pre-map-context
 `PatchPolicy` (state dict + forward), the missing-input -> all-UNKNOWN path,
 the inference-time `max_speed_override` seam, and that the train-time UNKNOWN
@@ -17,9 +20,12 @@ from torchvision.ops import MLP
 from rmind.components.containers import ModuleDict
 from rmind.components.loss import FocalLoss
 from rmind.components.map_context import (
+    MAX_SPEED_NUM_SPECIAL,
     MAX_SPEED_UNKNOWN_ID,
+    MAX_SPEED_UNLIMITED_ID,
     MAX_SPEED_VOCAB_KMH,
     MAX_SPEED_VOCAB_SIZE,
+    MAX_SPEED_WALK_ID,
     MaxSpeedTokenizer,
 )
 from rmind.components.nn import Embedding
@@ -88,21 +94,29 @@ def _batch_with_max_speed(value: float | None) -> dict:
 def test_tokenizer_vocabulary_mapping() -> None:
     tokenizer = MaxSpeedTokenizer()
 
-    # every vocabulary speed maps to its own id (2..15)
+    assert MAX_SPEED_VOCAB_SIZE == 13
+    assert MAX_SPEED_VOCAB_KMH == (10, 20, 30, 50, 60, 70, 80, 100, 120, 130)
+
+    # every vocabulary speed maps to its own id (3..12)
     ids = tokenizer(torch.tensor(MAX_SPEED_VOCAB_KMH))
-    torch.testing.assert_close(ids, torch.arange(2, MAX_SPEED_VOCAB_SIZE))
+    torch.testing.assert_close(
+        ids, torch.arange(MAX_SPEED_NUM_SPECIAL, MAX_SPEED_VOCAB_SIZE)
+    )
 
     cases = {
-        math.nan: 0,  # UNKNOWN
-        -1.0: 1,  # UNLIMITED (autobahn sentinel)
-        -5.0: 1,  # any negative -> UNLIMITED
-        0.0: 2,  # nearest is 5
-        7.0: 2,  # 5 vs 10 -> 5
-        8.0: 3,  # -> 10
-        32.0: 5,  # -> 30
-        48.0: 7,  # -> 50
-        56.0: 8,  # -> 60
-        500.0: 15,  # clamps to 130
+        math.nan: MAX_SPEED_UNKNOWN_ID,  # NaN -> UNKNOWN
+        -1.0: MAX_SPEED_UNLIMITED_ID,  # autobahn maxspeed=none sentinel
+        -5.0: MAX_SPEED_UNLIMITED_ID,  # any negative -> UNLIMITED
+        0.0: MAX_SPEED_WALK_ID,  # <= 7 -> WALK
+        5.0: MAX_SPEED_WALK_ID,  # override convention for Schrittgeschwindigkeit
+        7.0: MAX_SPEED_WALK_ID,  # data-side maxspeed=walk translation (7.0)
+        8.0: 3,  # > 7 -> nearest numeric class: 10
+        40.0: 5,  # exact tie 30/50 snaps DOWN -> 30 (conservative)
+        45.0: 6,  # nearest -> 50
+        90.0: 9,  # exact tie 80/100 snaps DOWN -> 80
+        110.0: 10,  # exact tie 100/120 snaps DOWN -> 100
+        135.0: 12,  # > 130 clamps to 130
+        500.0: 12,  # clamps to 130
     }
     out = tokenizer(torch.tensor(list(cases.keys())))
     torch.testing.assert_close(out, torch.tensor(list(cases.values())))

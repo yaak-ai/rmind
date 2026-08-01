@@ -6,10 +6,13 @@ defaults:
 
 # Map-context Arm M scaffold: the dinov2_dinowm winner recipe plus an OPTIONAL
 # per-frame max-speed conditioning token (rmind.components.map_context).
-# Vocabulary (16): 0 UNKNOWN (NaN/missing), 1 UNLIMITED (-1.0), 2..15 nearest
-# of [5,10,20,30,40,50,60,70,80,90,100,110,120,130] km/h. The token reads
-# [context, max_speed] (data-side meta/MapContext/max_speed once the GT
-# sidecars are wired into rbyte); with today's datasets it is all-UNKNOWN.
+# Vocabulary (13, semantic German speed classes): 0 UNKNOWN (NaN/missing),
+# 1 UNLIMITED (-1.0, autobahn maxspeed=none), 2 WALK (Schrittgeschwindigkeit,
+# inputs <= 7 km/h incl. OSM maxspeed=walk -> 7.0 on the data side), 3..12
+# nearest of [10,20,30,50,60,70,80,100,120,130] km/h (ties snap DOWN:
+# 40 -> 30; > 130 clamps to 130). The token reads [context, max_speed]
+# (data-side meta/MapContext/max_speed once the GT sidecars are wired into
+# rbyte); with today's datasets it is all-UNKNOWN.
 #
 # Inference override (no retraining -- the private-test-ground seam), e.g.
 # "act as if this is a 30 km/h zone":
@@ -18,7 +21,7 @@ defaults:
 #     +model.max_speed_override=30
 #   null / unset -> the batch input, or all-UNKNOWN when absent.
 
-max_speed_vocab_size: 16 # fixed by rmind.components.map_context
+max_speed_vocab_size: 13 # fixed by rmind.components.map_context
 max_speed_dropout: 0.3 # per-frame train-time replacement with UNKNOWN
 
 model:
