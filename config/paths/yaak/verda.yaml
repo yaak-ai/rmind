@@ -1,0 +1,7 @@
+---
+# Verda cloud (FIN-01): the yaak dataset lives on the shared NFS volume
+# `verda-nas` (mount: nfs.fin-01.datacrunch.io:/verda-nas-33cba3e6, ro,nolock).
+# Layout mirrors /nasa/drives/yaak/data (drive dirs at the root).
+data: /mnt/verda-nas
+rbyte:
+  cache: .rbyte_cache
