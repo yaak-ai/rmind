@@ -477,7 +477,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
     @classmethod
     def load_for_continuation(
-        cls, artifact: str, *, optimizer: Any, lr_scheduler: Any | None = None
+        cls,
+        artifact: str,
+        *,
+        optimizer: Any,
+        lr_scheduler: Any | None = None,
+        **_ignored: Any,
     ) -> "PatchPolicy":
         """Warm-start continuation training from a finished run's checkpoint.
 
@@ -486,6 +491,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         the given LR/schedule. `lr_scheduler=None` -> constant LR, no warmup.
         The replacement is written back into `hparams` so checkpoints saved by
         the continuation run reload with the continuation settings.
+
+        `**_ignored` swallows architecture keys that parent experiments inline
+        under `model.*` (e.g. dinov2_dinowm's `image_encoder`): on continuation
+        the architecture comes from the CHECKPOINT hparams, not the config.
         """
         if not isinstance(optimizer, HydraConfig):
             optimizer = HydraConfig[Optimizer].model_validate(optimizer)
