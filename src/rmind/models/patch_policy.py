@@ -73,12 +73,43 @@ class TransformerBlock(nn.Module):
 
     @override
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
-        attn_out, _ = self.attn(
-            *(self.attn_norm(x),) * 3, attn_mask=mask, need_weights=False
-        )
+        attn_out = self._attn(self.attn_norm(x), mask)
         # NOTE: no in-place ops on the residual stream (autograd + checkpointing)
         h = x + self.resid_drop(attn_out)
         return h + self.mlp(self.mlp_norm(h))
+
+    def _attn(self, x: Tensor, mask: Tensor) -> Tensor:
+        """`mask`: bool, True = blocked (see `block_causal_mask`).
+
+        Routes through `scaled_dot_product_attention`'s flash/memory-efficient
+        kernels instead of `nn.MultiheadAttention`'s fused path, which materializes
+        the full `seq x seq` score matrix in fp32 and OOMs at the 3-camera sequence
+        length (~4.6k tokens/clip). `self.attn` is kept only as a parameter
+        container (in_proj/out_proj) for checkpoint compatibility -- its own
+        `forward` is bypassed. Bool `attn_mask` semantics are flipped between the
+        two APIs (`nn.MultiheadAttention`: True = blocked; SDPA: True = attend), so
+        this converts to an unambiguous additive mask instead of passing `mask`
+        through directly.
+        """
+        batch, seq_len, _ = x.shape
+        num_heads, head_dim = self.attn.num_heads, self.attn.head_dim
+
+        qkv = F.linear(x, self.attn.in_proj_weight, self.attn.in_proj_bias)
+        q, k, v = qkv.view(batch, seq_len, 3, num_heads, head_dim).permute(
+            2, 0, 3, 1, 4
+        )
+        attn_bias = torch.zeros_like(mask, dtype=q.dtype).masked_fill(
+            mask, float("-inf")
+        )
+        out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_bias,
+            dropout_p=self.attn.dropout if self.training else 0.0,
+        )
+        out = out.transpose(1, 2).reshape(batch, seq_len, -1)
+        return self.attn.out_proj(out)
 
 
 @final
