@@ -1,0 +1,171 @@
+UNAPPLIED patch sketch: optional max-speed conditioning input for maxspeed
+PatchPolicy engines (see docs/serving_max_speed.md). Target: yaak-ai/drivr
+branch feat/configurable-decode-strategies @ ae755b4. Semantics: float km/h
+per frame, -1 = unlimited, NaN / --max-speed unset = UNKNOWN (the model's
+trained missing-map mode). Engines without the binding are legacy and are
+fed nothing (PR#27 derived-not-configured pattern).
+---
+diff --git a/src/drivr/engine/model_io.py b/src/drivr/engine/model_io.py
+--- a/src/drivr/engine/model_io.py
++++ b/src/drivr/engine/model_io.py
+@@ -33,6 +33,12 @@
+
+ # Canonical host-batch keys (the rmind export's fully-qualified dotted names).
+ CAM_KEY = "data.cam_front_left"
++# Optional map-context input (maxspeed PatchPolicy exports only): float32
++# km/h per frame (1, T, 1). NaN = unknown, any negative (-1.0) = explicitly
++# unlimited (autobahn maxspeed=none), <= 7 = Schrittgeschwindigkeit.
++# Tokenization to the 13-class vocabulary happens IN-graph; the host only
++# ever sends raw km/h. Legacy engines simply never declare the input.
++MAX_SPEED_KEY = "data.meta/MapContext/max_speed"
+ CANONICAL_INPUT_KEYS = (
+     CAM_KEY,
+     "data.meta/VehicleMotion/speed",
+@@ -41,6 +47,7 @@
+     "data.meta/VehicleMotion/steering_angle_normalized",
+     "data.meta/VehicleState/turn_signal",
+     "data.waypoints/xy_normalized",
++    MAX_SPEED_KEY,
+ )
+
+ # Raw action-channel order (rmind MERGE_RAW_KEYS): 3 channels are
+@@ -67,6 +74,8 @@
+     "waypoints_xy": "xy_normalized",
+     "waypoints_xy_normalized": "xy_normalized",
+     "waypoints": "xy_normalized",
++    "max_speed": "max_speed",
++    "maxspeed": "max_speed",
+ }
+
+
+diff --git a/src/drivr/app/drivr.py b/src/drivr/app/drivr.py
+--- a/src/drivr/app/drivr.py
++++ b/src/drivr/app/drivr.py
+@@ -39,6 +39,7 @@
+ from drivr.app.rerun_viz import RerunViz
+ from drivr.engine.model_io import (
+     CANONICAL_INPUT_KEYS,
++    MAX_SPEED_KEY,
+     collapse_outputs,
+     extract_action_plan,
+     resolve_input_names,
+@@ -157,6 +158,13 @@ def __init__(self, engine_path: Path):
+         # Engine input tensor name -> canonical batch key.
+         self.input_map = resolve_input_names(self.input_names, CANONICAL_INPUT_KEYS)
+
++        # Optional max-speed binding, discovered from the engine rather than
++        # configured (PR#27 pattern): maxspeed exports declare
++        # `data.meta/MapContext/max_speed`; legacy engines don't, and are fed
++        # nothing. The host batch always carries the key, so this flag is for
++        # logging/UI only - binding follows input_map either way.
++        self.wants_max_speed = MAX_SPEED_KEY in self.input_map.values()
++
+         # Heads (codebook) engine: two outputs `code_logits` + `offsets` decoded
+         # host-side. Detected from the output names; the code->action decode
+         # tables (`<engine>.decode_table.pt`, optional `.chain.pt`) are loaded
+@@ -174,6 +182,7 @@ def __init__(self, engine_path: Path):
+             inputs=len(self.input_names),
+             outputs=len(self.output_names),
+             heads=self.is_heads,
++            max_speed_binding=self.wants_max_speed,
+         )
+
+     def run(  # noqa: PLR0913
+@@ -2780,6 +2789,14 @@ class DriveApp:
+     # real roads. Loaded at startup; snapping stays off until toggled in the UI.
+     map_match_file: str | None = None
+
++    # Constant zone max-speed fed to maxspeed engines every step (km/h float;
++    # any negative = explicitly unlimited; <= 7 = Schrittgeschwindigkeit).
++    # None = no map feed: the batch carries NaN and the model runs on its
++    # in-vocabulary UNKNOWN token - exactly its training-time dropout
++    # condition. NEVER default this to 0: 0 km/h tokenizes to WALK
++    # ("parking lot everywhere"), not to "unknown".
++    max_speed: float | None = None
++
+     # Model
+     model_path: str | None = "/home/nvidia/trt_engines/model.trt"
+
+@@ -4072,6 +4089,18 @@ def load_in_background():
+                 # Load the single-engine policy TRT engine
+                 trt_engine = TRTEngine(engine_path)
+
++                # Surface max-speed feed/binding mismatches at load, loudly.
++                if trt_engine.wants_max_speed and self.max_speed is None:
++                    logger.info(
++                        "maxspeed engine without --max-speed: feeding NaN "
++                        "(UNKNOWN token, the model's trained missing-map mode)"
++                    )
++                elif self.max_speed is not None and not trt_engine.wants_max_speed:
++                    logger.warning(
++                        "--max-speed set but the engine declares no max-speed "
++                        "binding; the flag is ignored", max_speed=self.max_speed,
++                    )
++
+                 with self._lock:
+                     self._trt_full_engine = trt_engine
+                     self._model = {"path": path, "loaded": True}
+@@ -4657,6 +4686,13 @@ def _build_episode_batch(self) -> dict[str, np.ndarray]:
+             elif self._waypoints_xy is not None:
+                 waypoints[0, i] = self._waypoints_xy[:NUM_WAYPOINTS]
+
++        # Max speed: the constant zone limit (or NaN = UNKNOWN when unset) for
++        # every history frame. Always present in the host batch; only engines
++        # that declare the binding consume it (TRTEngine.run selects inputs
++        # via input_map). NaN - not zero - is this channel's neutral fill.
++        fill = np.nan if self.max_speed is None else float(self.max_speed)
++        max_speeds = np.full((1, NUM_TIMESTEPS, 1), fill, dtype=np.float32)
++
+         return {
+             'data.cam_front_left': images_np,
+             'data.meta/VehicleMotion/speed': speeds,
+@@ -4665,6 +4701,7 @@ def _build_episode_batch(self) -> dict[str, np.ndarray]:
+             'data.meta/VehicleMotion/steering_angle_normalized': steering_angles,
+             'data.meta/VehicleState/turn_signal': turn_signals,
+             'data.waypoints/xy_normalized': waypoints,
++            'data.meta/MapContext/max_speed': max_speeds,
+         }
+
+     def _run_inference(self):
+@@ -5248,6 +5285,17 @@ def stop(self):
+         logger.info("Drive app stopped")
+
+
++def _parse_max_speed(value: str) -> float:
++    """--max-speed value: km/h as float, or 'unlimited' (autobahn, no limit).
++
++    <= 7 (e.g. 5) means Schrittgeschwindigkeit / parking lot; the engine
++    snaps other values to the nearest German speed class in-graph.
++    """
++    if value.strip().lower() in ("unlimited", "none", "-1"):
++        return -1.0
++    return float(value)
++
++
+ def main():
+     """Main entry point."""
+     parser = argparse.ArgumentParser(
+@@ -5313,6 +5361,15 @@ def main():
+              "action-tokenizer/joint-actions exports (Normalize baked in)",
+     )
+     parser.add_argument(
++        "--max-speed",
++        type=_parse_max_speed,
++        default=None,
++        metavar="KMH|unlimited",
++        help="constant zone max-speed fed to maxspeed engines (km/h float; "
++             "'unlimited' for no legal limit; <= 7 = Schrittgeschwindigkeit; "
++             "omit to feed UNKNOWN). Ignored by engines without the binding",
++    )
++    parser.add_argument(
+         "--decode-strategy",
+         choices=["argmax", "chain_greedy", "entropy_gated"],
+         default="argmax",
+@@ -5375,6 +5432,7 @@ def main():
+         camera_fps=args.camera_fps,
+         camera_calib=args.camera_calib,
+         image_norm=args.image_norm,
++        max_speed=args.max_speed,
+         decode_strategy=args.decode_strategy,
+         decode_beta=args.decode_beta,
+         decode_tau=args.decode_tau,
