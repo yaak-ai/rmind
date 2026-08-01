@@ -38,10 +38,17 @@ num_heads: 8
 
 # batch 128 with linearly-scaled LR (baseline: 5e-5 @ 64). The clip11 train set
 # is ~1.97M samples (FT baseline zcglgth4: 308,038 steps @ batch 64 for 10
-# epochs) -> ~15.4k steps/epoch @ 128; cosine hits zero at the end of epoch 9.
+# epochs) -> ~15.4k steps/epoch @ 128; cosine hits zero at the end of epoch 14.
+# NOTE: closed-loop sweeps showed collisions + route deviation keep improving
+# late in training, hence the 15-epoch default. Re-derive both step counts when
+# changing max_epochs or batch size (see get_cosine_schedule_with_warmup's
+# oscillation past num_training_steps).
 lr: 1e-4
-lr_warmup_steps: 12500
-lr_total_steps: 154000
+lr_warmup_steps: 18500
+lr_total_steps: 231000
+
+trainer:
+  max_epochs: 15
 
 datamodule:
   train:
