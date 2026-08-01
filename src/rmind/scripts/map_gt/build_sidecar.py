@@ -102,7 +102,9 @@ def classify_env(
     return "rural"  # matched to a public road but no asserted limit
 
 
-def build_drive(drive: str, data_root: Path, out_root: Path) -> dict:
+def build_drive(
+    drive: str, data_root: Path, out_root: Path, *, use_overpass: bool = True
+) -> dict:
     vehicle, drive_id = drive.split("/", 1)
     drive_dir = data_root / vehicle / drive_id
     out_path = out_root / vehicle / f"{drive_id}.parquet"
@@ -133,6 +135,11 @@ def build_drive(drive: str, data_root: Path, out_root: Path) -> dict:
     mcap_path = drive_dir / "osm.mcap"
     if mcap_path.exists():
         ways_mcap = read_way_intervals(mcap_path)
+    elif not use_overpass:
+        # fast path has no other source -> fail loudly instead of writing an
+        # all-unknown parquet
+        msg = f"{drive}: no osm.mcap (and overpass disabled)"
+        raise RuntimeError(msg)
     else:  # a handful of drives lack osm.mcap -> overpass-only
         print(f"WARNING {drive}: no osm.mcap, using overpass only")
         ways_mcap = pl.DataFrame()
@@ -161,7 +168,7 @@ def build_drive(drive: str, data_root: Path, out_root: Path) -> dict:
                 break
 
     overpass = None
-    if route_coords is not None and len(route_coords) >= 2:
+    if use_overpass and route_coords is not None and len(route_coords) >= 2:
         cache = out_root / "_overpass" / f"{vehicle}__{drive_id}.json"
         try:
             overpass = fetch_route_osm(route_coords, cache)
@@ -370,6 +377,17 @@ def drives_from_train_yaml(path: Path) -> list[str]:
     return re.findall(r"    - (\S+/\S+)", match.group(1))
 
 
+def _build_one(job: tuple) -> dict:
+    """Pool worker: returns a success record or {'drive', 'error'} on failure."""
+    drive, data_root, out_root, use_overpass = job
+    try:
+        return build_drive(
+            drive, Path(data_root), Path(out_root), use_overpass=use_overpass
+        )
+    except Exception as exc:  # noqa: BLE001 — per-drive failure must not kill run
+        return {"drive": drive, "error": f"{type(exc).__name__}: {exc}"}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--drives", nargs="*", default=[], help="Vehicle/drive-id ...")
@@ -379,6 +397,14 @@ def main() -> None:
     ap.add_argument("--data-root", type=Path, default=Path("/nasa/drives/yaak/data"))
     ap.add_argument("--out-root", type=Path, default=Path("caches/map_gt"))
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument(
+        "--no-overpass",
+        action="store_true",
+        help="fast path: osm.mcap only (no way ids, signal/stop distances all-NaN)",
+    )
+    ap.add_argument(
+        "--workers", type=int, default=1, help="parallel drives (NFS-IO-bound: ~8-16)"
+    )
     args = ap.parse_args()
 
     drives = list(args.drives)
@@ -389,26 +415,41 @@ def main() -> None:
     if not drives:
         ap.error("no drives given (use --drives or --from-train-yaml)")
 
-    results = []
+    todo = []
     for drive in drives:
         vehicle, drive_id = drive.split("/", 1)
         out_path = args.out_root / vehicle / f"{drive_id}.parquet"
         if out_path.exists() and not args.overwrite:
             print(f"skip (exists): {drive}")
             continue
-        try:
-            res = build_drive(drive, args.data_root, args.out_root)
-        except Exception:
-            print(f"FAILED {drive}")
-            traceback.print_exc()
-            continue
+        todo.append((drive, str(args.data_root), str(args.out_root), not args.no_overpass))
+
+    results: list[dict] = []
+    failures: list[dict] = []
+
+    def _consume(res: dict, i: int) -> None:
+        if "error" in res:
+            failures.append(res)
+            print(f"[{i}/{len(todo)}] FAILED {res['drive']}: {res['error']}")
+            return
         results.append(res)
         print(
-            f"{drive}: {res['n_frames']} frames, "
+            f"[{i}/{len(todo)}] {res['drive']}: {res['n_frames']} frames, "
             f"max_speed coverage {res['coverage_max_speed']:.1%}, "
             f"road_class coverage {res['coverage_road_class']:.1%}, "
-            f"env {res['env_counts']}"
+            f"env {res['env_counts']}",
+            flush=True,
         )
+
+    if args.workers > 1 and len(todo) > 1:
+        import multiprocessing as mp
+
+        with mp.get_context("spawn").Pool(args.workers) as pool:
+            for i, res in enumerate(pool.imap_unordered(_build_one, todo), 1):
+                _consume(res, i)
+    else:
+        for i, job in enumerate(todo, 1):
+            _consume(_build_one(job), i)
 
     if results:
         summary_path = args.out_root / "build_summary.json"
@@ -419,6 +460,10 @@ def main() -> None:
             existing = [r for r in existing if r["drive"] not in done]
         summary_path.write_text(json.dumps(existing + results, indent=2))
         print(f"summary -> {summary_path}")
+    if failures:
+        failures_path = args.out_root / "build_failures.json"
+        failures_path.write_text(json.dumps(failures, indent=2))
+        print(f"{len(failures)} drives FAILED -> {failures_path}")
 
 
 if __name__ == "__main__":
