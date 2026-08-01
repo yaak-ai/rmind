@@ -7,6 +7,7 @@ and equivalence of the batched `_gather_offset` with the joint-policy original.
 
 from typing import override
 
+import pytest
 import torch
 from torch import Tensor
 from torch.nn import Identity, L1Loss, Linear, Module, Sequential
@@ -91,7 +92,14 @@ class _GoalEncoderStub(Module):
         return self.encode(waypoints)
 
 
-def _make_model(*, teacher_force_offset: bool = True) -> PatchPolicy:
+def _make_model(
+    *,
+    teacher_force_offset: bool = True,
+    speed_dropout: float = 0.0,
+    goal_dropout: float = 0.0,
+    nulls: bool = False,
+    trunk_dropout: float = 0.1,
+) -> PatchPolicy:
     return PatchPolicy(
         input_transform=Identity(),
         # tests feed pre-extracted patch features (b, t, p, d) directly
@@ -105,12 +113,19 @@ def _make_model(*, teacher_force_offset: bool = True) -> PatchPolicy:
             num_layers=2,
             num_heads=2,
             max_sequence_length=EPISODE_LENGTH * (NUM_PATCHES + 1),
+            attn_dropout=trunk_dropout,
+            resid_dropout=trunk_dropout,
+            mlp_dropout=trunk_dropout,
         ),
         tokenizer=_make_tokenizer(),
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
         offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * ACTION_DIM]),
         losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
         norm=torch.nn.LayerNorm(POLICY_DIM),
+        null_speed=Embedding(1, POLICY_DIM) if nulls else None,
+        null_goal=Embedding(1, GOAL_DIM) if nulls else None,
+        speed_dropout=speed_dropout,
+        goal_dropout=goal_dropout,
         sample_codes=False,
         teacher_force_offset=teacher_force_offset,
         prediction_config=PredictionConfig(
@@ -331,3 +346,96 @@ def test_readout_is_causally_valid() -> None:
 
     torch.testing.assert_close(features[:, :-1], features_perturbed[:, :-1])
     assert not torch.allclose(features[:, -1], features_perturbed[:, -1])
+
+
+# speed is binned at 130/SPEED_BINS per bin, so it needs a shift wide enough to
+# land in a different bin -- a small delta leaves the speed token untouched and
+# would make these tests vacuous
+_DELTA = {("continuous", "speed"): 130.0 / SPEED_BINS + 1.0}
+
+
+def _perturbed(batch: dict, path: tuple[str, str]) -> dict:
+    """Copy of `batch` with the tensor at `path` shifted."""
+    outer, inner = path
+    other = {k: dict(v) if isinstance(v, dict) else v for k, v in batch.items()}
+    other[outer][inner] = batch[outer][inner] + _DELTA.get(path, 1.0)
+    return other
+
+
+def _features_seeded(model: PatchPolicy, batch: dict) -> Tensor:
+    torch.manual_seed(0)
+    return model._features(batch)[0]  # noqa: SLF001
+
+
+def test_goal_dropout_removes_waypoint_dependence() -> None:
+    """With `goal_dropout=1.0` the goal latent never reaches the trunk."""
+    model = _make_model(goal_dropout=1.0, nulls=True, trunk_dropout=0.0).train()
+    batch = _make_batch()
+
+    torch.testing.assert_close(
+        _features_seeded(model, batch),
+        _features_seeded(model, _perturbed(batch, ("context", "waypoints"))),
+    )
+    # ...while the image still does
+    assert not torch.allclose(
+        _features_seeded(model, batch),
+        _features_seeded(model, _perturbed(batch, ("image", "cam_front_left"))),
+    )
+
+
+def test_speed_dropout_removes_speed_dependence() -> None:
+    model = _make_model(speed_dropout=1.0, nulls=True, trunk_dropout=0.0).train()
+    batch = _make_batch()
+
+    torch.testing.assert_close(
+        _features_seeded(model, batch),
+        _features_seeded(model, _perturbed(batch, ("continuous", "speed"))),
+    )
+
+
+def test_conditioning_dropout_is_train_only() -> None:
+    """In eval mode both conditioning signals must reach the trunk regardless of p."""
+    model = _make_model(
+        speed_dropout=1.0, goal_dropout=1.0, nulls=True, trunk_dropout=0.0
+    ).eval()
+    batch = _make_batch()
+    features = _features_seeded(model, batch)
+
+    for path in (("context", "waypoints"), ("continuous", "speed")):
+        assert not torch.allclose(
+            features, _features_seeded(model, _perturbed(batch, path))
+        ), path
+
+
+def test_null_tokens_are_trained() -> None:
+    """The null embeddings must receive gradient -- guards against building them
+    inside the frozen-encoder `no_grad` block, and against DDP flagging them as
+    unused on a step where nothing happens to be dropped."""
+    model = _make_model(speed_dropout=0.5, goal_dropout=0.5, nulls=True).train()
+
+    model._compute_metrics(_make_batch())["policy", "loss"].sum(  # noqa: SLF001
+        reduce=True
+    ).backward()
+
+    for null in (model.null_speed, model.null_goal):
+        assert null is not None
+        assert null.weight.grad is not None
+
+    # with p=1.0 the nulls are the only conditioning signal, so gradient is nonzero
+    model = _make_model(speed_dropout=1.0, goal_dropout=1.0, nulls=True).train()
+    model._compute_metrics(_make_batch())["policy", "loss"].sum(  # noqa: SLF001
+        reduce=True
+    ).backward()
+
+    for null in (model.null_speed, model.null_goal):
+        assert null is not None
+        assert null.weight.grad is not None
+        assert null.weight.grad.abs().sum() > 0
+
+
+def test_dropout_without_null_token_raises() -> None:
+    with pytest.raises(ValueError, match="speed_dropout"):
+        _make_model(speed_dropout=0.5, nulls=False)
+
+    with pytest.raises(ValueError, match="goal_dropout"):
+        _make_model(goal_dropout=0.5, nulls=False)

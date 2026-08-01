@@ -141,6 +141,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     patch token predicts that frame's action chunk with the VQ-BeT joint head from
     `JointPolicyObjective` (frozen residual-VQ chunk tokenizer; focal code loss +
     teacher-forced L1 offset).
+
+    `speed_dropout`/`goal_dropout` optionally apply conditioning dropout to the two
+    non-visual signals (see `_drop_condition`), so the policy cannot rely on either
+    shortcut -- speed is strongly autocorrelated with the action chunk, and the goal
+    latent reaches every patch token.
     """
 
     @validate_call
@@ -160,6 +165,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         offset_head: HydraConfig[Module] | InstanceOf[Module],
         losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        null_speed: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        null_goal: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        speed_dropout: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        goal_dropout: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
         image: Path = ("image", "cam_front_left"),
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
@@ -214,6 +223,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
         self.norm: Module | None = init_hydra_param(hparams, "norm", norm)
 
+        # conditioning dropout: learned "absent" tokens substituted for the speed
+        # token / goal latent (see `_drop_condition`)
+        self.null_speed: Module | None = init_hydra_param(
+            hparams, "null_speed", null_speed
+        )
+        self.null_goal: Module | None = init_hydra_param(
+            hparams, "null_goal", null_goal
+        )
+        for name, p, null in (
+            ("speed", speed_dropout, self.null_speed),
+            ("goal", goal_dropout, self.null_goal),
+        ):
+            if p > 0.0 and null is None:
+                msg = f"{name}_dropout > 0 requires null_{name}"
+                raise ValueError(msg)
+        self.speed_dropout = speed_dropout
+        self.goal_dropout = goal_dropout
+
         self.image: Path = image
         self.speed: Path = speed
         self.waypoints: Path = waypoints
@@ -229,6 +256,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "offset_scale": offset_scale,
+            "speed_dropout": speed_dropout,
+            "goal_dropout": goal_dropout,
         }
 
         if optimizer is not None:
@@ -259,6 +288,26 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise KeyError(msg)
         return value
 
+    def _drop_condition(self, x: Tensor, p: float, null: Module | None) -> Tensor:
+        """Replace `x` with a learned null token for a random subset of CLIPS.
+
+        Conditioning dropout, so no `1/(1-p)` rescale -- this substitutes a token,
+        it does not zero units. One draw per batch element (not per frame): the
+        trunk is causal across frames and both signals are ~constant within a clip,
+        so a per-frame mask would leak the dropped signal from frame t-1.
+        """
+        if null is None or not self.training:
+            return x
+
+        keep = torch.rand(x.shape[0], device=x.device) >= p
+        # NOTE: `where` keeps `null` in the autograd graph even when nothing is
+        # dropped, so DDP never sees it as an unused parameter
+        return torch.where(
+            keep.reshape(-1, *(1,) * (x.ndim - 1)),
+            x,
+            null(torch.zeros(1, dtype=torch.long, device=x.device)),
+        )
+
     def _features(self, batch: Any) -> tuple[Tensor, Tensor]:
         """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`."""
         inputs = self.input_transform(batch)
@@ -272,6 +321,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             patches = self.image_encoder(images)  # (b, t, p, d_img)
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
 
+        # NOTE: outside the `no_grad` above, or `null_goal` never gets gradient
+        goal = self._drop_condition(goal, self.goal_dropout, self.null_goal)
+
         _, _, num_patches, _ = patches.shape
         patches = torch.cat(
             [patches, goal.unsqueeze(-2).expand(-1, -1, num_patches, -1)], dim=-1
@@ -279,6 +331,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         patches = self.patch_projection(patches)  # (b, t, p, d)
 
         speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
+        speed_token = self._drop_condition(
+            speed_token, self.speed_dropout, self.null_speed
+        )
 
         # speed first so the frame block ends on a patch token (the readout position)
         tokens = torch.cat([speed_token, patches], dim=-2)  # (b, t, p + 1, d)
