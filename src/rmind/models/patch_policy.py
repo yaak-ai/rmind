@@ -167,6 +167,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
+        fusion_norm: bool = False,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -229,7 +230,40 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "offset_scale": offset_scale,
+            "fusion_norm": fusion_norm,
         }
+
+        # scale-balanced feature fusion: LayerNorm + learnable gain on the patch
+        # side (encoder-agnostic scale; DINO token-norm spread is negligible so
+        # nothing informative is lost), and a learnable gain on the goal side
+        # initialized so RMS(gain * z_q) ~= RMS(LN(patches)) ~= 1 -- calibrated
+        # from the frozen RVQ codebooks (seeded, data-free, identical across
+        # DDP ranks). Per-sample code-norm information passes through untouched.
+        if fusion_norm:
+            goal_dim = self.goal_encoder.quantizer.dim
+            patch_dim = self.patch_projection.in_features - goal_dim
+            self.fusion_patch_norm: Module | None = nn.LayerNorm(patch_dim)
+            self.fusion_patch_gain: nn.Parameter | None = nn.Parameter(
+                torch.tensor(1.0)
+            )
+            with torch.no_grad():
+                quantizer = self.goal_encoder.quantizer
+                generator = torch.Generator().manual_seed(0)
+                codes = torch.stack(
+                    [
+                        torch.randint(
+                            0, quantizer.codebook_size, (1024,), generator=generator
+                        )
+                        for _ in range(quantizer.num_quantizers)
+                    ],
+                    dim=-1,
+                )
+                rms = quantizer.lookup(codes).pow(2).mean().sqrt()
+            self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
+        else:
+            self.fusion_patch_norm = None
+            self.fusion_patch_gain = None
+            self.fusion_goal_gain = None
 
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
@@ -280,6 +314,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         with torch.no_grad():
             patches = self.image_encoder(images)  # (b, t, p, d_img)
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
+
+        if self.fusion_patch_norm is not None:
+            # NOTE: no in-place ops -- these tensors come from a no_grad block
+            # and the gains must receive gradients
+            patches = self.fusion_patch_norm(patches) * self.fusion_patch_gain
+            goal = torch.mul(goal, self.fusion_goal_gain)
 
         _, _, num_patches, _ = patches.shape
         patches = torch.cat(

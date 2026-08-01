@@ -82,6 +82,10 @@ class _GoalEncoderStub(Module):
     def __init__(self) -> None:
         super().__init__()
         self.proj = Linear(2, GOAL_DIM)
+        # fusion_norm calibrates its goal gain from the quantizer codebooks
+        self.quantizer = ResidualVQ(
+            dim=GOAL_DIM, codebook_size=4, num_quantizers=2, kmeans_init=False
+        )
 
     def encode(self, waypoints: Tensor) -> Tensor:
         return self.proj(waypoints).mean(dim=-2)
@@ -91,8 +95,11 @@ class _GoalEncoderStub(Module):
         return self.encode(waypoints)
 
 
-def _make_model(*, teacher_force_offset: bool = True) -> PatchPolicy:
+def _make_model(
+    *, teacher_force_offset: bool = True, fusion_norm: bool = False
+) -> PatchPolicy:
     return PatchPolicy(
+        fusion_norm=fusion_norm,
         input_transform=Identity(),
         # tests feed pre-extracted patch features (b, t, p, d) directly
         image_encoder=Identity(),
@@ -331,3 +338,46 @@ def test_readout_is_causally_valid() -> None:
 
     torch.testing.assert_close(features[:, :-1], features_perturbed[:, :-1])
     assert not torch.allclose(features[:, -1], features_perturbed[:, -1])
+
+
+def test_fusion_norm_balances_sources() -> None:
+    model = _make_model(fusion_norm=True)
+    batch = _make_batch()
+
+    inputs = model.input_transform(batch)
+    patches = model.image_encoder(inputs["image"]["cam_front_left"])
+    goal = model.goal_encoder.encode(inputs["context"]["waypoints"])
+
+    normed = model.fusion_patch_norm(patches) * model.fusion_patch_gain
+    goal * model.fusion_goal_gain
+
+    patch_rms = normed.pow(2).mean().sqrt().item()
+    # the goal gain is calibrated from codebook combinations, the stub's encode
+    # is a different map -- assert ballpark scale match, not equality
+    codes = model.goal_encoder.quantizer.lookup(
+        torch.randint(0, 4, (256, 2), generator=torch.Generator().manual_seed(1))
+    )
+    zq_rms = (codes * model.fusion_goal_gain).pow(2).mean().sqrt().item()
+    tolerance = 0.2
+    assert abs(patch_rms - 1.0) < tolerance
+    assert abs(zq_rms - 1.0) < tolerance
+
+    assert model.fusion_patch_gain.requires_grad
+    assert model.fusion_goal_gain.requires_grad
+    loss = model._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss.backward()
+    assert model.fusion_goal_gain.grad is not None
+
+    # flag off -> attributes absent
+    off = _make_model()
+    assert off.fusion_patch_norm is None
+
+
+def test_fusion_norm_calibration_deterministic() -> None:
+    """Same goal-encoder weights (the real-world case: loaded from a checkpoint)
+    must yield the identical calibrated gain on every construction/DDP rank."""
+    torch.manual_seed(7)
+    a = _make_model(fusion_norm=True)
+    torch.manual_seed(7)
+    b = _make_model(fusion_norm=True)
+    torch.testing.assert_close(a.fusion_goal_gain, b.fusion_goal_gain)

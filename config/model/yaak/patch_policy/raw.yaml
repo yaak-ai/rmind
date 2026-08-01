@@ -137,6 +137,10 @@ losses:
 
 teacher_force_offset: ${teacher_force_offset}
 
+# scale-balanced fusion: LN + learnable gain on patches, RVQ-calibrated
+# learnable gain on the goal latent (see PatchPolicy docstring)
+fusion_norm: ${fusion_norm}
+
 optimizer:
   _target_: rmind.components.optimizers.SelectiveAdamW
   _recursive_: true

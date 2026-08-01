@@ -59,5 +59,9 @@ speed_bins: 512
 # supervise the offset head at ground-truth codes (the #258 fix)
 teacher_force_offset: true
 
+# scale-balanced feature fusion (default OFF to preserve comparability with
+# the arms trained before it existed; enable per-arm or via CLI fusion_norm=true)
+fusion_norm: false
+
 wandb:
   tags: [patch_policy, dinov3]
