@@ -1,0 +1,26 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_maxspeed
+  - _self_
+
+# Map-context Arm MV: the max-speed-token arm plus an auxiliary max-speed
+# classification head -- a small MLP on the trunk's output at the max-speed
+# token position predicting the RAW (pre-dropout, pre-override) tokenized
+# limit. With the 0.3 input dropout this pressures VISION to encode the limit
+# whenever the token is dropped. UNKNOWN targets are ignored (never teach the
+# head to predict unknown); the weighted CE joins the total loss and
+# `max_speed_aux_acc` / `max_speed_aux_known_frac` are logged as metrics.
+
+max_speed_aux_loss_weight: 0.2
+
+model:
+  max_speed_aux_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels: [256, "${max_speed_vocab_size}"]
+
+  max_speed_aux_loss_weight: ${max_speed_aux_loss_weight}
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm, map_context, maxspeed_aux]

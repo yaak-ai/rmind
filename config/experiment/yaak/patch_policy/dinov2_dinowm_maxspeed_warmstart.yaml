@@ -1,0 +1,39 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_maxspeed
+  - _self_
+
+# Arm M warm-started from the dinov2_dinowm winner (solar-universe-517 /
+# ifuusvwq, v8 = best safety in the per-checkpoint sweep): the child model is
+# BUILT from this config (max-speed token + this schedule) and the parent's
+# weights are grafted on via PatchPolicy.load_for_warmstart -- learned
+# positional rows shifted into the wider (P + 2)-token frame blocks, the new
+# front-of-frame slot and all max_speed_embedding rows ZERO-initialized, all
+# other keys loaded strictly.
+#
+# Schedule: 5 epochs at batch 512 ~= 19,250 optimizer steps; cosine sized to
+# the ACTUAL planned steps (it oscillates past num_training_steps).
+warmstart_artifact: yaak/rmind/model-ifuusvwq:v8
+
+lr: 1e-4
+lr_warmup_steps: 1000
+lr_total_steps: 19250
+
+trainer:
+  max_epochs: 5
+
+model:
+  _target_: rmind.models.patch_policy.PatchPolicy.load_for_warmstart
+  artifact: ${warmstart_artifact}
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm,
+      map_context,
+      warmstart,
+      from-solar-universe-517,
+      from-ifuusvwq,
+    ]

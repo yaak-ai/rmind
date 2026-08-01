@@ -15,6 +15,7 @@ from torch.utils._pytree import MappingKey  # noqa: PLC2701
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
+from rmind.components.map_context import MAX_SPEED_UNKNOWN_ID
 from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
 from rmind.components.transformer.utils import run_layer_stack
 from rmind.config import HydraConfig, init_hydra_param
@@ -171,6 +172,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         max_speed_embedding: HydraConfig[Module] | InstanceOf[Module] | None = None,
         max_speed_dropout: float = 0.3,
         max_speed_override: float | None = None,
+        max_speed_aux_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        max_speed_aux_loss_weight: float = 0.2,
         image: Path = ("image", "cam_front_left"),
         speed: Path = ("continuous", "speed"),
         max_speed: Path = ("context", "max_speed"),
@@ -240,6 +243,21 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.max_speed_dropout = max_speed_dropout
         self.max_speed_override = max_speed_override
 
+        # optional auxiliary max-speed classification head (map-context Arm MV):
+        # a small MLP on the trunk's output at the max-speed token position,
+        # predicting the RAW (pre-dropout, pre-override) tokenized limit -- with
+        # input dropout active this pressures VISION to encode the limit
+        if max_speed_aux_head is not None and max_speed_embedding is None:
+            msg = (
+                "max_speed_aux_head requires max_speed_tokenizer/"
+                "max_speed_embedding (there is no max-speed token to supervise)"
+            )
+            raise ValueError(msg)
+        self.max_speed_aux_head: Module | None = init_hydra_param(
+            hparams, "max_speed_aux_head", max_speed_aux_head
+        )
+        self.max_speed_aux_loss_weight = max_speed_aux_loss_weight
+
         self.code_head = init_hydra_param(hparams, "code_head", code_head)
         self.offset_head = init_hydra_param(hparams, "offset_head", offset_head)
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
@@ -259,6 +277,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "max_speed": max_speed,
             "max_speed_dropout": max_speed_dropout,
             "max_speed_override": max_speed_override,
+            "max_speed_aux_loss_weight": max_speed_aux_loss_weight,
             "waypoints": waypoints,
             "chunk": chunk,
             "sample_codes": sample_codes,
@@ -330,13 +349,22 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return value
 
     def _features(
-        self, batch: Any, *, require_chunk: bool = True
-    ) -> tuple[Tensor, Tensor | None]:
+        self, batch: Any, *, require_chunk: bool = True, return_aux: bool = False
+    ) -> (
+        tuple[Tensor, Tensor | None]
+        | tuple[Tensor, Tensor | None, tuple[Tensor | None, Tensor | None]]
+    ):
         """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
 
         The chunk is only a TARGET (and never feeds the features), so callers on
         the inference path (`forward`, ONNX export) pass `require_chunk=False`
         and may omit the action series from the batch entirely.
+
+        With `return_aux=True` a third element is returned for the auxiliary
+        max-speed objective: `(aux_features, aux_targets)` -- the trunk output
+        at each frame's max-speed token position `(b, t, d)` and the RAW
+        (pre-dropout, pre-override) tokenized max-speed ids `(b, t)`; both are
+        `None` when the model has no max-speed token.
         """
         inputs = self.input_transform(batch)
 
@@ -367,8 +395,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # readout position); the block-causal mask derives tokens_per_frame from
         # the flattened length, so the optional max-speed token joins its frame's
         # bidirectional block automatically
+        aux_targets: Tensor | None = None
         if self.max_speed_embedding is not None:
-            max_speed_token = self._max_speed_token(inputs, reference=speed)
+            max_speed_token, aux_targets = self._max_speed_token(
+                inputs, reference=speed
+            )
             tokens = torch.cat(
                 [max_speed_token, speed_token, patches], dim=-2
             )  # (b, t, p + 2, d)
@@ -379,19 +410,28 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         embedding = self.encoder(
             rearrange(tokens, "b t k d -> b (t k) d"), num_frames=num_frames
         )
-        features = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)[
-            :, :, -1
-        ]  # last patch token per frame
+        grid = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)
+        features = grid[:, :, -1]  # last patch token per frame
 
         if self.norm is not None:
             features = self.norm(features)
+
+        if return_aux:
+            # the max-speed token sits FIRST in each frame block (see the
+            # concat order above)
+            aux_features = (
+                grid[:, :, 0] if self.max_speed_embedding is not None else None
+            )
+            return features, chunk, (aux_features, aux_targets)
 
         return features, chunk
 
     def _max_speed_token(
         self, inputs: Mapping[str, Any], *, reference: Tensor
-    ) -> Tensor:
-        """Embedded per-frame max-speed token `(b, t, 1, d)`.
+    ) -> tuple[Tensor, Tensor]:
+        """Embedded per-frame max-speed token `(b, t, 1, d)` plus the RAW
+        tokenized batch ids `(b, t)` (pre-dropout, pre-override -- the targets
+        for the optional auxiliary classification head).
 
         Resolution order: `max_speed_override` (a constant km/h applied to every
         frame -- e.g. drive the private test ground "as if" it were a 30 km/h
@@ -404,29 +444,32 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         b, t = reference.shape[:2]
         device = reference.device
 
+        max_speed = self._get(inputs, self.max_speed, required=False)
+        if max_speed is None:
+            raw_ids = torch.zeros((b, t, 1), dtype=torch.long, device=device)
+        else:
+            raw_ids = self.max_speed_tokenizer(max_speed)
+            if raw_ids.ndim == 2:  # (b, t) -> one token per frame
+                raw_ids = raw_ids.unsqueeze(-1)
+            raw_ids = raw_ids[..., :1]
+
         if self.max_speed_override is not None:
-            max_speed = torch.full(
-                (b, t, 1),
-                float(self.max_speed_override),
-                dtype=torch.float32,
-                device=device,
+            ids = self.max_speed_tokenizer(
+                torch.full(
+                    (b, t, 1),
+                    float(self.max_speed_override),
+                    dtype=torch.float32,
+                    device=device,
+                )
             )
         else:
-            max_speed = self._get(inputs, self.max_speed, required=False)
-
-        if max_speed is None:
-            ids = torch.zeros((b, t, 1), dtype=torch.long, device=device)
-        else:
-            ids = self.max_speed_tokenizer(max_speed)
-            if ids.ndim == 2:  # (b, t) -> one token per frame
-                ids = ids.unsqueeze(-1)
-            ids = ids[..., :1]
+            ids = raw_ids
 
         if self.training and self.max_speed_dropout > 0:
             drop = torch.rand(b, t, 1, device=device) < self.max_speed_dropout
             ids = torch.where(drop, torch.zeros_like(ids), ids)
 
-        return self.max_speed_embedding(ids)
+        return self.max_speed_embedding(ids), raw_ids.squeeze(-1)
 
     # VQ-BeT joint head -- mirrors `JointPolicyObjective` (incl. the teacher-forced
     # offset fix) with a leading (b, t) batch instead of (b,).
@@ -479,7 +522,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         )
 
     def _compute_metrics(self, batch: Any) -> TensorDict:
-        features, chunk = self._features(batch)  # (b, t, d), (b, t, h, a)
+        features, chunk, (aux_features, aux_targets) = self._features(
+            batch, return_aux=True
+        )  # (b, t, d), (b, t, h, a), ((b, t, d), (b, t))
         tokenizer = self.tokenizer
 
         with torch.no_grad():
@@ -516,6 +561,30 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
+        # auxiliary max-speed classification (map-context Arm MV): supervise the
+        # trunk output at the max-speed token position with the RAW (pre-dropout,
+        # pre-override) tokenized limit. UNKNOWN targets are ignored -- the head
+        # must never learn to PREDICT unknown; when a batch has no known limit at
+        # all, a zero loss through the logits keeps the head in the graph (DDP).
+        aux_valid: Tensor | None = None
+        aux_logits_flat: Tensor | None = None
+        aux_targets_flat: Tensor | None = None
+        if self.max_speed_aux_head is not None:
+            aux_logits = self.max_speed_aux_head(aux_features)  # (b, t, vocab)
+            aux_logits_flat = rearrange(aux_logits, "b t c -> (b t) c")
+            aux_targets_flat = rearrange(aux_targets, "b t -> (b t)")
+            aux_valid = aux_targets_flat != MAX_SPEED_UNKNOWN_ID
+            aux_ce = (
+                F.cross_entropy(
+                    aux_logits_flat,
+                    aux_targets_flat,
+                    ignore_index=MAX_SPEED_UNKNOWN_ID,
+                )
+                if aux_valid.any()
+                else aux_logits_flat.sum() * 0.0
+            )
+            losses["max_speed_aux"] = self.max_speed_aux_loss_weight * aux_ce
+
         # gradient-free LAST-FRAME metrics: the training losses above average over
         # all T readouts (contexts of 1..T frames), whereas JointPolicyObjective
         # only ever scores the newest frame -- these make the two comparable
@@ -531,6 +600,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             metrics["offset_sampled_recon_last"] = self.losses["offset"](
                 sampled_chunk[:, -1].detach(), target[:, -1]
             )
+            if aux_valid is not None:
+                metrics["max_speed_aux_acc"] = (
+                    (
+                        aux_logits_flat[aux_valid].argmax(dim=-1)
+                        == aux_targets_flat[aux_valid]
+                    )
+                    .float()
+                    .mean()
+                    if aux_valid.any()
+                    else torch.zeros((), device=aux_valid.device)
+                )
+                metrics["max_speed_aux_known_frac"] = aux_valid.float().mean()
 
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
 
@@ -643,6 +724,117 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             lr_scheduler.model_dump() if lr_scheduler is not None else None
         )
         return model
+
+    @classmethod
+    def load_for_warmstart(cls, artifact: str, **kwargs: Any) -> "PatchPolicy":
+        """Warm-start a NEW architecture (map-context arms: + max-speed token
+        and optionally the auxiliary head) from a parent checkpoint WITHOUT
+        those components.
+
+        Unlike `load_for_continuation` (same architecture, checkpoint hparams),
+        the child model is built from the GIVEN config kwargs (so optimizer/
+        schedule/new modules come from the experiment config) and the parent's
+        weights are grafted on surgically -- see `_warmstart_state_dict`:
+
+        - `encoder.position_embedding`: parent per-frame rows shifted into the
+          child's wider frame blocks; the new front-of-frame slot (the
+          max-speed token position) is ZERO-initialized;
+        - `max_speed_embedding`: all rows ZERO-initialized, so at step 0 the
+          new token is an all-zero input vector and the child starts as a
+          near-no-op perturbation of the parent;
+        - `max_speed_tokenizer` buffers and `max_speed_aux_head` weights keep
+          their fresh child initialization;
+        - EVERYTHING else loads strictly from the parent (any other
+          missing/unexpected key raises).
+        """
+        import wandb  # noqa: PLC0415
+        from pathlib import Path as FsPath  # noqa: PLC0415
+
+        child = cls(**kwargs)
+
+        run = wandb.run
+        artifact_obj = (
+            run.use_artifact(artifact)
+            if run is not None and not run.disabled
+            else wandb.Api().artifact(artifact, type="model")
+        )
+        ckpt_path = FsPath(artifact_obj.download()) / "model.ckpt"
+        parent_state = torch.load(ckpt_path, map_location="cpu", weights_only=False)[
+            "state_dict"
+        ]
+
+        state = cls._warmstart_state_dict(parent_state, child)
+        child.load_state_dict(state, strict=True)
+        child.hparams["warmstart_artifact"] = artifact
+        return child
+
+    @staticmethod
+    def _warmstart_state_dict(
+        parent_state: Mapping[str, Tensor], child: "PatchPolicy"
+    ) -> dict[str, Tensor]:
+        """Graft `parent_state` onto `child`'s architecture (see
+        `load_for_warmstart`); returns a state dict loadable with `strict=True`.
+        """
+        child_state = child.state_dict()
+        parent_keys, child_keys = set(parent_state), set(child_state)
+
+        if missing := parent_keys - child_keys:
+            msg = f"parent keys missing from the child architecture: {sorted(missing)}"
+            raise ValueError(msg)
+
+        new_keys = child_keys - parent_keys
+        allowed_prefixes = (
+            "max_speed_tokenizer.",
+            "max_speed_embedding.",
+            "max_speed_aux_head.",
+        )
+        if unexpected := [
+            k for k in new_keys if not k.startswith(allowed_prefixes)
+        ]:
+            msg = f"unexpected child-only keys (not max-speed components): {sorted(unexpected)}"
+            raise ValueError(msg)
+
+        state = {k: parent_state[k].clone() for k in parent_keys}
+        for key in new_keys:
+            state[key] = (
+                torch.zeros_like(child_state[key])
+                if key.startswith("max_speed_embedding.")
+                else child_state[key].clone()
+            )
+
+        pos_key = "encoder.position_embedding.weight"
+        parent_pos, child_pos = parent_state[pos_key], child_state[pos_key]
+        if parent_pos.shape != child_pos.shape:
+            (parent_rows, dim), (child_rows, child_dim) = (
+                parent_pos.shape,
+                child_pos.shape,
+            )
+            # exactly ONE new front-of-frame token per frame (the max-speed
+            # token), so the frame count is the row difference
+            num_frames = child_rows - parent_rows
+            if (
+                dim != child_dim
+                or num_frames <= 0
+                or parent_rows % num_frames
+                or child_rows % num_frames
+                or child_rows // num_frames != parent_rows // num_frames + 1
+            ):
+                msg = (
+                    "cannot remap position embedding: parent "
+                    f"{tuple(parent_pos.shape)} vs child {tuple(child_pos.shape)} "
+                    "is not one extra per-frame token"
+                )
+                raise ValueError(msg)
+            k_parent = parent_rows // num_frames
+            k_child = k_parent + 1
+            remapped = torch.zeros_like(child_pos)
+            for t in range(num_frames):
+                remapped[t * k_child + 1 : (t + 1) * k_child] = parent_pos[
+                    t * k_parent : (t + 1) * k_parent
+                ]
+            state[pos_key] = remapped
+
+        return state
 
     @classmethod
     def load_head_for_export(cls, artifact: str) -> "PatchPolicyHead":

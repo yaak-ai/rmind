@@ -52,7 +52,10 @@ CONFIG_PATH = "../config"
 
 
 def _make_model(
-    *, with_max_speed: bool = True, max_speed_dropout: float = 0.3
+    *,
+    with_max_speed: bool = True,
+    max_speed_dropout: float = 0.3,
+    with_aux: bool = False,
 ) -> PatchPolicy:
     tokens_per_frame = NUM_PATCHES + (2 if with_max_speed else 1)
     return PatchPolicy(
@@ -67,6 +70,9 @@ def _make_model(
             Embedding(MAX_SPEED_VOCAB_SIZE, POLICY_DIM) if with_max_speed else None
         ),
         max_speed_dropout=max_speed_dropout,
+        max_speed_aux_head=(
+            MLP(POLICY_DIM, [16, MAX_SPEED_VOCAB_SIZE]) if with_aux else None
+        ),
         encoder=BlockCausalTransformer(
             dim_model=POLICY_DIM,
             num_layers=2,
@@ -202,17 +208,20 @@ def test_dropout_only_in_train_mode() -> None:
     reference = batch["continuous"]["speed"]
 
     # eval: dropout inert, the token embeds the tokenized input
-    token = model._max_speed_token(batch, reference=reference)  # noqa: SLF001
+    token, raw_ids = model._max_speed_token(batch, reference=reference)  # noqa: SLF001
     expected_ids = model.max_speed_tokenizer(batch["context"]["max_speed"])
     torch.testing.assert_close(token, model.max_speed_embedding(expected_ids))
+    torch.testing.assert_close(raw_ids, expected_ids.squeeze(-1))
 
-    # train + p=1.0: every frame's token becomes UNKNOWN
+    # train + p=1.0: every frame's token becomes UNKNOWN, but the RAW ids
+    # (the aux-head targets) stay pre-dropout
     model.train()
-    token = model._max_speed_token(batch, reference=reference)  # noqa: SLF001
+    token, raw_ids = model._max_speed_token(batch, reference=reference)  # noqa: SLF001
     unknown_ids = torch.full(
         (BATCH_SIZE, EPISODE_LENGTH, 1), MAX_SPEED_UNKNOWN_ID, dtype=torch.long
     )
     torch.testing.assert_close(token, model.max_speed_embedding(unknown_ids))
+    torch.testing.assert_close(raw_ids, expected_ids.squeeze(-1))
 
 
 def test_mismatched_max_speed_args_rejected() -> None:
@@ -243,6 +252,151 @@ def test_mismatched_max_speed_args_rejected() -> None:
     else:
         msg = f"expected ValueError, got {_make_model_partial}"
         raise AssertionError(msg)
+
+
+def test_aux_head_loss_and_metrics() -> None:
+    """Aux head: CE on known targets joins the losses, accuracy is logged, and
+    gradients flow into the head; models WITHOUT the head are unchanged."""
+    model = _make_model(with_aux=True)
+    batch = _batch_with_max_speed(50.0)
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    losses = metrics["policy", "loss"]
+    assert "max_speed_aux" in set(losses.keys())
+    assert losses["max_speed_aux"].isfinite()
+    assert metrics["policy", "metric", "max_speed_aux_acc"].isfinite()
+    torch.testing.assert_close(
+        metrics["policy", "metric", "max_speed_aux_known_frac"], torch.tensor(1.0)
+    )
+
+    loss = losses.sum(reduce=True)
+    loss.backward()
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.max_speed_aux_head.parameters()
+    )
+
+    # no aux head -> no aux loss key
+    plain = _make_model(with_aux=False)
+    assert "max_speed_aux" not in set(
+        plain._compute_metrics(batch)["policy", "loss"].keys()  # noqa: SLF001
+    )
+
+
+def test_aux_head_all_unknown_targets_yield_zero_loss() -> None:
+    """Batch without max_speed (or all-NaN) -> all targets UNKNOWN -> loss is
+    exactly zero (never NaN) and still differentiable."""
+    model = _make_model(with_aux=True)
+
+    for batch in (_batch_with_max_speed(None), _batch_with_max_speed(math.nan)):
+        metrics = model._compute_metrics(batch)  # noqa: SLF001
+        aux = metrics["policy", "loss", "max_speed_aux"]
+        torch.testing.assert_close(aux, torch.zeros_like(aux))
+        torch.testing.assert_close(
+            metrics["policy", "metric", "max_speed_aux_known_frac"],
+            torch.tensor(0.0),
+        )
+        metrics["policy", "loss"].sum(reduce=True).backward()
+
+
+def test_aux_head_requires_max_speed_token() -> None:
+    try:
+        _make_model(with_max_speed=False, with_aux=True)
+    except ValueError:
+        pass
+    else:
+        msg = "expected ValueError for aux head without max-speed token"
+        raise AssertionError(msg)
+
+
+def test_warmstart_state_dict_surgery() -> None:
+    """Parent (no max-speed token) grafted onto a child (token + aux head):
+    positional rows shift by one per frame block, the new front-of-frame slot
+    and the max-speed embedding are zero, everything else is bit-identical."""
+    parent = _make_model(with_max_speed=False)
+    child = _make_model(with_aux=True)
+
+    state = PatchPolicy._warmstart_state_dict(parent.state_dict(), child)  # noqa: SLF001
+    child.load_state_dict(state, strict=True)
+
+    k_parent, k_child = NUM_PATCHES + 1, NUM_PATCHES + 2
+    parent_pos = parent.encoder.position_embedding.weight
+    child_pos = child.encoder.position_embedding.weight
+    for t in range(EPISODE_LENGTH):
+        torch.testing.assert_close(
+            child_pos[t * k_child + 1 : (t + 1) * k_child],
+            parent_pos[t * k_parent : (t + 1) * k_parent],
+        )
+        torch.testing.assert_close(
+            child_pos[t * k_child], torch.zeros_like(child_pos[t * k_child])
+        )
+
+    assert (child.max_speed_embedding.weight == 0).all()
+    for name, parameter in parent.named_parameters():
+        if name != "encoder.position_embedding.weight":
+            torch.testing.assert_close(
+                dict(child.named_parameters())[name], parameter
+            )
+
+    # step-0 sanity on the tiny stub: the child still runs and yields finite
+    # readouts on a batch WITHOUT max_speed (all-UNKNOWN token = zero vector)
+    features, _ = child._features(_batch_with_max_speed(None))  # noqa: SLF001
+    assert features.isfinite().all()
+
+
+def test_warmstart_state_dict_rejects_mismatch() -> None:
+    """A child whose extra rows are NOT one-per-frame must be rejected
+    (+2 rows over 3 frames: no consistent frame count divides both grids)."""
+    parent = _make_model(with_max_speed=False)
+    child = _make_model(with_max_speed=False)
+    child.encoder.position_embedding = torch.nn.Embedding(
+        EPISODE_LENGTH * (NUM_PATCHES + 1) + 2, POLICY_DIM
+    )
+    try:
+        PatchPolicy._warmstart_state_dict(parent.state_dict(), child)  # noqa: SLF001
+    except ValueError:
+        pass
+    else:
+        msg = "expected ValueError for a non-per-frame position embedding delta"
+        raise AssertionError(msg)
+
+
+def test_aux_experiment_config_composes() -> None:
+    with initialize(version_base=None, config_path=CONFIG_PATH):
+        cfg = compose(
+            "train",
+            overrides=["experiment=yaak/patch_policy/dinov2_dinowm_maxspeed_aux"],
+        )
+
+    assert cfg.model.max_speed_aux_head.in_channels == 512
+    assert list(cfg.model.max_speed_aux_head.hidden_channels) == [
+        256,
+        MAX_SPEED_VOCAB_SIZE,
+    ]
+    assert cfg.model.max_speed_aux_loss_weight == 0.2
+    assert "maxspeed_aux" in cfg.wandb.tags
+
+
+def test_warmstart_experiment_configs_compose() -> None:
+    for name, aux in [
+        ("dinov2_dinowm_maxspeed_warmstart", False),
+        ("dinov2_dinowm_maxspeed_aux_warmstart", True),
+    ]:
+        with initialize(version_base=None, config_path=CONFIG_PATH):
+            cfg = compose(
+                "train", overrides=[f"experiment=yaak/patch_policy/{name}"]
+            )
+
+        assert cfg.model._target_ == (
+            "rmind.models.patch_policy.PatchPolicy.load_for_warmstart"
+        )
+        assert cfg.model.artifact == "yaak/rmind/model-ifuusvwq:v8"
+        assert cfg.lr == 1e-4
+        assert cfg.lr_warmup_steps == 1000
+        assert cfg.lr_total_steps == 19250
+        assert cfg.trainer.max_epochs == 5
+        assert "warmstart" in cfg.wandb.tags
+        assert ("max_speed_aux_head" in cfg.model) == aux
 
 
 def test_experiment_config_composes() -> None:

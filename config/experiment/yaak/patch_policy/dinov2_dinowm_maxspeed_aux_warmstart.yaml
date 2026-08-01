@@ -1,0 +1,33 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_maxspeed_aux
+  - _self_
+
+# Arm MV warm-started from the dinov2_dinowm winner (see
+# dinov2_dinowm_maxspeed_warmstart.yaml for the surgery + schedule rationale);
+# the auxiliary head keeps its fresh initialization.
+warmstart_artifact: yaak/rmind/model-ifuusvwq:v8
+
+lr: 1e-4
+lr_warmup_steps: 1000
+lr_total_steps: 19250
+
+trainer:
+  max_epochs: 5
+
+model:
+  _target_: rmind.models.patch_policy.PatchPolicy.load_for_warmstart
+  artifact: ${warmstart_artifact}
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm,
+      map_context,
+      maxspeed_aux,
+      warmstart,
+      from-solar-universe-517,
+      from-ifuusvwq,
+    ]
