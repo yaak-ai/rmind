@@ -141,6 +141,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     patch token predicts that frame's action chunk with the VQ-BeT joint head from
     `JointPolicyObjective` (frozen residual-VQ chunk tokenizer; focal code loss +
     teacher-forced L1 offset).
+
+    Optionally (map-context Arm M), a per-frame max-speed token is prepended as
+    well (`T x (P + 2)`): pass `max_speed_tokenizer` + `max_speed_embedding`
+    (see `rmind.components.map_context`) and size the encoder's
+    `max_sequence_length` accordingly. The token reads `[context, max_speed]`
+    from the batch (all-UNKNOWN when absent) and can be pinned at inference via
+    `max_speed_override` (km/h) WITHOUT retraining -- see `_max_speed_token`.
     """
 
     @validate_call
@@ -160,8 +167,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         offset_head: HydraConfig[Module] | InstanceOf[Module],
         losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        max_speed_tokenizer: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        max_speed_embedding: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        max_speed_dropout: float = 0.3,
+        max_speed_override: float | None = None,
         image: Path = ("image", "cam_front_left"),
         speed: Path = ("continuous", "speed"),
+        max_speed: Path = ("context", "max_speed"),
         waypoints: Path = ("context", "waypoints"),
         chunk: Path = ("joint_actions",),
         sample_codes: bool = True,
@@ -210,6 +222,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.encoder: BlockCausalTransformer = init_hydra_param(
             hparams, "encoder", encoder
         )
+        # optional per-frame max-speed conditioning token (map context, Arm M);
+        # both args None (the default) -> the token is absent and the model is
+        # byte-identical (state dict + forward) to pre-map-context checkpoints
+        if (max_speed_tokenizer is None) != (max_speed_embedding is None):
+            msg = (
+                "max_speed_tokenizer and max_speed_embedding must be "
+                "provided together (or both omitted)"
+            )
+            raise ValueError(msg)
+        self.max_speed_tokenizer: Module | None = init_hydra_param(
+            hparams, "max_speed_tokenizer", max_speed_tokenizer
+        )
+        self.max_speed_embedding: Module | None = init_hydra_param(
+            hparams, "max_speed_embedding", max_speed_embedding
+        )
+        self.max_speed_dropout = max_speed_dropout
+        self.max_speed_override = max_speed_override
+
         self.code_head = init_hydra_param(hparams, "code_head", code_head)
         self.offset_head = init_hydra_param(hparams, "offset_head", offset_head)
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
@@ -217,6 +247,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         self.image: Path = image
         self.speed: Path = speed
+        self.max_speed: Path = max_speed
         self.waypoints: Path = waypoints
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
@@ -225,6 +256,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         hparams |= {
             "image": image,
             "speed": speed,
+            "max_speed": max_speed,
+            "max_speed_dropout": max_speed_dropout,
+            "max_speed_override": max_speed_override,
             "waypoints": waypoints,
             "chunk": chunk,
             "sample_codes": sample_codes,
@@ -329,8 +363,17 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
 
-        # speed first so the frame block ends on a patch token (the readout position)
-        tokens = torch.cat([speed_token, patches], dim=-2)  # (b, t, p + 1, d)
+        # non-patch tokens first so the frame block ends on a patch token (the
+        # readout position); the block-causal mask derives tokens_per_frame from
+        # the flattened length, so the optional max-speed token joins its frame's
+        # bidirectional block automatically
+        if self.max_speed_embedding is not None:
+            max_speed_token = self._max_speed_token(inputs, reference=speed)
+            tokens = torch.cat(
+                [max_speed_token, speed_token, patches], dim=-2
+            )  # (b, t, p + 2, d)
+        else:
+            tokens = torch.cat([speed_token, patches], dim=-2)  # (b, t, p + 1, d)
         _, num_frames, _, _ = tokens.shape
 
         embedding = self.encoder(
@@ -344,6 +387,46 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             features = self.norm(features)
 
         return features, chunk
+
+    def _max_speed_token(
+        self, inputs: Mapping[str, Any], *, reference: Tensor
+    ) -> Tensor:
+        """Embedded per-frame max-speed token `(b, t, 1, d)`.
+
+        Resolution order: `max_speed_override` (a constant km/h applied to every
+        frame -- e.g. drive the private test ground "as if" it were a 30 km/h
+        zone) > the `[context, max_speed]` batch input > all-UNKNOWN (today's
+        datasets, which carry no map context). During training each frame's
+        token is independently replaced with UNKNOWN with probability
+        `max_speed_dropout`, so the policy stays robust to missing map data and
+        the UNKNOWN inference path remains in-distribution.
+        """
+        b, t = reference.shape[:2]
+        device = reference.device
+
+        if self.max_speed_override is not None:
+            max_speed = torch.full(
+                (b, t, 1),
+                float(self.max_speed_override),
+                dtype=torch.float32,
+                device=device,
+            )
+        else:
+            max_speed = self._get(inputs, self.max_speed, required=False)
+
+        if max_speed is None:
+            ids = torch.zeros((b, t, 1), dtype=torch.long, device=device)
+        else:
+            ids = self.max_speed_tokenizer(max_speed)
+            if ids.ndim == 2:  # (b, t) -> one token per frame
+                ids = ids.unsqueeze(-1)
+            ids = ids[..., :1]
+
+        if self.training and self.max_speed_dropout > 0:
+            drop = torch.rand(b, t, 1, device=device) < self.max_speed_dropout
+            ids = torch.where(drop, torch.zeros_like(ids), ids)
+
+        return self.max_speed_embedding(ids)
 
     # VQ-BeT joint head -- mirrors `JointPolicyObjective` (incl. the teacher-forced
     # offset fix) with a leading (b, t) batch instead of (b,).
@@ -500,6 +583,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         The exported graph needs no action series in the batch (`forward`
         passes `require_chunk=False`).
+
+        Extra `kwargs` are set as attributes; for map-context checkpoints pass
+        `max_speed_override=<kmh>` (hydra: `+model.max_speed_override=30`) to
+        bake a constant zone speed into the graph, or leave it unset and feed
+        `data.meta/MapContext/max_speed` `(1, t, 1)` float km/h (NaN = unknown,
+        -1 = unlimited) as an explicit graph input (see
+        config/export/yaak/patch_policy/finetuned_maxspeed.yaml).
         """
         from torchvision.transforms.v2 import Normalize  # noqa: PLC0415
 

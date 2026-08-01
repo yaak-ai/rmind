@@ -1,0 +1,33 @@
+# @package _global_
+---
+# ONNX export for a map-context (dinov2_dinowm_maxspeed) PatchPolicy
+# checkpoint: the `finetuned` interface plus max speed as an EXPLICIT graph
+# input `data.meta/MapContext/max_speed` (1, 6, 1) float32 km/h per frame --
+# NaN = unknown, any negative (-1.0) = explicitly unlimited, else snapped to
+# the nearest of [5,10,20,30,40,50,60,70,80,90,100,110,120,130]. Serving that
+# has no map feed can send all-NaN (UNKNOWN, matches training-time dropout).
+#
+#   just export-onnx export=yaak/patch_policy/finetuned_maxspeed \
+#       model.artifact=yaak/rmind/model-<run>:vN image_hw=224
+#
+# Alternatively bake a CONSTANT zone speed into the graph instead of the
+# input (private test ground "as if 30 km/h zone"; the override then ignores
+# the max_speed input entirely):
+#
+#   ... export=yaak/patch_policy/finetuned +model.max_speed_override=30
+
+defaults:
+  - /export/yaak/patch_policy/finetuned
+  - _self_
+
+input:
+  data:
+    meta/MapContext/max_speed:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 1]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 5.0
+      high: 130.0

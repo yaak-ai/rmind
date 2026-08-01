@@ -1,0 +1,114 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm
+  - _self_
+
+# Map-context Arm M scaffold: the dinov2_dinowm winner recipe plus an OPTIONAL
+# per-frame max-speed conditioning token (rmind.components.map_context).
+# Vocabulary (16): 0 UNKNOWN (NaN/missing), 1 UNLIMITED (-1.0), 2..15 nearest
+# of [5,10,20,30,40,50,60,70,80,90,100,110,120,130] km/h. The token reads
+# [context, max_speed] (data-side meta/MapContext/max_speed once the GT
+# sidecars are wired into rbyte); with today's datasets it is all-UNKNOWN.
+#
+# Inference override (no retraining -- the private-test-ground seam), e.g.
+# "act as if this is a 30 km/h zone":
+#   train/instantiate-from-config: model.max_speed_override=30
+#   checkpoint loaders (load_from_wandb_artifact / load_for_export):
+#     +model.max_speed_override=30
+#   null / unset -> the batch input, or all-UNKNOWN when absent.
+
+max_speed_vocab_size: 16 # fixed by rmind.components.map_context
+max_speed_dropout: 0.3 # per-frame train-time replacement with UNKNOWN
+
+model:
+  max_speed_tokenizer:
+    _target_: rmind.components.map_context.MaxSpeedTokenizer
+
+  max_speed_embedding:
+    _target_: rmind.components.nn.Embedding
+    num_embeddings: ${max_speed_vocab_size}
+    embedding_dim: ${policy_embedding_dim}
+
+  max_speed_dropout: ${max_speed_dropout}
+  max_speed_override: null
+
+  encoder:
+    # episode_length frames x (num_patches + speed token + max-speed token)
+    max_sequence_length: "${eval:'${episode_length} * (${num_patches} + 2)'}"
+
+  # raw.yaml's input_transform plus the context.max_speed remapper path.
+  # NOTE: _args_ lists merge by replacement, so the Sequential is re-stated
+  # fully (same convention as dinov2_dinowm's image_encoder).
+  input_transform:
+    _target_: torch.nn.Sequential
+    _convert_: all
+    _args_:
+      - _target_: rmind.components.nn.Remapper
+        paths:
+          image:
+            cam_front_left: [data, cam_front_left]
+
+          continuous:
+            speed: [data, meta/VehicleMotion/speed]
+            gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
+            brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
+            steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
+
+          context:
+            waypoints: [data, waypoints/xy_normalized]
+            # absent from today's datasets -> Remapper yields None -> the
+            # model falls back to the all-UNKNOWN token (by design)
+            max_speed: [data, meta/MapContext/max_speed]
+
+          discrete:
+            turn_signal: [data, meta/VehicleState/turn_signal]
+
+      - _target_: rmind.components.nn.ChunkFields
+        episode_length: ${episode_length}
+        action_horizon: ${action_horizon}
+        unfold_paths:
+          - [continuous, gas_pedal]
+          - [continuous, brake_pedal]
+          - [continuous, steering_angle]
+          - [discrete, turn_signal]
+
+      - _target_: rmind.components.containers.ModuleDict
+        modules:
+          image:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: einops.layers.torch.Rearrange
+                pattern: "... h w c -> ... c h w"
+              - _target_: torchvision.transforms.v2.CenterCrop
+                size: [320, 576]
+              - _target_: torchvision.transforms.v2.Resize
+                size: ${image_resize}
+              - _target_: torchvision.transforms.v2.ToDtype
+                scale: true
+                dtype:
+                  _target_: hydra.utils.get_object
+                  path: torch.float32
+              - _target_: torchvision.transforms.v2.Normalize
+                mean: [0.485, 0.456, 0.406]
+                std: [0.229, 0.224, 0.225]
+
+          continuous:
+            _target_: rmind.components.nn.AtLeast3D
+
+          discrete:
+            _target_: rmind.components.nn.AtLeast3D
+
+          context:
+            _target_: torch.nn.Identity
+
+      - _target_: rmind.components.nn.StackFields
+        out_key: joint_actions
+        paths:
+          gas_pedal: [continuous, gas_pedal]
+          brake_pedal: [continuous, brake_pedal]
+          steering_angle: [continuous, steering_angle]
+          turn_signal: [discrete, turn_signal]
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm, map_context]
