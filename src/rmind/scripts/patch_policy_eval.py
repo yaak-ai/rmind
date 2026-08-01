@@ -15,6 +15,7 @@ Usage (from a repo checkout with the val rbyte cache built):
 """
 
 import argparse
+from typing import TYPE_CHECKING
 
 import pytorch_lightning as pl
 import torch
@@ -25,6 +26,9 @@ from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.models.patch_policy import PatchPolicy
 
+if TYPE_CHECKING:
+    from rmind.utils import RuleBasedCluster
+
 
 def _to_device(batch: object, device: torch.device) -> object:
     return tree_map(
@@ -32,8 +36,71 @@ def _to_device(batch: object, device: torch.device) -> object:
     )
 
 
+def _default_cluster_fn() -> "RuleBasedCluster":
+    """The exact rule set from config/trainer/callbacks/patch_policy.yaml, so the
+    per-cluster numbers here are comparable with the training-time predict metrics
+    (which, however, were logged under SAMPLED decoding only)."""
+    from rmind.utils import RuleBasedCluster  # noqa: PLC0415
+
+    key = "meta/VehicleMotion/{}"
+    return RuleBasedCluster(
+        fields={
+            "gas": {"key": key.format("gas_pedal_normalized"), "reduce": "last"},
+            "brake": {"key": key.format("brake_pedal_normalized"), "reduce": "last"},
+            "steer": {"key": key.format("steering_angle_normalized"), "reduce": "last"},
+            "dp_g": {"key": key.format("gas_pedal_normalized"), "reduce": "last_diff"},
+            "speed": {"key": key.format("speed"), "reduce": "last"},
+        },
+        rules=[
+            {"name": "highway", "when": {"speed": {"ge": 70}}},
+            {
+                "name": "braking_turn",
+                "when": {"brake": {"ge": 0.02}, "steer": {"abs_ge": 0.05}},
+            },
+            {
+                "name": "braking",
+                "when": {"brake": {"ge": 0.02}, "steer": {"abs_lt": 0.05}},
+            },
+            {
+                "name": "cruise_turn",
+                "when": {
+                    "gas": {"ge": 0.05},
+                    "brake": {"lt": 0.02},
+                    "steer": {"abs_ge": 0.05},
+                },
+            },
+            {
+                "name": "acceleration",
+                "when": {
+                    "gas": {"ge": 0.05},
+                    "brake": {"lt": 0.02},
+                    "dp_g": {"ge": 0.01},
+                },
+            },
+            {
+                "name": "gas_release",
+                "when": {
+                    "gas": {"ge": 0.05},
+                    "brake": {"lt": 0.02},
+                    "dp_g": {"lt": -0.01},
+                },
+            },
+            {
+                "name": "cruise",
+                "when": {
+                    "gas": {"ge": 0.05},
+                    "brake": {"lt": 0.02},
+                    "steer": {"abs_lt": 0.05},
+                    "dp_g": {"abs_lt": 0.01},
+                },
+            },
+        ],
+        default="idle_coast",
+    )
+
+
 @torch.no_grad()
-def evaluate(  # noqa: PLR0914
+def evaluate(  # noqa: C901, PLR0914
     model: PatchPolicy,
     loader: object,
     *,
@@ -78,6 +145,8 @@ def evaluate(  # noqa: PLR0914
         p_gt = probs.gather(-1, target_codes[..., None]).squeeze(-1)  # (b, t, g)
         entropy = -(probs * probs.clamp_min(1e-10).log()).sum(dim=-1)  # (b, t, g)
         accuracy = (argmax_codes == target_codes).float()  # (b, t, g)
+        # joint: all quantizer levels correct simultaneously ("exact behavior token")
+        joint_accuracy = (argmax_codes == target_codes).all(dim=-1).float()  # (b, t)
 
         b, t = features.shape[:2]
         for pos in range(t):
@@ -89,6 +158,7 @@ def evaluate(  # noqa: PLR0914
                 values[f"t{pos}/acc_{q}"] = accuracy[:, pos, q].mean()
                 values[f"t{pos}/p_gt_{q}"] = p_gt[:, pos, q].mean()
                 values[f"t{pos}/entropy_{q}"] = entropy[:, pos, q].mean()
+            values[f"t{pos}/acc_joint"] = joint_accuracy[:, pos].mean()
             values[f"t{pos}/offset"] = (
                 (teacher_chunk[:, pos] - target[:, pos]).abs().mean()
             )
@@ -101,14 +171,46 @@ def evaluate(  # noqa: PLR0914
             for key, value in values.items():
                 sums[key] = sums.get(key, torch.zeros((), device=device)) + value * b
 
+        # per-cluster x per-decoding, last frame only (deployment position),
+        # per-field L1 mean over the action horizon. Skipped when the batch
+        # lacks the raw meta series the cluster rules need (synthetic batches).
+        try:
+            labels = _default_cluster_fn()(batch, None)
+        except (KeyError, TypeError):
+            labels = None
+        if labels is not None:
+            action_features = tokenizer._action_features  # noqa: SLF001
+            tgt = target[:, -1].unflatten(-1, (-1, action_features))
+            per_field = {
+                "sampled": (
+                    sampled_chunk[:, -1].unflatten(-1, (-1, action_features)) - tgt
+                )
+                .abs()
+                .mean(dim=1),  # (b, fields)
+                "argmax": (
+                    argmax_chunk[:, -1].unflatten(-1, (-1, action_features)) - tgt
+                )
+                .abs()
+                .mean(dim=1),
+            }
+            for j, label in enumerate(labels):
+                key = f"cluster_n/{label}"
+                sums[key] = sums.get(key, torch.zeros((), device=device)) + 1
+                for dec, l1 in per_field.items():
+                    for f, field in enumerate(("gas", "brake", "steer")):
+                        k = f"cluster/{label}/{dec}_{field}"
+                        sums[k] = sums.get(k, torch.zeros((), device=device)) + l1[j, f]
+
         count += b
 
-    return {k: v / count for k, v in sums.items()} | {
-        "num_samples": torch.tensor(count)
-    }
+    # cluster sums are normalized by their own cluster counts at report time
+    return {
+        k: (v if k.startswith(("cluster/", "cluster_n/")) else v / count)
+        for k, v in sums.items()
+    } | {"num_samples": torch.tensor(count)}
 
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0914
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
@@ -177,7 +279,8 @@ def main() -> None:
     header = [
         "pos(context)",
         "code_focal",
-        "top1_acc",
+        "top1_acc",  # mean of per-quantizer marginal accuracies
+        "joint_acc",  # all 4 levels correct simultaneously
         "p_gt",
         "entropy",
         "offset",
@@ -192,6 +295,7 @@ def main() -> None:
             for v in [
                 q_mean(prefixes, "code"),
                 q_mean(prefixes, "acc"),
+                mean_over(prefixes, "acc_joint"),
                 q_mean(prefixes, "p_gt"),
                 q_mean(prefixes, "entropy"),
                 mean_over(prefixes, "offset"),
@@ -206,6 +310,29 @@ def main() -> None:
     row("all (wandb)", [f"t{p}" for p in positions])
     last = [f"t{positions[-1]}"]
     row("last (=bsln)", last)
+
+    cluster_labels = sorted(
+        (k.removeprefix("cluster_n/") for k in results if k.startswith("cluster_n/")),
+        key=lambda c: -results[f"cluster_n/{c}"].item(),
+    )
+    if cluster_labels:
+        print(  # noqa: T201
+            "\nper-cluster @ last frame (field L1 over horizon; both decodings):"
+        )
+        cols = ["cluster", "n"] + [
+            f"{dec[:4]}_{f}"
+            for dec in ("sampled", "argmax")
+            for f in ("gas", "brake", "steer")
+        ]
+        print(" | ".join(f"{h:>12s}" for h in cols))  # noqa: T201
+        for c in cluster_labels:
+            n = results[f"cluster_n/{c}"].item()
+            cells = [f"{c:>12s}", f"{int(n):12d}"] + [
+                f"{results[f'cluster/{c}/{dec}_{f}'].item() / n:12.4f}"
+                for dec in ("sampled", "argmax")
+                for f in ("gas", "brake", "steer")
+            ]
+            print(" | ".join(cells))  # noqa: T201
 
     print("\nper-quantizer @ last frame:")  # noqa: T201
     print(  # noqa: T201
