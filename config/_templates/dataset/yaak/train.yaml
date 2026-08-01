@@ -699,6 +699,10 @@ samples:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324
 
+    map_gt_path:
+      #@ for/end drive_id in drives:
+      - ${paths.map_gt}/(@=drive_id@).parquet
+
   executor:
     _target_: concurrent.futures.ProcessPoolExecutor
     mp_context:
@@ -998,10 +1002,41 @@ samples:
                 "meta/ImageMetadata.cam_front_left/time_stamp";
 
       - _target_: pipefunc.PipeFunc
+        output_name: map_gt
+        mapspec: "map_gt_path[i] -> map_gt[i]"
+        func:
+          _target_: rmind.io.MapGTSidecarReader
+
+      - _target_: pipefunc.PipeFunc
+        output_name: filtered_with_map
+        mapspec: "filtered[i], map_gt[i] -> filtered_with_map[i]"
+        func:
+          _target_: makefun.create_function
+          func_signature: "join_map_gt(*, filtered, map_gt)"
+          func_impl:
+            _target_: rbyte.io.DuckDBDataFrameQuery
+            query: |
+              SELECT
+                filtered.*,
+                -- Per-frame map ground truth (paths.map_gt sidecars) joined on
+                -- the cam_front_left frame index. Frames without map GT
+                -- (missing sidecar or uncovered frame_idx) become NULL, which
+                -- is coalesced to NaN: the model's MaxSpeedTokenizer maps NaN
+                -- to its UNKNOWN token. -1.0 means explicitly unlimited.
+                COALESCE(map_gt.max_speed_kmh, CAST('nan' AS FLOAT)) AS "meta/MapContext/max_speed"
+              FROM
+                filtered
+                LEFT JOIN map_gt
+                ON filtered."meta/ImageMetadata.cam_front_left/frame_idx"
+                = map_gt.frame_idx
+              ORDER BY
+                "meta/ImageMetadata.cam_front_left/time_stamp"
+
+      - _target_: pipefunc.PipeFunc
         renames:
-          input: filtered
+          input: filtered_with_map
         output_name: samples
-        mapspec: "filtered[i] -> samples[i]"
+        mapspec: "filtered_with_map[i] -> samples[i]"
         func:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
@@ -1030,6 +1065,7 @@ samples:
                   "meta/VehicleMotion/brake_pedal_normalized"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/brake_pedal_normalized",
                   "meta/VehicleMotion/steering_angle_normalized"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/steering_angle_normalized",
                   "meta/VehicleState/turn_signal"[1:${clip_length}]::BIGINT[${clip_length}] AS "meta/VehicleState/turn_signal",
+                  "meta/MapContext/max_speed"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/MapContext/max_speed",
               FROM
                   samples
               WHERE

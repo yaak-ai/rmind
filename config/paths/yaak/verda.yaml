@@ -3,5 +3,8 @@
 # `verda-nas` (mount: nfs.fin-01.datacrunch.io:/verda-nas-33cba3e6, ro,nolock).
 # Layout mirrors /nasa/drives/yaak/data (drive dirs at the root).
 data: /mnt/verda-nas
+# map-GT sidecars are part of the repo checkout (rsync them alongside the
+# code), not the NFS drive data — same repo-relative default as yaak/default.
+map_gt: caches/map_gt
 rbyte:
   cache: .rbyte_cache

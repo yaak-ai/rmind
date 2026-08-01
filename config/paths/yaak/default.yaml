@@ -1,4 +1,8 @@
 ---
 data: /nasa/drives/yaak/data
+# per-drive map-GT sidecars (<map_gt>/<Vehicle>/<drive>.parquet); repo-relative
+# like rbyte.cache — training runs from the repo root. Missing files are
+# tolerated (max_speed -> NaN -> UNKNOWN token).
+map_gt: caches/map_gt
 rbyte:
   cache: .rbyte_cache
