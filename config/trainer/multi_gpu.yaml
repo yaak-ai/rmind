@@ -1,8 +1,18 @@
+# Multi-GPU DDP training: select with `trainer=multi_gpu`.
+#
+# Effective batch = devices x datamodule.train.batch_size — halve the
+# per-rank batch_size when moving a single-GPU recipe here to keep the
+# optimization trajectory comparable (e.g. 2 x 32 == bs64).
+#
+# Requires the DDP-sharded dataloader (rmind.components.dataloader, see
+# yaak-ai/rbyte#106): without DistributedSampler sharding every rank draws
+# identical batches and 2 GPUs train no faster than one.
+#
+# find_unused_parameters: frozen-path modules (e.g. DINOv3 backbone under
+# pretrain-style freezing) leave grad-less parameters each step, which
+# vanilla DDP treats as an error.
 defaults:
   - default
-  - _self_
-devices: auto
-sync_batchnorm: True
-strategy:
-  _target_: pytorch_lightning.strategies.DDPStrategy
-  static_graph: True
+
+devices: 2
+strategy: ddp_find_unused_parameters_true

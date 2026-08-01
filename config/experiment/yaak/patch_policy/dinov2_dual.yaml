@@ -1,0 +1,24 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2
+  - _self_
+
+# Dual-feature arm: layer-10 + final-norm ⊕ final-layer + final-norm,
+# channel-concatenated per patch token (2 x 384 = 768-d patches). If the two
+# depths encode complementary features, the policy benefits from both.
+model:
+  image_encoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: rmind.components.timm_backbone.TimmBackbone
+        model_name: ${image_encoder_name}
+        img_size: ${image_resize}
+        norm_indices: [10, 11]
+      - _target_: einops.layers.torch.Rearrange
+        pattern: "... c h w -> ... (h w) c"
+
+image_embedding_dim: 768
+
+wandb:
+  tags: [patch_policy, dinov2_dual]
