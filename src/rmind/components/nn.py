@@ -350,6 +350,17 @@ class FeatureFusionPool(Module):
         num_waypoints: int,
         history_steps: int,
         pool: InstanceOf[Module],
+        # per-token modality dropout, distinct from raw_waypoints_dropout/
+        # raw_speed_dropout (which zero a whole feature stream): randomly
+        # excludes individual tokens from the cross-attention pooling step
+        # each training forward, so the pool can't over-rely on any single
+        # token. Each waypoint token is dropped independently at
+        # waypoint_token_dropout; the single speed token is dropped at
+        # speed_token_dropout. obs_summary/history tokens are never
+        # dropped. No-op at eval (self.training is False) or when 0.0
+        # (both default).
+        waypoint_token_dropout: float = 0.0,
+        speed_token_dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.pool = pool
@@ -358,6 +369,8 @@ class FeatureFusionPool(Module):
         self.speed_proj = Linear(1, embedding_dim)
         self.history_pos_embed = Embedding(history_steps, embedding_dim)
         self.source_type_embed = Embedding(3, embedding_dim)
+        self.waypoint_token_dropout = waypoint_token_dropout
+        self.speed_token_dropout = speed_token_dropout
 
     @override
     def forward(
@@ -385,5 +398,30 @@ class FeatureFusionPool(Module):
         ]  # (b, 1, d)
 
         tokens = torch.cat([obs_summary_tokens, waypoint_tokens, speed_tokens], dim=1)
-        pooled = self.pool(tokens)  # (b, num_queries, d)
+
+        key_padding_mask = None
+        if self.training and (
+            self.waypoint_token_dropout > 0.0 or self.speed_token_dropout > 0.0
+        ):
+            b = tokens.shape[0]
+            h, w = obs_summary_tokens.shape[1], waypoint_tokens.shape[1]
+            key_padding_mask = torch.zeros(
+                b, tokens.shape[1], dtype=torch.bool, device=tokens.device
+            )
+            if self.waypoint_token_dropout > 0.0:
+                key_padding_mask[:, h : h + w] = (
+                    torch.rand(b, w, device=tokens.device) < self.waypoint_token_dropout
+                )
+            if self.speed_token_dropout > 0.0:
+                key_padding_mask[:, h + w :] = (
+                    torch.rand(b, 1, device=tokens.device) < self.speed_token_dropout
+                )
+            fully_masked = key_padding_mask.all(dim=1)
+            if fully_masked.any():
+                # avoid an all-masked row -> every key/value ignored -> NaN softmax
+                # (obs_summary tokens, indices [0, h), are never dropped above, so
+                # this only guards the degenerate h == 0 case)
+                key_padding_mask[fully_masked, 0] = False
+
+        pooled = self.pool(tokens, key_padding_mask)  # (b, num_queries, d)
         return rearrange(pooled, "b q d -> b 1 (q d)")

@@ -75,6 +75,15 @@ active_control_keep_frac: 1.0
 raw_waypoints_dropout: 0.75
 raw_speed_dropout: 0.75
 
+# fusion_pool token-level dropout (only read by *_fusion_pool model configs):
+# unlike raw_waypoints_dropout/raw_speed_dropout above (which zero a whole
+# feature stream), these randomly exclude individual tokens from the
+# fusion_pool's cross-attention pooling step -- each waypoint token
+# independently at waypoint_token_dropout, the single speed token at
+# speed_token_dropout. See rmind.components.nn.FeatureFusionPool.
+waypoint_token_dropout: 0.1
+speed_token_dropout: 0.1
+
 # HistoryViewpointPerturbation (only read by *_viewpoint_aug model configs;
 # 0.0 = disabled). See rmind.components.augment and PolicyObjective's
 # dyaw_key/steering_correction_gain -- synthetic last-history-tick heading

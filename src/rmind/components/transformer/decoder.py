@@ -49,11 +49,17 @@ class CrossAttentionDecoderBlock(nn.Module):
         )
 
     @override
-    def forward(self, x: Tensor, context: Tensor) -> Tensor:
+    def forward(
+        self, x: Tensor, context: Tensor, key_padding_mask: Tensor | None = None
+    ) -> Tensor:
         residual = x
         x_norm = self.cross_attn_norm(x)
         cross_attn_out, _ = self.cross_attn(
-            query=x_norm, key=context, value=context, need_weights=False
+            query=x_norm,
+            key=context,
+            value=context,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
         )
         x = residual + self.cross_attn_resid_drop(cross_attn_out)
 
@@ -94,8 +100,12 @@ class CrossAttentionDecoder(nn.Module):
         ])
 
     @override
-    def forward(self, x: Tensor, context: Tensor) -> Tensor:
-        return run_layer_stack(self.layers, x, context, training=self.training)
+    def forward(
+        self, x: Tensor, context: Tensor, key_padding_mask: Tensor | None = None
+    ) -> Tensor:
+        return run_layer_stack(
+            self.layers, x, context, key_padding_mask, training=self.training
+        )
 
 
 @final
@@ -173,8 +183,10 @@ class AttentionPoolHead(nn.Module):
         nn.init.trunc_normal_(self.query, std=CLS_INIT_STD)
 
     @override
-    def forward(self, context: Tensor) -> Tensor:
+    def forward(
+        self, context: Tensor, key_padding_mask: Tensor | None = None
+    ) -> Tensor:
         if self.patch_pos_embed is not None:
             context = self.patch_pos_embed(context)
         query = self.query.expand(context.shape[0], -1, -1)
-        return self.decoder(query, context)
+        return self.decoder(query, context, key_padding_mask)
