@@ -42,7 +42,6 @@ class JointPolicyObjective(Objective):
         chunk: Path,
         norm: InstanceOf[Module] | None = None,
         sample_codes: bool = True,
-        shuffle_head: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -54,7 +53,6 @@ class JointPolicyObjective(Objective):
         self.losses = losses
         self.chunk: Path = chunk
         self.sample_codes = sample_codes
-        self.shuffle_head: Module | None = shuffle_head
 
     @override
     def train(self, mode: bool = True) -> "JointPolicyObjective":
@@ -84,7 +82,9 @@ class JointPolicyObjective(Objective):
         mask = episode.embeddings.get((Modality.UTILITY, "mask"))[
             :, -1, [3]
         ]  # (b, 1, d)
-        return self.decoder({"query": mask, "context": observation_summary}).squeeze(-2)  # (b, d)
+        return self.decoder({"query": mask, "context": observation_summary}).squeeze(
+            -2
+        )  # (b, d)
 
     def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """VQ-BeT joint code prediction with a code-conditioned offset."""
@@ -120,9 +120,10 @@ class JointPolicyObjective(Objective):
         return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
 
     @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor, shuffle_labels: Tensor | None = None) -> Metrics:
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         features = self._features(episode, embedding)
         tokenizer = self.tokenizer
+        noise_mask = episode.noise_mask
 
         with torch.no_grad():
             chunk = episode.get(self.chunk)[:, -1]  # (b, action_clip, action_space)
@@ -131,37 +132,42 @@ class JointPolicyObjective(Objective):
                 chunk.flatten(-2, -1)
             )  # (b, action_dim): the GT action chunk the policy must reconstruct
 
-        code_logits, _, _ = self._predict(features)
+        if noise_mask is not None:
+            random_codes = torch.randint(
+                0,
+                tokenizer.quantizer.codebook_size,
+                target_codes.shape,
+                device=target_codes.device,
+            )
+            target_codes = torch.where(noise_mask[:, None], random_codes, target_codes)
 
-        if shuffle_labels is not None:
-            keep = shuffle_labels == 0
-            code_logits_keep = code_logits[keep]
-            target_codes_keep = target_codes[keep]
-            features_keep = features[keep]
-            target_keep = target[keep]
-        else:
-            code_logits_keep = code_logits
-            target_codes_keep = target_codes
-            features_keep = features
-            target_keep = target
+        code_logits, _, _ = self._predict(features)
 
         losses: dict[str, Tensor] = {}
 
         for q in range(tokenizer.quantizer.num_quantizers):
             losses[f"code_{q}"] = self.losses["code"](
-                code_logits_keep[:, q, :], target_codes_keep[:, q]
+                code_logits[:, q, :], target_codes[:, q]
             )
 
-        predicted_chunk = tokenizer.invert(target_codes_keep) + self._gather_offset(
-            features_keep, target_codes_keep
+        if noise_mask is not None:
+            clean = ~noise_mask
+            features_clean, target_codes_clean, target_clean = (
+                features[clean],
+                target_codes[clean],
+                target[clean],
+            )
+        else:
+            features_clean, target_codes_clean, target_clean = (
+                features,
+                target_codes,
+                target,
+            )
+
+        predicted_chunk = tokenizer.invert(target_codes_clean) + self._gather_offset(
+            features_clean, target_codes_clean
         )
-        losses["offset"] = self.losses["offset"](predicted_chunk, target_keep)
-
-        if shuffle_labels is not None and self.shuffle_head is not None:
-            shuffle_logits = self.shuffle_head(features).squeeze(-1)
-            losses["trajectory"] = torch.nn.functional.binary_cross_entropy_with_logits(
-                shuffle_logits, shuffle_labels.float()
-            )
+        losses["offset"] = self.losses["offset"](predicted_chunk, target_clean)
 
         return {"loss": losses}
 

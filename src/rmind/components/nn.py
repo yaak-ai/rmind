@@ -158,6 +158,53 @@ class TrajectoryAugmentation(Module):
         return batch, labels
 
 
+@final
+class TokenMask(Module):
+    @validate_call
+    def __init__(
+        self,
+        *,
+        tokens: tuple[tuple[str, str, str], ...],
+        schedule: tuple[float, ...],
+        noise_fraction: float = 0.05,
+    ) -> None:
+        super().__init__()
+        self._keys: tuple[tuple[str, str], ...] = tuple(
+            (modality, name) for _, modality, name in tokens
+        )
+        self._schedule = schedule
+        self._noise_fraction = noise_fraction
+        self._epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self._epoch = epoch
+
+    @property
+    def keep_rate(self) -> float:
+        return self._schedule[min(self._epoch, len(self._schedule) - 1)]
+
+    @override
+    def forward(self, input_embeddings: dict) -> tuple[dict, Tensor]:
+        first = input_embeddings[self._keys[0][0]][self._keys[0][1]]
+        b, t, device = first.shape[0], first.shape[1], first.device
+        sizes = [input_embeddings[m][n].shape[2] for m, n in self._keys]
+        total = sum(sizes)
+
+        noise_mask = torch.zeros(b, device=device, dtype=torch.bool)
+        if not self.training:
+            return input_embeddings, noise_mask
+
+        noise_mask = torch.rand(b, device=device) < self._noise_fraction
+        mask = (torch.rand(b, 1, total, device=device) < self.keep_rate).float()
+        mask[noise_mask] = 0.0
+        mask = mask.expand(b, t, total)
+
+        for (m, n), chunk in zip(self._keys, mask.split(sizes, dim=2), strict=True):
+            input_embeddings[m][n] *= chunk.unsqueeze(-1)
+
+        return input_embeddings, noise_mask
+
+
 type Paths = Mapping[str, tuple[str, ...] | Paths]
 
 

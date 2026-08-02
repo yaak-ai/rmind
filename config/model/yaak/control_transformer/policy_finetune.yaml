@@ -85,23 +85,11 @@ hparams_jq: |
             "offset": { "_target_": "torch.nn.L1Loss" }
           }
         },
-        "chunk": ["input", "joint_actions"],
-        "shuffle_head": {
-          "_target_": "rmind.components.nn.Linear",
-          "in_features": 384,
-          "out_features": 1
-        }
+        "chunk": ["input", "joint_actions"]
       }
     }
   }
-  | .episode_builder.trajectory_augmentation = {
-    "_target_": "rmind.components.nn.TrajectoryAugmentation",
-    "modalities": {
-      "image": ["data", "cam_front_left"],
-      "speed": ["data", "meta/VehicleMotion/speed"],
-      "waypoints": ["data", "waypoints/xy_normalized"]
-    }
-  }
+  | .episode_builder.token_mask.schedule = [0.10, 0.10, 0.10, 0.10, 0.25, 0.30, 0.45, 0.60, 0.70, 0.90]
   | .lr_scheduler = {
     "interval": "step",
     "scheduler": {

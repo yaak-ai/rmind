@@ -177,14 +177,19 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> STEP_OUTPUT:
+        if (
+            hasattr(self.episode_builder, "token_mask")
+            and self.episode_builder.token_mask is not None
+        ):
+            self.episode_builder.token_mask.set_epoch(self.current_epoch)
+
         episode = self.episode_builder(batch)
         embedding = self.encoder(
             src=episode.embeddings_flattened, mask=episode.attention_mask
         )
 
-        extra = {"shuffle_labels": episode.shuffle_labels} if episode.shuffle_labels is not None else {}
         metrics = TensorDict({
-            name: objective.compute_metrics(episode=episode, embedding=embedding, **extra)  # ty:ignore[call-non-callable]
+            name: objective.compute_metrics(episode=episode, embedding=embedding)  # ty:ignore[call-non-callable]
             for name, objective in self.objectives.items()
         })
 

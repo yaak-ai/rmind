@@ -56,7 +56,7 @@ class Episode(TensorClass["frozen"]):  # ty:ignore[unsupported-base]
     index: Index
     embeddings_flattened: Tensor
     attention_mask: FactorizedAttentionMask
-    shuffle_labels: Tensor | None = None
+    noise_mask: Tensor | None = None
 
 
 @final
@@ -73,7 +73,7 @@ class EpisodeBuilder(Module):
         projections: InstanceOf[ModuleDict],
         role_encoding: InstanceOf[Module],
         attention_mask_builder: InstanceOf[FactorizedAttentionMaskBuilder],
-        trajectory_augmentation: InstanceOf[Module] | None = None,
+        token_mask: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -92,7 +92,7 @@ class EpisodeBuilder(Module):
         self.attention_mask_builder: FactorizedAttentionMaskBuilder = (
             attention_mask_builder
         )
-        self.trajectory_augmentation: Module | None = trajectory_augmentation
+        self.token_mask: Module | None = token_mask
         self.register_buffer("_attention_mask_spatial", None, persistent=False)
         self.register_buffer("_attention_mask_temporal", None, persistent=False)
         role_idx_by_type_modality: dict[tuple[str, str], int] = {}
@@ -113,10 +113,6 @@ class EpisodeBuilder(Module):
 
     @override
     def forward(self, batch: TensorTree) -> Episode:  # noqa: PLR0914
-        shuffle_labels = None
-        if self.trajectory_augmentation is not None:
-            batch, shuffle_labels = self.trajectory_augmentation(batch)
-
         input = self.input_transform(batch)
         input_tokens = self.tokenizers(input)
 
@@ -134,6 +130,10 @@ class EpisodeBuilder(Module):
         })
         input_embeddings = self.embeddings(input_tokens)
         projected_embeddings = self.projections(input_embeddings)
+
+        noise_mask = None
+        if self.token_mask is not None:
+            projected_embeddings, noise_mask = self.token_mask(projected_embeddings)
         projected_td = TensorDict(
             projected_embeddings, batch_size=[b, t]
         ).filter_non_tensor_data()
@@ -163,7 +163,7 @@ class EpisodeBuilder(Module):
             index=Index.from_tensordict(TensorDict(index, batch_size=[t])),  # ty:ignore[invalid-argument-type]
             embeddings_flattened=embeddings_flattened,
             attention_mask=attention_mask,
-            shuffle_labels=shuffle_labels,
+            noise_mask=noise_mask,
             device=device,
         )
 
