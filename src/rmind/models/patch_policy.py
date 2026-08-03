@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from itertools import chain
 from typing import Annotated, Any, final, override
 
 import pytorch_lightning as pl
@@ -258,7 +259,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     ],
                     dim=-1,
                 )
-                rms = quantizer.lookup(codes).pow(2).mean().sqrt()
+                # the CPU generator fixes the seed sequence; lookup must run on
+                # whatever device the loaded codebooks landed on
+                quantizer_device = next(
+                    chain(quantizer.parameters(), quantizer.buffers())
+                ).device
+                rms = (
+                    quantizer.lookup(codes.to(quantizer_device))
+                    .pow(2)
+                    .mean()
+                    .sqrt()
+                    .cpu()
+                )
             self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
         else:
             self.fusion_patch_norm = None
