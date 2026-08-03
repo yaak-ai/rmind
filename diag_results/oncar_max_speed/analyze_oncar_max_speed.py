@@ -321,9 +321,9 @@ def main() -> None:
             continue
         print(f"\n  {a} (max_speed UNKNOWN)  vs  {b} (max_speed = 10.0 km/h, verified)")
         ba, bb = speed_binned(sessions[a]["pred"]), speed_binned(sessions[b]["pred"])
-        hdr2 = ("  %-9s %5s %5s %8s %8s %9s %8s %8s %9s %9s" %
-                ("speed bin", "nA", "nB", "gasA", "gasB", "dgas", "brkA",
-                 "brkB", "dbrake", "MDE_gas"))
+        hdr2 = ("  %-9s %5s %5s %5s %5s %8s %8s %9s %9s %8s %8s %9s %9s" %
+                ("speed bin", "nA", "nB", "plA", "plB", "gasA", "gasB",
+                 "dgas", "MDE_gas", "brkA", "brkB", "dbrake", "MDE_brk"))
         print(hdr2)
         print("  " + "-" * (len(hdr2) - 2))
         for lo, hi in SPEED_BINS:
@@ -336,11 +336,16 @@ def main() -> None:
             gb = st.mean([r["gas"] for r in rb]) if rb else float("nan")
             bka = st.mean([r["brake"] for r in ra]) if ra else float("nan")
             bkb = st.mean([r["brake"] for r in rb]) if rb else float("nan")
-            m = mde(pa, pb, "gas") if (ra and rb) else float("nan")
-            flag = "  << n too small" if (len(ra) < 20 or len(rb) < 20) else ""
-            print("  %-9s %5d %5d %8.4f %8.4f %+9.4f %8.4f %8.4f %+9.4f %9.4f%s"
-                  % (k, len(ra), len(rb), ga, gb, gb - ga, bka, bkb, bkb - bka,
-                     m, flag))
+            mg = mde(pa, pb, "gas") if (ra and rb) else float("nan")
+            mb = mde(pa, pb, "brake") if (ra and rb) else float("nan")
+            # The PLAN is the unit of analysis (ticks inside a plan are steps of
+            # one forward pass), so the smallness flag counts plans, not ticks.
+            flag = ("  << underpowered (<15 plans/arm)"
+                    if (len(pa) < 15 or len(pb) < 15) else "")
+            print("  %-9s %5d %5d %5d %5d %8.4f %8.4f %+9.4f %9.4f %8.4f %8.4f "
+                  "%+9.4f %9.4f%s"
+                  % (k, len(ra), len(rb), len(pa), len(pb), ga, gb, gb - ga, mg,
+                     bka, bkb, bkb - bka, mb, flag))
 
         print("\n  pooled (all speeds), 95%% CI by plan-block bootstrap:")
         for sid in (a, b):
@@ -353,6 +358,33 @@ def main() -> None:
             m = mde(plan_blocks(sessions[a]["pred"]),
                     plan_blocks(sessions[b]["pred"]), key)
             print("    MDE %-5s (alpha=.05, power=.80, unit=plan): %.4f" % (key, m))
+
+        # --- Is the brake gap mechanical rather than conditioning? ------------
+        # The two sessions use different CLI plan configs: A is n6s0 (serves
+        # steps [0,6) of a 6-step plan, so plan:1/6 first) and B is n5s1 (serves
+        # [1,6), so plan:2/6 first -- step 1 of EVERY plan is skipped).  If
+        # brake is front-loaded within a plan, B mechanically shows less brake
+        # no matter what the max-speed input is.
+        print("\n  brake/gas by step-index-within-plan (the plan-config confound,"
+              "\n  A=%s n6s0 vs B=%s n5s1):" % (a, b))
+        print("    %-6s %6s %8s %8s   %6s %8s %8s"
+              % ("plan:i", "nA", "gasA", "brkA", "nB", "gasB", "brkB"))
+        step_re = re.compile(r"plan:(\d+)/")
+        per = {}
+        for tag, sid in (("A", a), ("B", b)):
+            d = defaultdict(list)
+            for r in sessions[sid]["pred"]:
+                m = step_re.search(r["engine"])
+                if m:
+                    d[int(m.group(1))].append(r)
+            per[tag] = d
+        for i in sorted(set(per["A"]) | set(per["B"])):
+            ra, rb = per["A"].get(i, []), per["B"].get(i, [])
+            def f(rows, key):
+                return ("%8.4f" % st.mean([r[key] for r in rows])) if rows else "       -"
+            print("    %-6s %6d %s %s   %6d %s %s"
+                  % (f"{i}/6", len(ra), f(ra, "gas"), f(ra, "brake"),
+                     len(rb), f(rb, "gas"), f(rb, "brake")))
 
     print()
     print("=" * 78)
