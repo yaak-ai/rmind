@@ -19,6 +19,11 @@ a pipefunc file_array pickle in the aboutblank `.rbyte_cache`
 (`EOFError: Ran out of input` -> `ppe_armMV.log`), the known
 concurrent-writer failure mode. The cached-batch path bypasses rbyte
 entirely; the cache itself was built single-writer before the corruption.
+A follow-up full-subset retry also died on the damaged store with a second
+symptom (`TypeError: Unsupported dataframe type, got NoneType` from
+`Dataset.from_config`, `ppe_armMV_manual.log`) -- the
+`.rbyte_cache/yaak/train/*/samples` store needs a single-writer rebuild
+before any full-subset rerun on aboutblank.
 
 ## Last-frame summary (deployment position, 768 samples)
 
