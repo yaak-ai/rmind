@@ -12,8 +12,9 @@ the Arm M standing run).
 
 The conditioning seam is mechanically live but behaviorally INERT at
 epoch 1 -- no directional speed-limit response yet in either arm; driving
-quality did NOT regress (both arms slightly beat the parent); Arm MV is the
-stronger arm on every axis that currently separates them.
+quality did NOT regress (parent and arms statistically indistinguishable
+once the parent's full 6400-sample run is included); Arm MV is the stronger
+arm on every axis that currently separates them.
 
 ## 1. Counterfactual conditioning: not directionally correct yet
 
@@ -45,12 +46,17 @@ Same-subset (768 samples) last-frame, argmax protocol
 - marginal top-1: 0.4040 / 0.4160 / **0.4189**
 - argmax recon L1: 0.0464 / 0.0443 / **0.0435**
 
-Arm M cross-checked on the full 6400-sample standing run: top1 0.4123,
-joint 0.0602, argmax recon 0.0470 (subset representative). Cluster-level
-movements (braking better in both arms, highway gas slightly worse in
-Arm M) are within noise at n=36-84. Sampled-decoding columns flatter the
-parent because the arms run hotter (entropy 0.79 vs 0.65 nats) -- argmax is
-the standing verdict column.
+Full 6400-sample cross-checks (last frame): Arm M top1 0.4123 / joint
+0.0602 / recon 0.0470; parent top1 0.4153 / joint 0.0616 / recon 0.0449
+(the late-landing manual run). At 6400 samples parent and Arm M are TIED;
+the parent's 768-vs-6400 joint delta (~0.006) shows the subset noise spans
+the between-model gaps, so the 768-sample arm advantage should not be read
+as improvement -- the supported claim is strictly "no regression". Arm MV's
+768-sample joint (0.0729) exceeds the parent on both subsets: suggestive,
+unconfirmed (its full-subset runs died on the corrupted cache).
+Cluster-level movements are within noise at n=36-84. Sampled-decoding
+columns flatter the parent because the arms run hotter (entropy 0.79 vs
+0.65 nats) -- argmax is the standing verdict column.
 
 ## 3. Aux head (Arm MV): unmeasurable on val, inflated on train
 
@@ -84,11 +90,12 @@ UNKNOWN-flood damage.
 
 ## Which arm is stronger
 
-**Arm MV.** Best joint top-1 (+1.7pt over parent, +0.9pt over Arm M), best
-argmax recon, and the only arm whose trunk measurably reads the token
-(100x Arm M's counterfactual sensitivity). Cost: none visible. Arm M at
-epoch 2 (v1) is still token-dead, strengthening the case that the aux
-pressure, not just more epochs, is what wires the token in.
+**Arm MV.** The only arm whose trunk measurably reads the token (100x
+Arm M's counterfactual sensitivity) at no visible driving cost; its joint
+top-1 is also nominally best (0.0729 at 768, above the parent on both
+subsets -- suggestive, within subset noise). Arm M at epoch 2 (v1) is
+still token-dead, strengthening the case that the aux pressure, not just
+more epochs, is what wires the token in.
 
 ## Epoch-1 caveats + what to re-run on final checkpoints
 

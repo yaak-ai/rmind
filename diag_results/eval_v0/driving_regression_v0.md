@@ -46,6 +46,19 @@ recon_argmax 0.0470 -- within ~0.004 of the 768-sample values, so the small
 subset is representative at the headline level (cluster tails are thin,
 n>=36).
 
+**Parent 6400-sample run** (landed after the first commit; the one manual
+full-subset retry that survived the cache corruption --
+`ppe_parent_6400_results.txt`), last frame: **top1 0.4153, joint 0.0616,
+recon_argmax 0.0449**. This revises the 768-sample read: at 6400 samples
+the parent is TIED with Arm M (joint 0.0616 vs 0.0602, recon 0.0449 vs
+0.0470); the parent's own 768-vs-6400 joint delta (0.0560 -> 0.0616) shows
+subset noise ~ +-0.006, the same order as the between-model gaps. Arm MV's
+joint 0.0729 at 768 exceeds the parent on BOTH subsets, so its edge is
+suggestive but unconfirmed (its full-subset attempts died on the corrupted
+cache). Parent 6400 per-cluster argmax (gas/brake/steer): cruise
+0.0785/0.0019/0.0068, braking 0.0235/0.1143/0.0392, highway
+0.1538/0.0020/0.0034, braking_turn 0.0189/0.1312/0.1707.
+
 ## Per-cluster argmax L1 @ last frame (gas / brake / steer, 768 samples)
 
 | cluster | n | parent | armM | armMV |
@@ -61,11 +74,14 @@ n>=36).
 
 ## Read
 
-- **No driving regression.** Both arms match or beat the parent on the
-  trustworthy metrics: joint top-1 +0.8pt (armM) / +1.7pt (armMV) over the
-  parent's 5.6%, argmax recon -4.5% / -6.3% relative. (Expected direction:
-  the arms had 1 extra epoch of training on the same data; the token itself
-  is behaviorally inert at this stage, see override_probe_v0.md.)
+- **No driving regression -- and, with the parent's 6400-sample run in, no
+  clear gain either.** On the shared 768 subset both arms beat the parent
+  (joint +0.8pt armM / +1.7pt armMV), but at 6400 samples parent and armM
+  are tied (0.0616 vs 0.0602 joint) and the 768 subset's parent value
+  (0.0560) sits ~0.006 below its 6400 value -- subset noise spans the gaps.
+  Verdict: adding the token did NOT hurt driving; claims of improvement are
+  not supported at this eval size. (The token itself is behaviorally inert
+  at this stage, see override_probe_v0.md.)
 - Cluster level: armM improves braking (brake L1 0.1040 vs 0.1223) and
   braking_turn; its highway gas L1 is slightly worse (0.1787 vs 0.1662).
   armMV improves braking-turn steer the least; differences at n=36-84 are
