@@ -27,8 +27,15 @@ class SelectiveAdamW(AdamW):
         submodules = dict(module.named_modules())
         params = dict(module.named_parameters())
         for param_name in params:
-            submodule_name, param_type = param_name.rsplit(sep=".", maxsplit=1)
+            # top-level parameters (e.g. PatchPolicy's fusion gains) have no
+            # module prefix; their "submodule" is the root module itself
+            submodule_name, _, param_type = param_name.rpartition(".")
             match param_type:
+                # fusion_norm scale gains: scalar calibration parameters,
+                # no weight decay (decay would pull the goal gain toward 0
+                # and re-open the patch/goal scale gap it exists to close)
+                case "fusion_patch_gain" | "fusion_goal_gain":
+                    weight_decay_param_blacklist.add(param_name)
                 case "weight":
                     if isinstance(
                         submodules[submodule_name], weight_decay_module_blacklist

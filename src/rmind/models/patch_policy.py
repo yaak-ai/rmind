@@ -265,7 +265,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     chain(quantizer.parameters(), quantizer.buffers())
                 ).device
                 rms = (
-                    quantizer.lookup(codes.to(quantizer_device))
+                    quantizer
+                    .lookup(codes.to(quantizer_device))
                     .pow(2)
                     .mean()
                     .sqrt()
