@@ -89,6 +89,14 @@ def main() -> None:  # noqa: PLR0914
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--batch-cache", default=None, help="optional .pt batch cache")
+    ap.add_argument(
+        "--micro-batch",
+        type=int,
+        default=0,
+        help="split each cached batch into chunks of this many samples for the "
+        "forward pass (0 = whole batch); lowers peak VRAM ~linearly so the "
+        "probe fits on busy shared GPUs",
+    )
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
@@ -132,21 +140,34 @@ def main() -> None:  # noqa: PLR0914
             conds += [(override_name(v), v, False) for v in DEFAULT_OVERRIDES[1:]]
             conds += [("NaNflood", None, True)]
 
+        def _slice_tree(node, s, e):
+            if isinstance(node, dict):
+                return {k: _slice_tree(v, s, e) for k, v in node.items()}
+            if isinstance(node, torch.Tensor):
+                return node[s:e]
+            return node
+
         for cname, ov, nanflood in conds:
             outs: dict[str, list] = {"logits": [], "codes": [], "chunk": []}
             for batch in batches:
-                batch_d = _to_device(batch, device)
-                if nanflood:
-                    speed = batch_d["data"]["meta/VehicleMotion/speed"]
-                    b2 = dict(batch_d)
-                    b2["data"] = dict(batch_d["data"])
-                    b2["data"][MAX_SPEED_KEY] = torch.full(
-                        (*speed.shape[:2], 1), float("nan"), device=device
-                    )
-                    batch_d = b2
-                out = run_override(model, batch_d, ov)
-                for k in outs:
-                    outs[k].append(out[k])
+                bsz = batch["data"]["meta/VehicleMotion/speed"].shape[0]
+                step = args.micro_batch or bsz
+                for s in range(0, bsz, step):
+                    chunk_cpu = _slice_tree(batch, s, s + step)
+                    batch_d = _to_device(chunk_cpu, device)
+                    if nanflood:
+                        speed = batch_d["data"]["meta/VehicleMotion/speed"]
+                        b2 = dict(batch_d)
+                        b2["data"] = dict(batch_d["data"])
+                        b2["data"][MAX_SPEED_KEY] = torch.full(
+                            (*speed.shape[:2], 1), float("nan"), device=device
+                        )
+                        batch_d = b2
+                    out = run_override(model, batch_d, ov)
+                    for k in outs:
+                        outs[k].append(out[k])
+                    del batch_d
+                torch.cuda.empty_cache()
             for k, v in outs.items():
                 arrays[f"{name}/{cname}/{k}"] = torch.cat(v).numpy()
             print(f"{name} {cname} done", flush=True)
