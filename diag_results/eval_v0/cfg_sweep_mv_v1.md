@@ -87,6 +87,41 @@ A policy that READS the token should show **negative** Δgas and **positive** Δ
 | 8 | +0.0461 ± 0.0122 | +0.0459 ± 0.0085 | -0.0361 ± 0.0159 |
 | 12 | +0.0315 ± 0.0133 | +0.0560 ± 0.0089 | -0.0469 ± 0.0187 |
 
+## Per-sample direction split (material moves, |Δ| > 0.05 on the horizon-mean pedal, vs the UNKNOWN baseline)
+
+Population means can hide opposite per-sample moves, so: share of the 768 samples whose gas rises / brake rises / both rise materially, plus the share of (sample, step) slots with simultaneously high pedals (gas>0.1 AND brake>0.1) — a physical-incoherence indicator (baseline: 0.00%).
+
+| cond | w | gas↑ only % | brake↑ only % | both↑ % | gas↓ % | both-pedals-high % |
+|---|---|---|---|---|---|---|
+| 30 | 0 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| 30 | 1 | 0.91 | 0.00 | 0.00 | 0.00 | 0.00 |
+| 30 | 2 | 1.17 | 0.00 | 0.00 | 0.00 | 0.00 |
+| 30 | 3 | 1.69 | 0.00 | 0.00 | 0.13 | 0.00 |
+| 30 | 5 | 2.34 | 0.00 | 0.00 | 0.65 | 0.00 |
+| 30 | 8 | 3.39 | 0.00 | 0.00 | 1.04 | 0.00 |
+| 30 | 12 | 5.08 | 0.26 | 0.00 | 1.69 | 0.00 |
+| 5(WALK) | 0 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| 5(WALK) | 1 | 13.93 | 1.17 | 0.00 | 3.39 | 0.04 |
+| 5(WALK) | 2 | 24.74 | 4.30 | 0.13 | 7.68 | 0.15 |
+| 5(WALK) | 3 | 29.95 | 4.82 | 0.13 | 9.24 | 0.33 |
+| 5(WALK) | 5 | 33.85 | 8.85 | 0.52 | 14.19 | 0.67 |
+| 5(WALK) | 8 | 35.03 | 13.28 | 0.78 | 18.75 | 1.15 |
+| 5(WALK) | 12 | 35.16 | 16.80 | 0.65 | 22.66 | 1.11 |
+| 100 | 0 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| 100 | 1 | 0.13 | 0.00 | 0.00 | 0.00 | 0.00 |
+| 100 | 2 | 0.13 | 0.00 | 0.00 | 0.13 | 0.00 |
+| 100 | 3 | 0.39 | 0.00 | 0.00 | 0.13 | 0.00 |
+| 100 | 5 | 0.39 | 0.00 | 0.00 | 0.13 | 0.00 |
+| 100 | 8 | 0.78 | 0.00 | 0.00 | 0.39 | 0.00 |
+| 100 | 12 | 1.17 | 0.13 | 0.00 | 0.39 | 0.00 |
+| -1(UNLIMITED) | 0 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| -1(UNLIMITED) | 1 | 1.17 | 0.00 | 0.00 | 0.13 | 0.00 |
+| -1(UNLIMITED) | 2 | 2.47 | 0.13 | 0.00 | 0.65 | 0.00 |
+| -1(UNLIMITED) | 3 | 3.12 | 0.13 | 0.00 | 0.65 | 0.00 |
+| -1(UNLIMITED) | 5 | 5.86 | 0.26 | 0.00 | 0.78 | 0.00 |
+| -1(UNLIMITED) | 8 | 8.20 | 0.52 | 0.00 | 1.17 | 0.00 |
+| -1(UNLIMITED) | 12 | 10.16 | 0.65 | 0.00 | 1.69 | 0.00 |
+
 ## Offset-policy attribution (mean Δgas / Δbrake vs baseline, all samples)
 
 | cond | w | primary (offsets_c) | offu (code-flip only) | offcfg (full CFG) |
@@ -167,7 +202,7 @@ Per (sample, quantizer): the smallest w at which some code overtakes the UNKNOWN
 ## Verdict
 
 CFG is mechanically live and correctly plumbed — w=0 reproduces the baseline codes exactly, w=1 is bit-identical to the plain-override run, and guided code flips grow monotonically with w (cond 30: 0.5% -> 6.0%, UNLIMITED: 1.2% -> 12.2%, WALK: 16.5% -> 77.7% of (sample, quantizer) slots) — so the weak conditioning CAN be amplified into real, decodable action changes.
-But the amplified direction is the WRONG one: guided-30 minus guided-100 on speed>50 frames grows from +0.0011 ± 0.0006 to +0.0070 ± 0.0028 gas (more throttle in the slower zone, ~2.5 paired SE from zero) while brake stays at noise (+0.0007 ± 0.0007), i.e. CFG scales up the token's regime association, not speed compliance — exactly the eval_v0 defect, magnified ~6x.
-The only strongly responsive class, WALK, does eventually raise brake (+0.056 ± 0.009 vs guided-100 at w=12) but raises gas at the same time (+0.032 ± 0.013), a both-pedals-up incoherence, and it gets there only past 60-78% code flips, 20% turn-signal flips and material out-of-box action slots rising from ~0 to 1.0% (2.7% if offsets are guided too) — decode degeneracy, not compliance.
-The logit geometry says this is structural rather than a bad choice of w: the median (sample, quantizer) needs w ≈ 168 (cond 30) or w ≈ 230 (cond 100) before any code overtakes the UNKNOWN top-1, so the numeric speed classes are ~2 orders of magnitude too weak for guidance in the usable range, and the offset head is irrelevant here (primary ≈ offsets-frozen variant to 4 decimals; extrapolating offsets only adds artifacts, `offset_scale=None` so nothing saturates them).
+But the amplified direction is the WRONG one: guided-30 minus guided-100 on speed>50 frames grows from +0.0011 ± 0.0006 to +0.0070 ± 0.0028 gas (more throttle in the slower zone, ~2.5 paired SE from zero) while brake stays at noise (+0.0007 ± 0.0007), i.e. CFG scales up the token's regime association, not speed compliance — the eval_v0 defect grows ≈6x from w=1 to w=12 instead of reversing.
+The only strongly responsive class, WALK, does shift population brake up with w (Δbrake +0.017 → +0.036 while Δgas recedes from its w=5 peak +0.047 → +0.037), but per sample it is a diffuse regime split, not compliance: at w=12, 35% of samples get materially MORE throttle vs 17% more brake (both rise on only 0.7%), simultaneous high-gas-and-high-brake slots appear where the baseline had none (0 → 1.1%), and all of it sits past 60-78% code flips, 20% turn-signal flips and material out-of-box action slots rising from ~0 to 1.0% (2.7% if offsets are guided too) — decode degeneracy.
+The logit geometry says this is structural rather than a bad choice of w: the median (sample, quantizer) needs w ≈ 168 (cond 30) or w ≈ 230 (cond 100) — p25 still 57 / 96 — before any code overtakes the UNKNOWN top-1, so the numeric speed classes are ~1.5-2 orders of magnitude too weak for guidance in the usable range, and the offset head is irrelevant here (primary ≈ offsets-frozen variant to 4 decimals; extrapolating offsets only adds artifacts, `offset_scale=None` so nothing saturates them).
 **No usable w exists** — every w that moves actions moves them the wrong way or into degeneracy, so a serving-side CFG trick cannot rescue zone conditioning on this checkpoint; the levers stay the training-side ones (compliance-conditioned targets, rare-class oversampling, stronger aux supervision).

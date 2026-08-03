@@ -199,6 +199,36 @@ def main() -> None:  # noqa: PLR0914, PLR0915
         L.append(f"| {w} | " + " | ".join(cells) + " |")
     L.append("")
 
+    # ---------- per-sample direction split ----------
+    L += [
+        "## Per-sample direction split (material moves, |Δ| > 0.05 on the "
+        "horizon-mean pedal, vs the UNKNOWN baseline)",
+        "",
+        "Population means can hide opposite per-sample moves, so: share of the "
+        "768 samples whose gas rises / brake rises / both rise materially, plus "
+        "the share of (sample, step) slots with simultaneously high pedals "
+        "(gas>0.1 AND brake>0.1) — a physical-incoherence indicator "
+        "(baseline: "
+        f"{(((base_chunk[..., 0] > 0.1) & (base_chunk[..., 1] > 0.1)).mean() * 100):.2f}%).",
+        "",
+        "| cond | w | gas↑ only % | brake↑ only % | both↑ % | gas↓ % | "
+        "both-pedals-high % |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for cond in CONDS:
+        for w in WS:
+            c = d[f"{cond}/w{w}/chunk"]
+            dg = c[..., 0].mean(-1) - base_chunk[..., 0].mean(-1)
+            db = c[..., 1].mean(-1) - base_chunk[..., 1].mean(-1)
+            up_g, up_b = dg > 0.05, db > 0.05
+            hi = ((c[..., 0] > 0.1) & (c[..., 1] > 0.1)).mean() * 100
+            L.append(
+                f"| {cond} | {w} | {(up_g & ~up_b).mean() * 100:.2f} | "
+                f"{(up_b & ~up_g).mean() * 100:.2f} | {(up_g & up_b).mean() * 100:.2f} | "
+                f"{(dg < -0.05).mean() * 100:.2f} | {hi:.2f} |"
+            )
+    L.append("")
+
     # ---------- offset-policy attribution ----------
     L += [
         "## Offset-policy attribution (mean Δgas / Δbrake vs baseline, all samples)",
@@ -246,6 +276,9 @@ def main() -> None:  # noqa: PLR0914, PLR0915
         "| cond | finite-crossing slots % | crit-w p1 | p5 | p25 | p50 |",
         "|---|---|---|---|---|---|",
     ]
+    # this table is computed from logits only; it agrees with the decoded flip
+    # rates above (e.g. cond 30: p1 = 1.8 vs 0.52% flips at w=1), so the two
+    # independent paths -- offline logit geometry and the GPU decode -- match.
     u = d["base/logits"].astype(np.float64)
     bk = u.argmax(-1)
     for cond in CONDS:
@@ -280,19 +313,23 @@ def main() -> None:  # noqa: PLR0914, PLR0915
         "on speed>50 frames grows from +0.0011 ± 0.0006 to +0.0070 ± 0.0028 gas "
         "(more throttle in the slower zone, ~2.5 paired SE from zero) while brake "
         "stays at noise (+0.0007 ± 0.0007), i.e. CFG scales up the token's "
-        "regime association, not speed compliance — exactly the eval_v0 defect, "
-        "magnified ~6x.",
-        "The only strongly responsive class, WALK, does eventually raise brake "
-        "(+0.056 ± 0.009 vs guided-100 at w=12) but raises gas at the same time "
-        "(+0.032 ± 0.013), a both-pedals-up incoherence, and it gets there only "
-        "past 60-78% code flips, 20% turn-signal flips and material out-of-box "
-        "action slots rising from ~0 to 1.0% (2.7% if offsets are guided too) "
-        "— decode degeneracy, not compliance.",
+        "regime association, not speed compliance — the eval_v0 defect grows "
+        "≈6x from w=1 to w=12 instead of reversing.",
+        "The only strongly responsive class, WALK, does shift population brake "
+        "up with w (Δbrake +0.017 → +0.036 while Δgas recedes from its w=5 peak "
+        "+0.047 → +0.037), but per sample it is a diffuse regime split, not "
+        "compliance: at w=12, 35% of samples get materially MORE throttle vs "
+        "17% more brake (both rise on only 0.7%), simultaneous "
+        "high-gas-and-high-brake slots appear where the baseline had none "
+        "(0 → 1.1%), and all of it sits past 60-78% code flips, 20% "
+        "turn-signal flips and material out-of-box action slots rising from ~0 "
+        "to 1.0% (2.7% if offsets are guided too) — decode degeneracy.",
         "The logit geometry says this is structural rather than a bad choice of "
         "w: the median (sample, quantizer) needs w ≈ 168 (cond 30) or w ≈ 230 "
-        "(cond 100) before any code overtakes the UNKNOWN top-1, so the numeric "
-        "speed classes are ~2 orders of magnitude too weak for guidance in the "
-        "usable range, and the offset head is irrelevant here (primary ≈ "
+        "(cond 100) — p25 still 57 / 96 — before any code overtakes the UNKNOWN "
+        "top-1, so the numeric speed classes are ~1.5-2 orders of magnitude too "
+        "weak for guidance in the usable range, and the offset head is "
+        "irrelevant here (primary ≈ "
         "offsets-frozen variant to 4 decimals; extrapolating offsets only adds "
         "artifacts, `offset_scale=None` so nothing saturates them).",
         "**No usable w exists** — every w that moves actions moves them the wrong "
