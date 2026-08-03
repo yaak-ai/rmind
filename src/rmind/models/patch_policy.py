@@ -188,6 +188,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         prediction_config: Annotated[
             PredictionConfig, Field(default_factory=PredictionConfig)
         ],
+        # Tolerate non-architecture keys that warm-start experiments inline
+        # into the model config (e.g. `artifact` from load_for_continuation
+        # wiring) -- Lightning re-instantiates from saved hparams on
+        # load_from_checkpoint / load_for_export and would otherwise reject
+        # the checkpoint. Mirrors load_for_continuation's `**_ignored`.
+        **_ignored: Any,
     ) -> None:
         super().__init__()
 
