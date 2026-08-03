@@ -1,0 +1,596 @@
+[
+  {
+    "timestamp": 1785764942.084205,
+    "timestamp_iso": "2026-08-03T13:49:02.084",
+    "event": "human_in_control",
+    "source": "startup",
+    "vehicle": {
+      "speed": 0.0,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": -0.017291666666666667,
+      "turn_signal": 0,
+      "gear": 0,
+      "can_timestamp": 1785764942.0486085
+    },
+    "gnss": {
+      "timestamp": 1785764942.049842,
+      "latitude": 52.493642,
+      "longitude": 13.449336166666667,
+      "altitude": 33.6,
+      "speed": 0.0,
+      "heading": 219.05,
+      "fix_quality": 2,
+      "satellites": 12,
+      "hdop": 0.52,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785764945.775655,
+    "timestamp_iso": "2026-08-03T13:49:05.775",
+    "event": "human_override",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 0.0,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": -0.017291666666666667,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785764945.7552433
+    },
+    "gnss": {
+      "timestamp": 1785764945.7571752,
+      "latitude": 52.493642,
+      "longitude": 13.449336166666667,
+      "altitude": 33.6,
+      "speed": 0.002,
+      "heading": 219.04,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.59,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785764945.776507,
+    "timestamp_iso": "2026-08-03T13:49:05.776",
+    "event": "human_in_control",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 0.0,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": -0.017291666666666667,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785764945.7552433
+    },
+    "gnss": {
+      "timestamp": 1785764945.7571752,
+      "latitude": 52.493642,
+      "longitude": 13.449336166666667,
+      "altitude": 33.6,
+      "speed": 0.002,
+      "heading": 219.04,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.59,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785764987.6634586,
+    "timestamp_iso": "2026-08-03T13:49:47.663",
+    "event": "mcm_engaged",
+    "source": "ui",
+    "vehicle": {
+      "speed": 0.0,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": 0.00875,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785764987.6392388
+    },
+    "gnss": {
+      "timestamp": 1785764987.567801,
+      "latitude": 52.493642,
+      "longitude": 13.449336,
+      "altitude": 33.6,
+      "speed": 0.0,
+      "heading": 219.02,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.53,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785764990.285543,
+    "timestamp_iso": "2026-08-03T13:49:50.285",
+    "event": "ai_policy_enabled",
+    "source": "ui",
+    "vehicle": {
+      "speed": 0.0,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": -0.0,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785764990.2650452
+    },
+    "gnss": {
+      "timestamp": 1785764990.1741755,
+      "latitude": 52.493641833333335,
+      "longitude": 13.449336,
+      "altitude": 33.6,
+      "speed": 0.0,
+      "heading": 219.03,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.51,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765025.0792296,
+    "timestamp_iso": "2026-08-03T13:50:25.079",
+    "event": "human_override",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 16.90625,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.1732283464566929,
+      "steering_angle": 0.5697916666666667,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765025.057402
+    },
+    "gnss": {
+      "timestamp": 1785765024.9896393,
+      "latitude": 52.4932415,
+      "longitude": 13.4486835,
+      "altitude": 33.7,
+      "speed": 16.343,
+      "heading": 261.58,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.56,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765025.080791,
+    "timestamp_iso": "2026-08-03T13:50:25.080",
+    "event": "human_in_control",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 16.90625,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.1732283464566929,
+      "steering_angle": 0.5697916666666667,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765025.057402
+    },
+    "gnss": {
+      "timestamp": 1785765024.9896393,
+      "latitude": 52.4932415,
+      "longitude": 13.4486835,
+      "altitude": 33.7,
+      "speed": 16.343,
+      "heading": 261.58,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.56,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765031.2584965,
+    "timestamp_iso": "2026-08-03T13:50:31.258",
+    "event": "mcm_engaged",
+    "source": "ui",
+    "vehicle": {
+      "speed": 0.25,
+      "gas_pedal": 0.06666666666666667,
+      "brake_pedal": 0.16535433070866143,
+      "steering_angle": 0.35750000000000004,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765031.24108
+    },
+    "gnss": {
+      "timestamp": 1785765031.1732626,
+      "latitude": 52.4933015,
+      "longitude": 13.448519166666667,
+      "altitude": 33.6,
+      "speed": 0.36,
+      "heading": 312.74,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.54,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765031.3457925,
+    "timestamp_iso": "2026-08-03T13:50:31.345",
+    "event": "human_override",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 0.21875,
+      "gas_pedal": 0.0196078431372549,
+      "brake_pedal": 0.047244094488188976,
+      "steering_angle": 0.4322916666666667,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765031.3304534
+    },
+    "gnss": {
+      "timestamp": 1785765031.1732626,
+      "latitude": 52.4933015,
+      "longitude": 13.448519166666667,
+      "altitude": 33.6,
+      "speed": 0.36,
+      "heading": 312.74,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.54,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765031.3513381,
+    "timestamp_iso": "2026-08-03T13:50:31.351",
+    "event": "human_in_control",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 0.21875,
+      "gas_pedal": 0.0196078431372549,
+      "brake_pedal": 0.047244094488188976,
+      "steering_angle": 0.4322916666666667,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765031.3304534
+    },
+    "gnss": {
+      "timestamp": 1785765031.1732626,
+      "latitude": 52.4933015,
+      "longitude": 13.448519166666667,
+      "altitude": 33.6,
+      "speed": 0.36,
+      "heading": 312.74,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.54,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765034.7649386,
+    "timestamp_iso": "2026-08-03T13:50:34.764",
+    "event": "mcm_engaged",
+    "source": "ui",
+    "vehicle": {
+      "speed": 3.28125,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": -0.008125,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765034.751873
+    },
+    "gnss": {
+      "timestamp": 1785765034.7565775,
+      "latitude": 52.49330883333333,
+      "longitude": 13.4485065,
+      "altitude": 33.6,
+      "speed": 2.9743120000000003,
+      "heading": 312.61,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.55,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765035.5889757,
+    "timestamp_iso": "2026-08-03T13:50:35.588",
+    "event": "ai_policy_enabled",
+    "source": "ui",
+    "vehicle": {
+      "speed": 4.25,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": 0.013125000000000001,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765035.5782006
+    },
+    "gnss": {
+      "timestamp": 1785765035.5629745,
+      "latitude": 52.4933135,
+      "longitude": 13.448498,
+      "altitude": 33.6,
+      "speed": 3.965,
+      "heading": 312.63,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.55,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765047.5267775,
+    "timestamp_iso": "2026-08-03T13:50:47.526",
+    "event": "human_override",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 10.75,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.031496062992125984,
+      "steering_angle": -0.40145833333333336,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765047.5089092
+    },
+    "gnss": {
+      "timestamp": 1785765047.3738117,
+      "latitude": 52.493449166666664,
+      "longitude": 13.4481885,
+      "altitude": 33.7,
+      "speed": 10.812,
+      "heading": 288.18,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.51,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765047.5283403,
+    "timestamp_iso": "2026-08-03T13:50:47.528",
+    "event": "human_in_control",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 10.75,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.031496062992125984,
+      "steering_angle": -0.40145833333333336,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765047.5089092
+    },
+    "gnss": {
+      "timestamp": 1785765047.3738117,
+      "latitude": 52.493449166666664,
+      "longitude": 13.4481885,
+      "altitude": 33.7,
+      "speed": 10.812,
+      "heading": 288.18,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.51,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765055.2769654,
+    "timestamp_iso": "2026-08-03T13:50:55.276",
+    "event": "mcm_engaged",
+    "source": "ui",
+    "vehicle": {
+      "speed": 4.59375,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": -0.24041666666666667,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765055.2592757
+    },
+    "gnss": {
+      "timestamp": 1785765055.1574116,
+      "latitude": 52.493473,
+      "longitude": 13.447991,
+      "altitude": 33.7,
+      "speed": 4.466,
+      "heading": 301.03,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.59,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765057.2668884,
+    "timestamp_iso": "2026-08-03T13:50:57.266",
+    "event": "ai_policy_enabled",
+    "source": "ui",
+    "vehicle": {
+      "speed": 5.5625,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": 0.015208333333333334,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765057.250796
+    },
+    "gnss": {
+      "timestamp": 1785765057.1734095,
+      "latitude": 52.49348483333333,
+      "longitude": 13.447956333333334,
+      "altitude": 33.7,
+      "speed": 5.51,
+      "heading": 299.45,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.59,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765062.7925384,
+    "timestamp_iso": "2026-08-03T13:51:02.792",
+    "event": "human_override",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 8.46875,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.14173228346456693,
+      "steering_angle": 0.4731250000000001,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765062.7656147
+    },
+    "gnss": {
+      "timestamp": 1785765062.7738285,
+      "latitude": 52.49353766666667,
+      "longitude": 13.44784,
+      "altitude": 33.7,
+      "speed": 8.602,
+      "heading": 332.92,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.59,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765062.7966263,
+    "timestamp_iso": "2026-08-03T13:51:02.796",
+    "event": "human_in_control",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 8.46875,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.14173228346456693,
+      "steering_angle": 0.4731250000000001,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765062.7656147
+    },
+    "gnss": {
+      "timestamp": 1785765062.7738285,
+      "latitude": 52.49353766666667,
+      "longitude": 13.44784,
+      "altitude": 33.7,
+      "speed": 8.602,
+      "heading": 332.92,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.59,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765099.3843377,
+    "timestamp_iso": "2026-08-03T13:51:39.384",
+    "event": "mcm_engaged",
+    "source": "ui",
+    "vehicle": {
+      "speed": 0.03125,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": 0.043333333333333335,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765099.362365
+    },
+    "gnss": {
+      "timestamp": 1785765099.2412705,
+      "latitude": 52.494096166666665,
+      "longitude": 13.448823166666667,
+      "altitude": 33.6,
+      "speed": 0.01,
+      "heading": 138.51,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.55,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765100.731849,
+    "timestamp_iso": "2026-08-03T13:51:40.731",
+    "event": "ai_policy_enabled",
+    "source": "ui",
+    "vehicle": {
+      "speed": 0.0,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": 0.008125,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765100.719454
+    },
+    "gnss": {
+      "timestamp": 1785765100.6444054,
+      "latitude": 52.49409633333333,
+      "longitude": 13.448823,
+      "altitude": 33.6,
+      "speed": 0.0,
+      "heading": 138.52,
+      "fix_quality": 4,
+      "satellites": 12,
+      "hdop": 0.56,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765117.2877033,
+    "timestamp_iso": "2026-08-03T13:51:57.287",
+    "event": "human_override",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 15.71875,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": 0.06541666666666666,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765117.2830591
+    },
+    "gnss": {
+      "timestamp": 1785765117.2608101,
+      "latitude": 52.49382583333333,
+      "longitude": 13.449274166666667,
+      "altitude": 33.9,
+      "speed": 15.557,
+      "heading": 142.7,
+      "fix_quality": 5,
+      "satellites": 12,
+      "hdop": 0.58,
+      "valid": true
+    }
+  },
+  {
+    "timestamp": 1785765117.2903738,
+    "timestamp_iso": "2026-08-03T13:51:57.290",
+    "event": "human_in_control",
+    "source": "mcm",
+    "vehicle": {
+      "speed": 15.71875,
+      "gas_pedal": 0.0,
+      "brake_pedal": 0.0,
+      "steering_angle": 0.06541666666666666,
+      "turn_signal": 0,
+      "gear": 3,
+      "can_timestamp": 1785765117.2830591
+    },
+    "gnss": {
+      "timestamp": 1785765117.2608101,
+      "latitude": 52.49382583333333,
+      "longitude": 13.449274166666667,
+      "altitude": 33.9,
+      "speed": 15.557,
+      "heading": 142.7,
+      "fix_quality": 5,
+      "satellites": 12,
+      "hdop": 0.58,
+      "valid": true
+    }
+  }
+]

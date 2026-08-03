@@ -1,0 +1,98 @@
+==============================================================================
+1. RECOVERED max_speed SETTING TIMELINE (sole source: pane scrollback)
+==============================================================================
+scrollback covers   13:49:40.288 .. 13:52:06.812 UTC (147 s).  OUTSIDE this window the setting is UNRECOVERABLE.
+  13:49:44.736  max_speed set to 10.0 km/h
+
+==============================================================================
+2. SESSION TIMELINE
+==============================================================================
+max_speed column: 'verified' only inside the scrollback window; every
+other session's setting is UNRECOVERABLE (not logged to any artifact).
+session          window UTC          ticks plans plancfg  gas_mn  gas_md  brk_mn  brk_md speed_mn  inf_ms max_speed 
+--------------------------------------------------------------------------------------------------------------------
+20260803_095728  09:58:04-10:07:57     944   161 n6s0    0.0263  0.0041  0.0289  0.0004      n/a     267 unrecoverable
+20260803_101342  10:16:07-10:23:00     669   114 n6s0    0.0158  0.0012  0.0189  0.0004      n/a     265 unrecoverable
+20260803_102952  10:30:35-10:34:22     410    70 n6s0    0.0250  0.0054  0.0232  0.0003      n/a     272 unrecoverable
+20260803_103557  10:36:20-10:57:59    1841   313 n6s0    0.0394  0.0110  0.0327  0.0001      n/a     267 unrecoverable
+20260803_105853  10:59:40-11:03:34     238    45 n6s0    0.0868  0.0918  0.0121  0.0000      n/a     265 unrecoverable
+20260803_134521  13:45:49-13:47:35     193    33 n6s0    0.0239  0.0031  0.0433  0.0018    10.05     268 unrecoverable
+20260803_134900  13:50:03-13:51:56     153    34 n5s1    0.0292  0.0067  0.0158  0.0000     9.68     276 10 (verified)
+
+==============================================================================
+3. PRE/POST SPLIT AT EACH RECOVERED max_speed CHANGE
+==============================================================================
+A within-drive test needs ticks on BOTH sides of a change.
+
+  change @ 13:49:44.736 -> 10.0
+    20260803_095728  ticks pre/post  944/   0   plans pre/post 161/  0
+    20260803_101342  ticks pre/post  669/   0   plans pre/post 114/  0
+    20260803_102952  ticks pre/post  410/   0   plans pre/post  70/  0
+    20260803_103557  ticks pre/post 1841/   0   plans pre/post 313/  0
+    20260803_105853  ticks pre/post  238/   0   plans pre/post  45/  0
+    20260803_134521  ticks pre/post  193/   0   plans pre/post  33/  0
+    20260803_134900  ticks pre/post    0/ 153   plans pre/post   0/ 34
+      first fresh plan after the change: 13:50:03.257 (+18.5 s) -- the earliest tick the new input could reach the model
+
+==============================================================================
+4. SPEED-BINNED gas/brake COMPARISON (context control)
+==============================================================================
+
+  20260803_134521 (max_speed UNKNOWN)  vs  20260803_134900 (max_speed = 10.0 km/h, verified)
+  speed bin    nA    nB     gasA     gasB      dgas     brkA     brkB    dbrake   MDE_gas
+  ---------------------------------------------------------------------------------------
+  0-5          35    27   0.0162   0.0183   +0.0021   0.1030   0.0183   -0.0847    0.0407
+  5-10         67    55   0.0205   0.0222   +0.0017   0.0356   0.0075   -0.0281    0.0443
+  10-15        39    31   0.0474   0.0560   +0.0085   0.0370   0.0001   -0.0369    0.0607
+  15-20        52    40   0.0159   0.0252   +0.0093   0.0176   0.0378   +0.0202    0.0344
+
+  pooled (all speeds), 95%% CI by plan-block bootstrap:
+    20260803_134521  gas   mean 0.0239  [0.0125, 0.0382]  (33 plans)
+    20260803_134521  brake mean 0.0433  [0.0213, 0.0686]  (33 plans)
+    20260803_134900  gas   mean 0.0292  [0.0190, 0.0400]  (34 plans)
+    20260803_134900  brake mean 0.0158  [0.0079, 0.0256]  (34 plans)
+    MDE gas   (alpha=.05, power=.80, unit=plan): 0.0251
+    MDE brake (alpha=.05, power=.80, unit=plan): 0.0446
+
+==============================================================================
+5. ENGINE FINGERPRINT (inference_ms, fresh-plan rows only)
+==============================================================================
+  The engine used is NOT recorded in any artifact.  TRT precision
+  changes GPU compute time, so inference_ms clusters identify it.
+  source                                             n   median      p10      p90
+  20260803_095728                                  161    267.3    253.3    290.3
+  20260803_101342                                  114    264.9    253.3    286.3
+  20260803_102952                                   70    271.6    252.4    296.6
+  20260803_103557                                  313    267.3    254.1    299.6
+  20260803_105853                                   45    265.3    255.3    289.0
+  20260803_134521                                   33    268.5    257.8    288.8
+  20260803_134900                                   34    276.0    258.3    295.7
+  control/20260803_094207_predictions.jsonl         55    170.7    164.9    179.9
+  control/20260803_133859_predictions.jsonl         49    172.3    164.7    179.6
+  control/20260803_141107_predictions.jsonl          9    296.7    292.2    316.9
+  control/20260803_141327_predictions.jsonl         37    306.7    294.5    316.8
+
+==============================================================================
+6. PLUMBING EVIDENCE (grep of the recovered stdout)
+==============================================================================
+  zellij_pane_t10_atuin_view.txt: {'max_speed_binding': 0, 'declares no max-speed': 0, 'maxspeed engine without': 0, 'Zone max-speed set from UI': 0}
+  zellij_pane_t2_scrollback.txt: {'max_speed_binding': 0, 'declares no max-speed': 0, 'maxspeed engine without': 0, 'Zone max-speed set from UI': 1}
+  zellij_pane_t6_ps_snapshots.txt: {'max_speed_binding': 0, 'declares no max-speed': 0, 'maxspeed engine without': 0, 'Zone max-speed set from UI': 0}
+     launch seen in ps: drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit
+     launch seen in ps: drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm_maxspeed_aux-0nr1ydjm-v1.trt --image-norm unit --max-speed 100
+  zellij_pane_t8_ps_snapshots.txt: {'max_speed_binding': 0, 'declares no max-speed': 0, 'maxspeed engine without': 0, 'Zone max-speed set from UI': 0}
+     launch seen in ps: drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit
+     launch seen in ps: drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit --plan-skip-steps 0 --plan-execute-steps 1
+
+==============================================================================
+7. POWER VERDICT vs THE OFFLINE REFERENCE EFFECT SIZES
+==============================================================================
+  on-car MDE for Delta-gas (best available pair, unit=plan): 0.0251
+  offline cond       dgas   MDE/dgas   detectable on-car?
+  WALK (5)        +0.0167          2x   NO
+  30 km/h         +0.0008         31x   NO
+  UNLIMITED       +0.0005         50x   NO
+  10 km/h         +0.0004         63x   NO
+  100 km/h        +0.0001        251x   NO
+  The setting actually used on-car was 10 km/h, whose offline dgas
+  (+0.0004) is ~63x below what this drive could resolve.

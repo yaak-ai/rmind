@@ -1,0 +1,57 @@
+
+max in 🌐 delta-devcar in drivr-receding-horizon-engine-derived-image-size on  feat/receding-horizon-engine-derived-image-size via 🐍 v3.10.12
+❯ bash
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | drivr
+bash: drivr: command not found
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr
+max       784319  0.0  0.0   2304   836 pts/9    S+   10:28   0:00 sh -cu uv run python -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm_maxspeed_aux-0nr1ydjm-v1.trt --image-norm unit --max-speed 100
+max       784320  0.0  0.3 231896 62424 pts/9    Sl+  10:28   0:00 uv run python -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm_maxspeed_aux-0nr1ydjm-v1.trt --image-norm unit --max-speed 100
+max       784325  6.1  2.9 5727112 469548 pts/9  Sl+  10:28   0:04 /home/max/Code/drivr-max-speed-input/.venv/bin/python3 -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm_maxspeed_aux-0nr1ydjm-v1.trt --image-norm unit --max-speed 100
+max       785163  0.0  0.0   8488  1956 pts/1    S+   10:29   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ kill -9 784319  784320 784325
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr
+max       816452  0.0  0.0   2304   828 pts/10   S+   11:05   0:00 sh -cu uv run python -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit
+max       816453  0.3  0.2 231896 44480 pts/10   Sl+  11:05   0:00 uv run python -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit
+max       816456 29.1  2.9 5727100 471160 pts/10 Sl+  11:05   0:04 /home/max/Code/drivr-receding-horizon-engine-derived-image-size/.venv/bin/python3 -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit
+max       816614  0.0  0.0   8488  1976 pts/1    S+   11:05   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ kill -9 816452 816453 816456
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr
+max       940657  0.0  0.0   8488  1976 pts/1    S+   13:52   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ^Ctch_policy_dinov2_dinowm_big-zt39kjn4-v1.fp16strict.trt
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr^C  max@delta-devcar:~/Code/drivr-receding-hmax@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivron-engine-derived-image-size$ kill -max      1122039  0.0  0.0   8488  1984 pts/1    S+   18:06   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr
+max      1122082  0.0  0.0   8488  1980 pts/1    S+   18:06   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ kill -9 816452 816453 816456c^C
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ls e
+ls: cannot access 'e': No such file or directory
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ls  /home/max/onnx_exports/patch_policy
+MANIFEST.md                                                     patch_policy_dinov2_dinowm_maxspeed-1n0ih44y-v1.fp16strict.trt
+patch_policy_dinov2_dinowm-ifuusvwq-v5.fp16strict.trt           patch_policy_dinov2_dinowm_maxspeed-1n0ih44y-v1.trt
+patch_policy_dinov2_dinowm-ifuusvwq-v5.fp16.trt                 patch_policy_dinov2_dinowm_maxspeed_aux-0nr1ydjm-v0.trt
+patch_policy_dinov2_dinowm-ifuusvwq-v5.onnx                     patch_policy_dinov2_dinowm_maxspeed_aux-0nr1ydjm-v1.fp16strict.trt
+patch_policy_dinov2_dinowm-ifuusvwq-v5.trt                      patch_policy_dinov2_dinowm_maxspeed_aux-0nr1ydjm-v1.trt
+patch_policy_dinov2_dinowm-ifuusvwq-v8.fp16strict.trt           patch_policy_dinov2-wxyp0bzq-v5.fp16strict.trt
+patch_policy_dinov2_dinowm-ifuusvwq-v8.trt                      patch_policy_dinov2-wxyp0bzq-v5.fp16.trt
+patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt           patch_policy_dinov2-wxyp0bzq-v5.onnx
+patch_policy_dinov2_dinowm-ilch4dyo-v2.trt                      patch_policy_dinov2-wxyp0bzq-v5.trt
+patch_policy_dinov2_dinowm-ilch4dyo-v3.fp16strict.trt           patch_policy_dinov3-8crjqzii-v6.fp16strict.trt
+patch_policy_dinov2_dinowm-ilch4dyo-v3.trt                      patch_policy_dinov3-8crjqzii-v6.onnx
+patch_policy_dinov2_dinowm_maxspeed-1n0ih44y-v0.fp16strict.trt  patch_policy_dinov3-8crjqzii-v6.trt
+patch_policy_dinov2_dinowm_maxspeed-1n0ih44y-v0.trt
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ cd ..
+max@delta-devcar:~/Code$ ls
+configurable-decode-strategies-receding  drivr-fm                drivr-receding-horizon-engine-derived-image-size  rmind
+drahve                                   drivr-hard-speed-limit  drivr-speed-p-controller                          sygnal-tools
+drivr                                    drivr-master            drivr-tokenizer-on-stack
+drivr-flow-matching                      drivr-max-speed-input   drivr-tokenizer-on-stack-fixed
+max@delta-devcar:~/Code$ cd drivr-max-speed-input/
+max@delta-devcar:~/Code/drivr-max-speed-input$ ls
+benchmark_all_models.py         images                pyproject.toml  resources          src                      videos
+config                          justfile              pytest.ini      run_inference.py   sygnal_dbc-2.4.0.tar.gz
+docs                            load_econ_modules.sh  README.md       run_prediction.py  tests
+gamepadcontroller-2.2.0.tar.gz  Makefile              reports         scripts            uv.lock
+max@delta-devcar:~/Code/drivr-max-speed-input$ ls ~/
+ai_throttle_emulator.py  Code     engines    mcm_cmd_monitor.py        mcm_set_feedback_scale.py   mcm_throttle_check.py  __pycache__
+bin                      Desktop  mcm_bench  mcm_enable_cl_reports.py  mcm_set_override_filter.py  onnx_exports
+max@delta-devcar:~/Code/drivr-max-speed-input$

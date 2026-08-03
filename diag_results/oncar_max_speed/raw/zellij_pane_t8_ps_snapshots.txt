@@ -1,0 +1,25 @@
+
+max in 🌐 delta-devcar in drivr-receding-horizon-engine-derived-image-size on  feat/receding-horizon-engine-derived-image-size via 🐍 v3.10.12
+❯ bash
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr
+max       920160  0.0  0.0   2308   832 pts/10   S+   13:36   0:00 sh -cu uv run python -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit --plan-skip-steps 0 --plan-execute-steps 1
+max       920161  0.1  0.2 231896 44152 pts/10   Sl+  13:36   0:00 uv run python -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit --plan-skip-steps 0 --plan-execute-steps 1
+max       920164 13.6  2.9 5727100 469332 pts/10 Sl+  13:36   0:04 /home/max/Code/drivr-receding-horizon-engine-derived-image-size/.venv/bin/python3 -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit --plan-skip-steps 0 --plan-execute-steps 1
+max       920867  0.0  0.0   8488  1968 pts/12   S+   13:36   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ kill -9 920160
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr
+max       920161  0.0  0.2 231896 44152 pts/10   Sl   13:36   0:00 uv run python -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit --plan-skip-steps 0 --plan-execute-steps 1
+max       920164 10.2  2.9 5727100 469332 pts/10 Sl   13:36   0:04 /home/max/Code/drivr-receding-horizon-engine-derived-image-size/.venv/bin/python3 -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit --plan-skip-steps 0 --plan-execute-steps 1
+max       921164  0.0  0.0   8488  1968 pts/12   S+   13:37   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ kill -9 920161 920164
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr
+max       921309  0.0  0.0   8488  1960 pts/12   S+   13:37   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr
+max       921662  0.0  0.0   2304   840 pts/10   S+   13:37   0:00 sh -cu uv run python -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit
+max       921663  0.0  0.2 231896 45684 pts/10   Sl+  13:37   0:00 uv run python -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit
+max       921667  8.5  2.9 5727112 467328 pts/10 Sl+  13:37   0:04 /home/max/Code/drivr-receding-horizon-engine-derived-image-size/.venv/bin/python3 -m drivr.app.drivr --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-norm unit
+max       922521  0.0  0.0   8488  1976 pts/12   S+   13:38   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ kill -9 921662 921663 921667
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$ ps -aux | grep drivr
+max       922780  0.0  0.0   8488  1972 pts/12   S+   13:38   0:00 grep --color=auto drivr
+max@delta-devcar:~/Code/drivr-receding-horizon-engine-derived-image-size$

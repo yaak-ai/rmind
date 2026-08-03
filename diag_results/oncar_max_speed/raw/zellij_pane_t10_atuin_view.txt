@@ -1,0 +1,134 @@
+
+max in 🌐 delta-devcar in drivr-receding-horizon-engine-derived-image-size on  feat/receding-horizon-engine-derived-image-size via 🐍 v3.10.12
+❯ curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+[sudo] password for max:
+tee: '>/dev/null': No such file or directory
+hO d91�B�!�)s:t(�͸/.7?{c���ř&\rpmr:I5iŭ&Ll�^ zgS&
+R(_65?6HII��
+            ��[��j7HV�d���>�kIc\M*#$䑞+�C���l�  Ζ':�B
+                                                     �LxF?�0?,� Ȧ�x<d3ǎrjP��tW<߿簆(ryQ#@�WGis�_Sai#*)jJ��ΠV*`�kM�d�G}(9_�X����*<��� m
+��~ĝff�5�8CloudFlare Software Packaging 2025 <help@cloudflare.com>;!wsBbh-0N^sh;x
+
+
+
+        -0N^s0y`�7UQ]QԴAR7&m6O�dg9܄N�PZ,zW|���3dr?䬅y�g�p@9��D9�U|�yEd��N:ƴW`<d]!���*i/�渚aԑU��7>=�H^1 M�$f]H~]F|y�n=��+5]aŰ1z�Nעl���x�b��n>�9K]S
+e&mMSk�L��c�қ�]z���\�(��(��J�3T5p4{ �� O@��۹<���^@�\Ny*1M8�$)2�*&j6ךD��=>��2g=��?
+                                                                                 i;orכ&
+h;x�\F(�YKS�%�}�,                                                                      r_T!§,�Ca,,;�,�{~6O�r�
+                 ��l���D�Kic}�tϘ(�:�c;Is\�"R�ɫԤvTx�b�P��@6F�q>)�G����niw,=�xAr�13AK�
+��Wp;��'}��`8�
+����sP4)P3~��b,{�
+            "(�X"X8v���]%�2r��Ӽ�:2C�ȕqu�,�nBrn_@s
+                                                 s=Z.8hҎ&Cu;�;� u���&a^~u��J7|YJf       Ϊr?P68h_!
+                                                                                                 @�'V"�
+                                                                                                       ��N��!C6Iat�� !wsBbh-0N^sh;x
+
+        -0N^s�-����� +
+#υwث�L���@xoeL#�W�,SoZ��VفP�3/Ng�b����g�&�0$(h9�~������}v|Zc�C�A܍o:KsӖO
+$G4!P9�Ds*�Jd�V�+�Vvwu@f�QA���2d�p*ԭ��Ou
+ɶ-96mf;�}hwz_%jX$`"���Qe�}�0��
+                               ��h.��a3�_L&_&-M
+4�St����+��G�.��rW
+
+max in 🌐 delta-devcar in drivr-receding-horizon-engine-derived-image-size on  feat/receding-horizon-engine-derived-image-size via 🐍 v3.10.12
+❯ ls /usr/share/keyrings/cloudflare-main.gpg
+╭───┬─────────────────────────────────────────┬──────┬────────┬────────────────╮
+│ # │                  name                   │ type │  size  │    modified    │
+├───┼─────────────────────────────────────────┼──────┼────────┼────────────────┤
+│ 0 │ /usr/share/keyrings/cloudflare-main.gpg │ file │ 2.2 kB │ 17 seconds ago │
+╰───┴─────────────────────────────────────────┴──────┴────────┴────────────────╯
+
+max in 🌐 delta-devcar in drivr-receding-horizon-engine-derived-image-size on  feat/receding-horizon-engine-derived-image-size via 🐍 v3.10.12
+❯ echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared jammy main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
+deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared jammy main
+
+max in 🌐 delta-devcar in drivr-receding-horizon-engine-derived-image-size on  feat/receding-horizon-engine-derived-image-size via 🐍 v3.10.12
+❯ sudo apt-get update && sudo apt-get install -y cloudflared
+Error: nu::parser::shell_andand
+
+  × The '&&' operator is not supported in Nushell
+   ╭─[repl_entry #4:1:21]
+ 1 │ sudo apt-get update && sudo apt-get install -y cloudflared
+   ·                     ─┬
+   ·                      ╰── instead of '&&', use ';' or 'and'
+   ╰────
+  help: use ';' instead of the shell '&&', or 'and' instead of the boolean '&&'
+
+
+max in 🌐 delta-devcar in drivr-receding-horizon-engine-derived-image-size on  feat/receding-horizon-engine-derived-image-size via 🐍 v3.10.12
+❯ sudo apt-get update ; sudo apt-get install -y cloudflared
+Hit:1 https://cli.github.com/packages stable InRelease
+Hit:2 http://ports.ubuntu.com/ubuntu-ports jammy InRelease
+Get:3 http://ports.ubuntu.com/ubuntu-ports jammy-updates InRelease [128 kB]
+Get:4 https://download.docker.com/linux/ubuntu jammy InRelease [48.5 kB]
+Hit:5 https://repo.download.nvidia.com/jetson/common r36.4 InRelease
+Get:6 https://pkg.cloudflare.com/cloudflared jammy InRelease [5,043 B]
+Hit:7 https://ppa.launchpadcontent.net/nnstreamer/ppa/ubuntu jammy InRelease
+Get:8 http://ports.ubuntu.com/ubuntu-ports jammy-backports InRelease [127 kB]
+Get:9 https://repo.download.nvidia.com/jetson/t234 r36.4 InRelease [2,553 B]
+Get:10 http://ports.ubuntu.com/ubuntu-ports jammy-security InRelease [129 kB]
+Get:11 http://download.zerotier.com/debian/jammy jammy InRelease [20.5 kB]
+Get:12 https://download.docker.com/linux/ubuntu jammy/stable arm64 Packages [83.9 kB]
+Hit:13 https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64  InRelease
+Get:14 https://pkg.cloudflare.com/cloudflared jammy/main arm64 Packages [376 B]
+Get:15 http://ports.ubuntu.com/ubuntu-ports jammy-updates/main arm64 DEP-11 Metadata [117 kB]
+Get:16 http://ports.ubuntu.com/ubuntu-ports jammy-updates/universe arm64 DEP-11 Metadata [357 kB]
+Get:17 http://ports.ubuntu.com/ubuntu-ports jammy-updates/multiverse arm64 DEP-11 Metadata [212 B]
+Get:18 http://ports.ubuntu.com/ubuntu-ports jammy-backports/main arm64 DEP-11 Metadata [3,584 B]
+Get:19 http://ports.ubuntu.com/ubuntu-ports jammy-backports/universe arm64 DEP-11 Metadata [12.0 kB]
+Get:20 http://ports.ubuntu.com/ubuntu-ports jammy-security/main arm64 DEP-11 Metadata [74.4 kB]
+Get:21 http://ports.ubuntu.com/ubuntu-ports jammy-security/universe arm64 DEP-11 Metadata [127 kB]
+Fetched 1,237 kB in 2s (647 kB/s)
+Reading package lists... Done
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+The following NEW packages will be installed:
+  cloudflared
+0 upgraded, 1 newly installed, 0 to remove and 457 not upgraded.
+Need to get 17.4 MB of archives.
+After this operation, 37.0 MB of additional disk space will be used.
+Get:1 https://pkg.cloudflare.com/cloudflared jammy/main arm64 cloudflared arm64 2026.7.3 [17.4 MB]
+Fetched 17.4 MB in 1s (27.0 MB/s)
+debconf: delaying package configuration, since apt-utils is not installed
+Selecting previously unselected package cloudflared.
+(Reading database ... 203167 files and directories currently installed.)
+Preparing to unpack .../cloudflared_2026.7.3_arm64.deb ...
+Unpacking cloudflared (2026.7.3) ...
+Setting up cloudflared (2026.7.3) ...
+Processing triggers for man-db (2.10.2-1) ...
+
+max in 🌐 delta-devcar in drivr-receding-horizon-engine-derived-image-size on  feat/receding-horizon-engine-derived-image-size via 🐍 v3.10.12
+❯ cloudflared tunnel login
+A browser window should have opened at the following URL:
+
+https://dash.cloudflare.com/argotunnel?aud=&callback=https%3A%2F%2Flogin.cloudflareaccess.org%2Fu2ow2LqdxiO33dlygvQ3v3TFc8PBSfMpqXmTyR621ng%3D
+
+If the browser failed to open, please visit the URL above directly in your browser.
+2026-08-03T18:10:24Z INF Waiting for login...
+2026-08-03T18:11:17Z INF Waiting for login...
+2026-08-03T18:12:10Z INF Waiting for login...
+2026-08-03T18:13:03Z INF Waiting for login...
+2026-08-03T18:13:56Z INF Waiting for login...
+2026-08-03T18:14:49Z INF Waiting for login...
+^CError: nu::shell::terminated_by_signal
+
+  × External command was terminated by a signal
+   ╭─[repl_entry #7:1:1]
+ 1 │ cloudflared tunnel login
+   · ─────┬─────
+   ·      ╰── terminated by SIGINT (2)
+   ╰────
+
+
+max in 🌐 delta-devcar in drivr-receding-horizon-engine-derived-image-size on  feat/receding-horizon-engine-derived-image-size via 🐍 v3.10.12
+ Atuin v18.16.1                         <esc>: exit, <tab>: edit, <enter>: edit, <ctrl-o>: inspect                     history count: 223
+  Search │ Inspect
+  5    4m    9h ago just drive --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.trt --image-norm unit -
+  4    3m    9h ago just drive --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.trt --image-norm unit
+  3    4m    9h ago just drive --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2_dinowm-ilch4dyo-v2.fp16strict.trt --image-
+  2    1m    9h ago just drive --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2-wxyp0bzq-v5.fp16strict.trt
+  1    5m    9h ago just drive --model /home/max/onnx_exports/patch_policy/patch_policy_dinov2-wxyp0bzq-v5.fp16strict.trt --image-norm un
+  >    6m    9h ago just drive --model /home/max/onnx_exports/patch_policy/patch_policy_dinov3-8crjqzii-v6.fp16strict.trt --image-norm un
+ [     GLOBAL     ]
+ just drive --model /home/max/onnx_exports/patch_policy/patch_policy_dinov3-8crjqzii-v6.fp16strict.trt --image-norm unit
