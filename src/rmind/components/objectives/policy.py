@@ -180,6 +180,16 @@ class PolicyObjective(Objective):
         # None (default) == disabled.
         raw_speed_key: tuple[str, ...] | None = None,
         raw_speed_dropout: float = 0.0,
+        # raw (pre-encoder, pre-fusion) image patch tokens for fusion_pool's
+        # optional register-compression step (see
+        # FeatureFusionPool.image_patch_pool) -- reuses the same frozen
+        # embeddings raw_feature_keys/the rawdino diagnostic already read
+        # off episode.input_embeddings (e.g. DINOv3 patches), so no extra
+        # vision backbone forward pass. None (default) disables image
+        # tokens in fusion_pool, unchanged from before this option existed.
+        # Ignored unless fusion_pool is set AND fusion_pool.image_patch_pool
+        # is set.
+        raw_image_patches_key: tuple[str, ...] | None = None,
         # cross-attention feature fusion: replaces the pool-then-concatenate
         # `features` construction above (feature_keys/raw_feature_keys/
         # history_feature_keys/trainable_image/raw_waypoints_key/raw_speed_key)
@@ -284,6 +294,7 @@ class PolicyObjective(Objective):
         self.raw_waypoints_horizon: int | None = raw_waypoints_horizon
         self.raw_speed_key: tuple[str, ...] | None = raw_speed_key
         self.raw_speed_dropout: float = raw_speed_dropout
+        self.raw_image_patches_key: tuple[str, ...] | None = raw_image_patches_key
         self.fusion_pool: FeatureFusionPool | None = fusion_pool
         self.prediction_std_scale: dict[str, float] = prediction_std_scale or {}
         # hurdle-gate decode: per-tick onset classification is weak (AUC ~0.72) and
@@ -660,10 +671,16 @@ class PolicyObjective(Objective):
                 scale=self.speed_scale,
                 flatten=False,
             )
+            raw_image_patches = (
+                episode.input_embeddings.get(self.raw_image_patches_key)[:, idx]
+                if self.raw_image_patches_key is not None
+                else None
+            )
             features = self.fusion_pool(
                 obs_summary_history=obs_summary_history,
                 raw_waypoints=raw_waypoints,
                 raw_speed=raw_speed,
+                raw_image_patches=raw_image_patches,
             )
         else:
             embeddings = episode.index[idx].select(*self.feature_keys).parse(embedding)

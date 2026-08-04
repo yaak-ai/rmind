@@ -330,17 +330,20 @@ class FeatureFusionPool(Module):
     waypoints are projected to `embedding_dim` and contribute one token per
     point, tagged with a point-index positional embedding (necessary, since
     the shared `waypoint_proj` has no other way to distinguish point order);
-    raw speed contributes a single projected token. Every token also gets a
-    shared per-source-type embedding, so the pool can tell sources apart even
-    where a positional embedding doesn't apply (e.g. the singleton speed
-    token). All tokens are concatenated into one sequence and pooled by
-    `pool` (an `AttentionPoolHead`, optionally with `num_queries>1`); a
-    multi-query `(b, num_queries, d)` output is flattened to `(b, 1,
-    num_queries*d)` so it's a drop-in replacement for a concatenated
-    `features` vector everywhere downstream.
+    raw speed contributes a single projected token; raw image patches are
+    optionally compressed into a small, fixed number of learned "register"
+    tokens first (see `image_patch_pool`), each tagged with a slot-index
+    positional embedding. Every token also gets a shared per-source-type
+    embedding, so the pool can tell sources apart even where a positional
+    embedding doesn't apply (e.g. the singleton speed token). All tokens are
+    concatenated into one sequence and pooled by `pool` (an
+    `AttentionPoolHead`, optionally with `num_queries>1`); a multi-query
+    `(b, num_queries, d)` output is flattened to `(b, 1, num_queries*d)` so
+    it's a drop-in replacement for a concatenated `features` vector
+    everywhere downstream.
     """
 
-    _OBS_SUMMARY, _RAW_WAYPOINTS, _RAW_SPEED = range(3)
+    _OBS_SUMMARY, _RAW_WAYPOINTS, _RAW_SPEED, _IMAGE_PATCH = range(4)
 
     @validate_call
     def __init__(
@@ -361,6 +364,22 @@ class FeatureFusionPool(Module):
         # (both default).
         waypoint_token_dropout: float = 0.0,
         speed_token_dropout: float = 0.0,
+        # register-style compression of raw image patch tokens (e.g. frozen
+        # DINOv3 patches read straight off episode.input_embeddings, before
+        # the main cross-modal encoder ever attends over them -- see
+        # PolicyObjective.raw_image_patches_key) into num_image_patch_tokens
+        # learned "register" tokens via cross-attention, mirroring DrivoR
+        # (arXiv:2601.05083)'s camera-aware register compression: cheaper
+        # than feeding all (e.g. 256) raw patches into this pool's own
+        # cross-attention directly, and reuses embeddings the frozen
+        # backbone already computed for the main encoder -- no extra vision
+        # backbone forward pass. None (default) disables image tokens
+        # entirely, unchanged from before this option existed.
+        image_patch_pool: InstanceOf[Module] | None = None,
+        # must match image_patch_pool's num_queries -- sizes
+        # image_patch_pos_embed. Ignored when image_patch_pool is None.
+        num_image_patch_tokens: int = 0,
+        image_patch_token_dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.pool = pool
@@ -368,17 +387,30 @@ class FeatureFusionPool(Module):
         self.waypoint_pos_embed = Embedding(num_waypoints, embedding_dim)
         self.speed_proj = Linear(1, embedding_dim)
         self.history_pos_embed = Embedding(history_steps, embedding_dim)
-        self.source_type_embed = Embedding(3, embedding_dim)
+        self.image_patch_pool: Module | None = image_patch_pool
+        self.image_patch_pos_embed = (
+            Embedding(num_image_patch_tokens, embedding_dim)
+            if image_patch_pool is not None
+            else None
+        )
+        self.source_type_embed = Embedding(4, embedding_dim)
         self.waypoint_token_dropout = waypoint_token_dropout
         self.speed_token_dropout = speed_token_dropout
+        self.image_patch_token_dropout = image_patch_token_dropout
 
     @override
     def forward(
-        self, *, obs_summary_history: Tensor, raw_waypoints: Tensor, raw_speed: Tensor
+        self,
+        *,
+        obs_summary_history: Tensor,
+        raw_waypoints: Tensor,
+        raw_speed: Tensor,
+        raw_image_patches: Tensor | None = None,
     ) -> Tensor:
         # obs_summary_history: (b, history_steps, d)
         # raw_waypoints: (b, num_waypoints, 2)
         # raw_speed: (b, 1)
+        # raw_image_patches: (b, num_raw_patches, d), required iff image_patch_pool is set
         history_ids = torch.arange(obs_summary_history.shape[1], device=obs_summary_history.device)
         obs_summary_tokens = (
             obs_summary_history
@@ -399,9 +431,25 @@ class FeatureFusionPool(Module):
 
         tokens = torch.cat([obs_summary_tokens, waypoint_tokens, speed_tokens], dim=1)
 
+        image_patch_tokens = None
+        if self.image_patch_pool is not None:
+            if raw_image_patches is None:
+                msg = "image_patch_pool is set but raw_image_patches was not provided"
+                raise ValueError(msg)
+            compressed = self.image_patch_pool(raw_image_patches)  # (b, num_image_patch_tokens, d)
+            patch_ids = torch.arange(compressed.shape[1], device=compressed.device)
+            image_patch_tokens = (
+                compressed
+                + self.image_patch_pos_embed(patch_ids)
+                + self.source_type_embed.weight[self._IMAGE_PATCH]
+            )
+            tokens = torch.cat([tokens, image_patch_tokens], dim=1)
+
         key_padding_mask = None
         if self.training and (
-            self.waypoint_token_dropout > 0.0 or self.speed_token_dropout > 0.0
+            self.waypoint_token_dropout > 0.0
+            or self.speed_token_dropout > 0.0
+            or (image_patch_tokens is not None and self.image_patch_token_dropout > 0.0)
         ):
             b = tokens.shape[0]
             h, w = obs_summary_tokens.shape[1], waypoint_tokens.shape[1]
@@ -413,8 +461,13 @@ class FeatureFusionPool(Module):
                     torch.rand(b, w, device=tokens.device) < self.waypoint_token_dropout
                 )
             if self.speed_token_dropout > 0.0:
-                key_padding_mask[:, h + w :] = (
+                key_padding_mask[:, h + w : h + w + 1] = (
                     torch.rand(b, 1, device=tokens.device) < self.speed_token_dropout
+                )
+            if image_patch_tokens is not None and self.image_patch_token_dropout > 0.0:
+                p = image_patch_tokens.shape[1]
+                key_padding_mask[:, h + w + 1 : h + w + 1 + p] = (
+                    torch.rand(b, p, device=tokens.device) < self.image_patch_token_dropout
                 )
             fully_masked = key_padding_mask.all(dim=1)
             if fully_masked.any():

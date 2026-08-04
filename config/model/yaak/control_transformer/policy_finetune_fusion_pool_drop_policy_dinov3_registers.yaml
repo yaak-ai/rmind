@@ -1,0 +1,191 @@
+---
+# Same as policy_finetune_fusion_pool_drop_policy, plus a 4th fusion_pool
+# source: frozen DINOv3 patch tokens for cam_front_left, register-compressed
+# down to num_image_patch_tokens learned tokens before they enter the
+# cross-attention fusion pool -- mirroring DrivoR (arXiv:2601.05083,
+# "Driving on Registers")'s camera-aware register compression.
+#
+# Two choices this makes deliberately, both cost-motivated:
+#   1. Reuses episode_builder's *already-computed* frozen DINOv3 patches
+#      (episode.input_embeddings, read via raw_image_patches_key -- same
+#      tensor policy_finetune_drop_history_speed_patches_rawdino.yaml reads)
+#      instead of running a second vision backbone. Zero extra backbone
+#      forward passes; the diagnostic question this isolates is purely
+#      "does patch-level visual detail help the fusion pool at all," not
+#      "is DINOv2 better than DINOv3" (that's a separate, pricier question --
+#      it would need its own TimmBackbone branch, see
+#      policy_finetune_drop_history_speed_patches_trainable_vision.yaml for
+#      the pattern).
+#   2. Compresses the 256 raw patches to num_image_patch_tokens (8) tokens via
+#      a dedicated AttentionPoolHead (fusion_pool.image_patch_pool) before
+#      they ever reach fusion_pool's own cross-attention -- keeps the fusion
+#      pool's own attention cost close to the 3-source baseline instead of
+#      scaling with the full patch grid, and gives the compressor its own
+#      learned queries to specialize on (register-style), rather than
+#      diluting fusion_pool's single set of queries across 256+ heterogeneous
+#      tokens directly.
+#
+# fusion_pool's output width is unchanged (num_queries=2 on the outer pool,
+# same as policy_finetune_fusion_pool_drop_policy) since heterogeneous
+# sources are cross-attention-pooled, not concatenated -- heads keep
+# in_features=768, no state_dict_drop beyond the base config's.
+_target_: rmind.models.control_transformer.ControlTransformer.load_from_wandb_artifact
+artifact: ???
+strict: false
+state_dict_drop:
+  - objectives\.policy\.
+hparams_jq: |
+  .objectives = {
+    "_target_": "rmind.components.containers.ModuleDict",
+    "modules": {
+      "policy": {
+        "_target_": "rmind.components.objectives.PolicyObjective",
+        "history_steps": 5,
+        "action_horizon": 6,
+        "raw_waypoints_key": ["context", "waypoints"],
+        "raw_speed_key": ["continuous", "speed"],
+        "raw_image_patches_key": ["image", "cam_front_left"],
+        "fusion_pool": {
+          "_target_": "rmind.components.nn.FeatureFusionPool",
+          "embedding_dim": 384,
+          "num_waypoints": 10,
+          "history_steps": 5,
+          "num_image_patch_tokens": 8,
+          "image_patch_pool": {
+            "_target_": "rmind.components.transformer.AttentionPoolHead",
+            "embedding_dim": 384,
+            "num_queries": 8,
+            "patch_pos_embed": {
+              "_target_": "rmind.components.position_encoding.PatchPositionEmbedding2D",
+              "grid_size": [16, 16],
+              "embedding_dim": 384
+            },
+            "decoder": {
+              "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+              "dim_model": 384,
+              "num_layers": 1,
+              "num_heads": 4,
+              "attn_dropout": 0.1,
+              "resid_dropout": 0.1,
+              "mlp_dropout": 0.1,
+              "hidden_layer_multiplier": 1
+            }
+          },
+          "pool": {
+            "_target_": "rmind.components.transformer.AttentionPoolHead",
+            "embedding_dim": 384,
+            "num_queries": 2,
+            "decoder": {
+              "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+              "dim_model": 384,
+              "num_layers": 1,
+              "num_heads": 4,
+              "attn_dropout": 0.1,
+              "resid_dropout": 0.1,
+              "mlp_dropout": 0.1,
+              "hidden_layer_multiplier": 1
+            }
+          }
+        },
+        "norm": {
+          "_target_": "torch.nn.LayerNorm",
+          "normalized_shape": 384
+        },
+        "heads": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 768,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 768,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 768,
+                "hidden_size": 384,
+                "out_features": 2,
+                "num_steps": 6
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.nn.GRUHead",
+                "in_features": 768,
+                "hidden_size": 384,
+                "out_features": 3,
+                "num_steps": 6
+              }
+            }
+          }
+        },
+        "targets": {
+          "continuous": {
+            "gas_pedal": ["input", "continuous", "gas_pedal"],
+            "brake_pedal": ["input", "continuous", "brake_pedal"],
+            "steering_angle": ["input", "continuous", "steering_angle"]
+          },
+          "discrete": {
+            "turn_signal": ["input", "discrete", "turn_signal"]
+          }
+        },
+        "trajectory_head": {
+          "_target_": "rmind.components.nn.GRUTrajectoryHead",
+          "in_features": 768,
+          "hidden_size": 384,
+          "num_steps": 6
+        },
+        "trajectory_loss": {
+          "_target_": "rmind.components.loss.GaussianNLLLoss"
+        },
+        "trajectory_loss_weight": ${trajectory_loss_weight},
+        "xy_key": ["input", "trajectory", "xy"],
+        "heading_key": ["input", "trajectory", "heading"],
+        "losses": {
+          "_target_": "rmind.components.containers.ModuleDict",
+          "modules": {
+            "continuous": {
+              "gas_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "brake_pedal": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              },
+              "steering_angle": {
+                "_target_": "rmind.components.loss.GaussianNLLLoss"
+              }
+            },
+            "discrete": {
+              "turn_signal": {
+                "_target_": "rmind.components.loss.LogitBiasCrossEntropyLoss"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  | .episode_builder.input_transform._args_[0].paths.trajectory = {
+    "xy": ["data", "meta/Gnss/xy"],
+    "heading": ["data", "headings_denoised/heading"]
+  }
+  | .episode_builder.input_transform._args_[1].modules.trajectory = {
+    "_target_": "torch.nn.Identity"
+  }
+  | .lr_scheduler = {
+    "interval": "step",
+    "scheduler": {
+      "_target_": "rmind.components.lr_schedulers.get_cosine_schedule_with_warmup",
+      "num_warmup_steps": ${lr_warmup_steps},
+      "num_training_steps": ${lr_training_steps}
+    }
+  }
