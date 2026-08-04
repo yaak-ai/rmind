@@ -147,6 +147,31 @@ stream its layer-2+ K/V were produced with frame 0 in context. That residual is
 recorded as a quantified diagnostic, and corroborated by the fact that it
 vanishes at `num_layers=1`.
 
+**Result at production sizes** (257 tokens/frame, max over every frame's readout):
+
+| configuration | float64 | float32 |
+| --- | --- | --- |
+| small 8L/512d, window 6, T=7 | 1.78e-15 | 1.43e-06 (3.2e-07 rel) |
+| `_big` 12L/768d, window 6, T=7 | 2.67e-15 | 1.55e-06 (4.0e-07 rel) |
+| `_big` 12L/768d, window 32, T=40 | 4.44e-15 | 1.91e-06 (4.2e-07 rel) |
+| **negative control** (window-absolute, small, window 6) | — | **9.37e-02 (2.1e-02 rel)** |
+
+The float64 residual is at machine epsilon, which proves the equivalence is exact
+and the ~1.5e-6 float32 residual is purely floating-point accumulation order —
+streaming computes a 257×1542 attention where the recompute computes 1542×1542, so
+the sums are ordered differently. The window-absolute control misses by **five
+orders of magnitude**, which is what the gate is there to catch.
+
+Isolated-episode diagnostic, same trunk, float64: **7.1e-02** at `L=8` and
+**4.4e-16** at `L=1` — exactly the layer-≥2 leakage explanation, and not a
+positional or cache defect.
+
+The ONNX graph agrees with eager to **1.4e-05 absolute / 4e-06 relative** on the
+new K/V and 5.7e-07 on the action chunk (ORT CPU fp32 vs PyTorch). Note
+`torch.onnx.export(verify=True)` reports a "large relative difference of 2.87" for
+`new_k`; that is per-element relative error on near-zero entries and is a false
+alarm — compare absolute error against the tensor scale.
+
 ## 6. KV memory budget on Orin
 
 `bytes = 2 (K,V) × L × (cache_frames × 257) × D × sizeof(dtype)`, with
@@ -168,16 +193,190 @@ practically available. Memory is not the binding constraint at any context lengt
 worth training: `_big` at 64 frames is 9.3 % of available RAM in fp32, 4.6 % in
 fp16. Latency and the per-tick cache read bandwidth bind first.
 
-## 7. Measured latency
+## 7. drivr serving sketch
 
-See the measurement table in the accompanying report. Method: fp32 engines (the
-hand-off's 194.8 / 448.8 ms baseline is fp32, and fp32 is the only precision that
-has ever reached 0/200 on parity), built and benchmarked on an idle delta-dev1
-with the GPU clock pinned at 918 MHz, `trtexec --iterations=60 --avgRuns=20
---useSpinWait --warmUp=1000`.
+```python
+# --- once, at engine load: the graph is the authority on every cache dimension
+for name in ("inputs_past_k", "inputs_past_v", "inputs_cache_bias",
+             "inputs_rope_cos", "inputs_rope_sin", "new_k", "new_v"):
+    expected = tuple(engine.get_tensor_shape(name))
+    if tuple(buffers[name].shape) != expected:      # set_tensor_address does NOT check
+        raise ValueError(f"{name}: engine wants {expected}, got {buffers[name].shape}")
+layers, _, heads, cache_tokens, head_dim = engine.get_tensor_shape("inputs_past_k")
+tokens_per_frame = engine.get_tensor_shape("new_k")[3]      # 257
+cache_frames = cache_tokens // tokens_per_frame             # context - 1
+
+# --- on engage / disengage / manual override, wherever the action plan is cleared
+def reset_cache():
+    cache_bias.fill_(-1e4)     # every slot invalid; K/V contents then do not matter
+    frame_index = 0            # RoPE counter; fp64 host-side, monotone per episode
+
+# --- per tick
+rope_cos, rope_sin = frame_rope_cos_sin(frame_index, head_dim=head_dim, base=1000.0)
+out = engine.run(image=frame, speed=..., waypoints=...,
+                 past_k=past_k, past_v=past_v, cache_bias=cache_bias,
+                 rope_cos=rope_cos, rope_sin=rope_sin)
+# ring-buffer advance: shift one frame block left, write 257 tokens per layer
+past_k[..., :-tokens_per_frame, :] = past_k[..., tokens_per_frame:, :]
+past_k[..., -tokens_per_frame:, :] = out["new_k"]
+# ... same for V ...
+cache_bias[..., -tokens_per_frame:] = 0.0     # the tail is now filled
+frame_index += 1
+```
+
+Three failure modes, all silent, all worth an explicit check:
+
+1. **Wrong cache shape** — `set_tensor_address` takes a raw pointer, so a
+   mismatched cache is reinterpreted rather than rejected. Validate at load.
+2. **Cache not reset at an episode boundary** — the model conditions on frames
+   from before the disengage. The output stays plausible. Hook the paths that
+   already clear the action plan.
+3. **`frame_index` not monotone** (e.g. reset mid-episode, or wrapped) — RoPE
+   offsets become wrong for the frames still in the ring. Reset the counter
+   **only** together with the cache.
+
+Optional but cheap: assert the number of valid slots in `cache_bias` equals
+`min(frame_index, cache_frames) * 257`. That single invariant catches all three.
+
+## 8. rbyte / dataset considerations
+
+`clip_length = episode_length + clip_horizon - 1`, so moving from 6 to 16 frames
+takes clips from 11 to 21 samples, and 64 frames would need 69. Consequences:
+
+* the dataset must be **rebuilt** — `clip_period` is derived from `clip_length`
+  and the existing clip-11 build is not reusable;
+* at `episode_step = 10` (≈3 Hz), 21 samples span ~7 s of driving and 69 span
+  ~23 s. Long clips are cut at session boundaries, so the number of usable
+  windows falls roughly linearly with `clip_length` — expect a materially
+  smaller train set at 64 frames, on top of the compute cost;
+* per-sample decode/IO grows linearly with `clip_length`, so the loader becomes a
+  real cost at long context, not just the GPU.
+
+This is the practical reason to step 6 → 16 → 32 rather than jumping to 64.
+
+## 9. Measured latency
+
+Method: fp32 engines (the hand-off's 194.8 / 448.8 ms baseline is fp32, and fp32
+is the only precision that has ever reached 0/200 on parity), built and
+benchmarked on an idle delta-dev1 (AGX Orin 16 GB, 8 cores, TRT 10.7) with the
+GPU clock **pinned at 918 MHz** — `governor=performance`, `min_freq=918000000`,
+verified by sampling `cur_freq` continuously *through* a 5 s idle gap (all 25
+samples at 918 MHz, so the `nvhost_podgov` 306 MHz artifact is not present).
+`trtexec --iterations=60 --avgRuns=20 --useSpinWait --warmUp=1000`, median GPU
+compute time.
+
+**Gate zero — the baseline reproduces.** Randomly-initialized fp32 exports of the
+*existing* block-causal architecture at 6 frames:
+
+| arm | measured here | hand-off §1 | delta |
+| --- | --- | --- | --- |
+| small (8L/512d) | **200.85 ms** | 194.8 ms | +3.1 % |
+| `_big` (12L/768d) | **420.16 ms** | 448.8 ms | −6.4 % |
+
+Close enough that the comparison is sound, and it confirms `_big` is **12** layers
+(§7 says 8; an 8-layer 768-d trunk could not cost 420 ms). Speedups below are
+quoted against *these* numbers, measured on the same host on the same day through
+the same export path, not against the hand-off's.
+
+**Decoder step, per tick, fp32, median GPU compute:**
+
+| context (frames) | small (8L/512d) | vs 6-frame baseline | `_big` (12L/768d) | vs 6-frame baseline |
+| --- | --- | --- | --- | --- |
+| 6 | **41.79 ms** | **4.81×** | **87.21 ms** | **4.82×** |
+| 16 | 59.58 ms | 3.37× | 127.79 ms | 3.29× |
+| 32 | 92.26 ms | 2.18× | 205.05 ms | 2.05× |
+| 64 | 160.51 ms | 1.25× | 364.22 ms | 1.15× |
+
+At the same 6 frames of context the step is **4.8× cheaper in both arms**. The
+hand-off estimated ~75 ms for `_big`; the measurement is 87.2 ms, i.e. the
+estimate was optimistic by ~16 % — close, and the reason is exactly the "no new
+overhead from cache management" assumption it flagged (§8): the in-graph
+`Concat` of `past_k` with the new frame's keys is real work.
+
+### Correcting the hand-off: per-tick cost does NOT stop scaling with context
+
+§2 claims "per-tick cost stops scaling with window length". It does not. The step
+runs 257 queries against `(N-1) × 257 + 257` keys, so both the attention terms
+and the cache traffic are **linear in N**. Measured, over 6 → 64 frames:
+
+| | fixed cost (N→1) | marginal cost per extra frame | R² of the linear fit |
+| --- | --- | --- | --- |
+| small | ~31.5 ms | **2.05 ms/frame** | >0.999 |
+| `_big` | ~63.3 ms | **4.78 ms/frame** | >0.999 |
+
+The marginal term is attention against the cache. Per extra cached frame it is
+`2 × 257 × 257 × D × 2 × L` FLOPs — 1.08 GFLOP (small) and 2.43 GFLOP (`_big`) —
+so the measured slopes correspond to **528 and 509 GFLOP/s effective**, ~16 % of
+the module's ~3.3 TFLOP/s fp32 peak, and *identical between arms*. That agreement
+says the scaling is dominated by a thin (257-query) attention GEMM rather than by
+the `Concat` or by cache bandwidth, and it means the slope is predictable: it
+scales with `L × D`, nothing else.
+
+What *does* improve superlinearly is the comparison against recomputing an
+N-frame window, which is quadratic. The right way to state the prize:
+
+* **`_big` attends to 32 frames for 205 ms — less than half of what it costs today
+  to attend to 6** (420 ms). Recomputing a 32-frame window block-causally would be
+  ~28× the trunk work of the 6-frame one, i.e. several seconds.
+* **small attends to 32 frames for 92 ms, versus 201 ms today for 6.**
+* Every configuration measured except `_big` at 64 frames (364 ms) fits inside one
+  333 ms tick, and `_big` clears the ~270 ms threshold that removes the
+  plan-execution distortion (hand-off §7) at **up to 32 frames** — where today it
+  does not clear it at 6.
+
+Practical reading of the slope: 32 frames is the point where `_big` still fits
+comfortably (205 ms, half of today's cost) and 64 frames is where it stops being
+free (364 ms, no longer inside a tick at fp32). If 64 frames is wanted, the levers
+are the fp32-encoder + fp16-trunk serving engine from the trt-export skill §9 —
+which halves the cache and its traffic as well as the GEMM cost — or a
+block-sparse/paged attention kernel. Not more caching: the cache is already exact.
+
+⚠️ The decoder numbers include §3.3's gather-before-final-block, which the
+baseline does not have. That optimization is free and applies to the baseline
+independently; the hand-off measured it at 30.6 ms (6.8 %) there. Subtracting it
+from the comparison would put the like-for-like `_big` speedup at ~4.5× rather
+than 4.8×.
 
 Note **cold vs warm cache costs the same** for a static-shape engine: the graph
 does identical work at any fill level, and correctness at cold start comes from
 `cache_bias`, not from a smaller computation. A cheaper first tick would need a
 dedicated small-context engine; it is not worth an engine to save one tick per
 episode.
+
+## 10. Open risks
+
+1. **Training cost is untouched, and it is now the bottleneck.** The cache makes
+   *inference* per-tick cost linear in context. Training still does one dense
+   forward over the whole clip, and the attention terms are quadratic in the
+   flattened length: 6 frames = 1542 tokens, 32 frames = 8224 (5.3× the tokens,
+   **28×** the attention work), 64 frames = 16448 (10.7× / **114×**). The `window`
+   mask makes attention block-sparse but plain SDPA still materializes the dense
+   score matrix, so the saving is not realized without a block-sparse kernel
+   (FlexAttention / `create_block_mask`). At `clip_length == window` the mask is
+   dense anyway. **This is the single largest practical risk to the bonus track**;
+   16 frames is the defensible first step, not 64.
+2. **Behaviour change, not just speed** (hand-off §6). Conditioning on 16–64
+   frames is a different model. Needs rsim and road, not val L1 — PR #248
+   established that aggregate L1 is blind to this failure class.
+3. **Train/infer mismatch if the window is not matched.** Serving with a ring of
+   `N-1` is only equivalent to training if training used
+   `frame_block_causal_mask(window=N)`. `CausalFrameTransformer` cross-checks
+   `max_sequence_length == window * tokens_per_frame` so a config mismatch raises,
+   but nothing prevents serving a checkpoint against the wrong cache size —
+   validate the engine's `inputs_past_k` shape against the checkpoint's `window`.
+4. **No parity/precision verification yet.** All measurements are fp32 with random
+   weights, so `parity_matrix.py --trials 200` has not been and cannot be run — it
+   needs a trained checkpoint. The 5 in-graph `ArgMax` nodes and the code-flip
+   defect are unchanged by this work (hand-off §6), and the margin screen must be
+   re-run on any real checkpoint before serving anything below fp32.
+5. **RoPE base is unvalidated.** `rope_base=1000` is reasoned (base 10000 leaves
+   most frequency pairs inert over 64 positions) but not measured. It is a
+   trainable-arm hyperparameter, and changing it after training invalidates the
+   checkpoint.
+6. **The `Concat` of cache and new keys is unavoidable without a plugin.** It costs
+   an extra read+write of the cache per tick. Measured slopes say it is not
+   dominant, but at 128 frames it would be. A paged/in-place attention plugin is
+   the escape hatch; `ScatterElements` in the ONNX graph is deliberately not.
+7. **`_big` at 64 frames does not fit a tick at fp32** (364 ms). Not a defect, but
+   it bounds the context length that is servable today without the mixed-precision
+   engine.
