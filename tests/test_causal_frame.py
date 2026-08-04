@@ -153,13 +153,28 @@ class WindowAbsoluteTrunk(CausalFrameTransformer):
 
 
 def stream(
-    trunk: CausalFrameTransformer, tokens: Tensor, *, cache_frames: int
+    trunk: CausalFrameTransformer,
+    tokens: Tensor,
+    *,
+    cache_frames: int,
+    ring: bool = False,
 ) -> Tensor:
     """One-frame-per-tick decode against a host-side ring buffer.
 
     Emulates exactly what drivr would do: the graph reads `past_k`/`past_v` and
-    returns only the new frame's K/V, and the host shifts them into the ring.
+    returns only the new frame's K/V, and the host places them in the ring.
     Returns the readout token per frame, `(b, t, d)`.
+
+    Two placement policies, and they must agree (see
+    `test_ring_slot_write_matches_shift_left`):
+
+    * `ring=False` -- shift the whole cache left by one frame block. Simple, but it
+      moves the entire cache every tick.
+    * `ring=True` -- write into slot `t % cache_frames`, moving nothing. Valid
+      because attention is permutation-invariant over keys and each key carries its
+      own rotation (RoPE with its absolute frame index) and its own `cache_bias`
+      slot. This is what the runtime should do: 257 tokens per layer instead of the
+      whole cache, and no overlapping in-place copy.
     """
     b, num_frames, k, _ = tokens.shape
     past_k, past_v, bias = trunk.empty_cache(
@@ -179,7 +194,15 @@ def stream(
             cache_bias=bias,
         )
         outs.append(out[:, -1])
-        if cache_frames:
+        if not cache_frames:
+            continue
+        if ring:
+            slot = slice((t % cache_frames) * k, (t % cache_frames + 1) * k)
+            past_k, past_v, bias = past_k.clone(), past_v.clone(), bias.clone()
+            past_k[..., slot, :] = new_k
+            past_v[..., slot, :] = new_v
+            bias[..., slot] = 0.0
+        else:
             past_k = torch.cat((past_k[..., k:, :], new_k), dim=-2)
             past_v = torch.cat((past_v[..., k:, :], new_v), dim=-2)
             bias = torch.cat((bias[..., k:], torch.zeros_like(bias[..., :k])), dim=-1)
@@ -435,3 +458,23 @@ def test_multihead_attention_state_dict_is_loadable() -> None:
     )
     assert not missing
     assert not unexpected
+
+
+@pytest.mark.parametrize("window", [2, 3, 6])
+def test_ring_slot_write_matches_shift_left(window: int) -> None:
+    """The host may write the new frame into slot `t % cache_frames` and move
+    nothing, instead of shifting the whole cache left.
+
+    Valid because attention is permutation-invariant over keys and every key
+    carries its own RoPE rotation (absolute frame index) and its own `cache_bias`
+    slot -- so cache ORDER is not information. Worth testing rather than asserting:
+    it is the difference between moving 257 tokens per layer per tick and moving the
+    entire cache, ~18 MiB versus ~2.3 GiB of device traffic at `_big`/64 frames, and
+    the shift-left form is an overlapping in-place copy that is undefined on GPU.
+    """
+    num_frames = 9
+    trunk = _trunk(window=window)
+    tokens = _tokens(num_frames)
+    shifted = stream(trunk, tokens, cache_frames=window - 1, ring=False)
+    slotted = stream(trunk, tokens, cache_frames=window - 1, ring=True)
+    torch.testing.assert_close(slotted, shifted, rtol=0, atol=TOL)

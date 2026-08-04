@@ -339,13 +339,21 @@ class CausalFrameTransformer(nn.Module):
         # block-causal trunk in config/model/yaak/patch_policy/raw.yaml sets
         # `max_sequence_length: episode_length * (num_patches + 1)`), and it is
         # cross-checked rather than ignored.
-        if max_sequence_length is not None:
-            expected = (window or 0) * tokens_per_frame
-            if max_sequence_length != expected:
+        #
+        # The check is `>=`, not `==`, deliberately: a clip LONGER than the window is
+        # the configuration sliding-window attention exists for (e.g. train on
+        # 64-frame clips with a 32-frame window, so most readouts see a full window).
+        # A clip SHORTER than the window is the error -- it silently trains a
+        # narrower context than will be served, which is the train/infer mismatch
+        # the hand-off warns about in §6.
+        if max_sequence_length is not None and window is not None:
+            minimum = window * tokens_per_frame
+            if max_sequence_length < minimum:
                 msg = (
-                    f"max_sequence_length {max_sequence_length} != window * "
-                    f"tokens_per_frame {expected}; the training window and the "
-                    "serving cache capacity must agree (hand-off §6)"
+                    f"max_sequence_length {max_sequence_length} < window * "
+                    f"tokens_per_frame {minimum}: the clip is shorter than the "
+                    "attention window, so training would never see a full window "
+                    "while serving always will (hand-off §6)"
                 )
                 raise ValueError(msg)
 

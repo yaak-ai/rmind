@@ -172,7 +172,21 @@ new K/V and 5.7e-07 on the action chunk (ORT CPU fp32 vs PyTorch). Note
 `new_k`; that is per-element relative error on near-zero entries and is a false
 alarm — compare absolute error against the tensor scale.
 
-## 6. KV memory budget on Orin
+## 6. Memory budget on Orin — weights and KV cache
+
+### Weights (measured, fp32 engines)
+
+| arm | parameters | fp32 TRT engine | ONNX initializers |
+| --- | --- | --- | --- |
+| small (8L/512d) | 52.6 M | **207.2 MiB** | 213.0 MB |
+| `_big` (12L/768d) | ~115 M | **440.2 MiB** | 453.3 MB |
+
+The decoder-step engine is marginally *smaller* than the baseline's at the same
+arm (434.2 vs 440.2 MiB for `_big`) — the 1542-slot positional table is gone and
+the 257-slot one replaces it. Weights are context-independent, so a longer window
+costs cache, never weights.
+
+### KV cache
 
 `bytes = 2 (K,V) × L × (cache_frames × 257) × D × sizeof(dtype)`, with
 `cache_frames = context_frames − 1`.
@@ -188,10 +202,20 @@ Per cached frame: small (8L/512d) **8.03 MiB** fp32 / 4.02 MiB fp16; `_big`
 | 64 | 16191 | 506 MiB | 1138 MiB | 253 MiB | 569 MiB |
 | 128 | 32639 | 1020 MiB | 2295 MiB | 510 MiB | 1147 MiB |
 
+### Total resident
+
 delta-dev1 has **15 GiB** of LPDDR5 shared between CPU and GPU, ~12 GiB
-practically available. Memory is not the binding constraint at any context length
-worth training: `_big` at 64 frames is 9.3 % of available RAM in fp32, 4.6 % in
-fp16. Latency and the per-tick cache read bandwidth bind first.
+practically available (measured `free`). Weights + cache, fp32:
+
+| | 6 frames | 16 | 32 | 64 |
+| --- | --- | --- | --- | --- |
+| small | 247 MiB | 327 MiB | 456 MiB | 713 MiB |
+| `_big` | 530 MiB | 711 MiB | **1000 MiB** | 1578 MiB |
+
+**Memory is not the binding constraint at any context length worth training** —
+`_big` at 64 frames is 1.5 GiB, 13 % of what is available, and halves again with an
+fp16 cache. Latency binds first, and it binds well before memory does: `_big`
+leaves the 333 ms tick at 64 frames (§9) while still using only an eighth of RAM.
 
 ## 7. drivr serving sketch
 
@@ -216,13 +240,29 @@ rope_cos, rope_sin = frame_rope_cos_sin(frame_index, head_dim=head_dim, base=100
 out = engine.run(image=frame, speed=..., waypoints=...,
                  past_k=past_k, past_v=past_v, cache_bias=cache_bias,
                  rope_cos=rope_cos, rope_sin=rope_sin)
-# ring-buffer advance: shift one frame block left, write 257 tokens per layer
-past_k[..., :-tokens_per_frame, :] = past_k[..., tokens_per_frame:, :]
-past_k[..., -tokens_per_frame:, :] = out["new_k"]
-# ... same for V ...
-cache_bias[..., -tokens_per_frame:] = 0.0     # the tail is now filled
+
+# ring advance: write into ONE slot and move nothing else
+slot = slice((frame_index % cache_frames) * tokens_per_frame,
+             (frame_index % cache_frames + 1) * tokens_per_frame)
+past_k[..., slot, :] = out["new_k"]
+past_v[..., slot, :] = out["new_v"]
+cache_bias[..., slot] = 0.0     # after the first `cache_frames` ticks: all zeros
 frame_index += 1
 ```
+
+**Do not shift the cache.** The obvious form,
+`past_k[..., :-257, :] = past_k[..., 257:, :]`, is wrong twice: it is an
+*overlapping* in-place copy on one storage (undefined in torch, a genuine
+read/write race on GPU), and it moves the entire cache every tick — ~1129 MiB in
+and out, ~2.3 GiB of device traffic, order 20 ms at `_big`/64 frames, versus
+18 MiB for a slot write.
+
+The slot write is valid because **attention is permutation-invariant over keys**,
+and each key carries its own position (RoPE-rotated with its absolute frame index)
+and its own `cache_bias` entry — so the *order* of the cache carries no
+information. Verified, not assumed:
+`test_ring_slot_write_matches_shift_left` streams both policies and requires the
+readouts to agree to 1e-6.
 
 Three failure modes, all silent, all worth an explicit check:
 
@@ -264,6 +304,12 @@ verified by sampling `cur_freq` continuously *through* a 5 s idle gap (all 25
 samples at 918 MHz, so the `nvhost_podgov` 306 MHz artifact is not present).
 `trtexec --iterations=60 --avgRuns=20 --useSpinWait --warmUp=1000`, median GPU
 compute time.
+
+These are **engine GPU compute** and therefore exclude the host-side ring update,
+as `inference_ms` in drivr's logs also does. With the slot write of §7 that update
+is one 257-token copy per layer — ~18 MiB at `_big`/64 frames, sub-millisecond. With
+the naive shift-left it would be ~2.3 GiB and order 20 ms, which is the other reason
+not to write it that way.
 
 **Gate zero — the baseline reproduces.** Randomly-initialized fp32 exports of the
 *existing* block-causal architecture at 6 frames:
@@ -380,10 +426,13 @@ episode.
    established that aggregate L1 is blind to this failure class.
 3. **Train/infer mismatch if the window is not matched.** Serving with a ring of
    `N-1` is only equivalent to training if training used
-   `frame_block_causal_mask(window=N)`. `CausalFrameTransformer` cross-checks
-   `max_sequence_length == window * tokens_per_frame` so a config mismatch raises,
-   but nothing prevents serving a checkpoint against the wrong cache size —
-   validate the engine's `inputs_past_k` shape against the checkpoint's `window`.
+   `frame_block_causal_mask(window=N)`. `CausalFrameTransformer` rejects
+   `max_sequence_length < window * tokens_per_frame` (a clip shorter than the
+   window trains a narrower context than will be served), but **nothing prevents
+   serving a checkpoint against the wrong cache size** — the trunk has no intrinsic
+   maximum length any more, so a 32-frame-trained model will happily run against a
+   64-frame cache and silently extrapolate. Validate the engine's `inputs_past_k`
+   shape against the checkpoint's `window` at load time.
 4. **No parity/precision verification yet.** All measurements are fp32 with random
    weights, so `parity_matrix.py --trials 200` has not been and cannot be run — it
    needs a trained checkpoint. The 5 in-graph `ArgMax` nodes and the code-flip
