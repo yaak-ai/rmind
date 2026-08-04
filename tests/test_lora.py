@@ -7,6 +7,7 @@ from torch import nn
 
 from rmind.callbacks.lora import LoraInjector
 from rmind.components.lora import LoRALinear, convert_multihead_attention
+from rmind.components.optimizers.selective_adamw import SelectiveAdamW
 from rmind.components.transformer.encoder import FactorizedTransformerEncoderBlock
 
 
@@ -129,3 +130,32 @@ def test_lora_injector_freezes_base_leaves_lora_trainable(
     assert isinstance(module.encoder.spatial_mha.attn.out_proj, LoRALinear)
     assert isinstance(module.encoder.mlp.l1, LoRALinear)
     assert isinstance(module.encoder.mlp.l2, LoRALinear)
+
+
+def test_selective_adamw_accepts_lora_params(
+    trainer: pl.Trainer, module: ToyEncoderModule
+) -> None:
+    """SelectiveAdamW classifies params by their last name segment
+    (param_type) and raises NotImplementedError on anything unrecognized --
+    lora_A/lora_B must be handled, or configure_optimizers blows up on any
+    LoRA-injected model (this exact failure hit a real training run).
+    """
+    LoraInjector(paths={"encoder"}, r=2, alpha=4, dropout=0.0).setup(
+        trainer, module, "fit"
+    )
+
+    optimizer = SelectiveAdamW(
+        module=module,
+        lr=1e-4,
+        weight_decay=0.1,
+        weight_decay_module_blacklist=(nn.LayerNorm, nn.Embedding),
+    )
+
+    optimized_params = {id(p) for g in optimizer.param_groups for p in g["params"]}
+    lora_params = [
+        p
+        for name, p in module.encoder.named_parameters()
+        if "lora_A" in name or "lora_B" in name
+    ]
+    assert lora_params
+    assert all(id(p) in optimized_params for p in lora_params)

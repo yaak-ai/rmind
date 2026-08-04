@@ -49,6 +49,11 @@ class SelectiveAdamW(AdamW):
                 ):
                     pass
 
+                # LoRA low-rank factors (rmind.components.lora.LoRALinear) -- weight-like,
+                # decayed same as the base Linear weight they adapt.
+                case "lora_A" | "lora_B":
+                    pass
+
                 # GRU/LSTM weight matrices (weight_ih_l0, weight_hh_l0, …) — apply weight decay
                 case _ if param_type.startswith("weight_") and "_l" in param_type:
                     pass
