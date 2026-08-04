@@ -304,13 +304,33 @@ and the cache traffic are **linear in N**. Measured, over 6 → 64 frames:
 | small | ~31.5 ms | **2.05 ms/frame** | >0.999 |
 | `_big` | ~63.3 ms | **4.78 ms/frame** | >0.999 |
 
-The marginal term is attention against the cache. Per extra cached frame it is
-`2 × 257 × 257 × D × 2 × L` FLOPs — 1.08 GFLOP (small) and 2.43 GFLOP (`_big`) —
-so the measured slopes correspond to **528 and 509 GFLOP/s effective**, ~16 % of
-the module's ~3.3 TFLOP/s fp32 peak, and *identical between arms*. That agreement
-says the scaling is dominated by a thin (257-query) attention GEMM rather than by
-the `Concat` or by cache bandwidth, and it means the slope is predictable: it
-scales with `L × D`, nothing else.
+The slope tracks `L × D` and nothing else, which makes it predictable: the extra
+attention work per cached frame is `2 × 257 × 257 × D × 2 × L` FLOPs — 1.08 GFLOP
+(small), 2.43 GFLOP (`_big`) — and the two measured slopes correspond to the same
+**~510–530 GFLOP/s effective** (~16 % of the module's ~3.3 TFLOP/s fp32 peak) in
+both arms.
+
+**Where the marginal time actually goes is split, and the `Concat` is a first-order
+term.** Bucketing `trtexec --dumpProfile` by kernel kind (TRT fuses and renames
+everything to `__myl_*`, so the module hierarchy is *not* recoverable — this is why
+the hand-off cross-checked its §1 split against an independent FLOP count instead):
+
+| bucket | small, N=6 | small, N=64 |
+| --- | --- | --- |
+| MatMul (qkv / proj / MLP / head / unfused attention GEMMs) | 25.5 ms (55 %) | 62.2 ms (31 %) |
+| fused kernels containing the cache `Concat` | 6.6 ms (14 %) | **68.2 ms (34 %)** |
+| `scaled_dot_product_attention` | 4.1 ms (9 %) | 35.0 ms (17 %) |
+| standalone fused softmax | 3.4 ms (7 %) | 30.5 ms (15 %) |
+| other fused elementwise | 6.4 ms (14 %) | 6.5 ms (3 %) |
+| conv2d (ViT patch embed) | 0.15 ms | 0.15 ms |
+
+⚠️ Treat this as *indicative only*: `--dumpProfile` inflates the total (46.2 ms
+against a benchmarked 41.8 ms at N=6, 202.5 against 160.5 at N=64) and it inflates
+large-tensor kernels most, which is exactly the `Concat` bucket. Both sources agree
+on the actionable conclusion though: **at long context the in-graph `Concat` of
+`past_k` with the new frame's keys is comparable to the attention itself**, so an
+in-place / paged attention plugin is the highest-value follow-up if 64+ frames are
+wanted — bigger than any further caching, because the cache is already exact.
 
 What *does* improve superlinearly is the comparison against recomputing an
 N-frame window, which is quadratic. The right way to state the prize:
@@ -373,10 +393,11 @@ episode.
    most frequency pairs inert over 64 positions) but not measured. It is a
    trainable-arm hyperparameter, and changing it after training invalidates the
    checkpoint.
-6. **The `Concat` of cache and new keys is unavoidable without a plugin.** It costs
-   an extra read+write of the cache per tick. Measured slopes say it is not
-   dominant, but at 128 frames it would be. A paged/in-place attention plugin is
-   the escape hatch; `ScatterElements` in the ONNX graph is deliberately not.
+6. **The `Concat` of cache and new keys is unavoidable without a plugin**, and the
+   profile says it is already a first-order cost at 64 frames (§9) — the largest
+   single bucket, comparable to the attention. A paged / in-place attention plugin
+   is the escape hatch; an in-graph `ScatterElements` deliberately is not (TRT
+   support risk, and the host-side ring is free).
 7. **`_big` at 64 frames does not fit a tick at fp32** (364 ms). Not a defect, but
    it bounds the context length that is servable today without the mixed-precision
    engine.
