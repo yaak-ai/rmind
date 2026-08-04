@@ -154,8 +154,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         patch_projection: HydraConfig[Module] | InstanceOf[Module],
         speed_tokenizer: HydraConfig[Module] | InstanceOf[Module],
         speed_embedding: HydraConfig[Module] | InstanceOf[Module],
-        encoder: HydraConfig[BlockCausalTransformer]
-        | InstanceOf[BlockCausalTransformer],
+        # BlockCausalTransformer, or the decoder-only
+        # components.transformer.causal_frame.CausalFrameTransformer (same
+        # `forward(src, *, num_frames)` contract, plus a KV-cached `step`)
+        encoder: HydraConfig[Module] | InstanceOf[Module],
         tokenizer: HydraConfig[Module] | InstanceOf[Module],
         code_head: HydraConfig[Module] | InstanceOf[Module],
         offset_head: HydraConfig[Module] | InstanceOf[Module],
@@ -208,9 +210,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.speed_embedding = init_hydra_param(
             hparams, "speed_embedding", speed_embedding
         )
-        self.encoder: BlockCausalTransformer = init_hydra_param(
-            hparams, "encoder", encoder
-        )
+        self.encoder: Module = init_hydra_param(hparams, "encoder", encoder)
         self.code_head = init_hydra_param(hparams, "code_head", code_head)
         self.offset_head = init_hydra_param(hparams, "offset_head", offset_head)
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
@@ -308,22 +308,16 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise KeyError(msg)
         return value
 
-    def _features(
-        self, batch: Any, *, require_chunk: bool = True
-    ) -> tuple[Tensor, Tensor | None]:
-        """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
+    def _frame_tokens(
+        self, images: Tensor, speed: Tensor, waypoints: Tensor
+    ) -> Tensor:
+        """Per-frame token blocks `(b, t, p + 1, d)` -- everything below the trunk.
 
-        The chunk is only a TARGET (and never feeds the features), so callers on
-        the inference path (`forward`, ONNX export) pass `require_chunk=False`
-        and may omit the action series from the batch entirely.
+        Factored out of `_features` so the KV-cached decode step
+        (`rmind.models.patch_policy_decoder.PatchPolicyDecoderStep`) runs the
+        identical per-frame pipeline on ONE frame. Nothing here is temporal, which
+        is exactly why one new frame per tick is sufficient.
         """
-        inputs = self.input_transform(batch)
-
-        images = self._get(inputs, self.image)  # (b, t, c, h, w)
-        speed = self._get(inputs, self.speed)  # (b, t, 1)
-        waypoints = self._get(inputs, self.waypoints)  # (b, t, n, 2)
-        chunk = self._get(inputs, self.chunk, required=require_chunk)
-
         with torch.no_grad():
             patches = self.image_encoder(images)  # (b, t, p, d_img)
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
@@ -343,7 +337,25 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
 
         # speed first so the frame block ends on a patch token (the readout position)
-        tokens = torch.cat([speed_token, patches], dim=-2)  # (b, t, p + 1, d)
+        return torch.cat([speed_token, patches], dim=-2)  # (b, t, p + 1, d)
+
+    def _features(
+        self, batch: Any, *, require_chunk: bool = True
+    ) -> tuple[Tensor, Tensor | None]:
+        """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
+
+        The chunk is only a TARGET (and never feeds the features), so callers on
+        the inference path (`forward`, ONNX export) pass `require_chunk=False`
+        and may omit the action series from the batch entirely.
+        """
+        inputs = self.input_transform(batch)
+
+        images = self._get(inputs, self.image)  # (b, t, c, h, w)
+        speed = self._get(inputs, self.speed)  # (b, t, 1)
+        waypoints = self._get(inputs, self.waypoints)  # (b, t, n, 2)
+        chunk = self._get(inputs, self.chunk, required=require_chunk)
+
+        tokens = self._frame_tokens(images, speed, waypoints)
         _, num_frames, _, _ = tokens.shape
 
         embedding = self.encoder(
