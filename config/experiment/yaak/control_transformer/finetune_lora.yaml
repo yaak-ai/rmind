@@ -1,0 +1,108 @@
+# @package _global_
+
+# Same as finetune.yaml, but the encoder is LoRA-adapted (see
+# rmind.callbacks.LoraInjector / config/trainer/callbacks/finetune_lora_encoder.yaml)
+# instead of frozen outright -- use with a `..._lora` model config variant
+# whose hparams_jq disables torch.compile on the loaded encoder
+# (e.g. policy_finetune_fusion_pool_drop_policy_lora.yaml).
+
+defaults:
+  - /model: yaak/control_transformer/policy_finetune
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: finetune_lora_encoder
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+encoder_embedding_dim: 384
+
+# peak LR for policy_finetune_drop_history_weighted.yaml's optimizer; 1e-5 matches
+# the original full-scale (10-epoch) run this policy was pretrained with -- override
+# for short, focused finetunes on a much smaller (post-filter) dataset
+optimizer_lr: 1e-5
+trajectory_loss_weight: 0.1
+# P1 trajectory motion rebalancing (only read by *_motion model configs; 0.0 =
+# disabled/plain mean). Scales each window's trajectory loss by a band-pass
+# triangular window on horizon arc-length (meters), peaking at the low-speed/
+# launch regime: stopped-stays-stopped (~0 m) and the cruising majority (large
+# arc) both stay at baseline weight, only the launch band is up-weighted. peak/
+# width are meters over the ~2 s horizon (a 5-10 km/h launch covers ~3-6 m).
+trajectory_motion_weight: 0.0
+trajectory_motion_peak: 4.0
+trajectory_motion_width: 4.0
+# Route-following rebalancing (only read by *_route model configs; 0.0 =
+# disabled/plain mean). Scales each window's trajectory loss up when the
+# car's *actual* recorded path ends up closer to the route waypoints'
+# polyline than where it started over the horizon -- windows already on the
+# route (or drifting away) sit at baseline; only real convergence toward the
+# route line is upweighted. Straight/on-route windows (the majority)
+# trivially satisfy any degree of route-grounding and otherwise dominate the
+# flat mean loss. trajectory_route_scale is the convergence (meters, over
+# the horizon) at which upweighting is ~63% saturated (tanh) -- 1.0 m
+# assumes a lane-correction-scale convergence is "clearly route-following."
+# route_waypoints_key (only read by *_route model configs) points at the raw
+# route input read to build that polyline; route_waypoints_scale converts it
+# to meters (waypoints/xy_normalized is scaled by 1/100).
+trajectory_route_weight: 0.0
+trajectory_route_scale: 1.0
+route_waypoints_scale: 100.0
+speed_loss_weight: 0.1
+activity_weight: 5
+gas_gate_weight: 1.0
+longitudinal_mode_loss_weight: 1.0
+longitudinal_press_threshold: 0.01
+# winner-takes-all multi-modal trajectory head2 (only read by *_multimodal
+# model configs): CrossEntropy weight for "which of head1's K candidates wins"
+trajectory_mode_loss_weight: 0.5
+# lr schedule for the hurdle finetune config; for short runs (limit_train_batches)
+# shrink these to match actual steps, else the run never leaves warmup
+lr_warmup_steps: 25000
+lr_training_steps: 250000
+# E6 data rebalance filters (all need +scores_parquet for the joined gt/loss/speed
+# columns; 1.0 = no-op, filters chain and compose):
+# - still_zero: downsample windows with gas untouched all 11 ticks at low speed
+# - brake_hold: downsample windows with brake held all 11 ticks at low speed
+# - low_loss: hard-example mining, downsample windows below the gas-loss quantile
+# - active_control: downsample windows with no active input anywhere in the
+#   window (gas/brake/steering all untouched) -- the idle/cruise/coast majority
+#   that crowds out launches, turns, and active braking
+still_zero_keep_frac: 1.0
+brake_hold_keep_frac: 1.0
+low_loss_keep_frac: 1.0
+low_loss_quantile: 0.5
+active_control_keep_frac: 1.0
+
+# raw (un-embedded) waypoints/speed modality dropout (only read by *_raw
+# model configs, e.g. for checkpoints with no waypoints/speed embedding at
+# all): fraction of samples per step whose raw vector is zeroed, so the heads
+# can't just always copy the route/speed instead of learning from
+# observation/history.
+raw_waypoints_dropout: 0.75
+raw_speed_dropout: 0.75
+
+# fusion_pool token-level dropout (only read by *_fusion_pool model configs):
+# unlike raw_waypoints_dropout/raw_speed_dropout above (which zero a whole
+# feature stream), these randomly exclude individual tokens from the
+# fusion_pool's cross-attention pooling step -- each waypoint token
+# independently at waypoint_token_dropout, the single speed token at
+# speed_token_dropout. See rmind.components.nn.FeatureFusionPool.
+waypoint_token_dropout: 0.1
+speed_token_dropout: 0.1
+
+# HistoryViewpointPerturbation (only read by *_viewpoint_aug model configs;
+# 0.0 = disabled). See rmind.components.augment and PolicyObjective's
+# dyaw_key/steering_correction_gain -- synthetic last-history-tick heading
+# offset + a matching trajectory/steering-angle GT correction.
+viewpoint_aug_probability: 0.0
+viewpoint_aug_max_degrees: 5.0
+steering_correction_gain: 0.0
+steering_correction_decay_steps: 2
+
+# LoraInjector rank/scaling/dropout for the encoder (see
+# config/trainer/callbacks/finetune_lora_encoder.yaml). alpha = 2r is a
+# common default; scale both together to keep the same effective LR on the
+# LoRA update.
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
