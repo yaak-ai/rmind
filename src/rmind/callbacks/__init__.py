@@ -8,6 +8,7 @@ from .loggers import (
     WandbWaypointsLogger,
 )
 from .logit_bias import LogitBiasSetter
+from .lora import LoraInjector
 from .predict_metrics import PredictMetricsCallback
 from .prediction import (
     DataFramePredictionWriter,
@@ -21,6 +22,7 @@ __all__ = [
     "DataFramePredictionWriter",
     "FeaturePermutator",
     "LogitBiasSetter",
+    "LoraInjector",
     "ModuleFreezer",
     "PredictMetricsCallback",
     "PredictionConfigSetter",
