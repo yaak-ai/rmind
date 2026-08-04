@@ -93,5 +93,14 @@ model:
   encoder:
     max_sequence_length: "${eval:'${episode_length} * (${num_patches} * ${num_cameras} + 1)'}"
 
+    # 769 keys/frame instead of 257 drives attention-entropy collapse: exdwrh9a
+    # (lr 1e-4) and oz9w19hg (lr 3e-5) both bottomed out around loss 4.7 and then
+    # climbed, and the exdwrh9a epoch-0 trunk shows |qk logit|max 3.6e4, residual
+    # RMS growing 62x over 8 layers and every head saturated to max p = 1.0, vs
+    # ~10 / 1.5x / ~0.3 for the single-camera control (8crjqzii, which trained to
+    # 154k steps at the same lr). Lowering the LR only delayed the turnaround, so
+    # bound the logits instead.
+    qk_norm: true
+
 wandb:
   tags: [patch_policy, dinov3, 3cam]

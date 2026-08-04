@@ -148,6 +148,10 @@ optimizer:
       path: torch.nn.Embedding
     - _target_: hydra.utils.get_class
       path: torch.nn.LayerNorm
+    # RMSNorm inherits straight from Module, so the LayerNorm entry does not cover
+    # it -- without this the qk_norm gains would take the full weight_decay.
+    - _target_: hydra.utils.get_class
+      path: torch.nn.RMSNorm
 
 # NOTE: the schedule oscillates if trained past num_training_steps (the cosine
 # comes back up) -- size lr_total_steps to the actual planned optimizer steps.

@@ -52,6 +52,7 @@ class TransformerBlock(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
+        qk_norm: bool = False,
     ) -> None:
         super().__init__()
 
@@ -62,6 +63,16 @@ class TransformerBlock(nn.Module):
             dropout=attn_dropout,
             batch_first=True,
         )
+        # Bounds the QK logits independently of sequence length. Without it the
+        # 3-camera trunk (769 keys/frame vs 257) undergoes attention-entropy
+        # collapse: on the exdwrh9a epoch-0 checkpoint |qk logit|max reaches 3.6e4
+        # and per-head max attention probability saturates at 1.0 from layer 1 on,
+        # while the 1-camera control (8crjqzii) stays at ~10 and ~0.3. Off by
+        # default so existing arms load bit-identically -- Identity contributes no
+        # state_dict entries.
+        head_dim = dim_model // num_heads
+        self.q_norm = nn.RMSNorm(head_dim) if qk_norm else nn.Identity()
+        self.k_norm = nn.RMSNorm(head_dim) if qk_norm else nn.Identity()
         self.resid_drop = nn.Dropout(resid_dropout)
         self.mlp_norm = nn.LayerNorm(dim_model)
         self.mlp = nn.Sequential(
@@ -98,6 +109,7 @@ class TransformerBlock(nn.Module):
         q, k, v = qkv.view(batch, seq_len, 3, num_heads, head_dim).permute(
             2, 0, 3, 1, 4
         )
+        q, k = self.q_norm(q), self.k_norm(k)
         attn_bias = torch.zeros_like(mask, dtype=q.dtype).masked_fill(
             mask, float("-inf")
         )
@@ -131,6 +143,7 @@ class BlockCausalTransformer(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
+        qk_norm: bool = False,
     ) -> None:
         super().__init__()
 
@@ -146,6 +159,7 @@ class BlockCausalTransformer(nn.Module):
                 resid_dropout=resid_dropout,
                 mlp_dropout=mlp_dropout,
                 hidden_layer_multiplier=hidden_layer_multiplier,
+                qk_norm=qk_norm,
             )
             for _ in range(num_layers)
         ])
