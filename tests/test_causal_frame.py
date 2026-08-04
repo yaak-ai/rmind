@@ -32,6 +32,7 @@ from torch import Tensor, nn
 from rmind.components.transformer.causal_frame import (
     MASK_BIAS,
     CausalFrameTransformer,
+    apply_rope,
     frame_block_causal_mask,
     frame_rope_cos_sin,
 )
@@ -42,6 +43,8 @@ DIM = 32
 HEADS = 4
 LAYERS = 3
 TOL = 1e-6
+# a negative control must miss the 1e-6 gate by orders of magnitude, not narrowly
+CONTROL_MIN_ERROR = 1e-2
 
 
 def _trunk(
@@ -94,16 +97,16 @@ class WindowAbsoluteTrunk(CausalFrameTransformer):
         )
         nn.init.trunc_normal_(self.absolute_position_embedding.weight, std=0.02)
 
-    def _unit_rope(self, device: torch.device, dtype: torch.dtype) -> tuple[Tensor, ...]:
+    def _unit_rope(
+        self, device: torch.device, dtype: torch.dtype
+    ) -> tuple[Tensor, ...]:
         return (
             torch.ones(1, 1, 1, self.head_dim, device=device, dtype=dtype),
             torch.zeros(1, 1, 1, self.head_dim, device=device, dtype=dtype),
         )
 
     @override
-    def forward(
-        self, src: Tensor, *, num_frames: int, frame_offset: int = 0
-    ) -> Tensor:
+    def forward(self, src: Tensor, *, num_frames: int, frame_offset: int = 0) -> Tensor:
         _, seq_len, _ = src.shape
         # window-absolute: shifting the frames later in the episode shifts the
         # positional lookup, which is exactly what sliding the window does
@@ -120,7 +123,7 @@ class WindowAbsoluteTrunk(CausalFrameTransformer):
         return self.norm(x)
 
     @override
-    def step(  # noqa: PLR0913
+    def step(
         self,
         src: Tensor,
         *,
@@ -218,8 +221,6 @@ def test_intra_frame_attention_is_exactly_unrotated() -> None:
     (ordered only by the intra-frame embedding). A pairing/axis bug in
     `apply_rope` breaks this.
     """
-    from rmind.components.transformer.causal_frame import apply_rope
-
     g = torch.Generator().manual_seed(3)
     q = torch.randn(2, HEADS, TOKENS_PER_FRAME, DIM // HEADS, generator=g).double()
     k = torch.randn(2, HEADS, TOKENS_PER_FRAME, DIM // HEADS, generator=g).double()
@@ -258,12 +259,17 @@ def test_shift_invariance_negative_control() -> None:
     trunk = _trunk(window=6, cls=WindowAbsoluteTrunk)
     x = _flat(_tokens(6))
     err = (
-        (trunk(x, num_frames=6, frame_offset=0) - trunk(x, num_frames=6, frame_offset=7))
+        (
+            trunk(x, num_frames=6, frame_offset=0)
+            - trunk(x, num_frames=6, frame_offset=7)
+        )
         .abs()
         .max()
         .item()
     )
-    assert err > 1e-2, f"control should not be shift-invariant, got {err:.3e}"
+    assert err > CONTROL_MIN_ERROR, (
+        f"control should not be shift-invariant, got {err:.3e}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -314,7 +320,7 @@ def test_stream_vs_recompute_negative_control() -> None:
     recompute = _readouts(trunk(_flat(tokens), num_frames=num_frames), num_frames)
     streamed = stream(trunk, tokens, cache_frames=window - 1)
     err = (streamed - recompute).abs().max().item()
-    assert err > 1e-2, f"control should diverge, got {err:.3e}"
+    assert err > CONTROL_MIN_ERROR, f"control should diverge, got {err:.3e}"
 
 
 def test_isolated_window_recompute_is_not_identical() -> None:
@@ -427,4 +433,5 @@ def test_multihead_attention_state_dict_is_loadable() -> None:
     missing, unexpected = trunk.layers[0].attn.load_state_dict(
         ref.state_dict(), strict=False
     )
-    assert not missing and not unexpected
+    assert not missing
+    assert not unexpected

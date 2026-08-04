@@ -40,7 +40,7 @@ Why `rope_cos`/`rope_sin` are inputs
 ------------------------------------
 They are the only positional state, they are two `head_dim` vectors, and computing
 them host-side in float64 keeps a long-episode absolute frame counter exact while
-leaving the TRT graph with **zero `Sin`/`Cos` nodes` -- trigonometric ops are the
+leaving the TRT graph with **zero `Sin`/`Cos` nodes** -- trigonometric ops are the
 most fp16-fragile part of this model family (see the trt-export skill §2).
 """
 
@@ -107,10 +107,7 @@ class PatchPolicyDecoderStep(nn.Module):
     ) -> tuple[Tensor, Tensor, Tensor]:
         """`(past_k, past_v, cache_bias)` for a cold cache -- the engage-time state."""
         return self.trunk.empty_cache(
-            batch_size=batch_size,
-            cache_frames=cache_frames,
-            device=device,
-            dtype=dtype,
+            batch_size=batch_size, cache_frames=cache_frames, device=device, dtype=dtype
         )
 
     def rope(self, frame_index: int) -> tuple[Tensor, Tensor]:

@@ -308,9 +308,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise KeyError(msg)
         return value
 
-    def _frame_tokens(
-        self, images: Tensor, speed: Tensor, waypoints: Tensor
-    ) -> Tensor:
+    def _frame_tokens(self, images: Tensor, speed: Tensor, waypoints: Tensor) -> Tensor:
         """Per-frame token blocks `(b, t, p + 1, d)` -- everything below the trunk.
 
         Factored out of `_features` so the KV-cached decode step

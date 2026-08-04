@@ -114,7 +114,7 @@ def frame_block_causal_mask(
     delta = frames[:, None] - frames[None, :]  # query frame - key frame
     blocked = delta < 0  # future frames
     if window is not None:
-        blocked = blocked | (delta > window - 1)  # evicted frames
+        blocked |= delta > window - 1  # evicted frames
     return blocked
 
 
@@ -136,6 +136,9 @@ def frame_rope_cos_sin(
     Note the intra-frame cancellation `(Rq)ᵀ(Rk) = qᵀk` is algebraically exact but
     numerically only as exact as `cos² + sin² = 1` in `dtype`; at float32 that is
     ~1e-7 relative, well inside the 1e-6 cache gate.
+
+    Raises:
+        ValueError: if `head_dim` is odd.
     """
     if head_dim % 2:
         msg = f"head_dim must be even for RoPE, got {head_dim}"
@@ -167,9 +170,7 @@ class CausalSelfAttention(nn.Module):
     positional embedding differs, and that is the intended change.
     """
 
-    def __init__(
-        self, *, dim_model: int, num_heads: int, dropout: float = 0.1
-    ) -> None:
+    def __init__(self, *, dim_model: int, num_heads: int, dropout: float = 0.1) -> None:
         super().__init__()
         if dim_model % num_heads:
             msg = f"dim_model {dim_model} not divisible by num_heads {num_heads}"
@@ -205,15 +206,11 @@ class CausalSelfAttention(nn.Module):
         q, k, v = self._qkv(x)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         attn = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=~mask,
-            dropout_p=self.dropout if self.training else 0.0,
+            q, k, v, attn_mask=~mask, dropout_p=self.dropout if self.training else 0.0
         )
         return self._out(attn)
 
-    def step(
+    def step(  # noqa: PLR0913, PLR0917
         self,
         x: Tensor,
         cos: Tensor,
@@ -221,6 +218,8 @@ class CausalSelfAttention(nn.Module):
         past_k: Tensor,
         past_v: Tensor,
         cache_bias: Tensor,
+        *,
+        readout_only: bool = False,
     ) -> tuple[Tensor, Tensor, Tensor]:
         """One frame's `tokens_per_frame` queries against the cache plus itself.
 
@@ -229,6 +228,11 @@ class CausalSelfAttention(nn.Module):
         frame). The only masking is `cache_bias`, which zeroes out unfilled ring
         slots.
 
+        `readout_only` computes the attention output for the LAST query position
+        only -- the head reads a single token per frame (§3.3 of the hand-off), so
+        in the final block the other `tokens_per_frame - 1` outputs are discarded.
+        K/V are still produced for every position; future frames attend to them.
+
         Returns `(out, new_k, new_v)` where the K/V are for the new frame only.
         """
         q, k, v = self._qkv(x)
@@ -236,32 +240,8 @@ class CausalSelfAttention(nn.Module):
         keys = torch.cat((past_k, k), dim=-2)
         values = torch.cat((past_v, v), dim=-2)
         bias = F.pad(cache_bias, (0, x.shape[1]))  # own-frame keys always visible
-        attn = F.scaled_dot_product_attention(q, keys, values, attn_mask=bias)
-        return self._out(attn), k, v
-
-    def step_readout(
-        self,
-        x: Tensor,
-        cos: Tensor,
-        sin: Tensor,
-        past_k: Tensor,
-        past_v: Tensor,
-        cache_bias: Tensor,
-    ) -> tuple[Tensor, Tensor, Tensor]:
-        """`step`, but only the LAST query position's output is computed.
-
-        The head reads a single token per frame (§3.3 of the hand-off), so in the
-        final block the attention output and MLP for the other
-        `tokens_per_frame - 1` positions are discarded. K/V are still produced
-        for all positions -- future frames attend to them.
-        """
-        q, k, v = self._qkv(x)
-        q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
-        keys = torch.cat((past_k, k), dim=-2)
-        values = torch.cat((past_v, v), dim=-2)
-        bias = F.pad(cache_bias, (0, x.shape[1]))
         attn = F.scaled_dot_product_attention(
-            q[:, :, -1:], keys, values, attn_mask=bias
+            q[:, :, -1:] if readout_only else q, keys, values, attn_mask=bias
         )
         return self._out(attn), k, v
 
@@ -301,7 +281,7 @@ class CausalFrameTransformerBlock(nn.Module):
         h = x + self.resid_drop(attn_out)
         return h + self.mlp(self.mlp_norm(h))
 
-    def step(  # noqa: PLR0913
+    def step(  # noqa: PLR0913, PLR0917
         self,
         x: Tensor,
         cos: Tensor,
@@ -312,8 +292,15 @@ class CausalFrameTransformerBlock(nn.Module):
         *,
         readout_only: bool = False,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        fn = self.attn.step_readout if readout_only else self.attn.step
-        attn_out, k, v = fn(self.attn_norm(x), cos, sin, past_k, past_v, cache_bias)
+        attn_out, k, v = self.attn.step(
+            self.attn_norm(x),
+            cos,
+            sin,
+            past_k,
+            past_v,
+            cache_bias,
+            readout_only=readout_only,
+        )
         if readout_only:
             x = x[:, -1:]
         h = x + attn_out
@@ -339,12 +326,29 @@ class CausalFrameTransformer(nn.Module):
         tokens_per_frame: int,
         window: int | None = None,
         rope_base: float = 1000.0,
+        max_sequence_length: int | None = None,
         attn_dropout: float = 0.1,
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
     ) -> None:
         super().__init__()
+        # There is no learned positional table over the flattened sequence any
+        # more, so this trunk has no intrinsic maximum length. The argument
+        # exists so the hydra `encoder` node can be overridden in place (the
+        # block-causal trunk in config/model/yaak/patch_policy/raw.yaml sets
+        # `max_sequence_length: episode_length * (num_patches + 1)`), and it is
+        # cross-checked rather than ignored.
+        if max_sequence_length is not None:
+            expected = (window or 0) * tokens_per_frame
+            if max_sequence_length != expected:
+                msg = (
+                    f"max_sequence_length {max_sequence_length} != window * "
+                    f"tokens_per_frame {expected}; the training window and the "
+                    "serving cache capacity must agree (hand-off §6)"
+                )
+                raise ValueError(msg)
+
         self.dim_model = dim_model
         self.num_layers = num_layers
         self.num_heads = num_heads
@@ -378,16 +382,17 @@ class CausalFrameTransformer(nn.Module):
         return self.intra_position_embedding(idx).repeat(num_frames, 1)
 
     @override
-    def forward(
-        self, src: Tensor, *, num_frames: int, frame_offset: int = 0
-    ) -> Tensor:
+    def forward(self, src: Tensor, *, num_frames: int, frame_offset: int = 0) -> Tensor:
         """Full-sequence forward over `num_frames * tokens_per_frame` tokens.
 
         `frame_offset` shifts the episode-absolute frame indices used by RoPE.
         The output must be invariant to it -- that is the property the old
         window-absolute embedding lacked, and it is asserted in the tests.
+
+        Raises:
+            ValueError: if `src` is not `num_frames * tokens_per_frame` long.
         """
-        b, seq_len, _ = src.shape
+        _b, seq_len, _ = src.shape
         k = self.tokens_per_frame
         if seq_len != num_frames * k:
             msg = f"expected {num_frames * k} tokens, got {seq_len}"
@@ -425,6 +430,9 @@ class CausalFrameTransformer(nn.Module):
         K/V are `(num_layers, batch, num_heads, cache_frames * tokens_per_frame,
         head_dim)`; `cache_bias` is `(1, 1, 1, cache_frames * tokens_per_frame)`
         filled with `MASK_BIAS` (nothing valid yet).
+
+        Raises:
+            ValueError: if neither `cache_frames` nor `window` is set.
         """
         n = cache_frames
         if n is None and self.window is not None:
@@ -441,10 +449,7 @@ class CausalFrameTransformer(nn.Module):
         )
         zeros = torch.zeros(shape, device=device, dtype=dtype)
         bias = torch.full(
-            (1, 1, 1, n * self.tokens_per_frame),
-            MASK_BIAS,
-            device=device,
-            dtype=dtype,
+            (1, 1, 1, n * self.tokens_per_frame), MASK_BIAS, device=device, dtype=dtype
         )
         return zeros, zeros.clone(), bias
 
