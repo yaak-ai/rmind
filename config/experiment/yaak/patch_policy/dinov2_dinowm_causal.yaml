@@ -128,6 +128,24 @@ model:
     attn_dropout: 0.0
     # 64 positions of range; base 10000 leaves most frequency pairs inert
     rope_base: 1000.0
+    # stochastic depth, timm-style linear ramp 0 -> 0.1 over the 8 layers.
+    # Anti-overfitting package (with label_smoothing + code_head decay below):
+    # the mid/big arms overfit hard (train p_gt ~0.6 vs val ~0.13).
+    drop_path_rate: 0.1
+
+  losses:
+    modules:
+      code:
+        # smooths only the CE term; the focal (1-pt)^gamma keeps the true-class
+        # pt. Also counteracts the entropy collapse behind the H6 calibration
+        # blowup (val focal exploding while p_gt rises).
+        label_smoothing: 0.1
+
+  optimizer:
+    # the code head is where overconfidence lives; decay it harder than the
+    # global 0.1 (biases stay decay-free via the blacklist)
+    weight_decay_overrides:
+      code_head: 0.2
 
 datamodule:
   train:

@@ -14,19 +14,35 @@ class HasLogitBias(Protocol):
 
 
 class FocalLoss(Module):
-    """https://arxiv.org/pdf/1708.02002.pdf."""
+    """https://arxiv.org/pdf/1708.02002.pdf.
 
-    def __init__(self, *, gamma: float = 2.0) -> None:
+    `label_smoothing` uses the smoothed-CE decomposition
+    `(1-eps) * ce_true + eps * ce_uniform`, but focal-modulates ONLY the
+    true-class term. Modulating both would let `(1-pt)^gamma -> 0` cancel
+    the smoothing penalty exactly on confident predictions -- the case
+    smoothing exists for. The unmodulated `eps * ce_uniform` term grows
+    with the logit margin, capping overconfidence (and the entropy
+    collapse behind the calibration blowup). At `label_smoothing=0.0`
+    this is exactly the unsmoothed focal loss.
+    """
+
+    def __init__(self, *, gamma: float = 2.0, label_smoothing: float = 0.0) -> None:
         super().__init__()
 
         self.gamma: float = gamma
+        self.label_smoothing: float = label_smoothing
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        ce_loss = F.cross_entropy(input, target, reduction="none")
-        pt = torch.exp(-ce_loss)
+        ce_raw = F.cross_entropy(input, target, reduction="none")
+        pt = torch.exp(-ce_raw)
+        focal = (1 - pt).pow(self.gamma) * ce_raw
+        eps = self.label_smoothing
+        if not eps:
+            return focal.mean()
 
-        return ((1 - pt).pow(self.gamma) * ce_loss).mean()
+        ce_uniform = -F.log_softmax(input, dim=-1).mean(dim=-1)
+        return ((1 - eps) * focal + eps * ce_uniform).mean()
 
 
 class LogitBiasFocalLoss(FocalLoss, HasLogitBias):

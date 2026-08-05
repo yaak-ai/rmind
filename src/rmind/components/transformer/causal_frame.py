@@ -444,6 +444,32 @@ class CausalSelfAttention(nn.Module):
 
 
 @final
+class DropPath(nn.Module):
+    """Stochastic depth (https://arxiv.org/abs/1603.09382): drop the whole
+    residual branch per sample with probability `drop_prob` during training,
+    rescaling survivors by `1/keep`; exact identity in eval, so the streaming
+    equivalence gate and the export `step` path are untouched.
+    """
+
+    def __init__(self, drop_prob: float = 0.0) -> None:
+        super().__init__()
+        if not 0.0 <= drop_prob < 1.0:
+            msg = f"drop_prob must be in [0, 1), got {drop_prob}"
+            raise ValueError(msg)
+        self.drop_prob = drop_prob
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        if not self.drop_prob or not self.training:
+            return x
+        keep = 1.0 - self.drop_prob
+        # fresh tensor, filled in place before entering the autograd graph --
+        # no in-place ops on the residual stream (checkpointing)
+        gate = x.new_empty((x.shape[0],) + (1,) * (x.ndim - 1)).bernoulli_(keep)
+        return x * (gate / keep)
+
+
+@final
 class CausalFrameTransformerBlock(nn.Module):
     """Pre-LN GPT block, structurally identical to `patch_policy.TransformerBlock`."""
 
@@ -457,8 +483,10 @@ class CausalFrameTransformerBlock(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
         attention_impl: AttentionImpl = "sdpa",
+        drop_path: float = 0.0,
     ) -> None:
         super().__init__()
+        self.drop_path = DropPath(drop_path)
         self.attn_norm = nn.LayerNorm(dim_model)
         self.attn = CausalSelfAttention(
             dim_model=dim_model,
@@ -481,8 +509,8 @@ class CausalFrameTransformerBlock(nn.Module):
     ) -> Tensor:
         attn_out = self.attn(self.attn_norm(x), cos, sin, mask)
         # NOTE: no in-place ops on the residual stream (autograd + checkpointing)
-        h = x + self.resid_drop(attn_out)
-        return h + self.mlp(self.mlp_norm(h))
+        h = x + self.drop_path(self.resid_drop(attn_out))
+        return h + self.drop_path(self.mlp(self.mlp_norm(h)))
 
     def step(  # noqa: PLR0913, PLR0917
         self,
@@ -535,6 +563,7 @@ class CausalFrameTransformer(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
         attention_impl: AttentionImpl = "sdpa",
+        drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
         # There is no learned positional table over the flattened sequence any
@@ -577,6 +606,9 @@ class CausalFrameTransformer(nn.Module):
         nn.init.trunc_normal_(
             self.intra_position_embedding.weight, mean=0.0, std=0.02, a=-0.04, b=0.04
         )
+        # stochastic depth: timm-style linear ramp, 0 at the first layer up to
+        # drop_path_rate at the last (deeper layers are the more redundant ones)
+        self.drop_path_rate = drop_path_rate
         self.layers = nn.ModuleList([
             CausalFrameTransformerBlock(
                 dim_model=dim_model,
@@ -586,8 +618,9 @@ class CausalFrameTransformer(nn.Module):
                 mlp_dropout=mlp_dropout,
                 hidden_layer_multiplier=hidden_layer_multiplier,
                 attention_impl=attention_impl,
+                drop_path=drop_path_rate * i / max(num_layers - 1, 1),
             )
-            for _ in range(num_layers)
+            for i in range(num_layers)
         ])
         self.norm = nn.LayerNorm(dim_model)
 
