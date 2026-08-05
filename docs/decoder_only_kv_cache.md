@@ -667,17 +667,40 @@ predicted it to 0.4 ms:
 | full decoder step, `_big` N=64, fp32 | latency | vs baseline | fits 333 ms? |
 | --- | --- | --- | --- |
 | `concat`, stacked cache (shipped) | 363.93 ms | — | no |
+| `concat` + **per-layer bindings** | 364.01 ms | **+0.1 ms — nothing** | no |
 | `split_kt`, stacked cache | 350.78 ms | −13.2 ms | no |
 | `split_kt` + **per-layer bindings** (30 bindings) | **318.33 ms** | **−45.6 ms (−12.5 %)** | **yes** |
 
-So the two graph-level mechanisms together do bring `_big`/64 inside the tick at
-fp32 — 12.5 %, of which **three quarters is the stacked-cache slice, not the
-`Concat`**. §12 then makes the whole question moot at fp16, but if an fp32-only
-engine is ever required, this is the configuration.
+**The two mechanisms only pay together, and that is not a coincidence.** Per-layer
+bindings are worth −32 ms on top of `split_kt` and **exactly zero** on top of
+`concat`, for the same reason `split` alone was worthless: `cat(past_k, k)` has to
+write a contiguous copy of the key set regardless, and TRT fuses the layer slice into
+that copy. Remove the slice and the copy remains. Only once the `Concat` is gone does
+the slice become pure waste — and only then is removing it worth anything.
 
-⚠️ **But read §12 before reaching for it.** This measurement is `split_kt`/fp32, and
-at fp16 the shipped `concat` graph fuses its whole attention into one kernel per
-layer, which changes both the baseline and the size of this prize (~12 ms, not ~33).
+So the fp32-only configuration is **`split_kt` + `per_layer_cache`** at 318 ms,
+inside the tick, of which three quarters is the slice and one quarter the `Concat`.
+
+⚠️ **Neither half of this is safe to carry into fp16, and one of them will not even
+build.** §12 measures the shipped `concat` graph fusing its whole attention into one
+kernel per layer at fp16, which both changes the baseline and shrinks this prize
+(~12 ms, not ~33). And `concat` + `per_layer_cache` **fails to build at fp16 on
+TRT 10.7** — a builder bug, not a graph error:
+
+```
+Error Code 9: Skipping tactic ... Slice operation "node_pad_slice" has incorrect
+fill value type, slice op requires fill value type to be same as its input.
+Error Code 10: Internal Error (Could not find any implementation for node ...)
+```
+
+`node_pad_slice` is `F.pad(cache_bias, (0, tokens_per_frame))`: TRT lowers ONNX `Pad`
+to a `Slice` with a fill value, and in the mixed fp32/fp16 graph the fill constant's
+dtype stops matching its input. The identical `F.pad` builds fine with a stacked
+cache, so the per-layer binding is what exposes it. Since that combination also gains
+nothing at fp32, it has no use and was not pursued — but if it is ever needed, delete
+the op rather than fight the builder: have the host supply `cache_bias` already
+`(1, 1, 1, cache_tokens + tokens_per_frame)` wide. One fewer graph op, one fewer
+thing for TRT to get wrong.
 
 ### A custom fused-attention (FlashAttention) plugin — effort estimate, not prototyped
 
@@ -850,25 +873,28 @@ context on the Orin".
    whether that node is a dtype conversion or a layout one, which is not
    established). No accuracy argument needed beyond (1) — the cache holds the same
    activations the trunk is already computing in fp16.
-3. **Bind the cache per layer** (`per_layer_cache=True`). −45.6 ms on the full graph
-   at `_big`/N=64 in fp32 when combined with `split_kt` (364 → 318 ms, which *does*
-   fit the tick); ceiling ~12 ms in fp16. Pure I/O-binding change, ONNX
-   bit-identical, no numerical cost. Worth taking whenever the shape validation of
-   §7 is in place, and it is strictly a serving-side change.
-4. **Do not ship `split`/`split_kt`.** Worth 3.6–7.8 % at 64 frames in fp32, worth
-   **−156 ms** at fp16. They stay in the tree because they are what proved the
-   `Concat` is not the cost, and because they are the right formulation if a future
-   engine is fp32-only — not because they should be served.
+3. **`split_kt` + `per_layer_cache` — but only if the engine is fp32.** Together they
+   are −45.6 ms at `_big`/N=64 (364 → 318 ms, which *does* fit the tick), ONNX
+   bit-identical for the binding half and 3.5e-07 for the attention half, no
+   numerical cost. Measured, and this is the part that is easy to get wrong:
+   **neither is worth anything without the other** (per-layer on top of `concat` is
+   +0.1 ms), and `concat` + `per_layer_cache` does not build at fp16 at all. So this
+   is one configuration, for one precision — not two independent knobs.
+4. **Do not ship `split`/`split_kt` on an fp16 engine.** Worth 3.6–7.8 % at 64 frames
+   in fp32; worth **−156 ms** at fp16, because they destroy the pattern the fused
+   kernel is matched on. They stay in the tree because they are what proved the
+   `Concat` is not the cost, and because (3) is the right configuration if an
+   fp32-only engine is ever required — not because they should be served by default.
 5. **Do not write a fused-attention plugin, and do not reach for TensorRT-LLM.**
    §11 has the effort estimate and the specific incompatibilities. fp16 already
    gets the fused kernel that a plugin would have been written to provide.
 
 The honest summary of the original question — *how much of the linear-in-context
-cost is avoidable by eliminating the per-tick KV concat/copy* — is **3.6 % from the
-`Concat`, ~9 % more from the stacked-cache slice (12.5 % together, which does bring
-`_big`/64 inside the tick at fp32), and neither is the reason 64 frames was
-expensive.** The dtype was: fp16 is 3.7× on the same graph, and it needs the
-`Concat` kept.
+cost is avoidable by eliminating the per-tick KV concat/copy* — is **12.5 % at fp32,
+and only if you remove both the `Concat` and the stacked-cache slice, because each is
+worthless without the other.** That does bring `_big`/64 inside the tick. But it is
+not the reason 64 frames was expensive: the dtype was. fp16 is 3.7× on the *unmodified*
+graph, and it needs the `Concat` kept.
 
 ## 14. Open risks
 
@@ -917,8 +943,16 @@ expensive.** The dtype was: fp16 is 3.7× on the same graph, and it needs the
    351 with `split_kt`, 318 with `split_kt` + per-layer bindings, 97 at fp16). Not a
    defect, but it bounds what is servable without either the §11 restructure or the
    mixed-precision engine.
-8. **`split_kt` changes the runtime contract**, and `set_tensor_address` will not
-   tell you: `inputs_past_k` becomes `(L, b, H, head_dim, cache_tokens)` and `new_k`
-   comes out matching. Bound the old layout, the engine silently reinterprets the
-   buffer. The §7 shape validation is what catches it, and it is not optional for
-   this variant.
+8. **`split_kt` and `per_layer_cache` change the runtime contract**, and
+   `set_tensor_address` will not tell you: `inputs_past_k` becomes
+   `(L, b, H, head_dim, cache_tokens)` under the first and splits into
+   `inputs_past_k_0 …` under the second. Bind the old layout and the engine silently
+   reinterprets the buffer. The §7 shape validation is what catches it, and it is not
+   optional for either variant.
+9. **The variants interact, non-obviously, with precision and with each other.**
+   Measured: `split_kt` alone −13 ms at fp32 but +156 ms at fp16; `per_layer_cache`
+   alone +0.1 ms; the two together −45.6 ms at fp32; and `concat` +
+   `per_layer_cache` does not build at fp16 at all (§11). **Do not treat any of these
+   as independent knobs, and re-measure at the precision you intend to serve** —
+   three of the four combinations measured behave differently from what the other
+   three predict.
