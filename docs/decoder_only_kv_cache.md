@@ -403,9 +403,10 @@ derived from those concatenated op abbreviations — and `Con` in a myelin name 
 the 1-row bias pad. Matching `Con` before the softmax pattern put it, and its
 siblings, in the `Concat` bucket.
 
-Re-bucketed with the softmax pattern taking precedence (`prof/rebucket.py` in the
-measurement scratch, and the naive rule is kept in it so the artifact is
-reproducible rather than asserted):
+Re-bucketed with the softmax pattern taking precedence
+(`rmind.scripts.decoder_only_profile_buckets`, which keeps the naive rule too so the
+artifact reproduces rather than being asserted — it prints 74.5 ms / 36.8 % naive on
+the same file):
 
 | bucket | small N=6 | small N=64 | `_big` N=64 |
 | --- | --- | --- | --- |
@@ -419,6 +420,14 @@ reproducible rather than asserted):
 
 The naive rule reproduces the old **74.5 ms / 36.8 %** on the same file, so this is
 the same measurement read two ways, not a new one.
+
+⚠️ **And do not trust the corrected table either.** TRT splits the same work across
+different fusions per arm, so ~17 ms of small/N=64's "other fused elementwise" is
+also cache-copy work that the pattern does not catch — the corrected KV total for
+that arm is somewhere in 47–64 ms, which is a range, not a number. **Bucketing a
+myelin profile cannot settle this question.** What settles it is building the graph
+without the `Concat` and measuring it, which is §10, and the answer there is 12.5 ms
+at small/N=64.
 
 ⚠️ The old warning that `--dumpProfile` inflates large-tensor kernels most does not
 survive either. It inflates the *small* arm (202.5 ms profiled vs 160.5 benchmarked
