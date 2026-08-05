@@ -63,6 +63,30 @@ attends to frames `[f-N+1 .. f]`. That equivalence is the correctness gate (see
 `tests/test_causal_frame.py`) and it is also the statement "train the way you
 infer" -- train with `window=N`, serve with a ring of `N`.
 
+Training cost: the mask is block-sparse, so use a block-sparse kernel
+------------------------------------------------------------------------
+The KV cache makes *serving* cost independent of the window; it does nothing for
+training, which is still one dense forward over the whole clip. `attention_impl`
+picks how the mask is realized:
+
+* `"sdpa"` (default, unchanged behaviour) -- a materialized bool mask handed to
+  `F.scaled_dot_product_attention`. Any `attn_mask` disqualifies the flash
+  backend, so every masked position is still computed: cost is `O((F*257)^2)`
+  regardless of `window`.
+* `"flex"` -- the same mask as a `BlockMask` for `torch.nn.attention.
+  flex_attention`, whose Triton kernel skips whole 128x128 blocks. Cost becomes
+  proportional to the *unmasked* area, `O(F * window * 257^2)`, i.e. linear in
+  context length at fixed window. Measured on a 5090 (bf16, fwd+bwd, one layer,
+  batch 4, 512-d/8-head): 6 frames 1.06 -> 0.69 ms, 32 frames/window 16
+  23.7 -> 5.3 ms (4.5x), 64 frames/window 16 93.6 -> 11.8 ms (7.9x). Numerically
+  identical to `"sdpa"` to ~4e-6 in fp32, forward and backward
+  (`tests/test_causal_frame.py`).
+
+Two constraints on `"flex"`, both deliberate rather than incidental:
+`attn_dropout` must be 0 (FlexAttention has no `dropout_p`, and the constructor
+raises rather than silently dropping it), and the decode `step` is unaffected --
+it stays SDPA, because it is the export target and has nothing to skip anyway.
+
 Note what is *not* equal, and cannot be for any bounded window with more than
 one layer: re-running frames `[1..6]` as a fresh isolated 6-frame episode. There
 frame 5 never saw frame 0, whereas in the stream its layer-2+ K/V were produced
@@ -70,18 +94,27 @@ with frame 0 in context. That is a property of bounded attention, not a cache
 defect.
 """
 
-from typing import final, override
+from collections.abc import Callable
+from functools import cache
+from typing import Literal, final, get_args, override
 
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.nn.attention.flex_attention import (
+    BlockMask,
+    create_block_mask,
+    flex_attention,
+)
 
 from rmind.components.transformer.utils import run_layer_stack
 
 __all__ = [
+    "AttentionImpl",
     "CausalFrameTransformer",
     "CausalFrameTransformerBlock",
     "CausalSelfAttention",
+    "frame_block_causal_block_mask",
     "frame_block_causal_mask",
     "frame_rope_cos_sin",
 ]
@@ -89,6 +122,16 @@ __all__ = [
 # additive bias for a masked-out position; finite so an fp16 engine cannot
 # produce NaN from -inf * 0 in a fused softmax
 MASK_BIAS: float = -1e4
+
+AttentionImpl = Literal["sdpa", "flex"]
+
+# FlexAttention's Triton kernels only accept a 128-element block on the shapes
+# this trunk uses (`BLOCK_SIZE=64` raises "Q and KV block size must be divisible
+# by BLOCK_M and BLOCK_N" from inductor on sm_120/torch 2.12), so the frame block
+# of 257 tokens can never tile exactly. See §11 of docs/decoder_only_kv_cache.md
+# for the measured cost of that misalignment (6-29% extra computed area, and
+# padding the frame to 384 to align it is 2.23x -- strictly worse).
+FLEX_BLOCK_SIZE: int = 128
 
 
 def frame_block_causal_mask(
@@ -116,6 +159,94 @@ def frame_block_causal_mask(
     if window is not None:
         blocked |= delta > window - 1  # evicted frames
     return blocked
+
+
+def frame_block_causal_mask_mod(
+    tokens_per_frame: int, window: int | None
+) -> Callable[[Tensor, Tensor, Tensor, Tensor], Tensor]:
+    """FlexAttention `mask_mod` for `frame_block_causal_mask`.
+
+    Note the inverted convention: `frame_block_causal_mask` returns True for
+    *blocked*, a `mask_mod` returns True for *keep*. The predicate is the same
+    frame-delta comparison, evaluated on index tensors instead of materialized.
+    """
+
+    def mask_mod(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
+        del b, h
+        delta = q_idx // tokens_per_frame - kv_idx // tokens_per_frame
+        keep = delta >= 0
+        if window is not None:
+            keep &= delta <= window - 1
+        return keep
+
+    return mask_mod
+
+
+@cache
+def frame_block_causal_block_mask(
+    num_frames: int,
+    tokens_per_frame: int,
+    *,
+    window: int | None = None,
+    device: torch.device | None = None,
+) -> BlockMask:
+    """`BlockMask` equivalent of `frame_block_causal_mask`, for FlexAttention.
+
+    Memoized: building one costs 3-9 ms of launch-bound work (measured on a
+    5090), which is per-*layer*-per-*step* if you let it happen naively -- 25 ms
+    a step at 8 layers, more than the attention itself. The cache key is the mask
+    geometry plus the device, and a `BlockMask` at 64 frames is ~66 KiB, so
+    holding them all costs nothing.
+
+    Broadcast over batch and head (`B = H = None`): the mask is the same for every
+    sequence in the batch, which is what makes it cheap.
+
+    `device=None` means CPU, matching `frame_block_causal_mask` -- note that
+    `create_block_mask`'s own default is `"cuda"`, which would make a CPU-only
+    caller fail with "Torch not compiled with CUDA enabled".
+    """
+    seq_len = num_frames * tokens_per_frame
+    return create_block_mask(
+        frame_block_causal_mask_mod(tokens_per_frame, window),
+        B=None,
+        H=None,
+        Q_LEN=seq_len,
+        KV_LEN=seq_len,
+        device=torch.device("cpu") if device is None else device,
+        BLOCK_SIZE=FLEX_BLOCK_SIZE,
+    )
+
+
+@cache
+def _compiled_flex_attention() -> Callable[..., Tensor]:
+    """`torch.compile`d `flex_attention` -- the only form that is block-sparse.
+
+    Eager `flex_attention` is a correctness reference that materializes the score
+    matrix; the Triton kernel that actually skips masked blocks only exists after
+    `torch.compile`. `dynamic=False` keeps static shapes (one specialization per
+    `(batch, seq_len, heads, dtype)`); the trunk sees at most a couple of those,
+    but if you vary batch size a lot, raise `torch._dynamo.config.cache_size_limit`
+    or dynamo will silently fall back to eager after 8 recompiles.
+
+    Compiled lazily so importing this module (which the ONNX export path does)
+    never pays for it.
+    """
+    return torch.compile(flex_attention, dynamic=False)
+
+
+def flex_frame_attention(
+    q: Tensor, k: Tensor, v: Tensor, block_mask: BlockMask
+) -> Tensor:
+    """Block-sparse attention on CUDA, eager FlexAttention elsewhere.
+
+    FlexAttention has no CPU backward (`NotImplementedError` in
+    `_validate_device`), and there is no Triton kernel to gain on CPU anyway, so
+    the CPU path is deliberately the eager reference implementation: it exists so
+    the parity test can run without a GPU, not to be fast.
+    """
+    if q.is_cuda:
+        return _compiled_flex_attention()(q, k, v, block_mask=block_mask)
+    return flex_attention(q, k, v, block_mask=block_mask)
 
 
 def frame_rope_cos_sin(
@@ -170,15 +301,36 @@ class CausalSelfAttention(nn.Module):
     positional embedding differs, and that is the intended change.
     """
 
-    def __init__(self, *, dim_model: int, num_heads: int, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        *,
+        dim_model: int,
+        num_heads: int,
+        dropout: float = 0.1,
+        attention_impl: AttentionImpl = "sdpa",
+    ) -> None:
         super().__init__()
         if dim_model % num_heads:
             msg = f"dim_model {dim_model} not divisible by num_heads {num_heads}"
+            raise ValueError(msg)
+        if attention_impl not in get_args(AttentionImpl):
+            msg = f"attention_impl must be one of {get_args(AttentionImpl)}"
+            raise ValueError(msg)
+        # FlexAttention has no `dropout_p`. Failing loudly beats silently
+        # dropping the trunk's attention dropout when someone flips the impl.
+        if attention_impl == "flex" and dropout:
+            msg = (
+                f"attention_impl='flex' cannot apply attention dropout "
+                f"(got attn_dropout={dropout}): FlexAttention has no dropout_p. "
+                "Set attn_dropout: 0.0 explicitly (resid_dropout/mlp_dropout are "
+                "unaffected) or use attention_impl='sdpa'."
+            )
             raise ValueError(msg)
         self.dim_model = dim_model
         self.num_heads = num_heads
         self.head_dim = dim_model // num_heads
         self.dropout = dropout
+        self.attention_impl = attention_impl
 
         # nn.MultiheadAttention's own initialization, so a randomly-initialized
         # CausalFrameTransformer is distributionally identical to the reference
@@ -201,13 +353,38 @@ class CausalSelfAttention(nn.Module):
         return self.out_proj(attn.transpose(1, 2).reshape(b, s, self.dim_model))
 
     @override
-    def forward(self, x: Tensor, cos: Tensor, sin: Tensor, mask: Tensor) -> Tensor:
-        """Full-sequence forward. `mask` is the bool block-causal mask."""
+    def forward(
+        self, x: Tensor, cos: Tensor, sin: Tensor, mask: Tensor | BlockMask
+    ) -> Tensor:
+        """Full-sequence forward.
+
+        `mask` is the bool block-causal mask (`attention_impl='sdpa'`) or the
+        equivalent `BlockMask` (`attention_impl='flex'`). RoPE is applied to q/k
+        *before* attention either way, so the positional scheme is orthogonal to
+        the kernel choice -- the frame-granular rotation is already baked into the
+        vectors the kernel sees.
+
+        Raises:
+            TypeError: if `mask` is not the type `attention_impl` requires.
+        """
         q, k, v = self._qkv(x)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
-        attn = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=~mask, dropout_p=self.dropout if self.training else 0.0
-        )
+        if self.attention_impl == "flex":
+            if not isinstance(mask, BlockMask):
+                msg = f"attention_impl='flex' needs a BlockMask, got {type(mask)}"
+                raise TypeError(msg)
+            attn = flex_frame_attention(q, k, v, mask)
+        else:
+            if isinstance(mask, BlockMask):
+                msg = "attention_impl='sdpa' needs a bool mask, got a BlockMask"
+                raise TypeError(msg)
+            attn = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=~mask,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
         return self._out(attn)
 
     def step(  # noqa: PLR0913, PLR0917
@@ -227,6 +404,11 @@ class CausalSelfAttention(nn.Module):
         construction) and every own-frame key is visible (bidirectional within a
         frame). The only masking is `cache_bias`, which zeroes out unfilled ring
         slots.
+
+        `attention_impl` deliberately does NOT apply here: the decode step is
+        always plain SDPA. It has 257 queries against a dense, fully-visible
+        cache -- there is no sparsity to exploit -- and it is the ONNX/TRT export
+        target, which a `torch.compile`d Triton kernel could not be.
 
         `readout_only` computes the attention output for the LAST query position
         only -- the head reads a single token per frame (§3.3 of the hand-off), so
@@ -259,11 +441,15 @@ class CausalFrameTransformerBlock(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
+        attention_impl: AttentionImpl = "sdpa",
     ) -> None:
         super().__init__()
         self.attn_norm = nn.LayerNorm(dim_model)
         self.attn = CausalSelfAttention(
-            dim_model=dim_model, num_heads=num_heads, dropout=attn_dropout
+            dim_model=dim_model,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            attention_impl=attention_impl,
         )
         self.resid_drop = nn.Dropout(resid_dropout)
         self.mlp_norm = nn.LayerNorm(dim_model)
@@ -275,7 +461,9 @@ class CausalFrameTransformerBlock(nn.Module):
         )
 
     @override
-    def forward(self, x: Tensor, cos: Tensor, sin: Tensor, mask: Tensor) -> Tensor:
+    def forward(
+        self, x: Tensor, cos: Tensor, sin: Tensor, mask: Tensor | BlockMask
+    ) -> Tensor:
         attn_out = self.attn(self.attn_norm(x), cos, sin, mask)
         # NOTE: no in-place ops on the residual stream (autograd + checkpointing)
         h = x + self.resid_drop(attn_out)
@@ -331,6 +519,7 @@ class CausalFrameTransformer(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
+        attention_impl: AttentionImpl = "sdpa",
     ) -> None:
         super().__init__()
         # There is no learned positional table over the flattened sequence any
@@ -364,6 +553,7 @@ class CausalFrameTransformer(nn.Module):
         self.tokens_per_frame = tokens_per_frame
         self.window = window
         self.rope_base = rope_base
+        self.attention_impl = attention_impl
 
         # frame-RELATIVE intra-frame position: tiled onto every frame, so it is
         # invariant to where the frame sits in the window (unlike the 1542-slot
@@ -380,6 +570,7 @@ class CausalFrameTransformer(nn.Module):
                 resid_dropout=resid_dropout,
                 mlp_dropout=mlp_dropout,
                 hidden_layer_multiplier=hidden_layer_multiplier,
+                attention_impl=attention_impl,
             )
             for _ in range(num_layers)
         ])
@@ -412,8 +603,14 @@ class CausalFrameTransformer(nn.Module):
             frames, head_dim=self.head_dim, base=self.rope_base
         )
         cos, sin = cos.to(src.dtype), sin.to(src.dtype)
-        mask = frame_block_causal_mask(
-            num_frames, k, window=self.window, device=src.device
+        mask: Tensor | BlockMask = (
+            frame_block_causal_block_mask(
+                num_frames, k, window=self.window, device=src.device
+            )
+            if self.attention_impl == "flex"
+            else frame_block_causal_mask(
+                num_frames, k, window=self.window, device=src.device
+            )
         )
 
         x = run_layer_stack(self.layers, x, cos, sin, mask, training=self.training)

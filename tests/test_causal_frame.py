@@ -30,10 +30,14 @@ import torch
 from torch import Tensor, nn
 
 from rmind.components.transformer.causal_frame import (
+    FLEX_BLOCK_SIZE,
     MASK_BIAS,
+    AttentionImpl,
     CausalFrameTransformer,
     apply_rope,
+    frame_block_causal_block_mask,
     frame_block_causal_mask,
+    frame_block_causal_mask_mod,
     frame_rope_cos_sin,
 )
 from rmind.models.patch_policy import block_causal_mask
@@ -45,6 +49,25 @@ LAYERS = 3
 TOL = 1e-6
 # a negative control must miss the 1e-6 gate by orders of magnitude, not narrowly
 CONTROL_MIN_ERROR = 1e-2
+
+# production geometry, for the flex-vs-sdpa parity gate
+PROD_TOKENS_PER_FRAME = 257
+# fp32 parity gate, applied SCALE-RELATIVE (max|diff| / max|reference|).
+#
+# An absolute 1e-5 is the right gate for activations and input gradients (both are
+# O(1) here and land at ~1e-6), but it is the wrong gate for a PARAMETER gradient:
+# `in_proj_weight.grad` is a sum over all 1542-4112 sequence positions, so its
+# entries are O(10) and its fp32 accumulation noise alone is ~1e-5 in absolute
+# terms no matter which kernel produced it. Measured on a 5090 with tf32 off, every
+# tensor is <= 1.5e-6 scale-relative, and
+# `test_flex_is_no_further_from_exact_than_sdpa` shows that residual IS the fp32
+# noise: flex sits 1.4x sdpa's own distance from a float64 reference, not 10x.
+FLEX_TOL = 1e-5
+# 128-block tiling of a 257-token frame: the boundary waste must stay far below the
+# 2.23x that padding frames to 384 (3 exact blocks) would cost
+MAX_TILE_WASTE = 1.3
+# and the block-sparse kernel must compute clearly less than the dense mask does
+MAX_DENSE_FRACTION = 0.8
 
 
 def _trunk(
@@ -458,6 +481,272 @@ def test_multihead_attention_state_dict_is_loadable() -> None:
     )
     assert not missing
     assert not unexpected
+
+
+# --------------------------------------------------------------------------- #
+# FlexAttention path: exact parity with the dense-mask SDPA path
+#
+# The saving is real only if the kernel is *identical*, not merely similar: the
+# block-sparse path is the training path for the SAME weights that serve through
+# `step`, so any drift here is a train/infer mismatch on top of a speedup.
+# --------------------------------------------------------------------------- #
+
+
+def _prod_trunk(  # noqa: PLR0913
+    *,
+    window: int,
+    dim: int,
+    heads: int,
+    impl: AttentionImpl,
+    layers: int = 2,
+    tokens_per_frame: int = PROD_TOKENS_PER_FRAME,
+) -> CausalFrameTransformer:
+    """Production-width trunk in fp32 (FlexAttention has no float64 CUDA kernel).
+
+    `attn_dropout=0` is required by the flex path and is set on both arms so the
+    two are comparable; `layers=2` is enough to exercise the stack while keeping
+    the 4112-token cases cheap.
+    """
+    torch.manual_seed(0)
+    return CausalFrameTransformer(
+        dim_model=dim,
+        num_layers=layers,
+        num_heads=heads,
+        tokens_per_frame=tokens_per_frame,
+        window=window,
+        attn_dropout=0.0,
+        resid_dropout=0.0,
+        mlp_dropout=0.0,
+        attention_impl=impl,
+    )
+
+
+def _pair(
+    *, window: int, dim: int, heads: int, device: str, layers: int = 2
+) -> tuple[CausalFrameTransformer, CausalFrameTransformer]:
+    """Same weights, two attention implementations."""
+    sdpa = _prod_trunk(window=window, dim=dim, heads=heads, impl="sdpa", layers=layers)
+    flex = _prod_trunk(window=window, dim=dim, heads=heads, impl="flex", layers=layers)
+    flex.load_state_dict(sdpa.state_dict())
+    return sdpa.to(device), flex.to(device)
+
+
+def _scale_rel(got: Tensor, ref: Tensor) -> float:
+    """`max|got - ref| / max|ref|` -- see the FLEX_TOL comment for why not atol."""
+    return ((got.double() - ref.double()).abs().max() / ref.double().abs().max()).item()
+
+
+def _fwd_bwd(
+    trunk: CausalFrameTransformer, x: Tensor, grad_out: Tensor, *, num_frames: int
+) -> dict[str, Tensor]:
+    """Forward + backward, returning the output and the gradients under comparison.
+
+    An input-gradient-only comparison would miss a parameter whose gradient path
+    runs through the mask, so both an attention projection and the intra-frame
+    position embedding are included.
+    """
+    trunk.zero_grad()
+    inp = x.detach().clone().requires_grad_()
+    out = trunk(inp, num_frames=num_frames)
+    out.backward(grad_out)
+    assert inp.grad is not None
+    return {
+        "out": out.detach(),
+        "d_input": inp.grad,
+        "d_in_proj_weight": trunk.layers[0].attn.in_proj_weight.grad.clone(),  # ty:ignore[possibly-unbound-attribute]
+        "d_out_proj_weight": trunk.layers[-1].attn.out_proj.weight.grad.clone(),  # ty:ignore[possibly-unbound-attribute]
+        "d_intra_position": trunk.intra_position_embedding.weight.grad.clone(),  # ty:ignore[possibly-unbound-attribute]
+    }
+
+
+def test_flex_mask_mod_matches_dense_mask() -> None:
+    """The `mask_mod` predicate is the dense mask, inverted. Device-free, exact.
+
+    Checked at the production 257 so the `// tokens_per_frame` arithmetic is
+    exercised on a frame width that is not a power of two.
+    """
+    for window in (None, 2, 6):
+        idx = torch.arange(5 * PROD_TOKENS_PER_FRAME)
+        mod = frame_block_causal_mask_mod(PROD_TOKENS_PER_FRAME, window)
+        keep = mod(torch.tensor(0), torch.tensor(0), idx[:, None], idx[None, :])
+        blocked = frame_block_causal_mask(5, PROD_TOKENS_PER_FRAME, window=window)
+        torch.testing.assert_close(keep, ~blocked)
+
+
+@pytest.mark.parametrize(("num_frames", "window"), [(6, 6), (16, 6), (32, 16)])
+def test_flex_block_mask_is_block_sparse(num_frames: int, window: int) -> None:
+    """The BlockMask really skips blocks, and the 257-vs-128 waste stays small.
+
+    This is the tile-alignment finding as an assertion: a 257-token frame block
+    can never tile a 128-element kernel block, so every frame boundary produces a
+    partial block that costs a full one. The overhead is a boundary effect and
+    amortizes with the number of frames -- but it must never approach the 2.23x
+    that padding frames to 384 would cost, which is the alternative this rejects.
+    """
+    k = PROD_TOKENS_PER_FRAME
+    bm = frame_block_causal_block_mask(num_frames, k, window=window)
+    computed = (
+        int(bm.kv_num_blocks.sum().item()) + int(bm.full_kv_num_blocks.sum().item())
+    ) * FLEX_BLOCK_SIZE**2
+    exact = k * k * sum(min(f + 1, window) for f in range(num_frames))
+    dense = (num_frames * k) ** 2
+    assert computed < dense, "no blocks skipped -- the mask is not sparse"
+    assert 1.0 <= computed / exact < MAX_TILE_WASTE, (
+        f"tile waste {computed / exact:.3f}"
+    )
+    # and the whole point: less work than the dense mask, by the expected margin
+    assert computed / dense < MAX_DENSE_FRACTION
+
+
+def test_flex_forward_matches_sdpa_on_cpu() -> None:
+    """Parity without a GPU, so CI covers the mask/plumbing even on a CPU runner.
+
+    Eager FlexAttention (the CPU fallback) has no backward, so this is
+    forward-only; the fwd+bwd gate is the CUDA test below.
+    """
+    sdpa, flex = _pair(window=2, dim=32, heads=4, device="cpu", layers=2)
+    g = torch.Generator().manual_seed(5)
+    x = torch.randn(1, 4 * PROD_TOKENS_PER_FRAME, 32, generator=g)
+    with torch.no_grad():
+        torch.testing.assert_close(
+            flex(x, num_frames=4), sdpa(x, num_frames=4), rtol=0, atol=FLEX_TOL
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+@pytest.mark.parametrize(("dim", "heads"), [(512, 8), (768, 12)])
+@pytest.mark.parametrize("window", [6, 16])
+def test_flex_matches_sdpa_forward_and_backward(
+    dim: int, heads: int, window: int
+) -> None:
+    """THE GATE: production shapes, fp32, forward and backward.
+
+    `num_frames == window` so the mask is the full block-causal one -- the widest
+    case, where nothing is skipped by the window and only causality is sparse. tf32
+    is disabled so this measures the kernels, not the tensor cores' mantissa.
+    """
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    sdpa, flex = _pair(window=window, dim=dim, heads=heads, device="cuda")
+    g = torch.Generator(device="cuda").manual_seed(9)
+    x = torch.randn(1, window * PROD_TOKENS_PER_FRAME, dim, generator=g, device="cuda")
+    grad_out = torch.randn(x.shape, generator=g, device="cuda")
+
+    ref = _fwd_bwd(sdpa, x, grad_out, num_frames=window)
+    got = _fwd_bwd(flex, x, grad_out, num_frames=window)
+    errors = {key: _scale_rel(got[key], ref[key]) for key in ref}
+    assert all(e < FLEX_TOL for e in errors.values()), errors
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+@pytest.mark.parametrize("window", [6, 16])
+def test_flex_matches_sdpa_under_gradient_checkpointing(window: int) -> None:
+    """The same parity in `.train()`, which is a different code path.
+
+    `run_layer_stack` only wraps layers in `checkpoint(use_reentrant=False)` while
+    training, so an eval-only test never runs the compiled flex kernel inside a
+    checkpoint or its recompute. With every dropout at 0 the two arms are still
+    exactly comparable. This is what catches a `BlockMask`-through-`checkpoint`
+    regression -- a `BlockMask` is not a tensor, and `checkpoint` has to carry it
+    through to the recompute unchanged.
+    """
+    torch.backends.cuda.matmul.allow_tf32 = False
+    sdpa, flex = _pair(window=window, dim=512, heads=8, device="cuda")
+    sdpa.train()
+    flex.train()
+    g = torch.Generator(device="cuda").manual_seed(13)
+    x = torch.randn(1, window * PROD_TOKENS_PER_FRAME, 512, generator=g, device="cuda")
+    grad_out = torch.randn(x.shape, generator=g, device="cuda")
+
+    ref = _fwd_bwd(sdpa, x, grad_out, num_frames=window)
+    got = _fwd_bwd(flex, x, grad_out, num_frames=window)
+    errors = {key: _scale_rel(got[key], ref[key]) for key in ref}
+    assert all(e < FLEX_TOL for e in errors.values()), errors
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+def test_flex_is_no_further_from_exact_than_sdpa() -> None:  # noqa: PLR0914
+    """Why FLEX_TOL is not an arbitrary number.
+
+    Both fp32 arms are compared against the SAME trunk run in float64 on the CPU,
+    which is the exact answer for this mask. If the flex kernel had a semantic
+    difference -- a mis-tiled block, a dropped partial block, a wrong scale -- it
+    would sit orders of magnitude further from the fp64 reference than sdpa does.
+    Measured on a 5090: sdpa 6.8e-7, flex 9.4e-7 scale-relative on the worst
+    tensor, i.e. flex is 1.4x sdpa's own fp32 accumulation noise. The 2x budget
+    below is therefore tight, not permissive.
+
+    One layer, `window=6`: enough to be exact, cheap enough to run in float64 on a
+    CPU.
+    """
+    torch.backends.cuda.matmul.allow_tf32 = False
+    dim, heads, window = 512, 8, 6
+    sdpa, flex = _pair(window=window, dim=dim, heads=heads, device="cuda", layers=1)
+    exact = _prod_trunk(
+        window=window, dim=dim, heads=heads, impl="sdpa", layers=1
+    ).double()
+    exact.load_state_dict({k: v.double().cpu() for k, v in sdpa.state_dict().items()})
+
+    g = torch.Generator().manual_seed(9)
+    x = torch.randn(1, window * PROD_TOKENS_PER_FRAME, dim, generator=g)
+    grad_out = torch.randn(x.shape, generator=g)
+    truth = _fwd_bwd(exact, x.double(), grad_out.double(), num_frames=window)
+    xc, gc = x.cuda(), grad_out.cuda()
+    ref = _fwd_bwd(sdpa, xc, gc, num_frames=window)
+    got = _fwd_bwd(flex, xc, gc, num_frames=window)
+
+    for key, exact_value in truth.items():
+        sdpa_err = _scale_rel(ref[key].cpu(), exact_value)
+        flex_err = _scale_rel(got[key].cpu(), exact_value)
+        assert flex_err < FLEX_TOL, (key, flex_err)
+        assert flex_err <= 2 * sdpa_err + 1e-9, (key, flex_err, sdpa_err)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+def test_flex_is_invariant_to_frame_offset() -> None:
+    """RoPE is applied to q/k *before* attention, so it is orthogonal to the
+    kernel: the flex path keeps the shift-invariance that makes the cache valid.
+    """
+    torch.backends.cuda.matmul.allow_tf32 = False
+    _, flex = _pair(window=4, dim=512, heads=8, device="cuda")
+    flex.eval()
+    g = torch.Generator(device="cuda").manual_seed(17)
+    x = torch.randn(1, 4 * PROD_TOKENS_PER_FRAME, 512, generator=g, device="cuda")
+    with torch.no_grad():
+        torch.testing.assert_close(
+            flex(x, num_frames=4, frame_offset=11),
+            flex(x, num_frames=4, frame_offset=0),
+            rtol=0,
+            atol=FLEX_TOL,
+        )
+
+
+def test_flex_rejects_attention_dropout() -> None:
+    """FlexAttention has no `dropout_p`; silently losing attention dropout when
+    switching impl would be an unlogged regularization change.
+    """
+    with pytest.raises(ValueError, match="dropout"):
+        CausalFrameTransformer(
+            dim_model=DIM,
+            num_layers=1,
+            num_heads=HEADS,
+            tokens_per_frame=TOKENS_PER_FRAME,
+            window=2,
+            attention_impl="flex",
+        )
+
+
+def test_unknown_attention_impl_is_rejected() -> None:
+    with pytest.raises(ValueError, match="attention_impl"):
+        CausalFrameTransformer(
+            dim_model=DIM,
+            num_layers=1,
+            num_heads=HEADS,
+            tokens_per_frame=TOKENS_PER_FRAME,
+            window=2,
+            attn_dropout=0.0,
+            attention_impl="flash",  # ty:ignore[invalid-argument-type]
+        )
 
 
 @pytest.mark.parametrize("window", [2, 3, 6])
