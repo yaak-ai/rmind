@@ -76,20 +76,31 @@ def align_cache(
 ) -> dict[str, np.ndarray]:
     """Re-lay-out the shared cache tensors for the variant's declared shapes.
 
+    Handles both layout knobs, so one reference run can be scored against every
+    variant: `split_kt` wants `past_k` transposed, and `per_layer_cache` wants the
+    stacked cache split into `past_k_0 …` with the layer dimension dropped.
+
     Raises:
-        ValueError: if a declared cache shape is neither the reference's nor its
-            transpose -- i.e. the variant is not a re-layout of the same cache.
+        ValueError: if a declared cache shape is neither the reference's, nor its
+            transpose, nor a per-layer slice of it -- i.e. the variant is not a
+            re-layout of the same cache.
     """
-    aligned = dict(inputs)
-    for name in CACHE_INPUTS:
-        want, got = shapes[name], inputs[name].shape
-        if want == got:
-            continue
-        if want == (*got[:-2], got[-1], got[-2]):
-            aligned[name] = np.ascontiguousarray(inputs[name].swapaxes(-1, -2))
-        else:
-            msg = f"{name}: cannot reconcile variant shape {want} with {got}"
-            raise ValueError(msg)
+    aligned = {k: v for k, v in inputs.items() if k not in CACHE_INPUTS}
+    aligned["inputs_cache_bias"] = inputs["inputs_cache_bias"]
+    for side in ("inputs_past_k", "inputs_past_v"):
+        stacked = inputs[side]
+        per_layer = f"{side}_0" in shapes
+        blocks = list(stacked) if per_layer else [stacked]
+        names = [f"{side}_{i}" for i in range(len(blocks))] if per_layer else [side]
+        for name, block in zip(names, blocks, strict=True):
+            want, got = shapes[name], block.shape
+            if want == got:
+                aligned[name] = block
+            elif want == (*got[:-2], got[-1], got[-2]):
+                aligned[name] = np.ascontiguousarray(block.swapaxes(-1, -2))
+            else:
+                msg = f"{name}: cannot reconcile variant shape {want} with {got}"
+                raise ValueError(msg)
     return aligned
 
 

@@ -54,6 +54,7 @@ def _trunk(
     window: int | None = None,
     cls: type[CausalFrameTransformer] | None = None,
     cache_attention: CacheAttention = "concat",
+    per_layer_cache: bool = False,
 ) -> CausalFrameTransformer:
     torch.manual_seed(0)
     trunk = (cls or CausalFrameTransformer)(
@@ -63,6 +64,7 @@ def _trunk(
         tokens_per_frame=TOKENS_PER_FRAME,
         window=window,
         cache_attention=cache_attention,
+        per_layer_cache=per_layer_cache,
     )
     return trunk.double().eval()
 
@@ -593,6 +595,36 @@ def test_split_attention_recompute_gate_negative_control(mode: CacheAttention) -
     streamed = stream(trunk, tokens, cache_frames=window - 1, ring=True)
     err = (streamed - recompute).abs().max().item()
     assert err > CONTROL_MIN_ERROR, f"control should diverge, got {err:.3e}"
+
+
+@pytest.mark.parametrize("mode", CACHE_ATTENTION_MODES)
+def test_per_layer_cache_binding_is_the_same_computation(mode: CacheAttention) -> None:
+    """Binding the cache per layer changes only what TRT is handed, not the answer.
+
+    Worth a test rather than an eyeball: `step` indexes `past_k[i]` and a list
+    indexes identically to a stacked tensor, so the failure mode is not a wrong
+    number but a wrong *layout* -- and the whole point of the per-layer binding is
+    that TRT stops materializing a copy of each slice (25.3 ms at `_big`/64
+    frames), which only holds if the host writes the ring the matching way.
+    """
+    cache_frames = 5
+    stacked = _trunk(window=6, cache_attention=mode)
+    per_layer = _trunk(window=6, cache_attention=mode, per_layer_cache=True)
+    per_layer.load_state_dict(stacked.state_dict())
+    tokens = _tokens(9)
+
+    got = stream(per_layer, tokens, cache_frames=cache_frames, ring=True)
+    want = stream(stacked, tokens, cache_frames=cache_frames, ring=True)
+    torch.testing.assert_close(got, want, rtol=0, atol=TOL)
+
+    past_k, past_v, bias = per_layer.empty_cache(cache_frames=cache_frames)
+    assert isinstance(past_k, list)
+    assert len(past_k) == LAYERS
+    assert isinstance(past_v, list)
+    assert len(past_v) == LAYERS
+    assert bias.shape == (1, 1, 1, cache_frames * TOKENS_PER_FRAME)
+    # no leading layer dimension on a per-layer binding
+    assert past_v[0].shape == (1, HEADS, cache_frames * TOKENS_PER_FRAME, DIM // HEADS)
 
 
 @pytest.mark.parametrize("mode", SPLIT_MODES)

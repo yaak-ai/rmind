@@ -52,6 +52,7 @@ from tensordict import TensorDict
 from torch import Tensor, nn
 
 from rmind.components.transformer.causal_frame import (
+    CacheSide,
     CausalFrameTransformer,
     frame_rope_cos_sin,
 )
@@ -104,11 +105,28 @@ class PatchPolicyDecoderStep(nn.Module):
         batch_size: int = 1,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[CacheSide, CacheSide, Tensor]:
         """`(past_k, past_v, cache_bias)` for a cold cache -- the engage-time state."""
         return self.trunk.empty_cache(
             batch_size=batch_size, cache_frames=cache_frames, device=device, dtype=dtype
         )
+
+    def cache_inputs(
+        self, past_k: CacheSide, past_v: CacheSide, cache_bias: Tensor
+    ) -> dict[str, Tensor]:
+        """The cache half of the graph's input mapping, under either binding.
+
+        One place that decides the names, so the export, the runtime and the
+        parity check cannot disagree about them: `past_k`/`past_v`, or
+        `past_k_0 … past_k_{L-1}` when the trunk uses per-layer bindings.
+        """
+        if not self.trunk.per_layer_cache:
+            return {"past_k": past_k, "past_v": past_v, "cache_bias": cache_bias}  # ty:ignore[invalid-return-type]
+        return {
+            **{f"past_k_{i}": t for i, t in enumerate(past_k)},
+            **{f"past_v_{i}": t for i, t in enumerate(past_v)},
+            "cache_bias": cache_bias,
+        }
 
     def rope(self, frame_index: int) -> tuple[Tensor, Tensor]:
         """`(rope_cos, rope_sin)` `(1, head_dim)` for the episode-absolute frame index."""
@@ -121,7 +139,7 @@ class PatchPolicyDecoderStep(nn.Module):
 
     def advance(
         self, past: tuple[Tensor, Tensor, Tensor], new_k: Tensor, new_v: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor]:  # ty:ignore[invalid-return-type]
         """Ring-buffer update, i.e. what drivr does between ticks.
 
         Shift left by one frame block and write the new K/V into the freed tail.
@@ -154,10 +172,20 @@ class PatchPolicyDecoderStep(nn.Module):
             image, inputs["speed"], inputs["waypoints"]
         )  # (b, 1, 257, d)
 
+        if self.trunk.per_layer_cache:
+            past_k: CacheSide = [
+                inputs[f"past_k_{i}"] for i in range(self.trunk.num_layers)
+            ]
+            past_v: CacheSide = [
+                inputs[f"past_v_{i}"] for i in range(self.trunk.num_layers)
+            ]
+        else:
+            past_k, past_v = inputs["past_k"], inputs["past_v"]
+
         out, new_k, new_v = self.trunk.step(
             tokens[:, 0],
-            past_k=inputs["past_k"],
-            past_v=inputs["past_v"],
+            past_k=past_k,
+            past_v=past_v,
             cos=inputs["rope_cos"],
             sin=inputs["rope_sin"],
             cache_bias=inputs["cache_bias"],

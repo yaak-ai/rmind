@@ -81,6 +81,7 @@ from rmind.components.transformer.utils import run_layer_stack
 __all__ = [
     "CACHE_ATTENTION_MODES",
     "CacheAttention",
+    "CacheSide",
     "CausalFrameTransformer",
     "CausalFrameTransformerBlock",
     "CausalSelfAttention",
@@ -109,6 +110,10 @@ MASK_BIAS: float = -1e4
 #                 is 257 tokens per layer either way.
 CacheAttention = Literal["concat", "split", "split_kt"]
 CACHE_ATTENTION_MODES: tuple[CacheAttention, ...] = ("concat", "split", "split_kt")
+
+# One side of the cache: either one stacked `(L, b, H, ...)` tensor or one tensor
+# per layer.  `step` is indifferent (`past_k[i]` indexes both); TRT is not.
+CacheSide = Tensor | list[Tensor]
 
 
 def frame_block_causal_mask(
@@ -429,6 +434,7 @@ class CausalFrameTransformer(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
         cache_attention: CacheAttention = "concat",
+        per_layer_cache: bool = False,
     ) -> None:
         super().__init__()
         # There is no learned positional table over the flattened sequence any
@@ -467,6 +473,13 @@ class CausalFrameTransformer(nn.Module):
         # the host's ring write must both follow, and `set_tensor_address` will
         # not catch a mismatch (see the module docstring).
         self.keys_transposed = cache_attention == "split_kt"
+        # One cache tensor per layer instead of one stacked `(L, b, H, S, D)`.
+        # `step` is indifferent -- `past_k[i]` works either way -- but TRT is not:
+        # it materializes a COPY of every `past_k[i]` slice out of a stacked input,
+        # 25.3 ms at `_big`/64 frames, even though the slice is a contiguous view.
+        # Per-layer bindings leave it nothing to slice. See §10-11 of
+        # `docs/decoder_only_kv_cache.md`.
+        self.per_layer_cache = per_layer_cache
 
         # frame-RELATIVE intra-frame position: tiled onto every frame, so it is
         # invariant to where the frame sits in the window (unlike the 1542-slot
@@ -530,7 +543,7 @@ class CausalFrameTransformer(nn.Module):
         cache_frames: int | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[CacheSide, CacheSide, Tensor]:
         """`(past_k, past_v, cache_bias)` for a cold cache.
 
         `cache_frames` is the number of PAST frames held; it defaults to
@@ -539,12 +552,19 @@ class CausalFrameTransformer(nn.Module):
         cached keys against 257 queries -- 1542 keys in total, exactly the
         baseline's flattened sequence length.
 
-        K/V are `(num_layers, batch, num_heads, cache_frames * tokens_per_frame,
-        head_dim)` -- except that under `cache_attention="split_kt"` the K side is
-        `(num_layers, batch, num_heads, head_dim, cache_frames *
-        tokens_per_frame)`, i.e. pre-transposed. `cache_bias` is `(1, 1, 1,
-        cache_frames * tokens_per_frame)` filled with `MASK_BIAS` (nothing valid
-        yet).
+        Three layout knobs, all of which the host must match exactly because
+        `set_tensor_address` validates nothing:
+
+        * K/V are `(num_layers, batch, num_heads, cache_frames *
+          tokens_per_frame, head_dim)`;
+        * under `cache_attention="split_kt"` the K side is instead
+          `(..., head_dim, cache_frames * tokens_per_frame)`, pre-transposed;
+        * under `per_layer_cache` each side is a **list of `num_layers` tensors**
+          without the leading layer dimension, i.e. one binding per layer.
+
+        `cache_bias` is always one `(1, 1, 1, cache_frames * tokens_per_frame)`
+        tensor filled with `MASK_BIAS` (nothing valid yet) -- it is shared by every
+        layer, so there is nothing per-layer about it.
 
         Raises:
             ValueError: if neither `cache_frames` nor `window` is set.
@@ -556,32 +576,43 @@ class CausalFrameTransformer(nn.Module):
             msg = "cache_frames required when window is None"
             raise ValueError(msg)
         tokens = n * self.tokens_per_frame
-        head = (self.num_layers, batch_size, self.num_heads)
-        past_v = torch.zeros((*head, tokens, self.head_dim), device=device, dtype=dtype)
-        past_k = (
-            torch.zeros((*head, self.head_dim, tokens), device=device, dtype=dtype)
-            if self.keys_transposed
-            else past_v.clone()
-        )
+        leading = () if self.per_layer_cache else (self.num_layers,)
+        head = (*leading, batch_size, self.num_heads)
+        v_shape = (*head, tokens, self.head_dim)
+        k_shape = (*head, self.head_dim, tokens) if self.keys_transposed else v_shape
         bias = torch.full((1, 1, 1, tokens), MASK_BIAS, device=device, dtype=dtype)
-        return past_k, past_v, bias
+        if not self.per_layer_cache:
+            return (
+                torch.zeros(k_shape, device=device, dtype=dtype),
+                torch.zeros(v_shape, device=device, dtype=dtype),
+                bias,
+            )
+        return (
+            [torch.zeros(k_shape, device=device, dtype=dtype) for _ in self.layers],
+            [torch.zeros(v_shape, device=device, dtype=dtype) for _ in self.layers],
+            bias,
+        )
 
     def write_slot(  # noqa: PLR0913
         self,
-        past_k: Tensor,
-        past_v: Tensor,
+        past_k: CacheSide,
+        past_v: CacheSide,
         cache_bias: Tensor,
         new_k: Tensor,
         new_v: Tensor,
         *,
         frame_index: int,
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[CacheSide, CacheSide, Tensor]:
         """The host-side ring write of §7, out-of-place, layout-aware.
 
         Writes one frame block into slot `frame_index % cache_frames` and moves
         nothing else. Returns fresh tensors rather than mutating, because that is
         what the tests need; the runtime writes in place into the device buffers
         that are already bound to the engine's cache inputs.
+
+        `new_k`/`new_v` are always the stacked `(L, b, H, ...)` engine outputs;
+        under `per_layer_cache` they are distributed into the per-layer buffers,
+        which is one 257-token copy per layer either way.
 
         Valid because attention is permutation-invariant over keys and every key
         carries its own rotation and its own `cache_bias` entry, so the order of
@@ -593,21 +624,38 @@ class CausalFrameTransformer(nn.Module):
             return past_k, past_v, cache_bias
         start = (frame_index % cache_frames) * tokens
         slot = slice(start, start + tokens)
-        past_k, past_v, cache_bias = past_k.clone(), past_v.clone(), cache_bias.clone()
-        if self.keys_transposed:
-            past_k[..., :, slot] = new_k
-        else:
-            past_k[..., slot, :] = new_k
-        past_v[..., slot, :] = new_v
+        cache_bias = cache_bias.clone()
         cache_bias[..., slot] = 0.0
-        return past_k, past_v, cache_bias
+
+        def place(side: Tensor, block: Tensor, *, transposed: bool) -> Tensor:
+            side = side.clone()
+            if transposed:
+                side[..., :, slot] = block
+            else:
+                side[..., slot, :] = block
+            return side
+
+        if not self.per_layer_cache:
+            return (
+                place(past_k, new_k, transposed=self.keys_transposed),  # ty:ignore[invalid-argument-type]
+                place(past_v, new_v, transposed=False),  # ty:ignore[invalid-argument-type]
+                cache_bias,
+            )
+        return (
+            [
+                place(k, new_k[i], transposed=self.keys_transposed)
+                for i, k in enumerate(past_k)
+            ],
+            [place(v, new_v[i], transposed=False) for i, v in enumerate(past_v)],
+            cache_bias,
+        )
 
     def step(  # noqa: PLR0913
         self,
         src: Tensor,
         *,
-        past_k: Tensor,
-        past_v: Tensor,
+        past_k: CacheSide,
+        past_v: CacheSide,
         cos: Tensor,
         sin: Tensor,
         cache_bias: Tensor,

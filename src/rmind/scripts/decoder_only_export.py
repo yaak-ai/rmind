@@ -116,7 +116,11 @@ def baseline_args(episode_length: int) -> tuple[dict[str, Any]]:
 
 
 def decoder_model_and_args(
-    arm: str, context: int, cache_attention: CacheAttention = "concat"
+    arm: str,
+    context: int,
+    cache_attention: CacheAttention = "concat",
+    *,
+    per_layer_cache: bool = False,
 ) -> tuple[Module, tuple[dict[str, Tensor]], tuple[int, int, int, int]]:
     """The decoder step: ONE new frame against a cache of `context - 1` frames."""
     policy, dim, layers, heads = build_policy(arm, episode_length=1)
@@ -127,6 +131,7 @@ def decoder_model_and_args(
         tokens_per_frame=TOKENS_PER_FRAME,
         window=context,
         cache_attention=cache_attention,
+        per_layer_cache=per_layer_cache,
     ).eval()
     step = PatchPolicyDecoderStep(policy=policy).eval()
 
@@ -135,9 +140,15 @@ def decoder_model_and_args(
     # export against a WARM cache -- the steady state. The graph is identical for a
     # cold cache and costs the same; only `cache_bias` differs.
     generator = torch.Generator().manual_seed(0)
-    past_k = torch.randn(past_k.shape, generator=generator)
-    past_v = torch.randn(past_v.shape, generator=generator)
-    cache_bias = torch.zeros_like(cache_bias)
+
+    def randomize(side: Any) -> Any:
+        if isinstance(side, list):
+            return [torch.randn(t.shape, generator=generator) for t in side]
+        return torch.randn(side.shape, generator=generator)
+
+    cache = step.cache_inputs(
+        randomize(past_k), randomize(past_v), torch.zeros_like(cache_bias)
+    )
     rope_cos, rope_sin = step.rope(context - 1)
 
     args = (
@@ -145,9 +156,7 @@ def decoder_model_and_args(
             "image": torch.rand(1, 1, 3, IMAGE_HW, IMAGE_HW),
             "speed": torch.rand(1, 1, 1) * 130,
             "waypoints": torch.rand(1, 1, NUM_WAYPOINTS, 2) * 2 - 1,
-            "past_k": past_k,
-            "past_v": past_v,
-            "cache_bias": cache_bias,
+            **cache,
             "rope_cos": rope_cos,
             "rope_sin": rope_sin,
         },
@@ -204,6 +213,14 @@ def main() -> None:
         "`split_kt` additionally holds the K cache pre-transposed. All three are "
         "the same attention -- see tests/test_causal_frame.py.",
     )
+    parser.add_argument(
+        "--per-layer-cache",
+        action="store_true",
+        help="bind the cache as one tensor PER LAYER (`inputs_past_k_0` ...) "
+        "instead of one stacked `(L, b, H, S, D)` tensor. TRT materializes a "
+        "copy of every `past_k[i]` slice out of a stacked input -- 25.3 ms at "
+        "_big/64 frames -- even though the slice is a contiguous view.",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--verify",
@@ -224,18 +241,21 @@ def main() -> None:
         export_args: tuple[Any, ...] = baseline_args(args.context)
     else:
         model, export_args, shapes = decoder_model_and_args(
-            args.arm, args.context, args.attention
+            args.arm, args.context, args.attention, per_layer_cache=args.per_layer_cache
         )
         layers, heads, head_dim, cache_frames = shapes
+        k_name = "past_k_0" if args.per_layer_cache else "past_k"
         logger.info(
             "cache",
             attention=args.attention,
+            per_layer=args.per_layer_cache,
             layers=layers,
             heads=heads,
             head_dim=head_dim,
             cache_frames=cache_frames,
             cached_keys=cache_frames * TOKENS_PER_FRAME,
-            past_k_shape=tuple(export_args[0]["past_k"].shape),
+            bindings=len(export_args[0]),
+            past_k_shape=tuple(export_args[0][k_name].shape),
         )
     logger.info(
         "parameters",
