@@ -276,6 +276,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("section", choices=["attention", "trunk", "vit"])
     parser.add_argument("--batches", default="4,16")
+    parser.add_argument(
+        "--only",
+        default=None,
+        help='restrict GEOMETRIES, e.g. "32x16" or "32x16,64x16". Use this (with a '
+        "single --batches value) when measuring one cell: a shared process that has "
+        "already peaked at tens of GiB fragments the allocator for whatever runs next, "
+        "which shows up as a spurious OOM.",
+    )
     parser.add_argument("--dtype", default="bf16", choices=["bf16", "fp32"])
     args = parser.parse_args()
     if not torch.cuda.is_available():
@@ -283,6 +291,15 @@ def main() -> None:
         raise SystemExit(msg)
     dtype = {"bf16": torch.bfloat16, "fp32": torch.float32}[args.dtype]
     batches = [int(b) for b in args.batches.split(",")]
+    if args.only:
+        wanted = {
+            tuple(int(x) for x in pair.split("x")) for pair in args.only.split(",")
+        }
+        global GEOMETRIES  # noqa: PLW0603
+        GEOMETRIES = tuple(g for g in GEOMETRIES if g in wanted)
+        if not GEOMETRIES:
+            msg = f"--only {args.only} matches none of the known geometries"
+            raise SystemExit(msg)
     emit(
         f"{torch.__version__} {torch.cuda.get_device_name(0)} dtype={args.dtype} "
         f"free/total GiB {[round(x / 2**30, 1) for x in torch.cuda.mem_get_info()]}"

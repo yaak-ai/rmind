@@ -12,8 +12,9 @@ past frames, and never recomputes or re-attends old frames to each other.
 | --- | --- |
 | trunk + mask + RoPE + cache | `src/rmind/components/transformer/causal_frame.py` |
 | one-tick export wrapper | `src/rmind/models/patch_policy_decoder.py` |
-| correctness gate (CPU) | `tests/test_causal_frame.py` |
-| training arm | `config/experiment/yaak/patch_policy/dinov2_dinowm_causal.yaml` |
+| correctness gate | `tests/test_causal_frame.py` (cache/positional gates on CPU; the FlexAttention fwd+bwd parity gate needs CUDA and skips without it) |
+| block-sparse training benchmark | `tests/bench_causal_frame.py` |
+| training arms | `config/experiment/yaak/patch_policy/dinov2_dinowm_causal.yaml`, `..._causal_80gb.yaml` |
 
 Everything outside the trunk is unchanged: the frozen DINOv2 ViT-S encoder, the
 frozen goal encoder and its RVQ, the fusion, `patch_projection`,
@@ -134,9 +135,11 @@ frames attend to those. Verified equivalent in
 
 ## 5. Correctness gate — `tests/test_causal_frame.py`
 
-Runs on CPU in <1 s. Every equivalence is paired with a **negative control** on a
-window-absolute variant of the same trunk, driven through the same harness, so a
-pass is falsifiable.
+The cache, mask and positional gates run on CPU in ~2 s (27 passed, 8 skipped);
+with a CUDA device the 8 skips are the FlexAttention parity gates of §11.2 and the
+whole file is 35 passed in ~9 s. Every equivalence is paired with a **negative
+control** on a window-absolute variant of the same trunk, driven through the same
+harness, so a pass is falsifiable.
 
 The literal §5.1 phrasing — "run on `[0..5]` cold, then `[1..6]` warm vs a full
 recompute of `[1..6]`" — is exact only when "full recompute" means the
@@ -286,9 +289,16 @@ takes clips from 11 to 21 samples, and 64 frames would need 69. Consequences:
 * the dataset must be **rebuilt** — `clip_period` is derived from `clip_length`
   and the existing clip-11 build is not reusable;
 * at `episode_step = 10` (≈3 Hz), 21 samples span ~7 s of driving and 69 span
-  ~23 s. Long clips are cut at session boundaries, so the number of usable
-  windows falls roughly linearly with `clip_length` — expect a materially
-  smaller train set at 64 frames, on top of the compute cost;
+  ~23 s;
+* **the train-set SIZE barely changes**, which is worth stating because the
+  opposite is the intuitive guess. The sampler is
+  `rbyte.io.DataFrameGroupByDynamic(every=${episode_stride} = 10i,
+  period=${clip_period}, gather_every=${episode_step})`: clip *starts* are strided
+  by `every`, independently of `period`, so a longer clip does not thin the
+  windows — it only truncates each drive's tail. Going from `clip_length` 11 to 37
+  costs ~26 windows of ~3.1k per drive, <1 % of the ~1.97M samples (assuming short
+  trailing windows are dropped; confirm on the first cache rebuild). Steps/epoch is
+  therefore `~1.97M / batch_size` at any `episode_length`;
 * per-sample decode/IO grows linearly with `clip_length`, so the loader becomes a
   real cost at long context, not just the GPU.
 
@@ -591,31 +601,47 @@ readouts per step and the activation memory:
 | 64 | 16 | 3215 | **749** | **1.15×** | 7469 | **1897** | **1.12×** |
 | 64 | 64 | 3233 | 1151 | 1.77× | 7501 | 2809 | 1.66× |
 
-("vs today" is against the 6-frame **dense** step of the same width, 652 / 1695 ms,
-which is what runs now. Raw per-batch measurements are in the commit message and
-reproducible with `tests/bench_causal_frame.py trunk`.)
+("vs today" is against the 6-frame step of **the same trunk with
+`attention_impl: sdpa`**, 652 / 1695 ms — the honest denominator for "what does
+flex buy". It is not literally the production `BlockCausalTransformer`, which has
+the same widths and the same dense-mask cost structure but no per-layer RoPE.
+Reproduce with `tests/bench_causal_frame.py trunk`.)
 
 **32-frame training lands inside today's 6-frame budget**: 1.08× at 512-d, 1.06× at
 768-d, against 2.74× / 2.50× if the mask stays dense. 64 frames is 1.15× / 1.12×.
 The cost of context has gone from quadratic to essentially free, and what is left
 is set by `window`, not by clip length: `32/8` (0.91×) is *cheaper* than today.
 
-Trunk peak activation memory at 768 frame-slots is likewise ~flat and slightly
-better than today's:
+And the recipe point itself, measured directly at the batch each arm actually
+uses — no normalization, and one fresh process per cell
+(`bench_causal_frame.py trunk --only 32x16 --batches 24`, plus the same for the
+6-frame/batch-128 baseline: a shared process that has already peaked at tens of GiB
+fragments the allocator for whatever runs next, which shows up as a spurious OOM):
 
-| frames | window | batch | 512-d/8L | 768-d/12L |
-| --- | --- | --- | --- | --- |
-| 6 | 6 | 128 | 11.0 GiB (sdpa, today) | 20.0 GiB |
-| 16 | 16 | 48 | 9.9 GiB | 17.6 GiB |
-| 32 | 16 | 24 | **9.7 GiB** | **17.4 GiB** |
-| 64 | 16 | 12 | 9.5 GiB | 17.1 GiB |
+| arm | geometry | batch | impl | step | trunk peak |
+| --- | --- | --- | --- | --- | --- |
+| 512-d / 8L | 6 frames, window 6 | 128 | sdpa (today) | 670.7 ms | 9.60 GiB |
+| 512-d / 8L | **32 frames, window 16** | **24** | **flex** | **701.7 ms** | **9.60 GiB** |
+| 768-d / 12L | 6 frames, window 6 | 128 | sdpa (today) | 1713.5 ms | 16.80 GiB |
+| 768-d / 12L | **32 frames, window 16** | **24** | **flex** | **1779.6 ms** | **16.79 GiB** |
 
-(Extrapolated linearly in batch from the measured batch-16 rows, which is how
-activation memory scales; flex is 3–5 % below sdpa at every measured point.) The
-768-d/64-frame/batch-16 **dense** case measures 23.6 GiB of trunk activations
-alone — that is what "does not fit a 32 GB card" looks like, and flex brings the
-same geometry to 22.8 GiB, i.e. block-sparsity is not the lever for memory. Holding
-frame-slots constant is.
+**1.05× the step time and the same memory to the last 10 MiB, for 5.3× the
+context.** Both arms. That is the whole result, and it agrees with the normalized
+table above to within 3 %, which is the check on the normalization.
+
+Peak activation memory at a constant 768 frame-slots is flat because the trunk's
+memory is dominated by the per-token residual/MLP activations that gradient
+checkpointing keeps, and those scale with `batch × frames`, not with either factor
+alone. Block-sparsity is not the memory lever (flex is only 2–5 % under sdpa at
+equal shape: 9825 vs 10017 MiB at 32 frames/batch 24, 22.8 vs 23.6 GiB at 64
+frames/batch 16) — **holding frame-slots constant is**.
+
+For the 80 GB arm, batch 64 × 32 frames scales to ~25.6 GiB (512-d) / ~44.8 GiB
+(768-d) of trunk activations. It **OOMs on a 32 GB 5090** — measured, in a fresh
+process — which is exactly why it is a separate yaml. Note also that the first
+compile of a new shape needs headroom *beyond* steady state (inductor benchmarks
+several kernel configs while the activations are live), so leave more margin than
+the steady-state figure suggests.
 
 The recipe built from this is
 `config/experiment/yaak/patch_policy/dinov2_dinowm_causal.yaml` (32 frames, window

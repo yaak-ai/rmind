@@ -54,11 +54,21 @@ defaults:
 #     64      16     3215       749                1.15x
 #     64      64     3233      1151                1.77x
 #
-# So 32 frames of clip with a 16-frame window costs 1.08x today's 6-frame trunk
-# step -- the same ballpark -- where dense SDPA would cost 2.74x. Trunk peak
-# activation memory at 768 frame-slots is ~9.7 GiB (flex) against ~11.0 GiB for
-# today's 6-frame/batch-128 arm, i.e. slightly BETTER, because block-sparsity also
-# shrinks the attention working set.
+# So 32 frames of clip with a 16-frame window costs ~1.08x today's 6-frame trunk
+# step -- the same ballpark -- where dense SDPA would cost 2.74x.
+#
+# Measured directly at the two batches involved, one fresh process per cell
+# (`bench_causal_frame.py trunk --only 32x16 --batches 24`), which is the number
+# this recipe actually rests on:
+#
+#   512-d/8L   6 frames, w6,  batch 128, sdpa (today)  670.7 ms   9.60 GiB
+#   512-d/8L  32 frames, w16, batch  24, flex          701.7 ms   9.60 GiB
+#   768-d/12L  6 frames, w6,  batch 128, sdpa (today) 1713.5 ms  16.80 GiB
+#   768-d/12L 32 frames, w16, batch  24, flex         1779.6 ms  16.79 GiB
+#
+# 1.05x the step time and the same memory to the last 10 MiB, for 5.3x the context.
+# Memory is flat because activation memory scales with `batch x frames`, which is
+# what is being held constant; block-sparsity is worth only another 2-5 % there.
 #
 # Serving cost of `window: 16` is already measured: 59.6 ms/tick for this arm on
 # an AGX Orin at 918 MHz (§9 of docs/decoder_only_kv_cache.md), vs 200.9 ms for

@@ -7,14 +7,22 @@ defaults:
 # The same 32-frame/16-window geometry as dinov2_dinowm_causal, with the batch an
 # 80 GB A100/H100 can hold instead of the one a 32 GB 5090 can.
 #
-# Trunk peak activation memory is linear in frame-slots per step and was measured
-# at ~9.7 GiB for 768 slots (RTX 5090, bf16, gradient checkpointing,
-# tests/bench_causal_frame.py). batch 64 x 32 frames = 2048 slots -> ~26 GiB of
-# trunk activations, plus the frozen ViT's forward-only working set for 2048
-# images, the VQ-BeT heads over 2048 readouts, and AdamW state for the ~53 M
-# trainable parameters (~0.6 GiB). That leaves comfortable headroom in 80 GB;
-# batch 96 (3072 slots, ~39 GiB trunk) is the next step if a smoke run shows room,
-# but re-derive the schedule below before trying it.
+# Trunk peak activation memory is linear in frame-slots per step and was MEASURED at
+# 9.60 GiB (512-d/8L) and 16.79 GiB (768-d/12L) for 768 slots -- batch 24 x 32
+# frames, RTX 5090, bf16, gradient checkpointing, `bench_causal_frame.py trunk
+# --only 32x16 --batches 24`. batch 64 x 32 frames = 2048 slots therefore needs
+# ~25.6 / ~44.8 GiB of trunk activations, plus the frozen ViT's forward-only working
+# set for 2048 images (~5.4 GiB extrapolated from 2031 MiB at 768), the VQ-BeT heads
+# over 2048 readouts, and AdamW state for the trainable parameters (~0.6 GiB at
+# 512-d). Comfortable in 80 GB, and measured to OOM on a 32 GB 5090 -- which is why
+# this is a separate file rather than a batch override on the main arm.
+#
+# Leave headroom beyond the steady-state figure: the first compile of a new shape
+# benchmarks several kernel configs while the activations are live, so peak during
+# step 1 exceeds peak at step 100.
+#
+# batch 96 (3072 slots, ~38 GiB trunk at 512-d) is the next step if a smoke run
+# shows room, but re-derive the schedule below before trying it.
 #
 # Schedule: 1.97M / 64 = ~30.8k steps/epoch. Today's 15-epoch/231k-step plan is
 # 177M supervised readouts; at 64 x 32 = 2048 readouts/step that is ~86.6k steps,
