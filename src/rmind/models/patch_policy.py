@@ -472,6 +472,33 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 sampled_chunk[:, -1].detach(), target[:, -1]
             )
 
+            # context-depth localizer for windowed causal trunks: readouts at
+            # positions < window-1 train under a PARTIAL window, positions
+            # >= window-1 under the FULL window served at inference. A gap
+            # between the two buckets says WHERE a causal arm is failing:
+            # full-window >> partial-window means long-context conditioning
+            # itself is the problem, not the heads or the features.
+            window = getattr(self.encoder, "window", None)
+            num_frames = code_logits.shape[1]
+            if window is not None and num_frames > window - 1:
+                buckets = {
+                    "partial_window": slice(None, window - 1),
+                    "full_window": slice(window - 1, None),
+                }
+                for bucket, sl in buckets.items():
+                    if code_logits[:, sl].shape[1] == 0:
+                        continue
+                    metrics[f"code_{bucket}"] = torch.stack([
+                        self.losses["code"](
+                            rearrange(code_logits[:, sl, q, :], "b t c -> (b t) c"),
+                            rearrange(target_codes[:, sl, q], "b t -> (b t)"),
+                        )
+                        for q in range(tokenizer.quantizer.num_quantizers)
+                    ]).mean()
+                    metrics[f"offset_{bucket}"] = self.losses["offset"](
+                        predicted_chunk[:, sl], target[:, sl]
+                    )
+
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:

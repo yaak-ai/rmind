@@ -147,6 +147,11 @@ model:
     weight_decay_overrides:
       code_head: 0.2
 
+# scale-balanced patch/goal fusion (learnable calibrated gains). The dinowm
+# features are post-norm but still ~34x the goal z_q's element RMS; the causal
+# line adopts the fix from the start (per Max, 2026-08-06).
+fusion_norm: true
+
 datamodule:
   train:
     batch_size: 24

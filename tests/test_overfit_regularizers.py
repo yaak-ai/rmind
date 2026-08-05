@@ -249,3 +249,25 @@ def test_full_model_train_step_causal_sdpa_cpu() -> None:
 def test_full_model_train_step_causal_flex_gpu() -> None:
     torch.manual_seed(0)
     _train_step(_causal_regularized_model("flex"), "cuda")
+
+
+def test_context_depth_bucket_metrics_present() -> None:
+    # window=2, episode_length=3: position 0 is partial-window, 1..2 full
+    model = _causal_regularized_model("sdpa").eval()
+    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+    for bucket in ("partial_window", "full_window"):
+        assert ("policy", "metric", f"code_{bucket}") in metrics.keys(
+            include_nested=True
+        )
+        assert ("policy", "metric", f"offset_{bucket}") in metrics.keys(
+            include_nested=True
+        )
+
+
+def test_context_depth_buckets_absent_for_block_causal_trunk() -> None:
+    from tests.test_patch_policy import _make_model as _make_sdpa_model
+
+    metrics = _make_sdpa_model()._compute_metrics(_make_batch())  # noqa: SLF001
+    assert ("policy", "metric", "code_full_window") not in metrics.keys(
+        include_nested=True
+    )
