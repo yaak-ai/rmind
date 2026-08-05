@@ -169,3 +169,81 @@ def test_unmatched_override_prefix_raises() -> None:
 def test_overlapping_override_prefixes_raise() -> None:
     with pytest.raises(ValueError, match="overlap"):
         _opt(weight_decay_overrides={"code_head": 0.2, "code_head.0": 0.3})
+
+
+# ---------------------------------------------------------------------------
+# The pre-launch gate: a full PatchPolicy training step through the causal
+# trunk with ALL THREE regularizers active, backward, and a SelectiveAdamW
+# step with the code_head decay override. Runs on CPU with sdpa; the flex
+# variant needs a GPU (same gate, attention_impl="flex").
+# ---------------------------------------------------------------------------
+
+
+def _causal_regularized_model(attention_impl: str) -> "PatchPolicy":
+    from tests.test_patch_policy import (
+        EPISODE_LENGTH,
+        NUM_PATCHES,
+        POLICY_DIM,
+        _make_model,
+    )
+
+    model = _make_model()
+    model.encoder = CausalFrameTransformer(
+        dim_model=POLICY_DIM,
+        num_layers=2,
+        num_heads=2,
+        tokens_per_frame=NUM_PATCHES + 1,
+        window=2,
+        max_sequence_length=EPISODE_LENGTH * (NUM_PATCHES + 1),
+        attn_dropout=0.0,
+        attention_impl=attention_impl,  # type: ignore[arg-type]
+        drop_path_rate=0.1,
+    )
+    model.losses["code"] = FocalLoss(label_smoothing=0.1)
+    return model
+
+
+def _train_step(model: "PatchPolicy", device: str) -> None:
+    from tests.test_patch_policy import _make_batch
+
+    model = model.to(device).train()
+    opt = SelectiveAdamW(
+        model,
+        lr=1e-4,
+        weight_decay=0.1,
+        weight_decay_overrides={"code_head": 0.2},
+        weight_decay_module_blacklist=(nn.LayerNorm, nn.Embedding),
+    )
+    batch = {}
+    src = _make_batch()
+
+    def _to(x: object) -> object:
+        return (
+            {k: _to(v) for k, v in x.items()} if isinstance(x, dict) else x.to(device)
+        )  # type: ignore[union-attr]
+
+    batch = _to(src)
+    loss = model._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    assert torch.isfinite(loss)
+    loss.backward()
+    grads = {
+        n: p.grad is not None and bool(torch.isfinite(p.grad).all())
+        for n, p in model.named_parameters()
+        if p.requires_grad
+    }
+    assert grads and all(grads.values()), [n for n, ok in grads.items() if not ok]
+    assert any("encoder.intra_position_embedding" in n for n in grads)
+    assert any(n.startswith("code_head") for n in grads)
+    opt.step()
+    opt.zero_grad()
+
+
+def test_full_model_train_step_causal_sdpa_cpu() -> None:
+    torch.manual_seed(0)
+    _train_step(_causal_regularized_model("sdpa"), "cpu")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="flex needs a GPU")
+def test_full_model_train_step_causal_flex_gpu() -> None:
+    torch.manual_seed(0)
+    _train_step(_causal_regularized_model("flex"), "cuda")
