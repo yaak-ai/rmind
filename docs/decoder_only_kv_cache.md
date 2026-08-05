@@ -334,10 +334,14 @@ the same export path, not against the hand-off's.
 | 64 | 160.51 ms | 1.25× | 364.22 ms | 1.15× |
 
 At the same 6 frames of context the step is **4.8× cheaper in both arms**. The
-hand-off estimated ~75 ms for `_big`; the measurement is 87.2 ms, i.e. the
-estimate was optimistic by ~16 % — close, and the reason is exactly the "no new
-overhead from cache management" assumption it flagged (§8): the in-graph
-`Concat` of `past_k` with the new frame's keys is real work.
+hand-off estimated ~75 ms for `_big`; the measurement is 87.2 ms, i.e. the estimate
+was optimistic by ~16 %.
+
+⚠️ An earlier version of this paragraph attributed that 16 % to the in-graph `Concat`
+of `past_k` with the new frame's keys. **That is wrong too** — at 6 frames the whole
+cache-copy path is ~0.46 ms per layer, ~5.5 ms of the 87.2, and a graph with the
+`Concat` removed entirely measures 87.00 ms, i.e. **0.2 ms** cheaper (§10). Whatever
+the 12 ms is, cache management is not it.
 
 ### Correcting the hand-off: per-tick cost does NOT stop scaling with context
 
@@ -356,27 +360,47 @@ attention work per cached frame is `2 × 257 × 257 × D × 2 × L` FLOPs — 1.
 **~510–530 GFLOP/s effective** (~16 % of the module's ~3.3 TFLOP/s fp32 peak) in
 both arms.
 
-**Where the marginal time actually goes is split, and the `Concat` is a first-order
-term.** Bucketing `trtexec --dumpProfile` by kernel kind (TRT fuses and renames
-everything to `__myl_*`, so the module hierarchy is *not* recoverable — this is why
-the hand-off cross-checked its §1 split against an independent FLOP count instead):
+**Where the marginal time goes — corrected, and the correction matters.** An
+earlier version of this section reported a bucket called "fused kernels containing
+the cache `Concat`" at **68.2 ms / 34 %** of small at N=64, and concluded from it
+that a paged/in-place attention plugin was the highest-value follow-up. **That
+number was a name-matching artifact and the conclusion drawn from it is wrong.**
 
-| bucket | small, N=6 | small, N=64 |
-| --- | --- | --- |
-| MatMul (qkv / proj / MLP / head / unfused attention GEMMs) | 25.5 ms (55 %) | 62.2 ms (31 %) |
-| fused kernels containing the cache `Concat` | 6.6 ms (14 %) | **68.2 ms (34 %)** |
-| `scaled_dot_product_attention` | 4.1 ms (9 %) | 35.0 ms (17 %) |
-| standalone fused softmax | 3.4 ms (7 %) | 30.5 ms (15 %) |
-| other fused elementwise | 6.4 ms (14 %) | 6.5 ms (3 %) |
-| conv2d (ViT patch embed) | 0.15 ms | 0.15 ms |
+TRT fuses and renames everything to `__myl_<Op><Op>...`, so buckets have to be
+derived from those concatenated op abbreviations — and `Con` in a myelin name means
+*any* `Concat`. Three unrelated `Concat`s exist per layer: the KV cache concat, the
+`F.pad(cache_bias)` that appends the own-frame keys' zero bias, and RoPE's own
+`cat((-x2, x1))`. The single most expensive kernel in the whole `_big`/N=64 profile,
+`__myl_RepRepConAddMaxSubExpSumDivMul` at 9.75 ms, is the **softmax** — its `Con` is
+the 1-row bias pad. Matching `Con` before the softmax pattern put it, and its
+siblings, in the `Concat` bucket.
 
-⚠️ Treat this as *indicative only*: `--dumpProfile` inflates the total (46.2 ms
-against a benchmarked 41.8 ms at N=6, 202.5 against 160.5 at N=64) and it inflates
-large-tensor kernels most, which is exactly the `Concat` bucket. Both sources agree
-on the actionable conclusion though: **at long context the in-graph `Concat` of
-`past_k` with the new frame's keys is comparable to the attention itself**, so an
-in-place / paged attention plugin is the highest-value follow-up if 64+ frames are
-wanted — bigger than any further caching, because the cache is already exact.
+Re-bucketed with the softmax pattern taking precedence (`prof/rebucket.py` in the
+measurement scratch, and the naive rule is kept in it so the artifact is
+reproducible rather than asserted):
+
+| bucket | small N=6 | small N=64 | `_big` N=64 |
+| --- | --- | --- | --- |
+| MatMul (qkv / proj / MLP / head / attention GEMMs) | 28.8 ms (62 %) | 65.5 ms (32 %) | 143.8 ms (40 %) |
+| `scaled_dot_product_attention` (the P·V GEMM) | 4.1 ms (9 %) | 35.0 ms (17 %) | 82.6 ms (23 %) |
+| fused softmax (incl. the `cache_bias` pad) | 3.4 ms (7 %) | 30.6 ms (15 %) | 68.5 ms (19 %) |
+| KV cache copy — K path (slice + rope + cat + transpose) | 2.0 ms (4 %) | 20.5 ms (10 %) | 46.1 ms (13 %) |
+| KV cache copy — V path (slice + cat) | 2.5 ms (5 %) | 26.1 ms (13 %) | 12.8 ms (4 %) |
+| other fused elementwise | 5.2 ms (11 %) | 24.7 ms (12 %) | 4.0 ms (1 %) |
+| conv2d (ViT patch embed) | 0.15 ms | 0.15 ms | 0.15 ms |
+
+The naive rule reproduces the old **74.5 ms / 36.8 %** on the same file, so this is
+the same measurement read two ways, not a new one.
+
+⚠️ The old warning that `--dumpProfile` inflates large-tensor kernels most does not
+survive either. It inflates the *small* arm (202.5 ms profiled vs 160.5 benchmarked
+at N=64) but **not** `_big`: 357.9 profiled vs 363.9 benchmarked, i.e. slightly
+*under*. Whatever the small-arm gap is, it is not proportional to tensor size.
+
+Even the corrected table overstates the prize, and §10 measures why: those cache-copy
+kernels are dominated by a **slice of the stacked cache tensor**, which any
+formulation pays, not by the `Concat`, which is fused into it for free. §10 removes
+the `Concat` from the graph outright and gains 3.6 %.
 
 What *does* improve superlinearly is the comparison against recomputing an
 N-frame window, which is quadratic. The right way to state the prize:
@@ -392,10 +416,11 @@ N-frame window, which is quadratic. The right way to state the prize:
 
 Practical reading of the slope: 32 frames is the point where `_big` still fits
 comfortably (205 ms, half of today's cost) and 64 frames is where it stops being
-free (364 ms, no longer inside a tick at fp32). If 64 frames is wanted, the levers
-are the fp32-encoder + fp16-trunk serving engine from the trt-export skill §9 —
-which halves the cache and its traffic as well as the GEMM cost — or a
-block-sparse/paged attention kernel. Not more caching: the cache is already exact.
+free (364 ms, no longer inside a tick at fp32). If 64 frames is wanted, the lever is
+the fp32-encoder + fp16-trunk serving engine from the trt-export skill §9 — which
+halves the cache and its traffic as well as the GEMM cost. **Not** an in-place/paged
+attention rewrite: §10 built one and it is worth 3.6 %. And not more caching: the
+cache is already exact.
 
 ⚠️ The decoder numbers include §3.3's gather-before-final-block, which the
 baseline does not have. That optimization is free and applies to the baseline
@@ -409,7 +434,234 @@ does identical work at any fill level, and correctness at cold start comes from
 dedicated small-context engine; it is not worth an engine to save one tick per
 episode.
 
-## 10. Open risks
+## 10. Paged / in-place attention: what removing the copy is actually worth
+
+The question this section answers: **how much of the linear-in-context cost is the
+per-tick KV copy, and what is the cheapest mechanism that removes it?** Same host,
+same day, same methodology as §9 (fp32, GPU pinned 918 MHz, idle,
+`--iterations=60 --avgRuns=20 --useSpinWait --warmUp=1000`). **Every** §9 point that
+anything below is compared against was re-measured first, as a second gate zero
+against the same engines:
+
+| | §9 recorded | re-measured | delta |
+| --- | --- | --- | --- |
+| `_big` N=6 | 87.21 ms | **87.21 ms** | 0.00 % |
+| `_big` N=32 | 205.05 ms | **205.22 ms** | +0.08 % |
+| `_big` N=64 | 364.22 ms | **363.93 ms** | −0.08 % |
+| small N=6 | 41.79 ms | **41.78 ms** | −0.02 % |
+| small N=32 | 92.26 ms | **92.27 ms** | +0.01 % |
+| small N=64 | 160.51 ms | **160.58 ms** | +0.04 % |
+
+Six for six inside 0.1 %, so the deltas below are real at the ~0.5 ms level.
+
+### The mechanisms
+
+All are the *same attention*, differing only in what the graph materializes;
+`cache_attention` on `CausalFrameTransformer` selects between them, and
+`tests/test_causal_frame.py` plus `rmind.scripts.decoder_only_cache_parity` gate
+the equivalence (float64 residual **2.2e-15** at production size — machine
+epsilon — and **3.5e-7** relative on `policy.joint_actions` through ORT).
+
+* **`concat`** (§3, the shipped default) — `cat(past_k, k)` then one SDPA.
+* **`split`** — two attentions, one over the cache and one over the own frame,
+  combined by online-softmax renormalization (`merge_attention`): the flash trick
+  applied once, at frame granularity. **No cache-sized tensor is created**: the
+  largest `Concat` in the exported graph drops from 12.4 M elements (16448 × 768)
+  to 0.197 M (RoPE's own `cat` on 257 tokens).
+* **`split_kt`** — `split`, plus `past_k` bound **pre-transposed**
+  `(L, b, H, head_dim, cache_tokens)`, so `q @ past_k` needs no transpose. Free
+  for the host: the ring slot write is 257 tokens per layer in either layout.
+
+No custom CUDA, no plugin, no `ScatterElements` — a graph restructure and an I/O
+layout change.
+
+### Measured
+
+**Removing the `Concat` entirely is worth 3.6–7.8 % at 64 frames and nothing at 32.**
+
+fp32, median GPU compute. `concat` is the re-measured baseline above.
+
+| arm | context | `concat` | `split` | `split_kt` | best delta |
+| --- | --- | --- | --- | --- | --- |
+| `_big` | 6 | 87.21 ms | — | 87.00 ms | −0.2 ms (−0.2 %) |
+| `_big` | 32 | 205.22 ms | 212.55 ms | 205.18 ms | −0.04 ms (**0 %**) |
+| `_big` | 64 | 363.93 ms | 365.10 ms | **350.78 ms** | **−13.2 ms (−3.6 %)** |
+| small | 6 | 41.78 ms | — | 41.97 ms | +0.2 ms (worse) |
+| small | 32 | 92.27 ms | — | 87.65 ms | −4.6 ms (−5.0 %) |
+| small | 64 | 160.58 ms | — | **148.09 ms** | **−12.5 ms (−7.8 %)** |
+
+**`split` is never worth building.** It is 1.2 ms worse at `_big`/64 and 7.3 ms
+worse at `_big`/32 — the transposed copy TRT inserts in its place costs slightly
+*more* than the `Concat` it replaced. Only the pre-transposed layout wins, which is
+the actionable half of this result.
+
+**What `split_kt` really changes is the slope, not the level.** Marginal cost per
+extra cached frame:
+
+| | `concat` | `split_kt` |
+| --- | --- | --- |
+| `_big`, 6→32 | 4.54 ms/frame | 4.55 ms/frame |
+| `_big`, 32→64 | **4.97 ms/frame** | **4.55 ms/frame** |
+| small, 6→32 | 1.94 ms/frame | 1.76 ms/frame |
+| small, 32→64 | **2.13 ms/frame** | **1.89 ms/frame** |
+
+`concat`'s marginal cost *grows* with context (4.54 → 4.97 on `_big`); `split_kt`'s
+is flat (4.55 → 4.55). The copy is what makes the baseline superlinear, so the gain
+is ~0 at 32 frames and widens with N — extrapolating the two slopes, ~7 % at 128
+frames. That is a much weaker and much more specific claim than "the `Concat` is
+34 % of runtime", and it is the one the measurements support.
+
+Two things fall out of the profiles, both of which contradict §9's old conclusion.
+
+**1. The `Concat` was never an extra copy.** `past_k` arrives as one stacked
+`(L, b, H, S, D)` tensor, so every layer must first take `past_k[i]`. TRT
+materializes that slice as a **copy** — 24 `__myl_Sli` kernels, one per (layer,
+side), 1.05 ms each, **25.3 ms** at `_big`/N=64, all hoisted to the start of the
+engine. In the `concat` graph the `Concat` is *fused into that same copy*
+(`__myl_SliResTraResCon`), so it costs nothing on top of a copy that happens
+anyway. Delete the `Concat` and the copy remains. That is the whole reason
+`split` gains nothing.
+
+**2. The transpose is the part that was actually costing something.** With
+`past_k` in its natural layout, TRT does **not** fold `k.transpose(-1,-2)` into the
+GEMM — it emits 12 extra `__myl_Tra`/`__myl_SliRes` kernels (14.6 + 12.5 ms) to
+materialize a transposed copy, which is exactly what the `Concat` kernel had been
+doing before. Pre-transposing the cache removes them, and that 13-14 ms *is* the
+entire measured win. Cross-checked against DRAM traffic: one layer's K side at
+`_big`/N=64 is 49.7 MiB, so a read+write copy is ~100 MiB, and 100 MiB / 1.05 ms
+= **95 GB/s** — right at what this LPDDR5 delivers. The copies are not
+inefficient; there are just no free ones.
+
+### Where the marginal cost really is, per layer, at `_big`/N=64
+
+| | `concat` | `split_kt` |
+| --- | --- | --- |
+| qkv projection | 0.91 | 0.90 |
+| KV copy / rope / transpose | 5.01 | 0.13 |
+| **q · Kᵀ** | **8.19** | **8.21** |
+| **softmax (+ bias)** | **5.80** | **7.08** |
+| **P · V** | **7.37** | **7.26** |
+| online-softmax merge | — | 0.05 |
+| own-frame attention (257×257) | (in the above) | 0.40 |
+| out projection + MLP | 2.67 | 2.67 |
+| **per layer** | **~27.6** | **~24.3** |
+| plus, once per engine: stacked-cache slice | (fused) | 25.3 total |
+
+**22.5 of the 24.3 ms/layer is the three cache-attention kernels, and no graph
+restructure touches them.** They are irreducible in fp32 for a structural reason:
+the 257 × 16448 score matrix is written by `q · Kᵀ`, read and rewritten by the
+softmax, and read by `P · V` — ~812 MiB of DRAM traffic per layer, ~9.7 GiB per
+tick. Avoiding that requires never materializing the scores, i.e. a fused
+FlashAttention-style kernel. TRT 10.7 has none for this shape (§12).
+
+### What this buys against the budget
+
+| | `concat` | `split_kt` | fits 333 ms? | fits 270 ms? |
+| --- | --- | --- | --- | --- |
+| `_big` N=32 | 205.2 | 205.2 | yes | yes |
+| `_big` N=64 | 363.9 | **350.8** | **no** (both) | no |
+| small N=32 | 92.3 | 87.7 | yes | yes |
+| small N=64 | 160.6 | **148.1** | yes | yes |
+
+`_big` at 64 frames goes 364 → 351 ms: still outside the 333 ms tick and well
+outside 270 ms. **The copy was not what put it there.** The honest statement of the
+prize is that `split_kt` is a free 3.6–7.8 % at 64 frames with no numerical cost,
+worth taking, and *not* a mechanism that changes which context lengths are servable.
+`_big`/64 at fp32 needs ~18 ms more than this mechanism can give.
+
+⚠️ Read the latency column, not trtexec's `H2D Latency`. That column moves a lot
+between these variants (51.3 ms `concat`, 73.6 `split`, 64.2 `split_kt` at
+`_big`/N=64) purely because trtexec re-uploads the whole cache every iteration and
+the declared input layouts differ. drivr keeps the cache resident on the device, so
+none of it is a real per-tick cost, and `split`'s +22 ms there is not a regression.
+
+## 11. The mechanisms that were *not* prototyped, and why
+
+### A stacked cache costs a copy per layer — and it may be removable
+
+The 25.3 ms of `__myl_Sli` kernels (§10) are TRT materializing `past_k[i]` out of
+the stacked `(L, b, H, S, D)` input. That slice is a **contiguous view** — a pointer
+offset, not data movement — so it is TRT choosing to copy, not arithmetic. Binding
+the cache as `2 × L` separate inputs (`inputs_past_k_0 …`) would leave TRT nothing
+to slice, and costs the host nothing: the ring write is 257 tokens per layer either
+way, into per-layer buffers instead of into slices of one buffer.
+
+Probed on a trunk-only graph (12L/768d, N=64, cache bound both ways) rather than by
+changing `PatchPolicyDecoderStep` first, because TRT may simply re-insert an
+equivalent reformat per binding. **Result: see the measurement log** — if the slices
+disappear this is worth ~25 ms (7 %) on top of `split_kt` at `_big`/N=64, taking it
+to ~325 ms, i.e. **inside the 333 ms tick**, for a pure I/O-binding change. That is
+a bigger prize than removing the `Concat` was, and it is the mechanism the task's
+"cache tensors bound to fixed device addresses" description actually points at.
+
+### A custom fused-attention (FlashAttention) plugin — effort estimate, not prototyped
+
+This is the only mechanism that attacks the real cost: the 257 × 16448 score matrix,
+~812 MiB of DRAM traffic per layer, ~9.7 GiB per tick at `_big`/N=64.
+
+* **Upper bound on the gain.** The two GEMMs are 12.98 GFLOP per layer; at the
+  ~800 GFLOP/s the current unfused GEMMs achieve, a kernel that eliminated *all*
+  score traffic and nothing else would land near 16 ms/layer against the measured
+  22.5 — **~6.5 ms/layer, ~78 ms at `_big`/N=64**, i.e. 351 → ~273 ms. Realistically
+  50–70 % of that, because a hand-written fp32 kernel will not match cuBLAS-class
+  GEMM efficiency on Orin's non-tensor-core fp32 path.
+* **Effort: 3–6 engineer-days.** Kernel (tiled online-softmax over the key range,
+  with a flash-decoding-style split over keys to get enough blocks for 16 SMs;
+  257 queries × 12 heads is only 48 tiles at 64-query granularity), `IPluginV3`
+  boilerplate (creator, serialization, shape/type inference, autotuning),
+  a custom-op export path so `torch.onnx.export` emits it, and parity per skill §5.
+* **Maintenance risk, which is the real objection.** A plugin is a `.so` tied to the
+  TRT version *and* GPU arch, loaded at runtime by drivr on the car. It becomes a
+  second artifact that has to be version-matched to every engine, and the skill's
+  existing rule — engines are valid only because dev1 and the car share TRT 10.7 —
+  now applies to a hand-written binary as well. Do not take this on for a 20 % trunk
+  win; take it on only if 64+ frames at fp32 is a product requirement.
+
+### TensorRT-LLM's paged attention — ruled out, with specifics
+
+Not a close call, for four independent reasons:
+
+1. **Wrong entry point.** TRT-LLM does not consume ONNX. Its `gptAttentionPlugin`
+   is reachable only through TRT-LLM's own Python graph builder, so using it means
+   reimplementing PatchPolicy — ViT encoder, goal RVQ, VQ-BeT heads — in that API.
+2. **Wrong attention shape.** The plugin has a context phase (whole prompt, causal)
+   and a generation phase (one query token). Ours is a 257-query block that is
+   **bidirectional within itself** and full-attention over the cache; that is
+   neither, and the causal mask is not optional.
+3. **Wrong positional encoding.** Its RoPE is per *token* with its own convention;
+   ours is per *frame* (all 257 tokens share one rotation), which is the property
+   that makes the cache valid at all (§1). Expressing it would mean modifying the
+   plugin.
+4. **Wrong dtype.** The fused MHA kernels are fp16/bf16/fp8/int8. fp32 — the only
+   precision that has ever reached 0/200 on parity for this model family — has no
+   fused path.
+
+Plus the deployment objection: it pins the car to a TRT-LLM build matched to
+JetPack 6.1 / TRT 10.7 / SM 8.7.
+
+### What TRT 10.7 already ships, checked on the device
+
+`trt.get_plugin_registry()` on delta-dev1 (73 creators) contains exactly one fused
+attention plugin: **`CustomQKVToContextPluginDynamic` v1/v2/v3** — the BERT fMHA
+plugin. It takes *packed* QKV with **equal Q and K/V sequence lengths**, i.e.
+self-attention only, and its fused kernels are fp16/int8. It cannot express
+257 queries against 16448 cached keys. The other candidates
+(`DisentangledAttention_TRT`, `MultiscaleDeformableAttnPlugin_TRT`) are unrelated.
+**So there is no off-the-shelf fused attention for this shape on this stack** —
+which is why the fp16 question below is the one that decides whether a custom
+plugin is worth days of CUDA.
+
+## 12. fp16 — the only remaining lever on the score matrix
+
+Latency-only, and deliberately so: every measurement in this document uses random
+weights, so parity (skill §4/§5) is unrunnable and **nothing here is a ship
+recommendation**. The question is narrow and architectural: TRT's fused MHA kernels
+exist only for fp16/int8, so does myelin pick a fused path for a 257 × 16448 block
+once the dtype allows it? If it does, the mechanism-2 plugin is unnecessary and the
+answer is "build the skill §9 mixed engine". If it does not, a plugin is the only
+remaining option.
+
+## 13. Open risks
 
 1. **Training cost is untouched, and it is now the bottleneck.** The cache makes
    *inference* per-tick cost linear in context. Training still does one dense
@@ -442,11 +694,21 @@ episode.
    most frequency pairs inert over 64 positions) but not measured. It is a
    trainable-arm hyperparameter, and changing it after training invalidates the
    checkpoint.
-6. **The `Concat` of cache and new keys is unavoidable without a plugin**, and the
-   profile says it is already a first-order cost at 64 frames (§9) — the largest
-   single bucket, comparable to the attention. A paged / in-place attention plugin
-   is the escape hatch; an in-graph `ScatterElements` deliberately is not (TRT
-   support risk, and the host-side ring is free).
-7. **`_big` at 64 frames does not fit a tick at fp32** (364 ms). Not a defect, but
-   it bounds the context length that is servable today without the mixed-precision
-   engine.
+6. ~~**The `Concat` of cache and new keys is unavoidable without a plugin**, and it
+   is already a first-order cost at 64 frames — the largest single bucket. A paged /
+   in-place attention plugin is the escape hatch.~~ **Withdrawn — measured false
+   (§10).** The `Concat` was removed from the graph outright, with no plugin, and it
+   is worth **3.6 %** at `_big`/64 frames. It was fused into the stacked-cache slice
+   copy, which any formulation pays. The remaining risk is the opposite one: *this
+   was the cheap lever, and it is now spent.* Anything further at long context has to
+   attack the 257 × 16448 score matrix, which needs either fp16 (§12) or a custom
+   fused-attention plugin (days of CUDA, and a `.so` pinned to the car's TRT
+   version).
+7. **`_big` at 64 frames does not fit a tick at fp32** (364 ms, or 351 ms with
+   `split_kt`). Not a defect, but it bounds the context length that is servable
+   today without the mixed-precision engine.
+8. **`split_kt` changes the runtime contract**, and `set_tensor_address` will not
+   tell you: `inputs_past_k` becomes `(L, b, H, head_dim, cache_tokens)` and `new_k`
+   comes out matching. Bound the old layout, the engine silently reinterprets the
+   buffer. The §7 shape validation is what catches it, and it is not optional for
+   this variant.
