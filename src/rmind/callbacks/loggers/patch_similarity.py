@@ -9,9 +9,10 @@ from pydantic import AfterValidator, validate_call
 from torch import Tensor
 from torch.nn.functional import cosine_similarity
 from torch.utils._pytree import MappingKey, key_get, tree_map  # noqa: PLC2701
+from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
-from wandb import Image
+from rmind.components.nn import ChunkFields
 
 from .common import (
     _bind_hook_arguments,
@@ -19,6 +20,9 @@ from .common import (
     _get_wandb_loggers,
     _validate_hook,
 )
+
+# batches are (batch, time, ...); `ChunkFields` must narrow that same axis
+_TIME_DIM = 1
 
 
 @final
@@ -64,6 +68,34 @@ class WandbPatchSimilarityLogger(SafeCallback):
         digest = hashlib.sha256(f"{sample_id}:{image_source_key}".encode()).digest()
         return int.from_bytes(digest[:4]) % num_patches
 
+    @staticmethod
+    def _episode_time_index(pl_module: pl.LightningModule) -> int:
+        """Index of the last episode timestep on the *raw batch's* time axis.
+
+        The dataset emits a clip sized for the largest action horizon shared across
+        configs, and `ChunkFields` narrows every non-unfolded field -- images included
+        -- to the first `episode_length` steps. That happens inside `input_transform`,
+        which the batch handed to this hook predates, so plain `-1` indexes the tail
+        the episode never saw: with `clip_length=11, episode_length=6` the rendered
+        frame would be 5 steps (~1.7s at 30fps) past the embeddings plotted over it.
+
+        Raises:
+            ValueError: if `ChunkFields` narrows an axis other than the time axis,
+                which would invalidate the index this returns.
+        """
+        for module in pl_module.episode_builder.input_transform.modules():  # ty:ignore[unresolved-attribute]
+            if isinstance(module, ChunkFields):
+                if module.dim != _TIME_DIM:
+                    msg = (
+                        "expected `ChunkFields` to narrow the time axis "
+                        f"(dim={_TIME_DIM}), got dim={module.dim}"
+                    )
+                    raise ValueError(msg)
+
+                return module.episode_length - 1
+
+        return -1
+
     def _call(  # noqa: PLR0914
         self,
         trainer: pl.Trainer,
@@ -89,6 +121,7 @@ class WandbPatchSimilarityLogger(SafeCallback):
         matching_indices = mask.nonzero(as_tuple=False).flatten()
         pred_emb_full = key_get(outputs, self._embeddings_predict_path)
         gt_emb_full = key_get(outputs, self._embeddings_target_path)
+        time_index = self._episode_time_index(pl_module)
 
         for local_idx in matching_indices:
             sample_id = sample_ids[local_idx].item()
@@ -104,7 +137,7 @@ class WandbPatchSimilarityLogger(SafeCallback):
                     gt_emb_full, self._image_sources_path[image_source_key]
                 )[local_idx, -1]
 
-                image_tensor = batch["data"][image_source_key][local_idx, -1]
+                image_tensor = batch["data"][image_source_key][local_idx, time_index]
                 if image_tensor.dtype != torch.uint8:
                     image_tensor = (image_tensor * 255).to(torch.uint8)
                 orig_image = image_tensor.cpu().numpy()
@@ -198,7 +231,7 @@ class WandbPatchSimilarityLogger(SafeCallback):
                 )
             for row in range(patch_grid_size):
                 ax.text(
-                    -0.7 * w_patch,
+                    -0.4 * w_patch,
                     (row + 0.5) * h_patch,
                     str(row),
                     ha="center",
@@ -246,7 +279,8 @@ class WandbPatchSimilarityLogger(SafeCallback):
             ax.set_yticklabels([])
 
             fig.tight_layout(pad=0)
-            fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+            # leave room at the left for the row labels, which sit outside the axes
+            fig.subplots_adjust(left=0.045, right=1, top=1, bottom=0)
             return _figure_to_rgba(fig)
         finally:
             plt.close(fig)
