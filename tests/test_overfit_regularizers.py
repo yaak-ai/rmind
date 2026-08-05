@@ -265,9 +265,7 @@ def test_context_depth_bucket_metrics_present() -> None:
 
 
 def test_context_depth_buckets_absent_for_block_causal_trunk() -> None:
-    from tests.test_patch_policy import _make_model as _make_sdpa_model
-
-    metrics = _make_sdpa_model()._compute_metrics(_make_batch())  # noqa: SLF001
+    metrics = _make_model()._compute_metrics(_make_batch())  # noqa: SLF001
     assert ("policy", "metric", "code_full_window") not in metrics.keys(
         include_nested=True
     )

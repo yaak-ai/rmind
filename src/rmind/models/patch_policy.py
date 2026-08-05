@@ -418,7 +418,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             (-1, self.tokenizer._action_features),  # noqa: SLF001
         )
 
-    def _compute_metrics(self, batch: Any) -> TensorDict:
+    def _compute_metrics(self, batch: Any) -> TensorDict:  # noqa: PLR0914
         features, chunk = self._features(batch)  # (b, t, d), (b, t, h, a)
         tokenizer = self.tokenizer
 
