@@ -8,6 +8,14 @@ from torch import nn
 from rmind.components.loss import FocalLoss
 from rmind.components.optimizers.selective_adamw import SelectiveAdamW
 from rmind.components.transformer.causal_frame import CausalFrameTransformer, DropPath
+from rmind.models.patch_policy import PatchPolicy
+from tests.test_patch_policy import (
+    EPISODE_LENGTH,
+    NUM_PATCHES,
+    POLICY_DIM,
+    _make_batch,
+    _make_model,
+)
 
 RESCALED = 2.0  # 1 / keep for drop_prob 0.5
 DROP_RATE_BAND = (0.35, 0.65)
@@ -179,14 +187,7 @@ def test_overlapping_override_prefixes_raise() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _causal_regularized_model(attention_impl: str) -> "PatchPolicy":
-    from tests.test_patch_policy import (
-        EPISODE_LENGTH,
-        NUM_PATCHES,
-        POLICY_DIM,
-        _make_model,
-    )
-
+def _causal_regularized_model(attention_impl: str) -> PatchPolicy:
     model = _make_model()
     model.encoder = CausalFrameTransformer(
         dim_model=POLICY_DIM,
@@ -203,9 +204,7 @@ def _causal_regularized_model(attention_impl: str) -> "PatchPolicy":
     return model
 
 
-def _train_step(model: "PatchPolicy", device: str) -> None:
-    from tests.test_patch_policy import _make_batch
-
+def _train_step(model: PatchPolicy, device: str) -> None:
     model = model.to(device).train()
     opt = SelectiveAdamW(
         model,
@@ -231,7 +230,8 @@ def _train_step(model: "PatchPolicy", device: str) -> None:
         for n, p in model.named_parameters()
         if p.requires_grad
     }
-    assert grads and all(grads.values()), [n for n, ok in grads.items() if not ok]
+    assert grads
+    assert all(grads.values()), [n for n, ok in grads.items() if not ok]
     assert any("encoder.intra_position_embedding" in n for n in grads)
     assert any(n.startswith("code_head") for n in grads)
     opt.step()
