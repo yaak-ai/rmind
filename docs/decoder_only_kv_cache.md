@@ -411,16 +411,14 @@ episode.
 
 ## 10. Open risks
 
-1. **Training cost is untouched, and it is now the bottleneck.** The cache makes
-   *inference* per-tick cost linear in context. Training still does one dense
-   forward over the whole clip, and the attention terms are quadratic in the
-   flattened length: 6 frames = 1542 tokens, 32 frames = 8224 (5.3× the tokens,
-   **28×** the attention work), 64 frames = 16448 (10.7× / **114×**). The `window`
-   mask makes attention block-sparse but plain SDPA still materializes the dense
-   score matrix, so the saving is not realized without a block-sparse kernel
-   (FlexAttention / `create_block_mask`). At `clip_length == window` the mask is
-   dense anyway. **This is the single largest practical risk to the bonus track**;
-   16 frames is the defensible first step, not 64.
+1. ~~**Training cost is untouched, and it is now the bottleneck.**~~ **Resolved —
+   see §11.** `attention_impl: flex` realizes the block-sparsity the `window` mask
+   always had, and with `episode_length > window` training cost becomes linear in
+   context length instead of quadratic. At a constant 768 frame-slots per step,
+   32-frame clips with a 16-frame window cost **1.08×** today's 6-frame trunk step
+   (dense SDPA: 2.74×), and 64 frames costs 1.15×. What remains of this risk is
+   narrower and listed in §11.6: `attn_dropout` must go to 0, the block-sparse
+   path is CUDA-only, and it loses to SDPA below roughly 1000 frame-slots per step.
 2. **Behaviour change, not just speed** (hand-off §6). Conditioning on 16–64
    frames is a different model. Needs rsim and road, not val L1 — PR #248
    established that aggregate L1 is blind to this failure class.
@@ -450,3 +448,261 @@ episode.
 7. **`_big` at 64 frames does not fit a tick at fp32** (364 ms). Not a defect, but
    it bounds the context length that is servable today without the mixed-precision
    engine.
+
+## 11. Block-sparse training — FlexAttention vs FlashAttention-2 vs dense
+
+**Recommendation: FlexAttention (`attention_impl: flex`), and it is the only exact
+option.** Everything below was measured on 2026-08-05 on an idle RTX 5090
+(sm_120, torch 2.12.1+cu130) with `tests/bench_causal_frame.py`; correctness is
+`tests/test_causal_frame.py`.
+
+### 11.1 The problem
+
+`CausalSelfAttention.forward` handed a materialized bool mask to
+`F.scaled_dot_product_attention`. Any `attn_mask` disqualifies the flash backend,
+so every masked position is computed anyway: cost `O((F·257)²)` no matter how
+narrow `window` is. The mask, however, is blocky in 257-token frame units — dense
+bidirectional blocks on the diagonal, a causal band below — which is exactly what a
+block-sparse kernel wants.
+
+### 11.2 Correctness (the gate)
+
+fp32, tf32 disabled, production geometry (257 tokens/frame, `window` 6 and 16,
+512-d/8-head and 768-d/12-head), forward **and** backward:
+
+| tensor | max abs diff | max abs value | scale-relative |
+| --- | --- | --- | --- |
+| output | 1.4e-6 | 5.2 | 2.7e-7 |
+| d/d input | 1.2e-6 | 5.0 | 2.4e-7 |
+| d/d `in_proj_weight` | 1.8e-5 | 12.8 | 1.4e-6 |
+| d/d `out_proj.weight` | 3.6e-5 | 43.3 | 8.4e-7 |
+| d/d `intra_position_embedding` | 3.3e-6 | 20.3 | 1.6e-7 |
+
+The gate is applied **scale-relative** (`max|diff| / max|ref|`), not as an absolute
+1e-5, and that is a deliberate choice worth stating plainly: a parameter gradient
+is a sum over all 1542–4112 sequence positions, so its entries are O(10) and its
+fp32 accumulation noise alone exceeds 1e-5 in absolute terms whichever kernel
+produced it. That the residual **is** that noise is shown independently, by
+comparing both fp32 arms against the same trunk run in float64 on the CPU:
+
+| | sdpa vs exact fp64 | flex vs exact fp64 |
+| --- | --- | --- |
+| worst tensor (scale-rel) | 6.8e-7 | 9.4e-7 |
+
+flex sits 1.4× sdpa's own distance from the exact answer, not 10×. Parity is also
+verified in `.train()`, i.e. with the compiled kernel inside
+`checkpoint(use_reentrant=False)` and its recompute, and the frame-offset
+shift-invariance of §1 still holds on the flex path — RoPE is applied to q/k before
+attention, so the positional scheme and the kernel are orthogonal.
+
+### 11.3 The 257-token tile-alignment finding
+
+`create_block_mask` tiles at 128, and **128 is the only usable block size**:
+`BLOCK_SIZE=64` fails to lower on sm_120/torch 2.12 (`ValueError: Q and KV block
+size must be divisible by BLOCK_M and BLOCK_N`). 257 = 2·128 + 1, so a frame block
+can never tile exactly and every frame boundary yields partial blocks, which the
+kernel computes in full and then masks elementwise. Measured computed area against
+the exact mask area:
+
+| frames | window | BLOCK 128 | BLOCK 64 | BLOCK 32 | frame padded to 384, BLOCK 128 |
+| --- | --- | --- | --- | --- | --- |
+| 6 | 6 | **1.288×** | 1.137× | 1.064× | 2.233× |
+| 16 | 6 | **1.191×** | 1.091× | 1.041× | 2.233× |
+| 16 | 16 | **1.111×** | 1.051× | 1.022× | 2.233× |
+| 32 | 16 | **1.074×** | 1.033× | 1.013× | 2.233× |
+| 64 | 16 | **1.063×** | 1.027× | 1.014× | 2.233× |
+| 64 | 64 | **1.023×** | 1.008× | 1.004× | 2.233× |
+
+Two conclusions. The waste is a **boundary effect that amortizes**: 29 % at 6
+frames, 6 % at 64, because the number of straddling blocks grows with `F` while the
+computed area grows with `F·window`. And **padding each frame to 384 to align it is
+strictly worse** — exactly `(384/257)² = 2.233×` at every geometry, since it pays
+1.49× more queries against 1.49× more keys to remove a ≤29 % overhead. Reordering
+tokens so frames tile 128 would need the 256 patches kept together and the speed
+token moved elsewhere; not worth it against a 6–11 % overhead in the regime that
+matters. The BLOCK 64/32 columns are what the hardware would allow if the kernel
+did — they are not available, and they would trade tile efficiency for the
+alignment anyway.
+
+### 11.4 Kernel benchmark — one attention layer, fwd+bwd (RoPE included), bf16
+
+`tests/bench_causal_frame.py attention --batches 4,16`:
+
+#### 512-d / 8 heads
+
+| frames | window | seq | b4 sdpa | b4 flex | b16 sdpa | b16 flex | b16 peak sdpa / flex |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 6 | 1542 | 1.26 ms | **1.40** | 4.24 | **2.11** | 396 / 350 MiB |
+| 16 | 6 | 4112 | 6.68 | **1.75** | 25.05 | **6.97** | 1083 / 933 |
+| 16 | 16 | 4112 | 6.68 | **2.47** | 25.06 | **9.51** | 1083 / 933 |
+| 32 | 8 | 8224 | 24.32 | **4.05** | 94.71 | **16.97** | 2263 / 1866 |
+| 32 | 16 | 8224 | 24.35 | **5.96** | 94.95 | **24.44** | 2263 / 1866 |
+| 32 | 32 | 8224 | 24.37 | **7.68** | 95.16 | **30.70** | 2263 / 1866 |
+| 64 | 16 | 16448 | 95.32 | **13.53** | 377.40 | **54.65** | 4914 / 3745 |
+| 64 | 64 | 16448 | 95.70 | **27.37** | 379.92 | **108.25** | 4914 / 3745 |
+
+#### 768-d / 12 heads
+
+| frames | window | seq | b4 sdpa | b4 flex | b16 sdpa | b16 flex | b16 peak sdpa / flex |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 6 | 1542 | 1.85 ms | **1.26** | 6.34 | **3.15** | 594 / 525 MiB |
+| 16 | 6 | 4112 | 9.66 | **2.53** | 37.29 | **10.59** | 1602 / 1399 |
+| 16 | 16 | 4112 | 9.66 | **3.55** | 37.26 | **14.33** | 1602 / 1399 |
+| 32 | 8 | 8224 | 36.00 | **6.18** | 142.08 | **25.50** | 3295 / 2798 |
+| 32 | 16 | 8224 | 36.08 | **9.04** | 142.43 | **36.67** | 3295 / 2798 |
+| 32 | 32 | 8224 | 36.11 | **11.50** | 142.69 | **45.85** | 3295 / 2798 |
+| 64 | 16 | 16448 | 142.25 | **20.38** | 568.75 | **82.35** | 6979 / 5602 |
+| 64 | 64 | 16448 | 143.18 | **40.81** | 572.26 | **163.13** | 6979 / 5602 |
+
+Three things to read off. **Dense SDPA is flat in `window`** — 24.32 / 24.35 / 24.37
+ms across windows 8/16/32 at 32 frames — which is the defect, stated as a
+measurement: the mask is doing nothing for cost. **flex is proportional to
+`F·window`**: 6.97 → 9.51 ms as the window goes 6 → 16 at 16 frames, and 54.65 ms
+at 64 frames/window 16 against 377.40 dense, a **6.9×** kernel speedup. And **flex
+uses less memory**, 24 % less at 64 frames, because there is no dense mask tensor
+and fewer score tiles in flight.
+
+The one row where flex loses is batch 4 at 6 frames (1.40 vs 1.26 ms): 13 kv blocks
+and 4 sequences cannot fill a 5090. It wins by 2× at the same geometry with batch
+16. See §11.6.5.
+
+For scale: the frozen DINOv2 ViT-S forward over the 768 images a step consumes
+costs **79.9 ms / 2031 MiB** on the same GPU (`bench_causal_frame.py vit
+--batches 768`). It is linear in frame-slots, identical for every row of §11.5, and
+about a tenth of the trunk step — so the trunk really is the term worth attacking.
+
+### 11.5 What the training step actually costs
+
+Attention is only part of a step; the MLP is linear in tokens and dilutes the
+saving, and the frozen ViT is linear in `batch × frames` and is untouched. The row
+that answers "is long-context training affordable" is the **full trunk**, in
+`.train()` (gradient checkpointing on), normalized to a constant **768 frame-slots
+per step** — today's `batch 128 × 6 frames`, which is what fixes the ViT cost, the
+readouts per step and the activation memory:
+
+| frames | window | 512-d/8L sdpa | 512-d/8L flex | vs today | 768-d/12L sdpa | 768-d/12L flex | vs today |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 | 6 | 652 ms | 497 ms | 0.76× | 1695 ms | 1323 ms | 0.78× |
+| 16 | 6 | 1085 | 550 | 0.84× | 2649 | 1447 | 0.85× |
+| 16 | 16 | 1085 | 626 | 0.96× | 2652 | 1616 | 0.95× |
+| 32 | 8 | 1787 | 593 | 0.91× | 4223 | 1538 | 0.91× |
+| 32 | 16 | 1787 | **705** | **1.08×** | 4237 | **1792** | **1.06×** |
+| 32 | 32 | 1791 | 800 | 1.23× | 4245 | 2001 | 1.18× |
+| 64 | 16 | 3215 | **749** | **1.15×** | 7469 | **1897** | **1.12×** |
+| 64 | 64 | 3233 | 1151 | 1.77× | 7501 | 2809 | 1.66× |
+
+("vs today" is against the 6-frame **dense** step of the same width, 652 / 1695 ms,
+which is what runs now. Raw per-batch measurements are in the commit message and
+reproducible with `tests/bench_causal_frame.py trunk`.)
+
+**32-frame training lands inside today's 6-frame budget**: 1.08× at 512-d, 1.06× at
+768-d, against 2.74× / 2.50× if the mask stays dense. 64 frames is 1.15× / 1.12×.
+The cost of context has gone from quadratic to essentially free, and what is left
+is set by `window`, not by clip length: `32/8` (0.91×) is *cheaper* than today.
+
+Trunk peak activation memory at 768 frame-slots is likewise ~flat and slightly
+better than today's:
+
+| frames | window | batch | 512-d/8L | 768-d/12L |
+| --- | --- | --- | --- | --- |
+| 6 | 6 | 128 | 11.0 GiB (sdpa, today) | 20.0 GiB |
+| 16 | 16 | 48 | 9.9 GiB | 17.6 GiB |
+| 32 | 16 | 24 | **9.7 GiB** | **17.4 GiB** |
+| 64 | 16 | 12 | 9.5 GiB | 17.1 GiB |
+
+(Extrapolated linearly in batch from the measured batch-16 rows, which is how
+activation memory scales; flex is 3–5 % below sdpa at every measured point.) The
+768-d/64-frame/batch-16 **dense** case measures 23.6 GiB of trunk activations
+alone — that is what "does not fit a 32 GB card" looks like, and flex brings the
+same geometry to 22.8 GiB, i.e. block-sparsity is not the lever for memory. Holding
+frame-slots constant is.
+
+The recipe built from this is
+`config/experiment/yaak/patch_policy/dinov2_dinowm_causal.yaml` (32 frames, window
+16, batch 24, 5090-32 GB) and `..._80gb.yaml` (batch 64); both carry their own
+step-count arithmetic, because the cosine LR schedule oscillates past
+`num_training_steps`.
+
+### 11.6 Operational hazards (all of these bit or nearly bit)
+
+1. **No `dropout_p` in FlexAttention.** `attn_dropout` must be 0 on the flex path;
+   the constructor raises rather than silently dropping it. This is a
+   regularization change riding along with a kernel change — an A/B against
+   today's arm must zero `attn_dropout` on the sdpa side too.
+2. **An in-place op in a `mask_mod` kills the path entirely.** Inductor lowers a
+   `mask_mod` as a pointwise subgraph, in which no buffer may be created, so
+   `keep &= x` fails with `SubgraphLoweringException: Buffers cannot be created
+   while lowering a pointwise subgraph` — at *every* shape. `ruff check` in this
+   repo runs with `fix = true, unsafe-fixes = true` and rewrites
+   `keep = keep & x` into `keep &= x` under PLR6104, which is exactly that. It
+   happened during this work and cost a benchmark run.
+   `test_mask_mod_is_free_of_in_place_ops` guards it on CPU.
+3. **dynamo's 8-entry compile cache.** One compiled `flex_attention` serves every
+   shape and `dynamic=False` specializes per shape; past 8 specializations dynamo
+   silently falls back to **eager** flex, which materializes the score matrix. Fine
+   in training (2–3 shapes), fatal in a sweep — raise
+   `torch._dynamo.config.cache_size_limit` there.
+4. **Build the `BlockMask` once.** `create_block_mask` costs 1.6–9 ms; per layer per
+   step that is ~25 ms of pure launch overhead at 8 layers, more than the attention
+   it feeds. `frame_block_causal_block_mask` is memoized on
+   `(num_frames, tokens_per_frame, window, device)`.
+5. **flex is not free at small shapes.** At batch 4 / 6 frames the whole trunk is
+   *slower* under flex (58.7 vs 52.6 ms at 512-d; 84.2 vs 71.6 at 768-d): 13 kv
+   blocks and a batch of 4 do not fill the GPU. The crossover is around 1000
+   frame-slots per step; below that, keep `sdpa`. This is why the default stays
+   `sdpa` and the flex path is opt-in per experiment.
+6. **CUDA only.** There is no CPU backward for FlexAttention, so the CPU path is
+   the eager reference implementation (correct, not fast) and the fwd+bwd parity
+   tests are CUDA-gated. A CPU-only CI run skips them; it still runs the mask-mod,
+   block-accounting and CPU-forward-parity tests.
+7. **Serving is untouched, on purpose.** `step` stays SDPA: it is the ONNX/TRT
+   export target (a `torch.compile`d Triton kernel is not exportable) and it has
+   257 queries against a fully-visible cache, i.e. no sparsity to exploit.
+   `attention_impl` therefore cannot change what an exported engine computes.
+
+### 11.7 Why not FlashAttention-2
+
+`flash_attn` is not installed in the repo venv and installing it was out of scope,
+so this is an analytic rejection — but it does not depend on a measurement, because
+the mismatch is in what FA2 can *express*.
+
+FA2's windowed attention is **token-granular and strictly causal**
+(`window_size=(left, right)` over token indices). Our mask is frame-granular with
+**bidirectional** intra-frame blocks. The closest approximation is a token window of
+`window · 257`, and it is wrong in two independent ways. Counting mask entries:
+
+| frames | window | exact keeps | missing | of which intra-frame future | spurious |
+| --- | --- | --- | --- | --- | --- |
+| 16 | 6 | 5,349,969 | 526,336 (9.8 %) | **100 %** | 328,960 (6.1 %) |
+| 32 | 16 | 25,891,208 | 1,052,672 (4.1 %) | **100 %** | 526,336 (2.0 %) |
+| 64 | 16 | 59,708,296 | 2,105,344 (3.5 %) | **100 %** | 1,579,008 (2.6 %) |
+
+* Every missing pair is an **intra-frame future** pair: the current frame's 257
+  tokens stop being mutually visible, so a patch at intra-frame position 3 cannot
+  see position 200 of its own frame. That destroys the one property the whole
+  positional scheme is built around (§1: frame-granular RoPE exists so that
+  intra-frame attention is *exactly unrotated* and stays bidirectional), and it
+  makes the trunk a raster-order scanner over patches rather than a per-frame
+  encoder.
+* The spurious pairs are a **ragged window edge**: a query late in its frame still
+  reaches keys of frame `f - window`, which the ring buffer has already evicted.
+  That breaks the streaming/recompute equivalence of §5 — the training mask would
+  no longer be any ring capacity's mask, so there is no `N` to serve with.
+
+`is_causal` at "frame level" via reshaping does not exist either: attention would
+have to be causal in one index and dense in another within a single softmax, and no
+reshape of `(B, H, S, D)` produces that. Options: (b) is not expressible; (a) is
+expressible but changes the model into a different one and forfeits the correctness
+gate; therefore (c) reject. Note the comparison is not even a performance question —
+torch's own flash backend with plain `is_causal` is the lower bound FA2 could reach,
+and flex at 64 frames/window 16 already computes only 23.5 % of the dense area.
+
+### 11.8 Not done
+
+**Readout-only final block during training.** Only each frame's last token is read
+by the heads, so the final layer could run `F` queries instead of `F·257` — worth
+about `1/L` of attention plus `1/L` of MLP, ~10 % of the trunk at `L = 8`. It is
+expressible in FlexAttention (`Q_LEN = F`, `KV_LEN = F·257`, `mask_mod` mapping the
+query index straight to a frame index), and §4 already proves the equivalence for
+the decode path. Not wired up, because it changes `PatchPolicy`'s readout indexing
+and the win is small next to the 2.5–4× already realized.

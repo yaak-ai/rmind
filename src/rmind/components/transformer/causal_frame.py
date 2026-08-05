@@ -76,11 +76,18 @@ picks how the mask is realized:
 * `"flex"` -- the same mask as a `BlockMask` for `torch.nn.attention.
   flex_attention`, whose Triton kernel skips whole 128x128 blocks. Cost becomes
   proportional to the *unmasked* area, `O(F * window * 257^2)`, i.e. linear in
-  context length at fixed window. Measured on a 5090 (bf16, fwd+bwd, one layer,
-  batch 4, 512-d/8-head): 6 frames 1.06 -> 0.69 ms, 32 frames/window 16
-  23.7 -> 5.3 ms (4.5x), 64 frames/window 16 93.6 -> 11.8 ms (7.9x). Numerically
-  identical to `"sdpa"` to ~4e-6 in fp32, forward and backward
-  (`tests/test_causal_frame.py`).
+  context length at fixed window. Measured on a 5090 (bf16, fwd+bwd, one attention
+  layer, batch 16, 512-d/8-head, `tests/bench_causal_frame.py`): 6 frames
+  4.2 -> 2.1 ms, 32 frames/window 16 95.0 -> 24.4 ms (3.9x), 64 frames/window 16
+  377.4 -> 54.7 ms (6.9x). Over the whole trunk at a constant 768 frame-slots per
+  step, 32-frame/window-16 training costs 1.08x today's 6-frame dense step
+  (dense SDPA would be 2.74x) -- see §11 of docs/decoder_only_kv_cache.md.
+  Numerically identical to `"sdpa"` to <=1.5e-6 scale-relative in fp32, forward and
+  backward (`tests/test_causal_frame.py`).
+
+  It is NOT a free win at small shapes: at batch 4 / 6 frames flex is slower than
+  sdpa (the mask has 13 kv blocks and cannot fill the GPU). The crossover is around
+  1000 frame-slots per step, which is why `"sdpa"` remains the default.
 
 Two constraints on `"flex"`, both deliberate rather than incidental:
 `attn_dropout` must be 0 (FlexAttention has no `dropout_p`, and the constructor
