@@ -12,7 +12,7 @@
 _target_: rbyte.Dataset.from_config
 _recursive_: false
 _convert_: all
-# action-only: no video stream → no frame decode
+#! action-only: no video stream → no frame decode
 streams: {}
 
 samples:
