@@ -119,20 +119,26 @@ class PatchPolicyDecoderStep(nn.Module):
         )
         return cos.reshape(1, -1), sin.reshape(1, -1)
 
-    @staticmethod
     def advance(
-        past: tuple[Tensor, Tensor, Tensor], new_k: Tensor, new_v: Tensor
+        self, past: tuple[Tensor, Tensor, Tensor], new_k: Tensor, new_v: Tensor
     ) -> tuple[Tensor, Tensor, Tensor]:
         """Ring-buffer update, i.e. what drivr does between ticks.
 
         Shift left by one frame block and write the new K/V into the freed tail.
         In the runtime this is a device-to-device copy of `257` tokens per layer,
-        not of the whole cache.
+        not of the whole cache. Prefer `self.trunk.write_slot` -- the slot write is
+        what the runtime should actually do (§7); this shifting form exists as the
+        reference the slot write is validated against.
         """
         past_k, past_v, bias = past
-        k = new_k.shape[-2]
+        k = new_v.shape[-2]
+        shifted_k = (
+            torch.cat((past_k[..., :, k:], new_k), dim=-1)
+            if self.trunk.keys_transposed
+            else torch.cat((past_k[..., k:, :], new_k), dim=-2)
+        )
         return (
-            torch.cat((past_k[..., k:, :], new_k), dim=-2),
+            shifted_k,
             torch.cat((past_v[..., k:, :], new_v), dim=-2),
             torch.cat((bias[..., k:], torch.zeros_like(bias[..., :k])), dim=-1),
         )

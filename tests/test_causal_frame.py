@@ -30,7 +30,9 @@ import torch
 from torch import Tensor, nn
 
 from rmind.components.transformer.causal_frame import (
+    CACHE_ATTENTION_MODES,
     MASK_BIAS,
+    CacheAttention,
     CausalFrameTransformer,
     apply_rope,
     frame_block_causal_mask,
@@ -48,7 +50,10 @@ CONTROL_MIN_ERROR = 1e-2
 
 
 def _trunk(
-    *, window: int | None = None, cls: type[CausalFrameTransformer] | None = None
+    *,
+    window: int | None = None,
+    cls: type[CausalFrameTransformer] | None = None,
+    cache_attention: CacheAttention = "concat",
 ) -> CausalFrameTransformer:
     torch.manual_seed(0)
     trunk = (cls or CausalFrameTransformer)(
@@ -57,6 +62,7 @@ def _trunk(
         num_heads=HEADS,
         tokens_per_frame=TOKENS_PER_FRAME,
         window=window,
+        cache_attention=cache_attention,
     )
     return trunk.double().eval()
 
@@ -197,11 +203,13 @@ def stream(
         if not cache_frames:
             continue
         if ring:
-            slot = slice((t % cache_frames) * k, (t % cache_frames + 1) * k)
-            past_k, past_v, bias = past_k.clone(), past_v.clone(), bias.clone()
-            past_k[..., slot, :] = new_k
-            past_v[..., slot, :] = new_v
-            bias[..., slot] = 0.0
+            past_k, past_v, bias = trunk.write_slot(
+                past_k, past_v, bias, new_k, new_v, frame_index=t
+            )
+        elif trunk.keys_transposed:
+            past_k = torch.cat((past_k[..., :, k:], new_k), dim=-1)
+            past_v = torch.cat((past_v[..., k:, :], new_v), dim=-2)
+            bias = torch.cat((bias[..., k:], torch.zeros_like(bias[..., :k])), dim=-1)
         else:
             past_k = torch.cat((past_k[..., k:, :], new_k), dim=-2)
             past_v = torch.cat((past_v[..., k:, :], new_v), dim=-2)
@@ -460,8 +468,155 @@ def test_multihead_attention_state_dict_is_loadable() -> None:
     assert not unexpected
 
 
+# --------------------------------------------------------------------------- #
+# cache_attention: the same attention, different graph
+# --------------------------------------------------------------------------- #
+
+SPLIT_MODES = [m for m in CACHE_ATTENTION_MODES if m != "concat"]
+
+
+def _cache_states(
+    trunk: CausalFrameTransformer, *, cache_frames: int, dtype: torch.dtype
+) -> dict[str, tuple[Tensor, Tensor, Tensor]]:
+    """Warm / cold / half-filled cache, with GARBAGE in every invalid slot.
+
+    Garbage (x50, so it would dominate any attention that saw it) rather than
+    zeros on purpose: an online-softmax merge that mishandles a fully-masked block
+    produces `0 * inf` -> NaN, and zeros would hide both that and a lost mask.
+    Valid slots hold O(1) values -- what a real trunk emits -- so the tolerances
+    below measure accumulation order and nothing else.
+    """
+    past_k, past_v, bias = trunk.empty_cache(
+        batch_size=2, cache_frames=cache_frames, dtype=dtype
+    )
+    g = torch.Generator().manual_seed(11)
+    k = torch.randn(past_k.shape, generator=g, dtype=torch.float64).to(dtype)
+    v = torch.randn(past_v.shape, generator=g, dtype=torch.float64).to(dtype)
+    valid = 2 * trunk.tokens_per_frame  # the "half" state: 2 of 5 frames filled
+    half = torch.full_like(bias, MASK_BIAS)
+    half[..., :valid] = 0.0
+
+    def poison(t: Tensor, keep: int) -> Tensor:
+        """x50 everywhere the mask should be blocking, O(1) in the filled slots."""
+        t = t.clone() * 50
+        t[..., :keep, :] /= 50
+        return t
+
+    return {
+        "warm": (k, v, torch.zeros_like(bias)),
+        "cold": (k * 50, v * 50, bias),  # every slot MASK_BIAS
+        "half": (poison(k, valid), poison(v, valid), half),
+    }
+
+
+@pytest.mark.parametrize("mode", SPLIT_MODES)
+@pytest.mark.parametrize("state", ["warm", "cold", "half"])
+@pytest.mark.parametrize(
+    ("dtype", "tol"), [(torch.float64, 1e-12), (torch.float32, 1e-5)]
+)
+def test_split_attention_matches_concat(
+    mode: CacheAttention, state: str, dtype: torch.dtype, tol: float
+) -> None:
+    """`split`/`split_kt` are the SAME attention as `concat`, to machine epsilon.
+
+    This is the gate on the graph restructure that removes the per-tick KV
+    `Concat`: an online-softmax merge of (cache, own frame) is algebraically a
+    single softmax over the concatenation, so any disagreement above float
+    accumulation noise is a defect, not a tradeoff. Checked on a cold and a
+    half-filled cache too, which is where such a merge actually breaks.
+    """
+    cache_frames = 5
+    reference = _trunk(window=6).to(dtype).eval()
+    variant = _trunk(window=6, cache_attention=mode).to(dtype).eval()
+    variant.load_state_dict(reference.state_dict())  # identical weights, not just seed
+    tokens = _tokens(1).to(dtype)
+    cos, sin = frame_rope_cos_sin(torch.tensor(5), head_dim=reference.head_dim)
+    cos, sin = cos.to(dtype), sin.to(dtype)
+
+    past_k, past_v, bias = _cache_states(
+        reference, cache_frames=cache_frames, dtype=dtype
+    )[state]
+    want, want_k, want_v = reference.step(
+        tokens[:, 0], past_k=past_k, past_v=past_v, cos=cos, sin=sin, cache_bias=bias
+    )
+    got, got_k, got_v = variant.step(
+        tokens[:, 0],
+        past_k=past_k.transpose(-1, -2) if variant.keys_transposed else past_k,
+        past_v=past_v,
+        cos=cos,
+        sin=sin,
+        cache_bias=bias,
+    )
+    assert torch.isfinite(got).all(), f"{mode}/{state} produced non-finite output"
+    torch.testing.assert_close(got, want, rtol=0, atol=tol)
+    # the emitted K/V must be in the CACHE's layout, so the host writes them raw
+    torch.testing.assert_close(
+        got_k.transpose(-1, -2) if variant.keys_transposed else got_k,
+        want_k,
+        rtol=0,
+        atol=tol,
+    )
+    torch.testing.assert_close(got_v, want_v, rtol=0, atol=tol)
+
+
+@pytest.mark.parametrize("mode", SPLIT_MODES)
+@pytest.mark.parametrize("window", [2, 6])
+def test_split_attention_passes_the_recompute_gate(
+    mode: CacheAttention, window: int
+) -> None:
+    """The §5.1 gate itself, run through the restructured step.
+
+    A step-vs-step comparison alone would not catch an error that the reference
+    also makes, so the variant must clear the independent gate: streaming against
+    the ring reproduces one full windowed forward, which uses no `step` code at
+    all.
+    """
+    num_frames = 7
+    trunk = _trunk(window=window, cache_attention=mode)
+    tokens = _tokens(num_frames)
+    recompute = _readouts(trunk(_flat(tokens), num_frames=num_frames), num_frames)
+    streamed = stream(trunk, tokens, cache_frames=window - 1, ring=True)
+    torch.testing.assert_close(streamed, recompute, rtol=0, atol=TOL)
+
+
+@pytest.mark.parametrize("mode", SPLIT_MODES)
+def test_split_attention_recompute_gate_negative_control(mode: CacheAttention) -> None:
+    """The same gate on the window-absolute trunk still fails under the restructure.
+
+    Without this, `test_split_attention_passes_the_recompute_gate` could pass for
+    a reason unrelated to the cache being valid.
+    """
+    window = 6
+    trunk = _trunk(window=window, cls=WindowAbsoluteTrunk, cache_attention=mode)
+    tokens = _tokens(7)
+    recompute = _readouts(trunk(_flat(tokens), num_frames=7), 7)
+    streamed = stream(trunk, tokens, cache_frames=window - 1, ring=True)
+    err = (streamed - recompute).abs().max().item()
+    assert err > CONTROL_MIN_ERROR, f"control should diverge, got {err:.3e}"
+
+
+@pytest.mark.parametrize("mode", SPLIT_MODES)
+def test_split_attention_cache_shapes(mode: CacheAttention) -> None:
+    """`split_kt` really does hand TRT a pre-transposed K cache.
+
+    The layout is part of the runtime contract and `set_tensor_address` will not
+    check it, so it is asserted rather than assumed (§7 hazard 1).
+    """
+    trunk = _trunk(window=6, cache_attention=mode)
+    past_k, past_v, bias = trunk.empty_cache(cache_frames=5)
+    tokens = 5 * TOKENS_PER_FRAME
+    assert past_v.shape == (LAYERS, 1, HEADS, tokens, DIM // HEADS)
+    assert bias.shape == (1, 1, 1, tokens)
+    expected_k = (
+        (LAYERS, 1, HEADS, DIM // HEADS, tokens) if mode == "split_kt" else past_v.shape
+    )
+    assert past_k.shape == expected_k
+    assert trunk.keys_transposed == (mode == "split_kt")
+
+
+@pytest.mark.parametrize("mode", CACHE_ATTENTION_MODES)
 @pytest.mark.parametrize("window", [2, 3, 6])
-def test_ring_slot_write_matches_shift_left(window: int) -> None:
+def test_ring_slot_write_matches_shift_left(window: int, mode: CacheAttention) -> None:
     """The host may write the new frame into slot `t % cache_frames` and move
     nothing, instead of shifting the whole cache left.
 
@@ -473,7 +628,7 @@ def test_ring_slot_write_matches_shift_left(window: int) -> None:
     the shift-left form is an overlapping in-place copy that is undefined on GPU.
     """
     num_frames = 9
-    trunk = _trunk(window=window)
+    trunk = _trunk(window=window, cache_attention=mode)
     tokens = _tokens(num_frames)
     shifted = stream(trunk, tokens, cache_frames=window - 1, ring=False)
     slotted = stream(trunk, tokens, cache_frames=window - 1, ring=True)

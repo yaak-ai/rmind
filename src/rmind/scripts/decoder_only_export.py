@@ -48,7 +48,11 @@ from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
 
-from rmind.components.transformer.causal_frame import CausalFrameTransformer
+from rmind.components.transformer.causal_frame import (
+    CACHE_ATTENTION_MODES,
+    CacheAttention,
+    CausalFrameTransformer,
+)
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 from rmind.utils.patch import monkeypatched
 
@@ -112,7 +116,7 @@ def baseline_args(episode_length: int) -> tuple[dict[str, Any]]:
 
 
 def decoder_model_and_args(
-    arm: str, context: int
+    arm: str, context: int, cache_attention: CacheAttention = "concat"
 ) -> tuple[Module, tuple[dict[str, Tensor]], tuple[int, int, int, int]]:
     """The decoder step: ONE new frame against a cache of `context - 1` frames."""
     policy, dim, layers, heads = build_policy(arm, episode_length=1)
@@ -122,6 +126,7 @@ def decoder_model_and_args(
         num_heads=heads,
         tokens_per_frame=TOKENS_PER_FRAME,
         window=context,
+        cache_attention=cache_attention,
     ).eval()
     step = PatchPolicyDecoderStep(policy=policy).eval()
 
@@ -189,6 +194,16 @@ def main() -> None:
         default=6,
         help="frames attended in TOTAL (decoder: 1 new + context-1 cached)",
     )
+    parser.add_argument(
+        "--attention",
+        choices=CACHE_ATTENTION_MODES,
+        default="concat",
+        help="how the step attends over [cache, own frame] (decoder mode only). "
+        "`concat` materializes a copy of the whole cache every tick; `split` "
+        "merges two attentions with online softmax and copies nothing; "
+        "`split_kt` additionally holds the K cache pre-transposed. All three are "
+        "the same attention -- see tests/test_causal_frame.py.",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--verify",
@@ -208,15 +223,19 @@ def main() -> None:
         model, *_ = build_policy(args.arm, episode_length=args.context)
         export_args: tuple[Any, ...] = baseline_args(args.context)
     else:
-        model, export_args, shapes = decoder_model_and_args(args.arm, args.context)
+        model, export_args, shapes = decoder_model_and_args(
+            args.arm, args.context, args.attention
+        )
         layers, heads, head_dim, cache_frames = shapes
         logger.info(
             "cache",
+            attention=args.attention,
             layers=layers,
             heads=heads,
             head_dim=head_dim,
             cache_frames=cache_frames,
             cached_keys=cache_frames * TOKENS_PER_FRAME,
+            past_k_shape=tuple(export_args[0]["past_k"].shape),
         )
     logger.info(
         "parameters",

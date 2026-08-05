@@ -70,7 +70,7 @@ with frame 0 in context. That is a property of bounded attention, not a cache
 defect.
 """
 
-from typing import final, override
+from typing import Literal, final, override
 
 import torch
 from torch import Tensor, nn
@@ -79,6 +79,8 @@ from torch.nn import functional as F
 from rmind.components.transformer.utils import run_layer_stack
 
 __all__ = [
+    "CACHE_ATTENTION_MODES",
+    "CacheAttention",
     "CausalFrameTransformer",
     "CausalFrameTransformerBlock",
     "CausalSelfAttention",
@@ -89,6 +91,24 @@ __all__ = [
 # additive bias for a masked-out position; finite so an fp16 engine cannot
 # produce NaN from -inf * 0 in a fused softmax
 MASK_BIAS: float = -1e4
+
+# How the step attends over `[cache, own frame]`.  Mathematically all three are
+# the same attention; they differ only in what the TRT graph materializes, which
+# at 64 frames of context is a first-order latency term (see
+# `docs/decoder_only_kv_cache.md` §9).
+#
+# * `concat`   -- `cat(past_k, k)` then one SDPA.  Simple, and the reference.
+#                 Materializes a full copy of the cache (K and V) every tick.
+# * `split`    -- two attentions, one over the cache and one over the own frame,
+#                 merged by online-softmax renormalization (the flash trick).
+#                 Nothing cache-sized is copied; `past_k`/`past_v` are read
+#                 straight from the bound device buffers.
+# * `split_kt` -- `split`, plus `past_k` is held **pre-transposed**
+#                 `(..., head_dim, cache_tokens)` so `q @ past_k` needs no
+#                 transpose at all.  Costs the host nothing: the ring slot write
+#                 is 257 tokens per layer either way.
+CacheAttention = Literal["concat", "split", "split_kt"]
+CACHE_ATTENTION_MODES: tuple[CacheAttention, ...] = ("concat", "split", "split_kt")
 
 
 def frame_block_causal_mask(
@@ -160,6 +180,51 @@ def apply_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
     return x * cos + torch.cat((-x2, x1), dim=-1) * sin
 
 
+def unnormalized_attention(
+    q: Tensor, k: Tensor, v: Tensor, bias: Tensor | None, *, keys_transposed: bool
+) -> tuple[Tensor, Tensor, Tensor]:
+    """One attention block, returning `(numerator, row_max, row_sum)`.
+
+    `q` is expected **already scaled** by `head_dim ** -0.5` -- scaling the
+    `(queries, head_dim)` tensor rather than the `(queries, keys)` logits is
+    strictly cheaper, and at 64 frames the logits are 64x larger than q.
+
+    The three returned pieces are the online-softmax state of this block:
+    `numerator = exp(logits - row_max) @ v` and `row_sum = sum exp(logits -
+    row_max)`, so `numerator / row_sum` is the block's own attention output and
+    two blocks compose exactly via `merge_attention`. Nothing of the size of the
+    key set is retained.
+    """
+    logits = q @ (k if keys_transposed else k.transpose(-1, -2))
+    if bias is not None:
+        logits += bias
+    row_max = logits.amax(dim=-1, keepdim=True)
+    weights = (logits - row_max).exp()
+    return weights @ v, row_max, weights.sum(dim=-1, keepdim=True)
+
+
+def merge_attention(
+    past: tuple[Tensor, Tensor, Tensor], own: tuple[Tensor, Tensor, Tensor]
+) -> Tensor:
+    """Combine two `unnormalized_attention` blocks into the attention over both.
+
+    Algebraically identical to a single softmax over the concatenated keys -- this
+    is the FlashAttention/online-softmax composition, applied once at frame
+    granularity instead of per key tile.
+
+    Safe on a **cold cache**, which is the reason it is written with a shared
+    maximum rather than the usual incremental update: when every cached slot is
+    masked, `past` row maxima sit at `MASK_BIAS`, so `exp(past_max - max)`
+    underflows to exactly `0` in float32 and the (finite, uniform-average) past
+    numerator is annihilated rather than producing `0 * inf`.
+    """
+    num_p, max_p, sum_p = past
+    num_o, max_o, sum_o = own
+    shared_max = torch.maximum(max_p, max_o)
+    w_p, w_o = (max_p - shared_max).exp(), (max_o - shared_max).exp()
+    return (num_p * w_p + num_o * w_o) / (sum_p * w_p + sum_o * w_o)
+
+
 @final
 class CausalSelfAttention(nn.Module):
     """Multi-head self-attention with frame RoPE and an optional read-only KV cache.
@@ -170,15 +235,26 @@ class CausalSelfAttention(nn.Module):
     positional embedding differs, and that is the intended change.
     """
 
-    def __init__(self, *, dim_model: int, num_heads: int, dropout: float = 0.1) -> None:
+    def __init__(
+        self,
+        *,
+        dim_model: int,
+        num_heads: int,
+        dropout: float = 0.1,
+        cache_attention: CacheAttention = "concat",
+    ) -> None:
         super().__init__()
         if dim_model % num_heads:
             msg = f"dim_model {dim_model} not divisible by num_heads {num_heads}"
+            raise ValueError(msg)
+        if cache_attention not in CACHE_ATTENTION_MODES:
+            msg = f"cache_attention must be one of {CACHE_ATTENTION_MODES}"
             raise ValueError(msg)
         self.dim_model = dim_model
         self.num_heads = num_heads
         self.head_dim = dim_model // num_heads
         self.dropout = dropout
+        self.cache_attention = cache_attention
 
         # nn.MultiheadAttention's own initialization, so a randomly-initialized
         # CausalFrameTransformer is distributionally identical to the reference
@@ -234,16 +310,33 @@ class CausalSelfAttention(nn.Module):
         K/V are still produced for every position; future frames attend to them.
 
         Returns `(out, new_k, new_v)` where the K/V are for the new frame only.
+        `new_k` is returned in the cache's own layout, i.e. pre-transposed under
+        `cache_attention="split_kt"`, so the host writes it into the ring
+        unchanged.
         """
         q, k, v = self._qkv(x)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
-        keys = torch.cat((past_k, k), dim=-2)
-        values = torch.cat((past_v, v), dim=-2)
-        bias = F.pad(cache_bias, (0, x.shape[1]))  # own-frame keys always visible
-        attn = F.scaled_dot_product_attention(
-            q[:, :, -1:] if readout_only else q, keys, values, attn_mask=bias
+        if self.cache_attention == "concat":
+            keys = torch.cat((past_k, k), dim=-2)
+            values = torch.cat((past_v, v), dim=-2)
+            bias = F.pad(cache_bias, (0, x.shape[1]))  # own-frame keys always visible
+            attn = F.scaled_dot_product_attention(
+                q[:, :, -1:] if readout_only else q, keys, values, attn_mask=bias
+            )
+            return self._out(attn), k, v
+
+        transposed = self.cache_attention == "split_kt"
+        new_k = k.transpose(-1, -2) if transposed else k
+        # scale q once, on the (queries, head_dim) tensor: 64x smaller than logits
+        scaled = (q[:, :, -1:] if readout_only else q) * self.head_dim**-0.5
+        own = unnormalized_attention(scaled, k, v, None, keys_transposed=False)
+        if cache_bias.shape[-1] == 0:  # no cache at all: nothing to merge
+            num, _, denom = own
+            return self._out(num / denom), new_k, v
+        past = unnormalized_attention(
+            scaled, past_k, past_v, cache_bias, keys_transposed=transposed
         )
-        return self._out(attn), k, v
+        return self._out(merge_attention(past, own)), new_k, v
 
 
 @final
@@ -259,11 +352,15 @@ class CausalFrameTransformerBlock(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
+        cache_attention: CacheAttention = "concat",
     ) -> None:
         super().__init__()
         self.attn_norm = nn.LayerNorm(dim_model)
         self.attn = CausalSelfAttention(
-            dim_model=dim_model, num_heads=num_heads, dropout=attn_dropout
+            dim_model=dim_model,
+            num_heads=num_heads,
+            dropout=attn_dropout,
+            cache_attention=cache_attention,
         )
         self.resid_drop = nn.Dropout(resid_dropout)
         self.mlp_norm = nn.LayerNorm(dim_model)
@@ -331,6 +428,7 @@ class CausalFrameTransformer(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
+        cache_attention: CacheAttention = "concat",
     ) -> None:
         super().__init__()
         # There is no learned positional table over the flattened sequence any
@@ -364,6 +462,11 @@ class CausalFrameTransformer(nn.Module):
         self.tokens_per_frame = tokens_per_frame
         self.window = window
         self.rope_base = rope_base
+        self.cache_attention = cache_attention
+        # `split_kt` holds the K side of the cache transposed; `empty_cache` and
+        # the host's ring write must both follow, and `set_tensor_address` will
+        # not catch a mismatch (see the module docstring).
+        self.keys_transposed = cache_attention == "split_kt"
 
         # frame-RELATIVE intra-frame position: tiled onto every frame, so it is
         # invariant to where the frame sits in the window (unlike the 1542-slot
@@ -380,6 +483,7 @@ class CausalFrameTransformer(nn.Module):
                 resid_dropout=resid_dropout,
                 mlp_dropout=mlp_dropout,
                 hidden_layer_multiplier=hidden_layer_multiplier,
+                cache_attention=cache_attention,
             )
             for _ in range(num_layers)
         ])
@@ -436,8 +540,11 @@ class CausalFrameTransformer(nn.Module):
         baseline's flattened sequence length.
 
         K/V are `(num_layers, batch, num_heads, cache_frames * tokens_per_frame,
-        head_dim)`; `cache_bias` is `(1, 1, 1, cache_frames * tokens_per_frame)`
-        filled with `MASK_BIAS` (nothing valid yet).
+        head_dim)` -- except that under `cache_attention="split_kt"` the K side is
+        `(num_layers, batch, num_heads, head_dim, cache_frames *
+        tokens_per_frame)`, i.e. pre-transposed. `cache_bias` is `(1, 1, 1,
+        cache_frames * tokens_per_frame)` filled with `MASK_BIAS` (nothing valid
+        yet).
 
         Raises:
             ValueError: if neither `cache_frames` nor `window` is set.
@@ -448,18 +555,52 @@ class CausalFrameTransformer(nn.Module):
         if n is None:
             msg = "cache_frames required when window is None"
             raise ValueError(msg)
-        shape = (
-            self.num_layers,
-            batch_size,
-            self.num_heads,
-            n * self.tokens_per_frame,
-            self.head_dim,
+        tokens = n * self.tokens_per_frame
+        head = (self.num_layers, batch_size, self.num_heads)
+        past_v = torch.zeros((*head, tokens, self.head_dim), device=device, dtype=dtype)
+        past_k = (
+            torch.zeros((*head, self.head_dim, tokens), device=device, dtype=dtype)
+            if self.keys_transposed
+            else past_v.clone()
         )
-        zeros = torch.zeros(shape, device=device, dtype=dtype)
-        bias = torch.full(
-            (1, 1, 1, n * self.tokens_per_frame), MASK_BIAS, device=device, dtype=dtype
-        )
-        return zeros, zeros.clone(), bias
+        bias = torch.full((1, 1, 1, tokens), MASK_BIAS, device=device, dtype=dtype)
+        return past_k, past_v, bias
+
+    def write_slot(  # noqa: PLR0913
+        self,
+        past_k: Tensor,
+        past_v: Tensor,
+        cache_bias: Tensor,
+        new_k: Tensor,
+        new_v: Tensor,
+        *,
+        frame_index: int,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """The host-side ring write of §7, out-of-place, layout-aware.
+
+        Writes one frame block into slot `frame_index % cache_frames` and moves
+        nothing else. Returns fresh tensors rather than mutating, because that is
+        what the tests need; the runtime writes in place into the device buffers
+        that are already bound to the engine's cache inputs.
+
+        Valid because attention is permutation-invariant over keys and every key
+        carries its own rotation and its own `cache_bias` entry, so the order of
+        the ring carries no information.
+        """
+        tokens = self.tokens_per_frame
+        cache_frames = cache_bias.shape[-1] // tokens
+        if not cache_frames:
+            return past_k, past_v, cache_bias
+        start = (frame_index % cache_frames) * tokens
+        slot = slice(start, start + tokens)
+        past_k, past_v, cache_bias = past_k.clone(), past_v.clone(), cache_bias.clone()
+        if self.keys_transposed:
+            past_k[..., :, slot] = new_k
+        else:
+            past_k[..., slot, :] = new_k
+        past_v[..., slot, :] = new_v
+        cache_bias[..., slot] = 0.0
+        return past_k, past_v, cache_bias
 
     def step(  # noqa: PLR0913
         self,
