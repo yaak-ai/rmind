@@ -247,8 +247,25 @@ leaves the 333 ms tick at 64 frames (§9) while still using only an eighth of RA
 
 ## 7. drivr serving sketch
 
+⚠️ **This sketch is the `cache_attention="concat"` + stacked-cache layout**, i.e. the
+default, which is also what §13 recommends serving. Two variants change the *binding*
+and nothing else, and `set_tensor_address` will not tell you if the host disagrees:
+
+| trunk setting | `inputs_past_k` | bindings |
+| --- | --- | --- |
+| default | `(L, b, H, cache_tokens, head_dim)` | `past_k`, `past_v` |
+| `cache_attention="split_kt"` | `(L, b, H, head_dim, cache_tokens)` — **transposed**, and `new_k` comes out matching | same names |
+| `per_layer_cache=True` | `(b, H, cache_tokens, head_dim)` **per layer** | `past_k_0 … past_k_{L-1}` |
+
+`PatchPolicyDecoderStep.cache_inputs()` is the single place that decides those names
+and `CausalFrameTransformer.write_slot()` the single place that does the layout-aware
+ring write — call them rather than re-deriving either, and keep the shape check below
+regardless: it is what catches all of this.
+
 ```python
 # --- once, at engine load: the graph is the authority on every cache dimension
+# (with per-layer bindings, iterate `past_k_0 … past_k_{L-1}` instead -- or just
+#  validate every name the engine declares, which is strictly better)
 for name in ("inputs_past_k", "inputs_past_v", "inputs_cache_bias",
              "inputs_rope_cos", "inputs_rope_sin", "new_k", "new_v"):
     expected = tuple(engine.get_tensor_shape(name))
@@ -775,10 +792,15 @@ important operational conclusion in this document:
 Two items, both visible in the fp16 profile of the `concat` engine (84.6 ms
 profiled / 97.4 ms benchmarked):
 
-* **19.3 ms of "Reformatting CopyNode for Input Tensor 2/3"** — TRT converting the
-  fp32 `past_k`/`past_v` engine inputs into the fp16 layout the fused kernel wants,
-  once per tick. **An fp16 cache would remove it**, and it halves cache memory too
-  (§6): 569 MiB instead of 1138 at `_big`/64. That is the cheapest remaining ~20 %.
+* **19.3 ms of "Reformatting CopyNode for Input Tensor 2/3"** — TRT reformatting the
+  fp32 `past_k`/`past_v` engine inputs for the fused kernel, once per tick, and
+  absent from the fp32 engine. ⚠️ **Unverified which half of "reformat" that is**:
+  if it is the dtype conversion, an fp16 cache removes it; if it is the *layout* the
+  fused kernel wants, an fp16 cache does not, and the only evidence available here
+  (no such node at fp32) is consistent with both. Treat the 19.3 ms as an
+  upper bound on a hypothesis, not as 20 % sitting there for the taking — but note
+  an fp16 cache is worth having regardless, because it halves cache memory (§6):
+  569 MiB instead of 1138 at `_big`/64.
 * **11.9 ms of KV copy** (12 × ~0.54 ms) — the same stacked-cache slice fused with
   the `Concat` as in fp32, but 4× cheaper because the tensors are half the size and
   the kernel is no longer the bottleneck. Per-layer bindings (§11) would target this,
@@ -817,10 +839,17 @@ context on the Orin".
    screen (§4a), then `--trials 200` against an fp32 control on a **real
    checkpoint**, and per §4 build it as `fp32 encoder + fp16 trunk`, not pure fp16.
    Nothing here validates numerics; these are random weights.
-2. **Make the cache fp16 while you are there.** It removes the ~19 ms of per-tick
-   input reformat in the fp16 engine *and* halves cache memory (§6). No accuracy
-   argument needed beyond (1) — the cache holds the same activations the trunk is
-   already computing in fp16.
+
+   ⚠️ **First check on the mixed engine: grep its profile for `_gemm_mha_v2`.** The
+   pinned ranges are encoder layers and the fusion is in the trunk, so it should
+   survive — but that is reasoning, not measurement, and if the kernel is absent the
+   entire 3.7× is gone and the mixed engine lands near fp32, not "between".
+2. **Make the cache fp16 while you are there.** Certain: it halves cache memory
+   (§6). Hypothesised, and worth measuring rather than assuming: it may also remove
+   the ~19 ms of per-tick input reformat in the fp16 engine (§12 — it depends on
+   whether that node is a dtype conversion or a layout one, which is not
+   established). No accuracy argument needed beyond (1) — the cache holds the same
+   activations the trunk is already computing in fp16.
 3. **Bind the cache per layer** (`per_layer_cache=True`). −45.6 ms on the full graph
    at `_big`/N=64 in fp32 when combined with `split_kt` (364 → 318 ms, which *does*
    fit the tick); ceiling ~12 ms in fp16. Pure I/O-binding change, ONNX
