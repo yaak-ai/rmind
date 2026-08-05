@@ -462,6 +462,33 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 sampled_chunk[:, -1].detach(), target[:, -1]
             )
 
+            # ARGMAX decode -- exactly what inference emits when `sample_codes=false`,
+            # i.e. what the exported engine actually serves. This is a DEPLOYMENT-aligned
+            # number and it does not track the code losses above. Measured on
+            # dashing-dream-514 (wxyp0bzq) v0 -> v9: val code_0 rose 0.811 -> 2.885
+            # (+256%) while this metric IMPROVED 13% (0.0456 -> 0.0395) and p_gt improved
+            # 20% -- the rising NLL is tail miscalibration, not capability loss. Across
+            # arms it is worse than uninformative: dinov2_smalltrunk has the BEST val
+            # code_0 (0.890) and the WORST argmax recon (0.0462), and it underperformed
+            # in rsim. Select checkpoints on this, not on val/loss/code_*.
+            argmax_codes = code_logits.argmax(dim=-1)
+            argmax_chunk = tokenizer.invert(argmax_codes) + self._offset(
+                offsets, argmax_codes
+            )
+            metrics["offset_argmax_recon"] = self.losses["offset"](argmax_chunk, target)
+            metrics["offset_argmax_recon_last"] = self.losses["offset"](
+                argmax_chunk[:, -1], target[:, -1]
+            )
+
+            # code accuracy at the deployed readout. Without it the code losses cannot
+            # separate "argmax still right, tails miscalibrated" from "argmax now wrong",
+            # which is the distinction that decides whether a rising val code loss
+            # matters. Chance is 1/num_codes marginally, (1/num_codes)**g jointly.
+            correct = argmax_codes[:, -1] == target_codes[:, -1]  # (b, g)
+            for q in range(tokenizer.quantizer.num_quantizers):
+                metrics[f"code_acc_{q}_last"] = correct[:, q].float().mean()
+            metrics["code_acc_joint_last"] = correct.all(dim=-1).float().mean()
+
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:

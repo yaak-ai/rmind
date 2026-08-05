@@ -381,3 +381,59 @@ def test_fusion_norm_calibration_deterministic() -> None:
     torch.manual_seed(7)
     b = _make_model(fusion_norm=True)
     torch.testing.assert_close(a.fusion_goal_gain, b.fusion_goal_gain)
+
+
+def test_argmax_decode_metrics_are_the_deployment_path() -> None:
+    """`offset_argmax_recon*` must be the ARGMAX decode -- what inference serves with
+    `sample_codes=false` -- and not an alias of the sampled-decode metric.
+
+    The distinction is the point of the metric: on dashing-dream-514 the val code losses
+    rose 256% across training while the argmax decode IMPROVED 13%, so selecting on the
+    code loss picks the worse checkpoint.
+    """
+    model = _make_model()
+    model.sample_codes = True  # make the sampled path genuinely differ from argmax
+    batch = _make_batch()
+
+    metrics = model._compute_metrics(batch)["policy", "metric"]  # noqa: SLF001
+
+    expected_keys = {
+        "offset_argmax_recon",
+        "offset_argmax_recon_last",
+        "code_acc_joint_last",
+        *(f"code_acc_{q}_last" for q in range(NUM_QUANTIZERS)),
+    }
+    assert expected_keys <= set(metrics.keys()), (
+        f"missing: {expected_keys - set(metrics.keys())}"
+    )
+    for key in expected_keys:
+        assert metrics[key].isfinite()
+
+    # accuracies are proportions, and joint correctness cannot exceed any marginal
+    marginals = [float(metrics[f"code_acc_{q}_last"]) for q in range(NUM_QUANTIZERS)]
+    joint = float(metrics["code_acc_joint_last"])
+    for acc in [*marginals, joint]:
+        assert 0.0 <= acc <= 1.0
+    assert joint <= min(marginals) + 1e-6
+
+    # recompute the argmax decode independently -- must match exactly
+    with torch.no_grad():
+        features, chunk = model._features(batch)  # noqa: SLF001
+        target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
+        code_logits, offsets = model._heads(features)  # noqa: SLF001
+        codes = code_logits.argmax(dim=-1)
+        decoded = model.tokenizer.invert(codes) + model._offset(offsets, codes)  # noqa: SLF001
+        expected_last = model.losses["offset"](decoded[:, -1], target[:, -1])
+        expected_all = model.losses["offset"](decoded, target)
+
+    torch.testing.assert_close(metrics["offset_argmax_recon_last"], expected_last)
+    torch.testing.assert_close(metrics["offset_argmax_recon"], expected_all)
+
+    # and the accuracies must be the argmax hit-rate against the tokenized targets
+    with torch.no_grad():
+        target_codes = model.tokenizer(chunk)
+        correct = codes[:, -1] == target_codes[:, -1]
+    for q in range(NUM_QUANTIZERS):
+        torch.testing.assert_close(
+            metrics[f"code_acc_{q}_last"], correct[:, q].float().mean()
+        )
