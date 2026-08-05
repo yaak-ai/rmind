@@ -192,7 +192,9 @@ def _causal_regularized_model(attention_impl: str) -> PatchPolicy:
     model.encoder = CausalFrameTransformer(
         dim_model=POLICY_DIM,
         num_layers=2,
-        num_heads=2,
+        # FlexAttention requires head_dim >= 16 (production: 512/8 = 64);
+        # 1 head keeps the toy POLICY_DIM=16 legal on the flex path
+        num_heads=1,
         tokens_per_frame=NUM_PATCHES + 1,
         window=2,
         max_sequence_length=EPISODE_LENGTH * (NUM_PATCHES + 1),
