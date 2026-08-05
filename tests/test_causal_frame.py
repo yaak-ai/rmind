@@ -23,11 +23,13 @@ variant of the same trunk, run through the same harness, so a pass is
 falsifiable rather than vacuous.
 """
 
+from collections.abc import Callable
 from typing import override
 
 import pytest
 import torch
 from torch import Tensor, nn
+from torch.fx.experimental.proxy_tensor import make_fx
 
 from rmind.components.transformer.causal_frame import (
     FLEX_BLOCK_SIZE,
@@ -542,21 +544,70 @@ def _fwd_bwd(
     """Forward + backward, returning the output and the gradients under comparison.
 
     An input-gradient-only comparison would miss a parameter whose gradient path
-    runs through the mask, so both an attention projection and the intra-frame
-    position embedding are included.
+    runs through the mask, so an attention projection at each end of the stack and
+    the intra-frame position embedding are included too.
     """
     trunk.zero_grad()
     inp = x.detach().clone().requires_grad_()
     out = trunk(inp, num_frames=num_frames)
     out.backward(grad_out)
     assert inp.grad is not None
-    return {
-        "out": out.detach(),
-        "d_input": inp.grad,
-        "d_in_proj_weight": trunk.layers[0].attn.in_proj_weight.grad.clone(),  # ty:ignore[possibly-unbound-attribute]
-        "d_out_proj_weight": trunk.layers[-1].attn.out_proj.weight.grad.clone(),  # ty:ignore[possibly-unbound-attribute]
-        "d_intra_position": trunk.intra_position_embedding.weight.grad.clone(),  # ty:ignore[possibly-unbound-attribute]
+    params = dict(trunk.named_parameters())
+    last = trunk.num_layers - 1
+    wanted = {
+        "d_in_proj_weight": "layers.0.attn.in_proj_weight",
+        "d_out_proj_weight": f"layers.{last}.attn.out_proj.weight",
+        "d_intra_position": "intra_position_embedding.weight",
     }
+    grads: dict[str, Tensor] = {"out": out.detach(), "d_input": inp.grad}
+    for key, name in wanted.items():
+        grad = params[name].grad
+        assert grad is not None, name
+        grads[key] = grad.clone()
+    return grads
+
+
+def _mutating_ops(mask_mod: Callable[..., Tensor]) -> list[str]:
+    """Names of the in-place aten ops a `mask_mod` traces down to."""
+    idx = torch.arange(4)
+    graph = make_fx(mask_mod)(torch.tensor(0), torch.tensor(0), idx, idx)
+    return [
+        str(node.target)
+        for node in graph.graph.nodes
+        if getattr(getattr(node.target, "_schema", None), "is_mutable", False)
+    ]
+
+
+def test_mask_mod_is_free_of_in_place_ops() -> None:
+    """Regression guard, and the reason it exists is not hypothetical.
+
+    Inductor lowers a `mask_mod` as a pointwise subgraph, in which no buffer may be
+    created -- so a single in-place op makes the flex path fail to compile at EVERY
+    shape ("SubgraphLoweringException: Buffers cannot be created while lowering a
+    pointwise subgraph"). `ruff check` in this repo runs with `fix = true` and
+    `unsafe-fixes = true`, and PLR6104 happily rewrites `keep = keep & x` into
+    `keep &= x`, which is exactly that failure. It bit once already.
+
+    This check runs on CPU, so it guards the flex path on machines that cannot run
+    the CUDA parity tests at all.
+    """
+    for window in (None, 6, 16):
+        assert not _mutating_ops(
+            frame_block_causal_mask_mod(PROD_TOKENS_PER_FRAME, window)
+        )
+
+
+def test_in_place_mask_mod_is_detected() -> None:
+    """Negative control for the guard above: the form ruff produces must be caught."""
+
+    def in_place(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
+        del b, h
+        delta = q_idx // PROD_TOKENS_PER_FRAME - kv_idx // PROD_TOKENS_PER_FRAME
+        keep = delta >= 0
+        keep &= delta <= LAYERS  # any bound; the in-place `&=` is the point
+        return keep
+
+    assert _mutating_ops(in_place) == ["aten.bitwise_and_.Tensor"]
 
 
 def test_flex_mask_mod_matches_dense_mask() -> None:
@@ -585,8 +636,12 @@ def test_flex_block_mask_is_block_sparse(num_frames: int, window: int) -> None:
     """
     k = PROD_TOKENS_PER_FRAME
     bm = frame_block_causal_block_mask(num_frames, k, window=window)
+    # partial blocks (masked elementwise inside the kernel) cost the same as full
+    # ones, so both count toward the work actually done
+    full_blocks = bm.full_kv_num_blocks
+    assert full_blocks is not None, "no fully-unmasked blocks at all?"
     computed = (
-        int(bm.kv_num_blocks.sum().item()) + int(bm.full_kv_num_blocks.sum().item())
+        int(bm.kv_num_blocks.sum().item()) + int(full_blocks.sum().item())
     ) * FLEX_BLOCK_SIZE**2
     exact = k * k * sum(min(f + 1, window) for f in range(num_frames))
     dense = (num_frames * k) ** 2

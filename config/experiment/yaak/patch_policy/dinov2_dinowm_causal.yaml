@@ -4,53 +4,130 @@ defaults:
   - /experiment/yaak/patch_policy/dinov2_dinowm
   - _self_
 
-# Decoder-only trunk: causal over frame blocks, bidirectional within a frame,
-# with a sliding window equal to the serving cache capacity. Trains the way it
-# infers (hand-off §6): a full forward under
-# `frame_block_causal_mask(window=episode_length)` is EXACTLY streaming one frame
-# per tick against a ring buffer of `episode_length - 1` past frames -- that
-# equivalence is the gate in tests/test_causal_frame.py.
+# Decoder-only trunk: causal over frame blocks, bidirectional within a frame, with
+# a sliding window equal to the serving cache capacity. Trains the way it infers
+# (hand-off §6): a full forward under `frame_block_causal_mask(window=W)` is
+# EXACTLY streaming one frame per tick against a ring buffer of `W - 1` past
+# frames -- that equivalence is the gate in tests/test_causal_frame.py.
 #
 # Positional encoding is frame-RoPE + a tiled 257-slot intra-frame embedding, so
 # nothing is window-absolute and cached keys never go stale. See
 # src/rmind/components/transformer/causal_frame.py.
 #
-# ⚠️ TRAINING COST. The KV cache makes INFERENCE per-tick cost independent of the
-# window; it does NOT make training cheaper. Training still does one dense
-# forward over the whole clip, and the attention terms are quadratic in the
-# flattened length:
+# ---------------------------------------------------------------------------
+# 1. WHY `episode_length` AND `window` ARE DIFFERENT NUMBERS HERE
+# ---------------------------------------------------------------------------
+# `window` is the CONTEXT DEPTH per readout, and it is also the serving ring
+# capacity. `episode_length` is the SUPERVISION DENSITY: every frame in the clip
+# is a readout with its own action-chunk target, so a 32-frame clip yields 32
+# training targets from one frozen-ViT pass over 32 images.
 #
-#   frames  flattened tokens  per-query cost  attention cost
-#      6           1542             1.0x            1.0x
-#     16           4112             2.7x            7.1x
-#     32           8224             5.3x           28.4x
-#     64          16448            10.7x          113.8x
+# Setting them equal (the previous version of this file) throws away the main
+# reason to have a window at all. With `episode_length == window` the mask is
+# plain block-causal, cost still grows as F^2, and the first `window - 1` readouts
+# of every clip are trained with LESS context than they will be served with. With
+# `episode_length > window` cost grows LINEARLY in F, and 17 of the 32 readouts
+# see a full 16-frame window (frames 0..14 see a short one, and that is the same
+# cold-start ramp drivr has after every engage).
 #
-# The `window` mask makes the attention BLOCK-SPARSE but plain SDPA still
-# materializes the dense score matrix, so the saving is not realized without a
-# block-sparse kernel (FlexAttention / `create_block_mask`). Hence 16 frames as
-# the default first step rather than 64, and the batch size cut accordingly.
-# Re-derive lr_warmup_steps / lr_total_steps for the new steps-per-epoch before
-# launching anything -- the cosine schedule oscillates past num_training_steps.
-episode_length: 16
-
-# clip_length becomes episode_length + clip_horizon - 1 = 21 automatically, so
-# the dataset must be rebuilt (rbyte clip_length); see the report's rbyte notes.
+# ---------------------------------------------------------------------------
+# 2. WHY THIS IS AFFORDABLE: `attention_impl: flex`
+# ---------------------------------------------------------------------------
+# A dense bool `attn_mask` disqualifies SDPA's flash backend, so plain SDPA
+# computes every masked position and the window buys nothing. `attention_impl:
+# flex` hands the same mask to FlexAttention as a `BlockMask`, whose Triton kernel
+# skips whole 128x128 blocks. Numerically identical (fp32 fwd+bwd parity to
+# <=1.5e-6 scale-relative, tests/test_causal_frame.py).
+#
+# Measured on an RTX 5090, bf16, FULL trunk fwd+bwd with gradient checkpointing
+# (tests/bench_causal_frame.py, 2026-08-05), normalized to a constant 768
+# frame-slots per step -- today's `batch 128 x 6 frames`, which is what fixes the
+# frozen-ViT cost, the readouts per step and the activation memory:
+#
+#   frames  window  sdpa ms   flex ms   flex vs today's dense 6-frame step
+#      6       6      652       497                0.76x
+#     16       6     1085       550                0.84x
+#     16      16     1085       626                0.96x
+#     32       8     1787       593                0.91x
+#     32      16     1787       705                1.08x   <-- this recipe
+#     32      32     1791       800                1.23x
+#     64      16     3215       749                1.15x
+#     64      64     3233      1151                1.77x
+#
+# So 32 frames of clip with a 16-frame window costs 1.08x today's 6-frame trunk
+# step -- the same ballpark -- where dense SDPA would cost 2.74x. Trunk peak
+# activation memory at 768 frame-slots is ~9.7 GiB (flex) against ~11.0 GiB for
+# today's 6-frame/batch-128 arm, i.e. slightly BETTER, because block-sparsity also
+# shrinks the attention working set.
+#
+# Serving cost of `window: 16` is already measured: 59.6 ms/tick for this arm on
+# an AGX Orin at 918 MHz (§9 of docs/decoder_only_kv_cache.md), vs 200.9 ms for
+# today's 6-frame non-cached baseline. A 16-frame window is 3.4x cheaper to serve
+# than what runs today, so this recipe does not trade serving cost for context.
+#
+# ---------------------------------------------------------------------------
+# 3. BATCH AND SCHEDULE ARITHMETIC
+# ---------------------------------------------------------------------------
+# batch 24 x 32 frames = 768 frame-slots and 768 readouts per step: identical to
+# today's batch 128 x 6. The loss means over `(b t)` readouts, so the gradient's
+# scale is unchanged and `lr` is left at 1e-4 (see §4 for the caveat).
+#
+# The clip11 train set is ~1.97M samples (FT baseline zcglgth4: 308,038 steps @
+# batch 64 for 10 epochs). Raising `episode_length` does NOT materially change
+# that count: the rbyte sampler is `DataFrameGroupByDynamic(every=${episode_stride}
+# = 10i, period=${clip_period}, gather_every=${episode_step})`, so clip STARTS are
+# strided by 10 raw frames independently of clip length -- only the tail of each
+# drive is lost, ~26 samples of ~3.1k per drive (<1%).
+#
+#   steps/epoch = 1.97M / 24 = ~82.1k   (today: 1.97M / 128 = ~15.4k)
+#
+# Today's arm plans 15 epochs = 231k steps = 177M supervised readouts. At 768
+# readouts/step that is the same 231k steps here, i.e. ~2.8 epochs -- so
+# `max_epochs: 3` and `lr_total_steps: 246000` (3 x 82.1k) spends about today's
+# wall clock. Do NOT leave `lr_total_steps` at 231000 with `max_epochs: 3`: the
+# cosine in `get_cosine_schedule_with_warmup` has no clamp and comes back UP past
+# `num_training_steps`. Warmup keeps today's 8% ratio.
+#
+# ---------------------------------------------------------------------------
+# 4. WHAT TO WATCH
+# ---------------------------------------------------------------------------
+# * `attn_dropout: 0.0` is REQUIRED: FlexAttention has no `dropout_p` and the
+#   trunk raises rather than silently dropping it. `raw.yaml` does not set it, so
+#   the Python default of 0.1 would otherwise apply. This is a regularization
+#   change riding along with the kernel change -- an A/B against today's arm must
+#   set `attn_dropout: 0.0` on the sdpa side too, or the two effects confound.
+# * 768 readouts from 24 clips are more correlated than 768 from 128 clips, so the
+#   effective batch is somewhat smaller than the count suggests. If early training
+#   is unstable, halve `lr` before touching anything else.
+# * `clip_length` becomes 37 (`episode_length + clip_horizon - 1`), so the dataset
+#   must be rebuilt (`just generate-config`, then a SINGLE-writer rbyte cache
+#   build -- two concurrent builds corrupt the samples store).
+# * 80 GB nodes: see dinov2_dinowm_causal_80gb.yaml, which only raises the batch.
+episode_length: 32
+window: 16
 
 model:
   encoder:
     _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
     tokens_per_frame: "${eval:'${num_patches} + 1'}"
-    # the training mask width == the serving cache capacity, in frames
-    window: ${episode_length}
+    # context depth per readout == the serving ring capacity, in frames
+    window: ${window}
+    # block-sparse kernel; the whole point of the window
+    attention_impl: flex
+    # required by attention_impl: flex (no dropout_p in FlexAttention)
+    attn_dropout: 0.0
     # 64 positions of range; base 10000 leaves most frequency pairs inert
     rope_base: 1000.0
 
-# 128 -> 16 keeps activation memory in the same ballpark as the 6-frame arm at
-# 128 (5.3x the tokens per sample). Placeholder: profile before committing.
 datamodule:
   train:
-    batch_size: 16
+    batch_size: 24
+
+trainer:
+  max_epochs: 3
+
+lr_warmup_steps: 19700
+lr_total_steps: 246000
 
 wandb:
   tags: [patch_policy, dinov2_dinowm_causal]

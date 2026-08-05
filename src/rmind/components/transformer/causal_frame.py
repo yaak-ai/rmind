@@ -169,6 +169,14 @@ def frame_block_causal_mask_mod(
     Note the inverted convention: `frame_block_causal_mask` returns True for
     *blocked*, a `mask_mod` returns True for *keep*. The predicate is the same
     frame-delta comparison, evaluated on index tensors instead of materialized.
+
+    ⚠️ Every operation here must be OUT-OF-PLACE. Inductor lowers a `mask_mod` as a
+    pointwise subgraph, and an in-place op inside one fails to compile with
+    "SubgraphLoweringException: Buffers cannot be created while lowering a pointwise
+    subgraph" -- for every shape, so the flex path is simply dead. This is a live
+    hazard rather than a hypothetical: `ruff check` (this repo runs it with
+    `fix = true, unsafe-fixes = true`) rewrites `keep = keep & x` into `keep &= x`
+    under PLR6104 and thereby breaks it, hence the `noqa` below.
     """
 
     def mask_mod(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
@@ -176,7 +184,7 @@ def frame_block_causal_mask_mod(
         delta = q_idx // tokens_per_frame - kv_idx // tokens_per_frame
         keep = delta >= 0
         if window is not None:
-            keep &= delta <= window - 1
+            keep = keep & (delta <= window - 1)  # noqa: PLR6104
         return keep
 
     return mask_mod
@@ -231,7 +239,7 @@ def _compiled_flex_attention() -> Callable[..., Tensor]:
     Compiled lazily so importing this module (which the ONNX export path does)
     never pays for it.
     """
-    return torch.compile(flex_attention, dynamic=False)
+    return torch.compile(flex_attention, dynamic=False)  # ty:ignore[no-matching-overload]
 
 
 def flex_frame_attention(

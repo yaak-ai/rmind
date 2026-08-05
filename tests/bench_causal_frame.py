@@ -36,6 +36,7 @@ import time
 from collections.abc import Callable, Iterable
 
 import torch
+import torch._dynamo
 from torch import Tensor
 from torch.nn import functional as F
 
@@ -48,6 +49,14 @@ from rmind.components.transformer.causal_frame import (
     frame_block_causal_mask,
     frame_rope_cos_sin,
 )
+
+# One `torch.compile`d `flex_attention` serves every shape in the sweep, and
+# `dynamic=False` specializes per shape. The dynamo default of 8 cache entries is
+# silently exceeded around row 8 of this grid, after which flex falls back to EAGER
+# (which materializes the score matrix) and the measurement becomes meaningless --
+# exactly on the long-context rows the recommendation rests on.
+torch._dynamo.config.cache_size_limit = 256  # noqa: SLF001
+torch._dynamo.config.accumulated_cache_size_limit = 512  # noqa: SLF001
 
 TOKENS_PER_FRAME = 257
 
@@ -122,7 +131,7 @@ def bench_attention(batches: Iterable[int], dtype: torch.dtype) -> None:
 
                     def run(  # noqa: ANN202, PLR0913
                         *,
-                        impl: AttentionImpl = impl,  # ty:ignore[invalid-parameter-default]
+                        impl: AttentionImpl = impl,
                         batch: int = batch,
                         num_frames: int = num_frames,
                         window: int = window,
@@ -201,7 +210,7 @@ def bench_trunk(batches: Iterable[int], dtype: torch.dtype) -> None:
 
                     def run(  # noqa: ANN202, PLR0913
                         *,
-                        impl: AttentionImpl = impl,  # ty:ignore[invalid-parameter-default]
+                        impl: AttentionImpl = impl,
                         batch: int = batch,
                         num_frames: int = num_frames,
                         window: int = window,
@@ -258,7 +267,7 @@ def bench_vit(batches: Iterable[int], dtype: torch.dtype) -> None:
 
         def step(img: Tensor = img) -> None:
             with torch.no_grad():
-                model.forward_features(img)
+                model.forward_features(img)  # ty:ignore[call-non-callable]
 
         emit(f"{n:>7} {_guard(lambda step=step: timed(step, iters=5, warmup=2))}")
 
