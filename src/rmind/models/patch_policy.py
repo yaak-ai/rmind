@@ -171,6 +171,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
         fusion_norm: bool = False,
+        fusion_goal_rms: float | None = None,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -247,31 +248,39 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             self.fusion_patch_gain: nn.Parameter | None = nn.Parameter(
                 torch.tensor(1.0)
             )
-            with torch.no_grad():
-                quantizer = self.goal_encoder.quantizer
-                generator = torch.Generator().manual_seed(0)
-                codes = torch.stack(
-                    [
-                        torch.randint(
-                            0, quantizer.codebook_size, (1024,), generator=generator
-                        )
-                        for _ in range(quantizer.num_quantizers)
-                    ],
-                    dim=-1,
-                )
-                # the CPU generator fixes the seed sequence; lookup must run on
-                # whatever device the loaded codebooks landed on
-                quantizer_device = next(
-                    chain(quantizer.parameters(), quantizer.buffers())
-                ).device
-                rms = (
-                    quantizer
-                    .lookup(codes.to(quantizer_device))
-                    .pow(2)
-                    .mean()
-                    .sqrt()
-                    .cpu()
-                )
+            if fusion_goal_rms is not None:
+                # data-measured element-RMS of z_q. The uniform-random-code MC
+                # below overestimates it (real codebook usage is non-uniform:
+                # measured 1.86x on gzxgumtf — 0.143 MC vs 0.077 real), landing
+                # the goal stream ~2x quieter than intended. Prefer the
+                # measured value when known (H3 eval, 2026-08-06).
+                rms = torch.tensor(fusion_goal_rms)
+            else:
+                with torch.no_grad():
+                    quantizer = self.goal_encoder.quantizer
+                    generator = torch.Generator().manual_seed(0)
+                    codes = torch.stack(
+                        [
+                            torch.randint(
+                                0, quantizer.codebook_size, (1024,), generator=generator
+                            )
+                            for _ in range(quantizer.num_quantizers)
+                        ],
+                        dim=-1,
+                    )
+                    # the CPU generator fixes the seed sequence; lookup must run
+                    # on whatever device the loaded codebooks landed on
+                    quantizer_device = next(
+                        chain(quantizer.parameters(), quantizer.buffers())
+                    ).device
+                    rms = (
+                        quantizer
+                        .lookup(codes.to(quantizer_device))
+                        .pow(2)
+                        .mean()
+                        .sqrt()
+                        .cpu()
+                    )
             self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
         else:
             self.fusion_patch_norm = None

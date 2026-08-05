@@ -147,6 +147,11 @@ model:
     weight_decay_overrides:
       code_head: 0.2
 
+  # data-measured element-RMS of gzxgumtf's z_q (H3 eval 2026-08-06): the
+  # seeded MC calibration overestimates 1.86x because real code usage is
+  # non-uniform, landing the goal stream at 0.54 instead of 1.0
+  fusion_goal_rms: 0.077
+
 # scale-balanced patch/goal fusion (learnable calibrated gains). The dinowm
 # features are post-norm but still ~34x the goal z_q's element RMS; the causal
 # line adopts the fix from the start (per Max, 2026-08-06).
