@@ -15,6 +15,7 @@ from rmind.data.nero import (
     POSE_BLOCK_LAYOUT,
     ROTATION_INDICES,
     SIDE_DIM,
+    STATE_QUAT_DIM,
     TRANSLATION_INDICES,
     PoseStandardizer,
     canonicalize_quat,
@@ -28,6 +29,8 @@ from rmind.data.nero import (
     rot6d_to_quat,
     rot6d_to_rotmat,
     rotmat_to_quat,
+    state_9d_to_quat,
+    state_quat_to_9d,
     translation_rotation_split,
 )
 
@@ -245,3 +248,61 @@ def test_letterbox_camera_cond_rewrites_intrinsics_consistently() -> None:
     # ... and fy/S shrinks by the letterbox ratio
     assert out[0, 0, 1].item() == pytest.approx(0.9 * (1080 / 1920), abs=1e-6)
     assert out[0, 1, 1].item() == pytest.approx(0.9 * (800 / 1280), abs=1e-6)
+
+
+# ------------------------------------------------- storage <-> model-facing
+
+
+def test_state_quat_9d_round_trip_is_identity() -> None:
+    """46 (contract §5.2 storage) <-> 60 (model-facing 9D), the rbyte boundary."""
+    generator = torch.Generator().manual_seed(5)
+    poses = _random_poses(64 * 6, seed=6).reshape(64, 6 * 7)
+    hub = torch.randn(64, 4, generator=generator, dtype=torch.float64)
+    hub = canonicalize_quat(hub / hub.norm(dim=-1, keepdim=True))
+    state = torch.cat([poses, hub], dim=-1)
+    assert state.shape[-1] == STATE_QUAT_DIM
+
+    expanded = state_quat_to_9d(state)
+    assert expanded.shape[-1] == SIDE_DIM
+    assert torch.allclose(state_9d_to_quat(expanded), state, atol=TOL)
+
+
+def test_state_conversion_preserves_the_block_layout() -> None:
+    """The arm translation must land at indices 0..2, not somewhere else."""
+    state = torch.zeros(1, STATE_QUAT_DIM)
+    state[0, :3] = torch.tensor([0.3, 0.1, 0.05])  # arm translation
+    state[0, 6] = 1.0  # arm qw
+    for pose in range(1, 6):  # remaining poses: identity rotation
+        state[0, pose * 7 + 6] = 1.0
+    state[0, -1] = 1.0  # hub qw
+    expanded = state_quat_to_9d(state)
+    assert torch.allclose(expanded[0, :3], torch.tensor([0.3, 0.1, 0.05]), atol=TOL)
+    # identity rotation in 6D is the first two columns of I
+    assert torch.allclose(
+        expanded[0, 3:9], torch.tensor([1.0, 0, 0, 0, 1.0, 0]), atol=TOL
+    )
+
+
+def test_letterbox_to_a_rectangular_target_unifies_different_camera_grids() -> None:
+    """rbyte's per-camera isotropic downscale leaves base 270x480 and side_*
+    300x480; the model must land them on ONE grid without anisotropy.
+    """
+    transform = LetterboxResize(size=(140, 224))
+    outputs = {}
+    for camera, (h, w) in (("base", (270, 480)), ("side_left", (300, 480))):
+        outputs[camera] = transform(torch.zeros(2, 3, 3, h, w))
+        assert outputs[camera].shape == (2, 3, 3, 140, 224)
+    # 300x480 -> 140x224 is exactly isotropic, so the side cameras are NOT padded
+    # while base is (270/480 is a wider aspect than 140/224)
+    cond = torch.zeros(1, 2, 13)
+    cond[..., 0], cond[..., 1] = 0.5, 0.5
+    cond[..., 2], cond[..., 3] = 0.5, 0.5
+    size = torch.tensor([[[480.0, 270.0], [480.0, 300.0]]])
+    out = letterbox_camera_cond(cond, source_size=size, target_size=(140, 224))
+    # side camera: untouched (no padding, isotropic resize)
+    assert out[0, 1, 1].item() == pytest.approx(0.5, abs=1e-6)
+    # base camera: fy shrinks by 270/300 = 0.9, principal point re-centred
+    assert out[0, 0, 1].item() == pytest.approx(0.5 * 0.9, abs=1e-6)
+    assert out[0, 0, 3].item() == pytest.approx(0.5, abs=1e-6)
+    # widths are the limiting dimension for both, so fx is untouched
+    assert torch.allclose(out[..., 0], cond[..., 0])

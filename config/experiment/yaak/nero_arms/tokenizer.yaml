@@ -29,7 +29,6 @@ num_quantizers: 4
 
 lr: 1e-3
 batch_size: 8
-image_size: 224
 both_sides: true
 num_train_batches: 2000
 

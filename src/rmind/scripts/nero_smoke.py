@@ -35,7 +35,7 @@ from omegaconf import OmegaConf
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from rmind.data.nero import PoseStandardizer
-from rmind.datamodules.nero_random import nero_random_batch
+from rmind.datamodules.nero_random import CAMERA_NAMES, nero_random_batch
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 #: steps discarded before the peak-memory counter is reset (allocator warmup)
@@ -61,8 +61,17 @@ def stage_budget(cfg: Any) -> dict[str, Any]:
     tokens_per_frame = cfg.num_cameras * cfg.num_patches + 1
     sequence_length = cfg.episode_length * tokens_per_frame
     head_dim = cfg.policy_embedding_dim // cfg.num_heads
+    patch = 14
+    grid = (cfg.image_height // patch, cfg.image_width // patch)
+    if grid[0] * grid[1] != cfg.num_patches:
+        msg = (
+            f"num_patches {cfg.num_patches} != the {grid} grid implied by "
+            f"{cfg.image_height}x{cfg.image_width} at patch {patch}"
+        )
+        raise ValueError(msg)
 
     report = {
+        "patch_grid": list(grid),
         "tokens_per_frame": tokens_per_frame,
         "sequence_length": sequence_length,
         "head_dim": head_dim,
@@ -110,7 +119,7 @@ def _chunk_pool(cfg: Any, *, batches: int, device: torch.device) -> torch.Tensor
             batch_size=cfg.batch_size,
             episode_length=cfg.episode_length,
             action_horizon=cfg.action_horizon,
-            image_size=8,  # images unused here; keep them tiny
+            grids=dict.fromkeys(CAMERA_NAMES, (8, 8)),  # images unused here
             both_sides=cfg.both_sides,
             seed=i,
         )
@@ -264,7 +273,6 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
                 batch_size=batch_size,
                 episode_length=cfg.episode_length,
                 action_horizon=cfg.action_horizon,
-                image_size=cfg.image_size,
                 both_sides=both_sides,
                 seed=0,
             ),
@@ -280,7 +288,6 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
                 batch_size=batch_size,
                 episode_length=cfg.episode_length,
                 action_horizon=cfg.action_horizon,
-                image_size=cfg.image_size,
                 both_sides=both_sides,
                 seed=step,
             ),

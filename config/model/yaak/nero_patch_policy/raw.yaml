@@ -2,15 +2,17 @@ _target_: rmind.models.nero_patch_policy.NeroPatchPolicy
 _recursive_: false
 _convert_: all
 
-# Contract §7.2: the three cameras have DIFFERENT aspect ratios (base 16:9,
-# side_* 16:10). Letterbox (uniform scale + symmetric pad), NOT plain Resize --
-# an anisotropic resize scales fx and fy independently and invalidates the
-# resolution-normalised intrinsics carried in camera_cond (§7.1).
+# ⚠️ rbyte delivers each camera ISOTROPICALLY downscaled to its OWN grid
+# (base 270x480, side_* 300x480), so the three image tensors do NOT share H/W.
+# Unifying them is rmind's job. LetterboxResize (uniform scale + symmetric pad),
+# NEVER a plain anisotropic Resize -- that would scale fx and fy independently
+# and invalidate the resolution-normalised intrinsics in camera_cond (§7.1).
+# 300x480 -> 140x224 is EXACTLY isotropic (x0.4667), so only base is padded.
 image_transform:
   _target_: torch.nn.Sequential
   _args_:
     - _target_: rmind.components.image.LetterboxResize
-      size: ${image_size}
+      size: ["${image_height}", "${image_width}"]
     - _target_: torchvision.transforms.v2.ToDtype
       scale: true
       dtype:
@@ -29,7 +31,7 @@ image_encoder:
   _args_:
     - _target_: rmind.components.timm_backbone.TimmBackbone
       model_name: ${image_encoder_name}
-      img_size: ["${image_size}", "${image_size}"]
+      img_size: ["${image_height}", "${image_width}"]
       norm_patch_tokens: true
     - _target_: einops.layers.torch.Rearrange
       pattern: "... c h w -> ... (h w) c"

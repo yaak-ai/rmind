@@ -11,7 +11,6 @@ train:
   batch_size: ${batch_size}
   episode_length: ${episode_length}
   action_horizon: ${action_horizon}
-  image_size: ${image_size}
   both_sides: ${both_sides}
   seed: 0
 
@@ -21,6 +20,5 @@ val:
   batch_size: ${batch_size}
   episode_length: ${episode_length}
   action_horizon: ${action_horizon}
-  image_size: ${image_size}
   both_sides: ${both_sides}
   seed: 100000

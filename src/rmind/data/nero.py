@@ -51,6 +51,7 @@ __all__ = [
     "POSE_QUAT_DIM",
     "ROTATION_INDICES",
     "SIDE_DIM",
+    "STATE_QUAT_DIM",
     "TRANSLATION_INDICES",
     "PoseStandardizer",
     "canonicalize_quat",
@@ -64,6 +65,8 @@ __all__ = [
     "rot6d_to_rotmat",
     "rotmat_to_quat",
     "rotmat_to_rot6d",
+    "state_9d_to_quat",
+    "state_quat_to_9d",
     "translation_rotation_split",
 ]
 
@@ -118,6 +121,9 @@ NUM_SIDES: Final[int] = 2
 #: storage form (contract §5.2) and model-facing form (§5.3) widths, per pose
 POSE_QUAT_DIM: Final[int] = 7
 POSE_9D_DIM: Final[int] = 9
+#: per-side width of the STORAGE form: 6 poses x 7 + a 4-dim hub quaternion.
+#: rbyte emits this (contract §5.2); the model-facing 60 is produced here.
+STATE_QUAT_DIM: Final[int] = 6 * POSE_QUAT_DIM + 4  # 46
 BIMANUAL_DIM: Final[int] = NUM_SIDES * SIDE_DIM  # 120
 
 TRANSLATION_INDICES: Final[tuple[int, ...]] = tuple(
@@ -263,6 +269,45 @@ def pose_9d_to_quat(pose: Tensor) -> Tensor:
         msg = f"expected a 9-dim pose, got {pose.shape[-1]}"
         raise ValueError(msg)
     return torch.cat([pose[..., :3], rot6d_to_quat(pose[..., 3:])], dim=-1)
+
+
+def state_quat_to_9d(state: Tensor) -> Tensor:
+    """Per-side STORAGE form `(..., 46)` -> model-facing `(..., 60)`.
+
+    ⚠️ CONTRACT INCONSISTENCY (resolved in rbyte's favour): §5.2 specifies
+    canonical-quaternion storage (7 floats per pose) while §8 tabulated
+    `state.pose` as `(T, 2, 60)`. rbyte implements §5.2, so the loader emits
+    **46** per side -- 6 poses x 7 plus the hub's 4-dim orientation quaternion --
+    and the 9D expansion happens **here**, at the model boundary. This is the
+    mirror of `rbyte.io.nero.state_quat_to_9d`; the two must stay in step.
+
+    Raises:
+        ValueError: if the last dimension is not `STATE_QUAT_DIM`.
+    """
+    if state.shape[-1] != STATE_QUAT_DIM:
+        msg = f"expected a {STATE_QUAT_DIM}-dim per-side state, got {state.shape[-1]}"
+        raise ValueError(msg)
+    poses = state[..., : 6 * POSE_QUAT_DIM].unflatten(-1, (6, POSE_QUAT_DIM))
+    hub = state[..., 6 * POSE_QUAT_DIM :]
+    return torch.cat(
+        [pose_quat_to_9d(poses).flatten(-2, -1), quat_to_rot6d(hub)], dim=-1
+    )
+
+
+def state_9d_to_quat(state: Tensor) -> Tensor:
+    """Inverse of `state_quat_to_9d`: `(..., 60)` -> `(..., 46)`.
+
+    Raises:
+        ValueError: if the last dimension is not `SIDE_DIM`.
+    """
+    if state.shape[-1] != SIDE_DIM:
+        msg = f"expected a {SIDE_DIM}-dim per-side state, got {state.shape[-1]}"
+        raise ValueError(msg)
+    poses = state[..., : 6 * POSE_9D_DIM].unflatten(-1, (6, POSE_9D_DIM))
+    hub = state[..., 6 * POSE_9D_DIM :]
+    return torch.cat(
+        [pose_9d_to_quat(poses).flatten(-2, -1), rot6d_to_quat(hub)], dim=-1
+    )
 
 
 def translation_rotation_split(x: Tensor) -> tuple[Tensor, Tensor]:
@@ -446,33 +491,42 @@ CAMERA_COND_DIM: Final[int] = 13
 
 
 def letterbox_camera_cond(
-    cond: Tensor, *, source_size: Tensor, target_size: int
+    cond: Tensor, *, source_size: Tensor, target_size: tuple[int, int] | int
 ) -> Tensor:
     """Rewrite the 4 resolution-normalised intrinsics of `camera_cond` for a letterbox.
 
-    Contract §7.2: the three cameras have DIFFERENT aspect ratios (`base`
-    1920x1080 = 16:9, `side_*` 1280x800 = 16:10). Anisotropic resize to a square
-    patch grid would scale `fx` and `fy` by different factors and destroy the
-    geometric meaning of the conditioning vector, so the image pipeline
-    letterboxes (uniform scale + symmetric padding) to `target_size` -- and the
-    conditioning vector must be rewritten to match, otherwise the policy is told
-    intrinsics that no longer describe the pixels it is looking at.
+    Contract §7.2 + the rbyte hand-off: rbyte delivers each camera **isotropically
+    downscaled to its own H/W** (`base` 270x480, `side_*` 300x480), which keeps
+    the normalised intrinsics exactly valid but leaves the three streams on
+    DIFFERENT grids. Unifying them is rmind's job, and it must be a letterbox
+    (uniform scale + symmetric padding): an anisotropic resize would scale `fx`
+    and `fy` independently and destroy the geometric meaning of this vector.
+    Padding does change the normalisation denominator, so the vector is rewritten
+    to match -- otherwise the policy is told intrinsics that no longer describe
+    the pixels it is looking at.
 
-    With `s = min(S/W, S/H)`, `rx = sW/S`, `ry = sH/S`:
+    With target `(TH, TW)`, `s = min(TW/W, TH/H)`, `rx = sW/TW`, `ry = sH/TH`:
 
-        fx/S = rx * (fx/W)          cx/S = rx * (cx/W) + (1 - rx)/2
-        fy/S = ry * (fy/H)          cy/S = ry * (cy/H) + (1 - ry)/2
+        fx/TW = rx * (fx/W)          cx/TW = rx * (cx/W) + (1 - rx)/2
+        fy/TH = ry * (fy/H)          cy/TH = ry * (cy/H) + (1 - ry)/2
+
+    A subsequent ISOTROPIC resize with no padding leaves all four untouched
+    (both numerator and denominator scale together), which is why the pipeline
+    pads first and resizes second.
 
     Extrinsics are untouched -- letterboxing does not move the camera.
 
     Args:
         cond: `(..., n_cameras, 13)`.
         source_size: `(..., n_cameras, 2)` native `(W, H)` in pixels.
-        target_size: the square side the letterboxed image is resized to.
+        target_size: the target `(height, width)`, or one int for a square.
     """
+    height, width = (
+        (target_size, target_size) if isinstance(target_size, int) else target_size
+    )
     w, h = source_size[..., 0], source_size[..., 1]
-    scale = torch.minimum(target_size / w, target_size / h)
-    rx, ry = scale * w / target_size, scale * h / target_size
+    scale = torch.minimum(width / w, height / h)
+    rx, ry = scale * w / width, scale * h / height
     fx, fy, cx, cy = cond[..., 0], cond[..., 1], cond[..., 2], cond[..., 3]
     return torch.cat(
         [

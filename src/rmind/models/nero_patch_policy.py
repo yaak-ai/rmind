@@ -100,7 +100,12 @@ from torch.optim import Optimizer
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
 from rmind.config import HydraConfig, init_hydra_param
-from rmind.data.nero import NUM_SIDES, pose_error_metrics
+from rmind.data.nero import (
+    NUM_SIDES,
+    STATE_QUAT_DIM,
+    pose_error_metrics,
+    state_quat_to_9d,
+)
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
 from rmind.models.control_transformer import PredictionConfig
 from rmind.utils._wandb import LoadableFromArtifact
@@ -132,12 +137,16 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
         cameras: Sequence[str] = ("base", "side_left", "side_right"),
         image_key: str = "image.{camera}",
-        goal_image: Path = ("goal.image",),
+        goal_image_key: str = "goal.image.{camera}",
         camera_cond: Path = ("camera_cond",),
         state: Path = ("state.pose",),
         side_valid: Path = ("side_valid",),
         chunk: Path = ("action.future_state",),
         use_goal_image: bool = True,
+        # rbyte emits the contract §5.2 STORAGE form (46 per side: 6 poses x 7 +
+        # a 4-dim hub quaternion). The 9D expansion happens here, at the model
+        # boundary -- set False if a loader ever hands over 60 directly.
+        convert_state_to_9d: bool = True,
         goal_dropout: float = 0.15,
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
@@ -188,12 +197,13 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         self.cameras = tuple(cameras)
         self.image_key = image_key
-        self.goal_image: Path = goal_image
+        self.goal_image_key = goal_image_key
         self.camera_cond: Path = camera_cond
         self.state: Path = state
         self.side_valid: Path = side_valid
         self.chunk: Path = chunk
         self.use_goal_image = use_goal_image
+        self.convert_state_to_9d = convert_state_to_9d
         self.goal_dropout = goal_dropout
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
@@ -203,12 +213,13 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         hparams |= {
             "cameras": self.cameras,
             "image_key": image_key,
-            "goal_image": goal_image,
+            "goal_image_key": goal_image_key,
             "camera_cond": camera_cond,
             "state": state,
             "side_valid": side_valid,
             "chunk": chunk,
             "use_goal_image": use_goal_image,
+            "convert_state_to_9d": convert_state_to_9d,
             "goal_dropout": goal_dropout,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
@@ -268,11 +279,26 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def _goal_features(
         self, batch: Any, *, batch_size: int, device: torch.device
     ) -> Tensor | None:
-        """`(b, n_cameras, P, D)` goal patch features, or None when goals are off."""
+        """`(b, n_cameras, P, D)` goal patch features, or None when goals are off.
+
+        ⚠️ The goal frames are THREE SEPARATE KEYS, not one stacked tensor: rbyte
+        cannot index one stream by several columns, and the final frame index
+        differs per camera (199 vs 200 in the dummy). They are also on different
+        native grids, so each is letterboxed by `image_transform` before being
+        stacked -- which is only valid because the transform lands them all on
+        the same grid.
+        """
         if not self.use_goal_image:
             return None
-        goal = self._get(batch, self.goal_image)
-        features = self._encode_images(goal)  # (b, n_cam, P, D)
+        features = torch.stack(
+            [
+                self._encode_images(
+                    self._get(batch, (self.goal_image_key.format(camera=camera),))
+                )
+                for camera in self.cameras
+            ],
+            dim=1,
+        )  # (b, n_cam, P, D)
 
         if self.training and self.goal_dropout > 0:
             drop = (
@@ -282,6 +308,27 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             features = torch.where(drop, self.no_goal.to(features.dtype), features)
         return features
 
+    def _state(self, batch: Any) -> Tensor:
+        """`state.pose` in the model-facing 9D form, converting from storage if needed."""
+        state = self._get(batch, self.state)
+        if self.convert_state_to_9d and state.shape[-1] == STATE_QUAT_DIM:
+            return state_quat_to_9d(state)
+        return state
+
+    def _chunk(self, batch: Any) -> Tensor:
+        """The action chunk in the model-facing 9D form.
+
+        Contract §6.2 reserves `action.commanded` as an alias of
+        `action.future_state`; rbyte currently materialises BOTH as
+        byte-identical tensors (~199 MB of a ~470 MB TensorDict). This model
+        reads exactly one path, so the duplicate is never paid for downstream --
+        point `chunk` at whichever slot is populated.
+        """
+        chunk = self._get(batch, self.chunk)
+        if self.convert_state_to_9d and chunk.shape[-1] == STATE_QUAT_DIM:
+            return state_quat_to_9d(chunk)
+        return chunk
+
     def _frame_tokens(self, batch: Any) -> Tensor:  # noqa: PLR0914
         """Per-frame token blocks `(b, T, 3P + 1, d)` -- everything below the trunk.
 
@@ -289,7 +336,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         `PatchPolicyDecoderStep` equivalent) can run the identical pipeline on a
         single frame; nothing here is temporal.
         """
-        state = self._get(batch, self.state)  # (b, T, 2, A_state)
+        state = self._state(batch)  # (b, T, 2, 60)
         valid = self._get(batch, self.side_valid)  # (b, 2) bool
         cond = self._get(batch, self.camera_cond)  # (b, n_cam, 13)
         b, t = state.shape[0], state.shape[1]
@@ -396,7 +443,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def _compute_metrics(self, batch: Any) -> TensorDict:  # noqa: PLR0914
         tokenizer = self.tokenizer
         features = self._features(batch)  # (b, T, d)
-        chunk = self._get(batch, self.chunk)  # (b, T, H, 2, A)
+        chunk = self._chunk(batch)  # (b, T, H, 2, 60)
         valid = self._get(batch, self.side_valid)  # (b, 2)
 
         b, t = features.shape[0], features.shape[1]

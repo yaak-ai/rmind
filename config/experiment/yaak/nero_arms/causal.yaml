@@ -9,12 +9,17 @@
 #
 # SEQUENCE LENGTH (compute this before launching anything -- PR #265's lesson):
 #
-#   tokens_per_frame = num_cameras * num_patches + 1 = 3 * 256 + 1 = 769
-#   flattened        = episode_length * tokens_per_frame = 6 * 769 = 4614
+#   tokens_per_frame = num_cameras * num_patches + 1 = 3 * 160 + 1 = 481
+#   flattened        = episode_length * tokens_per_frame = 6 * 481 = 2886
 #
 # For comparison on this same trunk: the 6-frame driving arm is 1542 and the
 # 16-frame causal driving arm is 4112. Attention cost scales quadratically, so
-# 4614 is ~9x the 6-frame driving arm and ~1.26x the 16-frame causal arm.
+# 2886 is ~3.5x the 6-frame driving arm and ~0.5x the 16-frame causal arm.
+#
+# num_patches = 160 (a 10x16 grid), NOT 256: the ViT input is 140x224, which is
+# the nero-arms 5:8 aspect at DINOv2's patch 14. Forcing a square 224x224 would
+# make 6 of 16 patch rows pure letterbox padding -- 37% of the sequence spent on
+# black bars -- for identical image content.
 #
 # ⚠️ head_dim = policy_embedding_dim / num_heads = 512 / 8 = 64, which is
 # divisible by 8. Below that, fused SDPA silently falls back to a math kernel
@@ -40,14 +45,19 @@ clip_length: "${eval:'${episode_length} + ${action_horizon}'}"
 cameras: [base, side_left, side_right]
 num_cameras: 3
 camera_cond_dim: 13
-# square LETTERBOX target (not a plain resize -- §7.2, different aspect ratios)
-image_size: 224
+# LETTERBOX target, not a plain resize (§7.2 + the rbyte per-camera grids).
+# 140x224 keeps the cameras' 5:8 aspect and is a whole number of patch 14s.
+image_height: 140
+image_width: 224
 image_encoder_name: vit_small_patch14_dinov2.lvd142m
 image_embedding_dim: 384
-num_patches: 256 # 224 / patch 14 -> 16x16
+num_patches: 160 # (140/14) x (224/14) = 10 x 16
 
 # --- contract §6.1 state / action space
 num_sides: 2
+# ⚠️ the LOADER emits 46 per side (contract §5.2 storage form: 6 poses x 7 + a
+# 4-dim hub quaternion); the model expands to the 60-dim 9D form at its input
+# boundary (rmind.data.nero.state_quat_to_9d). 60 is the MODEL-FACING width.
 state_features: 60 # 9D form, per side
 # CONFIG SEAM (§11): the per-side ACTION dimensionality. 60 today; ~12 for the
 # Revo2 joint-angle variant of §11(B). Head widths derive from this.

@@ -177,6 +177,71 @@ layer used here); at 12 dims it is 4608 outputs (2.4M).
   rotation error and vice versa, so the split cannot silently degrade into one
   scalar.
 
+## Measured (synthetic data — see the caveat)
+
+Hardware: one RTX 5090 (32 GiB). `uv run python -m rmind.scripts.nero_smoke`.
+
+### Pre-flight budget
+
+| | |
+| --- | --- |
+| tokens per frame | 769 |
+| flattened sequence | **4614** |
+| head_dim | 64 (÷8 ✓, even ✓) |
+| SDPA memory-efficient backend | admissible (probed, not assumed) |
+| dense score matrix *if* a math fallback were taken | 0.32 GiB per sample, bf16 |
+
+### Tokenizer reconstruction — translation and rotation, separately
+
+Held-out synthetic chunks, `4 × 16` residual-VQ, 6000 steps. Codebook
+perplexity **15.2–15.8 of 16** (near-uniform usage).
+
+| path | translation | rotation | standardised L1 |
+| --- | --- | --- | --- |
+| predict the train mean (baseline) | 14.24 mm | 10.94° | 0.677 |
+| **codes only** (what the policy's code head must hit) | **9.77 mm** | **4.91°** | 0.283 |
+| unquantized autoencoder (ceiling) | 9.10 mm | 4.08° | 0.238 |
+
+The gap between rows 2 and 3 is the cost of the codebook; the gap between rows 1
+and 3 is what the encoder learned. The policy adds the VQ-BeT offset head on top
+of row 2, so row 2 is a *coarse* target by construction, not the end-to-end
+accuracy.
+
+⚠️ These are numbers on **synthetic** SE(3), and the synthetic generator's
+compressibility was tuned (a ~14-DOF latent, matching a real hand's DOF count)
+until the space was compressible at all. They demonstrate that the recipe and the
+split metric work; they are **not** a prediction of accuracy on real glove data.
+
+### Policy smoke
+
+| | fresh random batches | one fixed batch (control) |
+| --- | --- | --- |
+| batch | 16 | 8 |
+| total loss | 10.06 → 10.01 (flat) | 7.89 → **0.048** |
+| offset L1 | 0.302 → 0.303 | 0.242 → 0.023 |
+| translation | 16.7 → 16.6 mm | 17.2 → **1.44 mm** |
+| rotation | 14.3° → 14.2° | 13.8° → **1.66°** |
+
+**The flat fresh-data curve is a property of the synthetic data, not a wiring
+bug, and the control proves it.** The four code losses sit at
+2.4387 / 2.4508 / 2.4338 / 2.4367, which is exactly the uniform-prior focal-loss
+value: `(1 − 1/16)² · ln 16 = 2.4368`. With a near-uniform codebook (measured
+perplexity 15.2–15.8/16) that is the hard floor for any predictor with no
+information — and here there is none, because the synthetic images are pure
+noise, so 768 of the 769 tokens per frame are distractors and the one informative
+token (state) is attenuated ~1/769 at init. Trained on a *single* batch the same
+model drives every code loss to ≈0.003–0.01 and reaches 1.4 mm / 1.7°, so the
+whole path — readout → per-side embedding → shared head → tokenizer targets →
+gradients — is sound.
+
+**Memory and speed.** Peak **2.33 GiB** at batch 8 and 4.9 GiB at batch 16 —
+⚠️ **with the trunk's gradient checkpointing**, which
+`rmind.components.transformer.utils.run_layer_stack` applies whenever
+`training=True`. That is memory traded for recompute; a non-checkpointed
+estimate for these shapes is ~5 GiB at batch 8. Median step 0.357 s at batch 8
+(3 observation cameras + 3 goal images = 6× the frozen-ViT work per sample
+versus the single-camera driving arm). 40.9M trainable / 63.1M total parameters.
+
 ## Contract issues
 
 1. **The 60-dim channel order is undefined.** §6.1 gives the blocks (arm 9,

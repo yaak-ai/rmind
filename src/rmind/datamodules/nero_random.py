@@ -32,6 +32,7 @@ from rmind.data.nero import (
     canonicalize_quat,
     pose_quat_to_9d,
     quat_to_rot6d,
+    state_9d_to_quat,
 )
 
 __all__ = [
@@ -43,11 +44,20 @@ __all__ = [
 
 #: contract §8
 CAMERA_NAMES: tuple[str, ...] = ("base", "side_left", "side_right")
-#: contract §7.2 -- DIFFERENT resolutions and aspect ratios per camera
+#: contract §7.2 -- DIFFERENT native resolutions and aspect ratios per camera
 CAMERA_RESOLUTIONS: dict[str, tuple[int, int]] = {
     "base": (1920, 1080),
     "side_left": (1280, 800),
     "side_right": (1280, 800),
+}
+#: ⚠️ what rbyte actually delivers: each camera ISOTROPICALLY downscaled to its
+#: OWN grid `(H, W)`, so the three image tensors do NOT share H/W. Unifying them
+#: is rmind's job (`LetterboxResize`), and a consumer that assumes a uniform grid
+#: across cameras breaks here rather than silently.
+CAMERA_GRIDS: dict[str, tuple[int, int]] = {
+    "base": (270, 480),
+    "side_left": (300, 480),
+    "side_right": (300, 480),
 }
 
 #: contract §4: start-pose spread std ~[0.037, 0.021, 0.009] m, within-episode
@@ -164,12 +174,20 @@ def nero_random_batch(  # noqa: PLR0913
     batch_size: int = 2,
     episode_length: int = 6,
     action_horizon: int = 6,
-    image_size: int = 224,
+    grids: dict[str, tuple[int, int]] | None = None,
     both_sides: bool = True,
     seed: int = 0,
     device: torch.device | str = "cpu",
 ) -> dict[str, Any]:
-    """One batch at the contract §8 shapes, images already letterboxed to a square.
+    """One batch in the shapes rbyte actually emits.
+
+    Note what is deliberately NOT normalised away here, because the model has to
+    cope with all three:
+
+    * the three cameras are on **different grids** (`CAMERA_GRIDS`);
+    * `goal.image.*` is **three separate keys**, each on its own grid;
+    * state and action are the contract §5.2 **storage form, 46 per side**
+      (quaternions), not the 60-dim 9D form -- the expansion is the model's job.
 
     `both_sides=False` reproduces the dummy recording: `side_valid = [False, True]`
     (left absent) with the invalid side's state and action zeroed, which is what
@@ -200,31 +218,36 @@ def nero_random_batch(  # noqa: PLR0913
         state = state * valid[:, None, :, None]  # noqa: PLR6104
         action = action * valid[:, None, None, :, None]  # noqa: PLR6104
 
-    images = {
-        f"image.{name}": torch.randint(
-            0,
-            256,
-            (batch_size, episode_length, 3, image_size, image_size),
-            dtype=torch.uint8,
+    # back to the 46-dim storage form the loader emits
+    state_quat = state_9d_to_quat(state)
+    action_quat = state_9d_to_quat(action)
+
+    images: dict[str, Tensor] = {}
+    for name in CAMERA_NAMES:
+        h, w = (grids or CAMERA_GRIDS)[name]
+        images[f"image.{name}"] = torch.randint(
+            0, 256, (batch_size, episode_length, 3, h, w), dtype=torch.uint8
         )
-        for name in CAMERA_NAMES
-    }
+        # ⚠️ THREE SEPARATE goal keys, not one stacked tensor: rbyte cannot index
+        # one stream by several columns and the final frame index differs per
+        # camera (199 vs 200 in the dummy).
+        images[f"goal.image.{name}"] = torch.randint(
+            0, 256, (batch_size, 3, h, w), dtype=torch.uint8
+        )
 
     batch: dict[str, Any] = {
         **images,
-        "goal.image": torch.randint(
-            0,
-            256,
-            (batch_size, len(CAMERA_NAMES), 3, image_size, image_size),
-            dtype=torch.uint8,
-        ),
         # ⚠️ randomised on purpose: with contract §7 `placeholder: true` the real
         # camera_cond is a CONSTANT (zero intrinsics, identity extrinsics), which
         # would leave this path untested. Randomising exercises it.
         "camera_cond": torch.randn(batch_size, len(CAMERA_NAMES), CAMERA_COND_DIM),
-        "state.pose": state,
+        "state.pose": state_quat,
         "side_valid": valid,
-        "action.future_state": action,
+        "action.future_state": action_quat,
+        # §6.2 reserves this as an alias and rbyte currently materialises it as a
+        # byte-identical duplicate (~199 MB of a ~470 MB TensorDict). The policy
+        # reads exactly ONE of the two, so the duplicate is never paid for here.
+        "action.commanded": action_quat,
         "goal.xyz": torch.randn(batch_size, NUM_SIDES, 3) * _START_XYZ,
         "align_residual_ms": torch.rand(batch_size, episode_length) * 3.0,
     }

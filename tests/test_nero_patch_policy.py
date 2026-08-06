@@ -22,16 +22,21 @@ import torch
 from torch import Tensor, nn
 
 from rmind.components.containers import ModuleDict
+from rmind.components.image import LetterboxResize
 from rmind.components.loss import FocalLoss
 from rmind.components.transformer.causal_frame import CausalFrameTransformer
 from rmind.components.vq import ResidualVQ
-from rmind.data.nero import CAMERA_COND_DIM, NUM_SIDES, SIDE_DIM
+from rmind.data.nero import CAMERA_COND_DIM, NUM_SIDES, SIDE_DIM, STATE_QUAT_DIM
 from rmind.datamodules.nero_random import CAMERA_NAMES, nero_random_batch
 from rmind.models.nero_patch_policy import NeroPatchPolicy
 from rmind.models.nero_pose_tokenizer import NeroPoseTokenizer
 
-PATCH_GRID = 2  # 2x2 = 4 patches per camera, stands in for 16x16 = 256
-NUM_PATCHES = PATCH_GRID**2
+PATCH_GRID = (2, 3)  # 6 patches per camera, standing in for the real 10x16 = 160
+NUM_PATCHES = PATCH_GRID[0] * PATCH_GRID[1]
+# the three cameras arrive on DIFFERENT grids (rbyte isotropic downscale); the
+# model's LetterboxResize is what unifies them, so the test uses one too
+TEST_GRIDS = {"base": (9, 16), "side_left": (10, 16), "side_right": (10, 16)}
+UNIFIED = (10, 16)
 IMAGE_DIM = 8
 POLICY_DIM = 16
 NUM_HEADS = 2  # head_dim = 8: divisible by 8 (fused SDPA) and even (RoPE)
@@ -42,12 +47,21 @@ CODEBOOK_SIZE = 4
 NUM_QUANTIZERS = 2
 
 
-class _ToFloat(nn.Module):
-    """Stand-in for the real `LetterboxResize -> ToDtype -> Normalize` pipeline."""
+class _Unify(nn.Module):
+    """The real pipeline minus the ImageNet normalisation: letterbox, then scale.
+
+    The letterbox is not decoration here -- `base` and `side_*` arrive on
+    different grids, so without it the per-camera patch tensors cannot be
+    concatenated at all.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.letterbox = LetterboxResize(size=UNIFIED)
 
     @override
     def forward(self, x: Tensor) -> Tensor:
-        return x.float() / 255.0
+        return self.letterbox(x).float() / 255.0
 
 
 class _TinyImageEncoder(nn.Module):
@@ -60,9 +74,7 @@ class _TinyImageEncoder(nn.Module):
     @override
     def forward(self, x: Tensor) -> Tensor:
         *batch, c, h, w = x.shape
-        pooled = nn.functional.adaptive_avg_pool2d(
-            x.reshape(-1, c, h, w), (PATCH_GRID, PATCH_GRID)
-        )
+        pooled = nn.functional.adaptive_avg_pool2d(x.reshape(-1, c, h, w), PATCH_GRID)
         pooled = pooled.flatten(-2, -1).transpose(-2, -1)  # (n, P, 3)
         return self.projection(pooled).reshape(*batch, NUM_PATCHES, IMAGE_DIM)
 
@@ -89,7 +101,7 @@ def _policy(**kwargs: Any) -> NeroPatchPolicy:
     torch.manual_seed(0)
     action_dim = HORIZON * SIDE_DIM
     policy = NeroPatchPolicy(
-        image_transform=_ToFloat(),
+        image_transform=_Unify(),
         image_encoder=_TinyImageEncoder(),
         patch_projection=nn.Linear(2 * IMAGE_DIM + CAMERA_COND_DIM, POLICY_DIM),
         state_embedding=nn.Linear(NUM_SIDES * SIDE_DIM + NUM_SIDES, POLICY_DIM),
@@ -112,14 +124,12 @@ def _policy(**kwargs: Any) -> NeroPatchPolicy:
     return policy.eval()  # no dropout, no goal dropout
 
 
-def _batch(
-    *, both_sides: bool = True, seed: int = 0, image_size: int = 16
-) -> dict[str, Any]:
+def _batch(*, both_sides: bool = True, seed: int = 0) -> dict[str, Any]:
     return nero_random_batch(
         batch_size=2,
         episode_length=EPISODE_LENGTH,
         action_horizon=HORIZON,
-        image_size=image_size,
+        grids=TEST_GRIDS,
         both_sides=both_sides,
         seed=seed,
     )
@@ -146,24 +156,50 @@ def test_token_layout_and_readout_shapes() -> None:
     assert out.shape == (2, NUM_SIDES, HORIZON, SIDE_DIM)
 
 
-def test_contract_batch_shapes_are_what_section_8_specifies() -> None:
-    batch = _batch(image_size=24)
-    assert batch["state.pose"].shape == (2, EPISODE_LENGTH, NUM_SIDES, SIDE_DIM)
+def test_loader_shapes_are_what_rbyte_actually_emits() -> None:
+    """Storage form (46/side), per-camera grids, per-camera goal keys."""
+    batch = _batch()
+    assert batch["state.pose"].shape == (2, EPISODE_LENGTH, NUM_SIDES, STATE_QUAT_DIM)
     assert batch["action.future_state"].shape == (
         2,
         EPISODE_LENGTH,
         HORIZON,
         NUM_SIDES,
-        SIDE_DIM,
+        STATE_QUAT_DIM,
     )
     assert batch["camera_cond"].shape == (2, len(CAMERA_NAMES), CAMERA_COND_DIM)
-    assert batch["goal.image"].shape == (2, len(CAMERA_NAMES), 3, 24, 24)
     assert batch["side_valid"].shape == (2, NUM_SIDES)
     for camera in CAMERA_NAMES:
-        assert batch[f"image.{camera}"].shape == (2, EPISODE_LENGTH, 3, 24, 24)
+        h, w = TEST_GRIDS[camera]
+        assert batch[f"image.{camera}"].shape == (2, EPISODE_LENGTH, 3, h, w)
+        # three SEPARATE goal keys, each on its own grid
+        assert batch[f"goal.image.{camera}"].shape == (2, 3, h, w)
+    # the cameras really are on different grids -- otherwise the letterbox path
+    # this test exercises would be vacuous
+    assert len({TEST_GRIDS[c] for c in CAMERA_NAMES}) > 1
     # §6.2: action(t) really is the future state chunk [t+1 .. t+H]
     assert torch.allclose(
         batch["action.future_state"][:, 0, 0], batch["state.pose"][:, 1], atol=1e-6
+    )
+    # §6.2 alias, materialised by rbyte as a byte-identical duplicate
+    assert torch.equal(batch["action.commanded"], batch["action.future_state"])
+
+
+def test_storage_form_is_expanded_to_the_model_facing_9d_form() -> None:
+    policy = _policy()
+    batch = _batch()
+    assert policy._state(batch).shape == (  # noqa: SLF001
+        2,
+        EPISODE_LENGTH,
+        NUM_SIDES,
+        SIDE_DIM,
+    )
+    assert policy._chunk(batch).shape == (  # noqa: SLF001
+        2,
+        EPISODE_LENGTH,
+        HORIZON,
+        NUM_SIDES,
+        SIDE_DIM,
     )
 
 
@@ -292,7 +328,9 @@ def test_goal_image_reaches_the_trunk_and_can_be_disabled() -> None:
     baseline = policy._features(batch)  # noqa: SLF001
 
     perturbed = dict(batch)
-    perturbed["goal.image"] = torch.randint_like(batch["goal.image"], 0, 256)
+    for camera in CAMERA_NAMES:
+        key = f"goal.image.{camera}"
+        perturbed[key] = torch.randint_like(batch[key], 0, 256)
     assert not torch.allclose(policy._features(perturbed), baseline, atol=1e-4)  # noqa: SLF001
 
 
@@ -314,7 +352,9 @@ def test_goal_dropout_replaces_the_goal_with_a_learned_embedding() -> None:
     policy.train()
     policy.image_encoder.eval()
     other = dict(batch)
-    other["goal.image"] = torch.randint_like(batch["goal.image"], 0, 256)
+    for camera in CAMERA_NAMES:
+        key = f"goal.image.{camera}"
+        other[key] = torch.randint_like(batch[key], 0, 256)
     assert torch.allclose(policy._frame_tokens(other), dropped, atol=1e-6)  # noqa: SLF001
 
 
