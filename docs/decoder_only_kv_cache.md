@@ -859,3 +859,132 @@ check). Grepped in four places:
 | **fp32 build log / layer info / profile** | **0** (expected: it is an fp16 tensor-core kernel) |
 
 **Verdict: present.** No alarm.
+
+### 12.5 Margin screen — and which `ArgMax` is actually yours
+
+Five in-graph `ArgMax` nodes, screened with `decoder_only_verify margins`
+(ORT-only, no GPU, 25 trials over 3 real camera frames). `margin = top1 − top2`
+expressed in **fp16 ULPs at that magnitude**: below ~1 ULP the two codes are not
+distinguishable in fp16 at all.
+
+Running the identical screen on the **randomly initialized** export of the same
+graph separates the frozen subgraph from the trained one — the skill's trick, and
+it works exactly as advertised:
+
+| probe | decisions/trial | trained min ULP | random min ULP | trained median | random median |
+| --- | --- | --- | --- | --- | --- |
+| `node_argmax` | 1 | 2.688 | **2.688** | 412.9 | **412.9** |
+| `node_argmax_1` | 1 | 11.557 | **11.557** | 44.4 | **44.4** |
+| `node_argmax_2` | 1 | 2.875 | **2.875** | 49.3 | **49.3** |
+| `node_argmax_3` | 1 | 3.317 | **3.317** | 41.1 | **41.1** |
+| `node_argmax_4` | **4** | **1.938** | 21.362 | 162.9 | 678.7 |
+
+Probes 0–3 are **byte-identical** between a trained checkpoint and a random one,
+so they are the **frozen waypoints-tokenizer RVQ** — four quantizer stages, one
+decision each, fixed for every checkpoint in this family. They are not a
+checkpoint risk and they are not fixable by training. `node_argmax_4` emits four
+decisions per trial and is the only probe that moved: it is the **trained VQ-BeT
+`code_head`** (4 quantizers × 16 codes).
+
+So the number that matters is the code head's, and reading the aggregate
+`min ULP` is misleading — the aggregate floor of 2.688 belongs to a frozen table.
+
+**The trained code head, at epoch 0:** min **1.94 ULP**, p1 4.22, median 162.9,
+**0 % of decisions under 1 ULP**, 1 % under 4. Against the skill's validated
+thresholds (`<1 ULP` predicted every measured fp16 failure across 16 checkpoints;
+`≥4 ULP` has never failed) that is the **marginal** band: not a predicted failure,
+but low precision must be verified at n≥200 rather than assumed.
+
+Worth noting for the training side: **training has tightened these margins**, from
+21.4 ULP min / 679 median at initialization to 1.9 / 163 after 80.8 k steps. That is
+the tie geometry the code-flip defect is made of, forming early. It is a quantity
+worth tracking per checkpoint, and this is a baseline for it.
+
+### 12.6 The parity ladder — n=200, real frames, decision changes
+
+`decoder_parity_orin.py`, run on delta-dev1 so the reference and the engines see
+byte-identical inputs. 10 histories, each a genuinely **streamed** 15-frame warm
+cache (cold start, ring slot writes, monotone frame counter — what drivr does),
+× 20 current-frame/speed/waypoint variations = 200 trials. Reference is ORT CPU
+fp32 on the same ONNX. A trial counts as a **decision change** when any action
+channel moves more than 0.02 — float noise is ~1e-4 here and a flipped code is
+~0.1, so the threshold is not delicate.
+
+| engine | latency | decision changes | of which control-channel only | worst \|d\| | mean \|d\| |
+| --- | --- | --- | --- | --- | --- |
+| **fp32** (TF32 cleared) | 59.82 ms | **0/200** | 0 | 4.2e-07 | 1.8e-08 |
+| fp16 | 16.97 ms | **5/200** (2.5 %) | **5** | 0.1827 | 5.0e-04 |
+
+**fp32 is 0/200, so the harness is sound** — that is the skill's gate on the
+harness itself, and it passes. Its residual is 4.2e-07 max, i.e. fp32 round-off
+between ORT CPU and TRT, not a modelling difference.
+
+Per channel, fp16 vs the fp32 reference:
+
+| channel | max \|d\| | mean \|d\| |
+| --- | --- | --- |
+| gas_pedal | 0.1065 | 1.18e-03 |
+| brake_pedal | 0.0068 | 6.02e-05 |
+| **steering_angle** | **0.1827** | 7.09e-04 |
+| turn_signal | 0.0041 | 5.46e-05 |
+
+**This arm's fp16 failure is different in kind from the baseline's, and worse.**
+On the block-causal baseline the headline magnitude was entirely `turn_signal`
+(0.546) — an indicator state, not a trajectory. Here `turn_signal` never even
+crosses tolerance (max 0.0041) and **all five flips are control channels**: up to
+**18.3 % of steering range** and **10.6 % of throttle** on 2.5 % of plans. There is
+no "it was only the indicator" reading available.
+
+### 12.7 KV-cache memory — the halving is real but is NOT the default
+
+§6's arithmetic is confirmed against the actual graph: at window 16 the cache is
+`8 layers × 15 frames × 257 × 512 × 4 B × 2 (K,V)` = **120.47 MiB**, and the
+engine's own `inputs_past_k` binding reports exactly that.
+
+The part §6 did not say is that **a plain `--fp16` build does not halve it.** TRT
+preserves the dtypes the ONNX declares for network *I/O* and casts internally, so
+the fp16 engine's cache bindings come back **float32**:
+
+| engine | `inputs_past_k` dtype | KV cache | latency |
+| --- | --- | --- | --- |
+| fp32 | float32 | 120.47 MiB | 59.82 ms |
+| fp16 (plain `--fp16`) | **float32** | **120.47 MiB** | 16.97 ms |
+| fp16 + fp16 cache I/O | float16 | **60.23 MiB** | **13.57 ms** |
+
+The halving has to be *asked for*, per tensor:
+
+```
+trtexec --onnx=M.onnx --fp16 \
+  --inputIOFormats=fp32:chw,fp32:chw,fp32:chw,fp16:chw,fp16:chw,fp16:chw,fp32:chw,fp32:chw \
+  --outputIOFormats=fp32:chw,fp16:chw,fp16:chw
+```
+
+i.e. `past_k`/`past_v`/`cache_bias` and `new_k`/`new_v` in fp16, while the camera
+frame, speed, waypoints, RoPE and the action chunk stay fp32 — so the only host
+contract that changes is the cache itself.
+
+**And it is not only memory: it is 20 % of the step.** Profiling the plain fp16
+engine (`--dumpProfile`, detailed verbosity) the two most expensive kernels in the
+whole graph are not compute at all:
+
+| kernel | time | share |
+| --- | --- | --- |
+| `Reformatting CopyNode for Input Tensor 3` (`past_k`) | 1.264 ms | 7.0 % |
+| `Reformatting CopyNode for Input Tensor 2` (`past_v`) | 1.250 ms | 6.9 % |
+| 19 × `_gemm_mha_v2` (fused MHA, the actual attention) | 5.34 ms | 29.4 % |
+| kernels naming `cat`/`concat` | **0.00 ms** | 0 % |
+
+2.51 ms — 14 % of the step — is spent converting a 120 MiB fp32 cache to fp16
+every tick, and it disappears when the cache is handed over as fp16 already:
+16.97 → 13.57 ms, a 3.40 ms saving that matches the reformat cost plus the halved
+cache traffic. **So the default `--fp16` build leaves 60 MiB and 3.4 ms on the
+table for nothing.**
+
+Note also the `Concat` line: **0 ms as a standalone kernel.** It has not
+disappeared — TRT has absorbed it *into* `_gemm_mha_v2`, which is precisely why §9
+called it load-bearing for the fusion. Do not "optimize" it away.
+
+Total resident at the served window 16, measured: 203 MiB of fp32 weights +
+120 MiB cache = **323 MiB** (§6 predicted 327 MiB), or 107 MiB + 60 MiB =
+**167 MiB** on the fp16 + fp16-cache engine. Memory remains nowhere near binding
+on a 15 GiB Orin.
