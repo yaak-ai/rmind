@@ -441,11 +441,13 @@ episode.
    maximum length any more, so a 32-frame-trained model will happily run against a
    64-frame cache and silently extrapolate. Validate the engine's `inputs_past_k`
    shape against the checkpoint's `window` at load time.
-4. **No parity/precision verification yet.** All measurements are fp32 with random
-   weights, so `parity_matrix.py --trials 200` has not been and cannot be run — it
-   needs a trained checkpoint. The 5 in-graph `ArgMax` nodes and the code-flip
-   defect are unchanged by this work (hand-off §6), and the margin screen must be
-   re-run on any real checkpoint before serving anything below fp32.
+4. ~~**No parity/precision verification yet.**~~ **Resolved for the first trained
+   checkpoint — see §12.** The margin screen and a 200-trial decision-parity ladder
+   have now been run on `do8m9ot8:v0`. What remains of this risk is narrower and
+   unavoidable: margins are **per-checkpoint**, so §12 must be re-run for every
+   checkpoint before it is served below fp32. A verdict cannot be inherited from a
+   sibling — 2 of 7 checkpoints in the baseline family genuinely flip ~4 % while
+   their own parents pass.
 5. **RoPE base is unvalidated.** `rope_base=1000` is reasoned (base 10000 leaves
    most frequency pairs inert over 64 positions) but not measured. It is a
    trainable-arm hyperparameter, and changing it after training invalidates the
@@ -732,3 +734,128 @@ expressible in FlexAttention (`Q_LEN = F`, `KV_LEN = F·257`, `mask_mod` mapping
 query index straight to a frame index), and §4 already proves the equivalence for
 the decode path. Not wired up, because it changes `PatchPolicy`'s readout indexing
 and the win is small next to the 2.5–4× already realized.
+## 12. Trained-checkpoint verification (resolves §10.4)
+
+Everything above §11 was measured with **randomly initialized** weights, which is
+sufficient for latency and memory but cannot speak to precision: an `ArgMax`
+margin is a property of what the head learned. This section is the first
+measurement of this architecture with a real checkpoint.
+
+**Checkpoint.** `yaak/rmind/model-do8m9ot8:v0` — run `do8m9ot8` ("vague-shape-587"),
+**epoch 0, step 80797**, `dinov2_dinowm_causal`: 8L/512d/8H, `window: 16`,
+`rope_base: 1000`, `fusion_norm: true`, `attention_impl: flex`, 52.78 M
+parameters. It is past warmup and **far from converged**. That is fine for
+everything here — latency depends on shapes, and parity depends on weight
+*statistics* — but **no quality conclusion may be drawn from it**.
+
+`attention_impl: flex` does not reach the export: `CausalFrameTransformer.step`
+is always SDPA (§11.6.7), so the trained trunk exports through the same path a
+`sdpa` checkpoint would.
+
+Tooling: `rmind.scripts.decoder_only_export --artifact ...` (the architecture then
+comes from the checkpoint's hparams and the trunk is used as trained) and
+`rmind.scripts.decoder_only_verify {gates,onnx-vs-eager,margins}`.
+
+### 12.1 The equivalence gate still holds with trained weights
+
+Same gate as §5, on the trained trunk at its trained `window=16`, T=17 frames
+(one frame past a full window, so the sliding case is exercised):
+
+| | max abs | scale-relative |
+| --- | --- | --- |
+| float64 | 2.66e-15 | **6.41e-16** |
+| float32 | 1.19e-06 | **2.87e-07** |
+| negative control (RoPE counter not advanced) | 2.29e-01 | **5.50e-02** |
+
+float64 sits at machine epsilon, so the equivalence is **exact** and the float32
+residual is purely accumulation order — the same conclusion as §5, and the
+float32 figure (2.87e-07) lands on §5's random-weight 3.2e-07. The negative
+control is five orders of magnitude worse, so the gate is falsifiable rather
+than vacuous. Note the control chosen here is the *operational* one — a runtime
+that resets the cache but forgets `frame_index` (§7 failure mode 3) — rather
+than §5's architectural window-absolute trunk.
+
+### 12.2 ONNX agrees with eager
+
+ORT CPU fp32 vs PyTorch, warm cache, 3 input sets. Scored as **absolute error
+against each tensor's own scale**, never per-element relative:
+
+| output | max abs | scale-relative |
+| --- | --- | --- |
+| `policy.joint_actions` | 8.9e-09 | 2.6e-06 |
+| `new_k` | 1.55e-05 | 2.2e-06 |
+| `new_v` | 1.13e-05 | 3.1e-06 |
+
+Worst 3.11e-06 scale-relative, reproducing §5's random-weight 1.4e-05 absolute on
+the new K/V. `torch.onnx.export(verify=True)` again reports a "large relative
+difference" of ~2.7 on `new_k`; it is again the documented false alarm — per-element
+relative error on near-zero entries.
+
+### 12.3 Latency: the random-weight architecture numbers were right
+
+Rebuilt and re-benchmarked on delta-dev1, TRT 10.7.0.23, **GPU clock pinned at
+918 MHz** (`governor=performance`, verified: every clock sample taken *through*
+each benchmark was 918 MHz), load ~0.1, no other users. `trtexec
+--iterations=60 --avgRuns=20 --useSpinWait --warmUp=1000`, median GPU compute.
+
+**fp32 here means TF32 CLEARED** (`--noTF32`). trtexec's default "fp32" is the
+TF32 tensor-core path — a different numeric configuration, and the one that has
+never been decision-exact.
+
+| context | fp32 trained | fp32 predicted (§9, random) | fp16 trained | fp16 predicted | fp16 speedup |
+| --- | --- | --- | --- | --- | --- |
+| 6 | **41.79 ms** | 41.79 | **10.55 ms** | 10.5 | 3.96× |
+| 16 (**served**) | **59.82 ms** | 59.58 | **16.97 ms** | — | **3.53×** |
+| 32 | **92.20 ms** | 92.26 | **27.19 ms** | 27.2 | 3.39× |
+
+**Every random-weight prediction was confirmed, none corrected** — the largest
+disagreement anywhere in the table is 0.4 % (59.82 vs 59.58 at window 16) and the
+6- and 32-frame cells agree to 0.1 % or better. So §9's central claim, that random
+weights are sufficient to measure this *architecture*, is now itself measured
+rather than argued.
+
+The linear-in-context correction of §9 also survives. Least-squares over the three
+contexts:
+
+| | marginal cost per extra frame | fixed cost (N→1) |
+| --- | --- | --- |
+| fp32 trained | **1.95 ms/frame** | 31.5 ms |
+| fp32 §9 (random, 6→64) | 2.05 ms/frame | ~31.5 ms |
+| fp16 trained | **0.64 ms/frame** | 7.4 ms |
+
+Per-tick cost still does **not** stop scaling with context — §2's claim remains
+wrong — but fp16 cuts the *slope* by 3.0× as well as the fixed term by 4.3×. That
+the slope falls at all is the interesting part: the marginal term is cache traffic
+and attention against `(N-1)·257` keys, so halving the data width buys close to
+halving the marginal cost, which is what a bandwidth-bound term should do.
+
+The **controlled** statement is the same-host, same-day, same-flags random-weight
+control: `decoder_random_n16` fp32 measured **59.65 ms** against the trained
+engine's **59.82 ms**, i.e. **0.3 %**. Weight values do not move a static-shape
+engine's latency, now measured rather than assumed. (§9's 59.58 ms is separate,
+weaker corroboration — a different build path, built four days earlier.)
+
+fp16 is **3.53× faster than fp32 at window 16** (59.82 → 16.97 ms) and the
+engine is half the size (203 → 107 MiB).
+
+### 12.4 The fused MHA kernel is present — the fp16 win is real
+
+`_gemm_mha_v2` was the thing to check, because without it the entire fp16
+speedup evaporates, and because the in-graph `Concat` of `past_k` with the new
+frame's keys is **load-bearing** for the fusion (§9, §10.6) — it must not be
+"optimized away".
+
+Built with `--profilingVerbosity=detailed` so tactic names survive into the
+engine (profiling a default-verbosity engine returns stripped names, and
+absence-of-name would read as absence-of-kernel — a false alarm on exactly this
+check). Grepped in four places:
+
+| source | `_gemm_mha_v2` hits |
+| --- | --- |
+| fp16 build log | 38 |
+| fp16 `--exportLayerInfo` | 38 |
+| fp16 `--exportProfile` | 19 |
+| fp16 profile log | 57 |
+| **fp32 build log / layer info / profile** | **0** (expected: it is an fp16 tensor-core kernel) |
+
+**Verdict: present.** No alarm.
