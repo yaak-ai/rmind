@@ -4,12 +4,12 @@ from subprocess import check_output  # noqa: S404
 import hydra
 import pytorch_lightning as pl
 import torch
+import wandb
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
 from structlog import get_logger
 
-import wandb
 from rmind.utils.precision import auto_precision
 
 logger = get_logger(__name__)

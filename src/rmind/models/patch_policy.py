@@ -427,7 +427,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             (-1, self.tokenizer._action_features),  # noqa: SLF001
         )
 
-    def _compute_metrics(self, batch: Any) -> TensorDict:  # noqa: PLR0914
+    def _compute_metrics(self, batch: Any) -> TensorDict:
         features, chunk = self._features(batch)  # (b, t, d), (b, t, h, a)
         tokenizer = self.tokenizer
 
@@ -465,9 +465,36 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
-        # gradient-free LAST-FRAME metrics: the training losses above average over
-        # all T readouts (contexts of 1..T frames), whereas JointPolicyObjective
-        # only ever scores the newest frame -- these make the two comparable
+        metrics = self._readout_metrics(
+            code_logits=code_logits,
+            offsets=offsets,
+            target_codes=target_codes,
+            target=target,
+            predicted_chunk=predicted_chunk,
+            sampled_chunk=sampled_chunk,
+            sampled_recon=sampled_recon,
+        )
+
+        return TensorDict({"policy": {"loss": losses, "metric": metrics}})
+
+    def _readout_metrics(  # noqa: PLR0913
+        self,
+        *,
+        code_logits: Tensor,
+        offsets: Tensor,
+        target_codes: Tensor,
+        target: Tensor,
+        predicted_chunk: Tensor,
+        sampled_chunk: Tensor,
+        sampled_recon: Tensor,
+    ) -> dict[str, Tensor]:
+        """Gradient-free diagnostics at the deployed readout.
+
+        The training losses average over all T readouts (contexts of 1..T
+        frames), whereas `JointPolicyObjective` only ever scores the newest
+        frame -- these make the two comparable.
+        """
+        tokenizer = self.tokenizer
         with torch.no_grad():
             metrics: dict[str, Tensor] = {"offset_sampled_recon": sampled_recon}
             for q in range(tokenizer.quantizer.num_quantizers):
@@ -480,6 +507,33 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             metrics["offset_sampled_recon_last"] = self.losses["offset"](
                 sampled_chunk[:, -1].detach(), target[:, -1]
             )
+
+            # ARGMAX decode -- exactly what inference emits when `sample_codes=false`,
+            # i.e. what the exported engine actually serves. This is a DEPLOYMENT-aligned
+            # number and it does not track the code losses above. Measured on
+            # dashing-dream-514 (wxyp0bzq) v0 -> v9: val code_0 rose 0.811 -> 2.885
+            # (+256%) while this metric IMPROVED 13% (0.0456 -> 0.0395) and p_gt improved
+            # 20% -- the rising NLL is tail miscalibration, not capability loss. Across
+            # arms it is worse than uninformative: dinov2_smalltrunk has the BEST val
+            # code_0 (0.890) and the WORST argmax recon (0.0462), and it underperformed
+            # in rsim. Select checkpoints on this, not on val/loss/code_*.
+            argmax_codes = code_logits.argmax(dim=-1)
+            argmax_chunk = tokenizer.invert(argmax_codes) + self._offset(
+                offsets, argmax_codes
+            )
+            metrics["offset_argmax_recon"] = self.losses["offset"](argmax_chunk, target)
+            metrics["offset_argmax_recon_last"] = self.losses["offset"](
+                argmax_chunk[:, -1], target[:, -1]
+            )
+
+            # code accuracy at the deployed readout. Without it the code losses cannot
+            # separate "argmax still right, tails miscalibrated" from "argmax now wrong",
+            # which is the distinction that decides whether a rising val code loss
+            # matters. Chance is 1/num_codes marginally, (1/num_codes)**g jointly.
+            correct = argmax_codes[:, -1] == target_codes[:, -1]  # (b, g)
+            for q in range(tokenizer.quantizer.num_quantizers):
+                metrics[f"code_acc_{q}_last"] = correct[:, q].float().mean()
+            metrics["code_acc_joint_last"] = correct.all(dim=-1).float().mean()
 
             # context-depth localizer for windowed causal trunks: readouts at
             # positions < window-1 train under a PARTIAL window, positions
@@ -508,7 +562,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                         predicted_chunk[:, sl], target[:, sl]
                     )
 
-        return TensorDict({"policy": {"loss": losses, "metric": metrics}})
+        return metrics
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
         metrics = self._compute_metrics(batch)

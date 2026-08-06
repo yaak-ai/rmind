@@ -210,7 +210,103 @@ def evaluate(  # noqa: C901, PLR0914
     } | {"num_samples": torch.tensor(count)}
 
 
-def main() -> None:  # noqa: PLR0914
+def _report(
+    results: dict[str, Tensor], *, num_quantizers: int, checkpoint: str
+) -> None:
+    """Print the per-position, per-cluster and per-quantizer tables."""
+    positions = sorted({int(k[1]) for k in results if k.startswith("t")})
+
+    def mean_over(prefixes: list[str], name: str) -> float:
+        return torch.stack([results[f"{p}/{name}"] for p in prefixes]).mean().item()
+
+    def q_mean(prefixes: list[str], stem: str) -> float:
+        return (
+            sum(mean_over(prefixes, f"{stem}_{q}") for q in range(num_quantizers))
+            / num_quantizers
+        )
+
+    print(f"\ncheckpoint: {checkpoint}")  # noqa: T201
+    print(f"val samples: {int(results['num_samples'])}\n")  # noqa: T201
+
+    header = [
+        "pos(context)",
+        "code_focal",
+        "top1_acc",  # mean of per-quantizer marginal accuracies
+        "joint_acc",  # all 4 levels correct simultaneously
+        "p_gt",
+        "entropy",
+        "offset",
+        "recon_sampled",
+        "recon_argmax",
+    ]
+    print(" | ".join(f"{h:>13s}" for h in header))  # noqa: T201
+
+    def row(label: str, prefixes: list[str]) -> None:
+        cells = [f"{label:>13s}"] + [
+            f"{v:13.4f}"
+            for v in [
+                q_mean(prefixes, "code"),
+                q_mean(prefixes, "acc"),
+                mean_over(prefixes, "acc_joint"),
+                q_mean(prefixes, "p_gt"),
+                q_mean(prefixes, "entropy"),
+                mean_over(prefixes, "offset"),
+                mean_over(prefixes, "sampled_recon"),
+                mean_over(prefixes, "argmax_recon"),
+            ]
+        ]
+        print(" | ".join(cells))  # noqa: T201
+
+    for pos in positions:
+        row(f"t={pos} ({pos + 1}f)", [f"t{pos}"])
+    row("all (wandb)", [f"t{p}" for p in positions])
+    last = [f"t{positions[-1]}"]
+    row("last (=bsln)", last)
+
+    _report_clusters(results)
+
+    print("\nper-quantizer @ last frame:")  # noqa: T201
+    print(  # noqa: T201
+        " | ".join(
+            f"{h:>13s}"
+            for h in ["quantizer", "code_focal", "top1_acc", "p_gt", "entropy"]
+        )
+    )
+    for q in range(num_quantizers):
+        cells = [f"{f'q{q}':>13s}"] + [
+            f"{mean_over(last, f'{stem}_{q}'):13.4f}"
+            for stem in ["code", "acc", "p_gt", "entropy"]
+        ]
+        print(" | ".join(cells))  # noqa: T201
+
+
+def _report_clusters(results: dict[str, Tensor]) -> None:
+    """Per-cluster last-frame field L1, for both decodings."""
+    cluster_labels = sorted(
+        (k.removeprefix("cluster_n/") for k in results if k.startswith("cluster_n/")),
+        key=lambda c: -results[f"cluster_n/{c}"].item(),
+    )
+    if not cluster_labels:
+        return
+
+    print("\nper-cluster @ last frame (field L1 over horizon; both decodings):")  # noqa: T201
+    cols = ["cluster", "n"] + [
+        f"{dec[:4]}_{f}"
+        for dec in ("sampled", "argmax")
+        for f in ("gas", "brake", "steer")
+    ]
+    print(" | ".join(f"{h:>12s}" for h in cols))  # noqa: T201
+    for c in cluster_labels:
+        n = results[f"cluster_n/{c}"].item()
+        cells = [f"{c:>12s}", f"{int(n):12d}"] + [
+            f"{results[f'cluster/{c}/{dec}_{f}'].item() / n:12.4f}"
+            for dec in ("sampled", "argmax")
+            for f in ("gas", "brake", "steer")
+        ]
+        print(" | ".join(cells))  # noqa: T201
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
@@ -261,92 +357,11 @@ def main() -> None:  # noqa: PLR0914
         autocast=device.type == "cuda",
     )
 
-    num_quantizers = model.tokenizer.quantizer.num_quantizers
-    positions = sorted({int(k[1]) for k in results if k.startswith("t")})
-
-    def mean_over(prefixes: list[str], name: str) -> float:
-        return torch.stack([results[f"{p}/{name}"] for p in prefixes]).mean().item()
-
-    def q_mean(prefixes: list[str], stem: str) -> float:
-        return (
-            sum(mean_over(prefixes, f"{stem}_{q}") for q in range(num_quantizers))
-            / num_quantizers
-        )
-
-    print(f"\ncheckpoint: {args.artifact or args.ckpt}")  # noqa: T201
-    print(f"val samples: {int(results['num_samples'])}\n")  # noqa: T201
-
-    header = [
-        "pos(context)",
-        "code_focal",
-        "top1_acc",  # mean of per-quantizer marginal accuracies
-        "joint_acc",  # all 4 levels correct simultaneously
-        "p_gt",
-        "entropy",
-        "offset",
-        "recon_sampled",
-        "recon_argmax",
-    ]
-    print(" | ".join(f"{h:>13s}" for h in header))  # noqa: T201
-
-    def row(label: str, prefixes: list[str]) -> None:
-        cells = [f"{label:>13s}"] + [
-            f"{v:13.4f}"
-            for v in [
-                q_mean(prefixes, "code"),
-                q_mean(prefixes, "acc"),
-                mean_over(prefixes, "acc_joint"),
-                q_mean(prefixes, "p_gt"),
-                q_mean(prefixes, "entropy"),
-                mean_over(prefixes, "offset"),
-                mean_over(prefixes, "sampled_recon"),
-                mean_over(prefixes, "argmax_recon"),
-            ]
-        ]
-        print(" | ".join(cells))  # noqa: T201
-
-    for pos in positions:
-        row(f"t={pos} ({pos + 1}f)", [f"t{pos}"])
-    row("all (wandb)", [f"t{p}" for p in positions])
-    last = [f"t{positions[-1]}"]
-    row("last (=bsln)", last)
-
-    cluster_labels = sorted(
-        (k.removeprefix("cluster_n/") for k in results if k.startswith("cluster_n/")),
-        key=lambda c: -results[f"cluster_n/{c}"].item(),
+    _report(
+        results,
+        num_quantizers=model.tokenizer.quantizer.num_quantizers,
+        checkpoint=args.artifact or args.ckpt,
     )
-    if cluster_labels:
-        print(  # noqa: T201
-            "\nper-cluster @ last frame (field L1 over horizon; both decodings):"
-        )
-        cols = ["cluster", "n"] + [
-            f"{dec[:4]}_{f}"
-            for dec in ("sampled", "argmax")
-            for f in ("gas", "brake", "steer")
-        ]
-        print(" | ".join(f"{h:>12s}" for h in cols))  # noqa: T201
-        for c in cluster_labels:
-            n = results[f"cluster_n/{c}"].item()
-            cells = [f"{c:>12s}", f"{int(n):12d}"] + [
-                f"{results[f'cluster/{c}/{dec}_{f}'].item() / n:12.4f}"
-                for dec in ("sampled", "argmax")
-                for f in ("gas", "brake", "steer")
-            ]
-            print(" | ".join(cells))  # noqa: T201
-
-    print("\nper-quantizer @ last frame:")  # noqa: T201
-    print(  # noqa: T201
-        " | ".join(
-            f"{h:>13s}"
-            for h in ["quantizer", "code_focal", "top1_acc", "p_gt", "entropy"]
-        )
-    )
-    for q in range(num_quantizers):
-        cells = [f"{f'q{q}':>13s}"] + [
-            f"{mean_over(last, f'{stem}_{q}'):13.4f}"
-            for stem in ["code", "acc", "p_gt", "entropy"]
-        ]
-        print(" | ".join(cells))  # noqa: T201
 
 
 if __name__ == "__main__":
