@@ -393,7 +393,11 @@ class FeatureFusionPool(Module):
             if image_patch_pool is not None
             else None
         )
-        self.source_type_embed = Embedding(4, embedding_dim)
+        # 4 rows once image_patch_pool is enabled, else 3 (unchanged from
+        # before this option existed) -- keeps checkpoints saved without
+        # image_patch_pool loadable, since the unused 4th row would
+        # otherwise be a pure size mismatch.
+        self.source_type_embed = Embedding(4 if image_patch_pool is not None else 3, embedding_dim)
         self.waypoint_token_dropout = waypoint_token_dropout
         self.speed_token_dropout = speed_token_dropout
         self.image_patch_token_dropout = image_patch_token_dropout
