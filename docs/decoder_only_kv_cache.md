@@ -824,10 +824,16 @@ contexts:
 | fp16 trained | **0.64 ms/frame** | 7.4 ms |
 
 Per-tick cost still does **not** stop scaling with context — §2's claim remains
-wrong — but fp16 cuts the *slope* by 3.0× as well as the fixed term by 4.3×. That
-the slope falls at all is the interesting part: the marginal term is cache traffic
-and attention against `(N-1)·257` keys, so halving the data width buys close to
-halving the marginal cost, which is what a bandwidth-bound term should do.
+wrong — but fp16 cuts the *slope* by 3.0× as well as the fixed term by 4.3×.
+
+⚠️ **Do not explain that slope drop as halved cache bandwidth.** All three fp16
+engines in this fit are plain `--fp16` builds, and §12.7 shows those keep their KV
+cache in **float32** — there is no halved data width anywhere in their cache path.
+The marginal term is cache traffic *and* attention against `(N-1)·257` keys, and
+only the latter moved to tensor cores, so the mechanism is not established by these
+three points. Separating the two would need fp16-cache engines at 6 and 32 frames,
+which were not built; at window 16 the fp16 cache is worth a further 3.4 ms (§12.7),
+which is a fixed-cost saving at that one context, not a slope measurement.
 
 The **controlled** statement is the same-host, same-day, same-flags randomly
 initialized control, exported from the same script at the same context and built
@@ -858,7 +864,7 @@ engine (profiling a default-verbosity engine returns stripped names, and
 absence-of-name would read as absence-of-kernel — a false alarm on exactly this
 check). Grepped in four places:
 
-| source | `_gemm_mha_v2` hits |
+| source | `_gemm_mha_v2` name occurrences |
 | --- | --- |
 | fp16 build log | 38 |
 | fp16 `--exportLayerInfo` | 38 |
@@ -867,6 +873,19 @@ check). Grepped in four places:
 | **fp32 build log / layer info / profile** | **0** (expected: it is an fp16 tensor-core kernel) |
 
 **Verdict: present.** No alarm.
+
+⚠️ Those are **name occurrences, not kernel counts**, and they are not comparable
+between engines or between files: detailed verbosity emits hash-suffixed tactic
+names that recur several times per kernel in one dump, and an engine built at
+default verbosity has them partly stripped. The attributed figure — the one to
+quote — comes from the profile JSON, where each instance carries its own time:
+**19 instances, 5.34 ms, 29.4 % of the step** at window 16 fp16, i.e. the fused
+attention is the single largest bucket in the graph.
+
+The same profile shows standalone `cat`/`concat` kernels at **0.00 ms**. The
+`Concat` has not vanished — TRT absorbed it *into* `_gemm_mha_v2`, which is exactly
+why §9 and §10.6 call it load-bearing. Removing it to "save a copy" would take the
+fusion with it.
 
 ### 12.5 Margin screen — and which `ArgMax` is actually yours
 
@@ -1005,9 +1024,9 @@ against one shared ORT fp32 reference over the same 200 trials:
 | engine | latency | vs fp32 | engine | KV cache | decisions | worst \|d\| | mean \|d\| | `_gemm_mha_v2` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | **fp32** (TF32 cleared) | 59.82 ms | 1.00× | 203 MiB | 120 MiB | **0/200** | 4.2e-07 | 1.8e-08 | n/a |
-| `encfp32-fp16trunk` | 21.79 ms | 2.75× | 155 MiB | 120 MiB | 2/200 | 0.0427 | 1.2e-04 | 7 |
-| fp16 | 16.97 ms | 3.53× | 107 MiB | 120 MiB | 5/200 | 0.1827 | 5.0e-04 | 38 |
-| **fp16 + fp16 cache I/O** | **13.63 ms** | **4.39×** | 105 MiB | **60 MiB** | 2/200 | 0.0426 | 1.6e-04 | 38 |
+| `encfp32-fp16trunk` | 21.79 ms | 2.75× | 155 MiB | 120 MiB | 2/200 | 0.0427 | 1.2e-04 | present |
+| fp16 | 16.97 ms | 3.53× | 107 MiB | 120 MiB | 5/200 | 0.1827 | 5.0e-04 | present |
+| **fp16 + fp16 cache I/O** | **13.63 ms** | **4.39×** | 105 MiB | **60 MiB** | 2/200 | 0.0426 | 1.6e-04 | present |
 
 **Serve fp32.** Not because low precision looks bad, but because at this window
 there is no latency pressure to trade anything for: 59.82 ms is **3.36× cheaper
@@ -1050,13 +1069,26 @@ Two honesty notes on those parity counts:
   serving that engine, re-run the ladder with a genuinely fp16 ring — the harness
   needs one change, to keep `past_k`/`past_v` in fp16 between ticks.
 
-`encfp32-fp16trunk` carries **7** `_gemm_mha_v2` instances rather than 8. That is
-consistent with §4: `readout_only_final_block=True` makes the last block's
-attention a 1-query op, a different shape that does not take the fused kernel.
-Note also that `build_mixed.py`'s log showed **0** hits, because it uses a
-non-verbose TRT logger — the engine had to be interrogated with
-`--dumpLayerInfo` instead. Reading that 0 as "the fusion is gone" would have been
-a false alarm, which is why the check greps the engine and not only the build log.
+**The fusion is present in every fp16-containing engine**, and that is the whole
+verdict — do not read the raw hit counts in the table as kernel counts. They are
+not comparable across engines: `build_mixed.py` never sets
+`profiling_verbosity`, so the mixed engine was built at TRT's default and its
+tactic names are partly stripped, while the trtexec builds used
+`--profilingVerbosity=detailed` and emit hash-suffixed names that appear several
+times per kernel in the same dump. The one quantity that is defensible is from the
+profile JSON of the plain fp16 engine, where instances and times are attributed:
+**19 instances, 5.34 ms, 29.4 % of the step**.
+
+Two traps this check walked into, both worth remembering:
+
+* `build_mixed.py`'s **build log showed 0 hits**, purely because its TRT logger is
+  not verbose. Reading that as "the fusion is gone" would have fired the alarm on
+  the one check that matters. The engine has to be interrogated with
+  `--dumpLayerInfo` / `--dumpProfile`, never only the build log.
+* An earlier version of `decoder_only_trt_measure.sh` grepped `[fm]mha`, which
+  matches `fmha`/`mmha` but **not** `_gemm_mha_v2`, so its "here is what fused MHA
+  exists" fallback printed an empty list next to a primary check reporting 38 hits.
+  Fixed to `mha`.
 
 ### 12.9 What is NOT established
 
