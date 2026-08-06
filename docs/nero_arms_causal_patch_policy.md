@@ -134,9 +134,14 @@ waypoints are ego-frame).
 features with a **learned** `no_goal` embedding, not zeros, so "no goal supplied"
 is distinguishable from "goal that happens to encode near zero".
 
-Goal xyz (§9 alternative) is emitted by the datamodule and left unconsumed; the
-second RVQ for it is scaffolded (`NeroGoalXYZTokenizer`) but not trained — it is
-only needed if the goal is to be *predicted* rather than conditioned on.
+Goal xyz (§9 alternative) is emitted by the datamodule and left unconsumed.
+**The second RVQ for it is NOT delivered**: `NeroGoalXYZTokenizer` exists only as
+a named config seam with the right defaults, and its inherited `_gather` does not
+yet handle a `(b, 2, 3)` tensor. It is needed only if the goal is to be
+*predicted* rather than conditioned on — §13.1 notes the taped target squares are
+fixed in the world frame, so the goal xyz is knowable and this becomes worth
+building the moment anyone wants goal prediction or a cube-position auxiliary
+loss.
 
 ### Image pipeline → letterbox, not resize (§7.2 + the rbyte grids)
 
