@@ -163,6 +163,10 @@ datamodule:
 
 trainer:
   max_epochs: 3
+  # causal epochs are 82.1k steps (~28h): at the default once-per-epoch cadence
+  # a run yields 3 val points and the quality gap/repr signals are unusable.
+  # 0.25 -> val every ~20.5k steps (~7h), 12 points per run.
+  val_check_interval: 0.25
 
 lr_warmup_steps: 19700
 lr_total_steps: 246000
