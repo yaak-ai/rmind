@@ -13,11 +13,17 @@ Token layout (one frame block)
     [ state token (1) ][ base patches (P) ][ side_left (P) ][ side_right (P) ]
                                                           tokens_per_frame = 3P + 1
 
-with `P = 256` -> **769 tokens per frame**. At `episode_length = 6` the flattened
-sequence is **4614** tokens, versus 1542 for the 6-frame driving arm and 4112 for
-the 16-frame causal driving arm -- i.e. just above the longest sequence already
-profiled on this trunk. The state token goes FIRST so that each frame block ends
-on a patch token, which is the readout position (unchanged from PR #265).
+with `P = 160` -- a 10x16 grid at DINOv2's patch 14 on a 140x224 input, which is
+the cameras' own 5:8 aspect -> **481 tokens per frame**. At `episode_length = 6`
+the flattened sequence is **2886**, versus 1542 for the 6-frame driving arm and
+4112 for the 16-frame causal driving arm.
+
+Forcing the usual SQUARE 224x224 input would put identical image content on a
+16x16 grid with 6 of 16 rows pure letterbox padding: 769 tokens per frame, 4614
+flattened, ~2.6x the attention cost for no extra information.
+
+The state token goes FIRST so that each frame block ends on a patch token, which
+is the readout position (unchanged from PR #265).
 
 Design decisions, and why
 -------------------------
@@ -26,7 +32,7 @@ Design decisions, and why
 tokens and not FiLM.** Each camera's 13-dim vector is concatenated to *that
 camera's* patch tokens before `patch_projection`. Reasons, in order of weight:
 
-1. *zero sequence cost*. At 769 tokens/frame attention is the binding constraint;
+1. *zero sequence cost*. At 481 tokens/frame attention is the binding constraint;
    3 extra tokens per frame is cheap but the pattern does not stay cheap, and
    FiLM would need a broadcast anyway.
 2. *it binds the geometry to the tokens it describes*. A patch of `side_left`

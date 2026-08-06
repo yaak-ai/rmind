@@ -52,7 +52,7 @@ state_embedding:
   hidden_channels: ["${policy_embedding_dim}", "${policy_embedding_dim}"]
 
 # decoder-only trunk, reused unchanged from feat/patch-policy-decoder-only.
-# tokens_per_frame = num_cameras * num_patches + 1 state token = 769
+# tokens_per_frame = num_cameras * num_patches + 1 state token = 3*160 + 1 = 481
 encoder:
   _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
   dim_model: ${policy_embedding_dim}

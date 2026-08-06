@@ -96,7 +96,7 @@ Each camera's 13-dim vector (§7.1) is concatenated to **that camera's** patch
 tokens before `patch_projection`. Alternatives considered: 3 extra tokens per
 frame, or FiLM.
 
-1. **Zero sequence cost.** At 769 tokens/frame attention is the binding
+1. **Zero sequence cost.** At 481 tokens/frame attention is the binding
    constraint.
 1. **It binds the geometry to the tokens it describes.** A `side_left` patch
    carries `side_left`'s extrinsics. Extra tokens or FiLM would deliver all three
@@ -238,62 +238,74 @@ Hardware: one RTX 5090 (32 GiB). `uv run python -m rmind.scripts.nero_smoke`.
 
 | | |
 | --- | --- |
-| tokens per frame | 769 |
-| flattened sequence | **4614** |
+| patch grid | 10 × 16 |
+| tokens per frame | 481 |
+| flattened sequence | **2886** |
 | head_dim | 64 (÷8 ✓, even ✓) |
 | SDPA memory-efficient backend | admissible (probed, not assumed) |
-| dense score matrix *if* a math fallback were taken | 0.32 GiB per sample, bf16 |
+| dense score matrix *if* a math fallback were taken | 0.124 GiB per sample, bf16 |
 
 ### Tokenizer reconstruction — translation and rotation, separately
 
 Held-out synthetic chunks, `4 × 16` residual-VQ, 6000 steps. Codebook
-perplexity **15.2–15.8 of 16** (near-uniform usage).
+perplexity **15.5–15.8 of 16** on held-out data (near-uniform usage).
 
 | path | translation | rotation | standardised L1 |
 | --- | --- | --- | --- |
 | predict the train mean (baseline) | 14.24 mm | 10.94° | 0.677 |
-| **codes only** (what the policy's code head must hit) | **9.77 mm** | **4.91°** | 0.283 |
-| unquantized autoencoder (ceiling) | 9.10 mm | 4.08° | 0.238 |
+| **codes only** (what the policy's code head must hit) | **9.76 mm** | **4.89°** | 0.281 |
+| unquantized autoencoder (ceiling) | 9.22 mm | 4.12° | 0.241 |
 
-The gap between rows 2 and 3 is the cost of the codebook; the gap between rows 1
-and 3 is what the encoder learned. The policy adds the VQ-BeT offset head on top
-of row 2, so row 2 is a *coarse* target by construction, not the end-to-end
-accuracy.
+The baseline row is what makes the other two readable. The gap between rows 2
+and 3 is the cost of the codebook; the gap between rows 1 and 3 is what the
+encoder learned. The policy adds the VQ-BeT offset head on top of row 2, so row 2
+is a *coarse* target by construction, not the end-to-end accuracy.
 
-⚠️ These are numbers on **synthetic** SE(3), and the synthetic generator's
-compressibility was tuned (a ~14-DOF latent, matching a real hand's DOF count)
-until the space was compressible at all. They demonstrate that the recipe and the
-split metric work; they are **not** a prediction of accuracy on real glove data.
+⚠️ These are numbers on **synthetic** SE(3), and the generator's compressibility
+was deliberately built in (a ~14-DOF latent, matching a real hand's DOF count).
+They demonstrate that the recipe and the split metric work; they are **not** a
+prediction of accuracy on real data — which, per §10 A1, will not even be this
+action space.
 
-### Policy smoke
+### Policy smoke — 400 steps, batch 8, lr 3e-4
 
-| | fresh random batches | one fixed batch (control) |
-| --- | --- | --- |
-| batch | 16 | 8 |
-| total loss | 10.06 → 10.01 (flat) | 7.89 → **0.048** |
-| offset L1 | 0.302 → 0.303 | 0.242 → 0.023 |
-| translation | 16.7 → 16.6 mm | 17.2 → **1.44 mm** |
-| rotation | 14.3° → 14.2° | 13.8° → **1.66°** |
+| | fresh random batches | one fixed batch | one fixed batch, right-only |
+| --- | --- | --- | --- |
+| `side_valid` | both | both | `[False, True]` |
+| total loss | 10.11 → 10.04 (flat) | 8.12 → **0.013** | 6.78 → **0.039** |
+| offset L1 | 0.295 → 0.302 | 0.237 → 0.013 | 0.235 → 0.029 |
+| translation | 16.5 → 17.0 mm | 17.1 → **0.57 mm** | 17.6 → **1.12 mm** |
+| rotation | 13.9° → 14.4° | 13.9° → **1.41°** | 13.9° → **1.31°** |
+| `valid_rows` | 96 | 96 | **48** |
 
 **The flat fresh-data curve is a property of the synthetic data, not a wiring
-bug, and the control proves it.** The four code losses sit at
-2.4387 / 2.4508 / 2.4338 / 2.4367, which is exactly the uniform-prior focal-loss
+bug, and the controls prove it.** The four code losses sit at
+2.4316 / 2.4388 / 2.4356 / 2.4368, which is exactly the uniform-prior focal-loss
 value: `(1 − 1/16)² · ln 16 = 2.4368`. With a near-uniform codebook (measured
-perplexity 15.2–15.8/16) that is the hard floor for any predictor with no
+perplexity 15.5–15.8/16) that is the hard floor for any predictor with no
 information — and here there is none, because the synthetic images are pure
-noise, so 768 of the 769 tokens per frame are distractors and the one informative
-token (state) is attenuated ~1/769 at init. Trained on a *single* batch the same
-model drives every code loss to ≈0.003–0.01 and reaches 1.4 mm / 1.7°, so the
-whole path — readout → per-side embedding → shared head → tokenizer targets →
+noise, so 480 of the 481 tokens per frame are distractors and the one informative
+token (state) is attenuated ~1/481 at init. Trained on a *single* batch the same
+model drives every code loss to 0.000 and reaches 0.57 mm / 1.41°, so the whole
+path — readout → per-side embedding → shared head → tokenizer targets →
 gradients — is sound.
 
-**Memory and speed.** Peak **2.33 GiB** at batch 8 and 4.9 GiB at batch 16 —
+The third column is the contract's headline bimanual case (§10 A2) exercised
+through a **backward** pass, not just a forward: with the left side masked out,
+`valid_rows` is pinned at 48 = 8 samples × 6 frames × 1 side and the run still
+converges.
+
+**Memory and speed.** Peak **1.74 GiB** at batch 8, median step **0.21 s** —
 ⚠️ **with the trunk's gradient checkpointing**, which
 `rmind.components.transformer.utils.run_layer_stack` applies whenever
-`training=True`. That is memory traded for recompute; a non-checkpointed
-estimate for these shapes is ~5 GiB at batch 8. Median step 0.357 s at batch 8
-(3 observation cameras + 3 goal images = 6× the frozen-ViT work per sample
-versus the single-camera driving arm). 40.9M trainable / 63.1M total parameters.
+`training=True`. That is memory traded for recompute, so it is not the number to
+size a non-checkpointed run from. 40.7M trainable / 62.9M total parameters. Wall
+time is dominated by synthetic image generation on the CPU, not by the model.
+
+<sub>Footnote: the fresh-batch run composed its config just before the
+`ToDtype`/`LetterboxResize` reorder and the other two just after. On pure-noise
+images the difference is uint8 rounding, i.e. nothing measurable — but the three
+are not a controlled comparison of that change.</sub>
 
 ## Contract issues
 
