@@ -1,0 +1,42 @@
+_target_: rmind.models.nero_pose_tokenizer.NeroPoseTokenizer
+_recursive_: false
+_convert_: all
+
+# CONFIG SEAM (contract §11): `action_features` is the per-side action
+# dimensionality. 60 = the §6.1 9D pose layout; ~12 would be the Revo2
+# joint-angle variant of §11(B). Everything below derives from it.
+action_features: ${action_features}
+action_horizon: ${action_horizon}
+
+# ⚠️ Per-channel standardisation with TRAIN-SPLIT statistics (contract §5.4).
+# The default is identity, which is WRONG for real data: translations are
+# ~0.06-0.7 m while 6D rotation components are ~1, so an unstandardised L1 lets
+# rotation error swamp translation error. Fit once and ship the JSON artifact
+# next to the checkpoint:
+#   standardizer:
+#     _target_: rmind.data.nero.PoseStandardizer.load
+#     path: ${pose_standardizer_artifact}
+standardizer:
+  _target_: rmind.data.nero.PoseStandardizer
+  dim: ${action_features}
+
+encoder:
+  _target_: torchvision.ops.MLP
+  in_channels: "${eval:'${action_horizon} * ${action_features}'}"
+  hidden_channels: [512, "${tokenizer_latent_dim}"]
+
+quantizer:
+  _target_: rmind.components.vq.ResidualVQ
+  dim: ${tokenizer_latent_dim}
+  codebook_size: ${codebook_size}
+  num_quantizers: ${num_quantizers}
+
+decoder:
+  _target_: torchvision.ops.MLP
+  in_channels: ${tokenizer_latent_dim}
+  hidden_channels: [512, "${eval:'${action_horizon} * ${action_features}'}"]
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: ${lr}
+  weight_decay: 0.0

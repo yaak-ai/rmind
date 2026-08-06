@@ -1,0 +1,11 @@
+# The driving PredictMetricsCallback is deliberately absent: its RuleBasedCluster
+# keys (gas_pedal / brake_pedal / speed) do not exist in the nero-arms contract.
+# The equivalent here is the tokenizer's translation-mm / rotation-degree split,
+# which the model logs directly.
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 2
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step

@@ -1,0 +1,41 @@
+# @package _global_
+#
+# VQ-BeT action tokenizer for the nero-arms SE(3) action space (contract §5, §6).
+#
+# One tokenizer serves BOTH current-state encoding and action prediction, because
+# action(t) is future state (§6.2) -- same space, same statistics.
+#
+# ⚠️ Before a real fit: replace `model.standardizer` with a `PoseStandardizer`
+# fitted on the TRAIN SPLIT ONLY and ship the JSON next to the checkpoint (§5.4).
+# Without it, rotation error swamps translation error in the L1 objective and the
+# scalar recon loss looks healthy while translation is garbage.
+
+defaults:
+  - /model: yaak/nero_pose_tokenizer/raw
+  - /datamodule: yaak/nero_random
+  - /trainer: default
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+episode_length: 6
+action_horizon: 6
+action_features: 60
+num_sides: 2
+
+tokenizer_latent_dim: 256
+codebook_size: 16
+num_quantizers: 4
+
+lr: 1e-3
+batch_size: 8
+image_size: 224
+both_sides: true
+num_train_batches: 2000
+
+trainer:
+  max_epochs: 5
+  gradient_clip_val: 1.0
+
+wandb:
+  tags: [nero_arms, pose_tokenizer]

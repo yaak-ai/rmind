@@ -1,0 +1,26 @@
+# Structured synthetic nero-arms batches at the EXACT contract §8 shapes.
+# For smoke runs and shape tests ONLY -- replace with the rbyte datamodule once
+# ingestion lands. See src/rmind/datamodules/nero_random.py for what is and is
+# not synthetic (poses are structured SE(3) walks; images are noise).
+_target_: rmind.datamodules.generic.GenericDataModule
+_convert_: all
+
+train:
+  _target_: rmind.datamodules.nero_random.NeroRandomDataLoader
+  num_batches: ${num_train_batches}
+  batch_size: ${batch_size}
+  episode_length: ${episode_length}
+  action_horizon: ${action_horizon}
+  image_size: ${image_size}
+  both_sides: ${both_sides}
+  seed: 0
+
+val:
+  _target_: rmind.datamodules.nero_random.NeroRandomDataLoader
+  num_batches: 8
+  batch_size: ${batch_size}
+  episode_length: ${episode_length}
+  action_horizon: ${action_horizon}
+  image_size: ${image_size}
+  both_sides: ${both_sides}
+  seed: 100000
