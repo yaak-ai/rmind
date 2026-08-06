@@ -129,8 +129,14 @@ def evaluate(  # noqa: C901, PLR0914
                 offsets, target_codes
             )
             # both decodings from the SAME logits: one multinomial draw (the
-            # inference path with sample_codes=true) and argmax (deterministic)
-            sampled_codes = model._sample_codes(code_logits)  # noqa: SLF001
+            # inference path with sample_codes=true) and argmax (deterministic).
+            # Drawn explicitly rather than via `model._sample_codes`, which
+            # returns ARGMAX when the loaded checkpoint carries
+            # `sample_codes=false` -- that would silently alias the two columns
+            # and erase the sampled-vs-argmax divergence this table exists for.
+            sampled_codes = torch.multinomial(
+                code_logits.float().softmax(dim=-1).flatten(0, -2), num_samples=1
+            ).view(code_logits.shape[:-1])
             sampled_chunk = tokenizer.invert(sampled_codes) + model._offset(  # noqa: SLF001
                 offsets, sampled_codes
             )
@@ -214,7 +220,13 @@ def _report(
     results: dict[str, Tensor], *, num_quantizers: int, checkpoint: str
 ) -> None:
     """Print the per-position, per-cluster and per-quantizer tables."""
-    positions = sorted({int(k[1]) for k in results if k.startswith("t")})
+    # k[1] would collapse t10.. onto t1.. -- fine at episode_length=6, wrong for
+    # the 32-frame causal arms
+    positions = sorted({
+        int(k.split("/", 1)[0][1:])
+        for k in results
+        if k.startswith("t") and k.split("/", 1)[0][1:].isdigit()
+    })
 
     def mean_over(prefixes: list[str], name: str) -> float:
         return torch.stack([results[f"{p}/{name}"] for p in prefixes]).mean().item()

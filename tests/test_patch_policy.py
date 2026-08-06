@@ -445,3 +445,80 @@ def _assert_argmax_decode_matches(
         torch.testing.assert_close(
             metrics[f"code_acc_{q}_last"], correct[:, q].float().mean()
         )
+
+
+def test_readout_is_the_last_patch_token_not_the_speed_token() -> None:
+    """The speed token is PREPENDED, so each frame block must END on a patch token.
+
+    `test_readout_is_causally_valid` cannot catch a readout moved to index 0: the
+    speed token attends bidirectionally within its frame, so it changes in
+    lockstep with the patch tokens. This pins the index arithmetic instead.
+    """
+    model = _make_model()
+    batch = _make_batch()
+    tokens_per_frame = NUM_PATCHES + 1
+
+    captured: dict[str, Tensor] = {}
+    encoder_forward = model.encoder.forward
+
+    def _capture(src: Tensor, *, num_frames: int) -> Tensor:
+        out = encoder_forward(src, num_frames=num_frames)
+        captured["embedding"] = out
+        return out
+
+    model.encoder.forward = _capture  # type: ignore[method-assign]
+    features, _ = model._features(batch)  # noqa: SLF001
+    model.encoder.forward = encoder_forward  # type: ignore[method-assign]
+
+    embedding = captured["embedding"]  # (b, t * k, d), pre-norm
+    assert embedding.shape[1] == EPISODE_LENGTH * tokens_per_frame
+
+    # the readout of frame t must be flat index t*(P+1) + P, i.e. its LAST token
+    for t in range(EPISODE_LENGTH):
+        expected = embedding[:, t * tokens_per_frame + NUM_PATCHES]
+        if model.norm is not None:
+            expected = model.norm(expected)
+        torch.testing.assert_close(features[:, t], expected)
+
+    # and NOT the frame's first token (the speed token)
+    speed_token = embedding[:, 0 * tokens_per_frame]
+    if model.norm is not None:
+        speed_token = model.norm(speed_token)
+    assert not torch.allclose(features[:, 0], speed_token)
+
+
+def test_teacher_forcing_routes_the_offset_loss_through_ground_truth_codes() -> None:
+    """`_compute_metrics` must gather offsets at GROUND-TRUTH codes when
+    `teacher_force_offset=True`.
+
+    The existing gradient test builds `predicted` by hand, so it would still pass
+    if `_compute_metrics` silently used the sampled codes. This asserts on the
+    loss value produced by `_compute_metrics` itself.
+    """
+    torch.manual_seed(0)
+    model = _make_model(teacher_force_offset=True)
+    model.sample_codes = True  # make the sampled path genuinely differ from argmax
+    batch = _make_batch()
+
+    offset_loss = model._compute_metrics(batch)["policy", "loss", "offset"]  # noqa: SLF001
+
+    with torch.no_grad():
+        features, chunk = model._features(batch)  # noqa: SLF001
+        target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
+        _, offsets = model._heads(features)  # noqa: SLF001
+        target_codes = model.tokenizer(chunk)
+        teacher_chunk = model.tokenizer.invert(target_codes) + model._offset(  # noqa: SLF001
+            offsets, target_codes
+        )
+        expected = model.losses["offset"](teacher_chunk, target)
+
+    torch.testing.assert_close(offset_loss, expected)
+
+    # the same model with teacher forcing OFF must NOT produce the teacher value
+    # (guards against the flag being ignored entirely)
+    torch.manual_seed(0)
+    free = _make_model(teacher_force_offset=False)
+    free.load_state_dict(model.state_dict())
+    free.sample_codes = True
+    free_loss = free._compute_metrics(batch)["policy", "loss", "offset"]  # noqa: SLF001
+    assert not torch.allclose(free_loss, expected)

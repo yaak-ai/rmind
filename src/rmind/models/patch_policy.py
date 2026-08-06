@@ -237,9 +237,17 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # scale-balanced feature fusion: LayerNorm + learnable gain on the patch
         # side (encoder-agnostic scale; DINO token-norm spread is negligible so
         # nothing informative is lost), and a learnable gain on the goal side
-        # initialized so RMS(gain * z_q) ~= RMS(LN(patches)) ~= 1 -- calibrated
-        # from the frozen RVQ codebooks (seeded, data-free, identical across
-        # DDP ranks). Per-sample code-norm information passes through untouched.
+        # initialized to 1/RMS so that RMS(gain * z_q) ~= RMS(LN(patches)) ~= 1 --
+        # calibrated from the frozen RVQ codebooks (seeded, data-free, identical
+        # across DDP ranks). Per-sample code-norm information passes through
+        # untouched.
+        #
+        # CAVEAT on the estimate: the codes below are drawn INDEPENDENTLY and
+        # UNIFORMLY per quantizer, whereas a real z_q is a residual-VQ tuple
+        # (level q+1 corrects level q's residual) with strongly non-uniform code
+        # usage. Measured on gzxgumtf:v9 the estimate is 1.86x too large
+        # (0.143 vs 0.077 on real data), which lands the goal stream ~2x quieter
+        # than intended. Prefer passing a measured value where it is known.
         if fusion_norm:
             goal_dim = self.goal_encoder.quantizer.dim
             patch_dim = self.patch_projection.in_features - goal_dim
@@ -272,6 +280,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     .sqrt()
                     .cpu()
                 )
+            if not bool(rms.isfinite()) or not float(rms) > 0.0:
+                msg = (
+                    f"fusion_norm goal-gain calibration produced RMS={float(rms)}; "
+                    "the goal codebooks are probably uninitialized (1/RMS is not finite)"
+                )
+                raise ValueError(msg)
             self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
         else:
             self.fusion_patch_norm = None
@@ -750,7 +764,9 @@ class PatchPolicyHead(pl.LightningModule):
     def __init__(
         self,
         *,
-        norm: InstanceOf[Module],
+        # optional, mirroring PatchPolicy.norm -- head-only export of an arm
+        # trained with `norm: null` must not fail validation
+        norm: InstanceOf[Module] | None,
         code_head: InstanceOf[Module],
         offset_head: InstanceOf[Module],
         tokenizer: InstanceOf[Module],
@@ -767,7 +783,8 @@ class PatchPolicyHead(pl.LightningModule):
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
 
-        features = self.norm(features)
+        if self.norm is not None:
+            features = self.norm(features)
         code_logits = rearrange(
             self.code_head(features), "... (g c) -> ... g c", g=g, c=c
         )
