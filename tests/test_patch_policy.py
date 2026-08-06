@@ -5,9 +5,10 @@ teacher-forced offset semantics inherited from `JointPolicyObjective` (#258),
 and equivalence of the batched `_gather_offset` with the joint-policy original.
 """
 
-from typing import override
+from typing import Any, override
 
 import torch
+from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Identity, L1Loss, Linear, Module, Sequential
 from torchvision.ops import MLP
@@ -416,23 +417,30 @@ def test_argmax_decode_metrics_are_the_deployment_path() -> None:
         assert 0.0 <= acc <= 1.0
     assert joint <= min(marginals) + 1e-6
 
-    # recompute the argmax decode independently -- must match exactly
+    _assert_argmax_decode_matches(model, batch, metrics)
+
+
+def _assert_argmax_decode_matches(
+    model: PatchPolicy, batch: dict[str, Any], metrics: TensorDict
+) -> None:
+    """Recompute the argmax decode independently -- it must match exactly."""
     with torch.no_grad():
         features, chunk = model._features(batch)  # noqa: SLF001
         target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
         code_logits, offsets = model._heads(features)  # noqa: SLF001
         codes = code_logits.argmax(dim=-1)
         decoded = model.tokenizer.invert(codes) + model._offset(offsets, codes)  # noqa: SLF001
-        expected_last = model.losses["offset"](decoded[:, -1], target[:, -1])
-        expected_all = model.losses["offset"](decoded, target)
+        correct = codes[:, -1] == model.tokenizer(chunk)[:, -1]
 
-    torch.testing.assert_close(metrics["offset_argmax_recon_last"], expected_last)
-    torch.testing.assert_close(metrics["offset_argmax_recon"], expected_all)
+        torch.testing.assert_close(
+            metrics["offset_argmax_recon_last"],
+            model.losses["offset"](decoded[:, -1], target[:, -1]),
+        )
+        torch.testing.assert_close(
+            metrics["offset_argmax_recon"], model.losses["offset"](decoded, target)
+        )
 
-    # and the accuracies must be the argmax hit-rate against the tokenized targets
-    with torch.no_grad():
-        target_codes = model.tokenizer(chunk)
-        correct = codes[:, -1] == target_codes[:, -1]
+    # the accuracies must be the argmax hit-rate against the tokenized targets
     for q in range(NUM_QUANTIZERS):
         torch.testing.assert_close(
             metrics[f"code_acc_{q}_last"], correct[:, q].float().mean()

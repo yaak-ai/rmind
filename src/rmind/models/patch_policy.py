@@ -446,9 +446,36 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
-        # gradient-free LAST-FRAME metrics: the training losses above average over
-        # all T readouts (contexts of 1..T frames), whereas JointPolicyObjective
-        # only ever scores the newest frame -- these make the two comparable
+        metrics = self._readout_metrics(
+            code_logits=code_logits,
+            offsets=offsets,
+            target_codes=target_codes,
+            target=target,
+            predicted_chunk=predicted_chunk,
+            sampled_chunk=sampled_chunk,
+            sampled_recon=sampled_recon,
+        )
+
+        return TensorDict({"policy": {"loss": losses, "metric": metrics}})
+
+    def _readout_metrics(  # noqa: PLR0913
+        self,
+        *,
+        code_logits: Tensor,
+        offsets: Tensor,
+        target_codes: Tensor,
+        target: Tensor,
+        predicted_chunk: Tensor,
+        sampled_chunk: Tensor,
+        sampled_recon: Tensor,
+    ) -> dict[str, Tensor]:
+        """Gradient-free diagnostics at the deployed readout.
+
+        The training losses average over all T readouts (contexts of 1..T
+        frames), whereas `JointPolicyObjective` only ever scores the newest
+        frame -- these make the two comparable.
+        """
+        tokenizer = self.tokenizer
         with torch.no_grad():
             metrics: dict[str, Tensor] = {"offset_sampled_recon": sampled_recon}
             for q in range(tokenizer.quantizer.num_quantizers):
@@ -489,7 +516,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 metrics[f"code_acc_{q}_last"] = correct[:, q].float().mean()
             metrics["code_acc_joint_last"] = correct.all(dim=-1).float().mean()
 
-        return TensorDict({"policy": {"loss": losses, "metric": metrics}})
+        return metrics
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
         metrics = self._compute_metrics(batch)
