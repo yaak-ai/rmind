@@ -238,50 +238,19 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # scale-balanced feature fusion: LayerNorm + learnable gain on the patch
         # side (encoder-agnostic scale; DINO token-norm spread is negligible so
         # nothing informative is lost), and a learnable gain on the goal side
-        # initialized so RMS(gain * z_q) ~= RMS(LN(patches)) ~= 1 -- calibrated
-        # from the frozen RVQ codebooks (seeded, data-free, identical across
-        # DDP ranks). Per-sample code-norm information passes through untouched.
+        # initialized to 1/RMS so that RMS(gain * z_q) ~= RMS(LN(patches)) ~= 1 --
+        # calibrated from the frozen RVQ codebooks (seeded, data-free, identical
+        # across DDP ranks). Per-sample code-norm information passes through
+        # untouched.
+        #
+        # CAVEAT on the estimate: the codes below are drawn INDEPENDENTLY and
+        # UNIFORMLY per quantizer, whereas a real z_q is a residual-VQ tuple
+        # (level q+1 corrects level q's residual) with strongly non-uniform code
+        # usage. Measured on gzxgumtf:v9 the estimate is 1.86x too large
+        # (0.143 vs 0.077 on real data), which lands the goal stream ~2x quieter
+        # than intended. Prefer passing a measured value where it is known.
         if fusion_norm:
-            goal_dim = self.goal_encoder.quantizer.dim
-            patch_dim = self.patch_projection.in_features - goal_dim
-            self.fusion_patch_norm: Module | None = nn.LayerNorm(patch_dim)
-            self.fusion_patch_gain: nn.Parameter | None = nn.Parameter(
-                torch.tensor(1.0)
-            )
-            if fusion_goal_rms is not None:
-                # data-measured element-RMS of z_q. The uniform-random-code MC
-                # below overestimates it (real codebook usage is non-uniform:
-                # measured 1.86x on gzxgumtf — 0.143 MC vs 0.077 real), landing
-                # the goal stream ~2x quieter than intended. Prefer the
-                # measured value when known (H3 eval, 2026-08-06).
-                rms = torch.tensor(fusion_goal_rms)
-            else:
-                with torch.no_grad():
-                    quantizer = self.goal_encoder.quantizer
-                    generator = torch.Generator().manual_seed(0)
-                    codes = torch.stack(
-                        [
-                            torch.randint(
-                                0, quantizer.codebook_size, (1024,), generator=generator
-                            )
-                            for _ in range(quantizer.num_quantizers)
-                        ],
-                        dim=-1,
-                    )
-                    # the CPU generator fixes the seed sequence; lookup must run
-                    # on whatever device the loaded codebooks landed on
-                    quantizer_device = next(
-                        chain(quantizer.parameters(), quantizer.buffers())
-                    ).device
-                    rms = (
-                        quantizer
-                        .lookup(codes.to(quantizer_device))
-                        .pow(2)
-                        .mean()
-                        .sqrt()
-                        .cpu()
-                    )
-            self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
+            self._init_fusion_norm(fusion_goal_rms)
         else:
             self.fusion_patch_norm = None
             self.fusion_patch_gain = None
@@ -345,6 +314,58 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         # speed first so the frame block ends on a patch token (the readout position)
         return torch.cat([speed_token, patches], dim=-2)  # (b, t, p + 1, d)
+
+    def _init_fusion_norm(self, fusion_goal_rms: float | None) -> None:
+        """Build the scale-balanced fusion parameters (see __init__).
+
+        Raises:
+            ValueError: if the goal-gain calibration RMS is not finite/positive
+                (1/RMS would be inf, NaN-ing the first step).
+        """
+        goal_dim = self.goal_encoder.quantizer.dim
+        patch_dim = self.patch_projection.in_features - goal_dim
+        self.fusion_patch_norm: Module | None = nn.LayerNorm(patch_dim)
+        self.fusion_patch_gain: nn.Parameter | None = nn.Parameter(torch.tensor(1.0))
+        if fusion_goal_rms is not None:
+            # data-measured element-RMS of z_q. The uniform-random-code MC
+            # below overestimates it (real codebook usage is non-uniform:
+            # measured 1.86x on gzxgumtf — 0.143 MC vs 0.077 real), landing
+            # the goal stream ~2x quieter than intended. Prefer the
+            # measured value when known (H3 eval, 2026-08-06).
+            rms = torch.tensor(fusion_goal_rms)
+        else:
+            with torch.no_grad():
+                quantizer = self.goal_encoder.quantizer
+                generator = torch.Generator().manual_seed(0)
+                codes = torch.stack(
+                    [
+                        torch.randint(
+                            0, quantizer.codebook_size, (1024,), generator=generator
+                        )
+                        for _ in range(quantizer.num_quantizers)
+                    ],
+                    dim=-1,
+                )
+                # the CPU generator fixes the seed sequence; lookup must run
+                # on whatever device the loaded codebooks landed on
+                quantizer_device = next(
+                    chain(quantizer.parameters(), quantizer.buffers())
+                ).device
+                rms = (
+                    quantizer
+                    .lookup(codes.to(quantizer_device))
+                    .pow(2)
+                    .mean()
+                    .sqrt()
+                    .cpu()
+                )
+        if not bool(rms.isfinite()) or not float(rms) > 0.0:
+            msg = (
+                f"fusion_norm goal-gain calibration produced RMS={float(rms)}; "
+                "the goal codebooks are probably uninitialized (1/RMS is not finite)"
+            )
+            raise ValueError(msg)
+        self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
 
     def _features(
         self, batch: Any, *, require_chunk: bool = True
@@ -796,7 +817,9 @@ class PatchPolicyHead(pl.LightningModule):
     def __init__(
         self,
         *,
-        norm: InstanceOf[Module],
+        # optional, mirroring PatchPolicy.norm -- head-only export of an arm
+        # trained with `norm: null` must not fail validation
+        norm: InstanceOf[Module] | None,
         code_head: InstanceOf[Module],
         offset_head: InstanceOf[Module],
         tokenizer: InstanceOf[Module],
@@ -813,7 +836,8 @@ class PatchPolicyHead(pl.LightningModule):
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
 
-        features = self.norm(features)
+        if self.norm is not None:
+            features = self.norm(features)
         code_logits = rearrange(
             self.code_head(features), "... (g c) -> ... g c", g=g, c=c
         )

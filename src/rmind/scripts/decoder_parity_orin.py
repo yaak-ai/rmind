@@ -222,17 +222,22 @@ def main() -> int:
     # KV-cache memory, read off the ENGINE rather than re-derived from a formula
     cache_report = {}
     for label, runner in runners.items():
-        rows = [b for b in runner.describe() if b["name"] in
-                ("inputs_past_k", "inputs_past_v", "inputs_cache_bias",
-                 "new_k", "new_v")]
+        rows = [
+            b
+            for b in runner.describe()
+            if b["name"]
+            in ("inputs_past_k", "inputs_past_v", "inputs_cache_bias", "new_k", "new_v")
+        ]
         total = sum(b["bytes"] for b in rows if b["name"].startswith("inputs_past"))
         cache_report[label] = {
             "bindings": rows,
             "kv_cache_bytes": total,
             "kv_cache_mib": total / 1024 / 1024,
         }
-        print(f"  {label}: KV cache = {total / 1024 / 1024:.2f} MiB "
-              f"({[b['dtype'] for b in rows if b['name'] == 'inputs_past_k'][0]})")
+        print(
+            f"  {label}: KV cache = {total / 1024 / 1024:.2f} MiB "
+            f"({[b['dtype'] for b in rows if b['name'] == 'inputs_past_k'][0]})"
+        )
 
     frames = real_frames(a.frames, image_hw)
     rng = np.random.default_rng(a.seed)
@@ -240,7 +245,9 @@ def main() -> int:
     if per_history * a.histories != a.trials:
         raise SystemExit("--trials must be divisible by --histories")
 
-    reference = np.zeros((a.trials, *tuple(sess.get_outputs()[0].shape[1:])), np.float32)
+    reference = np.zeros(
+        (a.trials, *tuple(sess.get_outputs()[0].shape[1:])), np.float32
+    )
     got = {label: np.zeros_like(reference) for label in labels}
 
     trial = 0
@@ -262,9 +269,7 @@ def main() -> int:
                 "inputs_rope_cos": cos,
                 "inputs_rope_sin": sin,
             }
-            _, new_k, new_v = sess.run(
-                ["policy.joint_actions", "new_k", "new_v"], feed
-            )
+            _, new_k, new_v = sess.run(["policy.joint_actions", "new_k", "new_v"], feed)
             lo = (tick % cache_frames) * tokens_per_frame
             hi = lo + tokens_per_frame
             past_k[:, :, :, lo:hi, :] = new_k
@@ -273,9 +278,7 @@ def main() -> int:
         print(f"  history {history}: streamed {cache_frames} ticks")
 
         for _ in range(per_history):
-            cos, sin = rope_cos_sin(
-                cache_frames + int(rng.integers(0, 512)), head_dim
-            )
+            cos, sin = rope_cos_sin(cache_frames + int(rng.integers(0, 512)), head_dim)
             feed = small_inputs(rng, frames[trial % len(frames)], num_waypoints)
             feed |= {
                 "inputs_past_k": past_k,
