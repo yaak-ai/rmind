@@ -996,3 +996,82 @@ Total resident at the served window 16, measured: 203 MiB of fp32 weights +
 120 MiB cache = **323 MiB** (§6 predicted 327 MiB), or 107 MiB + 60 MiB =
 **167 MiB** on the fp16 + fp16-cache engine. Memory remains nowhere near binding
 on a 15 GiB Orin.
+
+### 12.8 The serving decision
+
+All four engines at the served window 16, on the same host at 918 MHz, scored
+against one shared ORT fp32 reference over the same 200 trials:
+
+| engine | latency | vs fp32 | engine | KV cache | decisions | worst \|d\| | mean \|d\| | `_gemm_mha_v2` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **fp32** (TF32 cleared) | 59.82 ms | 1.00× | 203 MiB | 120 MiB | **0/200** | 4.2e-07 | 1.8e-08 | n/a |
+| `encfp32-fp16trunk` | 21.79 ms | 2.75× | 155 MiB | 120 MiB | 2/200 | 0.0427 | 1.2e-04 | 7 |
+| fp16 | 16.97 ms | 3.53× | 107 MiB | 120 MiB | 5/200 | 0.1827 | 5.0e-04 | 38 |
+| **fp16 + fp16 cache I/O** | **13.63 ms** | **4.39×** | 105 MiB | **60 MiB** | 2/200 | 0.0426 | 1.6e-04 | 38 |
+
+**Serve fp32.** Not because low precision looks bad, but because at this window
+there is no latency pressure to trade anything for: 59.82 ms is **3.36× cheaper
+than the 200.85 ms 6-frame baseline that is served today** (§9's gate zero), while
+attending 16 frames instead of 6. The tick carrying an inference costs
+`333 + 59.8 = 393 ms` against today's `333 + 200.9 = 534 ms`. fp32 is the only
+0/200 configuration and it is *also* the faster-than-today one, so accepting even
+1 % of flipped control decisions buys nothing.
+
+**If a faster engine is ever needed** — the `_big` arm, window 32/64, or a tighter
+tick — the answer for *this* architecture is **fp16 with fp16 cache I/O**, and that
+is a **departure from the skill's standing recommendation**. `encfp32-fp16trunk` is
+the skill's designated "fast one", but here it is dominated on every axis at once:
+
+| | latency | KV cache | decisions | worst \|d\| |
+| --- | --- | --- | --- | --- |
+| `encfp32-fp16trunk` | 21.79 ms | 120 MiB | 2/200 | 0.0427 |
+| fp16 + fp16 cache | **13.63 ms** | **60 MiB** | 2/200 | 0.0426 |
+
+1.6× faster, half the cache, indistinguishable parity. The reason is structural
+and specific to the decoder step: **the step encodes only ONE frame**, so the image
+encoder is 69 % of the graph's layers (1950 of 2818) instead of the ~18 % of
+runtime it is in the recompute-everything baseline. Pinning it is no longer cheap.
+Meanwhile the fp16 cache lever does not exist in the baseline at all, because the
+baseline has no cache.
+
+Two honesty notes on those parity counts:
+
+* **2/200 vs 5/200 is not a distinguishable difference.** The 95 % intervals
+  overlap (≈0.1–3.6 % against ≈0.8–5.7 %), and the skill's own warning about
+  2/50 vs 4/50 applies with less force but still applies. What *is* a clean signal
+  is the magnitude, which is not a counting statistic: worst \|d\| falls 4.3×
+  (0.183 → 0.043) and mean \|d\| 3–4× when either the encoder is pinned or the
+  cache is handed over in fp16. Both flagged trials in both better engines are
+  control-channel-only.
+* ⚠️ **The fp16-cache parity number is optimistic and must not be shipped on.** The
+  harness streams each history through ORT in **fp32** and casts to fp16 once per
+  trial. A real fp16 ring accumulates the cache *in fp16 across every tick*, so
+  rounding compounds over an episode in a way this measures nothing about. Before
+  serving that engine, re-run the ladder with a genuinely fp16 ring — the harness
+  needs one change, to keep `past_k`/`past_v` in fp16 between ticks.
+
+`encfp32-fp16trunk` carries **7** `_gemm_mha_v2` instances rather than 8. That is
+consistent with §4: `readout_only_final_block=True` makes the last block's
+attention a 1-query op, a different shape that does not take the fused kernel.
+Note also that `build_mixed.py`'s log showed **0** hits, because it uses a
+non-verbose TRT logger — the engine had to be interrogated with
+`--dumpLayerInfo` instead. Reading that 0 as "the fusion is gone" would have been
+a false alarm, which is why the check greps the engine and not only the build log.
+
+### 12.9 What is NOT established
+
+* **Nothing about driving quality.** epoch 0, step 80797. Latency and parity are
+  properties of shapes and weight statistics; behaviour is not, and PR #248
+  established that aggregate val L1 is blind to this failure class anyway.
+* **Windows 6 and 32 are latency artifacts only.** They were built from a
+  window-16 checkpoint, which `step` will run against any cache size while
+  silently extrapolating (§10.3). The engines on delta-dev1 are renamed
+  `LATENCY-ONLY-WRONG-WINDOW.*` with a `PARITY-NOTES.md` beside them.
+* **The harness shares 10 caches across 200 trials** (20 current-frame variants
+  each) rather than using 200 independent histories, because a cache is 126 MiB.
+  The cache is the slowest-moving real input, but this is a genuine narrowing of
+  the input distribution.
+* **Speed and waypoints are synthetic**, which makes this harness ~7× harsher than
+  the road on the baseline arm. Do not quote 2/200 as a deployment rate.
+* **Margins are per-checkpoint.** Re-run §12.5 and §12.6 for every checkpoint
+  before serving it below fp32. A verdict cannot be inherited from a sibling.
