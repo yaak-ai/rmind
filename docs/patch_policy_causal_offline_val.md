@@ -85,6 +85,27 @@ Readouts `partial 0-14` see a partial context; `full 15-31` see the full 16-fram
 | recon_argmax | 0.0419 | 0.0411 | -1.8% |  |
 | joint_acc | 0.0901 | 0.0934 | +3.7% |  |
 
+### Reading
+
+The bucket averages understate what the per-position table (below) shows: on
+held-out data the code loss falls only from t=0 to t=1-3 and is then FLAT, and
+from t~12 onward it creeps slightly the wrong way. p_gt peaks at t=11-13 (0.3324)
+and entropy bottoms out in the same place, i.e. the best-generalizing readout is
+not the deepest one. All the context that generalizes is spent within ~4 frames.
+
+The train curves say the opposite: there, the full-window bucket beat the partial
+one by 5.9% on code loss and the gap was widening. That advantage does NOT
+transfer -- on val it is +0.4%, i.e. gone or marginally reversed. The train-side
+full-window advantage is therefore memorization of long context, not
+generalizable long-context conditioning. Offset agrees on both sides that depth
+is irrelevant (train +2.7%, val +0.7%, both against the full window).
+
+H6 check: this is not an entropy-collapse artifact. Entropy is 1.58 nats against
+a uniform 2.77, so the head is far from collapsed, and p_gt (0.331 full vs 0.328
+partial) moves the same negligible amount as the focal. p_gt is NOT rising while
+focal explodes -- the two agree that the buckets are equivalent, so the flat
+verdict survives the calibration confound.
+
 ## Deliverable 3 -- decoding and tails
 
 | series | mean | p50 | p95 | p99 | max |
