@@ -1,0 +1,23 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2
+  - _self_
+
+# DINO-WM-faithful features (https://github.com/gaoyuezhou/dino_wm): the FINAL
+# block's patch tokens after DINOv2's final LayerNorm (x_norm_patchtokens),
+# instead of the rmind convention of pre-norm layer-10 intermediates.
+# NOTE: _args_ lists merge by replacement, so the Sequential is re-stated fully.
+model:
+  image_encoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: rmind.components.timm_backbone.TimmBackbone
+        model_name: ${image_encoder_name}
+        img_size: ${image_resize}
+        norm_patch_tokens: true
+      - _target_: einops.layers.torch.Rearrange
+        pattern: "... c h w -> ... (h w) c"
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm]

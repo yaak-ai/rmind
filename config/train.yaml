@@ -6,3 +6,6 @@ defaults:
 
 seed: 1337
 matmul_precision: "high"
+
+# optional checkpoint to resume from (passed to trainer.fit)
+ckpt_path: null

@@ -31,7 +31,9 @@ def _train(cfg: DictConfig) -> None:
 
     logger.debug("starting training")
 
-    return trainer.fit(model=model, datamodule=datamodule)
+    return trainer.fit(
+        model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path")
+    )
 
 
 @hydra.main(version_base=None)
