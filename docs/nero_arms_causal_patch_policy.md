@@ -46,6 +46,14 @@ the model's input boundary:
 | state / action | `(T, 2, 60)` | **`(T, 2, 46)`** — the §5.2 quaternion storage form | `state_quat_to_9d` |
 | goal image | one `(3, 3, H, W)` | **three keys** `goal.image.{camera}`, each on its own grid | per-camera encode |
 
+The `[t+1 .. t+H]` shift of §6.2 is **verified identical on both sides**
+(`future = stack(state[i+1 : i+1+H])` in rbyte). Note the windowing convention
+differs from every driving config: rbyte materialises each row's future chunk at
+build time and drops rows without a full chunk, so `clip_length == episode_length
+== 6` rather than `episode_length + horizon - 1`. An off-by-one here would train
+the policy to predict the *current* state and would show up as a suspiciously
+good loss curve, not as an error.
+
 `action.commanded` is currently a byte-identical duplicate of
 `action.future_state` (~199 MB of a ~470 MB TensorDict). The policy reads exactly
 one path, chosen by config, so the duplicate is never consumed.

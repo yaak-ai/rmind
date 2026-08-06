@@ -39,7 +39,14 @@ defaults:
 # --- contract §6.2: action(t) = future state chunk [t+1 .. t+H] at 30 Hz
 episode_length: 6
 action_horizon: 6
-clip_length: "${eval:'${episode_length} + ${action_horizon}'}"
+# ⚠️ clip_length == episode_length here, NOT `episode_length + horizon - 1` as in
+# every driving config. rbyte materialises each row's future chunk AT BUILD TIME
+# (`future = stack(state[i+1 : i+1+H])`) and drops the rows without a full chunk,
+# so one sample row already carries both `state.pose[t]` and
+# `action.future_state[t]`; the window needs no extra frames. Verified against
+# rbyte@feat/nero-arms, which builds at clip_length 6 with the same [t+1 .. t+H]
+# shift this side assumes.
+clip_length: ${episode_length}
 
 # --- contract §8 / §7.2
 cameras: [base, side_left, side_right]
