@@ -101,8 +101,8 @@ for f in "$OUTDIR/$TAG.build.log" "$OUTDIR/$TAG.layers.json" \
   [ -f "$f" ] && printf '   %-24s %s hits\n' "$(basename "$f")" \
     "$(grep -ao "_gemm_mha_v2" "$f" 2>/dev/null | wc -l)"
 done
-echo "   -- all *mha*/*fmha* tactic names present --"
-grep -ahoE "[A-Za-z0-9_]*[fm]mha[A-Za-z0-9_]*" \
+echo "   -- all *mha* tactic names present --"
+grep -ahoE "[A-Za-z0-9_]*mha[A-Za-z0-9_]*" \
   "$OUTDIR/$TAG.build.log" "$OUTDIR/$TAG.layers.json" 2>/dev/null \
   | sort | uniq -c | sort -rn | head -12
 echo "   (empty above = NO fused MHA at all)"

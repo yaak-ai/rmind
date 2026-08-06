@@ -829,11 +829,19 @@ the slope falls at all is the interesting part: the marginal term is cache traff
 and attention against `(N-1)·257` keys, so halving the data width buys close to
 halving the marginal cost, which is what a bandwidth-bound term should do.
 
-The **controlled** statement is the same-host, same-day, same-flags random-weight
-control: `decoder_random_n16` fp32 measured **59.65 ms** against the trained
-engine's **59.82 ms**, i.e. **0.3 %**. Weight values do not move a static-shape
-engine's latency, now measured rather than assumed. (§9's 59.58 ms is separate,
-weaker corroboration — a different build path, built four days earlier.)
+The **controlled** statement is the same-host, same-day, same-flags randomly
+initialized control, exported from the same script at the same context and built
+minutes apart:
+
+| window 16 | trained | random control | delta |
+| --- | --- | --- | --- |
+| fp32 | 59.82 ms | 59.65 ms | 0.3 % |
+| fp16 | 16.97 ms | 16.93 ms | 0.2 % |
+
+Weight values do not move a static-shape engine's latency — now measured rather
+than assumed, and measured at *both* precisions, which matters because fp16
+tactic selection could in principle have been value-sensitive. (§9's 59.58 ms is
+separate, weaker corroboration: a different build path, built four days earlier.)
 
 fp16 is **3.53× faster than fp32 at window 16** (59.82 → 16.97 ms) and the
 engine is half the size (203 → 107 MiB).
