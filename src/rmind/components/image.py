@@ -43,7 +43,9 @@ class LetterboxResize(Module):
 
     def __init__(self, *, size: int | tuple[int, int], fill: float = 0.0) -> None:
         super().__init__()
-        self.size: tuple[int, int] = (size, size) if isinstance(size, int) else tuple(size)
+        self.size: tuple[int, int] = (
+            (size, size) if isinstance(size, int) else tuple(size)
+        )
         self.fill = fill
 
     @override

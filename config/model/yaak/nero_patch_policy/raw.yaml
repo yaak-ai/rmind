@@ -8,16 +8,19 @@ _convert_: all
 # NEVER a plain anisotropic Resize -- that would scale fx and fy independently
 # and invalidate the resolution-normalised intrinsics in camera_cond (§7.1).
 # 300x480 -> 140x224 is EXACTLY isotropic (x0.4667), so only base is padded.
+#
+# ToDtype comes FIRST: letterboxing interpolates, and doing that in uint8 would
+# round every resampled pixel back to an integer before the network ever sees it.
 image_transform:
   _target_: torch.nn.Sequential
   _args_:
-    - _target_: rmind.components.image.LetterboxResize
-      size: ["${image_height}", "${image_width}"]
     - _target_: torchvision.transforms.v2.ToDtype
       scale: true
       dtype:
         _target_: hydra.utils.get_object
         path: torch.float32
+    - _target_: rmind.components.image.LetterboxResize
+      size: ["${image_height}", "${image_width}"]
     - _target_: torchvision.transforms.v2.Normalize
       mean: [0.485, 0.456, 0.406]
       std: [0.229, 0.224, 0.225]

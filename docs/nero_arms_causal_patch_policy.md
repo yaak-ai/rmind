@@ -297,28 +297,39 @@ versus the single-camera driving arm). 40.9M trainable / 63.1M total parameters.
 
 ## Contract issues
 
-1. **The 60-dim channel order is undefined.** §6.1 gives the blocks (arm 9,
-   fingers 45, hub rotation 6) but never their order *within* the 60 dims.
-   Without it, per-channel standardisation and the translation/rotation split are
-   both unimplementable. This work **defines** it in
-   `rmind.data.nero.POSE_BLOCK_LAYOUT` as
-   `[arm, thumb, index, middle, ring, little] × (t3, r6)` then `hub (r6)`, giving
-   18 translation indices `{0-2, 9-11, 18-20, 27-29, 36-38, 45-47}` and 42
-   rotation indices. **The rbyte side must confirm or correct this**; it is
-   exactly the kind of silent interface break the brief warns about. The layout
-   is also written into the standardisation artifact so a mismatch is detectable
-   rather than silent.
-1. **§5 names only the 7↔9 pose pair.** The hub-orientation block is
-   rotation-only and needs a 4↔6 pair. Added here as
-   `quat_to_rot6d` / `rot6d_to_quat`; the contract should name them.
-1. **§7 `placeholder: true` makes `camera_cond` a constant** (zero intrinsics,
-   identity extrinsics) until the real calibration file drops. The
-   generalisation claim behind §7.1 is therefore **untestable** on current data,
-   and any model trained before the file drop learns nothing from that vector.
-   The smoke harness randomises `camera_cond` so the path is at least exercised.
-1. **§8 emits both `action.future_state` and `action.commanded` as aliases.** The
-   policy reads `action.future_state` by config path; switching is one line. No
-   issue, noted so the alias is not accidentally consumed twice.
+1. **§8's `(T, 2, 60)` contradicts §5.2's quaternion storage.** rbyte implemented
+   §5.2 and emits **46** per side; this side does the 46→60 expansion at the model
+   boundary. Resolved in practice, but §8 should be corrected so the next reader
+   does not size a tensor from it. **Verified, not assumed**: `pose_quat_to_9d` is
+   bit-identical across the two repos and the block order agrees (arm `[0:7]`,
+   fingers `[7:42]` thumb→little, hub quaternion `[42:46]`).
+2. **The 60-dim channel order was undefined.** §6.1 gave blocks but not their
+   order, which makes per-channel standardisation and the translation/rotation
+   split unimplementable. It is now pinned on both sides — here as
+   `rmind.data.nero.POSE_BLOCK_LAYOUT`, giving 18 translation indices
+   `{0-2, 9-11, 18-20, 27-29, 36-38, 45-47}` and 42 rotation indices. The layout
+   is also written into the standardisation artifact, so a future mismatch is
+   detectable rather than silent. **§6.1 should state it.**
+3. **§5 names only the 7↔9 pose pair.** The hub-orientation block is
+   rotation-only and needs a 4↔6 pair (`quat_to_rot6d` / `rot6d_to_quat` here,
+   and the same pair exists in rbyte). The contract should name it.
+4. **§8's image row implies a common H/W across cameras; there is none.** rbyte
+   isotropically downscales per camera (`base` 270×480, `side_*` 300×480), which
+   is the right call for the intrinsics but makes "letterbox to a common grid" a
+   mandatory consumer-side step. §8 should say so explicitly — a consumer that
+   assumes a uniform patch grid fails at `torch.cat`, which is at least loud, but
+   one that resizes anisotropically fails **silently** and invalidates
+   `camera_cond`.
+5. **§7's `placeholder: true` makes `camera_cond` a constant** (zero intrinsics,
+   identity extrinsics) until the real calibration drops. The generalisation claim
+   behind §7.1 is therefore **untestable** on current data, and a model trained
+   before the file drop learns nothing from that vector. The smoke harness
+   randomises it so the path is at least exercised. §13.2's rectified-K-plus-
+   extrinsics choice is what the 13-dim layout already assumes.
+6. **`action.commanded` is a byte-identical duplicate** of
+   `action.future_state` — ~199 MB of a ~470 MB TensorDict, scaling linearly. The
+   policy reads exactly one path (config-selected), so nothing downstream pays
+   for it; the duplication is worth removing loader-side before the dataset grows.
 
 ## Open items for the user
 
