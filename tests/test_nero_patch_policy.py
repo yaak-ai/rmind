@@ -15,6 +15,7 @@ makes falsifiable:
   shape-only test passes even if the tensor is dropped on the floor.
 """
 
+from pathlib import Path
 from typing import Any, override
 
 import pytest
@@ -404,3 +405,114 @@ def test_action_dimensionality_is_a_config_seam(action_features: int) -> None:
     codes = tokenizer(chunk)
     assert codes.shape == (5, NUM_QUANTIZERS)
     assert tokenizer.invert(codes).shape == (5, HORIZON * action_features)
+
+
+# ------------------------------------------------------- action-space seam
+
+
+def _joint_policy(*, action_features: int, state_features: int) -> NeroPatchPolicy:
+    """The §13.3 option-A configuration: robot joint commands, ~12 dims per side."""
+    torch.manual_seed(0)
+    action_dim = HORIZON * action_features
+    tokenizer = NeroPoseTokenizer(
+        encoder=nn.Linear(action_dim, 16),
+        quantizer=ResidualVQ(
+            dim=16,
+            codebook_size=CODEBOOK_SIZE,
+            num_quantizers=NUM_QUANTIZERS,
+            kmeans_init=False,
+        ),
+        decoder=nn.Linear(16, action_dim),
+        action_features=action_features,
+        action_horizon=HORIZON,
+    )
+    return NeroPatchPolicy(
+        image_transform=_Unify(),
+        image_encoder=_TinyImageEncoder(),
+        patch_projection=nn.Linear(2 * IMAGE_DIM + CAMERA_COND_DIM, POLICY_DIM),
+        state_embedding=nn.Linear(NUM_SIDES * state_features + NUM_SIDES, POLICY_DIM),
+        encoder=CausalFrameTransformer(
+            dim_model=POLICY_DIM,
+            num_layers=NUM_LAYERS,
+            num_heads=NUM_HEADS,
+            tokens_per_frame=len(CAMERA_NAMES) * NUM_PATCHES + 1,
+            window=EPISODE_LENGTH,
+        ),
+        tokenizer=tokenizer,
+        code_head=nn.Linear(POLICY_DIM, NUM_QUANTIZERS * CODEBOOK_SIZE),
+        offset_head=nn.Linear(POLICY_DIM, NUM_QUANTIZERS * CODEBOOK_SIZE * action_dim),
+        losses=ModuleDict(modules={"code": FocalLoss(), "offset": nn.L1Loss()}),
+        image_embedding_dim=IMAGE_DIM,
+        policy_embedding_dim=POLICY_DIM,
+        sample_codes=False,
+        goal_dropout=0.0,
+    )
+
+
+def test_joint_angle_action_space_needs_no_code_change() -> None:
+    """Contract §10 A1 / §13.3 option A -- LOAD-BEARING, not precautionary.
+
+    The glove SE(3) parameterisation is a stand-in; iteration-1 teleop records
+    robot joint values (~12 per side, 24 bimanual). Swapping to that must be a
+    config change plus a new tokenizer checkpoint, so this exercises a full
+    forward AND backward in the joint-angle space with the SAME model code.
+    """
+    action_features, state_features = 12, 24
+    policy = _joint_policy(
+        action_features=action_features, state_features=state_features
+    )
+    policy.train()
+    policy.image_encoder.eval()
+
+    generator = torch.Generator().manual_seed(7)
+    batch = dict(_batch())
+    batch["state.pose"] = torch.randn(
+        2, EPISODE_LENGTH, NUM_SIDES, state_features, generator=generator
+    )
+    batch["action.future_state"] = torch.randn(
+        2, EPISODE_LENGTH, HORIZON, NUM_SIDES, action_features, generator=generator
+    )
+
+    # the storage-form conversion must NOT fire for a non-46-dim space
+    assert policy._state(batch).shape[-1] == state_features  # noqa: SLF001
+    assert policy._chunk(batch).shape[-1] == action_features  # noqa: SLF001
+    # ... and the pose-layout metrics must switch themselves off
+    assert not policy.tokenizer.has_pose_layout
+
+    loss = policy._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss.backward()
+    assert policy.encoder.layers[0].attn.in_proj_weight.grad is not None
+    assert policy.offset_head.weight.grad is not None
+
+    policy.eval()
+    out = policy(batch)["policy", "action"]
+    assert out.shape == (2, NUM_SIDES, HORIZON, action_features)
+
+
+def test_head_widths_derive_from_the_action_space_in_config() -> None:
+    """The seam is only real if the CONFIG derives the head widths from it."""
+    from hydra import compose, initialize_config_dir  # noqa: PLC0415
+
+    config_dir = str(Path(__file__).resolve().parents[1] / "config")
+    widths: dict[int, tuple[int, int]] = {}
+    for action_features in (60, 12):
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+            cfg = compose(
+                config_name="train",
+                overrides=[
+                    "experiment=yaak/nero_arms/causal",
+                    f"action_features={action_features}",
+                ],
+            )
+        widths[action_features] = (
+            cfg.model.offset_head.hidden_channels[-1],
+            cfg.model.tokenizer.decoder.hidden_channels[-1],
+        )
+        assert widths[action_features] == (
+            cfg.num_quantizers
+            * cfg.codebook_size
+            * cfg.action_horizon
+            * action_features,
+            cfg.action_horizon * action_features,
+        )
+    assert widths[60] != widths[12]  # the override actually propagates

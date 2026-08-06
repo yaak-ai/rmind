@@ -1,9 +1,16 @@
 # nero-arms causal patch policy + SE(3) action tokenizer
 
 Design record for the nero-arms bimanual manipulation arm of the patch policy.
-Coded against `nero-arms/DATA_CONTRACT.md` v0.1 (+ §7.2, §11). Where this
-document and the contract disagree, the contract wins and the disagreement is
-listed in "Contract issues" below.
+Coded against `nero-arms/DATA_CONTRACT.md` v0.1 (+ §7.2, §10 answers, §11, §13)
+and against what the rbyte ingestion side actually emits (`rbyte@feat/nero-arms`).
+Where this document and the contract disagree, the contract wins and the
+disagreement is listed in "Contract issues" below.
+
+⚠️ **The glove SE(3) parameterisation is a stand-in, not the observation space**
+(§10 A1). Iteration-1 teleoperation uses the gloves only as the *input device*;
+the recorded observations will be **robot arm/hand state** — Revo2 joint values,
+roughly 12 per side rather than 60. Everything below is therefore built so the
+action space is a **config value, not a constant**; see "Action-space seam".
 
 Built on `feat/patch-policy-decoder-only`. The decoder-only trunk
 (`rmind/components/transformer/causal_frame.py`: frame-RoPE + tiled intra-frame
@@ -27,24 +34,55 @@ below it is new.
 | `config/datamodule/yaak/nero_random.yaml`                    | synthetic datamodule                                                                                                                                                                                                               |
 | `tests/test_nero_pose.py`, `tests/test_nero_patch_policy.py` | tests                                                                                                                                                                                                                              |
 
+## What the loader actually hands over
+
+rbyte (`feat/nero-arms`, 15,047 samples across 104 episodes) emits shapes that
+differ from the §8 table in three ways that matter here. All three are handled at
+the model's input boundary:
+
+| | §8 said | rbyte emits | handled by |
+| --- | --- | --- | --- |
+| images | one `(T, 3, H, W)` per camera, implicitly common H/W | **different grids**: `base` `(T,3,270,480)`, `side_*` `(T,3,300,480)` | `LetterboxResize` |
+| state / action | `(T, 2, 60)` | **`(T, 2, 46)`** — the §5.2 quaternion storage form | `state_quat_to_9d` |
+| goal image | one `(3, 3, H, W)` | **three keys** `goal.image.{camera}`, each on its own grid | per-camera encode |
+
+`action.commanded` is currently a byte-identical duplicate of
+`action.future_state` (~199 MB of a ~470 MB TensorDict). The policy reads exactly
+one path, chosen by config, so the duplicate is never consumed.
+
+The 46↔60 conversion is the shared boundary of §5, and it is verified against the
+other side rather than assumed: `rmind.data.nero.pose_quat_to_9d` is
+**bit-identical** to `rbyte.io.nero.rotation.pose_quat_to_9d` on random poses,
+and `state_quat_to_9d` matches structurally (arm `[0:7]`, fingers `[7:42]` in
+thumb→little order, hub quaternion `[42:46]`).
+
 ## Token layout and sequence length
 
 ```
-frame block = [ state token (1) ][ base (256) ][ side_left (256) ][ side_right (256) ]
-tokens_per_frame = 3 * 256 + 1 = 769
-flattened        = episode_length * 769 = 6 * 769 = 4614
+frame block = [ state token (1) ][ base (160) ][ side_left (160) ][ side_right (160) ]
+tokens_per_frame = 3 * 160 + 1 = 481
+flattened        = episode_length * 481 = 6 * 481 = 2886
 ```
 
+The ViT input is **140×224**, a 10×16 = 160-patch grid at DINOv2's patch 14. That
+is the cameras' own 5:8 aspect, so **nothing is spent on padding except `base`'s
+two letterbox rows**. Forcing the usual square 224×224 would have put the same
+image content on a 16×16 grid with 6 of 16 rows pure black bars — 769 tokens per
+frame and 4614 flattened, i.e. **60% more sequence for zero extra information**.
+Since attention is quadratic, that is ~2.6× the attention cost.
+
+`TimmBackbone`'s `norm_patch_tokens` path assumed a square grid (`isqrt(P)`); it
+now reads `patch_embed.grid_size`, which is identical for square inputs and
+correct for these.
+
 For comparison on the same trunk: the 6-frame driving arm is **1542**, the
-16-frame causal driving arm is **4112**. So this sits just above the largest arm
-already profiled, and the `episode_length = 6` choice is what keeps it there —
-`episode_length = 16` would be 12304 tokens (≈9× the attention cost of 4614).
+16-frame causal driving arm is **4112**.
 
 `head_dim = 512 / 8 = 64`: divisible by 8 (fused SDPA — at head_dim 20 PR #265
-fell back to a math kernel that materialises the full `(B, H, L, L)` score
-matrix and OOMed) and even (required by the trunk's frame-RoPE). The
-`nero_smoke --stage budget` pre-flight asserts both and probes the SDPA backend
-empirically rather than reasoning about it.
+fell back to a math kernel that materialises the full `(B, H, L, L)` score matrix
+and OOMed) and even (required by the trunk's frame-RoPE). The
+`nero_smoke --stage budget` pre-flight asserts both, cross-checks `num_patches`
+against the image size, and probes the SDPA backend empirically.
 
 The state token goes **first** so each frame block ends on a patch token, which
 is the readout position — unchanged from PR #265, where the speed token played
@@ -92,23 +130,33 @@ Goal xyz (§9 alternative) is emitted by the datamodule and left unconsumed; the
 second RVQ for it is scaffolded (`NeroGoalXYZTokenizer`) but not trained — it is
 only needed if the goal is to be *predicted* rather than conditioned on.
 
-### Image pipeline → letterbox, not resize (§7.2)
+### Image pipeline → letterbox, not resize (§7.2 + the rbyte grids)
 
-`base` is 1920×1080 (16:9), `side_*` are 1280×800 (16:10). A plain `Resize` to a
-square scales x and y by different factors, which (a) scales `fx` and `fy`
-independently so the resolution-normalised intrinsics in `camera_cond` stop
-describing the pixels the policy sees, and (b) makes the same object a different
-shape in `base` than in the side views, which a shared frozen ViT cannot undo.
-`LetterboxResize` keeps the scale isotropic; `letterbox_camera_cond` rewrites the
-4 intrinsic entries to match (extrinsics are untouched — letterboxing does not
-move the camera).
+rbyte downscales each camera **isotropically to its own grid**, which keeps the
+resolution-normalised intrinsics in `camera_cond` exactly valid at zero
+propagation cost — and leaves the three streams on different grids. Unifying them
+is rmind's job, and it must be a letterbox (uniform scale + symmetric padding),
+never an anisotropic resize: that would scale `fx` and `fy` independently so the
+conditioning vector stops describing the pixels the policy sees, and would make
+the same object a different shape in `base` than in the side views.
 
-Consequence to watch: all three cameras land on the same 16×16 patch grid, so
-`base`'s wider field of view gets **coarser real-world coverage per patch** than
-the side cameras. If the overhead view underperforms, this is the first thing to
-look at.
+`300×480 → 140×224` is exactly isotropic, so the side cameras are resized and not
+padded; `base` (`270×480`) is padded by 7 rows top and bottom after scaling.
+`letterbox_camera_cond` rewrites the four intrinsic entries to match — for the
+side cameras it is a no-op, for `base` `fy` shrinks by `270/300` and the
+principal point is re-centred. Extrinsics are untouched; letterboxing does not
+move the camera.
 
-### Bimanual `side_valid` (§6.1)
+§13.2 confirms the conditioning vector should carry **rectified** K plus
+extrinsics and *not* distortion coefficients, which is what the 13-dim layout
+already assumes.
+
+Consequence to watch: all three cameras share one patch grid, so `base`'s wider
+field of view gets coarser real-world coverage per patch than the side cameras,
+and `base` additionally spends 2 of its 10 patch rows on letterbox padding. If
+the overhead view underperforms, this is the first thing to look at.
+
+### Bimanual `side_valid` (§6.1, §10 A2 — permanent contract)
 
 Consumed in two places, both falsifiable:
 
@@ -125,6 +173,11 @@ Not asserted, deliberately: independence of the *valid* side's prediction from
 the invalid side's inputs. The state token is shared, so that dependence is
 legitimate.
 
+§10 A2 confirms bimanual is permanent with one arm optionally absent, so this is
+contract behaviour rather than dummy-data scaffolding. It is exercised through a
+backward pass, not just a forward: a right-only overfit run reaches 1.37 mm /
+1.37° with `valid_rows` pinned at 48 = 8 samples × 6 frames × 1 side.
+
 ### Per-side, weight-shared tokenizer and head
 
 One tokenizer is fitted on the pooled valid side-chunks of both hands, and one
@@ -135,7 +188,7 @@ a head that are immediately meaningful for the left hand. A single 120-dim
 bimanual tokenizer was rejected: on right-only data it would learn "left ≡ 0",
 which breaks the moment real bimanual teleop lands.
 
-### Config seam for the Revo2 action space (§11)
+### Action-space seam (§10 A1, §13.3) — load-bearing
 
 `action_features` (per-side action dimensionality) and `action_horizon` are
 config values; every head width derives from

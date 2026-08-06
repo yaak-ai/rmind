@@ -34,7 +34,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from rmind.data.nero import PoseStandardizer
+from rmind.data.nero import PoseStandardizer, state_quat_to_9d
 from rmind.datamodules.nero_random import CAMERA_NAMES, nero_random_batch
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
@@ -123,7 +123,9 @@ def _chunk_pool(cfg: Any, *, batches: int, device: torch.device) -> torch.Tensor
             both_sides=cfg.both_sides,
             seed=i,
         )
-        action = batch["action.future_state"]  # (b, T, H, 2, F)
+        # storage form (46/side) -> model-facing 9D (60/side), the same
+        # conversion the policy and the tokenizer do at their input boundary
+        action = state_quat_to_9d(batch["action.future_state"])  # (b, T, H, 2, 60)
         valid = batch["side_valid"]
         b, t, h, s, f = action.shape
         chunks = action.permute(0, 1, 3, 2, 4).reshape(-1, h, f)

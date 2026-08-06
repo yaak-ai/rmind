@@ -49,7 +49,13 @@ from torch.optim import Optimizer
 from rmind.components import optimizers
 from rmind.components.vq import ResidualVQ
 from rmind.config import HydraConfig, init_hydra_param
-from rmind.data.nero import SIDE_DIM, PoseStandardizer, pose_error_metrics
+from rmind.data.nero import (
+    SIDE_DIM,
+    STATE_QUAT_DIM,
+    PoseStandardizer,
+    pose_error_metrics,
+    state_quat_to_9d,
+)
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
 
@@ -203,6 +209,10 @@ class NeroPoseTokenizer(pl.LightningModule, LoadableFromArtifact):
         for key in self.side_valid:
             valid = valid[key]
 
+        # rbyte emits the §5.2 STORAGE form (46 per side); expand at the
+        # boundary, exactly as the policy does, so both see the same space.
+        if self.has_pose_layout and action.shape[-1] == STATE_QUAT_DIM:
+            action = state_quat_to_9d(action)
         b, t, h, s, f = action.shape
         chunks = action.permute(0, 1, 3, 2, 4).reshape(b * t * s, h, f)
         mask = valid[:, None, :].expand(b, t, s).reshape(-1)
