@@ -31,6 +31,10 @@ check-git:
 prek *ARGS:
     prek --all-files {{ ARGS }}
 
+# generate the palletjack command-card dataset (frames, printable sheets, samples)
+generate-cards *ARGS:
+    uv run python -m rmind.scripts.generate_cards {{ ARGS }}
+
 # generate config files from templates with ytt
 generate-config:
     ytt --file {{ justfile_directory() }}/config/_templates \

@@ -1,0 +1,122 @@
+# @package _global_
+
+# Overfit the image-only palletjack policy on the synthetic command cards, to
+# validate the kit inference pipeline end to end.
+#
+#   just generate-cards
+#   uv run python -m rmind.scripts.prepare_background   # negatives, see below
+#   just train experiment=palletjack/control_transformer/overfit_cards \
+#     pretrained_checkpoint=/path/to/model.ckpt
+#
+# Hold a printed card in front of the camera and the three outputs should match
+# the values printed on it. See `data/palletjack/cards/print/`.
+#
+# The datamodule also carries real recordings labelled (0, 0, 0), so an ordinary
+# warehouse scene commands a full stop instead of whatever the network would
+# extrapolate for an input it has never seen. Swap to `palletjack/cards` for a
+# cards-only run (faster, but unsafe to drive).
+defaults:
+  - /model: palletjack/control_transformer/policy
+  - /datamodule: palletjack/cards_with_background
+  - /trainer: default
+  - /trainer/callbacks: palletjack_overfit
+  - /paths: palletjack/default
+  - /wandb: yaak/rmind
+  - _self_
+
+num_heads: 4
+num_layers: 8
+encoder_embedding_dim: 384
+image_embedding_dim: 384
+
+# two summary tokens, no waypoint context
+policy_in_channels: 768
+
+traction_bins: 255
+steering_bins: 511
+fork1_bins: 127
+
+pretrained_checkpoint: null
+pretrained_artifact: null
+
+# 448 card + 362 background episodes / batch 32 = 25 steps per epoch.
+#
+# Budgeted for the intended path: a *finetune* of an earlier palletjack
+# checkpoint, where the policy heads already know the cards and only the
+# background class is new. Training the same thing from scratch (or from a car
+# checkpoint) needs roughly 4000+ steps instead - raise `max_epochs` to ~170.
+warmup_steps: 50
+training_steps: 1500
+
+trainer:
+  max_epochs: 60
+  check_val_every_n_epoch: 20
+  precision: "bf16-mixed"
+  gradient_clip_val: 1.0
+  log_every_n_steps: 14
+
+# Cards are rendered pixel-perfect but will be *photographed* by the kit's camera.
+# Augmentation is what closes that gap: it is wrapped in `TrainOnly`, so it is
+# absent from validation, prediction and the exported ONNX graph.
+#
+# NOTE: torchvision v2 transforms sample one set of parameters per call, so a
+# batch shares its augmentation; variety comes from successive steps.
+image_transform:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... h w c -> ... c h w"
+    - _target_: torchvision.transforms.v2.CenterCrop
+      size: [320, 576]
+    - _target_: torchvision.transforms.v2.Resize
+      size: [256, 256]
+    - _target_: torchvision.transforms.v2.ToDtype
+      scale: true
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+    - _target_: rmind.components.nn.TrainOnly
+      module:
+        _target_: torch.nn.Sequential
+        _args_:
+          # --- viewing angle ---
+          # zoom in: the camera sees only part of the card
+          - _target_: torchvision.transforms.v2.RandomResizedCrop
+            size: [256, 256]
+            scale: [0.5, 1.0]
+            ratio: [0.75, 1.3333]
+            antialias: true
+          # off-axis viewing: the real one. A card held at an angle projects to a
+          # trapezoid, which rotation and shear cannot represent.
+          - _target_: torchvision.transforms.v2.RandomPerspective
+            distortion_scale: 0.4
+            p: 0.85
+            fill: 0.5
+          # zoom out / tilt / translate: the card does not fill the frame and is
+          # not centred. `fill` stands in for the (unknown) background.
+          - _target_: torchvision.transforms.v2.RandomAffine
+            degrees: 20
+            translate: [0.12, 0.12]
+            scale: [0.5, 1.0]
+            shear: 10
+            fill: 0.5
+          # --- lighting ---
+          # directional light: lamp, window, shadow across part of the sheet
+          - _target_: rmind.components.nn.RandomIlluminationGradient
+            factor: [0.6, 1.4]
+          # global light + white balance. `hue` stays small on purpose: colour is
+          # the primary cue distinguishing the cards, so it must not rotate far.
+          - _target_: torchvision.transforms.v2.ColorJitter
+            brightness: 0.55
+            contrast: 0.5
+            saturation: 0.4
+            hue: 0.05
+          # blur hard: it is what destroys fine glyph detail, and a model that
+          # relies on fine detail to tell LEFT from RIGHT emits a
+          # wrong-direction steering command when the camera defocuses
+          - _target_: torchvision.transforms.v2.GaussianBlur
+            kernel_size: 9
+            sigma: [0.1, 4.0]
+    - _target_: torchvision.transforms.v2.Normalize
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]

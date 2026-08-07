@@ -1,0 +1,51 @@
+# @package _global_
+
+# Palletjack pretrain, the counterpart of `yaak/control_transformer/pretrain`.
+#
+# There is no palletjack recording pipeline yet, so `datamodule` is left unset:
+# supply one, or point this at the command-card dataset to exercise the wiring:
+#
+#   just train experiment=palletjack/control_transformer/pretrain \
+#     datamodule=palletjack/cards ++model.encoder.disable=true
+#
+# NOTE: a real dataset must carry `meta/sample_id` - the patch-similarity and
+# foresight loggers index into it. The command cards do not, so they only work
+# with W&B logging off (where those loggers never fire).
+defaults:
+  - /model: palletjack/control_transformer/raw
+  - /datamodule: null
+  - /trainer: default
+  - /trainer/callbacks: palletjack_pretrain
+  - /paths: palletjack/default
+  - /wandb: yaak/rmind
+  - _self_
+
+num_heads: 4
+num_layers: 8
+encoder_embedding_dim: 384
+image_embedding_dim: 384
+
+traction_bins: 255
+steering_bins: 511
+fork1_bins: 127
+
+pretrained_checkpoint: null
+pretrained_artifact: null
+
+image_transform:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... h w c -> ... c h w"
+    - _target_: torchvision.transforms.v2.CenterCrop
+      size: [320, 576]
+    - _target_: torchvision.transforms.v2.Resize
+      size: [256, 256]
+    - _target_: torchvision.transforms.v2.ToDtype
+      scale: true
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+    - _target_: torchvision.transforms.v2.Normalize
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]

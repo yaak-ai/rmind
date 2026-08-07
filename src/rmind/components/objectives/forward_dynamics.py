@@ -45,6 +45,28 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.projections: ModuleDict | None = projections
         self.patch_pos_embed: Module | None = patch_pos_embed
 
+    def _image_patch_count(self, episode: Episode) -> int:
+        """Patch count of the image a foresight head reconstructs.
+
+        Derived from the foresight head names (which mirror the image token names)
+        rather than hardcoded, so the objective is camera-name agnostic.
+
+        Raises:
+            ValueError: if the objective has no foresight head to derive it from.
+        """
+        names = tuple(
+            name
+            for modality, name in self.heads.tree_paths()
+            if modality == Modality.FORESIGHT
+        )
+        if not names:
+            msg = "no foresight heads: cannot infer image patch count"
+            raise ValueError(msg)
+
+        *_, n_patches, _ = episode.embeddings.get((Modality.IMAGE, names[0])).shape
+
+        return n_patches
+
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         if self.norm is not None:
@@ -66,10 +88,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             ]
         )
         features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]
-        _, _, n_patches, _ = episode.embeddings.get((
-            Modality.IMAGE,
-            "cam_front_left",
-        )).shape
+        n_patches = self._image_patch_count(episode)
         mask_tokens = repeat(
             episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:],
             "b t 1 d -> b t n d",
@@ -148,10 +167,7 @@ class ForwardDynamicsPredictionObjective(Objective):
             )
 
             features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]
-            _, _, n_patches, _ = episode.embeddings.get((
-                Modality.IMAGE,
-                "cam_front_left",
-            )).shape
+            n_patches = self._image_patch_count(episode)
 
             mask_tokens = repeat(
                 episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:],
