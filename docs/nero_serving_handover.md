@@ -35,7 +35,20 @@ Writes `policy_random.ckpt` (~250 MB) and `io_contract.json`. Load with
 
 **Verified: these 9 are all the forward pass needs.** `action.future_state`,
 `action.commanded`, `goal.xyz` and `align_residual_ms` appear in a training batch but are labels
-and diagnostics — a serving app must not supply them.
+and diagnostics — a serving app must not supply them. (`goal.xyz` is plumbed in the data but not
+consumed by the model; goal conditioning is image-based today.)
+
+### Running without a goal
+
+Pass **`goal_valid`** — `(1, 3)` bool, per camera (a `(1,)` flag broadcasts to all three) — and
+you may then **omit that camera's `goal.image.*` entirely**. The model routes to a learned
+`no_goal` embedding, which is the same path goal-dropout trains, so it is in-distribution.
+
+- absent `goal_valid` ⇒ all-true, i.e. existing callers are unaffected;
+- a **missing** `goal.image.*` with `goal_valid` **true** still raises `KeyError` — that is a real
+  error, not an implicit "no goal";
+- do **not** substitute a black image for a missing goal: it is read as a genuine goal, and it is
+  out of distribution because training never saw one.
 
 ## Output
 

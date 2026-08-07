@@ -516,3 +516,70 @@ def test_head_widths_derive_from_the_action_space_in_config() -> None:
             cfg.action_horizon * action_features,
         )
     assert widths[60] != widths[12]  # the override actually propagates
+
+
+# --------------------------------------------------------------- goal_valid
+
+
+def test_goal_valid_absent_is_backward_compatible() -> None:
+    """An existing batch with no `goal_valid` must behave exactly as before."""
+    policy = _policy()
+    batch = _batch()
+    policy.eval()
+    with torch.no_grad():
+        base = policy(batch)["policy"]["action"]
+        explicit = policy(
+            dict(batch) | {"goal_valid": torch.ones(2, 3, dtype=torch.bool)}
+        )["policy"]["action"]
+    assert torch.equal(base, explicit)
+
+
+def test_no_goal_is_reachable_at_inference() -> None:
+    """§22.8: the learned `no_goal` embedding must be usable at serving.
+
+    Before `goal_valid`, the only routes were training-time dropout and a
+    model-wide config switch, so a serving app could never say "no goal" -- and
+    omitting the frames raised KeyError while a black image was read as a real
+    goal.
+    """
+    policy = _policy()
+    batch = _batch()
+    policy.eval()
+    lean = {k: v for k, v in batch.items() if not k.startswith("goal.image")}
+    lean["goal_valid"] = torch.zeros(2, 3, dtype=torch.bool)
+    with torch.no_grad():
+        goal_free = policy(lean)["policy"]["action"]
+        goal_on = policy(batch)["policy"]["action"]
+    assert goal_free.shape == goal_on.shape
+    assert not torch.equal(goal_free, goal_on)
+
+
+def test_missing_goal_frames_still_raise_when_claimed() -> None:
+    """A missing key with `goal_valid` TRUE is an error, not an implicit no-goal."""
+    policy = _policy()
+    batch = _batch()
+    policy.eval()
+    broken = {k: v for k, v in batch.items() if k != "goal.image.base"}
+    broken["goal_valid"] = torch.ones(2, 3, dtype=torch.bool)
+    with pytest.raises(KeyError), torch.no_grad():
+        policy(broken)
+
+
+def test_goal_dropout_does_not_mutate_the_loader_flag() -> None:
+    """Regression: `present &= keep` would alias and corrupt `batch["goal_valid"]`.
+
+    `.to()` returns *self* when dtype and device already match, so an in-place op
+    permanently zeroes the loader's tensor -- and with a cached TensorDict the
+    corruption outlives the step. A ruff PLR6104 autofix introduced exactly this
+    bug in the depth path.
+    """
+    policy = _policy()
+    batch = _batch()
+    policy.train()
+    flag = torch.ones(2, 3, dtype=torch.bool)
+    batch = dict(batch) | {"goal_valid": flag}
+    for _ in range(5):
+        _ = policy._goal_features(  # noqa: SLF001
+            batch, batch_size=2, device=torch.device("cpu")
+        )
+    assert bool(flag.all()), "goal dropout mutated the caller's goal_valid tensor"

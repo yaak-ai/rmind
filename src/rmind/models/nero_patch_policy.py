@@ -147,6 +147,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         camera_cond: Path = ("camera_cond",),
         state: Path = ("state.pose",),
         side_valid: Path = ("side_valid",),
+        goal_valid: Path = ("goal_valid",),
         chunk: Path = ("action.future_state",),
         use_goal_image: bool = True,
         # rbyte emits the contract §5.2 STORAGE form (46 per side: 6 poses x 7 +
@@ -214,6 +215,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.camera_cond: Path = camera_cond
         self.state: Path = state
         self.side_valid: Path = side_valid
+        self.goal_valid: Path = goal_valid
         self.chunk: Path = chunk
         self.use_goal_image = use_goal_image
         self.convert_state_to_9d = convert_state_to_9d
@@ -230,6 +232,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "camera_cond": camera_cond,
             "state": state,
             "side_valid": side_valid,
+            "goal_valid": goal_valid,
             "chunk": chunk,
             "use_goal_image": use_goal_image,
             "convert_state_to_9d": convert_state_to_9d,
@@ -303,23 +306,58 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """
         if not self.use_goal_image:
             return None
-        features = torch.stack(
-            [
-                self._encode_images(
+
+        n_cam = len(self.cameras)
+        # (b, n_cam) bool. Absent => all-true, so existing batches are unaffected.
+        supplied = self._lookup(batch, self.goal_valid)
+        if supplied is None:
+            present = torch.ones(batch_size, n_cam, dtype=torch.bool, device=device)
+        else:
+            present = supplied.to(device=device, dtype=torch.bool)
+            if present.ndim == 1:  # (b,) broadcasts to every camera
+                present = present[:, None].expand(batch_size, n_cam)
+            present = present.reshape(batch_size, n_cam)
+
+        encoded: list[Tensor | None] = []
+        for index, camera in enumerate(self.cameras):
+            images = self._lookup(batch, (self.goal_image_key.format(camera=camera),))
+            if images is None:
+                # Omitting the frames is only legal where nothing claims a goal:
+                # a missing key with `goal_valid` true is a real error, not an
+                # implicit "no goal".
+                if bool(present[:, index].any()):
                     self._get(batch, (self.goal_image_key.format(camera=camera),))
-                )
-                for camera in self.cameras
-            ],
+                encoded.append(None)
+                continue
+            encoded.append(self._encode_images(images))
+
+        reference = next((e for e in encoded if e is not None), None)
+        if reference is None:
+            # Every goal omitted. `num_patches` is not knowable from the goal
+            # side alone, so borrow it from the observation stream, which is
+            # always present and lands on the same grid via `image_transform`.
+            reference = self._encode_images(
+                self._get(batch, (self.image_key.format(camera=self.cameras[0]),))[
+                    :, :1
+                ]
+            ).squeeze(1)
+        features = torch.stack(
+            [self.no_goal.expand_as(reference) if e is None else e for e in encoded],
             dim=1,
         )  # (b, n_cam, P, D)
 
         if self.training and self.goal_dropout > 0:
-            drop = (
-                torch.rand(batch_size, features.shape[1], 1, 1, device=device)
-                < self.goal_dropout
-            )
-            features = torch.where(drop, self.no_goal.to(features.dtype), features)
-        return features
+            keep = torch.rand(batch_size, n_cam, device=device) >= self.goal_dropout
+            # ⚠️ NOT `present &= keep`. `present` may ALIAS `batch["goal_valid"]`
+            # (`.to()` returns self when dtype/device already match), so an
+            # in-place op would corrupt the loader's tensor for the rest of its
+            # life -- invisibly, and worse with a cached TensorDict. Same bug a
+            # ruff PLR6104 autofix introduced in the depth path.
+            present &= keep
+
+        return torch.where(
+            present[:, :, None, None], features, self.no_goal.to(features.dtype)
+        )
 
     def _state(self, batch: Any) -> Tensor:
         """`state.pose` in the model-facing 9D form, converting from storage if needed."""
