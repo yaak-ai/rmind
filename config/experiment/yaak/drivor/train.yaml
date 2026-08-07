@@ -1,0 +1,22 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/drivor/raw
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: drivor
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+num_registers: 16
+lora_rank: 32
+lora_alpha: 32
+vit_embedding_dim: 384
+route_embedding_dim: 384
+decoder_embedding_dim: 256
+decoder_num_layers: 4
+decoder_num_heads: 8
+num_queries: 64
+num_poses: 10
+heading_weight: 0.1

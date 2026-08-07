@@ -1,0 +1,89 @@
+_target_: rmind.models.drivor.DrivoR
+_recursive_: false
+_convert_: all
+
+image_preprocess:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... h w c -> ... c h w"
+    - _target_: torchvision.transforms.v2.CenterCrop
+      size: [320, 576]
+    - _target_: torchvision.transforms.v2.Resize
+      size: [256, 256]
+    - _target_: torchvision.transforms.v2.ToDtype
+      scale: true
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+    - _target_: torchvision.transforms.v2.Normalize
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+backbone:
+  _target_: rmind.components.drivor.backbone.RegisterViTBackbone
+  model_name: vit_small_patch16_dinov3.lvd1689m
+  img_size: [256, 256]
+  num_registers: ${num_registers}
+  lora_rank: ${lora_rank}
+  lora_alpha: ${lora_alpha}
+
+register_projection:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: torch.nn.LayerNorm
+      normalized_shape: ${vit_embedding_dim}
+    - _target_: rmind.components.nn.Linear
+      in_features: ${vit_embedding_dim}
+      out_features: ${decoder_embedding_dim}
+
+# frozen -- see rmind.models.drivor.DrivoR.__init__. Trained separately;
+# see plan history for why waypoints/xy_normalized (the route reference, NOT
+# the trajectory ground truth) is encoded here as the driving-command
+# substitute rather than reused as a prediction target.
+route_tokenizer:
+  _target_: rmind.models.waypoints_tokenizer.WaypointsLatentTokenizer
+  tokenizer:
+    _target_: rmind.models.waypoints_tokenizer.WaypointsTokenizer.load_from_wandb_artifact
+    artifact: yaak/waypoints-tokenizer/model-gzxgumtf:v9
+    weights_only: false
+
+trajectory_head:
+  _target_: rmind.components.drivor.trajectory_decoder.TrajectoryDecoderHead
+  num_queries: ${num_queries}
+  dim_model: ${decoder_embedding_dim}
+  num_poses: ${num_poses}
+  pose_dims: 3
+  decoder:
+    _target_: rmind.components.transformer.CrossAttentionDecoder
+    dim_model: ${decoder_embedding_dim}
+    num_layers: ${decoder_num_layers}
+    num_heads: ${decoder_num_heads}
+    attn_dropout: 0.1
+    resid_dropout: 0.1
+    mlp_dropout: 0.1
+    hidden_layer_multiplier: 4
+  ego_state_encoder:
+    _target_: rmind.components.drivor.ego_state.EgoStateEncoder
+    continuous_dim: 4
+    num_turn_signal_classes: 3
+    route_embedding_dim: ${route_embedding_dim}
+    embedding_dim: ${decoder_embedding_dim}
+    hidden_dim: ${decoder_embedding_dim}
+
+loss:
+  _target_: rmind.components.drivor.loss.WinnerTakesAllPoseLoss
+  heading_weight: ${heading_weight}
+
+optimizer:
+  _target_: torch.optim.Adam
+  lr: 2e-4
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: 2000
+    num_training_steps: 100000
+
+reference_timestep: 0

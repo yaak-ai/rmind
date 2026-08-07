@@ -154,6 +154,33 @@ def make_batch(device: torch.device, b: int = 2, t: int = 6) -> Batch:
                     low=0.0,
                     high=20.0,
                 ),
+                # Additive fields for `rmind.models.drivor.DrivoR`. Deterministic (no
+                # `make_tensor`/RNG draw) rather than merely appended after the
+                # pre-existing keys above: empirically, even appending new RNG draws
+                # at the end of this dict shifts `tests/snapshots/training_step_losses.json`'s
+                # bit-identical values for the pre-existing keys (verified directly --
+                # the mechanism wasn't tracked down further, but a deterministic
+                # construction sidesteps it entirely, and is arguably more robust
+                # anyway for values that don't need genuine randomness here).
+                "headings_denoised/heading": (
+                    (torch.arange(t, dtype=torch.float32, device=device) * 7.0) % 360.0
+                )
+                .unsqueeze(0)
+                .expand(b, t),
+                # monotonically increasing, 100ms/step, matching real per-frame
+                # timestamps closely enough for dead-reckoning.
+                "meta/ImageMetadata.cam_front_left/time_stamp": (
+                    torch.arange(t, dtype=torch.float32, device=device) * 0.1
+                )
+                .unsqueeze(0)
+                .expand(b, t),
+                "meta/Gnss/xy": (
+                    torch.arange(t, dtype=torch.float32, device=device).unsqueeze(-1)
+                    * 10.0
+                    + torch.tensor([500_000.0, 5_000_000.0], device=device)
+                )
+                .unsqueeze(0)
+                .expand(b, t, 2),
             },
             batch_size=[b],
             device=device,

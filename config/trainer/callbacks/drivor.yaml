@@ -1,0 +1,11 @@
+# No `ModuleFreezer` entry: freezing (`RegisterViTBackbone`'s base ViT,
+# `route_tokenizer`) is handled internally by `rmind.models.drivor.DrivoR` and
+# its submodules -- see their `__init__`/`train()` overrides.
+- _target_: pytorch_lightning.callbacks.TQDMProgressBar
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 4
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
