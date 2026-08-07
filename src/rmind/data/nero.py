@@ -45,6 +45,8 @@ from torch import Tensor, nn
 
 __all__ = [
     "BIMANUAL_DIM",
+    "DISPARITY_INVALID",
+    "DISPARITY_MAX_DEFAULT",
     "NUM_SIDES",
     "POSE_9D_DIM",
     "POSE_BLOCK_LAYOUT",
@@ -53,6 +55,7 @@ __all__ = [
     "SIDE_DIM",
     "STATE_QUAT_DIM",
     "TRANSLATION_INDICES",
+    "DisparityStandardizer",
     "PoseStandardizer",
     "canonicalize_quat",
     "geodesic_angle_error",
@@ -480,6 +483,174 @@ class PoseStandardizer(nn.Module):
             std=payload["std"],
             dim=payload["dim"],
             eps=payload["eps"],
+            source=payload["source"],
+        )
+
+
+# --------------------------------------------------------------- disparity
+
+#: contract §21.1: default-mode max disparity, exactly representable in 8 bits.
+#: ⚠️ `extended_disparity` raises this to ~191 and the episode metadata DECLARES
+#: it (§21.10) -- never infer it from the pixels.
+DISPARITY_MAX_DEFAULT: Final[int] = 95
+#: contract §21.4 / §22.4: 0 means **no measurement**, NOT zero distance.
+DISPARITY_INVALID: Final[int] = 0
+
+
+@final
+class DisparityStandardizer(nn.Module):
+    """Train-split standardisation of the disparity stream (contract §22.3, §5.4).
+
+    Why disparity and not metric depth
+    ----------------------------------
+    rbyte emits both. §22.3 picks disparity as the network input because it is
+    **bounded** (0..`max_disparity`, 95 by default) and uniformly quantised,
+    whereas `fx_mono * baseline / disparity` is unbounded with precision
+    collapsing at range -- a single far pixel produces a huge value that
+    dominates any normalisation. It is also the raw measurement, so no
+    calibration error enters the model input at all.
+
+    Why the invalid fill is the MEAN and not zero (§22.4)
+    ----------------------------------------------------
+    `disparity == 0` means *no measurement*. Zero-filling it asserts "surface at
+    zero distance" with full confidence, and stereo drops out precisely at the
+    depth discontinuities around a grasped object -- i.e. exactly where the
+    signal matters. So invalid pixels are replaced by the train-split **mean**,
+    which lands at 0 after standardisation and is the neutral "no information"
+    value; the *fact* that they were invalid is carried separately, as an
+    explicit per-patch validity fraction on the depth token
+    (`NeroPatchPolicy._depth_tokens`). Neutral value + explicit flag, never a
+    fabricated measurement.
+
+    ⚠️ Statistics are fitted over the **training split only** and over **valid
+    pixels only** -- fitting over all pixels would drag the mean towards zero by
+    the invalid fraction, which varies per scene.
+
+    The buffers are registered (not parameters), so they travel inside the
+    checkpoint; the JSON artifact is the human-auditable copy and the provenance
+    record. A serving path that silently fell back to identity standardisation
+    is the failure mode this is designed against.
+    """
+
+    VERSION: Final[int] = 1
+
+    mean: Tensor
+    std: Tensor
+
+    def __init__(
+        self,
+        *,
+        mean: Tensor | Sequence[float] | float | None = None,
+        std: Tensor | Sequence[float] | float | None = None,
+        eps: float = 1e-6,
+        max_disparity: int = DISPARITY_MAX_DEFAULT,
+        source: str = "identity",
+    ) -> None:
+        super().__init__()
+        self.eps = eps
+        self.max_disparity = max_disparity
+        self.source = source
+        self.register_buffer(
+            "mean",
+            torch.zeros(1)
+            if mean is None
+            else torch.as_tensor(mean, dtype=torch.float32).reshape(1),
+        )
+        self.register_buffer(
+            "std",
+            torch.ones(1)
+            if std is None
+            else torch.as_tensor(std, dtype=torch.float32).reshape(1),
+        )
+
+    @classmethod
+    def from_samples(
+        cls,
+        disparity: Tensor,
+        valid: Tensor,
+        *,
+        source: str = "train-split",
+        **kwargs: object,
+    ) -> Self:
+        """Fit mean/std over the VALID pixels of a training-split sample.
+
+        Args:
+            disparity: any shape, raw disparity levels.
+            valid: broadcastable to `disparity`, True where a measurement exists.
+            source: provenance string written into the artifact.
+            **kwargs: forwarded to `__init__`.
+
+        Raises:
+            ValueError: if the sample contains no valid pixel at all -- fitting
+                on nothing would silently produce an identity standardiser.
+        """
+        selected = disparity.float()[valid.expand_as(disparity).bool()]
+        if selected.numel() == 0:
+            msg = "no valid disparity pixels to fit the standardiser on"
+            raise ValueError(msg)
+        return cls(
+            mean=selected.mean(),
+            std=selected.std().clamp_min(1e-6),
+            source=source,
+            **kwargs,  # ty:ignore[invalid-argument-type]
+        )
+
+    def standardize(self, x: Tensor) -> Tensor:
+        return (x - self.mean) / (self.std + self.eps)
+
+    def unstandardize(self, x: Tensor) -> Tensor:
+        return x * (self.std + self.eps) + self.mean
+
+    @override
+    def forward(self, disparity: Tensor, valid: Tensor) -> Tensor:
+        """`(..., 1, H, W)` raw disparity + validity mask -> standardised float.
+
+        Invalid pixels become the train-split mean *before* standardisation, so
+        they land exactly on 0 -- see the class docstring.
+        """
+        x = disparity.to(self.mean.dtype)
+        x = torch.where(valid.to(torch.bool).expand_as(x), x, self.mean.to(x.dtype))
+        return self.standardize(x)
+
+    # -------------------------------------------------------------- artifact
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "version": self.VERSION,
+            "eps": self.eps,
+            "max_disparity": self.max_disparity,
+            "source": self.source,
+            "invalid_value": DISPARITY_INVALID,
+            "mean": self.mean.tolist(),
+            "std": self.std.tolist(),
+        }
+
+    def save(self, path: str | Path) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = path.write_text(json.dumps(self.to_dict(), indent=2))
+        return path
+
+    @classmethod
+    def load(cls, path: str | Path) -> Self:
+        """Load a versioned artifact.
+
+        Raises:
+            ValueError: on a version mismatch -- an old artifact with different
+                semantics must fail loudly, not standardise wrongly.
+        """
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        version = payload["version"]
+        if version != cls.VERSION:
+            msg = (
+                f"disparity standardisation artifact version {version} != {cls.VERSION}"
+            )
+            raise ValueError(msg)
+        return cls(
+            mean=payload["mean"],
+            std=payload["std"],
+            eps=payload["eps"],
+            max_disparity=payload["max_disparity"],
             source=payload["source"],
         )
 

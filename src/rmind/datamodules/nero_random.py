@@ -38,6 +38,8 @@ from rmind.data.nero import (
 __all__ = [
     "CAMERA_NAMES",
     "CAMERA_RESOLUTIONS",
+    "DEPTH_CAMERA_NAMES",
+    "DEPTH_GRIDS",
     "NeroRandomDataset",
     "nero_random_batch",
 ]
@@ -59,6 +61,21 @@ CAMERA_GRIDS: dict[str, tuple[int, int]] = {
     "side_left": (300, 480),
     "side_right": (300, 480),
 }
+
+#: contract §21.3: the depth stream exists on the OVERHEAD `base` device only --
+#: it looks down at the workspace so disparity maps to table position, while the
+#: SR side cameras sit near-tangent and localise on-plane objects poorly.
+DEPTH_CAMERA_NAMES: tuple[str, ...] = ("base",)
+#: ⚠️ contract §21.11: the recorder runs `StereoDepth` at **640x400** and §21.9
+#: forbids resizing the stream (a resize scales `fx` but not the stored disparity
+#: values, so `fx * baseline / disparity` would be wrong by the resize factor).
+#: So the depth tensor is LARGER than the RGB tensors, which are downscaled per
+#: §8 -- surprising on first read, and deliberate. Model-side letterboxing to the
+#: ViT grid is still fine, because the policy consumes standardised DISPARITY and
+#: never performs the metric conversion (§22.3).
+DEPTH_GRIDS: dict[str, tuple[int, int]] = {"base": (400, 640)}
+#: contract §21.1 default mode; §21.10 DECLARES it per episode, never infers it.
+DEPTH_MAX_DISPARITY = 95
 
 #: contract §4: start-pose spread std ~[0.037, 0.021, 0.009] m, within-episode
 #: motion range ~[0.32, 0.19, 0.06] m -- i.e. episodes START in a narrow region
@@ -169,6 +186,49 @@ def _side_trajectory(steps: int, generator: torch.Generator) -> Tensor:
     return torch.cat(columns, dim=-1)
 
 
+#: Fraction of synthetic pixels left without a measurement. Generated as
+#: connected blobs, not i.i.d. pixels -- stereo drops out in regions at depth
+#: discontinuities, which is exactly where a grasped object is (§22.4).
+DEPTH_INVALID_FRACTION = 0.15
+
+
+def _disparity_field(
+    shape: tuple[int, ...], height: int, width: int
+) -> tuple[Tensor, Tensor]:
+    """`(*shape, 1, H, W)` synthetic uint8 disparity plus its validity mask.
+
+    Unlike the RGB streams (pure noise -- there is no synthetic-vision claim
+    anywhere in this module) this one is a **smooth low-frequency field**, for a
+    specific reason: `DisparityStandardizer` is fitted on it, and the mean/std of
+    uniform noise over 0..95 are a fixed constant that would make the fitted
+    statistics vacuous. A smooth field at least varies per sample the way a real
+    depth map does.
+
+    Invalid regions are generated as **blobs**, not i.i.d. pixels, because that
+    is how stereo actually fails -- it drops out in connected regions at depth
+    discontinuities (§22.4). Per contract §21.4 the emitted disparity is exactly
+    `0` wherever the mask is False, so the two are self-consistent; the policy
+    still consumes the explicit mask rather than recomputing it, because a real
+    loader may mark additional pixels invalid (confidence threshold, LR check)
+    that are not zero.
+    """
+    low = (8, 12)
+
+    def _smooth(scale: float, offset: float) -> Tensor:
+        coarse = torch.rand(*shape, 1, *low) * scale + offset
+        return torch.nn.functional.interpolate(
+            coarse.reshape(-1, 1, *low),
+            size=(height, width),
+            mode="bilinear",
+            align_corners=False,
+        ).reshape(*shape, 1, height, width)
+
+    disparity = _smooth(1.0, 0.0).mul(DEPTH_MAX_DISPARITY - 1).add(1).round()
+    valid = _smooth(1.0, 0.0) > DEPTH_INVALID_FRACTION
+    disparity = torch.where(valid, disparity, torch.zeros_like(disparity))
+    return disparity.to(torch.uint8), valid
+
+
 def nero_random_batch(  # noqa: PLR0913
     *,
     batch_size: int = 2,
@@ -176,6 +236,9 @@ def nero_random_batch(  # noqa: PLR0913
     action_horizon: int = 6,
     grids: dict[str, tuple[int, int]] | None = None,
     both_sides: bool = True,
+    depth: bool = False,
+    depth_grids: dict[str, tuple[int, int]] | None = None,
+    depth_present: float = 1.0,
     seed: int = 0,
     device: torch.device | str = "cpu",
 ) -> dict[str, Any]:
@@ -192,6 +255,19 @@ def nero_random_batch(  # noqa: PLR0913
     `both_sides=False` reproduces the dummy recording: `side_valid = [False, True]`
     (left absent) with the invalid side's state and action zeroed, which is what
     the contract §6.1 mandates and what the policy's mask path must handle.
+
+    ⚠️ **`depth=False` is the default and it is the REALISTIC case** (contract
+    §22.5): none of the 104 existing episodes carry depth and the recorder's
+    `--depth` is off by default, so a depth-enabled model trains on a mixture
+    where the stream is frequently missing. `depth=False` emits **no**
+    `disparity.*` key at all -- the "key absent from the batch" case, which is
+    different from, and more common than, `depth_present < 1` (the key exists but
+    some samples in the batch have no measurement). The policy must survive both.
+
+    The depth keys are drawn **strictly last**, after every other tensor, so that
+    enabling depth cannot shift the global RNG stream for the images, poses or
+    `camera_cond`. Without that, a depth-on/depth-off comparison would be
+    confounded by a different synthetic dataset rather than by the model.
     """
     generator = torch.Generator().manual_seed(seed)
     steps = episode_length + action_horizon
@@ -251,6 +327,29 @@ def nero_random_batch(  # noqa: PLR0913
         "goal.xyz": torch.randn(batch_size, NUM_SIDES, 3) * _START_XYZ,
         "align_residual_ms": torch.rand(batch_size, episode_length) * 3.0,
     }
+
+    # ⚠️ EVERYTHING BELOW IS DRAWN LAST, ON PURPOSE. See the docstring: keeping
+    # the depth draws after every other tensor is what makes `depth=False`
+    # byte-identical to the pre-depth datamodule.
+    if depth:
+        for name in DEPTH_CAMERA_NAMES:
+            h, w = (depth_grids or DEPTH_GRIDS)[name]
+            disparity, valid = _disparity_field((batch_size, episode_length), h, w)
+            batch[f"disparity.{name}"] = disparity
+            batch[f"disparity_valid.{name}"] = valid
+        # §22.2: depth's own 13-dim conditioning vector, built from the MONO
+        # intrinsics at the recorded depth resolution (§21.11) and the mono
+        # camera's own extrinsics -- a genuinely different camera from `base`'s
+        # RGB `CAM_A` (96.0 deg HFOV against 73.7 deg), which is exactly why it
+        # cannot be a 4th channel on the RGB image (§22.1).
+        batch["disparity_cond"] = torch.randn(
+            batch_size, len(DEPTH_CAMERA_NAMES), CAMERA_COND_DIM
+        )
+        # §22.5: per-sample availability. Distinct from the per-PIXEL
+        # `disparity_valid.*` mask above -- this one says "this episode has a
+        # depth stream at all", that one says "this pixel got a measurement".
+        batch["depth_valid"] = torch.rand(batch_size) < depth_present
+
     return {k: v.to(device) for k, v in batch.items()}
 
 
