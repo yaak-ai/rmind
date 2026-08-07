@@ -1,9 +1,11 @@
 #@yaml/text-templated-strings
 
 #@ drives = [
-#@    'Niro096-HQ/2023-01-11--13-47-36',
-#@    'Niro101-HQ/2022-12-25--09-58-33',
-#@    'Niro101-HQ/2022-12-30--09-23-51',
+#@     'Niro115-HQ/2023-05-16--10-47-33',
+#@     'Niro104-HQ/2022-12-20--13-57-20',
+#@     'Niro107-HQ/2023-05-12--12-05-15',
+#@     'Niro122-HQ/2023-04-05--12-06-39',
+#@     'Niro102-HQ/2022-12-03--11-30-20',
 #@ ]
 
 ---
@@ -54,7 +56,7 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: ${paths.rbyte.cache}/yaak/train_debug/samples
+  run_folder: ${paths.rbyte.cache}/yaak/drivor_val/samples
   scheduling_strategy: eager
   return_results: false
   persist_memory: false
@@ -353,7 +355,7 @@ samples:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
           every: 10i
-          period: 60i
+          period: 110i
           closed: left
           gather_every: 10
 
@@ -367,22 +369,22 @@ samples:
             _target_: rbyte.io.DuckDBDataFrameQuery
             query: |
               SELECT
-                  "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[6] AS "meta/ImageMetadata.cam_front_left/time_stamp",
-                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[6] AS "meta/ImageMetadata.cam_front_left/frame_idx",
-                  "meta/VehicleMotion/speed"::FLOAT[6] AS "meta/VehicleMotion/speed",
-                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/gas_pedal_normalized",
-                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[6] AS "meta/VehicleMotion/brake_pedal_normalized",
-                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[6] AS "meta/VehicleMotion/steering_angle_normalized",
-                  "meta/VehicleState/turn_signal"::INT8[6] AS "meta/VehicleState/turn_signal",
-                  "meta/Gnss/xy"::FLOAT[2][6] AS "meta/Gnss/xy",
-                  "headings_denoised/heading"::FLOAT[6] AS "headings_denoised/heading",
-                  "waypoints/xy_normalized"::FLOAT[2][10][6] AS "waypoints/xy_normalized",
-                  "waypoints/xy"::FLOAT[2][10][6] AS "waypoints/xy",
+                  "meta/ImageMetadata.cam_front_left/time_stamp"::TIMESTAMP[11] AS "meta/ImageMetadata.cam_front_left/time_stamp",
+                  "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[11] AS "meta/ImageMetadata.cam_front_left/frame_idx",
+                  "meta/VehicleMotion/speed"::FLOAT[11] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[11] AS "meta/VehicleMotion/gas_pedal_normalized",
+                  "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[11] AS "meta/VehicleMotion/brake_pedal_normalized",
+                  "meta/VehicleMotion/steering_angle_normalized"::FLOAT[11] AS "meta/VehicleMotion/steering_angle_normalized",
+                  "meta/VehicleState/turn_signal"::INT8[11] AS "meta/VehicleState/turn_signal",
+                  "meta/Gnss/xy"::FLOAT[2][11] AS "meta/Gnss/xy",
+                  "headings_denoised/heading"::FLOAT[11] AS "headings_denoised/heading",
+                  "waypoints/xy_normalized"::FLOAT[2][10][11] AS "waypoints/xy_normalized",
+                  "waypoints/xy"::FLOAT[2][10][11] AS "waypoints/xy",
               FROM
                   samples
               WHERE
-                  len("meta/ImageMetadata.cam_front_left/frame_idx") = 6
-                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 50
+                  len("meta/ImageMetadata.cam_front_left/frame_idx") = 11
+                  AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == 100
                   AND NOT (
                       list_max("meta/VehicleMotion/gas_pedal_normalized") <= (1.0 / 255 + 0.001)
                       AND list_max("meta/VehicleMotion/brake_pedal_normalized") <= (1.0 / 164 + 0.001)

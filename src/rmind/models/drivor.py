@@ -140,10 +140,18 @@ class DrivoR(pl.LightningModule):
         # driving-command substitute -- NOT the trajectory target, see class docstring
         route = data["waypoints/xy_normalized"][:, t0]
 
+        # raw int64 microseconds-since-epoch (polars Datetime[us] -> torch int64). Epoch
+        # values (~1.67e15) lose all sub-second precision if cast to float32 (~7 significant
+        # digits) BEFORE differencing -- subtract the reference timestamp while still in
+        # exact int64 arithmetic first, so the values handed to float32 are small (a few
+        # seconds' worth of microseconds) and safe.
+        time_stamp_us = data["meta/ImageMetadata.cam_front_left/time_stamp"]
+        time_stamp_s = (time_stamp_us - time_stamp_us[:, t0 : t0 + 1]).float() / 1e6
+
         target_xy, target_heading = dead_reckon_future_trajectory(
             speed_kmh=data["meta/VehicleMotion/speed"],
             heading_deg=data["headings_denoised/heading"],
-            time_stamp_s=data["meta/ImageMetadata.cam_front_left/time_stamp"],
+            time_stamp_s=time_stamp_s,
             reference_index=t0,
         )
 

@@ -2,7 +2,7 @@
 
 defaults:
   - /model: yaak/drivor/raw
-  - /datamodule: yaak/train
+  - /datamodule: yaak/drivor_train
   - /trainer: default
   - /trainer/callbacks: drivor
   - /paths: yaak/default
@@ -17,6 +17,11 @@ route_embedding_dim: 384
 decoder_embedding_dim: 256
 decoder_num_layers: 4
 decoder_num_heads: 8
+# DrivoR uses its own dataset config (config/dataset/yaak/drivor_train.yaml, generated
+# from config/_templates/dataset/yaak/drivor_train.yaml), with an 11-step episode window
+# isolated from ControlTransformer's shared 6-step train.yaml/train_debug.yaml -- giving
+# reference_timestep=0 a full 10 future poses (T-1-t0) at the existing ~0.33s/step
+# spacing, i.e. ~3.3s of trajectory, matching common planning-horizon convention.
 num_queries: 64
 num_poses: 10
 heading_weight: 0.1

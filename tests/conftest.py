@@ -167,10 +167,12 @@ def make_batch(device: torch.device, b: int = 2, t: int = 6) -> Batch:
                 )
                 .unsqueeze(0)
                 .expand(b, t),
-                # monotonically increasing, 100ms/step, matching real per-frame
-                # timestamps closely enough for dead-reckoning.
+                # int64 microseconds-since-epoch, monotonically increasing 100ms/step --
+                # matches the real pipeline's actual dtype/units (polars Datetime[us] ->
+                # torch int64), which `DrivoR._inputs` converts to float seconds itself
+                # (verified against a real batch: this is NOT pre-converted upstream).
                 "meta/ImageMetadata.cam_front_left/time_stamp": (
-                    torch.arange(t, dtype=torch.float32, device=device) * 0.1
+                    torch.arange(t, dtype=torch.int64, device=device) * 100_000
                 )
                 .unsqueeze(0)
                 .expand(b, t),
