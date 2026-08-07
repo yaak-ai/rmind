@@ -896,3 +896,31 @@ def test_depth_dropout_does_not_mutate_the_batch() -> None:
         _ = policy._frame_tokens(batch)  # noqa: SLF001
 
     assert torch.equal(batch["depth_valid"], before)
+
+
+def test_depth_patch_embedding_trains_when_depth_is_present() -> None:
+    """§22.7: the trainable embedding must actually receive gradient.
+
+    This is the substance of the §22.7 correction -- the ~269k trainable
+    parameters that replaced a ~22M-parameter frozen ViT pass. Its counterpart
+    (`test_no_depth_embedding_receives_gradient_when_depth_is_absent`) covers the
+    depth-ABSENT half and asserts this weight gets NO gradient there, so without
+    this test nothing anywhere shows it is ever trained at all. A `Linear` that
+    silently received no gradient would produce an identical-looking loss curve
+    and an identical peak-memory number -- "it did not crash" is not "it trains".
+    """
+    policy = _depth_policy()  # depth_dropout = 0.0
+    policy.train()
+    batch = _depth_batch(seed=8)
+    assert bool(batch["depth_valid"].all()), "test needs depth present"
+
+    loss = policy._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss.backward()
+
+    assert policy.depth_patch_embedding.weight.grad is not None
+    assert torch.any(policy.depth_patch_embedding.weight.grad != 0)
+    # ...and `no_depth` gets only ZERO gradient here, since no token was
+    # substituted. Not `is None`: it is the unselected branch of a `torch.where`,
+    # so autograd still routes a (zero) gradient to it.
+    assert policy.no_depth.grad is not None
+    assert not torch.any(policy.no_depth.grad != 0)
