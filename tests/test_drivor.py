@@ -158,9 +158,11 @@ def test_dead_reckon_constant_velocity() -> None:
         reference_index=0,
     )
 
-    expected_x = torch.tensor([10.0, 20.0, 30.0, 40.0]) / 100.0
-    assert torch.allclose(position[0, :, 0], expected_x, atol=1e-4)
-    assert torch.allclose(position[0, :, 1], torch.zeros(4), atol=1e-4)
+    # heading is a compass bearing (0deg=north); forward at heading=0 is
+    # local +y, not +x -- see trajectory_target.py's convention note.
+    expected_y = torch.tensor([10.0, 20.0, 30.0, 40.0]) / 100.0
+    assert torch.allclose(position[0, :, 1], expected_y, atol=1e-4)
+    assert torch.allclose(position[0, :, 0], torch.zeros(4), atol=1e-4)
     assert torch.allclose(heading[0], torch.zeros(4), atol=1e-6)
 
 
@@ -176,9 +178,10 @@ def test_dead_reckon_heading_change() -> None:
         reference_index=0,
     )
 
-    # interval 0->1 uses heading@t0=0deg (rel. to ref=0deg) -> +x; interval 1->2
-    # uses heading@t1=90deg (rel. to ref=0deg) -> +y.
-    expected_position = torch.tensor([[10.0, 0.0], [10.0, 10.0]]) / 100.0
+    # heading is a compass bearing (0deg=north=local+y, 90deg=east=local+x).
+    # interval 0->1 uses heading@t0=0deg (rel. to ref=0deg) -> +y; interval
+    # 1->2 uses heading@t1=90deg (rel. to ref=0deg) -> +x.
+    expected_position = torch.tensor([[0.0, 10.0], [10.0, 10.0]]) / 100.0
     assert torch.allclose(position[0], expected_position, atol=1e-4)
 
     expected_heading = torch.deg2rad(torch.tensor([90.0, 90.0]))
@@ -197,9 +200,10 @@ def test_gnss_anchor_drift_zero_when_consistent() -> None:
         reference_index=0,
     )
 
-    # ego frame == world frame here (heading=0 throughout); dead-reckoned final
-    # position is (20, 0) m, so a consistent GNSS trace has the same endpoint.
-    gnss_xy = torch.tensor([[[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]]])
+    # ego frame == world frame here (heading=0 throughout, identity rotation);
+    # dead-reckoned final position is (0, 20) m (forward=local+y at heading=0),
+    # so a consistent GNSS trace has the same endpoint.
+    gnss_xy = torch.tensor([[[0.0, 0.0], [0.0, 10.0], [0.0, 20.0]]])
     drift = gnss_anchor_drift_m(
         dead_reckoned_position_normalized=position,
         gnss_xy=gnss_xy,
@@ -222,7 +226,7 @@ def test_gnss_anchor_drift_nonzero_when_inconsistent() -> None:
     )
 
     gnss_xy = torch.tensor([
-        [[0.0, 0.0], [10.0, 0.0], [200.0, 0.0]]
+        [[0.0, 0.0], [0.0, 10.0], [0.0, 200.0]]
     ])  # last fix way off
     drift = gnss_anchor_drift_m(
         dead_reckoned_position_normalized=position,

@@ -42,8 +42,18 @@ def dead_reckon_future_trajectory(
     step_heading_rel = heading_rad[..., t0:-1] - ref_heading
     dt = time_stamp_s[..., t0 + 1 :] - time_stamp_s[..., t0:-1]
 
-    dx = speed_m_s * torch.cos(step_heading_rel) * dt
-    dy = speed_m_s * torch.sin(step_heading_rel) * dt
+    # `heading_deg` is a compass bearing (0deg = north = world +y/northing,
+    # 90deg = east = world +x/easting, clockwise) -- confirmed empirically
+    # against real GNSS traces (see plan history). `gnss_anchor_drift_m` below
+    # mirrors the production SQL's `ST_Rotate(_, radians(heading))`, which
+    # maps that bearing convention's "forward" onto local +y (verified: R(+h)
+    # applied to the compass-bearing forward vector (sin h, cos h) reduces to
+    # exactly (0, 1)). So "forward" here must also be local +y, not +x --
+    # using (cos, sin) instead (a plain math-angle convention) silently
+    # rotates the dead-reckoned trajectory ~90deg out of alignment with the
+    # QA check and with any other ego-centric convention in this codebase.
+    dx = speed_m_s * torch.sin(step_heading_rel) * dt
+    dy = speed_m_s * torch.cos(step_heading_rel) * dt
     position = torch.stack([dx, dy], dim=-1).cumsum(dim=-2) / 100.0
 
     heading_rel = heading_rad[..., t0 + 1 :] - ref_heading

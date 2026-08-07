@@ -36,9 +36,17 @@ class DrivoR(pl.LightningModule):
     realized future path; see `dataset/yaak/*.yaml`'s `ST_Contains` sanity
     filter and the plan history for how this was established). Instead, the
     target is dead-reckoned forward from `reference_timestep` using CAN speed
-    and EKF+RTS-denoised heading (`dead_reckon_future_trajectory`), which are
-    both densely, smoothly available at every window step -- unlike raw GNSS
-    (~1Hz). `waypoints/xy_normalized` IS still used, but only as the model's
+    (a genuinely dense ~50Hz signal, smoothly interpolated onto every window
+    step) and EKF/RTS-denoised heading (`dead_reckon_future_trajectory`).
+    Verified against real drive data: heading is noise-*reduced*, not
+    upsampled -- it's still sourced from the ~1Hz GNSS stream (one denoised
+    value per raw GNSS fix), so it repeats across 2-3 consecutive window
+    steps the same way raw GNSS position does; only speed is genuinely dense.
+    The resulting trajectory is still a meaningfully better target than raw
+    GNSS position directly (no per-fix GPS jitter, real per-step distance
+    from dense speed), but isn't as smooth as originally assumed -- see
+    `gnss_anchor_drift_m` and the plan's verification notes for how this was
+    checked. `waypoints/xy_normalized` IS still used, but only as the model's
     driving-command substitute (see `EgoStateEncoder`/`route_tokenizer`
     below), since rmind has no NAVSIM-style discrete routing command.
     """
