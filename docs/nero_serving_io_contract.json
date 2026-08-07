@@ -1,0 +1,138 @@
+{
+  "note": "RANDOM WEIGHTS. Shapes are real; values are meaningless.",
+  "experiment": "yaak/nero_arms/causal",
+  "batch_size": 1,
+  "parameters": {
+    "total": 62929320,
+    "trainable": 40704960
+  },
+  "inputs": {
+    "image.base": {
+      "shape": [
+        1,
+        6,
+        3,
+        270,
+        480
+      ],
+      "dtype": "torch.uint8"
+    },
+    "goal.image.base": {
+      "shape": [
+        1,
+        3,
+        270,
+        480
+      ],
+      "dtype": "torch.uint8"
+    },
+    "image.side_left": {
+      "shape": [
+        1,
+        6,
+        3,
+        300,
+        480
+      ],
+      "dtype": "torch.uint8"
+    },
+    "goal.image.side_left": {
+      "shape": [
+        1,
+        3,
+        300,
+        480
+      ],
+      "dtype": "torch.uint8"
+    },
+    "image.side_right": {
+      "shape": [
+        1,
+        6,
+        3,
+        300,
+        480
+      ],
+      "dtype": "torch.uint8"
+    },
+    "goal.image.side_right": {
+      "shape": [
+        1,
+        3,
+        300,
+        480
+      ],
+      "dtype": "torch.uint8"
+    },
+    "camera_cond": {
+      "shape": [
+        1,
+        3,
+        13
+      ],
+      "dtype": "torch.float32"
+    },
+    "state.pose": {
+      "shape": [
+        1,
+        6,
+        2,
+        46
+      ],
+      "dtype": "torch.float32"
+    },
+    "side_valid": {
+      "shape": [
+        1,
+        2
+      ],
+      "dtype": "torch.bool"
+    },
+    "action.future_state": {
+      "shape": [
+        1,
+        6,
+        6,
+        2,
+        46
+      ],
+      "dtype": "torch.float32"
+    },
+    "action.commanded": {
+      "shape": [
+        1,
+        6,
+        6,
+        2,
+        46
+      ],
+      "dtype": "torch.float32"
+    },
+    "goal.xyz": {
+      "shape": [
+        1,
+        2,
+        3
+      ],
+      "dtype": "torch.float32"
+    },
+    "align_residual_ms": {
+      "shape": [
+        1,
+        6
+      ],
+      "dtype": "torch.float32"
+    }
+  },
+  "outputs": {
+    "policy.action": {
+      "shape": [
+        1,
+        2,
+        6,
+        60
+      ],
+      "dtype": "torch.float32"
+    }
+  }
+}
