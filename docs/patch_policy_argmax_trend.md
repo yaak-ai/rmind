@@ -107,11 +107,17 @@ sampling. It rose +12.0%. Simultaneously the train-side offset stayed ~0.0059 an
 `quality/gap/policy/loss/code_0` (train-minus-val) widened 0.758 -> 1.096. That is
 overfitting, measured on a decoding-independent quantity.
 
-Note also the *direction* of the sampling bias on the trend: sampled recon moved
-only +5.2% while the two decoding-independent quantities moved +16.2% and +12.0%.
-Sampled recon is partly saturated against the untrained-offset noise floor, so it
-**compresses** the degradation rather than inventing it. The logged curve
-understates how bad the trend is.
+Note the *direction* of the sampling bias on the trend: sampled recon moved only
++5.2% while the two decoding-independent quantities moved +16.2% and +12.0%.
+Partly saturated against the untrained-offset noise floor, sampled recon
+**compresses** the code-head degradation rather than inventing it.
+
+But do not read that as "it is worse than it looks" — §4 measures the argmax
+decoding and finds it **flat**, so the logged curve is misleading in *both*
+directions at once: it understates the rate at which the code head is degrading
+(+5.2% against +16.2% / +12.0%) **and** it overstates the degradation of the
+deployed output, which is +0.1%. Neither the sampled curve nor the code loss is a
+proxy for what gets served. See §4 and §5-Q1.
 
 ## 3. Train-side counter-curve (why this is overfitting, not a bug)
 
@@ -207,6 +213,19 @@ so picking a neighbouring code changes the reconstructed gas/brake/steer almost 
 at all. Argmax recon is flat *because* the extra mistakes land on codes whose
 decoded action is nearly the same. This is the mirror image of the sampled-decode
 artifact: sampling lands on codes with an untrained *offset* entry, which does hurt.
+
+A rough consistency check on that claim, from the measured numbers rather than
+asserted: argmax recon is the sum of a codebook-selection error and an offset error.
+The offset term rose **+12.8%** in absolute terms (0.007224 -> 0.008148, i.e.
++0.00092) against a total argmax recon of ~0.0415. Had nothing else changed, that
+alone should have pushed argmax recon up by roughly +2%. It moved +0.13%
+(+0.000055). So the codebook-selection contribution must have *improved* by very
+nearly the amount the offset term worsened — which is exactly the decode-equivalence
+claim, and it is also consistent with p(GT) being flat and the head sharpening. This
+is a consistency check, not a clean decomposition: the offset L1 is measured only at
+ground-truth codes, so it does not partition argmax recon exactly, and the two terms
+are not additive in L1. But the order of magnitude is unambiguous — something had to
+cancel a 2%-scale regression, and only the selection term can have.
 
 The per-position curve shows the trade explicitly — under argmax the **shallow**
 readouts improved and the **deep** ones degraded, crossing over around t=13:
@@ -347,7 +366,11 @@ backwards, so continued training is at best neutral and at worst is eroding the 
 
 Concretely:
 
-1. **Stop `p8d6fxao` (sage-universe-592) now.** It is a bit-exact duplicate that is
+Nothing in this investigation touched either run: both were live throughout, no
+process was stopped or started, and the evaluations ran on a third box (aboutblank).
+The actions below are recommendations for the operator.
+
+1. **Stop `p8d6fxao` (sage-universe-592).** It is a bit-exact duplicate that is
    1.5x slower than the run it duplicates, and it holds a 5090 on the most contended
    box. It produces zero information. This is a free GPU.
 2. **Do not simply let `do8m9ot8` run on.** Epoch 1 -> 2 bought +0.13% on the served
