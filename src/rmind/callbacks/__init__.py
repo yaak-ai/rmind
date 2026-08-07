@@ -18,8 +18,10 @@ from .prediction import (
 from .prediction_config import PredictionConfigSetter
 from .safe import SafeCallback
 from .training_quality import TrainingQualityLogger
+from .weights import CheckpointWeightLoader
 
 __all__ = [
+    "CheckpointWeightLoader",
     "DataFramePredictionWriter",
     "FeaturePermutator",
     "GpuMemoryStatsCallback",

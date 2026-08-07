@@ -144,6 +144,8 @@ multirun/
 # generated
 config/dataset/*
 config/logger/*
+# generated card rig + recordings copied off the kit (regenerate on demand)
+data/palletjack/
 
 # editor
 .helix/
