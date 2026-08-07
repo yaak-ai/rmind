@@ -22,7 +22,7 @@ from rmind.utils._wandb import LoadableFromArtifact
 type Path = tuple[str, ...]
 
 
-class WaypointsTokenizer(pl.LightningModule, LoadableFromArtifact):
+class WaypointsTokenizer(LoadableFromArtifact, pl.LightningModule):
     """Residual-VQ autoencoder over a whole per-frame waypoint path.
 
     Ported from the `feat/wpts-rvq` branch; `_step` is adapted to this repo's

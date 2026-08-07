@@ -129,7 +129,7 @@ class BlockCausalTransformer(nn.Module):
         return self.norm(x)
 
 
-class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
+class PatchPolicy(LoadableFromArtifact, pl.LightningModule):
     """Patch Policy (https://arxiv.org/pdf/2607.18236) with a VQ-BeT action head.
 
     Per frame: frozen ViT patch features `(P, D)` get the frozen waypoints-tokenizer

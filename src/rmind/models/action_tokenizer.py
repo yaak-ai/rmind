@@ -26,7 +26,7 @@ class LRSchedulerHydraConfig(BaseModel):
     scheduler: HydraConfig[LRScheduler]
 
 
-class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
+class ActionTokenizer(LoadableFromArtifact, pl.LightningModule):
     """Residual-VQ action tokenizer VQ-BeT
     https://arxiv.org/pdf/2403.03181.
     """

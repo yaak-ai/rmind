@@ -12,9 +12,14 @@ from pytorch_lightning import LightningModule
 from pytorch_lightning.utilities.model_summary.model_summary import ModelSummary
 from structlog import get_logger
 from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
+from vector_quantize_pytorch.vector_quantize_pytorch import Codebook  # ty:ignore[unresolved-import]
 
 from rmind.config import HydraConfig
 from rmind.utils.patch import monkeypatched
+
+
+def _skip_kmeans_init(self: Codebook, data: torch.Tensor, mask: torch.Tensor | None = None) -> None:  # noqa: ARG001
+    del data, mask
 
 # tensordict's global dicts mutated during export tracing cause a spurious
 # "pending unbacked symbol u0" error even though the exported graph is valid
@@ -51,33 +56,39 @@ def main(cfg: DictConfig) -> None:
     model = config.model.instantiate().eval()
     logger.debug(f"model summary:\n{ModelSummary(model)}")  # noqa: G004
 
-    # Eager forward populates cached buffers (e.g. attention mask) that are not
-    # trace-friendly. Must run before torch.export — see EpisodeBuilder._build_attention_mask_tensor.
-    # The second pass (with _is_exporting_flag=True) also serves as the source
-    # of truth for output-name inference below.
-    eager_out: Any = None
-    for patch in (False, True):
-        with monkeypatched(
-            obj=(obj := torch.compiler),
-            name=(name := "_is_exporting_flag"),
-            patch=patch,
-        ):
-            logger.debug("model eager forward", **{f"{obj.__name__}.{name}": patch})
-            eager_out = model(*args)
+    # `vector_quantize_pytorch`'s lazy first-batch kmeans codebook init branches
+    # on the `initted` buffer (`if self.initted: return`) -- always true for a
+    # trained checkpoint, but Dynamo can't guard on a tensor value and treats it
+    # as unsupported data-dependent branching. Skip it outright for tracing: any
+    # exported model is loaded from a trained checkpoint, so it's always a no-op.
+    with monkeypatched(obj=Codebook, name="init_embed_", patch=_skip_kmeans_init):
+        # Eager forward populates cached buffers (e.g. attention mask) that are not
+        # trace-friendly. Must run before torch.export — see EpisodeBuilder._build_attention_mask_tensor.
+        # The second pass (with _is_exporting_flag=True) also serves as the source
+        # of truth for output-name inference below.
+        eager_out: Any = None
+        for patch in (False, True):
+            with monkeypatched(
+                obj=(obj := torch.compiler),
+                name=(name := "_is_exporting_flag"),
+                patch=patch,
+            ):
+                logger.debug("model eager forward", **{f"{obj.__name__}.{name}": patch})
+                eager_out = model(*args)
 
-    if config.output_names is None:
-        # Infer from eager output, not `out_spec.unflatten([None]*N)`: TensorDict's
-        # pytree unflatten short-circuits to None on any-None leaves, collapsing to
-        # output_names=[''] which makes torch.onnx prune subgraphs as unreached.
-        paths_and_leaves, _ = tree_flatten_with_path(eager_out)
-        config.output_names = [
-            ".".join(mk.key for mk in path)  # ty:ignore[unresolved-attribute]
-            for path, _ in paths_and_leaves
-        ]
-        logger.debug("inferred output_names", output_names=config.output_names)
+        if config.output_names is None:
+            # Infer from eager output, not `out_spec.unflatten([None]*N)`: TensorDict's
+            # pytree unflatten short-circuits to None on any-None leaves, collapsing to
+            # output_names=[''] which makes torch.onnx prune subgraphs as unreached.
+            paths_and_leaves, _ = tree_flatten_with_path(eager_out)
+            config.output_names = [
+                ".".join(mk.key for mk in path)  # ty:ignore[unresolved-attribute]
+                for path, _ in paths_and_leaves
+            ]
+            logger.debug("inferred output_names", output_names=config.output_names)
 
-    logger.debug("torch exporting")
-    exported_program = torch.export.export(mod=model, args=tuple(args), strict=True)
+        logger.debug("torch exporting")
+        exported_program = torch.export.export(mod=model, args=tuple(args), strict=True)
 
     logger.debug("onnx exporting")
     model = torch.onnx.export(

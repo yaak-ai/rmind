@@ -1,30 +1,8 @@
-from typing import Annotated, Any, ClassVar, Literal, Self, override
+from typing import Annotated, Any, ClassVar, Literal, override
 
-import jq  # ty:ignore[unresolved-import]
 import pytorch_lightning as pl
-import torch
-from deepdiff import DeepDiff
-from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
-from lightning_utilities.core.rank_zero import rank_zero_warn
-from omegaconf import OmegaConf
-from pydantic import (
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    Field,
-    InstanceOf,
-    validate_call,
-)
-from pytorch_lightning.core.saving import _load_state, pl_load  # noqa: PLC2701
-from pytorch_lightning.utilities.migration.utils import (
-    _pl_migrate_checkpoint,  # noqa: PLC2701
-    pl_legacy_patch,
-)
-from pytorch_lightning.utilities.model_helpers import (
-    _restricted_classmethod,  # noqa: PLC2701
-)
+from pydantic import BaseModel, ConfigDict, Field, InstanceOf, validate_call
 from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
-from structlog import get_logger
 from tensordict import TensorDict
 from torch.nn import Module
 from torch.optim import Optimizer
@@ -35,8 +13,6 @@ from rmind.components.containers import ModuleDict
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
 from rmind.utils._wandb import LoadableFromArtifact
-
-logger = get_logger(__name__)
 
 INTERNAL_STEP_OUTPUT_KEY = "_internal"
 
@@ -54,7 +30,7 @@ class PredictionConfig(BaseModel):
     objectives: set[ObjectivePredictionKey] = Field(default_factory=set)
 
 
-class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
+class ControlTransformer(LoadableFromArtifact, pl.LightningModule):
     episode_builder: Module
     encoder: Module
     objectives: ModuleDict
@@ -110,70 +86,6 @@ class ControlTransformer(pl.LightningModule, LoadableFromArtifact):
         self.prediction_config = prediction_config
 
         self.save_hyperparameters(hparams)
-
-    @override
-    @_restricted_classmethod
-    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
-    def load_from_checkpoint(
-        cls,  # noqa: N805
-        checkpoint_path: _PATH,
-        *,
-        map_location: _MAP_LOCATION_TYPE = None,
-        hparams_file: _PATH | None = None,
-        strict: bool | None = None,
-        hparams_jq: Annotated[jq._Program, BeforeValidator(jq.compile)] | None = None,
-        weights_only: bool | None = False,
-        **kwargs: Any,
-    ) -> Self:  # ty:ignore[invalid-method-override]
-        if hparams_jq is None:
-            return super().load_from_checkpoint(
-                checkpoint_path=checkpoint_path,
-                map_location=map_location,
-                hparams_file=hparams_file,
-                weights_only=weights_only,
-                strict=strict,
-                **kwargs,
-            )
-
-        with pl_legacy_patch():
-            checkpoint = pl_load(
-                checkpoint_path, map_location=map_location, weights_only=weights_only
-            )
-
-        # convert legacy checkpoints to the new format
-        checkpoint = _pl_migrate_checkpoint(checkpoint, checkpoint_path=checkpoint_path)
-
-        hparams = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
-        hparams_container = OmegaConf.to_container(
-            OmegaConf.create(hparams), resolve=False, throw_on_missing=False
-        )
-        hparams_container_updated = hparams_jq.input_value(hparams_container).first()
-
-        for diff in (
-            DeepDiff(hparams_container, hparams_container_updated, view="tree")
-            .pretty()
-            .splitlines()
-        ):
-            logger.debug("hparams updated", diff=diff)
-
-        checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY] = OmegaConf.create(
-            hparams_container_updated
-        )
-
-        model = _load_state(cls, checkpoint, strict=strict, **kwargs)
-        state_dict = checkpoint["state_dict"]
-        if not state_dict:
-            rank_zero_warn(
-                f"The state dict in {checkpoint_path!r} contains no parameters."
-            )
-            return model  # ty:ignore[invalid-return-type]
-
-        device = next(
-            (t for t in state_dict.values() if isinstance(t, torch.Tensor)),
-            torch.tensor(0),
-        ).device
-
-        return model.to(device)  # ty:ignore[invalid-return-type, unresolved-attribute]
 
     @override
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> STEP_OUTPUT:
