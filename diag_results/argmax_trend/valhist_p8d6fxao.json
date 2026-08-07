@@ -1,0 +1,19 @@
+[
+ {
+  "val/policy/metric/offset_sampled_recon": 0.07885747402906418,
+  "_step": 811,
+  "val/policy/loss/code_0": 1.3063782453536987,
+  "val/policy/loss/offset": 0.0072804708033800125,
+  "val/policy/metric/offset_partial_window": 0.007262369617819786,
+  "val/policy/loss/code_3": 1.606469988822937,
+  "val/policy/metric/offset_sampled_recon_last": 0.08005140721797943,
+  "val/policy/metric/code_full_window": 1.3981165885925293,
+  "val/policy/metric/offset_full_window": 0.007296448107808828,
+  "trainer/global_step": 100995,
+  "val/policy/loss/code_1": 1.538063883781433,
+  "val/policy/loss/code_2": 1.1232223510742188,
+  "val/policy/metric/code_partial_window": 1.388339877128601,
+  "val/loss/total": 5.581413745880127,
+  "epoch": 1
+ }
+]
