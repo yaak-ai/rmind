@@ -8,6 +8,16 @@ shapes (3 cameras, 120-dim bimanual action, camera-conditioning, goal images):
     which SDPA backend the trunk actually gets. This is the pre-flight from
     PR #265: at head_dim 20 the fused kernels are inadmissible and the math
     fallback materialises the full `(B, H, L, L)` score matrix and OOMs.
+    It also **verifies the trunk's configured `tokens_per_frame` against the
+    token block the model actually builds** -- a stale value there does not
+    necessarily raise, it tiles the intra-frame embedding and the frame-RoPE
+    wrong, which is a silent correctness bug rather than a crash. That check
+    matters most for the depth arm, where the token count changes.
+``depth``
+    Fit the `DisparityStandardizer` on the **training split only** and over
+    **valid pixels only** (contract §22.3 + §5.4) and write the versioned
+    artifact. Reports the invalid-pixel fraction, because fitting over all
+    pixels instead would drag the mean towards zero by exactly that fraction.
 ``tokenizer``
     Fit the VQ-BeT `NeroPoseTokenizer`, reporting translation error in **mm** and
     rotation error in **degrees**, separately (contract §5.5). Writes the
@@ -34,7 +44,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from rmind.data.nero import PoseStandardizer, state_quat_to_9d
+from rmind.data.nero import DisparityStandardizer, PoseStandardizer, state_quat_to_9d
 from rmind.datamodules.nero_random import CAMERA_NAMES, nero_random_batch
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
@@ -57,8 +67,10 @@ def _to(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 # --------------------------------------------------------------------- budget
 
 
-def stage_budget(cfg: Any) -> dict[str, Any]:
-    tokens_per_frame = cfg.num_cameras * cfg.num_patches + 1
+def stage_budget(cfg: Any, *, verify_tokens: bool = True) -> dict[str, Any]:  # ruff: ignore[too-many-locals]
+    use_depth = bool(cfg.get("use_depth", False))
+    depth_tokens = cfg.num_depth_cameras * cfg.depth_patches if use_depth else 0
+    tokens_per_frame = cfg.num_cameras * cfg.num_patches + 1 + depth_tokens
     sequence_length = cfg.episode_length * tokens_per_frame
     head_dim = cfg.policy_embedding_dim // cfg.num_heads
     patch = 14
@@ -72,8 +84,13 @@ def stage_budget(cfg: Any) -> dict[str, Any]:
 
     report = {
         "patch_grid": list(grid),
+        "use_depth": use_depth,
+        "depth_tokens_per_frame": depth_tokens,
         "tokens_per_frame": tokens_per_frame,
         "sequence_length": sequence_length,
+        # what the depth arm costs against the SAME trunk with depth off
+        "sequence_length_without_depth": cfg.episode_length
+        * (cfg.num_cameras * cfg.num_patches + 1),
         "head_dim": head_dim,
         "head_dim_div8": head_dim % 8 == 0,
         "head_dim_even_for_rope": head_dim % 2 == 0,
@@ -105,7 +122,92 @@ def stage_budget(cfg: Any) -> dict[str, Any]:
         except RuntimeError as error:  # pragma: no cover - backend-dependent
             report["efficient_attention_admissible"] = False
             report["efficient_attention_error"] = str(error)[:200]
+
+    if verify_tokens:
+        # ⚠️ THE CHECK THAT ARITHMETIC CANNOT REPLACE. `tokens_per_frame` is a
+        # config value feeding the trunk's tiled intra-frame embedding and
+        # frame-RoPE. If the token layout and that value disagree the trunk does
+        # not necessarily raise -- it tiles wrong, and the model trains on a
+        # scrambled positional structure. So compare against the block the model
+        # ACTUALLY builds.
+        torch.manual_seed(0)
+        model = instantiate(cfg.model).eval()
+        batch = nero_random_batch(
+            batch_size=1,
+            episode_length=cfg.episode_length,
+            action_horizon=cfg.action_horizon,
+            depth=use_depth,
+            seed=0,
+        )
+        with torch.no_grad():
+            built = int(model._frame_tokens(batch).shape[-2])  # ruff: ignore[private-member-access]
+        configured = int(cfg.model.encoder.tokens_per_frame)
+        report |= {
+            "tokens_per_frame_built": built,
+            "tokens_per_frame_configured": configured,
+        }
+        if not built == configured == tokens_per_frame:
+            msg = (
+                f"tokens_per_frame disagreement: model builds {built}, trunk is "
+                f"configured for {configured}, arithmetic says {tokens_per_frame}"
+            )
+            raise ValueError(msg)
+        report["params_m"] = sum(p.numel() for p in model.parameters()) / 1e6
+        del model
     return report
+
+
+# ----------------------------------------------------------------------- depth
+
+
+def stage_depth(cfg: Any, out: Path, *, batches: int = 32) -> dict[str, Any]:
+    """Fit and write the `DisparityStandardizer` (contract §22.3 + §5.4).
+
+    ⚠️ Train split only, valid pixels only. Fitting over ALL pixels would drag
+    the mean towards zero by the invalid fraction -- and `disparity == 0` is *no
+    measurement*, not zero distance (§21.4), so those pixels are not data.
+
+    Raises:
+        ValueError: if the experiment is not depth-enabled.
+    """
+    if not cfg.get("use_depth", False):
+        msg = "the depth stage needs a depth-enabled experiment (use_depth: true)"
+        raise ValueError(msg)
+
+    disparities: list[torch.Tensor] = []
+    masks: list[torch.Tensor] = []
+    for i in range(batches):
+        batch = nero_random_batch(
+            batch_size=2,
+            episode_length=cfg.episode_length,
+            action_horizon=cfg.action_horizon,
+            grids=dict.fromkeys(CAMERA_NAMES, (8, 8)),  # RGB unused here
+            depth=True,
+            seed=i,
+        )
+        for camera in cfg.depth_cameras:
+            disparities.append(batch[f"disparity.{camera}"])
+            masks.append(batch[f"disparity_valid.{camera}"])
+
+    disparity = torch.cat(disparities)
+    valid = torch.cat(masks)
+    standardizer = DisparityStandardizer.from_samples(
+        disparity, valid, source="smoke-train-split"
+    )
+    artifact = standardizer.save(out / "disparity_standardizer.json")
+
+    # the contrast that makes the "valid pixels only" rule falsifiable rather
+    # than merely stated
+    naive = disparity.float()
+    return {
+        "artifact": str(artifact),
+        "num_pixels": int(disparity.numel()),
+        "invalid_fraction": float((~valid).float().mean()),
+        "mean_valid_only": float(standardizer.mean.item()),
+        "std_valid_only": float(standardizer.std.item()),
+        "mean_if_fitted_on_all_pixels": float(naive.mean()),
+        "std_if_fitted_on_all_pixels": float(naive.std()),
+    }
 
 
 # ------------------------------------------------------------------ tokenizer
@@ -134,7 +236,7 @@ def _chunk_pool(cfg: Any, *, batches: int, device: torch.device) -> torch.Tensor
     return torch.cat(pool).to(device)
 
 
-def stage_tokenizer(  # noqa: PLR0914
+def stage_tokenizer(  # ruff: ignore[too-many-locals]
     cfg: Any, out: Path, *, steps: int, device: torch.device
 ) -> dict[str, Any]:
     torch.manual_seed(0)
@@ -159,7 +261,7 @@ def stage_tokenizer(  # noqa: PLR0914
         index = torch.randint(0, train_pool.shape[0], (batch_size,), device=device)
         chunks = train_pool[index]
         raw = chunks.flatten(-2, -1)
-        a = model._normalize(raw)  # noqa: SLF001
+        a = model._normalize(raw)  # ruff: ignore[private-member-access]
         z = model.encoder(a)
         _codes, z_q, vq = model.quantizer(z)
         a_hat = model.decoder(z + (z_q - z).detach())
@@ -182,7 +284,7 @@ def stage_tokenizer(  # noqa: PLR0914
                 "recon": recon.item(),
                 **{k: v.item() for k, v in metrics.items()},
             })
-            print(  # noqa: T201
+            print(  # ruff: ignore[print]
                 f"[tokenizer] step {step:5d} loss {loss.item():.4f} "
                 f"recon {recon.item():.4f} "
                 f"trans {metrics['translation_mm'].item():.2f} mm "
@@ -202,7 +304,7 @@ def stage_tokenizer(  # noqa: PLR0914
         # the UNQUANTIZED autoencoder, i.e. the ceiling the code path is measured
         # against: the gap between the two is the cost of the codebook, and the
         # gap between this and the mean baseline is what the encoder learned
-        a = model._normalize(raw)  # noqa: SLF001
+        a = model._normalize(raw)  # ruff: ignore[private-member-access]
         z = model.encoder(a)
         ae = {
             k: v.item()
@@ -210,7 +312,7 @@ def stage_tokenizer(  # noqa: PLR0914
         }
         # baseline: predicting the train-split MEAN chunk, so the numbers above
         # are falsifiable rather than merely small
-        mean_chunk = model._normalize(train_pool.flatten(-2, -1)).mean(0, keepdim=True)  # noqa: SLF001
+        mean_chunk = model._normalize(train_pool.flatten(-2, -1)).mean(0, keepdim=True)  # ruff: ignore[private-member-access]
         baseline = {
             k: v.item()
             for k, v in model.reconstruction_metrics(
@@ -235,7 +337,7 @@ def stage_tokenizer(  # noqa: PLR0914
 # --------------------------------------------------------------------- policy
 
 
-def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
+def stage_policy(  # ruff: ignore[complex-structure, too-many-arguments, too-many-locals, too-many-statements]
     cfg: Any,
     out: Path,
     *,
@@ -245,15 +347,28 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
     batch_size: int,
     both_sides: bool = True,
     overfit_one_batch: bool = False,
+    depth_standardizer: Path | None = None,
 ) -> dict[str, Any]:
     torch.manual_seed(0)
     model = instantiate(cfg.model)
+    use_depth = bool(getattr(model, "use_depth", False))
 
     if tokenizer_ckpt is not None and tokenizer_ckpt.exists():
         payload = torch.load(tokenizer_ckpt, map_location="cpu", weights_only=False)
         missing = model.tokenizer.load_state_dict(payload["state_dict"], strict=False)
-        print(f"[policy] tokenizer loaded ({missing})")  # noqa: T201
-    model.tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        print(f"[policy] tokenizer loaded ({missing})")  # ruff: ignore[print]
+    model.tokenizer.requires_grad_(False).eval()  # ruff: ignore[boolean-positional-value-in-call]
+
+    # ⚠️ the config's disparity statistics are a documented PLACEHOLDER (a
+    # uniform prior). Swap in the artifact fitted on the train split, exactly as
+    # a real run would via `DisparityStandardizer.load`.
+    if use_depth and depth_standardizer is not None and depth_standardizer.exists():
+        model.depth_standardizer = DisparityStandardizer.load(depth_standardizer)
+        print(  # ruff: ignore[print]
+            f"[policy] disparity standardizer {model.depth_standardizer.source}: "
+            f"mean {model.depth_standardizer.mean.item():.2f} "
+            f"std {model.depth_standardizer.std.item():.2f}"
+        )
     model = model.to(device)
     model.train()
 
@@ -276,6 +391,7 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
                 episode_length=cfg.episode_length,
                 action_horizon=cfg.action_horizon,
                 both_sides=both_sides,
+                depth=use_depth,
                 seed=0,
             ),
             device,
@@ -291,6 +407,7 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
                 episode_length=cfg.episode_length,
                 action_horizon=cfg.action_horizon,
                 both_sides=both_sides,
+                depth=use_depth,
                 seed=step,
             ),
             device,
@@ -302,7 +419,7 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
         with torch.autocast(
             device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
         ):
-            metrics = model._compute_metrics(batch)  # noqa: SLF001
+            metrics = model._compute_metrics(batch)  # ruff: ignore[private-member-access]
             loss = metrics["policy", "loss"].sum(reduce=True)
 
         optimizer.zero_grad(set_to_none=True)
@@ -331,13 +448,15 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
                     f" trans {flat['policy/metric/translation_mm']:.1f} mm "
                     f"rot {flat['policy/metric/rotation_deg']:.1f} deg"
                 )
-            print(  # noqa: T201
+            print(  # ruff: ignore[print]
                 f"[policy] step {step:4d} loss {loss.item():.4f} "
                 f"offset {flat['policy/loss/offset']:.4f}{extra}"
             )
 
     peak = torch.cuda.max_memory_allocated() / 1024**3 if device.type == "cuda" else 0.0
-    tokens_per_frame = cfg.num_cameras * cfg.num_patches + 1
+    # read the trunk's ACTUAL value rather than recomputing it here -- the depth
+    # arm changes it and two copies of the arithmetic is how they drift apart
+    tokens_per_frame = int(cfg.model.encoder.tokens_per_frame)
 
     def _mean(key: str, lo: int, hi: int) -> float:
         return statistics.fmean(c[key] for c in curve[lo:hi])
@@ -346,11 +465,13 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
     summary = {
         "batch_size": batch_size,
         "both_sides": both_sides,
+        "use_depth": use_depth,
         "overfit_one_batch": overfit_one_batch,
         # ⚠️ the trunk gradient-CHECKPOINTS while training
         # (rmind.components.transformer.utils.run_layer_stack), so peak memory
         # is a checkpointed figure -- memory traded for recompute.
         "gradient_checkpointing": True,
+        "tokens_per_frame": tokens_per_frame,
         "sequence_length": cfg.episode_length * tokens_per_frame,
         "trainable_params_m": trainable / 1e6,
         "total_params_m": total / 1e6,
@@ -367,6 +488,8 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
         "curve": curve,
     }
     name = "policy_curve"
+    if use_depth:
+        name += "_depth"
     if overfit_one_batch:
         name += "_overfit"
     if not both_sides:
@@ -381,9 +504,15 @@ def stage_policy(  # noqa: C901, PLR0913, PLR0914, PLR0915
 def main() -> None:
     parser = argparse.ArgumentParser()
     _ = parser.add_argument(
-        "--stage", default="all", choices=["all", "budget", "tokenizer", "policy"]
+        "--stage",
+        default="all",
+        choices=["all", "budget", "depth", "tokenizer", "policy"],
     )
-    _ = parser.add_argument("--out", default="/tmp/nero-smoke")  # noqa: S108
+    # contract §22 depth arm. OFF by default (§22.6), which also makes the
+    # depth-off numbers in this harness directly comparable to the pre-depth
+    # ones -- the experiment it composes is byte-identical.
+    _ = parser.add_argument("--depth", action="store_true")
+    _ = parser.add_argument("--out", default="/tmp/nero-smoke")  # ruff: ignore[hardcoded-temp-file]
     _ = parser.add_argument("--tokenizer-steps", type=int, default=3000)
     _ = parser.add_argument("--policy-steps", type=int, default=300)
     _ = parser.add_argument("--batch-size", type=int, default=8)
@@ -407,11 +536,19 @@ def main() -> None:
 
     overrides = [] if args.lr is None else [f"lr={args.lr}"]
     report: dict[str, Any] = {}
-    policy_cfg = _cfg("yaak/nero_arms/causal", overrides)
+    experiment = (
+        "yaak/nero_arms/causal_depth" if args.depth else "yaak/nero_arms/causal"
+    )
+    policy_cfg = _cfg(experiment, overrides)
+    report["experiment"] = experiment
 
     if args.stage in {"all", "budget"}:
         report["budget"] = stage_budget(policy_cfg)
-        print(json.dumps(report["budget"], indent=2))  # noqa: T201
+        print(json.dumps(report["budget"], indent=2))  # ruff: ignore[print]
+
+    if args.depth and args.stage in {"all", "depth"}:
+        report["depth"] = stage_depth(policy_cfg, out)
+        print(json.dumps(report["depth"], indent=2))  # ruff: ignore[print]
 
     if args.stage in {"all", "tokenizer"}:
         report["tokenizer"] = stage_tokenizer(
@@ -431,6 +568,7 @@ def main() -> None:
             batch_size=args.batch_size,
             both_sides=not args.right_only,
             overfit_one_batch=args.overfit_one_batch,
+            depth_standardizer=out / "disparity_standardizer.json",
         )
 
     _ = (out / "report.json").write_text(
@@ -438,7 +576,7 @@ def main() -> None:
             report, indent=2, default=lambda o: OmegaConf.to_container(o, resolve=True)
         )
     )
-    print(f"\nwrote {out / 'report.json'}")  # noqa: T201
+    print(f"\nwrote {out / 'report.json'}")  # ruff: ignore[print]
 
 
 if __name__ == "__main__":

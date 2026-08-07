@@ -76,6 +76,67 @@ to the feature. This halves the head parameter count versus two independent
 heads and -- more importantly -- lets right-only dummy data train a head that is
 immediately meaningful for the left hand, matching the weight-shared tokenizer.
 
+Depth (contract §22) -- OPT-IN, off by default
+----------------------------------------------
+`use_depth=False` is the default and nothing below is constructed in that case,
+so the depth-off model is bit-identical to the pre-depth one (same parameters,
+same init RNG stream, same forward). The four decisions, all from §22:
+
+**Depth is a FOURTH CAMERA, not a 4th channel on the RGB image (§22.1/§22.2).**
+The disparity stream's metadata declares `reference_frame: rectified_CAM_B`,
+`aligned_to: none` -- it lives in the rectified LEFT MONO camera's frame, a
+different sensor at a different position with a much wider lens (96.0 deg HFOV
+against `CAM_A`'s 73.7 deg). `setDepthAlign` is deliberately not applied upstream
+because warping invalidates the `fx_mono * baseline / disparity` conversion. So
+stacking it as an extra channel on the overhead RGB would silently misregister
+every pixel. Instead it gets its own patch tokens and its own 13-dim
+`camera_cond` built from the MONO intrinsics at the recorded depth resolution
+(§21.11), which is the same machinery that already handles three heterogeneous
+cameras.
+
+**A TRAINABLE patch embedding, not the frozen DINOv2 encoder (§22.7).** The
+first implementation here routed disparity through the RGB ViT; that was wrong.
+DINOv2 is trained on natural RGB -- photometric statistics, texture, colour,
+semantics -- while disparity is a smooth, single-channel, purely *geometric*
+signal, so replicated to 3 channels it is a grey image with none of the
+statistics the encoder expects. The encoder is also **frozen**, so nothing
+downstream can adapt the mismatch away. And the cost ran backwards: a fourth ViT
+pass is +33% frozen compute per frame to buy only ~+8% sequence, i.e. paying the
+larger cost for the less appropriate representation. Instead the disparity is
+patchified and projected by a `Linear` -- what a ViT does at its own input, and
+the standard treatment for a non-RGB modality: ~262k **trainable** parameters
+against ~22M frozen ones, and cheaper in FLOPs than the pass it replaces.
+
+The coarse depth grid §22.2 asks for then falls out of the patch size directly,
+with no pooling: an 80x128 letterboxed input at patch 16 is a 5x8 = 40-token
+grid. `(5, 16)` -- §22.2's literal "half the patches" -- is a config change.
+
+**Normalised DISPARITY, not metric depth (§22.3), with the validity mask as a
+SECOND INPUT CHANNEL (§22.4).** `disparity == 0` means *no measurement*, not zero
+distance, and stereo drops out precisely at the depth discontinuities around a
+grasped object -- i.e. exactly where the signal matters. Making the mask a
+first-class input channel is what lets "unmeasured" be its own state instead of
+something the network has to infer from a fill value; the disparity channel is
+additionally filled with the train-split mean where invalid, so the two channels
+agree on a neutral value plus an explicit flag rather than asserting a surface at
+zero distance. See `rmind.data.nero.DisparityStandardizer`.
+
+**Depth is ABSENT from most data and that is the normal case (§22.5).** None of
+the 104 existing episodes have depth and the recorder's `--depth` is off by
+default, so a depth-enabled model trains on a mixture. THREE cases, all handled:
+the key is missing from the batch entirely (no encoder call at all), the key is
+present but a given sample has `depth_valid=False`, and `depth_dropout` forcing
+the second case during training so the policy never becomes depth-DEPENDENT and
+degrades gracefully when the stream is missing at serving time. In every case the
+depth tokens carry a **learned `no_depth` embedding, never zeros**, plus an
+explicit availability flag -- the same pattern as the `no_goal` goal-dropout
+embedding and `side_valid`.
+
+Depth tokens are placed BETWEEN the state token and the RGB patches, so the
+readout (the last token of a frame block) is still a `side_right` patch exactly
+as in the depth-off model, rather than becoming a constant `no_depth` token on
+the majority of samples.
+
 Configuration seam (contract §11)
 ---------------------------------
 `action_features` (per-side action dimensionality) and `action_horizon` come from
@@ -107,6 +168,7 @@ from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.data.nero import (
+    CAMERA_COND_DIM,
     NUM_SIDES,
     STATE_QUAT_DIM,
     pose_error_metrics,
@@ -126,7 +188,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     """Causal patch policy over 3 cameras + bimanual SE(3) state. See module docstring."""
 
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-statements]
         self,
         *,
         image_transform: HydraConfig[Module] | InstanceOf[Module],
@@ -150,6 +212,27 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         goal_valid: Path = ("goal_valid",),
         chunk: Path = ("action.future_state",),
         use_goal_image: bool = True,
+        # --- contract §22 depth, OFF BY DEFAULT (§22.6). Nothing below is
+        # constructed unless `use_depth`, so the depth-off model is bit-identical
+        # to the pre-depth one.
+        use_depth: bool = False,
+        depth_transform: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        depth_standardizer: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        depth_patch_embedding: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        #: §21.3: the overhead `base` device only -- the SR side cameras sit
+        #: near-tangent and localise on-plane objects poorly.
+        depth_cameras: Sequence[str] = ("base",),
+        depth_key: str = "disparity.{camera}",
+        #: PER-PIXEL validity (§21.4/§22.4), not to be confused with...
+        depth_mask_key: str = "disparity_valid.{camera}",
+        #: ...this, the PER-SAMPLE "does this episode have depth at all" flag (§22.5)
+        depth_valid: Path = ("depth_valid",),
+        depth_camera_cond: Path = ("disparity_cond",),
+        #: side of the square depth patch, e.g. 16 (§22.7)
+        depth_patch_size: int | None = None,
+        #: the depth token grid, e.g. (5, 8) for an 80x128 input at patch 16
+        depth_patch_grid: tuple[int, int] | None = None,
+        depth_dropout: float = 0.25,
         # rbyte emits the contract §5.2 STORAGE form (46 per side: 6 poses x 7 +
         # a 4-dim hub quaternion). The 9D expansion happens here, at the model
         # boundary -- set False if a loader ever hands over 60 directly.
@@ -181,12 +264,12 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # frozen feature extractor: never trains, never leaves eval mode (see train())
         self.image_encoder = (
             init_hydra_param(hparams, "image_encoder", image_encoder)
-            .requires_grad_(False)  # noqa: FBT003
+            .requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
             .eval()
         )
         self.tokenizer = (
             init_hydra_param(hparams, "tokenizer", tokenizer)
-            .requires_grad_(False)  # noqa: FBT003
+            .requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
             .eval()
         )
 
@@ -208,6 +291,59 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # per-side identity for the weight-shared head
         self.side_embedding = nn.Embedding(NUM_SIDES, policy_embedding_dim)
         nn.init.trunc_normal_(self.side_embedding.weight, std=0.02)
+
+        # --- contract §22 depth. ⚠️ CONSTRUCTED LAST, AND ONLY IF `use_depth`.
+        # Last, so that every module above draws the SAME init RNG whether depth
+        # is on or off -- which is what makes the §22.6 A/B a controlled
+        # comparison instead of two differently-initialised models. Only if
+        # `use_depth`, so the depth-off model has no extra parameters at all.
+        self.use_depth = use_depth
+        self.depth_transform: Module | None = None
+        self.depth_standardizer: Module | None = None
+        self.depth_patch_embedding: Module | None = None
+        self.depth_patch_size: int | None = None
+        self.depth_patch_grid: tuple[int, int] | None = None
+        if use_depth:
+            missing = [
+                name
+                for name, value in (
+                    ("depth_transform", depth_transform),
+                    ("depth_standardizer", depth_standardizer),
+                    ("depth_patch_embedding", depth_patch_embedding),
+                    ("depth_patch_size", depth_patch_size),
+                    ("depth_patch_grid", depth_patch_grid),
+                )
+                if value is None
+            ]
+            if missing:
+                msg = f"use_depth=True requires {missing}"
+                raise ValueError(msg)
+            self.depth_transform = init_hydra_param(
+                hparams, "depth_transform", depth_transform
+            )
+            # not a Parameter: train-split statistics, registered buffers, so it
+            # travels inside the checkpoint (see DisparityStandardizer)
+            self.depth_standardizer = init_hydra_param(
+                hparams, "depth_standardizer", depth_standardizer
+            ).requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
+            self.depth_patch_embedding = init_hydra_param(
+                hparams, "depth_patch_embedding", depth_patch_embedding
+            )
+            self.depth_patch_size = int(depth_patch_size)  # ty:ignore[invalid-argument-type]
+            self.depth_patch_grid = tuple(depth_patch_grid)  # ty:ignore[invalid-argument-type]
+            # §22.5: learned "no depth supplied", NEVER zeros -- so "this episode
+            # has no depth stream" is distinguishable from "a depth map that
+            # happens to encode near zero". It is a learned TOKEN (d_model), the
+            # same role a mask token plays in MAE/BERT.
+            self.no_depth = nn.Parameter(torch.zeros(policy_embedding_dim))
+            nn.init.trunc_normal_(self.no_depth, std=0.02)
+
+        self.depth_cameras = tuple(depth_cameras)
+        self.depth_key = depth_key
+        self.depth_mask_key = depth_mask_key
+        self.depth_valid: Path = depth_valid
+        self.depth_camera_cond: Path = depth_camera_cond
+        self.depth_dropout = depth_dropout
 
         self.cameras = tuple(cameras)
         self.image_key = image_key
@@ -235,6 +371,15 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "goal_valid": goal_valid,
             "chunk": chunk,
             "use_goal_image": use_goal_image,
+            "use_depth": use_depth,
+            "depth_cameras": self.depth_cameras,
+            "depth_key": depth_key,
+            "depth_mask_key": depth_mask_key,
+            "depth_valid": depth_valid,
+            "depth_camera_cond": depth_camera_cond,
+            "depth_patch_size": self.depth_patch_size,
+            "depth_patch_grid": self.depth_patch_grid,
+            "depth_dropout": depth_dropout,
             "convert_state_to_9d": convert_state_to_9d,
             "goal_dropout": goal_dropout,
             "sample_codes": sample_codes,
@@ -359,6 +504,173 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             present[:, :, None, None], features, self.no_goal.to(features.dtype)
         )
 
+    # ------------------------------------------------------------------ depth
+
+    def _patchify_depth(self, disparity: Tensor, mask: Tensor) -> Tensor:
+        """`(b, T, 1, H, W)` disparity + mask -> `(b, T, P, patch * patch * 2)`.
+
+        Contract §22.7: depth gets a **trainable patch embedding, NOT the frozen
+        DINOv2 encoder**. Routing disparity through the RGB ViT was the first
+        implementation here and it was wrong on all three counts: DINOv2 is
+        trained on natural RGB (photometric statistics, texture, colour,
+        semantics) while disparity is a smooth single-channel *geometric* signal,
+        so replicated to 3 channels it is a grey image with none of the
+        statistics the encoder expects; the encoder is **frozen**, so nothing
+        downstream can adapt away the mismatch; and the cost runs the wrong way,
+        a fourth ViT pass being +33% frozen compute per frame to buy only ~+8%
+        sequence. A `Linear` over flattened patches is what a ViT does at its own
+        input anyway, is ~262k TRAINABLE parameters against ~22M frozen ones, and
+        is cheaper in FLOPs than the pass it replaces.
+
+        **Two input channels: standardised disparity and the validity mask**
+        (§22.4). The mask being a first-class input is the point -- it is what
+        lets the model treat "no measurement" as its own state rather than having
+        to infer it from a fill value. The disparity channel is still filled with
+        the train-split mean where invalid (`DisparityStandardizer`), so the two
+        channels agree: a neutral value plus an explicit "this is not a
+        measurement" bit, never a fabricated surface at zero distance.
+
+        Order is load-bearing: the fill and the standardisation happen at native
+        resolution, **before** any resampling. The other way round would let the
+        invalid zeros bleed into their valid neighbours during interpolation -- a
+        small, plausible-looking, entirely fabricated depth gradient exactly at
+        the object boundaries where stereo drops out.
+
+        `depth_transform` (a `LetterboxResize`) is applied to BOTH channels and
+        its zero padding is correct for both by construction: 0 is the train mean
+        in standardised space, and 0 in the mask is "invalid".
+
+        Raises:
+            ValueError: if the transformed size is not an exact multiple of
+                `depth_patch_size`, or disagrees with `depth_patch_grid`. A
+                mismatched reshape would scramble the spatial layout silently.
+        """
+        assert self.depth_standardizer is not None  # noqa: S101
+        assert self.depth_transform is not None  # noqa: S101
+        assert self.depth_patch_size is not None  # noqa: S101
+        standardized = self.depth_standardizer(disparity, mask)
+        small = self.depth_transform(standardized)  # (b, T, 1, h, w)
+        valid = self.depth_transform(mask.to(small.dtype))  # (b, T, 1, h, w)
+        stacked = torch.cat([small, valid], dim=-3)  # (b, T, 2, h, w)
+
+        size = self.depth_patch_size
+        *_, height, width = stacked.shape
+        grid = (height // size, width // size)
+        if (
+            grid[0] * size != height
+            or grid[1] * size != width
+            or grid != self.depth_patch_grid
+        ):
+            msg = (
+                f"depth input {height}x{width} at patch {size} gives grid {grid}, "
+                f"which is not an exact tiling or disagrees with "
+                f"depth_patch_grid {self.depth_patch_grid}"
+            )
+            raise ValueError(msg)
+        return rearrange(
+            stacked, "... c (gh p1) (gw p2) -> ... (gh gw) (c p1 p2)", p1=size, p2=size
+        )
+
+    def _depth_tokens(
+        self, batch: Any, *, batch_size: int, num_frames: int, device: torch.device
+    ) -> Tensor | None:
+        """`(b, T, n_depth_cameras * Pd, d)` depth patch tokens, or None when off.
+
+        Per-token layout into the trainable embedding (§22.7)::
+
+            [ flattened patch: patch * patch * 2 channels | camera_cond (13) ]
+
+        The per-PATCH validity is already inside that first block, as the second
+        channel of every pixel (§22.4) -- so a patch that is entirely unmeasured
+        is representable, and so is one that is half unmeasured, which is the
+        common case at an object boundary.
+
+        The per-SAMPLE `depth_valid` (§22.5) is a different statement -- "this
+        episode has no depth stream at all" -- and it is consumed by SUBSTITUTION
+        rather than as an input dimension: the whole token is replaced by the
+        learned `no_depth`. Feeding it as an extra input dimension as well would
+        be dead weight, since it is 1 for every token that survives the
+        substitution.
+
+        Raises:
+            KeyError: if a disparity stream is present without its validity mask.
+                Falling back to `disparity != 0` would look right and would
+                silently discard the loader's additional invalidations
+                (confidence threshold, left-right check), which are not zero.
+        """
+        if not self.use_depth:
+            return None
+        assert self.depth_patch_grid is not None  # ruff: ignore[assert]
+        assert self.depth_patch_embedding is not None  # ruff: ignore[assert]
+        b, t = batch_size, num_frames
+        num_patches = self.depth_patch_grid[0] * self.depth_patch_grid[1]
+
+        # ⚠️ §22.5: `depth_valid` ABSENT means "no depth", not "assume depth".
+        # None of the 104 existing episodes carry the key at all.
+        present = self._lookup(batch, self.depth_valid)
+        present = (
+            torch.zeros(b, dtype=torch.bool, device=device)
+            if present is None
+            else present.to(device=device, dtype=torch.bool).reshape(b)
+        )
+        # §22.5 depth DROPOUT: applied in training regardless of how much depth
+        # the data actually has, so the policy never becomes depth-dependent for
+        # basic motion and degrades gracefully when the stream is missing at
+        # serving time.
+        if self.training and self.depth_dropout > 0:
+            # ⚠️ NOT `present &= ...`. `present` may ALIAS `batch["depth_valid"]`
+            # -- `.to()` with a matching dtype and device returns the same tensor,
+            # not a copy -- so an in-place op here permanently zeroes the loader's
+            # own flag for that batch. With a cached or reused TensorDict that
+            # corruption outlives the step, and it is invisible: the batch simply
+            # claims it never had depth.
+            present = present & (  # noqa: PLR6104
+                torch.rand(b, device=device) >= self.depth_dropout
+            )
+
+        cond = self._lookup(batch, self.depth_camera_cond)
+        if cond is None:
+            cond = torch.zeros(
+                b, len(self.depth_cameras), CAMERA_COND_DIM, device=device
+            )
+
+        blocks: list[Tensor] = []
+        for index, camera in enumerate(self.depth_cameras):
+            disparity = self._lookup(batch, (self.depth_key.format(camera=camera),))
+            if disparity is None:
+                # the key is missing from the batch entirely -- the NORMAL case
+                # on today's data (§22.5). No embedding call at all.
+                tokens = self.no_depth.expand(b, t, num_patches, -1)
+            else:
+                mask = self._lookup(batch, (self.depth_mask_key.format(camera=camera),))
+                if mask is None:
+                    msg = (
+                        f"{self.depth_key.format(camera=camera)!r} present without "
+                        f"{self.depth_mask_key.format(camera=camera)!r}: contract "
+                        "§21.4/§22.4 requires the explicit validity mask"
+                    )
+                    raise KeyError(msg)
+                patches = self._patchify_depth(disparity, mask)
+                tokens = self.depth_patch_embedding(
+                    torch.cat(
+                        [
+                            patches,
+                            cond[:, index][:, None, None, :].expand(
+                                b, t, num_patches, -1
+                            ),
+                        ],
+                        dim=-1,
+                    )
+                )
+
+            # per-sample substitution, for a MIXED batch (some episodes have
+            # depth, some do not) and for the dropout above
+            available = present[:, None, None, None]
+            tokens = torch.where(available, tokens, self.no_depth.to(tokens.dtype))
+            blocks.append(tokens)
+
+        return torch.cat(blocks, dim=-2)
+
     def _state(self, batch: Any) -> Tensor:
         """`state.pose` in the model-facing 9D form, converting from storage if needed."""
         state = self._get(batch, self.state)
@@ -380,7 +692,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             return state_quat_to_9d(chunk)
         return chunk
 
-    def _frame_tokens(self, batch: Any) -> Tensor:  # noqa: PLR0914
+    def _frame_tokens(self, batch: Any) -> Tensor:  # ruff: ignore[too-many-locals]
         """Per-frame token blocks `(b, T, 3P + 1, d)` -- everything below the trunk.
 
         Factored out so a KV-cached one-frame decode step (the
@@ -422,6 +734,17 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             dim=-1,
         )  # (b, T, 2 * A_state + 2)
         state_token = self.state_embedding(state_input).unsqueeze(-2)  # (b, T, 1, d)
+
+        # ⚠️ depth goes BETWEEN the state token and the RGB patches, not after
+        # them: the readout is the LAST token of a frame block, and appending
+        # depth would make it a constant `no_depth` token on every sample without
+        # a depth stream -- which is most of them (§22.5). This way the readout
+        # stays the last `side_right` patch, exactly as in the depth-off model.
+        depth_tokens = self._depth_tokens(
+            batch, batch_size=b, num_frames=t, device=device
+        )
+        if depth_tokens is not None:
+            return torch.cat([state_token, depth_tokens, patch_tokens], dim=-2)
 
         # state first, so each frame block ends on a patch token (the readout)
         return torch.cat([state_token, patch_tokens], dim=-2)
@@ -486,12 +809,12 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         offset = self._offset(offsets, codes)
         return (self.tokenizer.invert(codes) + offset).unflatten(
             -1,
-            (-1, self.tokenizer._action_features),  # noqa: SLF001
+            (-1, self.tokenizer._action_features),  # ruff: ignore[private-member-access]
         )
 
     # ------------------------------------------------------------------ loss
 
-    def _compute_metrics(self, batch: Any) -> TensorDict:  # noqa: PLR0914
+    def _compute_metrics(self, batch: Any) -> TensorDict:  # ruff: ignore[too-many-locals]
         tokenizer = self.tokenizer
         features = self._features(batch)  # (b, T, d)
         chunk = self._chunk(batch)  # (b, T, H, 2, 60)
@@ -505,7 +828,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         with torch.no_grad():
             target_codes = tokenizer(flat_chunk)  # (n, g)
-            target = tokenizer._normalize(flat_chunk.flatten(-2, -1))  # noqa: SLF001
+            target = tokenizer._normalize(flat_chunk.flatten(-2, -1))  # ruff: ignore[private-member-access]
 
         side_features = self._per_side_features(features).reshape(
             -1, features.shape[-1]
@@ -541,7 +864,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             if getattr(tokenizer, "has_pose_layout", False):
                 shape = (-1, tokenizer.action_horizon, tokenizer.action_features)
                 metrics |= pose_error_metrics(
-                    tokenizer._denormalize(sampled_chunk.detach()).reshape(shape),  # noqa: SLF001
+                    tokenizer._denormalize(sampled_chunk.detach()).reshape(shape),  # ruff: ignore[private-member-access]
                     flat_chunk.reshape(shape),
                 )
 
@@ -551,7 +874,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
         metrics = self._compute_metrics(batch)
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # ruff: ignore[in-dict-keys]
         metrics["loss", "total"] = losses.sum(reduce=True)
         self.log_dict(
             {
