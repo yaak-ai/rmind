@@ -102,10 +102,11 @@
   <line x1="880" y1="500" x2="860" y2="516" stroke="#0891b2" stroke-dasharray="5 3" marker-end="url(#arrd)"/>
 
   <!-- ================= BAND 2 ================= -->
-  <text x="30" y="648" font-size="16" font-weight="bold" fill="#1a1a2e">2 · Trunk — CausalFrameTransformer (reused unchanged from the decoder-only branch)</text>
+  <text x="30" y="648" font-size="16" font-weight="bold" fill="#1a1a2e">2 · Trunk — CausalFrameTransformer, reused unchanged (rmind #269 stack, NOT the #265 flat-1D trunk)</text>
 
-  <rect x="30" y="666" width="1120" height="150" rx="6" fill="#ffedd5" stroke="#f97316"/>
-  <text x="590" y="690" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">flatten to T × 481 = 2886 tokens   (3126 with depth)   ·   learned 1D positional embedding</text>
+  <rect x="30" y="666" width="1120" height="172" rx="6" fill="#ffedd5" stroke="#f97316"/>
+  <text x="590" y="688" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">flatten to T × 481 = 2886 tokens   (3126 with depth)   ·   FACTORIZED position — not a flat 1D embedding</text>
+  <text x="590" y="708" text-anchor="middle" font-size="11.5" fill="#7c2d12">intra-frame: learned 481-slot embedding tiled onto every frame   ·   inter-frame: RoPE at FRAME granularity</text>
 
   <!-- attention mask sketch -->
   <text x="60" y="716" font-size="12" font-weight="bold" fill="#7c2d12">block-causal mask</text>
@@ -122,8 +123,8 @@
   </g>
   <text x="152" y="742" font-size="12" fill="#7c2d12">bidirectional WITHIN a frame,</text>
   <text x="152" y="760" font-size="12" fill="#7c2d12">causal ACROSS frames</text>
-  <text x="152" y="781" font-size="11" fill="#666">so a KV-cached one-frame decode step</text>
-  <text x="152" y="796" font-size="11" fill="#666">runs the identical pipeline at serving</text>
+  <text x="152" y="781" font-size="10.5" fill="#666">RoPE uses the EPISODE-ABSOLUTE frame index,</text>
+  <text x="152" y="795" font-size="10.5" fill="#666">so a slid window leaves cached keys valid</text>
 
   <rect x="430" y="720" width="300" height="76" rx="6" fill="#fff" stroke="#f6b98a"/>
   <text x="580" y="742" text-anchor="middle" font-size="12" font-weight="bold" fill="#7c2d12">pre-LN GPT blocks</text>
@@ -135,41 +136,42 @@
   <text x="935" y="761" text-anchor="middle" font-size="11" fill="#7c2d12">last patch token of each frame → (b, T, d)</text>
   <text x="935" y="780" text-anchor="middle" font-size="10" fill="#666">supervised at EVERY frame; inference decodes the newest</text>
 
+  <text x="590" y="826" text-anchor="middle" font-size="11" fill="#b45309">#265's flat 1D embedding is window-absolute — slot 0 means "oldest frame in the window", so sliding it stales every cached key</text>
   <line x1="616" y1="594" x2="616" y2="662" stroke="#555" marker-end="url(#arr)"/>
 
   <!-- ================= BAND 3 ================= -->
-  <text x="30" y="856" font-size="16" font-weight="bold" fill="#1a1a2e">3 · VQ-BeT chunk head  (per side, weight-shared + learned side embedding)</text>
+  <text x="30" y="872" font-size="16" font-weight="bold" fill="#1a1a2e">3 · VQ-BeT chunk head  (per side, weight-shared + learned side embedding)</text>
 
-  <rect x="30" y="874" width="250" height="96" rx="6" fill="#ffedd5" stroke="#f97316"/>
-  <text x="155" y="896" text-anchor="middle" font-size="12" font-weight="bold" fill="#7c2d12">code head</text>
-  <text x="155" y="915" text-anchor="middle" font-size="11" fill="#7c2d12">4 quantizers × 16 codes</text>
-  <text x="155" y="933" text-anchor="middle" font-size="11" fill="#7c2d12">focal loss vs target codes</text>
-  <text x="155" y="955" text-anchor="middle" font-size="10" fill="#666">targets from the frozen tokenizer</text>
+  <rect x="30" y="890" width="250" height="96" rx="6" fill="#ffedd5" stroke="#f97316"/>
+  <text x="155" y="912" text-anchor="middle" font-size="12" font-weight="bold" fill="#7c2d12">code head</text>
+  <text x="155" y="931" text-anchor="middle" font-size="11" fill="#7c2d12">4 quantizers × 16 codes</text>
+  <text x="155" y="949" text-anchor="middle" font-size="11" fill="#7c2d12">focal loss vs target codes</text>
+  <text x="155" y="971" text-anchor="middle" font-size="10" fill="#666">targets from the frozen tokenizer</text>
 
-  <rect x="316" y="874" width="250" height="96" rx="6" fill="#ffedd5" stroke="#f97316"/>
-  <text x="441" y="896" text-anchor="middle" font-size="12" font-weight="bold" fill="#7c2d12">offset head</text>
-  <text x="441" y="915" text-anchor="middle" font-size="11" fill="#7c2d12">gathered at the codes</text>
-  <text x="441" y="933" text-anchor="middle" font-size="11" fill="#7c2d12">teacher_force_offset = true</text>
-  <text x="441" y="955" text-anchor="middle" font-size="10" fill="#666">offset trained on TARGET codes, not sampled</text>
+  <rect x="316" y="890" width="250" height="96" rx="6" fill="#ffedd5" stroke="#f97316"/>
+  <text x="441" y="912" text-anchor="middle" font-size="12" font-weight="bold" fill="#7c2d12">offset head</text>
+  <text x="441" y="931" text-anchor="middle" font-size="11" fill="#7c2d12">gathered at the codes</text>
+  <text x="441" y="949" text-anchor="middle" font-size="11" fill="#7c2d12">teacher_force_offset = true</text>
+  <text x="441" y="971" text-anchor="middle" font-size="10" fill="#666">offset trained on TARGET codes, not sampled</text>
 
-  <rect x="602" y="874" width="250" height="96" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
-  <text x="727" y="896" text-anchor="middle" font-size="12" font-weight="bold" fill="#1e3a8a">RVQ pose tokenizer</text>
-  <text x="727" y="915" text-anchor="middle" font-size="11" fill="#1e3a8a">frozen · 6-step × 60-dim chunk</text>
-  <text x="727" y="933" text-anchor="middle" font-size="11" fill="#1e3a8a">invert(codes) + offset</text>
-  <text x="727" y="955" text-anchor="middle" font-size="10" fill="#1e3a8a">trained separately on 6D-rotation poses</text>
+  <rect x="602" y="890" width="250" height="96" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="727" y="912" text-anchor="middle" font-size="12" font-weight="bold" fill="#1e3a8a">RVQ pose tokenizer</text>
+  <text x="727" y="931" text-anchor="middle" font-size="11" fill="#1e3a8a">frozen · 6-step × 60-dim chunk</text>
+  <text x="727" y="949" text-anchor="middle" font-size="11" fill="#1e3a8a">invert(codes) + offset</text>
+  <text x="727" y="971" text-anchor="middle" font-size="10" fill="#1e3a8a">trained separately on 6D-rotation poses</text>
 
-  <rect x="888" y="874" width="262" height="96" rx="6" fill="#fff" stroke="#cbd5e1"/>
-  <text x="1019" y="896" text-anchor="middle" font-size="12" font-weight="bold" fill="#1a1a2e">action chunk</text>
-  <text x="1019" y="916" text-anchor="middle" font-size="12" fill="#444">(b, 2, 6, 60)</text>
-  <text x="1019" y="935" text-anchor="middle" font-size="11" fill="#444">side × horizon × 9D pose</text>
-  <text x="1019" y="956" text-anchor="middle" font-size="10" fill="#666">200 ms at 30 Hz · standardised</text>
+  <rect x="888" y="890" width="262" height="96" rx="6" fill="#fff" stroke="#cbd5e1"/>
+  <text x="1019" y="912" text-anchor="middle" font-size="12" font-weight="bold" fill="#1a1a2e">action chunk</text>
+  <text x="1019" y="932" text-anchor="middle" font-size="12" fill="#444">(b, 2, 6, 60)</text>
+  <text x="1019" y="951" text-anchor="middle" font-size="11" fill="#444">side × horizon × 9D pose</text>
+  <text x="1019" y="972" text-anchor="middle" font-size="10" fill="#666">200 ms at 30 Hz · standardised</text>
 
-  <line x1="280" y1="922" x2="312" y2="922" stroke="#555" marker-end="url(#arr)"/>
-  <line x1="566" y1="922" x2="598" y2="922" stroke="#555" marker-end="url(#arr)"/>
-  <line x1="852" y1="922" x2="884" y2="922" stroke="#555" marker-end="url(#arr)"/>
-  <line x1="935" y1="796" x2="935" y2="840" stroke="#555"/>
-  <line x1="935" y1="840" x2="155" y2="840" stroke="#555"/>
-  <line x1="155" y1="840" x2="155" y2="870" stroke="#555" marker-end="url(#arr)"/>
+  <line x1="280" y1="938" x2="312" y2="938" stroke="#555" marker-end="url(#arr)"/>
+  <line x1="566" y1="938" x2="598" y2="938" stroke="#555" marker-end="url(#arr)"/>
+  <line x1="852" y1="938" x2="884" y2="938" stroke="#555" marker-end="url(#arr)"/>
+  <line x1="935" y1="838" x2="935" y2="856" stroke="#555"/>
+  <line x1="935" y1="856" x2="155" y2="856" stroke="#555"/>
+  <line x1="155" y1="856" x2="155" y2="886" stroke="#555" marker-end="url(#arr)"/>
 
   <!-- ================= NOTES ================= -->
   <text x="30" y="1012" font-size="16" font-weight="bold" fill="#1a1a2e">Decisions worth knowing</text>
