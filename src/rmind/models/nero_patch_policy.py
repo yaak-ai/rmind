@@ -154,7 +154,14 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # boundary -- set False if a loader ever hands over 60 directly.
         convert_state_to_9d: bool = True,
         goal_dropout: float = 0.15,
-        sample_codes: bool = True,
+        # Argmax by default, not sampling. No loss depends on this while
+        # `teacher_force_offset` is True (the default): the code losses are
+        # cross-entropy against tokenizer-encoded `target_codes`, and the offset
+        # loss is teacher-forced from those same codes. So sampling only feeds
+        # the reported `offset_sampled_recon` / pose-error metrics -- and those
+        # are more useful computed the way SERVING decodes, which is argmax.
+        # It also makes inference deterministic; see docs/nero_serving_handover.md.
+        sample_codes: bool = False,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
         optimizer: HydraConfig[Optimizer] | None = None,

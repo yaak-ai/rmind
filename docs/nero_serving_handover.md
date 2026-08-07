@@ -48,14 +48,18 @@ stats shipped beside the tokenizer checkpoint.
 
 ## Four things that will bite you
 
-**1. The policy is STOCHASTIC by default.** Same input, different output — this is VQ-BeT
-sampling from a categorical over action codes, and it is deliberate (the point is a multimodal
-action distribution, not a single regressed action). Verified: identical inputs give outputs
-differing by ~1.1 in standardised units.
+**1. Inference is DETERMINISTIC by default** (`sample_codes=False`, i.e. `argmax` over action
+codes). Verified: repeated calls on identical inputs are bit-identical.
 
-For a deterministic serving path set `model.sample_codes = False` (falls back to `argmax`);
-verified bit-identical across repeated calls. **Decide which you want early** — a serving app
-written assuming determinism will look broken otherwise.
+Set `model.sample_codes = True` for stochastic sampling — VQ-BeT can sample from its categorical
+over codes, giving a multimodal action distribution. That is a real capability, but it is opt-in,
+because a serving app that assumes determinism should not be surprised. Measured: sampling makes
+repeated calls on identical inputs differ by ~1.1 in standardised units.
+
+No loss depends on this flag while `teacher_force_offset` is true (the default): the code losses
+are cross-entropy against tokenizer-encoded targets and the offset loss is teacher-forced from
+those same codes. Verified — all five losses bit-identical under both settings. It changes only
+the reported reconstruction metrics, which are now computed the way serving decodes.
 
 **2. State goes in as 46 dims, actions come out as 60.** Different spaces, not a typo. Input is
 canonical-quaternion storage (`3 + 4` per pose); output is the model-facing form
