@@ -16,8 +16,10 @@ from .prediction import (
 )
 from .prediction_config import PredictionConfigSetter
 from .safe import SafeCallback
+from .weights import CheckpointWeightLoader
 
 __all__ = [
+    "CheckpointWeightLoader",
     "DataFramePredictionWriter",
     "FeaturePermutator",
     "LogitBiasSetter",

@@ -77,6 +77,63 @@ class Identity(nn.Identity, Invertible):
         return input
 
 
+@final
+class RandomIlluminationGradient(Module):
+    """Multiply by a linear brightness ramp of random direction and strength.
+
+    `ColorJitter` models a *global* light change. This models a directional one -
+    a window, an overhead lamp, a shadow falling across part of the frame - which
+    is what a printed sheet held up in a warehouse actually sees. Expects float
+    input in [0, 1], i.e. before normalization.
+
+    One ramp is sampled per call, matching torchvision v2's per-call semantics.
+    """
+
+    @validate_call
+    def __init__(self, *, factor: tuple[float, float] = (0.65, 1.35)) -> None:
+        super().__init__()
+
+        self.factor: tuple[float, float] = factor
+
+    @override
+    def forward(self, input: Tensor) -> Tensor:
+        *_, height, width = input.shape
+        angle = torch.rand((), device=input.device) * 2 * torch.pi
+        rows = torch.linspace(-0.5, 0.5, height, device=input.device)
+        cols = torch.linspace(-0.5, 0.5, width, device=input.device)
+        ramp = rows[:, None] * torch.cos(angle) + cols[None, :] * torch.sin(angle)
+        # normalize to [0, 1] so `factor` bounds the actual gain regardless of angle
+        ramp = (ramp - ramp.min()) / (
+            ramp.max() - ramp.min() + torch.finfo(ramp.dtype).eps
+        )
+        low, high = self.factor
+
+        return (input * (low + ramp * (high - low))).clamp(0.0, 1.0)
+
+    @override
+    def extra_repr(self) -> str:
+        return f"factor={list(self.factor)}"
+
+
+@final
+class TrainOnly(Module):
+    """Apply `module` in training mode only; identity otherwise.
+
+    Lets train-time-only transforms (e.g. image augmentation) live inside the
+    model's `input_transform`, so they are absent from `predict`/`validation`
+    and traced away by `torch.export` (which runs the module in eval mode).
+    """
+
+    def __init__(self, *, module: Module) -> None:
+        super().__init__()
+
+        self.module: Module = module
+
+    @override
+    def forward(self, input: Tensor) -> Tensor:
+        return self.module(input) if self.training else input
+
+
 type Paths = Mapping[str, tuple[str, ...] | Paths]
 
 

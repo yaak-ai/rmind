@@ -1,0 +1,210 @@
+---
+# Palletjack pretrain architecture — the counterpart of
+# `model/yaak/control_transformer/raw.yaml` for the Linde D12.
+#
+# Differences vs the yaak (car) model:
+#   - one camera (`cam_left_backward`), no speed observation and no
+#     route/waypoint context (indoor operation, no map)
+#   - three continuous actions (traction, steering, fork1) replacing
+#     gas_pedal / brake_pedal / steering_angle / turn_signal
+#   - forward dynamics predicts foresight only, there being no speed to predict
+defaults:
+  - /model/palletjack/control_transformer/episode_builder@episode_builder: default
+  - _self_
+
+_target_: rmind.models.control_transformer.ControlTransformer
+_recursive_: false
+_convert_: all
+
+encoder:
+  _target_: rmind.utils.functional.compiled
+  backend: inductor
+  module:
+    _target_: rmind.components.transformer.TransformerEncoder
+    dim_model: ${encoder_embedding_dim}
+    num_layers: ${num_layers}
+    num_heads: ${num_heads}
+    attn_dropout: 0.1
+    resid_dropout: 0.1
+    mlp_dropout: 0.1
+    hidden_layer_multiplier: 1
+    emb_norm:
+      _target_: torch.nn.LayerNorm
+      normalized_shape: ${encoder_embedding_dim}
+    rope:
+      _target_: rmind.components.position_encoding.RotaryPositionalEmbeddings
+      dim:
+        _target_: operator.floordiv
+        _args_:
+          - ${encoder_embedding_dim}
+          - ${num_heads}
+      max_seq_len: 256
+      base: 10
+
+objectives:
+  _target_: rmind.components.containers.ModuleDict
+  _convert_: all
+  modules:
+    inverse_dynamics:
+      _target_: rmind.components.objectives.InverseDynamicsPredictionObjective
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
+      heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            traction:
+              _target_: rmind.components.nn.Linear
+              in_features: ${encoder_embedding_dim}
+              out_features: ${traction_bins}
+              bias: False
+            steering:
+              _target_: rmind.components.nn.Linear
+              in_features: ${encoder_embedding_dim}
+              out_features: ${steering_bins}
+              bias: False
+            fork1:
+              _target_: rmind.components.nn.Linear
+              in_features: ${encoder_embedding_dim}
+              out_features: ${fork1_bins}
+              bias: False
+
+      targets:
+        continuous:
+          traction: [input_tokens, continuous, traction]
+          steering: [input_tokens, continuous, steering]
+          fork1: [input_tokens, continuous, fork1]
+
+      losses:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            traction:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+            steering:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+            fork1:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+
+    forward_dynamics:
+      _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
+      # null is intentional: foresight features pass through their own projection
+      norm: null
+      patch_pos_embed:
+        _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
+        grid_size: [16, 16]
+        embedding_dim: ${image_embedding_dim}
+      projections:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          foresight:
+            cam_left_backward:
+              _target_: torch.nn.Sequential
+              _args_:
+                - _target_: rmind.components.nn.Linear
+                  in_features:
+                    _target_: operator.mul
+                    _args_:
+                      - 2
+                      - ${encoder_embedding_dim}
+                  out_features: ${encoder_embedding_dim}
+
+      heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          foresight:
+            cam_left_backward:
+              _target_: rmind.components.transformer.CrossAttentionDecoderHead
+              decoder:
+                _target_: rmind.components.transformer.CrossAttentionDecoder
+                dim_model: ${image_embedding_dim}
+                num_layers: 2
+                num_heads: 4
+                attn_dropout: 0.1
+                resid_dropout: 0.1
+                mlp_dropout: 0.1
+                hidden_layer_multiplier: 1
+              output_projection:
+                _target_: rmind.components.nn.Linear
+                in_features: ${image_embedding_dim}
+                out_features: ${image_embedding_dim}
+
+      targets:
+        foresight:
+          cam_left_backward: [input_embeddings, image, cam_left_backward]
+
+      losses:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          foresight:
+            cam_left_backward:
+              _target_: rmind.components.loss.GramAnchoringLoss
+              weight_sim: 1.0
+              weight_gram: 100.0
+              patches: 256
+
+    memory_extraction:
+      _target_: rmind.components.objectives.MemoryExtractionObjective
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
+      heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            traction_diff:
+              _target_: rmind.components.nn.Linear
+              in_features: ${encoder_embedding_dim}
+              out_features: ${traction_bins}
+              bias: False
+
+            steering_diff:
+              _target_: rmind.components.nn.Linear
+              in_features: ${encoder_embedding_dim}
+              out_features: ${steering_bins}
+              bias: False
+
+            fork1_diff:
+              _target_: rmind.components.nn.Linear
+              in_features: ${encoder_embedding_dim}
+              out_features: ${fork1_bins}
+              bias: False
+
+      targets:
+        continuous:
+          traction_diff: [input_tokens, continuous, traction_diff]
+          steering_diff: [input_tokens, continuous, steering_diff]
+          fork1_diff: [input_tokens, continuous, fork1_diff]
+
+      losses:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            traction_diff:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+
+            steering_diff:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+
+            fork1_diff:
+              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: 1e-5
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: 25000
+    num_training_steps: 250000

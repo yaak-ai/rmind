@@ -112,7 +112,13 @@ class AttentionMaskBuilder(Module, ABC):
         index: TensorTree, *, step: int | slice, keys: Sequence[tuple[str, str]]
     ) -> Tensor:
         leaves = tree_leaves(index, lambda x: isinstance(x, Tensor))
-        chunks = [index[modality][name][step].reshape(-1) for modality, name in keys]  # ty:ignore[invalid-argument-type, unresolved-attribute]
+        # keys absent from the index are skipped: an embodiment need not use every
+        # token kind (e.g. an image-only episode has no action or action_summary tokens)
+        chunks = [
+            index[modality][name][step].reshape(-1)  # ty:ignore[invalid-argument-type, unresolved-attribute]
+            for modality, name in keys
+            if name in index.get(modality, {})
+        ]
         if not chunks:
             return leaves[0].new_empty(0)
 

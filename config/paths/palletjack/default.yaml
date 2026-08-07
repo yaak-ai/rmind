@@ -1,0 +1,6 @@
+---
+data: ${hydra:runtime.cwd}/data/palletjack
+cards: ${paths.data}/cards
+background: ${paths.data}/background
+rbyte:
+  cache: .rbyte_cache
