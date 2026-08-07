@@ -320,6 +320,183 @@ time is dominated by synthetic image generation on the CPU, not by the model.
 images the difference is uint8 rounding, i.e. nothing measurable — but the three
 are not a controlled comparison of that change.</sub>
 
+## Depth (contract §22) — opt-in, off by default
+
+Max asked for depth in the policy, so it is built — but **config-gated and off by
+default** (§22.6), so the existing arm is untouched and depth can be measured as
+an A/B rather than assumed to help. `config/experiment/yaak/nero_arms/causal.yaml`
+and `config/model/yaak/nero_patch_policy/raw.yaml` are **not modified**; the arm
+is an additive experiment, `causal_depth.yaml`, that inherits `causal.yaml`.
+
+| file | what |
+| --- | --- |
+| `config/experiment/yaak/nero_arms/causal_depth.yaml` | the whole depth arm |
+| `rmind.data.nero.DisparityStandardizer` | train-split disparity standardisation, versioned artifact |
+| `NeroPatchPolicy._patchify_depth` / `._depth_tokens` | the §22.7 embedding and the absence handling |
+| `rmind.datamodules.nero_random` | `depth=True` emits the stream at real contract shapes |
+| `rmind.scripts.nero_smoke --depth`, `--stage depth` | budget/fit/policy smoke |
+
+### Depth is a fourth CAMERA, not a fourth channel (§22.1/§22.2)
+
+The disparity stream declares `reference_frame: rectified_CAM_B`,
+`aligned_to: none`: it lives in the rectified **left mono** camera's frame — a
+different sensor at a different position with a much wider lens (96.0° HFOV
+against `CAM_A`'s 73.7°). `setDepthAlign` is deliberately not applied upstream
+because warping invalidates the `fx_mono · baseline / disparity` conversion. So
+stacking it as a 4th channel on the overhead RGB would silently misregister every
+pixel — the failure would look like a mildly unhelpful input, not like an error.
+
+It therefore gets its own patch tokens and its own 13-dim `camera_cond` built
+from the mono intrinsics at the recorded depth resolution, reusing the machinery
+that already handles three heterogeneous cameras.
+
+### The encoder is a TRAINABLE patch embedding, not the frozen ViT (§22.7)
+
+⚠️ **This was the one real design error, and it is worth recording.** The first
+implementation routed disparity through the same frozen DINOv2 that serves the
+RGB cameras — replicated to 3 channels, at 140×224, with the resulting patch
+features average-pooled to a coarser grid. Wrong on three counts:
+
+1. **Domain.** DINOv2 is trained on natural RGB — photometric statistics,
+   texture, colour, semantics. Disparity is a smooth, single-channel, purely
+   *geometric* signal; as a grey image it has none of those statistics.
+2. **Frozen.** Even if the features partly transferred, nothing downstream can
+   adapt them. The mismatch is uncorrectable anywhere in the pipeline.
+3. **The cost ran backwards.** A fourth ViT pass is +33% frozen-encoder compute
+   per frame to buy only ~+8% sequence — the *larger* cost for the *less
+   appropriate* representation.
+
+The replacement is what a ViT does at its own input, and the standard treatment
+for a non-RGB modality: patchify and project with a `Linear`.
+
+| | frozen-ViT pass (rejected) | trainable patch embedding (shipped) |
+| --- | --- | --- |
+| parameters | ~22M **frozen** | **269k trainable** (`Linear(525 → 512)`) |
+| FLOPs | a 4th full ViT forward | one matmul per patch |
+| domain fit | RGB pretraining, no adaptation | learned on disparity directly |
+
+**Two input channels: standardised disparity and the validity mask.** The mask
+being a first-class input is the point — "no measurement" becomes its own state
+instead of something the network must infer from a fill value.
+
+The coarse grid §22.2 asks for now falls straight out of the patch size, with no
+pooling: 400×640 letterboxes isotropically to 80×128, which at patch 16 is a
+**5×8 = 40-token** grid. §22.2's literal "half the patches" is a config change.
+
+### Normalised disparity, and invalid means invalid (§22.3/§22.4)
+
+Disparity, not metric depth: it is bounded (0–95) and uniformly quantised,
+whereas metric depth is unbounded with precision collapsing at range, so a single
+far pixel dominates any normalisation. It is also the raw measurement, so no
+calibration error enters the model input at all.
+
+`DisparityStandardizer` fits on the **training split only** and over **valid
+pixels only**, and the second rule is not cosmetic — measured on the synthetic
+stream at only 3.9% invalid:
+
+| | mean | std |
+| --- | --- | --- |
+| valid pixels only (correct) | **48.15** | **18.93** |
+| all pixels (the easy mistake) | 46.30 | 20.75 |
+
+The gap scales with the invalid fraction, which on real stereo is far above 3.9%
+and is concentrated exactly where the object is.
+
+`disparity == 0` is *no measurement*, not zero distance. Invalid pixels are
+filled with the train mean (landing on 0 after standardisation — a neutral
+non-measurement) **and** flagged by the mask channel. The fill and the
+standardisation happen at native resolution, **before** any resampling: the other
+order lets invalid zeros bleed into valid neighbours during interpolation, which
+fabricates a small, plausible-looking depth gradient at precisely the object
+boundaries where stereo drops out.
+
+### Absence is the normal case (§22.5)
+
+None of the 104 existing episodes have depth and the recorder's `--depth` is off
+by default. **Three** distinct absences, all handled:
+
+* the `disparity.*` key is **missing from the batch entirely** — no embedding
+  call at all (this is today's real data);
+* the key is present but a sample has `depth_valid=False` — a **mixed batch**;
+* `depth_dropout` (0.25) forcing the second case during training, so the policy
+  never becomes depth-*dependent* for basic motion.
+
+In every case the token becomes a **learned `no_depth`, never zeros**, so "this
+episode has no depth stream" is distinguishable from "a depth map that happens to
+encode near zero". `no_depth` is verified to receive gradient through a real
+backward pass on a depth-absent batch.
+
+Depth tokens sit **between the state token and the RGB patches**, so the readout
+(the last token of a frame block) is still a `side_right` patch exactly as in the
+depth-off model — rather than becoming a constant `no_depth` token on the
+majority of samples.
+
+### Measured — depth-on vs depth-off
+
+Same box (one RTX 5090), same batch size 8, 60 steps, gradient checkpointing on.
+
+| | depth-off | depth-on | delta |
+| --- | --- | --- | --- |
+| tokens / frame | 481 | **521** | +8.3% |
+| flattened sequence (T=6) | 2886 | **3126** | +8.3% |
+| **peak memory** | **1.743 GiB** | **1.859 GiB** | **+6.7%** |
+| median step | 0.218 s | 0.229 s | +5.1% |
+| trainable params | 40.705M | 40.995M | +0.7% |
+| total params | 62.929M | 63.220M | +0.5% |
+
+The +290,304 parameters are exactly `Linear(525 → 512)` = 269,312, the 512-dim
+`no_depth` token, and the trunk's tiled intra-frame embedding growing by
+40 × 512 = 20,480.
+
+⚠️ **This supersedes the §22.2 estimate of +33% sequence and ~1.8× attention**,
+which assumed a fourth stream at the *same* patch grid (641 tokens/frame). At the
+coarse 40-token grid the real cost is +8.3% sequence and a **measured** +6.7%
+peak memory.
+
+⚠️ **The loss curves from these runs are NOT a learning claim.** They were run
+without a trained tokenizer checkpoint, so the inline RVQ is uninitialised and
+collapses every chunk onto code 0 — all four code losses are exactly 0.000 and
+the offset head is fitting a near-constant target. What these runs measure is
+memory, throughput and stability; both arms train without divergence and their
+curves are indistinguishable, which is the expected result when the synthetic
+depth is noise. A real comparison needs the tokenizer stage and real depth data,
+neither of which exists yet.
+
+### Proof that depth-off is unchanged
+
+A within-branch test can only show the depth code is not *reached*. The actual
+guarantee is a **cross-commit fingerprint**: seed, compose
+`experiment=yaak/nero_arms/causal`, and dump the resolved model config, a sha256
+of every `state_dict` tensor, a sha256 of the synthetic batch, and the forward
+output. Run on `feat/nero-arms-causal-patch-policy`, then on this branch:
+
+```
+params      62929320
+tokens      [2, 6, 481, 512]  4744876913c19e82
+features    3cb1fa34ccb1b4d7
+prediction  4cc9853c1a7d5f81
+```
+
+**Byte-identical**, including the resolved config — because `raw.yaml` and
+`causal.yaml` are untouched and every depth module is constructed only under
+`use_depth`, *last*, so the init RNG stream for every pre-existing module is
+unchanged whether depth is on or off. (That ordering also makes the A/B a
+controlled comparison: both arms share identical weights everywhere else.)
+
+### A bug this found
+
+Depth dropout was written as `present &= ...`. `present` comes from
+`batch["depth_valid"].to(dtype=torch.bool, device=cpu)`, and `.to()` with a
+matching dtype and device returns **the same tensor, not a copy** — so the
+in-place op permanently zeroed the loader's own flag for that batch. With a
+cached or reused TensorDict the corruption outlives the step and is invisible:
+the batch simply claims it never had depth. Regression test:
+`test_depth_dropout_does_not_mutate_the_batch`.
+
+⚠️ It was introduced by a `ruff` autofix (PLR6104, non-augmented-assignment)
+rewriting a deliberate out-of-place `&`. Worth knowing that rule can be unsafe
+where the left-hand side may alias caller-owned data.
+
 ## Contract issues
 
 1. **§8's `(T, 2, 60)` contradicts §5.2's quaternion storage.** rbyte implemented
@@ -355,6 +532,52 @@ are not a controlled comparison of that change.</sub>
    `action.future_state` — ~199 MB of a ~470 MB TensorDict, scaling linearly. The
    policy reads exactly one path (config-selected), so nothing downstream pays
    for it; the duplication is worth removing loader-side before the dataset grows.
+
+7. **§22.2 says depth gets "its own 13-dim `camera_cond`" but never says
+   WHERE it lives** — and §8 pins `camera_cond` at `(3, 13)`. Adding a fourth row
+   would change the shape of an existing key for every consumer and force a
+   padded row whenever depth is absent, which is most of the time. This side
+   therefore emits a **separate key**, and the names below need pinning exactly
+   as §21.10 pinned `disparity.{camera}` — the recorder and the consumer already
+   diverged once on precisely this kind of unnamed record:
+
+   | key | shape | meaning |
+   | --- | --- | --- |
+   | `disparity.{camera}` | `(T, 1, 400, 640)` uint8 | the stream (§21.11 resolution) |
+   | `disparity_valid.{camera}` | `(T, 1, 400, 640)` bool | **per-pixel** validity (§21.4) |
+   | `disparity_cond` | `(n_depth_cameras, 13)` float32 | mono intrinsics + extrinsics |
+   | `depth_valid` | `(,)` bool | **per-sample** "this episode has depth" (§22.5) |
+
+   ⚠️ `disparity_valid.*` and `depth_valid` are one word apart and mean entirely
+   different things. Renaming one of them before real data exists would be cheap;
+   afterwards it will not be. All four are config-settable model-side, so pinning
+   them later is a config change rather than a code change.
+8. **§22.2's sequence-cost estimate is superseded.** It projected +33% sequence
+   and ~1.8× attention, assuming a fourth stream at the *same* patch grid. At the
+   coarse 40-token grid this arm measures **+8.3% sequence and +6.7% peak
+   memory**. §22.2 should carry the measured figure.
+9. **§22.2 and §22.7 are in tension as written.** §22.2 says depth "reuses the
+   machinery that already handles three heterogeneous cameras", which read
+   literally is exactly what produced the frozen-ViT error that §22.7 then
+   corrects. §22.2 should say it reuses the *token-and-conditioning* machinery
+   but **not** the encoder.
+10. **§21.9's "the depth stream is never resized" is stated absolutely but is
+    really a constraint on the metric conversion.** Resizing scales `fx` but not
+    the stored disparity values, so `fx · baseline / disparity` breaks — which
+    binds *rbyte*, where the conversion lives. The policy consumes standardised
+    disparity and never converts, so letterboxing to the model grid is legal.
+    §21.9 should say "never resized **before** the conversion", or a future
+    reader will conclude the policy cannot resize it and will pay 400×640 tokens.
+11. **Pre-existing, not depth-specific: `letterbox_camera_cond` is never called
+    in the live path.** It is implemented and unit-tested in
+    `rmind.data.nero`, and the Files table above implies it is applied, but
+    `_frame_tokens` consumes `camera_cond` raw — so the RGB `base` camera's
+    intrinsics are not rewritten for its letterbox padding. Harmless today only
+    because §7's `placeholder: true` makes `camera_cond` a constant. **It must be
+    wired in before the real calibration drops**, and doing so will change the
+    depth-off model, so it wants its own commit and its own A/B. Depth's own
+    letterbox is a pure isotropic resize with no padding, so the rewrite is a
+    no-op for `disparity_cond`.
 
 ## Open items for the user
 
