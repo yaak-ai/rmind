@@ -1,0 +1,46 @@
+{
+  "min_ulp": 2.68798828125,
+  "verdict": "marginal: verify parity at n>=200 before serving low precision",
+  "probes": {
+    "node_argmax": {
+      "n": 25,
+      "min_ulp": 2.68798828125,
+      "p1_ulp": 35.619257812499995,
+      "median_ulp": 412.891845703125,
+      "frac_under_1_ulp": 0.0,
+      "frac_under_4_ulp": 0.04
+    },
+    "node_argmax_1": {
+      "n": 25,
+      "min_ulp": 11.5570068359375,
+      "p1_ulp": 11.7054541015625,
+      "median_ulp": 44.3668212890625,
+      "frac_under_1_ulp": 0.0,
+      "frac_under_4_ulp": 0.0
+    },
+    "node_argmax_2": {
+      "n": 25,
+      "min_ulp": 2.8753662109375,
+      "p1_ulp": 3.1220166015625,
+      "median_ulp": 49.34912109375,
+      "frac_under_1_ulp": 0.0,
+      "frac_under_4_ulp": 0.08
+    },
+    "node_argmax_3": {
+      "n": 25,
+      "min_ulp": 3.3167724609375,
+      "p1_ulp": 5.639575195312499,
+      "median_ulp": 41.0595703125,
+      "frac_under_1_ulp": 0.0,
+      "frac_under_4_ulp": 0.04
+    },
+    "node_argmax_4": {
+      "n": 100,
+      "min_ulp": 3.1466064453125,
+      "p1_ulp": 8.10216552734375,
+      "median_ulp": 184.781494140625,
+      "frac_under_1_ulp": 0.0,
+      "frac_under_4_ulp": 0.01
+    }
+  }
+}

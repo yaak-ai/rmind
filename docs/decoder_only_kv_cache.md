@@ -8,13 +8,13 @@ Per tick the model encodes **one** new frame (257 tokens: 1 speed token prepende
 to 256 goal-fused patch tokens), runs those 257 queries against the cached K/V of
 past frames, and never recomputes or re-attends old frames to each other.
 
-| | file |
-| --- | --- |
-| trunk + mask + RoPE + cache | `src/rmind/components/transformer/causal_frame.py` |
-| one-tick export wrapper | `src/rmind/models/patch_policy_decoder.py` |
-| correctness gate | `tests/test_causal_frame.py` (cache/positional gates on CPU; the FlexAttention fwd+bwd parity gate needs CUDA and skips without it) |
-| block-sparse training benchmark | `tests/bench_causal_frame.py` |
-| training arms | `config/experiment/yaak/patch_policy/dinov2_dinowm_causal.yaml`, `..._causal_80gb.yaml` |
+|                                 | file                                                                                                                                |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| trunk + mask + RoPE + cache     | `src/rmind/components/transformer/causal_frame.py`                                                                                  |
+| one-tick export wrapper         | `src/rmind/models/patch_policy_decoder.py`                                                                                          |
+| correctness gate                | `tests/test_causal_frame.py` (cache/positional gates on CPU; the FlexAttention fwd+bwd parity gate needs CUDA and skips without it) |
+| block-sparse training benchmark | `tests/bench_causal_frame.py`                                                                                                       |
+| training arms                   | `config/experiment/yaak/patch_policy/dinov2_dinowm_causal.yaml`, `..._causal_80gb.yaml`                                             |
 
 Everything outside the trunk is unchanged: the frozen DINOv2 ViT-S encoder, the
 frozen goal encoder and its RVQ, the fusion, `patch_projection`,
@@ -44,14 +44,14 @@ latency with representation.
 All 257 tokens of a frame share one rotation `R_f`, which gives both properties
 the hand-off asks for:
 
-* intra-frame attention is **exactly unrotated**, `(R_f q)ᵀ(R_f k) = qᵀk`, so it
+- intra-frame attention is **exactly unrotated**, `(R_f q)ᵀ(R_f k) = qᵀk`, so it
   stays fully bidirectional and is ordered only by the intra-frame embedding;
-* inter-frame logits depend only on `f_q − f_k`, so a key rotated with its own
+- inter-frame logits depend only on `f_q − f_k`, so a key rotated with its own
   episode-absolute frame index is valid **forever**, at any future window
   position. That is precisely cache-safety.
 
 `rope_base = 1000`, not the customary 10000: over a 64-frame range, base 10000
-leaves most frequency pairs rotating <0.01 rad and therefore inert.
+leaves most frequency pairs rotating \<0.01 rad and therefore inert.
 
 **Why not ALiBi.** ALiBi is equally cache-safe and, being a pure additive bias,
 folds into the existing mask with no new ops. It remains the better choice for a
@@ -63,7 +63,7 @@ model family. Two reasons it is not the default here:
    inputs**, computed host-side in float64 from the episode frame counter. The
    exported engine contains zero trigonometric nodes, so ALiBi's advantage
    evaporates.
-2. ALiBi's bias is per-head and query-dependent, so the training path must
+1. ALiBi's bias is per-head and query-dependent, so the training path must
    materialize an `(H, S, S)` tensor. At 32 frames that is 12 × 8224² × 4 B ≈
    3.2 TB. RoPE has no such term.
 
@@ -111,12 +111,12 @@ Outputs: `policy.joint_actions`, `new_k`, `new_v`.
 
 Two silent-failure hazards on the drivr side:
 
-* `TRTEngine.run` binds via `set_tensor_address` — a raw pointer with **no size
+- `TRTEngine.run` binds via `set_tensor_address` — a raw pointer with **no size
   validation** (§3.4). A cache allocated for a different `cache_frames`, layer
   count, head count or dtype is not an error; TRT reinterprets the buffer and the
   model merely looks weak. **Validate every binding against
   `engine.get_tensor_shape(name)` before the first `run`.**
-* Cache and frame counter must be **reset on every episode boundary** — engage,
+- Cache and frame counter must be **reset on every episode boundary** — engage,
   disengage, manual override. drivr already clears the action plan on those
   transitions; hook the same paths. A stale cache is not detectable from the
   output.
@@ -152,12 +152,12 @@ vanishes at `num_layers=1`.
 
 **Result at production sizes** (257 tokens/frame, max over every frame's readout):
 
-| configuration | float64 | float32 |
-| --- | --- | --- |
-| small 8L/512d, window 6, T=7 | 1.78e-15 | 1.43e-06 (3.2e-07 rel) |
-| `_big` 12L/768d, window 6, T=7 | 2.67e-15 | 1.55e-06 (4.0e-07 rel) |
-| `_big` 12L/768d, window 32, T=40 | 4.44e-15 | 1.91e-06 (4.2e-07 rel) |
-| **negative control** (window-absolute, small, window 6) | — | **9.37e-02 (2.1e-02 rel)** |
+| configuration                                           | float64  | float32                    |
+| ------------------------------------------------------- | -------- | -------------------------- |
+| small 8L/512d, window 6, T=7                            | 1.78e-15 | 1.43e-06 (3.2e-07 rel)     |
+| `_big` 12L/768d, window 6, T=7                          | 2.67e-15 | 1.55e-06 (4.0e-07 rel)     |
+| `_big` 12L/768d, window 32, T=40                        | 4.44e-15 | 1.91e-06 (4.2e-07 rel)     |
+| **negative control** (window-absolute, small, window 6) | —        | **9.37e-02 (2.1e-02 rel)** |
 
 The float64 residual is at machine epsilon, which proves the equivalence is exact
 and the ~1.5e-6 float32 residual is purely floating-point accumulation order —
@@ -179,10 +179,10 @@ alarm — compare absolute error against the tensor scale.
 
 ### Weights (measured, fp32 engines)
 
-| arm | parameters | fp32 TRT engine | ONNX initializers |
-| --- | --- | --- | --- |
-| small (8L/512d) | 52.6 M | **207.2 MiB** | 213.0 MB |
-| `_big` (12L/768d) | ~115 M | **440.2 MiB** | 453.3 MB |
+| arm               | parameters | fp32 TRT engine | ONNX initializers |
+| ----------------- | ---------- | --------------- | ----------------- |
+| small (8L/512d)   | 52.6 M     | **207.2 MiB**   | 213.0 MB          |
+| `_big` (12L/768d) | ~115 M     | **440.2 MiB**   | 453.3 MB          |
 
 The decoder-step engine is marginally *smaller* than the baseline's at the same
 arm (434.2 vs 440.2 MiB for `_big`) — the 1542-slot positional table is gone and
@@ -198,22 +198,22 @@ Per cached frame: small (8L/512d) **8.03 MiB** fp32 / 4.02 MiB fp16; `_big`
 (12L/768d) **18.07 MiB** fp32 / 9.04 MiB fp16.
 
 | context (frames) | cached keys | small fp32 | `_big` fp32 | small fp16 | `_big` fp16 |
-| --- | --- | --- | --- | --- | --- |
-| 6 | 1285 | 40 MiB | 90 MiB | 20 MiB | 45 MiB |
-| 16 | 3855 | 120 MiB | 271 MiB | 60 MiB | 136 MiB |
-| 32 | 7967 | 249 MiB | 560 MiB | 124 MiB | 280 MiB |
-| 64 | 16191 | 506 MiB | 1138 MiB | 253 MiB | 569 MiB |
-| 128 | 32639 | 1020 MiB | 2295 MiB | 510 MiB | 1147 MiB |
+| ---------------- | ----------- | ---------- | ----------- | ---------- | ----------- |
+| 6                | 1285        | 40 MiB     | 90 MiB      | 20 MiB     | 45 MiB      |
+| 16               | 3855        | 120 MiB    | 271 MiB     | 60 MiB     | 136 MiB     |
+| 32               | 7967        | 249 MiB    | 560 MiB     | 124 MiB    | 280 MiB     |
+| 64               | 16191       | 506 MiB    | 1138 MiB    | 253 MiB    | 569 MiB     |
+| 128              | 32639       | 1020 MiB   | 2295 MiB    | 510 MiB    | 1147 MiB    |
 
 ### Total resident
 
 delta-dev1 has **15 GiB** of LPDDR5 shared between CPU and GPU, ~12 GiB
 practically available (measured `free`). Weights + cache, fp32:
 
-| | 6 frames | 16 | 32 | 64 |
-| --- | --- | --- | --- | --- |
-| small | 247 MiB | 327 MiB | 456 MiB | 713 MiB |
-| `_big` | 530 MiB | 711 MiB | **1000 MiB** | 1578 MiB |
+|        | 6 frames | 16      | 32           | 64       |
+| ------ | -------- | ------- | ------------ | -------- |
+| small  | 247 MiB  | 327 MiB | 456 MiB      | 713 MiB  |
+| `_big` | 530 MiB  | 711 MiB | **1000 MiB** | 1578 MiB |
 
 **Memory is not the binding constraint at any context length worth training** —
 `_big` at 64 frames is 1.5 GiB, 13 % of what is available, and halves again with an
@@ -271,10 +271,10 @@ Three failure modes, all silent, all worth an explicit check:
 
 1. **Wrong cache shape** — `set_tensor_address` takes a raw pointer, so a
    mismatched cache is reinterpreted rather than rejected. Validate at load.
-2. **Cache not reset at an episode boundary** — the model conditions on frames
+1. **Cache not reset at an episode boundary** — the model conditions on frames
    from before the disengage. The output stays plausible. Hook the paths that
    already clear the action plan.
-3. **`frame_index` not monotone** (e.g. reset mid-episode, or wrapped) — RoPE
+1. **`frame_index` not monotone** (e.g. reset mid-episode, or wrapped) — RoPE
    offsets become wrong for the frames still in the ring. Reset the counter
    **only** together with the cache.
 
@@ -286,20 +286,19 @@ Optional but cheap: assert the number of valid slots in `cache_bias` equals
 `clip_length = episode_length + clip_horizon - 1`, so moving from 6 to 16 frames
 takes clips from 11 to 21 samples, and 64 frames would need 69. Consequences:
 
-* the dataset must be **rebuilt** — `clip_period` is derived from `clip_length`
+- the dataset must be **rebuilt** — `clip_period` is derived from `clip_length`
   and the existing clip-11 build is not reusable;
-* at `episode_step = 10` (≈3 Hz), 21 samples span ~7 s of driving and 69 span
+- at `episode_step = 10` (≈3 Hz), 21 samples span ~7 s of driving and 69 span
   ~23 s;
-* **the train-set SIZE barely changes**, which is worth stating because the
+- **the train-set SIZE barely changes**, which is worth stating because the
   opposite is the intuitive guess. The sampler is
-  `rbyte.io.DataFrameGroupByDynamic(every=${episode_stride} = 10i,
-  period=${clip_period}, gather_every=${episode_step})`: clip *starts* are strided
+  `rbyte.io.DataFrameGroupByDynamic(every=${episode_stride} = 10i, period=${clip_period}, gather_every=${episode_step})`: clip *starts* are strided
   by `every`, independently of `period`, so a longer clip does not thin the
   windows — it only truncates each drive's tail. Going from `clip_length` 11 to 37
-  costs ~26 windows of ~3.1k per drive, <1 % of the ~1.97M samples (assuming short
+  costs ~26 windows of ~3.1k per drive, \<1 % of the ~1.97M samples (assuming short
   trailing windows are dropped; confirm on the first cache rebuild). Steps/epoch is
   therefore `~1.97M / batch_size` at any `episode_length`;
-* per-sample decode/IO grows linearly with `clip_length`, so the loader becomes a
+- per-sample decode/IO grows linearly with `clip_length`, so the loader becomes a
   real cost at long context, not just the GPU.
 
 This is the practical reason to step 6 → 16 → 32 rather than jumping to 64.
@@ -324,10 +323,10 @@ not to write it that way.
 **Gate zero — the baseline reproduces.** Randomly-initialized fp32 exports of the
 *existing* block-causal architecture at 6 frames:
 
-| arm | measured here | hand-off §1 | delta |
-| --- | --- | --- | --- |
-| small (8L/512d) | **200.85 ms** | 194.8 ms | +3.1 % |
-| `_big` (12L/768d) | **420.16 ms** | 448.8 ms | −6.4 % |
+| arm               | measured here | hand-off §1 | delta  |
+| ----------------- | ------------- | ----------- | ------ |
+| small (8L/512d)   | **200.85 ms** | 194.8 ms    | +3.1 % |
+| `_big` (12L/768d) | **420.16 ms** | 448.8 ms    | −6.4 % |
 
 Close enough that the comparison is sound, and it confirms `_big` is **12** layers
 (§7 says 8; an 8-layer 768-d trunk could not cost 420 ms). Speedups below are
@@ -337,11 +336,11 @@ the same export path, not against the hand-off's.
 **Decoder step, per tick, fp32, median GPU compute:**
 
 | context (frames) | small (8L/512d) | vs 6-frame baseline | `_big` (12L/768d) | vs 6-frame baseline |
-| --- | --- | --- | --- | --- |
-| 6 | **41.79 ms** | **4.81×** | **87.21 ms** | **4.82×** |
-| 16 | 59.58 ms | 3.37× | 127.79 ms | 3.29× |
-| 32 | 92.26 ms | 2.18× | 205.05 ms | 2.05× |
-| 64 | 160.51 ms | 1.25× | 364.22 ms | 1.15× |
+| ---------------- | --------------- | ------------------- | ----------------- | ------------------- |
+| 6                | **41.79 ms**    | **4.81×**           | **87.21 ms**      | **4.82×**           |
+| 16               | 59.58 ms        | 3.37×               | 127.79 ms         | 3.29×               |
+| 32               | 92.26 ms        | 2.18×               | 205.05 ms         | 2.05×               |
+| 64               | 160.51 ms       | 1.25×               | 364.22 ms         | 1.15×               |
 
 At the same 6 frames of context the step is **4.8× cheaper in both arms**. The
 hand-off estimated ~75 ms for `_big`; the measurement is 87.2 ms, i.e. the
@@ -355,10 +354,10 @@ overhead from cache management" assumption it flagged (§8): the in-graph
 runs 257 queries against `(N-1) × 257 + 257` keys, so both the attention terms
 and the cache traffic are **linear in N**. Measured, over 6 → 64 frames:
 
-| | fixed cost (N→1) | marginal cost per extra frame | R² of the linear fit |
-| --- | --- | --- | --- |
-| small | ~31.5 ms | **2.05 ms/frame** | >0.999 |
-| `_big` | ~63.3 ms | **4.78 ms/frame** | >0.999 |
+|        | fixed cost (N→1) | marginal cost per extra frame | R² of the linear fit |
+| ------ | ---------------- | ----------------------------- | -------------------- |
+| small  | ~31.5 ms         | **2.05 ms/frame**             | >0.999               |
+| `_big` | ~63.3 ms         | **4.78 ms/frame**             | >0.999               |
 
 The slope tracks `L × D` and nothing else, which makes it predictable: the extra
 attention work per cached frame is `2 × 257 × 257 × D × 2 × L` FLOPs — 1.08 GFLOP
@@ -371,14 +370,14 @@ term.** Bucketing `trtexec --dumpProfile` by kernel kind (TRT fuses and renames
 everything to `__myl_*`, so the module hierarchy is *not* recoverable — this is why
 the hand-off cross-checked its §1 split against an independent FLOP count instead):
 
-| bucket | small, N=6 | small, N=64 |
-| --- | --- | --- |
-| MatMul (qkv / proj / MLP / head / unfused attention GEMMs) | 25.5 ms (55 %) | 62.2 ms (31 %) |
-| fused kernels containing the cache `Concat` | 6.6 ms (14 %) | **68.2 ms (34 %)** |
-| `scaled_dot_product_attention` | 4.1 ms (9 %) | 35.0 ms (17 %) |
-| standalone fused softmax | 3.4 ms (7 %) | 30.5 ms (15 %) |
-| other fused elementwise | 6.4 ms (14 %) | 6.5 ms (3 %) |
-| conv2d (ViT patch embed) | 0.15 ms | 0.15 ms |
+| bucket                                                     | small, N=6     | small, N=64        |
+| ---------------------------------------------------------- | -------------- | ------------------ |
+| MatMul (qkv / proj / MLP / head / unfused attention GEMMs) | 25.5 ms (55 %) | 62.2 ms (31 %)     |
+| fused kernels containing the cache `Concat`                | 6.6 ms (14 %)  | **68.2 ms (34 %)** |
+| `scaled_dot_product_attention`                             | 4.1 ms (9 %)   | 35.0 ms (17 %)     |
+| standalone fused softmax                                   | 3.4 ms (7 %)   | 30.5 ms (15 %)     |
+| other fused elementwise                                    | 6.4 ms (14 %)  | 6.5 ms (3 %)       |
+| conv2d (ViT patch embed)                                   | 0.15 ms        | 0.15 ms            |
 
 ⚠️ Treat this as *indicative only*: `--dumpProfile` inflates the total (46.2 ms
 against a benchmarked 41.8 ms at N=6, 202.5 against 160.5 at N=64) and it inflates
@@ -391,11 +390,11 @@ wanted — bigger than any further caching, because the cache is already exact.
 What *does* improve superlinearly is the comparison against recomputing an
 N-frame window, which is quadratic. The right way to state the prize:
 
-* **`_big` attends to 32 frames for 205 ms — less than half of what it costs today
+- **`_big` attends to 32 frames for 205 ms — less than half of what it costs today
   to attend to 6** (420 ms). Recomputing a 32-frame window block-causally would be
   ~28× the trunk work of the 6-frame one, i.e. several seconds.
-* **small attends to 32 frames for 92 ms, versus 201 ms today for 6.**
-* Every configuration measured except `_big` at 64 frames (364 ms) fits inside one
+- **small attends to 32 frames for 92 ms, versus 201 ms today for 6.**
+- Every configuration measured except `_big` at 64 frames (364 ms) fits inside one
   333 ms tick, and `_big` clears the ~270 ms threshold that removes the
   plan-execution distortion (hand-off §7) at **up to 32 frames** — where today it
   does not clear it at 6.
@@ -429,10 +428,10 @@ episode.
    (dense SDPA: 2.74×), and 64 frames costs 1.15×. What remains of this risk is
    narrower and listed in §11.6: `attn_dropout` must go to 0, the block-sparse
    path is CUDA-only, and it loses to SDPA below roughly 1000 frame-slots per step.
-2. **Behaviour change, not just speed** (hand-off §6). Conditioning on 16–64
+1. **Behaviour change, not just speed** (hand-off §6). Conditioning on 16–64
    frames is a different model. Needs rsim and road, not val L1 — PR #248
    established that aggregate L1 is blind to this failure class.
-3. **Train/infer mismatch if the window is not matched.** Serving with a ring of
+1. **Train/infer mismatch if the window is not matched.** Serving with a ring of
    `N-1` is only equivalent to training if training used
    `frame_block_causal_mask(window=N)`. `CausalFrameTransformer` rejects
    `max_sequence_length < window * tokens_per_frame` (a clip shorter than the
@@ -441,23 +440,23 @@ episode.
    maximum length any more, so a 32-frame-trained model will happily run against a
    64-frame cache and silently extrapolate. Validate the engine's `inputs_past_k`
    shape against the checkpoint's `window` at load time.
-4. ~~**No parity/precision verification yet.**~~ **Resolved for the first trained
+1. ~~**No parity/precision verification yet.**~~ **Resolved for the first trained
    checkpoint — see §12.** The margin screen and a 200-trial decision-parity ladder
    have now been run on `do8m9ot8:v0`. What remains of this risk is narrower and
    unavoidable: margins are **per-checkpoint**, so §12 must be re-run for every
    checkpoint before it is served below fp32. A verdict cannot be inherited from a
    sibling — 2 of 7 checkpoints in the baseline family genuinely flip ~4 % while
    their own parents pass.
-5. **RoPE base is unvalidated.** `rope_base=1000` is reasoned (base 10000 leaves
+1. **RoPE base is unvalidated.** `rope_base=1000` is reasoned (base 10000 leaves
    most frequency pairs inert over 64 positions) but not measured. It is a
    trainable-arm hyperparameter, and changing it after training invalidates the
    checkpoint.
-6. **The `Concat` of cache and new keys is unavoidable without a plugin**, and the
+1. **The `Concat` of cache and new keys is unavoidable without a plugin**, and the
    profile says it is already a first-order cost at 64 frames (§9) — the largest
    single bucket, comparable to the attention. A paged / in-place attention plugin
    is the escape hatch; an in-graph `ScatterElements` deliberately is not (TRT
    support risk, and the host-side ring is free).
-7. **`_big` at 64 frames does not fit a tick at fp32** (364 ms). Not a defect, but
+1. **`_big` at 64 frames does not fit a tick at fp32** (364 ms). Not a defect, but
    it bounds the context length that is servable today without the mixed-precision
    engine.
 
@@ -482,13 +481,13 @@ block-sparse kernel wants.
 fp32, tf32 disabled, production geometry (257 tokens/frame, `window` 6 and 16,
 512-d/8-head and 768-d/12-head), forward **and** backward:
 
-| tensor | max abs diff | max abs value | scale-relative |
-| --- | --- | --- | --- |
-| output | 1.4e-6 | 5.2 | 2.7e-7 |
-| d/d input | 1.2e-6 | 5.0 | 2.4e-7 |
-| d/d `in_proj_weight` | 1.8e-5 | 12.8 | 1.4e-6 |
-| d/d `out_proj.weight` | 3.6e-5 | 43.3 | 8.4e-7 |
-| d/d `intra_position_embedding` | 3.3e-6 | 20.3 | 1.6e-7 |
+| tensor                         | max abs diff | max abs value | scale-relative |
+| ------------------------------ | ------------ | ------------- | -------------- |
+| output                         | 1.4e-6       | 5.2           | 2.7e-7         |
+| d/d input                      | 1.2e-6       | 5.0           | 2.4e-7         |
+| d/d `in_proj_weight`           | 1.8e-5       | 12.8          | 1.4e-6         |
+| d/d `out_proj.weight`          | 3.6e-5       | 43.3          | 8.4e-7         |
+| d/d `intra_position_embedding` | 3.3e-6       | 20.3          | 1.6e-7         |
 
 The gate is applied **scale-relative** (`max|diff| / max|ref|`), not as an absolute
 1e-5, and that is a deliberate choice worth stating plainly: a parameter gradient
@@ -497,9 +496,9 @@ fp32 accumulation noise alone exceeds 1e-5 in absolute terms whichever kernel
 produced it. That the residual **is** that noise is shown independently, by
 comparing both fp32 arms against the same trunk run in float64 on the CPU:
 
-| | sdpa vs exact fp64 | flex vs exact fp64 |
-| --- | --- | --- |
-| worst tensor (scale-rel) | 6.8e-7 | 9.4e-7 |
+|                          | sdpa vs exact fp64 | flex vs exact fp64 |
+| ------------------------ | ------------------ | ------------------ |
+| worst tensor (scale-rel) | 6.8e-7             | 9.4e-7             |
 
 flex sits 1.4× sdpa's own distance from the exact answer, not 10×. Parity is also
 verified in `.train()`, i.e. with the compiled kernel inside
@@ -510,20 +509,19 @@ attention, so the positional scheme and the kernel are orthogonal.
 ### 11.3 The 257-token tile-alignment finding
 
 `create_block_mask` tiles at 128, and **128 is the only usable block size**:
-`BLOCK_SIZE=64` fails to lower on sm_120/torch 2.12 (`ValueError: Q and KV block
-size must be divisible by BLOCK_M and BLOCK_N`). 257 = 2·128 + 1, so a frame block
+`BLOCK_SIZE=64` fails to lower on sm_120/torch 2.12 (`ValueError: Q and KV block size must be divisible by BLOCK_M and BLOCK_N`). 257 = 2·128 + 1, so a frame block
 can never tile exactly and every frame boundary yields partial blocks, which the
 kernel computes in full and then masks elementwise. Measured computed area against
 the exact mask area:
 
-| frames | window | BLOCK 128 | BLOCK 64 | BLOCK 32 | frame padded to 384, BLOCK 128 |
-| --- | --- | --- | --- | --- | --- |
-| 6 | 6 | **1.288×** | 1.137× | 1.064× | 2.233× |
-| 16 | 6 | **1.191×** | 1.091× | 1.041× | 2.233× |
-| 16 | 16 | **1.111×** | 1.051× | 1.022× | 2.233× |
-| 32 | 16 | **1.074×** | 1.033× | 1.013× | 2.233× |
-| 64 | 16 | **1.063×** | 1.027× | 1.014× | 2.233× |
-| 64 | 64 | **1.023×** | 1.008× | 1.004× | 2.233× |
+| frames | window | BLOCK 128  | BLOCK 64 | BLOCK 32 | frame padded to 384, BLOCK 128 |
+| ------ | ------ | ---------- | -------- | -------- | ------------------------------ |
+| 6      | 6      | **1.288×** | 1.137×   | 1.064×   | 2.233×                         |
+| 16     | 6      | **1.191×** | 1.091×   | 1.041×   | 2.233×                         |
+| 16     | 16     | **1.111×** | 1.051×   | 1.022×   | 2.233×                         |
+| 32     | 16     | **1.074×** | 1.033×   | 1.013×   | 2.233×                         |
+| 64     | 16     | **1.063×** | 1.027×   | 1.014×   | 2.233×                         |
+| 64     | 64     | **1.023×** | 1.008×   | 1.004×   | 2.233×                         |
 
 Two conclusions. The waste is a **boundary effect that amortizes**: 29 % at 6
 frames, 6 % at 64, because the number of straddling blocks grows with `F` while the
@@ -542,29 +540,29 @@ alignment anyway.
 
 #### 512-d / 8 heads
 
-| frames | window | seq | b4 sdpa | b4 flex | b16 sdpa | b16 flex | b16 peak sdpa / flex |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 6 | 6 | 1542 | 1.26 ms | **1.40** | 4.24 | **2.11** | 396 / 350 MiB |
-| 16 | 6 | 4112 | 6.68 | **1.75** | 25.05 | **6.97** | 1083 / 933 |
-| 16 | 16 | 4112 | 6.68 | **2.47** | 25.06 | **9.51** | 1083 / 933 |
-| 32 | 8 | 8224 | 24.32 | **4.05** | 94.71 | **16.97** | 2263 / 1866 |
-| 32 | 16 | 8224 | 24.35 | **5.96** | 94.95 | **24.44** | 2263 / 1866 |
-| 32 | 32 | 8224 | 24.37 | **7.68** | 95.16 | **30.70** | 2263 / 1866 |
-| 64 | 16 | 16448 | 95.32 | **13.53** | 377.40 | **54.65** | 4914 / 3745 |
-| 64 | 64 | 16448 | 95.70 | **27.37** | 379.92 | **108.25** | 4914 / 3745 |
+| frames | window | seq   | b4 sdpa | b4 flex   | b16 sdpa | b16 flex   | b16 peak sdpa / flex |
+| ------ | ------ | ----- | ------- | --------- | -------- | ---------- | -------------------- |
+| 6      | 6      | 1542  | 1.26 ms | **1.40**  | 4.24     | **2.11**   | 396 / 350 MiB        |
+| 16     | 6      | 4112  | 6.68    | **1.75**  | 25.05    | **6.97**   | 1083 / 933           |
+| 16     | 16     | 4112  | 6.68    | **2.47**  | 25.06    | **9.51**   | 1083 / 933           |
+| 32     | 8      | 8224  | 24.32   | **4.05**  | 94.71    | **16.97**  | 2263 / 1866          |
+| 32     | 16     | 8224  | 24.35   | **5.96**  | 94.95    | **24.44**  | 2263 / 1866          |
+| 32     | 32     | 8224  | 24.37   | **7.68**  | 95.16    | **30.70**  | 2263 / 1866          |
+| 64     | 16     | 16448 | 95.32   | **13.53** | 377.40   | **54.65**  | 4914 / 3745          |
+| 64     | 64     | 16448 | 95.70   | **27.37** | 379.92   | **108.25** | 4914 / 3745          |
 
 #### 768-d / 12 heads
 
-| frames | window | seq | b4 sdpa | b4 flex | b16 sdpa | b16 flex | b16 peak sdpa / flex |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 6 | 6 | 1542 | 1.85 ms | **1.26** | 6.34 | **3.15** | 594 / 525 MiB |
-| 16 | 6 | 4112 | 9.66 | **2.53** | 37.29 | **10.59** | 1602 / 1399 |
-| 16 | 16 | 4112 | 9.66 | **3.55** | 37.26 | **14.33** | 1602 / 1399 |
-| 32 | 8 | 8224 | 36.00 | **6.18** | 142.08 | **25.50** | 3295 / 2798 |
-| 32 | 16 | 8224 | 36.08 | **9.04** | 142.43 | **36.67** | 3295 / 2798 |
-| 32 | 32 | 8224 | 36.11 | **11.50** | 142.69 | **45.85** | 3295 / 2798 |
-| 64 | 16 | 16448 | 142.25 | **20.38** | 568.75 | **82.35** | 6979 / 5602 |
-| 64 | 64 | 16448 | 143.18 | **40.81** | 572.26 | **163.13** | 6979 / 5602 |
+| frames | window | seq   | b4 sdpa | b4 flex   | b16 sdpa | b16 flex   | b16 peak sdpa / flex |
+| ------ | ------ | ----- | ------- | --------- | -------- | ---------- | -------------------- |
+| 6      | 6      | 1542  | 1.85 ms | **1.26**  | 6.34     | **3.15**   | 594 / 525 MiB        |
+| 16     | 6      | 4112  | 9.66    | **2.53**  | 37.29    | **10.59**  | 1602 / 1399          |
+| 16     | 16     | 4112  | 9.66    | **3.55**  | 37.26    | **14.33**  | 1602 / 1399          |
+| 32     | 8      | 8224  | 36.00   | **6.18**  | 142.08   | **25.50**  | 3295 / 2798          |
+| 32     | 16     | 8224  | 36.08   | **9.04**  | 142.43   | **36.67**  | 3295 / 2798          |
+| 32     | 32     | 8224  | 36.11   | **11.50** | 142.69   | **45.85**  | 3295 / 2798          |
+| 64     | 16     | 16448 | 142.25  | **20.38** | 568.75   | **82.35**  | 6979 / 5602          |
+| 64     | 64     | 16448 | 143.18  | **40.81** | 572.26   | **163.13** | 6979 / 5602          |
 
 Three things to read off. **Dense SDPA is flat in `window`** — 24.32 / 24.35 / 24.37
 ms across windows 8/16/32 at 32 frames — which is the defect, stated as a
@@ -576,11 +574,10 @@ and fewer score tiles in flight.
 
 The one row where flex loses is batch 4 at 6 frames (1.40 vs 1.26 ms): 13 kv blocks
 and 4 sequences cannot fill a 5090. It wins by 2× at the same geometry with batch
-16. See §11.6.5.
+16\. See §11.6.5.
 
 For scale: the frozen DINOv2 ViT-S forward over the 768 images a step consumes
-costs **79.9 ms / 2031 MiB** on the same GPU (`bench_causal_frame.py vit
---batches 768`). It is linear in frame-slots, identical for every row of §11.5, and
+costs **79.9 ms / 2031 MiB** on the same GPU (`bench_causal_frame.py vit --batches 768`). It is linear in frame-slots, identical for every row of §11.5, and
 about a tenth of the trunk step — so the trunk really is the term worth attacking.
 
 ### 11.5 What the training step actually costs
@@ -592,16 +589,16 @@ that answers "is long-context training affordable" is the **full trunk**, in
 per step** — today's `batch 128 × 6 frames`, which is what fixes the ViT cost, the
 readouts per step and the activation memory:
 
-| frames | window | 512-d/8L sdpa | 512-d/8L flex | vs today | 768-d/12L sdpa | 768-d/12L flex | vs today |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 6 | 6 | 652 ms | 497 ms | 0.76× | 1695 ms | 1323 ms | 0.78× |
-| 16 | 6 | 1085 | 550 | 0.84× | 2649 | 1447 | 0.85× |
-| 16 | 16 | 1085 | 626 | 0.96× | 2652 | 1616 | 0.95× |
-| 32 | 8 | 1787 | 593 | 0.91× | 4223 | 1538 | 0.91× |
-| 32 | 16 | 1787 | **705** | **1.08×** | 4237 | **1792** | **1.06×** |
-| 32 | 32 | 1791 | 800 | 1.23× | 4245 | 2001 | 1.18× |
-| 64 | 16 | 3215 | **749** | **1.15×** | 7469 | **1897** | **1.12×** |
-| 64 | 64 | 3233 | 1151 | 1.77× | 7501 | 2809 | 1.66× |
+| frames | window | 512-d/8L sdpa | 512-d/8L flex | vs today  | 768-d/12L sdpa | 768-d/12L flex | vs today  |
+| ------ | ------ | ------------- | ------------- | --------- | -------------- | -------------- | --------- |
+| 6      | 6      | 652 ms        | 497 ms        | 0.76×     | 1695 ms        | 1323 ms        | 0.78×     |
+| 16     | 6      | 1085          | 550           | 0.84×     | 2649           | 1447           | 0.85×     |
+| 16     | 16     | 1085          | 626           | 0.96×     | 2652           | 1616           | 0.95×     |
+| 32     | 8      | 1787          | 593           | 0.91×     | 4223           | 1538           | 0.91×     |
+| 32     | 16     | 1787          | **705**       | **1.08×** | 4237           | **1792**       | **1.06×** |
+| 32     | 32     | 1791          | 800           | 1.23×     | 4245           | 2001           | 1.18×     |
+| 64     | 16     | 3215          | **749**       | **1.15×** | 7469           | **1897**       | **1.12×** |
+| 64     | 64     | 3233          | 1151          | 1.77×     | 7501           | 2809           | 1.66×     |
 
 ("vs today" is against the 6-frame step of **the same trunk with
 `attention_impl: sdpa`**, 652 / 1695 ms — the honest denominator for "what does
@@ -620,12 +617,12 @@ uses — no normalization, and one fresh process per cell
 6-frame/batch-128 baseline: a shared process that has already peaked at tens of GiB
 fragments the allocator for whatever runs next, which shows up as a spurious OOM):
 
-| arm | geometry | batch | impl | step | trunk peak |
-| --- | --- | --- | --- | --- | --- |
-| 512-d / 8L | 6 frames, window 6 | 128 | sdpa (today) | 670.7 ms | 9.60 GiB |
-| 512-d / 8L | **32 frames, window 16** | **24** | **flex** | **701.7 ms** | **9.60 GiB** |
-| 768-d / 12L | 6 frames, window 6 | 128 | sdpa (today) | 1713.5 ms | 16.80 GiB |
-| 768-d / 12L | **32 frames, window 16** | **24** | **flex** | **1779.6 ms** | **16.79 GiB** |
+| arm         | geometry                 | batch  | impl         | step          | trunk peak    |
+| ----------- | ------------------------ | ------ | ------------ | ------------- | ------------- |
+| 512-d / 8L  | 6 frames, window 6       | 128    | sdpa (today) | 670.7 ms      | 9.60 GiB      |
+| 512-d / 8L  | **32 frames, window 16** | **24** | **flex**     | **701.7 ms**  | **9.60 GiB**  |
+| 768-d / 12L | 6 frames, window 6       | 128    | sdpa (today) | 1713.5 ms     | 16.80 GiB     |
+| 768-d / 12L | **32 frames, window 16** | **24** | **flex**     | **1779.6 ms** | **16.79 GiB** |
 
 **1.05× the step time and the same memory to the last 10 MiB, for 5.3× the
 context.** Both arms. That is the whole result, and it agrees with the normalized
@@ -657,33 +654,32 @@ step-count arithmetic, because the cosine LR schedule oscillates past
    the constructor raises rather than silently dropping it. This is a
    regularization change riding along with a kernel change — an A/B against
    today's arm must zero `attn_dropout` on the sdpa side too.
-2. **An in-place op in a `mask_mod` kills the path entirely.** Inductor lowers a
+1. **An in-place op in a `mask_mod` kills the path entirely.** Inductor lowers a
    `mask_mod` as a pointwise subgraph, in which no buffer may be created, so
-   `keep &= x` fails with `SubgraphLoweringException: Buffers cannot be created
-   while lowering a pointwise subgraph` — at *every* shape. `ruff check` in this
+   `keep &= x` fails with `SubgraphLoweringException: Buffers cannot be created while lowering a pointwise subgraph` — at *every* shape. `ruff check` in this
    repo runs with `fix = true, unsafe-fixes = true` and rewrites
    `keep = keep & x` into `keep &= x` under PLR6104, which is exactly that. It
    happened during this work and cost a benchmark run.
    `test_mask_mod_is_free_of_in_place_ops` guards it on CPU.
-3. **dynamo's 8-entry compile cache.** One compiled `flex_attention` serves every
+1. **dynamo's 8-entry compile cache.** One compiled `flex_attention` serves every
    shape and `dynamic=False` specializes per shape; past 8 specializations dynamo
    silently falls back to **eager** flex, which materializes the score matrix. Fine
    in training (2–3 shapes), fatal in a sweep — raise
    `torch._dynamo.config.cache_size_limit` there.
-4. **Build the `BlockMask` once.** `create_block_mask` costs 1.6–9 ms; per layer per
+1. **Build the `BlockMask` once.** `create_block_mask` costs 1.6–9 ms; per layer per
    step that is ~25 ms of pure launch overhead at 8 layers, more than the attention
    it feeds. `frame_block_causal_block_mask` is memoized on
    `(num_frames, tokens_per_frame, window, device)`.
-5. **flex is not free at small shapes.** At batch 4 / 6 frames the whole trunk is
+1. **flex is not free at small shapes.** At batch 4 / 6 frames the whole trunk is
    *slower* under flex (58.7 vs 52.6 ms at 512-d; 84.2 vs 71.6 at 768-d): 13 kv
    blocks and a batch of 4 do not fill the GPU. The crossover is around 1000
    frame-slots per step; below that, keep `sdpa`. This is why the default stays
    `sdpa` and the flex path is opt-in per experiment.
-6. **CUDA only.** There is no CPU backward for FlexAttention, so the CPU path is
+1. **CUDA only.** There is no CPU backward for FlexAttention, so the CPU path is
    the eager reference implementation (correct, not fast) and the fwd+bwd parity
    tests are CUDA-gated. A CPU-only CI run skips them; it still runs the mask-mod,
    block-accounting and CPU-forward-parity tests.
-7. **Serving is untouched, on purpose.** `step` stays SDPA: it is the ONNX/TRT
+1. **Serving is untouched, on purpose.** `step` stays SDPA: it is the ONNX/TRT
    export target (a `torch.compile`d Triton kernel is not exportable) and it has
    257 queries against a fully-visible cache, i.e. no sparsity to exploit.
    `attention_impl` therefore cannot change what an exported engine computes.
@@ -699,20 +695,20 @@ FA2's windowed attention is **token-granular and strictly causal**
 **bidirectional** intra-frame blocks. The closest approximation is a token window of
 `window · 257`, and it is wrong in two independent ways. Counting mask entries:
 
-| frames | window | exact keeps | missing | of which intra-frame future | spurious |
-| --- | --- | --- | --- | --- | --- |
-| 16 | 6 | 5,349,969 | 526,336 (9.8 %) | **100 %** | 328,960 (6.1 %) |
-| 32 | 16 | 25,891,208 | 1,052,672 (4.1 %) | **100 %** | 526,336 (2.0 %) |
-| 64 | 16 | 59,708,296 | 2,105,344 (3.5 %) | **100 %** | 1,579,008 (2.6 %) |
+| frames | window | exact keeps | missing           | of which intra-frame future | spurious          |
+| ------ | ------ | ----------- | ----------------- | --------------------------- | ----------------- |
+| 16     | 6      | 5,349,969   | 526,336 (9.8 %)   | **100 %**                   | 328,960 (6.1 %)   |
+| 32     | 16     | 25,891,208  | 1,052,672 (4.1 %) | **100 %**                   | 526,336 (2.0 %)   |
+| 64     | 16     | 59,708,296  | 2,105,344 (3.5 %) | **100 %**                   | 1,579,008 (2.6 %) |
 
-* Every missing pair is an **intra-frame future** pair: the current frame's 257
+- Every missing pair is an **intra-frame future** pair: the current frame's 257
   tokens stop being mutually visible, so a patch at intra-frame position 3 cannot
   see position 200 of its own frame. That destroys the one property the whole
   positional scheme is built around (§1: frame-granular RoPE exists so that
   intra-frame attention is *exactly unrotated* and stays bidirectional), and it
   makes the trunk a raster-order scanner over patches rather than a per-frame
   encoder.
-* The spurious pairs are a **ragged window edge**: a query late in its frame still
+- The spurious pairs are a **ragged window edge**: a query late in its frame still
   reaches keys of frame `f - window`, which the ring buffer has already evicted.
   That breaks the streaming/recompute equivalence of §5 — the training mask would
   no longer be any ring capacity's mask, so there is no `N` to serve with.
@@ -734,6 +730,7 @@ expressible in FlexAttention (`Q_LEN = F`, `KV_LEN = F·257`, `mask_mod` mapping
 query index straight to a frame index), and §4 already proves the equivalence for
 the decode path. Not wired up, because it changes `PatchPolicy`'s readout indexing
 and the win is small next to the 2.5–4× already realized.
+
 ## 12. Trained-checkpoint verification (resolves §10.4)
 
 Everything above §11 was measured with **randomly initialized** weights, which is
@@ -761,11 +758,11 @@ comes from the checkpoint's hparams and the trunk is used as trained) and
 Same gate as §5, on the trained trunk at its trained `window=16`, T=17 frames
 (one frame past a full window, so the sliding case is exercised):
 
-| | max abs | scale-relative |
-| --- | --- | --- |
-| float64 | 2.66e-15 | **6.41e-16** |
-| float32 | 1.19e-06 | **2.87e-07** |
-| negative control (RoPE counter not advanced) | 2.29e-01 | **5.50e-02** |
+|                                              | max abs  | scale-relative |
+| -------------------------------------------- | -------- | -------------- |
+| float64                                      | 2.66e-15 | **6.41e-16**   |
+| float32                                      | 1.19e-06 | **2.87e-07**   |
+| negative control (RoPE counter not advanced) | 2.29e-01 | **5.50e-02**   |
 
 float64 sits at machine epsilon, so the equivalence is **exact** and the float32
 residual is purely accumulation order — the same conclusion as §5, and the
@@ -780,11 +777,11 @@ than §5's architectural window-absolute trunk.
 ORT CPU fp32 vs PyTorch, warm cache, 3 input sets. Scored as **absolute error
 against each tensor's own scale**, never per-element relative:
 
-| output | max abs | scale-relative |
-| --- | --- | --- |
-| `policy.joint_actions` | 8.9e-09 | 2.6e-06 |
-| `new_k` | 1.55e-05 | 2.2e-06 |
-| `new_v` | 1.13e-05 | 3.1e-06 |
+| output                 | max abs  | scale-relative |
+| ---------------------- | -------- | -------------- |
+| `policy.joint_actions` | 8.9e-09  | 2.6e-06        |
+| `new_k`                | 1.55e-05 | 2.2e-06        |
+| `new_v`                | 1.13e-05 | 3.1e-06        |
 
 Worst 3.11e-06 scale-relative, reproducing §5's random-weight 1.4e-05 absolute on
 the new K/V. `torch.onnx.export(verify=True)` again reports a "large relative
@@ -795,18 +792,17 @@ relative error on near-zero entries.
 
 Rebuilt and re-benchmarked on delta-dev1, TRT 10.7.0.23, **GPU clock pinned at
 918 MHz** (`governor=performance`, verified: every clock sample taken *through*
-each benchmark was 918 MHz), load ~0.1, no other users. `trtexec
---iterations=60 --avgRuns=20 --useSpinWait --warmUp=1000`, median GPU compute.
+each benchmark was 918 MHz), load ~0.1, no other users. `trtexec --iterations=60 --avgRuns=20 --useSpinWait --warmUp=1000`, median GPU compute.
 
 **fp32 here means TF32 CLEARED** (`--noTF32`). trtexec's default "fp32" is the
 TF32 tensor-core path — a different numeric configuration, and the one that has
 never been decision-exact.
 
-| context | fp32 trained | fp32 predicted (§9, random) | fp16 trained | fp16 predicted | fp16 speedup |
-| --- | --- | --- | --- | --- | --- |
-| 6 | **41.79 ms** | 41.79 | **10.55 ms** | 10.5 | 3.96× |
-| 16 (**served**) | **59.82 ms** | 59.58 | **16.97 ms** | — | **3.53×** |
-| 32 | **92.20 ms** | 92.26 | **27.19 ms** | 27.2 | 3.39× |
+| context         | fp32 trained | fp32 predicted (§9, random) | fp16 trained | fp16 predicted | fp16 speedup |
+| --------------- | ------------ | --------------------------- | ------------ | -------------- | ------------ |
+| 6               | **41.79 ms** | 41.79                       | **10.55 ms** | 10.5           | 3.96×        |
+| 16 (**served**) | **59.82 ms** | 59.58                       | **16.97 ms** | —              | **3.53×**    |
+| 32              | **92.20 ms** | 92.26                       | **27.19 ms** | 27.2           | 3.39×        |
 
 **Every random-weight prediction was confirmed, none corrected** — the largest
 disagreement anywhere in the table is 0.4 % (59.82 vs 59.58 at window 16) and the
@@ -817,11 +813,11 @@ rather than argued.
 The linear-in-context correction of §9 also survives. Least-squares over the three
 contexts:
 
-| | marginal cost per extra frame | fixed cost (N→1) |
-| --- | --- | --- |
-| fp32 trained | **1.95 ms/frame** | 31.5 ms |
-| fp32 §9 (random, 6→64) | 2.05 ms/frame | ~31.5 ms |
-| fp16 trained | **0.64 ms/frame** | 7.4 ms |
+|                        | marginal cost per extra frame | fixed cost (N→1) |
+| ---------------------- | ----------------------------- | ---------------- |
+| fp32 trained           | **1.95 ms/frame**             | 31.5 ms          |
+| fp32 §9 (random, 6→64) | 2.05 ms/frame                 | ~31.5 ms         |
+| fp16 trained           | **0.64 ms/frame**             | 7.4 ms           |
 
 Per-tick cost still does **not** stop scaling with context — §2's claim remains
 wrong — but fp16 cuts the *slope* by 3.0× as well as the fixed term by 4.3×.
@@ -839,10 +835,10 @@ The **controlled** statement is the same-host, same-day, same-flags randomly
 initialized control, exported from the same script at the same context and built
 minutes apart:
 
-| window 16 | trained | random control | delta |
-| --- | --- | --- | --- |
-| fp32 | 59.82 ms | 59.65 ms | 0.3 % |
-| fp16 | 16.97 ms | 16.93 ms | 0.2 % |
+| window 16 | trained  | random control | delta |
+| --------- | -------- | -------------- | ----- |
+| fp32      | 59.82 ms | 59.65 ms       | 0.3 % |
+| fp16      | 16.97 ms | 16.93 ms       | 0.2 % |
 
 Weight values do not move a static-shape engine's latency — now measured rather
 than assumed, and measured at *both* precisions, which matters because fp16
@@ -864,12 +860,12 @@ engine (profiling a default-verbosity engine returns stripped names, and
 absence-of-name would read as absence-of-kernel — a false alarm on exactly this
 check). Grepped in four places:
 
-| source | `_gemm_mha_v2` name occurrences |
-| --- | --- |
-| fp16 build log | 38 |
-| fp16 `--exportLayerInfo` | 38 |
-| fp16 `--exportProfile` | 19 |
-| fp16 profile log | 57 |
+| source                                    | `_gemm_mha_v2` name occurrences                    |
+| ----------------------------------------- | -------------------------------------------------- |
+| fp16 build log                            | 38                                                 |
+| fp16 `--exportLayerInfo`                  | 38                                                 |
+| fp16 `--exportProfile`                    | 19                                                 |
+| fp16 profile log                          | 57                                                 |
 | **fp32 build log / layer info / profile** | **0** (expected: it is an fp16 tensor-core kernel) |
 
 **Verdict: present.** No alarm.
@@ -898,13 +894,13 @@ Running the identical screen on the **randomly initialized** export of the same
 graph separates the frozen subgraph from the trained one — the skill's trick, and
 it works exactly as advertised:
 
-| probe | decisions/trial | trained min ULP | random min ULP | trained median | random median |
-| --- | --- | --- | --- | --- | --- |
-| `node_argmax` | 1 | 2.688 | **2.688** | 412.9 | **412.9** |
-| `node_argmax_1` | 1 | 11.557 | **11.557** | 44.4 | **44.4** |
-| `node_argmax_2` | 1 | 2.875 | **2.875** | 49.3 | **49.3** |
-| `node_argmax_3` | 1 | 3.317 | **3.317** | 41.1 | **41.1** |
-| `node_argmax_4` | **4** | **1.938** | 21.362 | 162.9 | 678.7 |
+| probe           | decisions/trial | trained min ULP | random min ULP | trained median | random median |
+| --------------- | --------------- | --------------- | -------------- | -------------- | ------------- |
+| `node_argmax`   | 1               | 2.688           | **2.688**      | 412.9          | **412.9**     |
+| `node_argmax_1` | 1               | 11.557          | **11.557**     | 44.4           | **44.4**      |
+| `node_argmax_2` | 1               | 2.875           | **2.875**      | 49.3           | **49.3**      |
+| `node_argmax_3` | 1               | 3.317           | **3.317**      | 41.1           | **41.1**      |
+| `node_argmax_4` | **4**           | **1.938**       | 21.362         | 162.9          | 678.7         |
 
 Probes 0–3 are **byte-identical** between a trained checkpoint and a random one,
 so they are the **frozen waypoints-tokenizer RVQ** — four quantizer stages, one
@@ -937,10 +933,10 @@ fp32 on the same ONNX. A trial counts as a **decision change** when any action
 channel moves more than 0.02 — float noise is ~1e-4 here and a flipped code is
 ~0.1, so the threshold is not delicate.
 
-| engine | latency | decision changes | of which control-channel only | worst \|d\| | mean \|d\| |
-| --- | --- | --- | --- | --- | --- |
-| **fp32** (TF32 cleared) | 59.82 ms | **0/200** | 0 | 4.2e-07 | 1.8e-08 |
-| fp16 | 16.97 ms | **5/200** (2.5 %) | **5** | 0.1827 | 5.0e-04 |
+| engine                  | latency  | decision changes  | of which control-channel only | worst \|d\| | mean \|d\| |
+| ----------------------- | -------- | ----------------- | ----------------------------- | ----------- | ---------- |
+| **fp32** (TF32 cleared) | 59.82 ms | **0/200**         | 0                             | 4.2e-07     | 1.8e-08    |
+| fp16                    | 16.97 ms | **5/200** (2.5 %) | **5**                         | 0.1827      | 5.0e-04    |
 
 **fp32 is 0/200, so the harness is sound** — that is the skill's gate on the
 harness itself, and it passes. Its residual is 4.2e-07 max, i.e. fp32 round-off
@@ -948,12 +944,12 @@ between ORT CPU and TRT, not a modelling difference.
 
 Per channel, fp16 vs the fp32 reference:
 
-| channel | max \|d\| | mean \|d\| |
-| --- | --- | --- |
-| gas_pedal | 0.1065 | 1.18e-03 |
-| brake_pedal | 0.0068 | 6.02e-05 |
-| **steering_angle** | **0.1827** | 7.09e-04 |
-| turn_signal | 0.0041 | 5.46e-05 |
+| channel            | max \|d\|  | mean \|d\| |
+| ------------------ | ---------- | ---------- |
+| gas_pedal          | 0.1065     | 1.18e-03   |
+| brake_pedal        | 0.0068     | 6.02e-05   |
+| **steering_angle** | **0.1827** | 7.09e-04   |
+| turn_signal        | 0.0041     | 5.46e-05   |
 
 **This arm's fp16 failure is different in kind from the baseline's, and worse.**
 On the block-causal baseline the headline magnitude was entirely `turn_signal`
@@ -972,11 +968,11 @@ The part §6 did not say is that **a plain `--fp16` build does not halve it.** T
 preserves the dtypes the ONNX declares for network *I/O* and casts internally, so
 the fp16 engine's cache bindings come back **float32**:
 
-| engine | `inputs_past_k` dtype | KV cache | latency |
-| --- | --- | --- | --- |
-| fp32 | float32 | 120.47 MiB | 59.82 ms |
-| fp16 (plain `--fp16`) | **float32** | **120.47 MiB** | 16.97 ms |
-| fp16 + fp16 cache I/O | float16 | **60.23 MiB** | **13.57 ms** |
+| engine                | `inputs_past_k` dtype | KV cache       | latency      |
+| --------------------- | --------------------- | -------------- | ------------ |
+| fp32                  | float32               | 120.47 MiB     | 59.82 ms     |
+| fp16 (plain `--fp16`) | **float32**           | **120.47 MiB** | 16.97 ms     |
+| fp16 + fp16 cache I/O | float16               | **60.23 MiB**  | **13.57 ms** |
 
 The halving has to be *asked for*, per tensor:
 
@@ -994,12 +990,12 @@ contract that changes is the cache itself.
 engine (`--dumpProfile`, detailed verbosity) the two most expensive kernels in the
 whole graph are not compute at all:
 
-| kernel | time | share |
-| --- | --- | --- |
-| `Reformatting CopyNode for Input Tensor 3` (`past_k`) | 1.264 ms | 7.0 % |
-| `Reformatting CopyNode for Input Tensor 2` (`past_v`) | 1.250 ms | 6.9 % |
-| 19 × `_gemm_mha_v2` (fused MHA, the actual attention) | 5.34 ms | 29.4 % |
-| kernels naming `cat`/`concat` | **0.00 ms** | 0 % |
+| kernel                                                | time        | share  |
+| ----------------------------------------------------- | ----------- | ------ |
+| `Reformatting CopyNode for Input Tensor 3` (`past_k`) | 1.264 ms    | 7.0 %  |
+| `Reformatting CopyNode for Input Tensor 2` (`past_v`) | 1.250 ms    | 6.9 %  |
+| 19 × `_gemm_mha_v2` (fused MHA, the actual attention) | 5.34 ms     | 29.4 % |
+| kernels naming `cat`/`concat`                         | **0.00 ms** | 0 %    |
 
 2.51 ms — 14 % of the step — is spent converting a 120 MiB fp32 cache to fp16
 every tick, and it disappears when the cache is handed over as fp16 already:
@@ -1021,12 +1017,12 @@ on a 15 GiB Orin.
 All four engines at the served window 16, on the same host at 918 MHz, scored
 against one shared ORT fp32 reference over the same 200 trials:
 
-| engine | latency | vs fp32 | engine | KV cache | decisions | worst \|d\| | mean \|d\| | `_gemm_mha_v2` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **fp32** (TF32 cleared) | 59.82 ms | 1.00× | 203 MiB | 120 MiB | **0/200** | 4.2e-07 | 1.8e-08 | n/a |
-| `encfp32-fp16trunk` | 21.79 ms | 2.75× | 155 MiB | 120 MiB | 2/200 | 0.0427 | 1.2e-04 | present |
-| fp16 | 16.97 ms | 3.53× | 107 MiB | 120 MiB | 5/200 | 0.1827 | 5.0e-04 | present |
-| **fp16 + fp16 cache I/O** | **13.63 ms** | **4.39×** | 105 MiB | **60 MiB** | 2/200 | 0.0426 | 1.6e-04 | present |
+| engine                    | latency      | vs fp32   | engine  | KV cache   | decisions | worst \|d\| | mean \|d\| | `_gemm_mha_v2` |
+| ------------------------- | ------------ | --------- | ------- | ---------- | --------- | ----------- | ---------- | -------------- |
+| **fp32** (TF32 cleared)   | 59.82 ms     | 1.00×     | 203 MiB | 120 MiB    | **0/200** | 4.2e-07     | 1.8e-08    | n/a            |
+| `encfp32-fp16trunk`       | 21.79 ms     | 2.75×     | 155 MiB | 120 MiB    | 2/200     | 0.0427      | 1.2e-04    | present        |
+| fp16                      | 16.97 ms     | 3.53×     | 107 MiB | 120 MiB    | 5/200     | 0.1827      | 5.0e-04    | present        |
+| **fp16 + fp16 cache I/O** | **13.63 ms** | **4.39×** | 105 MiB | **60 MiB** | 2/200     | 0.0426      | 1.6e-04    | present        |
 
 **Serve fp32.** Not because low precision looks bad, but because at this window
 there is no latency pressure to trade anything for: 59.82 ms is **3.36× cheaper
@@ -1041,10 +1037,10 @@ tick — the answer for *this* architecture is **fp16 with fp16 cache I/O**, and
 is a **departure from the skill's standing recommendation**. `encfp32-fp16trunk` is
 the skill's designated "fast one", but here it is dominated on every axis at once:
 
-| | latency | KV cache | decisions | worst \|d\| |
-| --- | --- | --- | --- | --- |
-| `encfp32-fp16trunk` | 21.79 ms | 120 MiB | 2/200 | 0.0427 |
-| fp16 + fp16 cache | **13.63 ms** | **60 MiB** | 2/200 | 0.0426 |
+|                     | latency      | KV cache   | decisions | worst \|d\| |
+| ------------------- | ------------ | ---------- | --------- | ----------- |
+| `encfp32-fp16trunk` | 21.79 ms     | 120 MiB    | 2/200     | 0.0427      |
+| fp16 + fp16 cache   | **13.63 ms** | **60 MiB** | 2/200     | 0.0426      |
 
 1.6× faster, half the cache, indistinguishable parity. The reason is structural
 and specific to the decoder step: **the step encodes only ONE frame**, so the image
@@ -1055,14 +1051,14 @@ baseline has no cache.
 
 Two honesty notes on those parity counts:
 
-* **2/200 vs 5/200 is not a distinguishable difference.** The 95 % intervals
+- **2/200 vs 5/200 is not a distinguishable difference.** The 95 % intervals
   overlap (≈0.1–3.6 % against ≈0.8–5.7 %), and the skill's own warning about
   2/50 vs 4/50 applies with less force but still applies. What *is* a clean signal
-  is the magnitude, which is not a counting statistic: worst \|d\| falls 4.3×
-  (0.183 → 0.043) and mean \|d\| 3–4× when either the encoder is pinned or the
+  is the magnitude, which is not a counting statistic: worst |d| falls 4.3×
+  (0.183 → 0.043) and mean |d| 3–4× when either the encoder is pinned or the
   cache is handed over in fp16. Both flagged trials in both better engines are
   control-channel-only.
-* ⚠️ **The fp16-cache parity number is optimistic and must not be shipped on.** The
+- ⚠️ **The fp16-cache parity number is optimistic and must not be shipped on.** The
   harness streams each history through ORT in **fp32** and casts to fp16 once per
   trial. A real fp16 ring accumulates the cache *in fp16 across every tick*, so
   rounding compounds over an episode in a way this measures nothing about. Before
@@ -1081,29 +1077,282 @@ profile JSON of the plain fp16 engine, where instances and times are attributed:
 
 Two traps this check walked into, both worth remembering:
 
-* `build_mixed.py`'s **build log showed 0 hits**, purely because its TRT logger is
+- `build_mixed.py`'s **build log showed 0 hits**, purely because its TRT logger is
   not verbose. Reading that as "the fusion is gone" would have fired the alarm on
   the one check that matters. The engine has to be interrogated with
   `--dumpLayerInfo` / `--dumpProfile`, never only the build log.
-* An earlier version of `decoder_only_trt_measure.sh` grepped `[fm]mha`, which
+- An earlier version of `decoder_only_trt_measure.sh` grepped `[fm]mha`, which
   matches `fmha`/`mmha` but **not** `_gemm_mha_v2`, so its "here is what fused MHA
   exists" fallback printed an empty list next to a primary check reporting 38 hits.
   Fixed to `mha`.
 
 ### 12.9 What is NOT established
 
-* **Nothing about driving quality.** epoch 0, step 80797. Latency and parity are
+- **Nothing about driving quality.** epoch 0, step 80797. Latency and parity are
   properties of shapes and weight statistics; behaviour is not, and PR #248
   established that aggregate val L1 is blind to this failure class anyway.
-* **Windows 6 and 32 are latency artifacts only.** They were built from a
+- **Windows 6 and 32 are latency artifacts only.** They were built from a
   window-16 checkpoint, which `step` will run against any cache size while
   silently extrapolating (§10.3). The engines on delta-dev1 are renamed
   `LATENCY-ONLY-WRONG-WINDOW.*` with a `PARITY-NOTES.md` beside them.
-* **The harness shares 10 caches across 200 trials** (20 current-frame variants
+- **The harness shares 10 caches across 200 trials** (20 current-frame variants
   each) rather than using 200 independent histories, because a cache is 126 MiB.
   The cache is the slowest-moving real input, but this is a genuine narrowing of
   the input distribution.
-* **Speed and waypoints are synthetic**, which makes this harness ~7× harsher than
+- **Speed and waypoints are synthetic**, which makes this harness ~7× harsher than
   the road on the baseline arm. Do not quote 2/200 as a deployment rate.
-* **Margins are per-checkpoint.** Re-run §12.5 and §12.6 for every checkpoint
+- **Margins are per-checkpoint.** Re-run §12.5 and §12.6 for every checkpoint
   before serving it below fp32. A verdict cannot be inherited from a sibling.
+
+## 13. The final checkpoint (v2, step 242392) — first serious export candidate
+
+§12 measured `model-do8m9ot8:**v0**` — epoch 0, step 80797, explicitly "far from
+converged", with no quality claim attached. This section re-runs the whole
+workflow on `model-do8m9ot8:**v2**`, the **final** checkpoint of the same run
+(epoch 2, **step 242392**), which is the first of this family that actually
+drives: closed loop 179.6±18.2 m against v1's 94.7±11.3, clearing the hard left
+at spawn 40 for the first time and halving collisions per 100 m. So unlike §12
+these numbers decide something.
+
+Architecture is byte-for-byte the same arm — `dinov2_dinowm_causal`, 8L/512d/8H,
+`window: 16`, `rope_base: 1000`, `fusion_norm: true`, `teacher_force_offset: true`, 52.78 M parameters — and the exported graph is structurally identical to
+v0's: **997 nodes**, same op histogram, same 8 inputs in the same order, same 3
+outputs, opset 20, producer `pytorch 2.12.1+cu130`.
+
+⚠️ **Export host.** dev1 can no longer run the exporter: its only surviving
+interpreter is Python 3.10 and the branch needs `typing.override` (3.12) — the
+nix 3.12 that `~/Code/rmind/.venv` symlinked has been garbage-collected, so that
+venv is dead. v2 was exported on the workstation and rsync'd in (md5-gated).
+This is not a compromise: v0's ONNX carries producer `pytorch 2.12.1+cu130`,
+i.e. exactly the workstation's torch, so the exporter did not change between the
+two runs and the v0/v2 latency comparison is not confounded.
+
+### 13.1 Both correctness gates pass, with §12's structure
+
+| gate                                               | v2           | v0 (§12) |
+| -------------------------------------------------- | ------------ | -------- |
+| streaming ≡ full windowed forward, float64         | **5.56e-16** | 6.41e-16 |
+| same, float32                                      | **2.69e-07** | 2.87e-07 |
+| negative control (RoPE counter not advanced)       | **3.08e-02** | 5.50e-02 |
+| ONNX (ORT CPU fp32) vs eager, worst scale-relative | **3.93e-06** | 3.11e-06 |
+
+float64 sits at machine epsilon, so the equivalence is exact and the float32
+residual is accumulation order alone. The negative control is **five orders of
+magnitude** worse, so the gate is falsifiable rather than vacuous.
+
+### 13.2 Latency is unchanged — and this time there is a same-day control
+
+The task's rule was that weights must not move a static-shape engine's latency,
+and that a >1 % difference should be investigated rather than reported. To make
+that decidable, **the v0 engines still on dev1 from 6 Aug were re-benchmarked
+first**, unmodified, before any v2 engine was built. Without that, a v2/v0
+disagreement is ambiguous between "host drifted in three days" and "v2 differs".
+
+All medians, `trtexec --iterations=60 --avgRuns=20 --useSpinWait --warmUp=1000`,
+clock verified at 918 MHz across every sample of every run. **fp32 means
+`--noTF32`**; trtexec's default "fp32" is the TF32 path and a different numeric
+configuration.
+
+| context         | v2 fp32      | v0 re-benched today | §12 published | Δ v2 vs today's v0 |
+| --------------- | ------------ | ------------------- | ------------- | ------------------ |
+| 6               | 41.80 ms     | 41.78               | 41.79         | +0.04 %            |
+| **16 (served)** | **59.67 ms** | 59.72               | 59.82         | **−0.09 %**        |
+| 32              | 92.22 ms     | 92.32               | 92.20         | −0.11 %            |
+
+| context         | v2 fp16      | v0 re-benched today | §12 published | Δ           |
+| --------------- | ------------ | ------------------- | ------------- | ----------- |
+| 6               | 10.57 ms     | 10.55               | 10.55         | +0.25 %     |
+| **16 (served)** | **17.05 ms** | 16.98               | 16.97         | **+0.45 %** |
+| 32              | 27.17 ms     | 27.21               | 27.19         | −0.13 %     |
+
+Every cell is inside 0.5 %, and the v0 engines themselves reproduced their
+three-day-old numbers to within 0.2 %. Nothing to investigate: 161 k additional
+training steps are worth **zero** latency, as §12.3's random-vs-trained control
+already implied.
+
+### 13.3 The fused MHA kernel is present — and the build-log trap fired again
+
+Built with `--profilingVerbosity=detailed`, and the quotable figure taken from
+the **profile JSON**, where every instance carries its own time, never from a
+`grep | wc -l` (those are name occurrences, not kernel counts, and are comparable
+neither across engines nor across files).
+
+| engine              | `_gemm_mha_v2` instances | time         | share of step                         |
+| ------------------- | ------------------------ | ------------ | ------------------------------------- |
+| **fp16** (plain)    | **19**                   | **5.347 ms** | **29.3 %**                            |
+| fp16 + fp16 cache   | 19                       | 5.330 ms     | 34.4 %                                |
+| `encfp32-fp16trunk` | 7                        | 4.587 ms     | 19.8 %                                |
+| fp32                | 0                        | —            | — (expected: fp16 tensor-core kernel) |
+
+**Verdict: present.** 19 instances / 5.347 ms / 29.3 % reproduces §12.4's
+19 / 5.34 ms / 29.4 % almost exactly, and the fused attention is again the single
+largest bucket in the graph. Standalone `cat`/`concat` kernels are **0 instances,
+0.00 ms** in every engine — the KV `Concat` has not vanished, TRT has absorbed it
+*into* `_gemm_mha_v2`, which is why it is load-bearing and must not be
+"optimized" away.
+
+**§12.8's false alarm reproduced exactly**, and it is worth keeping the receipt:
+
+| source                     | fp16 (trtexec) | mixed (`build_mixed.py`) |
+| -------------------------- | -------------- | ------------------------ |
+| build log                  | 38             | **0**                    |
+| engine `--exportLayerInfo` | 38             | **7**                    |
+| engine `--exportProfile`   | 19             | **7**                    |
+
+`build_mixed.py` still never sets `profiling_verbosity`, so its **build log
+reports 0 hits on an engine that demonstrably has 7**. Interrogate the ENGINE.
+
+### 13.4 Margins WIDENED — training's tightening is not monotonic
+
+Same screen as §12.5 (ORT-only, 25 trials, the same 3 real camera frames).
+
+The four frozen probes came back **byte-identical to §12.5's published values** —
+2.68798828125 / 11.5570068359375 / 2.8753662109375 / 3.3167724609375 — which is
+the control that makes the comparison legitimate: identical frozen-RVQ margins
+mean the harness fed identical input tensors, so v0-vs-v2 is one measurement, not
+two. Only `node_argmax_4`, the trained VQ-BeT `code_head`, moved.
+
+| trained `code_head` | init (§12.5) | v0 @ step 80.8 k | **v2 @ step 242.4 k** |
+| ------------------- | ------------ | ---------------- | --------------------- |
+| min ULP             | 21.362       | 1.938            | **3.147**             |
+| p1 ULP              | —            | 4.22             | **8.10**              |
+| median ULP          | 678.7        | 162.9            | **184.8**             |
+| under 1 ULP         | —            | 0 %              | **0 %**               |
+| under 4 ULP         | —            | 1 %              | **1 %**               |
+
+**§12.5 predicted the wrong direction.** It observed init → 80.8 k tightening
+(21.4 → 1.9 ULP) and read it as "the tie geometry forming early". Carried to
+convergence the margins **recover**: min 1.94 → 3.15, median 163 → 185. The
+tightening is a mid-training excursion, not a monotone consequence of training,
+and a checkpoint should not be assumed tighter because it is later. Still the
+**marginal** 1–4 band (`<1` predicted every measured fp16 failure across 16
+checkpoints; `≥4` has never failed), so low precision still had to be verified at
+n≥200 rather than assumed — but the prediction going in was "no worse than v0's
+5/200", and that is what happened.
+
+Quote the **code head's 3.147**, never the screen's aggregate `min_ulp=2.688`:
+the aggregate floor belongs to the frozen waypoints-tokenizer table.
+
+### 13.5 The parity ladder — n=200, and fp32 is exact
+
+Same harness, same host, same 3 real frames, 10 genuinely streamed 15-frame warm
+caches × 20 current-frame/speed/waypoint variations, one shared ORT CPU fp32
+reference. Scored as **decision changes** (any action channel moving >0.02), not
+float error.
+
+| engine                    | latency      | vs fp32   | engine  | KV cache      | decisions | control-only | worst \|d\| | mean \|d\| |
+| ------------------------- | ------------ | --------- | ------- | ------------- | --------- | ------------ | ----------- | ---------- |
+| **fp32** (TF32 cleared)   | 59.67 ms     | 1.00×     | 203 MiB | 120.47 MiB    | **0/200** | 0            | 9.4e-07     | 2.19e-08   |
+| `encfp32-fp16trunk`       | 21.80 ms     | 2.74×     | 155 MiB | 120.47 MiB    | 3/200     | 3            | 0.0547      | 2.54e-04   |
+| fp16                      | 17.05 ms     | 3.50×     | 105 MiB | 120.47 MiB    | 3/200     | 3            | 0.0579      | 2.87e-04   |
+| **fp16 + fp16 cache I/O** | **13.66 ms** | **4.37×** | 105 MiB | **60.23 MiB** | 2/200     | 2            | 0.0428      | 2.68e-04   |
+
+**fp32 is 0/200, so the harness is sound** — its residual is 9.4e-07, fp32
+round-off between ORT CPU and TRT, not a modelling difference.
+
+Per channel, v2 fp16 against the fp32 reference, with v0's for comparison:
+
+| channel            | v2 max \|d\| | v2 mean \|d\| | v0 max \|d\| (§12.6) |
+| ------------------ | ------------ | ------------- | -------------------- |
+| gas_pedal          | 0.0228       | 3.27e-04      | 0.1065               |
+| brake_pedal        | 0.0241       | 2.44e-04      | 0.0068               |
+| **steering_angle** | **0.0579**   | 5.35e-04      | **0.1827**           |
+| turn_signal        | 0.0029       | 4.10e-05      | 0.0041               |
+
+**The failure is the same in kind as v0's but materially smaller.** Every flip in
+every arm is still a **control** channel and `turn_signal` still never crosses
+tolerance (max 0.0029), so there remains no "it was only the indicator" reading —
+but the worst case falls from **18.3 % of steering range to 5.8 %**, and throttle
+from 10.6 % to 2.3 %. That is the wider code-head margin of §13.4 showing up
+where it should. Counts (3/200 vs v0's 5/200) are **not** a distinguishable
+difference at this n; the magnitude is the real signal.
+
+### 13.6 KV-cache memory — the halving is real, still not the default
+
+Confirmed against the engines' own bindings, at window 16:
+
+| engine                | `inputs_past_k` dtype | KV cache       | latency      |
+| --------------------- | --------------------- | -------------- | ------------ |
+| fp32                  | float32               | 120.47 MiB     | 59.67 ms     |
+| fp16 (plain `--fp16`) | **float32**           | **120.47 MiB** | 17.05 ms     |
+| `encfp32-fp16trunk`   | float32               | 120.47 MiB     | 21.80 ms     |
+| fp16 + fp16 cache I/O | float16               | **60.23 MiB**  | **13.66 ms** |
+
+A plain `--fp16` build still leaves **60 MiB and 3.4 ms on the table for
+nothing** (17.05 → 13.66 ms), and the profile says exactly why:
+
+| kernel bucket, plain fp16            | instances | time     | share  |
+| ------------------------------------ | --------- | -------- | ------ |
+| `Reformatting CopyNode` for `past_k` | 1         | 1.261 ms | 6.9 %  |
+| `Reformatting CopyNode` for `past_v` | 1         | 1.248 ms | 6.8 %  |
+| all `Reformatting CopyNode`          | 12        | 2.773 ms | 15.2 % |
+| `cat`/`concat` standalone            | 0         | 0.00 ms  | 0 %    |
+
+2.51 ms of that is converting a 120 MiB fp32 cache to fp16 every tick, matching
+§12.7's 1.264/1.250 ms to three digits. In the fp16-cache engine the entire
+reformat bucket collapses to **7 instances / 0.081 ms / 0.5 %**, which is the
+mechanism, measured rather than inferred.
+
+Total resident at window 16: **323 MiB** fp32 (203 weights + 120 cache) or
+**165 MiB** on fp16 + fp16 cache. Nowhere near binding on a 15 GiB Orin.
+
+### 13.7 The serving decision — §12.8's recommendation stands, more firmly
+
+**Serve fp32.** v2 does not change the recommendation; it strengthens it, and for
+the same structural reason: at window 16 there is **no latency pressure to trade
+anything for**. 59.67 ms is 3.37× cheaper than the 200.85 ms 6-frame baseline
+served today, while attending 16 frames instead of 6. The tick carrying an
+inference costs `333 + 59.7 = 393 ms` against today's `333 + 200.9 = 534 ms`.
+fp32 is the only 0/200 configuration and is *also* the faster-than-today one, so
+accepting even 1 % of flipped **control** decisions buys nothing.
+
+Two things v2 adds to that case rather than subtracting:
+
+- the code-head margin **widened** (1.94 → 3.15 ULP), so the fp16 risk is smaller
+  than §12 measured — but it is still nonzero, still concentrated in steering and
+  throttle, and still 3/200;
+- v2 is the first checkpoint whose *driving* is worth protecting. §12's verdict
+  was cheap because v0 could not drive; here the same verdict has something to
+  lose.
+
+**If a faster engine is ever needed** — the `_big` arm, window 32/64, a tighter
+tick — the answer for this architecture remains **fp16 with fp16 cache I/O**, and
+`encfp32-fp16trunk` remains dominated on every axis at once, exactly as §12.8
+found:
+
+|                     | latency      | KV cache      | decisions | worst \|d\| |
+| ------------------- | ------------ | ------------- | --------- | ----------- |
+| `encfp32-fp16trunk` | 21.80 ms     | 120.47 MiB    | 3/200     | 0.0547      |
+| fp16 + fp16 cache   | **13.66 ms** | **60.23 MiB** | **2/200** | **0.0428**  |
+
+1.6× faster, half the cache, no worse parity. The cause is structural: the step
+encodes only **one** frame, so the image encoder is 69 % of the graph's layers
+(1950 of 2818, re-derived on this graph — never hardcoded) rather than the ~18 %
+of runtime it is in the recompute-everything baseline, so pinning it is no longer
+cheap; and the fp16-cache lever does not exist in the baseline at all.
+
+### 13.8 What is NOT established
+
+- ⚠️ **The fp16-cache parity number is optimistic and must not be shipped on.**
+  The harness streams each history through ORT in **fp32** and casts to fp16 once
+  per trial. A real fp16 ring accumulates the cache **in fp16 across every tick**,
+  so rounding compounds over an episode in a way this measures nothing about.
+  Unchanged from §12.8, and still the one blocking item before serving it.
+- **Nothing here is a driving-quality measurement.** The closed-loop numbers
+  motivating this checkpoint come from rsim, not from these engines.
+- **Windows 6 and 32 are latency artifacts only** — built from a window-16
+  checkpoint, which `step` runs against any cache while silently extrapolating.
+  Renamed `LATENCY-ONLY-WRONG-WINDOW.*` on dev1 with a `PARITY-NOTES.md`.
+- **10 caches shared across 200 trials** (20 current-frame variants each), a
+  genuine narrowing of the input distribution; and **speed and waypoints are
+  synthetic**, which made this harness ~7× harsher than the road on the baseline
+  arm. Do not quote 2/200 or 3/200 as deployment rates.
+- **The v2 ONNX is 212,612,625 B against v0's 212,368,893 B** (+0.11 %) despite
+  identical 997-node graphs, identical shapes and identical frozen-probe margins.
+  Unexplained, and benign as far as anything measured here can tell: the built
+  fp32 engines are 203 MiB in both cases and every gate and latency figure lands
+  on v0's.
+- **Margins remain per-checkpoint.** §13.4 shows they move non-monotonically, so
+  re-run §13.4 and §13.5 for every checkpoint before serving one below fp32. A
+  verdict cannot be inherited from a sibling — or from an earlier epoch of the
+  same run.

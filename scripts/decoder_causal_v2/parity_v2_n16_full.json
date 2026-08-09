@@ -1,0 +1,458 @@
+{
+  "onnx": "/home/max/onnx_exports/decoder_causal_v2/decoder_do8m9ot8v2_n16.onnx",
+  "trials": 200,
+  "histories": 10,
+  "code_tol": 0.02,
+  "frames": "/tmp/native_raw.png,/tmp/frame_video1.jpg,/tmp/frame_video0_.jpg",
+  "seed": 1337,
+  "cache": {
+    "fp32": {
+      "bindings": [
+        {
+          "name": "inputs_past_k",
+          "input": true,
+          "shape": [
+            8,
+            1,
+            8,
+            3855,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 63160320
+        },
+        {
+          "name": "inputs_past_v",
+          "input": true,
+          "shape": [
+            8,
+            1,
+            8,
+            3855,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 63160320
+        },
+        {
+          "name": "inputs_cache_bias",
+          "input": true,
+          "shape": [
+            1,
+            1,
+            1,
+            3855
+          ],
+          "dtype": "float32",
+          "bytes": 15420
+        },
+        {
+          "name": "new_k",
+          "input": false,
+          "shape": [
+            8,
+            1,
+            8,
+            257,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 4210688
+        },
+        {
+          "name": "new_v",
+          "input": false,
+          "shape": [
+            8,
+            1,
+            8,
+            257,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 4210688
+        }
+      ],
+      "kv_cache_bytes": 126320640,
+      "kv_cache_mib": 120.46875
+    },
+    "fp16": {
+      "bindings": [
+        {
+          "name": "inputs_past_k",
+          "input": true,
+          "shape": [
+            8,
+            1,
+            8,
+            3855,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 63160320
+        },
+        {
+          "name": "inputs_past_v",
+          "input": true,
+          "shape": [
+            8,
+            1,
+            8,
+            3855,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 63160320
+        },
+        {
+          "name": "inputs_cache_bias",
+          "input": true,
+          "shape": [
+            1,
+            1,
+            1,
+            3855
+          ],
+          "dtype": "float32",
+          "bytes": 15420
+        },
+        {
+          "name": "new_k",
+          "input": false,
+          "shape": [
+            8,
+            1,
+            8,
+            257,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 4210688
+        },
+        {
+          "name": "new_v",
+          "input": false,
+          "shape": [
+            8,
+            1,
+            8,
+            257,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 4210688
+        }
+      ],
+      "kv_cache_bytes": 126320640,
+      "kv_cache_mib": 120.46875
+    },
+    "encfp32-fp16trunk": {
+      "bindings": [
+        {
+          "name": "inputs_past_k",
+          "input": true,
+          "shape": [
+            8,
+            1,
+            8,
+            3855,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 63160320
+        },
+        {
+          "name": "inputs_past_v",
+          "input": true,
+          "shape": [
+            8,
+            1,
+            8,
+            3855,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 63160320
+        },
+        {
+          "name": "inputs_cache_bias",
+          "input": true,
+          "shape": [
+            1,
+            1,
+            1,
+            3855
+          ],
+          "dtype": "float32",
+          "bytes": 15420
+        },
+        {
+          "name": "new_k",
+          "input": false,
+          "shape": [
+            8,
+            1,
+            8,
+            257,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 4210688
+        },
+        {
+          "name": "new_v",
+          "input": false,
+          "shape": [
+            8,
+            1,
+            8,
+            257,
+            64
+          ],
+          "dtype": "float32",
+          "bytes": 4210688
+        }
+      ],
+      "kv_cache_bytes": 126320640,
+      "kv_cache_mib": 120.46875
+    },
+    "fp16-fp16cache": {
+      "bindings": [
+        {
+          "name": "inputs_past_k",
+          "input": true,
+          "shape": [
+            8,
+            1,
+            8,
+            3855,
+            64
+          ],
+          "dtype": "float16",
+          "bytes": 31580160
+        },
+        {
+          "name": "inputs_past_v",
+          "input": true,
+          "shape": [
+            8,
+            1,
+            8,
+            3855,
+            64
+          ],
+          "dtype": "float16",
+          "bytes": 31580160
+        },
+        {
+          "name": "inputs_cache_bias",
+          "input": true,
+          "shape": [
+            1,
+            1,
+            1,
+            3855
+          ],
+          "dtype": "float16",
+          "bytes": 7710
+        },
+        {
+          "name": "new_k",
+          "input": false,
+          "shape": [
+            8,
+            1,
+            8,
+            257,
+            64
+          ],
+          "dtype": "float16",
+          "bytes": 2105344
+        },
+        {
+          "name": "new_v",
+          "input": false,
+          "shape": [
+            8,
+            1,
+            8,
+            257,
+            64
+          ],
+          "dtype": "float16",
+          "bytes": 2105344
+        }
+      ],
+      "kv_cache_bytes": 63160320,
+      "kv_cache_mib": 60.234375
+    }
+  },
+  "engines": {
+    "fp32": {
+      "decision_changes": 0,
+      "decision_changes_control_only": 0,
+      "worst_max_abs": 8.940696716308594e-07,
+      "mean_abs": 2.1937678340577804e-08,
+      "bit_exact": false,
+      "per_channel": {
+        "gas_pedal": {
+          "max_abs": 4.544854164123535e-07,
+          "mean_abs": 2.2842698399472283e-08
+        },
+        "brake_pedal": {
+          "max_abs": 4.544854164123535e-07,
+          "mean_abs": 2.2003817434779194e-08
+        },
+        "steering_angle": {
+          "max_abs": 8.940696716308594e-07,
+          "mean_abs": 3.5626872119109976e-08
+        },
+        "turn_signal": {
+          "max_abs": 4.76837158203125e-07,
+          "mean_abs": 7.277328073485023e-09
+        }
+      },
+      "changed": []
+    },
+    "fp16": {
+      "decision_changes": 3,
+      "decision_changes_control_only": 3,
+      "worst_max_abs": 0.057856976985931396,
+      "mean_abs": 0.00028661981923505664,
+      "bit_exact": false,
+      "per_channel": {
+        "gas_pedal": {
+          "max_abs": 0.02276836335659027,
+          "mean_abs": 0.0003268167783971876
+        },
+        "brake_pedal": {
+          "max_abs": 0.024082252755761147,
+          "mean_abs": 0.00024396603112109005
+        },
+        "steering_angle": {
+          "max_abs": 0.057856976985931396,
+          "mean_abs": 0.0005346957477740943
+        },
+        "turn_signal": {
+          "max_abs": 0.0028758998960256577,
+          "mean_abs": 4.100065052625723e-05
+        }
+      },
+      "changed": [
+        {
+          "trial": 23,
+          "max_abs": 0.02276836335659027,
+          "channels": [
+            "gas_pedal"
+          ]
+        },
+        {
+          "trial": 48,
+          "max_abs": 0.057856976985931396,
+          "channels": [
+            "brake_pedal",
+            "steering_angle"
+          ]
+        },
+        {
+          "trial": 162,
+          "max_abs": 0.04700242355465889,
+          "channels": [
+            "steering_angle"
+          ]
+        }
+      ]
+    },
+    "encfp32-fp16trunk": {
+      "decision_changes": 3,
+      "decision_changes_control_only": 3,
+      "worst_max_abs": 0.05467120185494423,
+      "mean_abs": 0.00025415714480914176,
+      "bit_exact": false,
+      "per_channel": {
+        "gas_pedal": {
+          "max_abs": 0.04132430627942085,
+          "mean_abs": 0.00030553145916201174
+        },
+        "brake_pedal": {
+          "max_abs": 0.04834354296326637,
+          "mean_abs": 0.0002509591868147254
+        },
+        "steering_angle": {
+          "max_abs": 0.05467120185494423,
+          "mean_abs": 0.00043738578096963465
+        },
+        "turn_signal": {
+          "max_abs": 0.003027911065146327,
+          "mean_abs": 2.275210317748133e-05
+        }
+      },
+      "changed": [
+        {
+          "trial": 89,
+          "max_abs": 0.04834354296326637,
+          "channels": [
+            "gas_pedal",
+            "brake_pedal"
+          ]
+        },
+        {
+          "trial": 117,
+          "max_abs": 0.05467120185494423,
+          "channels": [
+            "steering_angle"
+          ]
+        },
+        {
+          "trial": 162,
+          "max_abs": 0.04713975265622139,
+          "channels": [
+            "steering_angle"
+          ]
+        }
+      ]
+    },
+    "fp16-fp16cache": {
+      "decision_changes": 2,
+      "decision_changes_control_only": 2,
+      "worst_max_abs": 0.0428096242249012,
+      "mean_abs": 0.0002683038474060595,
+      "bit_exact": false,
+      "per_channel": {
+        "gas_pedal": {
+          "max_abs": 0.0428096242249012,
+          "mean_abs": 0.000553534715436399
+        },
+        "brake_pedal": {
+          "max_abs": 0.04099426418542862,
+          "mean_abs": 0.0003400300338398665
+        },
+        "steering_angle": {
+          "max_abs": 0.0063668787479400635,
+          "mean_abs": 0.00014431789168156683
+        },
+        "turn_signal": {
+          "max_abs": 0.0017086025327444077,
+          "mean_abs": 3.5332715924596414e-05
+        }
+      },
+      "changed": [
+        {
+          "trial": 107,
+          "max_abs": 0.04099426418542862,
+          "channels": [
+            "gas_pedal",
+            "brake_pedal"
+          ]
+        },
+        {
+          "trial": 145,
+          "max_abs": 0.0428096242249012,
+          "channels": [
+            "gas_pedal"
+          ]
+        }
+      ]
+    }
+  }
+}
