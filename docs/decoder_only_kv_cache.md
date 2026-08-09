@@ -1170,12 +1170,35 @@ three-day-old numbers to within 0.2 %. Nothing to investigate: 161 k additional
 training steps are worth **zero** latency, as §12.3's random-vs-trained control
 already implied.
 
+**`--noTF32` verified behaviourally, not assumed.** The whole fp32 column is only
+the 0/200 reference if TF32 really was cleared, and trtexec prints `TF32 is
+enabled by default. Add --noTF32 …` into the log *even when `--noTF32` is passed*
+— it is a pre-parse banner, so reading it as state is a trap. The decisive check
+is which tactics the builder actually chose:
+
+| build log | `tf32f32` tactic names selected |
+| --- | --- |
+| v2 fp32 (`--noTF32`) | **0** |
+| v2 fp16 (TF32 not cleared) | 52 |
+| v0 fp32 (6 Aug, `--noTF32`) | **0** |
+
+Zero TF32 tactics in the fp32 arm and 52 in an arm where it was left on: the flag
+took, and it took identically to v0's.
+
 ### 13.3 The fused MHA kernel is present — and the build-log trap fired again
 
 Built with `--profilingVerbosity=detailed`, and the quotable figure taken from
 the **profile JSON**, where every instance carries its own time, never from a
 `grep | wc -l` (those are name occurrences, not kernel counts, and are comparable
 neither across engines nor across files).
+
+⚠️ **Every "share of step" percentage in §13.3 and §13.6 is against the profile
+run's OWN total**, not against the benchmarked step: `--dumpProfile` inflates
+totals (18.263 ms profile total vs the 17.05 ms benchmarked fp16 step), which is
+why latency and profile come from separate runs in the first place. This is the
+same denominator §12.4 and §12.7 used, so the figures are directly comparable to
+theirs — but they are shares of an inflated total, and a share of the *served*
+step would be ~7 % larger in each case.
 
 | engine              | `_gemm_mha_v2` instances | time         | share of step                         |
 | ------------------- | ------------------------ | ------------ | ------------------------------------- |
