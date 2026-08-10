@@ -1,9 +1,12 @@
-from typing import final
+from typing import TYPE_CHECKING, cast, final
 
 import torch
 from torch import Tensor
 from torch.nn import Module
 from vector_quantize_pytorch import ResidualVQ as RVQ  # noqa: N817
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @final
@@ -35,6 +38,25 @@ class ResidualVQ(Module):
             threshold_ema_dead_code=threshold_ema_dead_code,
             kmeans_init=kmeans_init,
         )
+
+        # The library codebook lazily runs kmeans-init on the first forward,
+        # guarded by a data-dependent `if self.initted` (a tensor buffer) that
+        # `torch.export` can't trace. That init is only needed while training
+        # from scratch -- an eval/inference model always loads an
+        # already-initialized codebook -- so gate it on the Python `training`
+        # flag, which export specializes as a constant.
+        for layer in self.vq.layers:
+            self._guard_kmeans_init(cast("Module", layer._codebook))  # noqa: SLF001
+
+    @staticmethod
+    def _guard_kmeans_init(codebook: Module) -> None:
+        init_embed_ = cast("Callable[..., object]", codebook.init_embed_)
+
+        def guarded(*args: object, **kwargs: object) -> None:
+            if codebook.training:
+                init_embed_(*args, **kwargs)
+
+        codebook.init_embed_ = guarded  # ty:ignore[unresolved-attribute]
 
     @property
     def codebook_sizes(self) -> tuple[int, ...]:
