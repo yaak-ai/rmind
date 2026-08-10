@@ -6,7 +6,10 @@ defaults:
 _target_: rmind.datamodules.GenericDataModule
 train:
   _target_: rbyte.dataloader.TorchDataNodeDataLoader
-  batch_size: 64
+  # bumped from 64: the real run showed only ~4GB/24GB VRAM used at batch_size=64
+  # (frozen ViT-S backbone + LoRA-only qkv/proj + a lightweight 256-dim decoder is
+  # cheap per-sample) -- more headroom to amortize per-step overhead over.
+  batch_size: 256
   shuffle: true
   drop_last: true
   collate_fn:

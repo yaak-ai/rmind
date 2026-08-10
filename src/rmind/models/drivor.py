@@ -1,4 +1,4 @@
-from typing import Any, override
+from typing import Any, Literal, cast, override
 
 import pytorch_lightning as pl
 import torch
@@ -8,8 +8,14 @@ from tensordict import TensorDict
 from torch.nn import Module
 from torch.optim import Optimizer
 
-from rmind.components.drivor.loss import winner_takes_all_pose_l1
-from rmind.components.drivor.trajectory_target import dead_reckon_future_trajectory
+from rmind.components.drivor.loss import (
+    winner_takes_all_pose_l1,
+    winner_takes_all_pose_l1_components,
+)
+from rmind.components.drivor.trajectory_target import (
+    dead_reckon_future_trajectory,
+    gnss_anchor_drift_m,
+)
 from rmind.config import HydraConfig
 from rmind.models.control_transformer import LRSchedulerHydraConfig
 
@@ -157,6 +163,57 @@ class DrivoR(pl.LightningModule):
 
         return image, continuous, turn_signal, route, target_xy, target_heading
 
+    def _loss_hparams(self) -> tuple[float, Literal["mean", "sum"]]:
+        """`self.loss` is typed generically (`InstanceOf[Module]`, see
+        `__init__`) since any Hydra-configured module could be plugged in --
+        but `winner_takes_all_pose_l1_components` (used below to get logging
+        breakdowns `self.loss(...)` alone doesn't expose) needs its own
+        `heading_weight`/`reduction` to compute a `loss` that actually matches
+        `self.loss(...)`'s. Read them off `self.loss` when present (i.e. it's
+        a `WinnerTakesAllPoseLoss`), else fall back to the same defaults the
+        loss functions themselves use.
+        """
+        heading_weight = getattr(self.loss, "heading_weight", 0.1)
+        reduction = cast(
+            "Literal['mean', 'sum']", getattr(self.loss, "reduction", "mean")
+        )
+        return heading_weight, reduction
+
+    def _pose_metrics(
+        self,
+        pred: torch.Tensor,
+        target_xy: torch.Tensor,
+        target_heading: torch.Tensor,
+        *,
+        prefix: Literal["train", "val"],
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
+        """Shared by `training_step`/`validation_step`: the scalar loss plus
+        the logging breakdown (`winner_takes_all_pose_l1_components` gives us
+        both from one call, so both steps see identical diagnostics instead
+        of just `train/loss` with everything else gated on validation).
+        """
+        heading_weight, reduction = self._loss_hparams()
+        loss, best_index, per_candidate, winner_xy_loss, winner_heading_loss = (
+            winner_takes_all_pose_l1_components(
+                pred,
+                target_xy,
+                target_heading,
+                heading_weight=heading_weight,
+                reduction=reduction,
+            )
+        )
+        best_index_unique_frac: float = best_index.unique().numel() / best_index.numel()
+        metrics: dict[str, torch.Tensor | float] = {
+            f"{prefix}/loss": loss,
+            # unweighted, unlike f"{prefix}/loss" -- see winner_takes_all_pose_l1_components
+            f"{prefix}/loss_xy": winner_xy_loss.mean(),
+            f"{prefix}/loss_heading": winner_heading_loss.mean(),
+            # winner-collapse/candidate-diversity diagnostics
+            f"{prefix}/best_index_unique_frac": best_index_unique_frac,
+            f"{prefix}/per_candidate_loss_std": per_candidate.std(dim=-1).mean(),
+        }
+        return loss, metrics
+
     def _forward(
         self,
         *,
@@ -193,30 +250,41 @@ class DrivoR(pl.LightningModule):
         pred = self._forward(
             image=image, continuous=continuous, turn_signal=turn_signal, route=route
         )
-        loss = self.loss(pred, target_xy, target_heading)
-        self.log("train/loss", loss, sync_dist=True)
+        loss, metrics = self._pose_metrics(
+            pred, target_xy, target_heading, prefix="train"
+        )
+        self.log_dict(metrics, sync_dist=True)
         return {"loss": loss}
 
     @override
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
+        data = batch["data"]
         image, continuous, turn_signal, route, target_xy, target_heading = self._inputs(
             batch
         )
         pred = self._forward(
             image=image, continuous=continuous, turn_signal=turn_signal, route=route
         )
-        loss, best_index, per_candidate = winner_takes_all_pose_l1(
-            pred, target_xy, target_heading
+        loss, metrics = self._pose_metrics(
+            pred, target_xy, target_heading, prefix="val"
         )
 
         if not self.trainer.sanity_checking:
+            # QA check on the dead-reckoned target itself (see
+            # trajectory_target.gnss_anchor_drift_m / class docstring) --
+            # large drift flags wheel slip, GPS multipath, or a heading-filter
+            # failure for that batch, independent of model quality.
+            drift_m = gnss_anchor_drift_m(
+                dead_reckoned_position_normalized=target_xy,
+                gnss_xy=data["meta/Gnss/xy"],
+                heading_deg=data["headings_denoised/heading"],
+                reference_index=self.reference_timestep,
+            )
             self.log_dict(
-                {
-                    "val/loss": loss,
-                    "val/best_index_unique_frac": (
-                        best_index.unique().numel() / best_index.numel()
-                    ),
-                    "val/per_candidate_loss_std": per_candidate.std(dim=-1).mean(),
+                metrics
+                | {
+                    "val/gnss_anchor_drift_m_median": drift_m.median(),
+                    "val/gnss_anchor_drift_m_p90": drift_m.quantile(0.9),
                 },
                 sync_dist=True,
             )
@@ -231,8 +299,13 @@ class DrivoR(pl.LightningModule):
         pred = self._forward(
             image=image, continuous=continuous, turn_signal=turn_signal, route=route
         )
+        heading_weight, reduction = self._loss_hparams()
         _, best_index, per_candidate = winner_takes_all_pose_l1(
-            pred, target_xy, target_heading
+            pred,
+            target_xy,
+            target_heading,
+            heading_weight=heading_weight,
+            reduction=reduction,
         )
         best_pred = pred.gather(
             1, best_index[:, None, None, None].expand(-1, 1, *pred.shape[-2:])
