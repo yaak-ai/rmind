@@ -299,21 +299,32 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return self
 
     @staticmethod
-    def _get(inputs: Mapping[str, Any], path: Path) -> Any:
+    def _get(
+        inputs: Mapping[str, Any], path: Path, *, required: bool = True
+    ) -> Any:
         value = key_get_default(inputs, tuple(map(MappingKey, path)), None)
-        if value is None:
+        if value is None and required:
             msg = f"input {path!r} missing from transformed batch"
             raise KeyError(msg)
         return value
 
-    def _features(self, batch: Any) -> tuple[Tensor, Tensor]:
-        """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`."""
+    def _features(
+        self, batch: Any, *, require_chunk: bool = True
+    ) -> tuple[Tensor, Tensor | None]:
+        """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
+
+        The chunk is only a TARGET (it never feeds the features), so callers on
+        the inference path (`forward`, ONNX export) pass `require_chunk=False`
+        and may omit the action series from the batch entirely -- `Remapper`
+        and `StackFields` already propagate `None` through when a raw field is
+        absent.
+        """
         inputs = self.input_transform(batch)
 
         image_by_camera = self._get(inputs, ("image",))  # {camera: (b, t, c, h, w)}
         speed = self._get(inputs, self.speed)  # (b, t, 1)
         waypoints = self._get(inputs, self.waypoints)  # (b, t, n, 2)
-        chunk = self._get(inputs, self.chunk)  # (b, t, horizon, fields)
+        chunk = self._get(inputs, self.chunk, required=require_chunk)
 
         images = torch.stack(
             [image_by_camera[camera] for camera in self.cameras], dim=2
@@ -475,9 +486,41 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def forward(self, batch: Any) -> TensorDict:
-        features, _ = self._features(batch)
+        features, _ = self._features(batch, require_chunk=False)
         chunk = self._predict_chunk(features[:, -1])
         return TensorDict({"policy": {"joint_actions": chunk}})
+
+    @classmethod
+    def load_for_export(cls, artifact: str, **kwargs: Any) -> "PatchPolicy":
+        """Load a checkpoint configured for deployment export (ONNX).
+
+        Mirrors the control-transformer export conventions
+        (config/export/yaak/control_transformer/finetuned.yaml):
+        - argmax code decoding (`sample_codes=False`) for determinism;
+        - the in-model image pipeline (Rearrange/CenterCrop/Resize/ToDtype)
+          is replaced by ImageNet `Normalize` only -- deployment supplies
+          already-cropped/resized `[0, 1]` float frames in `(b, t, c, h, w)`.
+
+        The exported graph needs no action series in the batch (`forward`
+        passes `require_chunk=False`).
+        """
+        from torchvision.transforms.v2 import Normalize  # noqa: PLC0415
+
+        model = cls.load_from_wandb_artifact(
+            artifact,
+            filename="model.ckpt",
+            map_location="cpu",
+            strict=False,
+            weights_only=False,
+        )
+        for key, value in kwargs.items():
+            setattr(model, key, value)
+        model.sample_codes = False
+        # index 2 of the input_transform Sequential is the per-modality ModuleDict
+        model.input_transform[2]["image"] = Normalize(
+            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+        )
+        return model.eval()
 
     @staticmethod
     def _structure(chunk: Tensor) -> TensorDict:

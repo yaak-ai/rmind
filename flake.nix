@@ -31,6 +31,9 @@
           skim
           openssl
           ffmpeg
+          cargo
+          rustc
+          pkg-config
         ];
 
         env = {
