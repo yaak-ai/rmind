@@ -445,7 +445,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def forward(self, batch: Any) -> TensorDict:
         features, _ = self._features(batch, require_chunk=False)
         chunk = self._predict_chunk(features[:, -1])
-        return TensorDict({"policy": {"joint_actions": chunk}})
+        # Decode to the same per-channel policy.continuous.*/policy.discrete.*
+        # structure ControlTransformer's PolicyObjective.predict() returns
+        # (see _structure) -- deployment (rsim's OnnxAgent) reads named
+        # scalar-per-tick outputs, not the raw normalized joint-action chunk.
+        # [:, 0] takes the immediate next action; the remaining horizon steps
+        # are a training-time-only lookahead nothing downstream consumes.
+        return TensorDict({"policy": self._structure(chunk[:, 0])})
 
     @classmethod
     def load_for_export(cls, artifact: str, **kwargs: Any) -> "PatchPolicy":
@@ -455,14 +461,15 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         (config/export/yaak/control_transformer/finetuned.yaml):
         - argmax code decoding (`sample_codes=False`) for determinism;
         - the in-model image pipeline (Rearrange/CenterCrop/Resize/ToDtype)
-          is replaced by ImageNet `Normalize` only -- deployment supplies
-          already-cropped/resized `[0, 1]` float frames in `(b, t, c, h, w)`.
+          is replaced by an Identity -- deployment supplies already-cropped/
+          resized/normalized `(b, t, c, h, w)` float frames (rsim's OnnxAgent
+          applies ImageNet Normalize client-side rather than in-graph; keep
+          this Identity rather than ControlTransformer's in-graph Normalize
+          convention, or camera input gets normalized twice).
 
         The exported graph needs no action series in the batch (`forward`
         passes `require_chunk=False`).
         """
-        from torchvision.transforms.v2 import Normalize  # noqa: PLC0415
-
         model = cls.load_from_wandb_artifact(
             artifact,
             filename="model.ckpt",
@@ -474,9 +481,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             setattr(model, key, value)
         model.sample_codes = False
         # index 2 of the input_transform Sequential is the per-modality ModuleDict
-        model.input_transform[2]["image"] = Normalize(
-            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-        )
+        model.input_transform[2]["image"] = nn.Identity()
         return model.eval()
 
     @staticmethod

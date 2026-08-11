@@ -1,14 +1,21 @@
 # @package _global_
 ---
 # ONNX export for a PatchPolicy checkpoint (3-camera arm). Deployment interface
-# mirrors the control_transformer export conventions: 6 observation frames of
-# already-cropped/resized [0,1] float RGB per camera in (1, 6, 3, 256, 256),
-# plus speed (km/h) and ego-frame /100 waypoints. No action series needed --
-# PatchPolicy.forward never reads the action chunk (it's a training-only
-# target, see _features's docstring), so gas/brake/steering/turn_signal are
-# simply omitted here; Remapper/StackFields propagate the missing fields as
-# None instead of erroring. Output: policy.joint_actions (1, 6, 4) normalized
-# action chunk from the newest frame, argmax decoding.
+# mirrors the control_transformer export conventions, with one deliberate
+# difference (see load_for_export): 6 observation frames of already-cropped/
+# resized/ImageNet-normalized float RGB per camera in (1, 6, 3, 256, 256) --
+# normalization happens client-side (rsim's OnnxAgent), not in-graph, so this
+# stays consistent with a plain Identity image transform rather than
+# control_transformer's in-graph Normalize -- plus speed (km/h) and ego-frame
+# /100 waypoints. No action series needed -- PatchPolicy.forward never reads
+# the action chunk (it's a training-only target, see _features's docstring),
+# so gas/brake/steering/turn_signal are simply omitted here; Remapper/
+# StackFields propagate the missing fields as None instead of erroring.
+# Output: policy.continuous.{gas_pedal,brake_pedal,steering_angle} +
+# policy.discrete.turn_signal, decoded (argmax codes, immediate next action
+# only) via PatchPolicy._structure -- the same per-tick scalar contract
+# control_transformer exports use, so rsim's OnnxAgent needs no changes to
+# consume either.
 #
 #   just export-onnx export=yaak/patch_policy/finetuned \
 #       model.artifact=yaak/alex-tmp/model-l5kjqcew:v1 \
