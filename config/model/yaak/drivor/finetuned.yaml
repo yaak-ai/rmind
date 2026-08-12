@@ -1,0 +1,3 @@
+_target_: rmind.models.drivor.DrivoR.load_from_wandb_artifact
+artifact: ???
+filename: model.ckpt

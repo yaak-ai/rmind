@@ -18,6 +18,7 @@ from rmind.components.drivor.trajectory_target import (
 )
 from rmind.config import HydraConfig
 from rmind.models.control_transformer import LRSchedulerHydraConfig
+from rmind.utils._wandb import LoadableFromArtifact
 
 CONTINUOUS_FIELDS = (
     "speed",
@@ -27,7 +28,7 @@ CONTINUOUS_FIELDS = (
 )
 
 
-class DrivoR(pl.LightningModule):
+class DrivoR(pl.LightningModule, LoadableFromArtifact):
     """Trajectory-only, single-camera adaptation of DrivoR (arXiv:2601.05083)
     on rmind/Yaak data.
 

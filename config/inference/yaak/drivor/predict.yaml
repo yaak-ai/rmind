@@ -1,0 +1,37 @@
+# @package _global_
+---
+defaults:
+  - /model: yaak/drivor/finetuned
+  - /datamodule: yaak/drivor_val
+  - /paths: yaak/default
+  - _self_
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  _convert_: all
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  precision: "bf16-mixed"
+  logger: false
+  callbacks:
+    - _target_: rmind.callbacks.DataFramePredictionWriter
+      write_interval: batch
+      path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
+      select:
+        - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+        - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+        - [batch, data, meta/VehicleMotion/speed]
+        - [batch, data, headings_denoised/heading]
+        - [batch, meta, input_id]
+        - [trajectory, prediction]
+        - [trajectory, best_prediction]
+        - [trajectory, best_index]
+        - [trajectory, per_candidate_loss]
+        - [trajectory, ground_truth_xy]
+        - [trajectory, ground_truth_heading]
+      writer:
+        _target_: polars.DataFrame.write_parquet
+        _partial_: true
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 5
