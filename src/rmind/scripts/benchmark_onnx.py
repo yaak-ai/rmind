@@ -5,11 +5,15 @@ Fixed run parameters (data_dir, start_frame, num_episodes, ...) live in
 config/benchmark_onnx.yaml — override just `onnx=` and/or `wandb_model=` per run.
 
 `wandb_model=` always requires `export=...` (e.g.
-export=yaak/control_transformer/finetuned): the PyTorch model is then loaded
-with the same hparams_jq used to produce the ONNX export, so both backends run
-architecturally identical, hparams_jq-stripped models on the same externally
+export=yaak/control_transformer/finetuned, or export=yaak/patch_policy/finetuned):
+the PyTorch model is then loaded the same way that export strips its in-graph
+image preprocessing (hparams_jq for ControlTransformer,
+PatchPolicy.load_for_export for PatchPolicy), so both backends run
+architecturally identical, export-stripped models on the same externally
 preprocessed input — see tests/test_benchmark_onnx_preprocessing.py for why
 that external preprocessing is equivalent to the original, unstripped one.
+PatchPolicy checkpoints are only benchmarked on cam_front_left — see the
+NOTE in _WandbBackend.run.
 
 Usage:
     # ONNX only (compare with driver's benchmark_all_models.py)
@@ -530,22 +534,47 @@ class _ONNXBackend:
         return preds, new_cache
 
 
+_PATCH_POLICY_TARGET_MARKER = "rmind.models.patch_policy.PatchPolicy"
+
+
 class _WandbBackend:
     def __init__(
-        self, artifact: str, *, hparams_jq: str, strict: bool | None = None
+        self,
+        artifact: str,
+        *,
+        target: str | None = None,
+        hparams_jq: str | None = None,
+        strict: bool | None = None,
     ) -> None:
-        from rmind.models.control_transformer import ControlTransformer  # noqa: PLC0415
+        if target is not None and _PATCH_POLICY_TARGET_MARKER in target:
+            # PatchPolicy.load_for_export already applies the same "strip the
+            # in-graph image preprocessing" trick load_from_wandb_artifact's
+            # hparams_jq does for ControlTransformer (see its docstring): it sets
+            # input_transform[2]["image"] = nn.Identity() and sample_codes=False.
+            # There is no hparams_jq/strict knob to thread through here.
+            from rmind.models.patch_policy import PatchPolicy  # noqa: PLC0415
 
-        # map_location="cpu": we .to(self.device) right below anyway, and it avoids
-        # torch.load trying to restore the checkpoint's original CUDA tensors when
-        # hparams_jq is set (that path doesn't default map_location like Lightning's
-        # own load_from_checkpoint does), which errors out on a CPU-only machine.
-        kwargs: dict[str, Any] = {"map_location": "cpu", "hparams_jq": hparams_jq}
-        if strict is not None:
-            kwargs["strict"] = strict
-        self.model = ControlTransformer.load_from_wandb_artifact(
-            artifact, **kwargs
-        ).eval()
+            self.model = PatchPolicy.load_for_export(artifact).eval()
+            self.is_patch_policy = True
+        else:
+            from rmind.models.control_transformer import ControlTransformer  # noqa: PLC0415
+
+            if hparams_jq is None:
+                # _validate_config should have already rejected this — defense in depth.
+                msg = "wandb_model= for a ControlTransformer export requires hparams_jq"
+                raise ValueError(msg)
+
+            # map_location="cpu": we .to(self.device) right below anyway, and it avoids
+            # torch.load trying to restore the checkpoint's original CUDA tensors when
+            # hparams_jq is set (that path doesn't default map_location like Lightning's
+            # own load_from_checkpoint does), which errors out on a CPU-only machine.
+            kwargs: dict[str, Any] = {"map_location": "cpu", "hparams_jq": hparams_jq}
+            if strict is not None:
+                kwargs["strict"] = strict
+            self.model = ControlTransformer.load_from_wandb_artifact(
+                artifact, **kwargs
+            ).eval()
+            self.is_patch_policy = False
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = self.model.to(self.device)
         logger.info("Wandb model loaded", artifact=artifact, device=self.device)
@@ -556,23 +585,49 @@ class _WandbBackend:
         def _t(arr: np.ndarray) -> torch.Tensor:
             return torch.from_numpy(arr).to(dev)
 
-        # hparams_jq (required, see __init__) strips the model's own image
-        # encoder Rearrange along with the rest of input_transform, so it now
-        # expects CHW straight through — same layout _K_CAM already has.
+        # hparams_jq (ControlTransformer) / load_for_export (PatchPolicy) —
+        # see __init__ — both strip the model's own image-encoder Rearrange
+        # along with the rest of input_transform, so it now expects CHW
+        # straight through — same layout _K_CAM already has.
+        #
+        # NOTE: only cam_front_left is fed. That matches config/model/yaak/
+        # patch_policy/raw.yaml's Remapper (single-camera image path) for
+        # every current PatchPolicy experiment, but config/export/yaak/
+        # patch_policy/finetuned.yaml's ONNX graph additionally declares
+        # cam_left_forward/cam_right_forward inputs. If a checkpoint's own
+        # saved hparams actually reads those (this benchmark can't introspect
+        # a wandb artifact's hparams ahead of loading it), its predictions
+        # here would be wrong rather than erroring — this local video-based
+        # harness only ever has front-camera footage
+        # (cam_front_left.pii.mp4) to feed. Extending _load_batch/
+        # _MetadataReader to source left/right camera video is out of scope
+        # of this fix.
         cam = _t(onnx_batch[_K_CAM])
 
-        # Reconstruct the nested {"data": {...}} batch that ControlTransformer.forward expects
-        batch: dict = {
-            "data": {
-                _PT_CAM: cam,
-                _PT_SPEED: _t(onnx_batch[_K_SPEED]),
+        # Reconstruct the nested {"data": {...}} batch that ControlTransformer/
+        # PatchPolicy.forward expect (both use the same Remapper path names)
+        data: dict = {
+            _PT_CAM: cam,
+            _PT_SPEED: _t(onnx_batch[_K_SPEED]),
+            _PT_WP: _t(onnx_batch[_K_WP]),
+        }
+        # PatchPolicy.forward never reads the action chunk (require_chunk=False) —
+        # see config/export/yaak/patch_policy/finetuned.yaml's docstring — but its
+        # ChunkFields step unconditionally unfolds gas/brake/steer/turn into rolling
+        # (episode_length, action_horizon) windows, which needs
+        # episode_length + action_horizon - 1 raw timesteps of history; we only have
+        # NUM_TIMESTEPS. Omitting the keys entirely (rather than supplying
+        # NUM_TIMESTEPS-long real values) makes Remapper/ChunkFields propagate None
+        # instead, which ChunkFields short-circuits on — matching how the real ONNX
+        # export (which never had these fields to begin with) behaves.
+        if not self.is_patch_policy:
+            data.update({
                 _PT_GAS: _t(onnx_batch[_K_GAS]),
                 _PT_BRAKE: _t(onnx_batch[_K_BRAKE]),
                 _PT_STEER: _t(onnx_batch[_K_STEER]),
                 _PT_TURN: _t(onnx_batch[_K_TURN]),
-                _PT_WP: _t(onnx_batch[_K_WP]),
-            }
-        }
+            })
+        batch: dict = {"data": data}
 
         if dev == "cuda":
             torch.cuda.synchronize()
@@ -825,17 +880,29 @@ class Config(BaseModel):
         return v if v is None or isinstance(v, list | tuple) else [v]
 
 
-def _validate_config(config: Config, *, hparams_jq: str | None) -> None:
+def _validate_config(
+    config: Config, *, target: str | None, hparams_jq: str | None
+) -> None:
     if not config.onnx and not config.wandb_model:
         msg = "At least one of onnx= or wandb_model= is required"
         raise ValueError(msg)
 
-    if config.wandb_model and hparams_jq is None:
+    is_patch_policy = target is not None and _PATCH_POLICY_TARGET_MARKER in target
+    if config.wandb_model and target is None:
         msg = (
             "wandb_model= requires export=... (e.g. "
-            "export=yaak/control_transformer/finetuned) — the PyTorch model must "
-            "be loaded with the same hparams_jq as the ONNX export for the "
+            "export=yaak/control_transformer/finetuned or "
+            "export=yaak/patch_policy/finetuned) so the PyTorch model is loaded "
+            "with the same export-time stripping as the ONNX export, for the "
             "comparison to be apples-to-apples. See module docstring."
+        )
+        raise ValueError(msg)
+    if config.wandb_model and not is_patch_policy and hparams_jq is None:
+        msg = (
+            "wandb_model= with a ControlTransformer export= requires that "
+            "export's model.hparams_jq — the PyTorch model must be loaded with "
+            "the same hparams_jq as the ONNX export for the comparison to be "
+            "apples-to-apples. See module docstring."
         )
         raise ValueError(msg)
 
@@ -846,7 +913,11 @@ def _validate_config(config: Config, *, hparams_jq: str | None) -> None:
 
 
 def _build_backends(
-    config: Config, *, hparams_jq: str | None = None, strict: bool | None = None
+    config: Config,
+    *,
+    target: str | None = None,
+    hparams_jq: str | None = None,
+    strict: bool | None = None,
 ) -> tuple[dict[str, _ONNXBackend | _WandbBackend], tuple[int, int]]:
     # ordered dict: label → backend
     backends: dict[str, _ONNXBackend | _WandbBackend] = {}
@@ -861,7 +932,7 @@ def _build_backends(
 
     wandb_artifacts = config.wandb_model or []
     if wandb_artifacts:
-        if hparams_jq is None:
+        if target is None:
             # _validate_config should have already rejected this — defense in depth.
             msg = "wandb_model= requires export=..."
             raise ValueError(msg)
@@ -872,7 +943,7 @@ def _build_backends(
                 else f"PyTorch Native {idx + 1}"
             )
             backends[label] = _WandbBackend(
-                artifact, hparams_jq=hparams_jq, strict=strict
+                artifact, target=target, hparams_jq=hparams_jq, strict=strict
             )
 
     if config.image_size:
@@ -945,25 +1016,39 @@ def _run_benchmark(
     return all_preds, all_gt, rows
 
 
-def _resolve_export_hparams(cfg: DictConfig) -> tuple[str | None, bool | None]:
-    # `export=yaak/control_transformer/finetuned` (same group export_onnx.py uses)
-    # injects a top-level `model:` block (it's `@package _global_`) with the exact
-    # hparams_jq/strict that export applies — select it to load PyTorch with an
-    # identically-stripped input_transform, for an apples-to-apples ONNX comparison.
+def _resolve_export_model_cfg(
+    cfg: DictConfig,
+) -> tuple[str | None, str | None, bool | None]:
+    """Pull `(_target_, hparams_jq, strict)` out of an `export=...` group's `model:` block.
+
+    `export=yaak/control_transformer/finetuned` (same group export_onnx.py uses)
+    injects a top-level `model:` block (it's `@package _global_`) with the exact
+    hparams_jq/strict that export applies — select it to load PyTorch with an
+    identically-stripped input_transform, for an apples-to-apples ONNX comparison.
+    `export=yaak/patch_policy/finetuned` doesn't define hparams_jq/strict at all —
+    `PatchPolicy.load_for_export` strips its own in-graph image preprocessing
+    unconditionally, no jq patch needed — so those two come back `None` for it.
+    """
     export_model_cfg = OmegaConf.select(cfg, "model", default=None)
     if export_model_cfg is None:
-        return None, None
-    return export_model_cfg.hparams_jq, export_model_cfg.strict
+        return None, None, None
+    return (
+        OmegaConf.select(export_model_cfg, "_target_", default=None),
+        OmegaConf.select(export_model_cfg, "hparams_jq", default=None),
+        OmegaConf.select(export_model_cfg, "strict", default=None),
+    )
 
 
 @hydra.main(version_base=None)
 def main(cfg: DictConfig) -> None:
-    hparams_jq, strict = _resolve_export_hparams(cfg)
+    target, hparams_jq, strict = _resolve_export_model_cfg(cfg)
 
     config = Config(**OmegaConf.to_container(cfg, resolve=True))  # ty:ignore[invalid-argument-type]
-    _validate_config(config, hparams_jq=hparams_jq)
+    _validate_config(config, target=target, hparams_jq=hparams_jq)
 
-    backends, image_size = _build_backends(config, hparams_jq=hparams_jq, strict=strict)
+    backends, image_size = _build_backends(
+        config, target=target, hparams_jq=hparams_jq, strict=strict
+    )
 
     meta = _MetadataReader(config.data_dir / "metadata.log")
     meta.load()
