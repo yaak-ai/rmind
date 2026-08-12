@@ -1,28 +1,34 @@
 """KV-cached one-tick decode step for `PatchPolicy` -- the deployment export target.
 
-Per tick the graph encodes exactly ONE new frame (1 speed token prepended to 256
-goal-fused patch tokens = 257 queries), runs those 257 queries against the cached
-K/V of the past frames, and returns the action chunk plus the new frame's K/V.
-Old frames are never re-encoded and never re-attended to each other.
+Per tick the graph encodes exactly ONE new frame per camera (1 speed token
+prepended to `cam * 256` goal-fused patch tokens, `cam = len(policy.cameras)`,
+= `tokens_per_frame` queries -- 257 at `cam=1`, 769 at `cam=3`), runs those
+queries against the cached K/V of the past frames, and returns the action chunk
+plus the new frame's K/V. Old frames are never re-encoded and never re-attended
+to each other.
 
 Runtime contract (drivr)
 ------------------------
-Inputs, all bound **by name**:
+Inputs, all bound **by name**. One flat `image_<camera>` binding per configured
+camera (`policy.cameras`) -- e.g. `image_cam_front_left` alone at `cam=1`, or
+`image_cam_front_left` / `image_cam_left_forward` / `image_cam_right_forward` at
+`cam=3` -- rather than a single nested per-camera mapping, so every camera is an
+ordinary flat TRT/ONNX binding like `past_k`/`past_v` below:
 
 | name | shape | notes |
 | --- | --- | --- |
-| `image` | `(1, 1, 3, H, W)` | ONE frame, `[0, 1]` float. ImageNet norm is in-graph, so serve with `--image-norm unit`. `H = W = 224` (dinov2) / `256` (dinov3) -- `Resize=0`, a wrong size is silently sheared. |
+| `image_<camera>` (one per `policy.cameras`) | `(1, 1, 3, H, W)` | ONE frame per camera, `[0, 1]` float. ImageNet norm is in-graph, so serve with `--image-norm unit`. `H = W = 224` (dinov2) / `256` (dinov3) -- `Resize=0`, a wrong size is silently sheared. Cameras are stacked in `policy.cameras` order -- that order is part of the trained weights (`patch_projection`), not just a config convenience. |
 | `speed` | `(1, 1, 1)` | km/h |
 | `waypoints` | `(1, 1, 10, 2)` | ego-frame, /100 |
-| `past_k`, `past_v` | `(L, 1, heads, cache_frames * 257, head_dim)` | read-only |
-| `cache_bias` | `(1, 1, 1, cache_frames * 257)` | `0` = filled slot, `-1e4` = empty |
+| `past_k`, `past_v` | `(L, 1, heads, cache_frames * tokens_per_frame, head_dim)` | read-only |
+| `cache_bias` | `(1, 1, 1, cache_frames * tokens_per_frame)` | `0` = filled slot, `-1e4` = empty |
 | `rope_cos`, `rope_sin` | `(1, head_dim)` | this frame's rotation, from the episode frame counter |
 
 Outputs: `policy.joint_actions` `(1, horizon, action_features)`, and `new_k` /
-`new_v` `(L, 1, heads, 257, head_dim)`.
+`new_v` `(L, 1, heads, tokens_per_frame, head_dim)`.
 
 The host owns the ring buffer: it shifts `new_k`/`new_v` into `past_k`/`past_v`
-and appends `257` zeros to the filled region of `cache_bias`. Nothing is written
+and appends `tokens_per_frame` zeros to the filled region of `cache_bias`. Nothing is written
 inside the graph -- no `ScatterElements`, and the cache tensors are ordinary
 engine I/O.
 
@@ -85,8 +91,9 @@ class PatchPolicyDecoderStep(nn.Module):
         self.policy = policy.eval()
         self.trunk: CausalFrameTransformer = policy.encoder
         # §3.3: the head reads one token per frame, so the final block's attention
-        # output and MLP for the other 256 positions are discarded. K/V are still
-        # produced for all 257 -- future frames attend to them.
+        # output and MLP for the other `tokens_per_frame - 1` positions are
+        # discarded. K/V are still produced for all `tokens_per_frame` -- future
+        # frames attend to them.
         self.readout_only_final_block = readout_only_final_block
         self.register_buffer(
             "image_mean", torch.tensor(IMAGENET_MEAN).reshape(1, 1, 3, 1, 1)
@@ -126,8 +133,8 @@ class PatchPolicyDecoderStep(nn.Module):
         """Ring-buffer update, i.e. what drivr does between ticks.
 
         Shift left by one frame block and write the new K/V into the freed tail.
-        In the runtime this is a device-to-device copy of `257` tokens per layer,
-        not of the whole cache.
+        In the runtime this is a device-to-device copy of `tokens_per_frame`
+        tokens per layer, not of the whole cache.
         """
         past_k, past_v, bias = past
         k = new_k.shape[-2]
@@ -142,11 +149,19 @@ class PatchPolicyDecoderStep(nn.Module):
     @override
     def forward(self, inputs: Mapping[str, Tensor]) -> TensorDict:
         policy = self.policy
-        image = (inputs["image"] - self.image_mean) / self.image_std
+        # `policy.cameras` order is load-bearing (it's the order the trained
+        # `patch_projection` saw), not just how the inputs happen to be named.
+        images = torch.stack(
+            [
+                (inputs[f"image_{camera}"] - self.image_mean) / self.image_std
+                for camera in policy.cameras
+            ],
+            dim=2,
+        )  # (1, 1, cam, 3, H, W)
 
         tokens = policy._frame_tokens(  # noqa: SLF001
-            image, inputs["speed"], inputs["waypoints"]
-        )  # (b, 1, 257, d)
+            images, inputs["speed"], inputs["waypoints"]
+        )  # (b, 1, tokens_per_frame, d)
 
         out, new_k, new_v = self.trunk.step(
             tokens[:, 0],

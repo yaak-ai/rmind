@@ -1,0 +1,106 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal
+  - override /datamodule: yaak/train_3cam
+  - _self_
+
+# Side cameras: cam_left_forward + cam_right_forward, each contributing its own
+# num_patches patch tokens per frame -- same frozen encoder/patch_projection, no
+# new parameters, just a longer per-frame token block (see
+# PatchPolicy._frame_tokens). Mirrors dinov3_3cam.yaml's pattern
+# (alex/patch-policy-3cam), layered on the causal (CausalFrameTransformer) arm
+# instead of the block-causal one.
+num_cameras: 3
+
+model:
+  cameras: [cam_front_left, cam_left_forward, cam_right_forward]
+
+  # NOTE: _args_ lists merge by replacement (see dinov2_dinowm.yaml), so the
+  # Sequential is re-stated fully -- the only change vs raw.yaml is the two
+  # extra camera keys under paths.image (Remapper.forward emits None for a
+  # camera key absent from the batch, and the crop/resize/normalize step below
+  # already skips None branches, so this stays compatible with single-camera
+  # datamodules too).
+  input_transform:
+    _target_: torch.nn.Sequential
+    _convert_: all
+    _args_:
+      - _target_: rmind.components.nn.Remapper
+        paths:
+          image:
+            cam_front_left: [data, cam_front_left]
+            cam_left_forward: [data, cam_left_forward]
+            cam_right_forward: [data, cam_right_forward]
+
+          continuous:
+            speed: [data, meta/VehicleMotion/speed]
+            gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
+            brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
+            steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
+
+          context:
+            waypoints: [data, waypoints/xy_normalized]
+
+          discrete:
+            turn_signal: [data, meta/VehicleState/turn_signal]
+
+      - _target_: rmind.components.nn.ChunkFields
+        episode_length: ${episode_length}
+        action_horizon: ${action_horizon}
+        unfold_paths:
+          - [continuous, gas_pedal]
+          - [continuous, brake_pedal]
+          - [continuous, steering_angle]
+          - [discrete, turn_signal]
+
+      - _target_: rmind.components.containers.ModuleDict
+        modules:
+          image:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: einops.layers.torch.Rearrange
+                pattern: "... h w c -> ... c h w"
+              - _target_: torchvision.transforms.v2.CenterCrop
+                size: [320, 576]
+              - _target_: torchvision.transforms.v2.Resize
+                size: ${image_resize}
+              - _target_: torchvision.transforms.v2.ToDtype
+                scale: true
+                dtype:
+                  _target_: hydra.utils.get_object
+                  path: torch.float32
+              - _target_: torchvision.transforms.v2.Normalize
+                mean: [0.485, 0.456, 0.406]
+                std: [0.229, 0.224, 0.225]
+
+          continuous:
+            _target_: rmind.components.nn.AtLeast3D
+
+          discrete:
+            _target_: rmind.components.nn.AtLeast3D
+
+          context:
+            _target_: torch.nn.Identity
+
+      - _target_: rmind.components.nn.StackFields
+        out_key: joint_actions
+        paths:
+          gas_pedal: [continuous, gas_pedal]
+          brake_pedal: [continuous, brake_pedal]
+          steering_angle: [continuous, steering_angle]
+          turn_signal: [discrete, turn_signal]
+
+  # 3x patches/frame (256 -> 768): dinov2_dinowm_causal.yaml sets
+  # tokens_per_frame/max_sequence_length off the single-camera `num_patches`
+  # formula -- restate both for 3 cameras. `max_sequence_length` isn't
+  # load-bearing for CausalFrameTransformer's embedding size (unlike
+  # BlockCausalTransformer's), but it IS the window-fits-in-the-clip sanity
+  # check at init (causal_frame.py's `max_sequence_length < window *
+  # tokens_per_frame` guard) and is stale at the 1-camera formula otherwise.
+  encoder:
+    tokens_per_frame: "${eval:'${num_patches} * ${num_cameras} + 1'}"
+    max_sequence_length: "${eval:'${episode_length} * (${num_patches} * ${num_cameras} + 1)'}"
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal, 3cam]

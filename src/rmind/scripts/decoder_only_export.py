@@ -80,16 +80,25 @@ logger = get_logger(__name__)
 
 # (experiment, trunk width, layers, heads). `_big` is 12L/768d/12H -- note the
 # hand-off §7 says "8 layers, 512-d; 768-d in the `_big` arm", which understates
-# the depth; dinov2_dinowm_big.yaml sets num_layers: 12.
+# the depth; dinov2_dinowm_big.yaml sets num_layers: 12. `small_3cam` is `small`
+# plus cam_left_forward/cam_right_forward (config/experiment/yaak/patch_policy/
+# dinov2_dinowm_causal_3cam.yaml) -- same width/layers/heads, 3x the per-frame
+# patch tokens.
 ARMS = {
     "small": ("yaak/patch_policy/dinov2_dinowm", 512, 8, 8),
     "big": ("yaak/patch_policy/dinov2_dinowm_big", 768, 12, 12),
+    "small_3cam": ("yaak/patch_policy/dinov2_dinowm_causal_3cam", 512, 8, 8),
 }
 IMAGE_HW = 224  # dinov2 arms; 256 for dinov3
 NUM_PATCHES = 256
-TOKENS_PER_FRAME = NUM_PATCHES + 1  # speed token prepended
 NUM_WAYPOINTS = 10
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+
+
+def tokens_per_frame(num_cameras: int) -> int:
+    """`num_cameras * NUM_PATCHES + 1` -- the speed token plus every camera's
+    patches (257 at `num_cameras=1`, 769 at `num_cameras=3`)."""
+    return NUM_PATCHES * num_cameras + 1
 
 
 def build_policy(arm: str, *, episode_length: int) -> tuple[Any, int, int, int]:
@@ -113,12 +122,17 @@ def build_policy(arm: str, *, episode_length: int) -> tuple[Any, int, int, int]:
     return model.cpu().eval(), dim, layers, heads
 
 
-def baseline_args(episode_length: int) -> tuple[dict[str, Any]]:
+def baseline_args(
+    episode_length: int, cameras: tuple[str, ...] = ("cam_front_left",)
+) -> tuple[dict[str, Any]]:
     """The current serving interface: `episode_length` frames re-encoded per tick."""
     return (
         {
             "data": {
-                "cam_front_left": torch.rand(1, episode_length, 3, IMAGE_HW, IMAGE_HW),
+                **{
+                    camera: torch.rand(1, episode_length, 3, IMAGE_HW, IMAGE_HW)
+                    for camera in cameras
+                },
                 "meta/VehicleMotion/speed": torch.rand(1, episode_length, 1) * 130,
                 "waypoints/xy_normalized": torch.rand(
                     1, episode_length, NUM_WAYPOINTS, 2
@@ -161,7 +175,7 @@ def decoder_model_and_args(  # noqa: PLR0914
     *,
     artifact: str | None = None,
     ckpt: str | None = None,
-) -> tuple[Module, tuple[dict[str, Tensor]], tuple[int, int, int, int]]:
+) -> tuple[Module, tuple[dict[str, Tensor]], tuple[int, int, int, int, int]]:
     """The decoder step: ONE new frame against a cache of `context - 1` frames."""  # noqa: DOC501
     if artifact is not None or ckpt is not None:
         # Trained: the architecture comes from the checkpoint's hparams and the
@@ -212,7 +226,7 @@ def decoder_model_and_args(  # noqa: PLR0914
             dim_model=dim,
             num_layers=layers,
             num_heads=heads,
-            tokens_per_frame=TOKENS_PER_FRAME,
+            tokens_per_frame=tokens_per_frame(len(policy.cameras)),
             window=context,
         ).eval()
 
@@ -230,7 +244,10 @@ def decoder_model_and_args(  # noqa: PLR0914
 
     args = (
         {
-            "image": torch.rand(1, 1, 3, IMAGE_HW, IMAGE_HW),
+            **{
+                f"image_{camera}": torch.rand(1, 1, 3, IMAGE_HW, IMAGE_HW)
+                for camera in policy.cameras
+            },
             "speed": torch.rand(1, 1, 1) * 130,
             "waypoints": torch.rand(1, 1, NUM_WAYPOINTS, 2) * 2 - 1,
             "past_k": past_k,
@@ -240,7 +257,11 @@ def decoder_model_and_args(  # noqa: PLR0914
             "rope_sin": rope_sin,
         },
     )
-    return step, args, (layers, heads, dim // heads, cache_frames)
+    return (
+        step,
+        args,
+        (layers, heads, dim // heads, cache_frames, step.trunk.tokens_per_frame),
+    )
 
 
 def export(model: Module, args: tuple[Any, ...], out: Path, *, verify: bool) -> None:
@@ -319,19 +340,20 @@ def main() -> None:
             if (args.artifact or args.ckpt)
             else build_policy(args.arm, episode_length=args.context)[0]
         )
-        export_args: tuple[Any, ...] = baseline_args(args.context)
+        export_args: tuple[Any, ...] = baseline_args(args.context, model.cameras)
     else:
         model, export_args, shapes = decoder_model_and_args(
             args.arm, args.context, artifact=args.artifact, ckpt=args.ckpt
         )
-        layers, heads, head_dim, cache_frames = shapes
+        layers, heads, head_dim, cache_frames, k = shapes
         logger.info(
             "cache",
             layers=layers,
             heads=heads,
             head_dim=head_dim,
             cache_frames=cache_frames,
-            cached_keys=cache_frames * TOKENS_PER_FRAME,
+            tokens_per_frame=k,
+            cached_keys=cache_frames * k,
         )
     logger.info(
         "parameters",

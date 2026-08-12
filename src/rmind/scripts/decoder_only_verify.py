@@ -51,6 +51,7 @@ cheap axis to share; it is still a limitation and is reported as one.
 
 import argparse
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -144,28 +145,55 @@ def _real_frames(spec: str, size: int) -> list[np.ndarray]:
     return out
 
 
-def _small_inputs(
-    rng: np.random.Generator, frame: np.ndarray, num_waypoints: int
-) -> dict[str, np.ndarray]:
-    """The per-tick inputs: one real frame plus synthetic speed and waypoints.
+def _image_input_names(meta: Mapping[str, Any]) -> list[str]:
+    """The graph's `inputs_image_<camera>` names, any camera count.
 
-    Synthetic speed/waypoints is what makes this harness ~7x harsher than the
-    road (trt-export skill); the image must nonetheless be real, because noise
-    both understated and manufactured failures when it was not.
+    One flat binding per camera (`PatchPolicyDecoderStep`'s runtime contract),
+    so this is just a name filter -- no positional/order assumption, since
+    every camera is bound by name.
+
+    Raises:
+        ValueError: if no `inputs_image_<camera>` binding is present.
+    """
+    names = sorted(name for name in meta if name.startswith("inputs_image_"))
+    if not names:
+        msg = f"no inputs_image_<camera> binding found among {sorted(meta)}"
+        raise ValueError(msg)
+    return names
+
+
+def _small_inputs(
+    rng: np.random.Generator,
+    camera_frames: Mapping[str, np.ndarray],
+    num_waypoints: int,
+) -> dict[str, np.ndarray]:
+    """The per-tick inputs: one real frame per camera plus synthetic speed and
+    waypoints.
+
+    `camera_frames` keys are already the full ONNX input names
+    (`inputs_image_<camera>`, from `_image_input_names`) mapped to a real frame
+    for that camera this tick. Synthetic speed/waypoints is what makes this
+    harness ~7x harsher than the road (trt-export skill); the image must
+    nonetheless be real, because noise both understated and manufactured
+    failures when it was not. The SAME jitter is applied to every camera this
+    tick (independent per-camera jitter would need independent real footage per
+    camera, which the harness does not have).
     """
     jitter = np.float32(rng.uniform(0.92, 1.08))
-    return {
-        "inputs_image": np.clip(frame * jitter, 0, 1)[None, None].astype(np.float32),
-        "inputs_speed": np.full((1, 1, 1), rng.uniform(0, 40), np.float32),
-        "inputs_waypoints": np.stack(
-            [
-                rng.normal(0, 0.02, num_waypoints).astype(np.float32),
-                (np.arange(num_waypoints, dtype=np.float32) + 1)
-                * np.float32(rng.uniform(2, 25) / 100.0),
-            ],
-            axis=1,
-        )[None, None].astype(np.float32),
+    out = {
+        name: np.clip(frame * jitter, 0, 1)[None, None].astype(np.float32)
+        for name, frame in camera_frames.items()
     }
+    out["inputs_speed"] = np.full((1, 1, 1), rng.uniform(0, 40), np.float32)
+    out["inputs_waypoints"] = np.stack(
+        [
+            rng.normal(0, 0.02, num_waypoints).astype(np.float32),
+            (np.arange(num_waypoints, dtype=np.float32) + 1)
+            * np.float32(rng.uniform(2, 25) / 100.0),
+        ],
+        axis=1,
+    )[None, None].astype(np.float32)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -306,7 +334,10 @@ def _eager_feed(
     past_k, past_v, bias = step.empty_cache(cache_frames=cache_frames)
     cos, sin = step.rope(cache_frames)
     return {
-        "image": torch.rand(1, 1, 3, 224, 224, generator=g),
+        **{
+            f"image_{camera}": torch.rand(1, 1, 3, 224, 224, generator=g)
+            for camera in step.policy.cameras
+        },
         "speed": torch.rand(1, 1, 1, generator=g) * 130,
         "waypoints": torch.rand(1, 1, 10, 2, generator=g) * 2 - 1,
         "past_k": torch.randn(past_k.shape, generator=g),
@@ -404,13 +435,20 @@ def cmd_margins(args: argparse.Namespace) -> int:  # noqa: PLR0914, PLR0915
     meta = {i.name: (i.shape, i.type) for i in sess.get_inputs()}
     cache_tokens = meta["inputs_past_k"][0][3]
     num_waypoints = meta["inputs_waypoints"][0][2]
-    frames = _real_frames(args.frames, meta["inputs_image"][0][-1])
+    image_names = _image_input_names(meta)
+    frames = _real_frames(args.frames, meta[image_names[0]][0][-1])
 
     rng = np.random.default_rng(args.seed)
     per_probe: dict[str, list[float]] = {name: [] for name, _ in probes}
     names = [o.name for o in sess.get_outputs()]
     for trial in range(args.trials):
-        feed = _small_inputs(rng, frames[trial % len(frames)], num_waypoints)
+        # every camera draws a real frame from the same rotating pool, offset by
+        # its index -- no per-camera footage, but never a repeat within one tick
+        camera_frames = {
+            name: frames[(trial + i) % len(frames)]
+            for i, name in enumerate(image_names)
+        }
+        feed = _small_inputs(rng, camera_frames, num_waypoints)
         # a WARM cache: unfilled slots would mask the cache away entirely and
         # screen a context the served model never sees
         feed["inputs_past_k"] = rng.standard_normal(
@@ -478,7 +516,7 @@ def cmd_margins(args: argparse.Namespace) -> int:  # noqa: PLR0914, PLR0915
 # --------------------------------------------------------------------------- #
 
 
-def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914
+def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914, PLR0915
     import onnxruntime as ort  # noqa: PLC0415
 
     out = Path(args.out)
@@ -491,7 +529,8 @@ def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914
     k = step.trunk.tokens_per_frame
     cache_frames = meta["inputs_past_k"][3] // k
     num_waypoints = meta["inputs_waypoints"][2]
-    frames = _real_frames(args.frames, meta["inputs_image"][-1])
+    image_names = _image_input_names(meta)
+    frames = _real_frames(args.frames, meta[image_names[0]][-1])
     rng = np.random.default_rng(args.seed)
 
     per_history = args.trials // args.histories
@@ -523,12 +562,17 @@ def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914
         # frame counter. Not randn -- these are real keys of real frames.
         past_k, past_v, bias = step.empty_cache(cache_frames=cache_frames)
         for tick in range(cache_frames):
-            small = _small_inputs(
-                rng, frames[(history + tick) % len(frames)], num_waypoints
-            )
+            camera_frames = {
+                name: frames[(history + tick + i) % len(frames)]
+                for i, name in enumerate(image_names)
+            }
+            small = _small_inputs(rng, camera_frames, num_waypoints)
             cos, sin = step.rope(tick)
             feed = {
-                "image": torch.from_numpy(small["inputs_image"]),
+                **{
+                    f"image_{camera}": torch.from_numpy(small[f"inputs_image_{camera}"])
+                    for camera in step.policy.cameras
+                },
                 "speed": torch.from_numpy(small["inputs_speed"]),
                 "waypoints": torch.from_numpy(small["inputs_waypoints"]),
                 "past_k": past_k,
@@ -557,7 +601,11 @@ def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914
             value.tofile(out / "caches" / f"h{history}_{name}.dat")
 
         for _ in range(per_history):
-            small = _small_inputs(rng, frames[trial % len(frames)], num_waypoints)
+            camera_frames = {
+                name: frames[(trial + i) % len(frames)]
+                for i, name in enumerate(image_names)
+            }
+            small = _small_inputs(rng, camera_frames, num_waypoints)
             frame_index = cache_frames + int(rng.integers(0, 512))
             cos, sin = step.rope(frame_index)
             feed = {
@@ -570,7 +618,7 @@ def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914
             }
             reference[trial] = sess.run(["policy.joint_actions"], feed)[0][0]
             for name in (
-                "inputs_image",
+                *image_names,
                 "inputs_speed",
                 "inputs_waypoints",
                 "inputs_rope_cos",

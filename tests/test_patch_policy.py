@@ -20,6 +20,7 @@ from rmind.components.nn import Embedding
 from rmind.components.norm import Scaler, UniformBinner
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.components.objectives.joint_policy import JointPolicyObjective
+from rmind.components.transformer.causal_frame import CausalFrameTransformer
 from rmind.components.vq import ResidualVQ
 from rmind.models.action_tokenizer import ActionTokenizer
 from rmind.models.control_transformer import PredictionConfig
@@ -97,7 +98,11 @@ class _GoalEncoderStub(Module):
 
 
 def _make_model(
-    *, teacher_force_offset: bool = True, fusion_norm: bool = False
+    *,
+    teacher_force_offset: bool = True,
+    fusion_norm: bool = False,
+    cameras: tuple[str, ...] = ("cam_front_left",),
+    encoder: Module | None = None,
 ) -> PatchPolicy:
     return PatchPolicy(
         fusion_norm=fusion_norm,
@@ -108,11 +113,14 @@ def _make_model(
         patch_projection=Linear(IMAGE_DIM + GOAL_DIM, POLICY_DIM),
         speed_tokenizer=UniformBinner(range=(0.0, 130.0), bins=SPEED_BINS),
         speed_embedding=Embedding(SPEED_BINS, POLICY_DIM),
-        encoder=BlockCausalTransformer(
+        cameras=cameras,
+        encoder=encoder
+        if encoder is not None
+        else BlockCausalTransformer(
             dim_model=POLICY_DIM,
             num_layers=2,
             num_heads=2,
-            max_sequence_length=EPISODE_LENGTH * (NUM_PATCHES + 1),
+            max_sequence_length=EPISODE_LENGTH * (len(cameras) * NUM_PATCHES + 1),
         ),
         tokenizer=_make_tokenizer(),
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
@@ -132,7 +140,7 @@ def _make_model(
     ).eval()
 
 
-def _make_batch() -> dict:
+def _make_batch(*, cameras: tuple[str, ...] = ("cam_front_left",)) -> dict:
     generator = torch.Generator().manual_seed(0)
     chunk = torch.rand(
         (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS), generator=generator
@@ -142,10 +150,11 @@ def _make_batch() -> dict:
     ).float()
     return {
         "image": {
-            "cam_front_left": torch.randn(
+            camera: torch.randn(
                 (BATCH_SIZE, EPISODE_LENGTH, NUM_PATCHES, IMAGE_DIM),
                 generator=generator,
             )
+            for camera in cameras
         },
         "continuous": {
             "speed": torch.rand((BATCH_SIZE, EPISODE_LENGTH, 1), generator=generator)
@@ -194,6 +203,63 @@ def test_features_and_metrics_shapes() -> None:
     for value in losses.values():
         assert value.isfinite()
     assert metrics["policy", "metric", "offset_sampled_recon"].isfinite()
+
+
+def test_multi_camera_stacks_patches_in_camera_order() -> None:
+    cameras = ("cam_front_left", "cam_left_forward", "cam_right_forward")
+    model = _make_model(cameras=cameras)
+    assert model.encoder.position_embedding.num_embeddings == EPISODE_LENGTH * (
+        len(cameras) * NUM_PATCHES + 1
+    )
+
+    batch = _make_batch(cameras=cameras)
+    features, chunk = model._features(batch)  # noqa: SLF001
+    assert features.shape == (BATCH_SIZE, EPISODE_LENGTH, POLICY_DIM)
+    assert chunk.shape == (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS)
+
+    # swap two cameras' images: same data, different camera identity -> must
+    # change the readout (patches are ordered/positioned by `cameras`)
+    swapped = {**batch, "image": {**batch["image"]}}
+    swapped["image"]["cam_left_forward"], swapped["image"]["cam_right_forward"] = (
+        batch["image"]["cam_right_forward"],
+        batch["image"]["cam_left_forward"],
+    )
+    swapped_features, _ = model._features(swapped)  # noqa: SLF001
+    assert not torch.allclose(features, swapped_features)
+
+
+def test_multi_camera_with_causal_frame_transformer() -> None:
+    """The arm this repo actually trains (dinov2_dinowm_causal_3cam.yaml): 3
+    cameras through `CausalFrameTransformer` rather than `BlockCausalTransformer`.
+    `CausalFrameTransformer` only ever sees an opaque `tokens_per_frame`, so this
+    is really exercising that `PatchPolicy` computes that count (`cam * p + 1`)
+    consistently with what it feeds the trunk -- `test_causal_frame.py` covers
+    the trunk itself in isolation.
+    """
+    cameras = ("cam_front_left", "cam_left_forward", "cam_right_forward")
+    tokens_per_frame = len(cameras) * NUM_PATCHES + 1
+    model = _make_model(
+        cameras=cameras,
+        encoder=CausalFrameTransformer(
+            dim_model=POLICY_DIM,
+            num_layers=2,
+            num_heads=2,
+            tokens_per_frame=tokens_per_frame,
+        ),
+    )
+    batch = _make_batch(cameras=cameras)
+
+    features, chunk = model._features(batch)  # noqa: SLF001
+    assert features.shape == (BATCH_SIZE, EPISODE_LENGTH, POLICY_DIM)
+    assert chunk.shape == (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS)
+
+    swapped = {**batch, "image": {**batch["image"]}}
+    swapped["image"]["cam_left_forward"], swapped["image"]["cam_right_forward"] = (
+        batch["image"]["cam_right_forward"],
+        batch["image"]["cam_left_forward"],
+    )
+    swapped_features, _ = model._features(swapped)  # noqa: SLF001
+    assert not torch.allclose(features, swapped_features)
 
 
 def test_frozen_modules_receive_no_grad() -> None:

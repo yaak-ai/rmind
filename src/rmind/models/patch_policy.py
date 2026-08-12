@@ -133,10 +133,12 @@ class BlockCausalTransformer(nn.Module):
 class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     """Patch Policy (https://arxiv.org/pdf/2607.18236) with a VQ-BeT action head.
 
-    Per frame: frozen ViT patch features `(P, D)` get the frozen waypoints-tokenizer
-    latent `g_t` (that frame's goal vector) concatenated to every patch token --
-    the paper's `T x P x (D + G)` scheme -- then projected to the policy width. An
-    embedded speed token is prepended, the `T x (P + 1)` sequence is flattened,
+    Per frame: frozen ViT patch features `(P, D)` -- concatenated across `cameras`
+    when more than one is configured, each camera contributing its own `P` patches
+    -- get the frozen waypoints-tokenizer latent `g_t` (that frame's goal vector)
+    concatenated to every patch token -- the paper's `T x P x (D + G)` scheme --
+    then projected to the policy width. An embedded speed token is prepended, the
+    `T x (P + 1)` sequence is flattened,
     given a learned 1D positional embedding, and run through a block-causal
     transformer (bidirectional intra-frame, causal inter-frame). Each frame's LAST
     patch token predicts that frame's action chunk with the VQ-BeT joint head from
@@ -163,7 +165,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         offset_head: HydraConfig[Module] | InstanceOf[Module],
         losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
-        image: Path = ("image", "cam_front_left"),
+        cameras: tuple[str, ...] = ("cam_front_left",),
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
         chunk: Path = ("joint_actions",),
@@ -217,7 +219,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
         self.norm: Module | None = init_hydra_param(hparams, "norm", norm)
 
-        self.image: Path = image
+        self.cameras: tuple[str, ...] = cameras
         self.speed: Path = speed
         self.waypoints: Path = waypoints
         self.chunk: Path = chunk
@@ -225,7 +227,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
         hparams |= {
-            "image": image,
+            "cameras": cameras,
             "speed": speed,
             "waypoints": waypoints,
             "chunk": chunk,
@@ -279,7 +281,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     @staticmethod
     def _get(
         inputs: Mapping[str, Any], path: Path, *, required: bool = True
-    ) -> Tensor | None:
+    ) -> Any | None:
         value = key_get_default(inputs, tuple(map(MappingKey, path)), None)
         if value is None and required:
             msg = f"input {path!r} missing from transformed batch"
@@ -287,16 +289,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return value
 
     def _frame_tokens(self, images: Tensor, speed: Tensor, waypoints: Tensor) -> Tensor:
-        """Per-frame token blocks `(b, t, p + 1, d)` -- everything below the trunk.
+        """Per-frame token blocks `(b, t, cam*p + 1, d)` -- everything below the trunk.
 
-        Factored out of `_features` so the KV-cached decode step
+        `images` is `(b, t, cam, c, h, w)`, `cam = len(self.cameras)` -- even a
+        single-camera model stacks to a `cam=1` axis, so this is the one code path
+        for both. Factored out of `_features` so the KV-cached decode step
         (`rmind.models.patch_policy_decoder.PatchPolicyDecoderStep`) runs the
         identical per-frame pipeline on ONE frame. Nothing here is temporal, which
         is exactly why one new frame per tick is sufficient.
         """
         with torch.no_grad():
-            patches = self.image_encoder(images)  # (b, t, p, d_img)
+            patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
+
+        # each camera contributes its own `p` patches through the same frozen
+        # encoder/patch_projection -- no new parameters, just a longer per-frame
+        # token block (https://arxiv.org/pdf/2607.18236 section 2.1 generalizes
+        # trivially: concatenate cameras along the patch axis, not the channel one)
+        patches = rearrange(patches, "b t cam p d -> b t (cam p) d")
 
         if self.fusion_patch_norm is not None:
             # NOTE: no in-place ops -- these tensors come from a no_grad block
@@ -378,10 +388,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """
         inputs = self.input_transform(batch)
 
-        images = self._get(inputs, self.image)  # (b, t, c, h, w)
+        image_by_camera = self._get(inputs, ("image",))  # {camera: (b, t, c, h, w)}
         speed = self._get(inputs, self.speed)  # (b, t, 1)
         waypoints = self._get(inputs, self.waypoints)  # (b, t, n, 2)
         chunk = self._get(inputs, self.chunk, required=require_chunk)
+
+        images = torch.stack(
+            [image_by_camera[camera] for camera in self.cameras], dim=2
+        )  # (b, t, cam, c, h, w)
 
         tokens = self._frame_tokens(images, speed, waypoints)
         _, num_frames, _, _ = tokens.shape
