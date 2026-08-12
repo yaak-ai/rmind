@@ -15,6 +15,15 @@ that external preprocessing is equivalent to the original, unstripped one.
 PatchPolicy checkpoints are only benchmarked on cam_front_left — see the
 NOTE in _WandbBackend.run.
 
+`frame_sources=` selects where cam_front_left frames come from: "video"
+(default) decodes cam_front_left.pii.mp4; "jpg" reads dvc.yaml's
+pre-extracted frames/cam_front_left.pii.mp4/<W>x<H>/*.jpg instead — the
+same fixed-size JPEGs training itself was built from, skipping
+_preprocess_image's approximate video-decode downscale. Pass both
+(frame_sources=[video,jpg]) to run every backend against both sources —
+every table then carries one row/column per (backend, source) pair, and
+_print_validation's pairwise diff covers source-vs-source too.
+
 Usage:
     # ONNX only (compare with driver's benchmark_all_models.py)
     just benchmark-onnx onnx=~/rmind/outputs/.../model.onnx
@@ -29,6 +38,11 @@ Usage:
         onnx=~/rmind/outputs/.../model.onnx \\
         wandb_model=yaak/rmind/model-XXXXXXXX:vN \\
         export=yaak/control_transformer/finetuned
+
+    # video-decoded frames vs pre-extracted jpg frames, same backend(s)
+    just benchmark-onnx \\
+        onnx=~/rmind/outputs/.../model.onnx \\
+        frame_sources=[video,jpg]
 """
 
 from __future__ import annotations
@@ -326,6 +340,7 @@ def _preprocess_image(image: np.ndarray, image_size: tuple[int, int]) -> np.ndar
     of them do this internally anymore — see
     tests/test_benchmark_onnx_preprocessing.py for the equivalence proof.
     """
+    import cv2  # noqa: PLC0415
     from torchvision.transforms import v2 as T  # noqa: PLC0415
 
     # The v2 *classes* (not torchvision.transforms.functional's functional API)
@@ -333,15 +348,20 @@ def _preprocess_image(image: np.ndarray, image_size: tuple[int, int]) -> np.ndar
     # identical (functional.resize leaves a ~1/255-per-pixel rounding residual
     # even with matching interpolation/antialias args, per
     # tests/test_benchmark_onnx_preprocessing.py's investigation history).
-    resize_native = T.Resize(list(DEFAULT_IMAGE_SIZE))
     crop = T.CenterCrop(list(_CENTER_CROP_SIZE))
     resize_final = T.Resize(list(image_size))
 
+    # cv2.INTER_CUBIC (not torchvision's Resize) for this first downscale —
+    # empirically closer to the real extraction pipeline's scale_npp output
+    # than torchvision's antialiased Resize, per this benchmark's own
+    # video-vs-jpg investigation.
+    h, w = DEFAULT_IMAGE_SIZE
+    native_hwc = cv2.resize(image, (w, h), interpolation=cv2.INTER_CUBIC)
+
     # uint8 throughout crop/resize (matching ToDtype running *after* Resize in
     # raw.yaml) to minimize rounding drift relative to the real pipeline.
-    tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0)  # uint8
-    native = resize_native(tensor)
-    cropped = crop(native)
+    tensor = torch.from_numpy(native_hwc).permute(2, 0, 1).unsqueeze(0)  # uint8
+    cropped = crop(tensor)
     resized = resize_final(cropped)
     scaled = (resized.float() / 255.0)[0].numpy()  # CHW float32 [0, 1]
     return _normalize_cam(scaled)
@@ -352,28 +372,100 @@ def _normalize_cam(cam: np.ndarray) -> np.ndarray:
     return (cam - _IMAGENET_MEAN) / _IMAGENET_STD
 
 
+class _VideoFrameSource:
+    """Reads frames straight out of cam_front_left.pii.mp4 (original behavior)."""
+
+    def __init__(self, video_path: Path) -> None:
+        import cv2  # noqa: PLC0415
+
+        self._cap = cv2.VideoCapture(str(video_path))
+        if not self._cap.isOpened():
+            msg = f"Cannot open video: {video_path}"
+            raise RuntimeError(msg)
+
+    def read(self, frame_idx: int) -> np.ndarray:
+        import cv2  # noqa: PLC0415
+
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame_bgr = self._cap.read()
+        if not ret:
+            msg = f"Cannot read frame {frame_idx}"
+            raise ValueError(msg)
+        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+    def close(self) -> None:
+        self._cap.release()
+
+
+# /home/alex/data/dvc.yaml's extract_frames stage runs ffmpeg with -vsync 0
+# (every decoded frame kept, none dropped/duplicated) through the image2
+# muxer, which numbers output files 1-based in source order — so cv2's
+# 0-based frame_idx N is jpg file N+1.
+_JPG_INDEX_OFFSET = 1
+_JPG_FILENAME_PATTERN = "{idx:09d}.jpg"
+
+
+class _JpgFrameSource:
+    """Reads pre-extracted frames/cam_front_left.pii.mp4/<W>x<H>/*.jpg frames —
+    the same fixed-size JPEGs training itself was built from (see
+    _preprocess_image's docstring), so this source skips the video decode
+    (and its approximate downscale-to-native-size step) entirely.
+    """
+
+    def __init__(self, frames_dir: Path) -> None:
+        if not frames_dir.is_dir():
+            msg = f"Frames dir not found: {frames_dir}"
+            raise RuntimeError(msg)
+        self._frames_dir = frames_dir
+
+    def read(self, frame_idx: int) -> np.ndarray:
+        import cv2  # noqa: PLC0415
+
+        path = self._frames_dir / _JPG_FILENAME_PATTERN.format(
+            idx=frame_idx + _JPG_INDEX_OFFSET
+        )
+        frame_bgr = cv2.imread(str(path))
+        if frame_bgr is None:
+            msg = f"Cannot read frame {path}"
+            raise ValueError(msg)
+        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+    def close(self) -> None:
+        pass
+
+
+_FrameSource = _VideoFrameSource | _JpgFrameSource
+
+
+def _jpg_frames_dir(data_dir: Path) -> Path:
+    # dvc.yaml's extract_frames stage names the output dir <width>x<height>
+    # (params.yaml's frames.scale), which is DEFAULT_IMAGE_SIZE's (H, W) —
+    # training's native JPEG frame resolution — spelled WxH.
+    h, w = DEFAULT_IMAGE_SIZE
+    return data_dir / "frames" / "cam_front_left.pii.mp4" / f"{w}x{h}"
+
+
 @dataclass
 class _BatchRequest:
     video_path: Path
+    frames_dir: Path
     metadata: _MetadataReader
     waypoints: _WaypointLoader
     start_frame: int
     frame_step: int
     image_size: tuple[int, int]
+    source: str = "video"  # "video" | "jpg"
+
+    def make_frame_source(self) -> _FrameSource:
+        if self.source == "jpg":
+            return _JpgFrameSource(self.frames_dir)
+        return _VideoFrameSource(self.video_path)
 
 
 def _read_timestep(
-    cap: Any, frame_idx: int, request: _BatchRequest
+    source: _FrameSource, frame_idx: int, request: _BatchRequest
 ) -> tuple[np.ndarray, _VehicleState, np.ndarray]:
-    import cv2  # noqa: PLC0415
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ret, frame_bgr = cap.read()
-    if not ret:
-        msg = f"Cannot read frame {frame_idx}"
-        raise ValueError(msg)
-
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    frame_rgb = source.read(frame_idx)
     state = request.metadata.get_state_for_frame(frame_idx)
     gnss = request.metadata.get_gnss_for_frame(frame_idx)
     image = _preprocess_image(frame_rgb, request.image_size)
@@ -381,14 +473,10 @@ def _read_timestep(
     return image, state, wp
 
 
-def _read_ground_truth(cap: Any, gt_idx: int, metadata: _MetadataReader) -> GroundTruth:
-    import cv2  # noqa: PLC0415
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, gt_idx)
-    ret, _ = cap.read()
-    if not ret:
-        msg = f"Cannot read GT frame {gt_idx}"
-        raise ValueError(msg)
+def _read_ground_truth(
+    source: _FrameSource, gt_idx: int, metadata: _MetadataReader
+) -> GroundTruth:
+    source.read(gt_idx)  # validates the GT frame exists; pixels unused
     gt_state = metadata.get_state_for_frame(gt_idx)
     return GroundTruth(
         gas=gt_state.gas_pedal,
@@ -399,35 +487,29 @@ def _read_ground_truth(cap: Any, gt_idx: int, metadata: _MetadataReader) -> Grou
 
 
 def _read_episode(
-    cap: Any, request: _BatchRequest
+    source: _FrameSource, request: _BatchRequest
 ) -> tuple[list[np.ndarray], list[_VehicleState], list[np.ndarray], GroundTruth]:
     images, states, wps_list = [], [], []
 
     for t in range(NUM_TIMESTEPS):
         frame_idx = request.start_frame + t * request.frame_step
-        image, state, wp = _read_timestep(cap, frame_idx, request)
+        image, state, wp = _read_timestep(source, frame_idx, request)
         images.append(image)
         states.append(state)
         wps_list.append(wp)
 
     # Ground truth: frame AFTER the episode (matches driver)
     gt_idx = request.start_frame + NUM_TIMESTEPS * request.frame_step
-    gt = _read_ground_truth(cap, gt_idx, request.metadata)
+    gt = _read_ground_truth(source, gt_idx, request.metadata)
     return images, states, wps_list, gt
 
 
 def _load_batch(request: _BatchRequest) -> tuple[dict[str, np.ndarray], GroundTruth]:
-    import cv2  # noqa: PLC0415
-
-    cap = cv2.VideoCapture(str(request.video_path))
-    if not cap.isOpened():
-        msg = f"Cannot open video: {request.video_path}"
-        raise RuntimeError(msg)
-
+    source = request.make_frame_source()
     try:
-        images, states, wps_list, gt = _read_episode(cap, request)
+        images, states, wps_list, gt = _read_episode(source, request)
     finally:
-        cap.release()
+        source.close()
 
     wp_array = np.clip(np.stack(wps_list) / 100.0, -1.0, 1.0)  # [T, N, 2], 100m horizon
 
@@ -597,11 +679,11 @@ class _WandbBackend:
         # cam_left_forward/cam_right_forward inputs. If a checkpoint's own
         # saved hparams actually reads those (this benchmark can't introspect
         # a wandb artifact's hparams ahead of loading it), its predictions
-        # here would be wrong rather than erroring — this local video-based
-        # harness only ever has front-camera footage
-        # (cam_front_left.pii.mp4) to feed. Extending _load_batch/
-        # _MetadataReader to source left/right camera video is out of scope
-        # of this fix.
+        # here would be wrong rather than erroring — this local benchmark
+        # harness (whether sourcing frames from cam_front_left.pii.mp4 or its
+        # pre-extracted jpg frames, see frame_sources=) only ever has
+        # front-camera footage to feed. Extending _load_batch/_MetadataReader
+        # to source left/right camera frames is out of scope of this fix.
         cam = _t(onnx_batch[_K_CAM])
 
         # Reconstruct the nested {"data": {...}} batch that ControlTransformer/
@@ -652,13 +734,15 @@ class _WandbBackend:
 
 
 def _print_timing_table(
-    backends: dict, all_preds: dict[str, list[Predictions]], n_episodes: int
+    label_backend: dict[str, Any],
+    all_preds: dict[str, list[Predictions]],
+    n_episodes: int,
 ) -> None:
     from tabulate import tabulate  # noqa: PLC0415
 
     rows = []
     has_cpu_star = False
-    for label, backend in backends.items():
+    for label, backend in label_backend.items():
         times = np.array([p.time_ms for p in all_preds[label]])
         if isinstance(backend, _ONNXBackend):
             providers = backend.session.get_providers()
@@ -717,12 +801,14 @@ def _print_timing_table(
 
 
 def _print_error_table(
-    backends: dict, all_preds: dict[str, list[Predictions]], all_gt: list[GroundTruth]
+    labels: Sequence[str],
+    all_preds: dict[str, list[Predictions]],
+    all_gt: list[GroundTruth],
 ) -> None:
     from tabulate import tabulate  # noqa: PLC0415
 
     rows = []
-    for label in backends:
+    for label in labels:
         preds = all_preds[label]
         gas_e = [abs(p.gas - g.gas) for p, g in zip(preds, all_gt, strict=False)]
         brake_e = [abs(p.brake - g.brake) for p, g in zip(preds, all_gt, strict=False)]
@@ -761,8 +847,10 @@ def _print_error_table(
     )
 
 
-def _print_validation(backends: dict, all_preds: dict[str, list[Predictions]]) -> None:
-    labels = list(backends)
+def _print_validation(
+    labels: Sequence[str], all_preds: dict[str, list[Predictions]]
+) -> None:
+    labels = list(labels)
     sep = "=" * 100
     print("\nVALIDATION CHECKS")  # noqa: T201
     print(sep)  # noqa: T201
@@ -795,58 +883,76 @@ def _print_validation(backends: dict, all_preds: dict[str, list[Predictions]]) -
 
 
 def _print_per_episode(
-    backends: dict, rows: list[dict], all_gt: list[GroundTruth]
+    labels: Sequence[str], rows: list[dict], all_gt: list[GroundTruth]
 ) -> None:
     from tabulate import tabulate  # noqa: PLC0415
 
-    labels = list(backends)
+    labels = list(labels)
     headers = (
-        ["Ep", "Field"] + [f"T={i}" for i in range(NUM_TIMESTEPS)] + ["GT"] + labels
+        ["Ep", "Frame", "Chan"]
+        + [f"T={i}" for i in range(NUM_TIMESTEPS)]
+        + ["GT"]
+        + labels
     )
-    sep = "=" * 150
     print("\nPER-EPISODE PREDICTIONS")  # noqa: T201
-    print(sep)  # noqa: T201
 
+    table_rows = []
     for row, gt in zip(rows, all_gt, strict=False):
         ep = row["episode"] + 1
-        table_rows = []
-        for field_key, field_label, gt_val in [
+        frame = row["frame"]
+        for chan_key, chan_label, gt_val in [
             ("brake", "brake", gt.brake),
             ("gas", "gas", gt.gas),
             ("steer", "steer", gt.steer),
         ]:
-            hist = row[f"history_{field_key}"]
+            hist = row[f"history_{chan_key}"]
             t_vals = [f"{v:.6f}" for v in hist]
-            pred_vals = [f"{row[f'{lbl}_{field_key}']:.6f}" for lbl in labels]
-            table_rows.append([ep, field_label, *t_vals, f"{gt_val:.6f}", *pred_vals])
-        print(tabulate(table_rows, headers=headers, tablefmt="grid"))  # noqa: T201
+            pred_vals = [f"{row[f'{lbl}_{chan_key}']:.6f}" for lbl in labels]
+            table_rows.append([
+                ep,
+                frame,
+                chan_label,
+                *t_vals,
+                f"{gt_val:.6f}",
+                *pred_vals,
+            ])
+    print(  # noqa: T201
+        tabulate(
+            table_rows,
+            headers=headers,
+            tablefmt="grid",
+            colalign=("right",) * len(headers),
+        )
+    )
 
 
 def _print_summary_footer(
-    backends: dict, all_preds: dict[str, list[Predictions]], all_gt: list[GroundTruth]
+    labels: Sequence[str],
+    all_preds: dict[str, list[Predictions]],
+    all_gt: list[GroundTruth],
 ) -> None:
+    labels = list(labels)
     sep = "=" * 100
     print(f"\n{sep}")  # noqa: T201
     print("SUMMARY")  # noqa: T201
     print(sep)  # noqa: T201
-    for label in backends:
+    for label in labels:
         times = np.array([p.time_ms for p in all_preds[label]])
         hz = 1000.0 / times.mean() if times.mean() > 0 else 0.0
         print(f"{label}:  {times.mean():.1f} ms ({hz:.1f} Hz)")  # noqa: T201
 
     all_gas_max = max(
         max(abs(p.gas - g.gas) for p, g in zip(all_preds[lbl], all_gt, strict=False))
-        for lbl in backends
+        for lbl in labels
     )
     all_steer_max = max(
         max(
             abs(p.steer - g.steer) for p, g in zip(all_preds[lbl], all_gt, strict=False)
         )
-        for lbl in backends
+        for lbl in labels
     )
     print(f"Max error vs GT:    Gas={all_gas_max:.6f}, Steer={all_steer_max:.6f}")  # noqa: T201
 
-    labels = list(backends)
     if len(labels) >= _MIN_BACKENDS_FOR_COMPARISON:
         la, lb = labels[0], labels[1]
         pa, pb = all_preds[la], all_preds[lb]
@@ -856,6 +962,9 @@ def _print_summary_footer(
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+
+_VALID_FRAME_SOURCES = frozenset({"video", "jpg"})
 
 
 class Config(BaseModel):
@@ -872,12 +981,36 @@ class Config(BaseModel):
     image_size: tuple[int, int] | None = None
     output: Path | None = None
     warmup: int = 1
+    # "video" decodes cam_front_left.pii.mp4 (original behavior); "jpg" reads
+    # dvc.yaml's pre-extracted frames/cam_front_left.pii.mp4/<W>x<H>/*.jpg
+    # instead — the same fixed-size JPEGs training itself was built from, so
+    # it skips _preprocess_image's approximate downscale-to-native-size step.
+    # Pass both (e.g. frame_sources=[video,jpg]) to run every backend against
+    # both sources and compare predictions side by side.
+    frame_sources: Sequence[str] = ("video",)
 
     @field_validator("onnx", "wandb_model", mode="before")
     @classmethod
     def _coerce_to_list(cls, v: Any) -> Any:
         # lets a single `onnx=path`/`wandb_model=artifact` override stand in for a list
         return v if v is None or isinstance(v, list | tuple) else [v]
+
+    @field_validator("frame_sources", mode="before")
+    @classmethod
+    def _coerce_frame_sources(cls, v: Any) -> Any:
+        return v if isinstance(v, list | tuple) else [v]
+
+    @field_validator("frame_sources")
+    @classmethod
+    def _check_frame_sources(cls, v: Sequence[str]) -> Sequence[str]:
+        if not v:
+            msg = "frame_sources must be non-empty"
+            raise ValueError(msg)
+        bad = sorted(set(v) - _VALID_FRAME_SOURCES)
+        if bad:
+            msg = f"Unknown frame_sources {bad} (expected {sorted(_VALID_FRAME_SOURCES)})"
+            raise ValueError(msg)
+        return v
 
 
 def _validate_config(
@@ -906,9 +1039,21 @@ def _validate_config(
         )
         raise ValueError(msg)
 
-    for fname in ("cam_front_left.pii.mp4", "metadata.log", "waypoints.json"):
+    for fname in ("metadata.log", "waypoints.json"):
         if not (config.data_dir / fname).exists():
             msg = f"Missing: {config.data_dir / fname}"
+            raise FileNotFoundError(msg)
+
+    if "video" in config.frame_sources:
+        video_path = config.data_dir / "cam_front_left.pii.mp4"
+        if not video_path.exists():
+            msg = f"Missing: {video_path}"
+            raise FileNotFoundError(msg)
+
+    if "jpg" in config.frame_sources:
+        frames_dir = _jpg_frames_dir(config.data_dir)
+        if not frames_dir.is_dir() or next(frames_dir.glob("*.jpg"), None) is None:
+            msg = f"Missing (or empty) jpg frames dir: {frames_dir}"
             raise FileNotFoundError(msg)
 
 
@@ -925,7 +1070,7 @@ def _build_backends(
 
     onnx_paths = config.onnx or []
     for idx, path in enumerate(onnx_paths):
-        label = "ONNX Full" if len(onnx_paths) == 1 else f"ONNX Full {idx + 1}"
+        label = "ONNX" if len(onnx_paths) == 1 else f"ONNX {idx + 1}"
         backend = _ONNXBackend(path)
         backends[label] = backend
         image_size = backend.image_size  # last ONNX wins if multiple
@@ -938,9 +1083,9 @@ def _build_backends(
             raise ValueError(msg)
         for idx, artifact in enumerate(wandb_artifacts):
             label = (
-                "PyTorch Native"
+                "PyTorch"
                 if len(wandb_artifacts) == 1
-                else f"PyTorch Native {idx + 1}"
+                else f"PyTorch {idx + 1}"
             )
             backends[label] = _WandbBackend(
                 artifact, target=target, hparams_jq=hparams_jq, strict=strict
@@ -1039,6 +1184,68 @@ def _resolve_export_model_cfg(
     )
 
 
+def _run_all_sources(
+    config: Config,
+    backends: dict[str, _ONNXBackend | _WandbBackend],
+    base_request: _BatchRequest,
+) -> tuple[
+    dict[str, _ONNXBackend | _WandbBackend],
+    dict[str, list[Predictions]],
+    list[GroundTruth],
+    list[dict],
+]:
+    """Run every backend against every configured frame source.
+
+    When comparing more than one source, each backend's label gets suffixed
+    with its source so every (backend, source) pair shows up as its own
+    row/column — _print_validation's generic pairwise diff then automatically
+    includes source-vs-source comparisons too.
+    """
+    multi_source = len(config.frame_sources) > 1
+    all_preds: dict[str, list[Predictions]] = {}
+    label_backend: dict[str, _ONNXBackend | _WandbBackend] = {}
+    all_gt_by_source: dict[str, list[GroundTruth]] = {}
+    rows_by_source: dict[str, list[dict]] = {}
+
+    for source in config.frame_sources:
+        request = replace(base_request, source=source)
+        labeled = (
+            {f"{label} ({source})": b for label, b in backends.items()}
+            if multi_source
+            else backends
+        )
+        label_backend.update(labeled)
+        preds, gt, rows = _run_benchmark(labeled, request, config.num_episodes)
+        all_preds.update(preds)
+        all_gt_by_source[source] = gt
+        rows_by_source[source] = rows
+
+    counts = {source: len(gt) for source, gt in all_gt_by_source.items()}
+    if len(set(counts.values())) > 1:
+        logger.warning("Episode count differs across frame sources", counts=counts)
+
+    # Ground truth comes from metadata alone (pixels never factor in), so
+    # it's identical across sources modulo how many episodes each source's
+    # frame reader let complete — use whichever ran fewest.
+    canonical_source = min(all_gt_by_source, key=lambda s: counts[s])
+    all_gt = all_gt_by_source[canonical_source]
+
+    # Merge every source's per-episode backend columns onto the canonical
+    # source's rows (episode/frame/history_* are source-independent already).
+    rows = rows_by_source[canonical_source]
+    for source, source_rows in rows_by_source.items():
+        if source == canonical_source:
+            continue
+        for row, source_row in zip(rows, source_rows, strict=False):
+            row.update({
+                k: v
+                for k, v in source_row.items()
+                if k not in {"episode", "frame"} and not k.startswith("history_")
+            })
+
+    return label_backend, all_preds, all_gt, rows
+
+
 @hydra.main(version_base=None)
 def main(cfg: DictConfig) -> None:
     target, hparams_jq, strict = _resolve_export_model_cfg(cfg)
@@ -1055,47 +1262,53 @@ def main(cfg: DictConfig) -> None:
     wps = _WaypointLoader(config.data_dir / "waypoints.json")
     wps.load()
 
-    request = _BatchRequest(
+    base_request = _BatchRequest(
         video_path=config.data_dir / "cam_front_left.pii.mp4",
+        frames_dir=_jpg_frames_dir(config.data_dir),
         metadata=meta,
         waypoints=wps,
         start_frame=config.start_frame,
         frame_step=config.frame_step,
         image_size=image_size,
+        source=config.frame_sources[0],
     )
 
-    onnx_backends = {
-        label: b for label, b in backends.items() if isinstance(b, _ONNXBackend)
-    }
-    _warmup_backends(onnx_backends, request, config.warmup)
+    _warmup_backends(
+        {label: b for label, b in backends.items() if isinstance(b, _ONNXBackend)},
+        base_request,
+        config.warmup,
+    )
 
     logger.info("=" * 70)
     logger.info(
-        "Benchmark: %d episodes, start_frame=%d, frame_step=%d",
+        "Benchmark: %d episodes, start_frame=%d, frame_step=%d, frame_sources=%s",
         config.num_episodes,
         config.start_frame,
         config.frame_step,
+        list(config.frame_sources),
     )
     logger.info("=" * 70)
 
-    all_preds, all_gt, rows = _run_benchmark(backends, request, config.num_episodes)
+    label_backend, all_preds, all_gt, rows = _run_all_sources(
+        config, backends, base_request
+    )
 
     n = len(all_gt)
     if n == 0:
         logger.error("No episodes completed")
         return
 
-    _print_timing_table(backends, all_preds, n)
-    _print_error_table(backends, all_preds, all_gt)
-    _print_validation(backends, all_preds)
-    _print_per_episode(backends, rows, all_gt)
-    _print_summary_footer(backends, all_preds, all_gt)
+    labels = list(all_preds)
+    _print_timing_table(label_backend, all_preds, n)
+    _print_error_table(labels, all_preds, all_gt)
+    _print_validation(labels, all_preds)
+    _print_per_episode(labels, rows, all_gt)
+    _print_summary_footer(labels, all_preds, all_gt)
 
     if config.output and rows:
         config.output.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = list(rows[0].keys())
         with Path(config.output).open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             w.writeheader()
             w.writerows(rows)
         logger.info("Predictions saved", path=str(config.output))
