@@ -65,4 +65,57 @@ model:
   sample_codes: false
 
 wandb:
-  tags: [patch_policy, dinov2_dinowm_causal_big]
+  group: causal_capacity_scaling
+  job_type: train
+  # Structured base: / chg: / same: so the run page states what this is derived
+  # from, what actually differs, and what was deliberately held fixed.
+  tags:
+    - patch_policy
+    - causal_decoder
+    - dinov2_dinowm_causal_big
+    # --- what it is based on
+    - base:vague-shape-587
+    - base:do8m9ot8
+    - base:dinov2_dinowm_causal
+    # --- what changed vs that base
+    - chg:trunk_512d8L8H_to_768d12L12H
+    - chg:trunk_31.5M_to_85.3M
+    - chg:droppath_0.1_to_0.2
+    - chg:offsethead_relu_to_gelu
+    - chg:samplecodes_on_to_off
+    - chg:drives_655_to_654
+    - chg:1gpu_to_ddp2x4090
+    # --- deliberately held fixed, so the trunk change is readable
+    - same:eff_bs24
+    - same:lr1e-4
+    - same:246k_steps
+    - same:window16
+    - same:ep_len32
+    - same:label_smooth0.1
+    - same:wd_code0.2
+    - same:fusion_norm
+  notes: >-
+    Capacity scaling of the CAUSAL decoder arm.
+
+    BASE: vague-shape-587 (do8m9ot8, dinov2_dinowm_causal, 512d/8L/8H) -- the variant
+    that succeeded in on-car closed loop (v2 braked better in turns than v0).
+
+    CHANGED vs base: trunk 512d/8L/8H -> 768d/12L/12H (31.5M -> 85.3M trunk, ~3.4x
+    FLOPs; THE experiment). drop_path 0.1 -> 0.2 (stochastic depth scales with depth;
+    12 layers not 8). Offset head ReLU -> GELU (staged fix #1: dead-unit fraction
+    climbed 0.29 -> 0.83 under wd=0.1; GELU removes dying-ReLU without touching decay;
+    SmoothL1 deliberately NOT bundled so this stays attributable). sample_codes true ->
+    false (_sample_codes feeds only _predict_chunk's cluster metrics and the detached
+    sampled_recon -- no loss path uses it, so sampling only added variance to the
+    logged numbers). Train drives 655 -> 654 (dropped Niro115-HQ/2023-05-19--07-08-01:
+    bad left-cam quality, likely a mislabelled student drive; no val/predict split
+    changes). 1 GPU -> DDP 2x RTX 4090, per-rank batch 12 (rmind#259 sharded loader).
+
+    HELD CONSTANT so the trunk change is readable: effective batch 24, lr 1e-4, 246k
+    steps / 19.7k warmup, window 16, episode_length 32, label_smoothing 0.1, code_head
+    wd 0.2, fusion_norm + fusion_goal_rms 0.077.
+
+    SELECTION: select on CLOSED LOOP, not val. On this architecture val rises
+    monotonically from the first validation while on-car behaviour improved; H8
+    (offline tail metrics predict closed loop) was falsified at rho=+0.00 against
+    corrected closed-loop distance. Keep every epoch checkpoint.
