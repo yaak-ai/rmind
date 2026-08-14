@@ -4,6 +4,7 @@ defaults:
   - /model: yaak/drivor/finetuned
   - /datamodule: yaak/drivor_val
   - /paths: yaak/default
+  - /logger: yaak/rerun/prediction_drivor
   - _self_
 
 trainer:
@@ -15,6 +16,9 @@ trainer:
   precision: "bf16-mixed"
   logger: false
   callbacks:
+    - _target_: rmind.callbacks.DrivoRRerunPredictionWriter
+      write_interval: batch
+      logger: ${logger}
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
       path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet

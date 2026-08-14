@@ -11,6 +11,7 @@ from .logit_bias import LogitBiasSetter
 from .predict_metrics import PredictMetricsCallback
 from .prediction import (
     DataFramePredictionWriter,
+    DrivoRRerunPredictionWriter,
     RerunPredictionWriter,
     TensorDictPredictionWriter,
 )
@@ -19,6 +20,7 @@ from .safe import SafeCallback
 
 __all__ = [
     "DataFramePredictionWriter",
+    "DrivoRRerunPredictionWriter",
     "FeaturePermutator",
     "LogitBiasSetter",
     "ModuleFreezer",
