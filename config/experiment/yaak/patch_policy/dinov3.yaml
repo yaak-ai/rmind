@@ -36,6 +36,18 @@ policy_embedding_dim: 512
 num_layers: 8
 num_heads: 8
 
+# Activation checkpointing on the trunk: true = every block, false = none, k =
+# every k-th. Off by default: checkpointing trades a full extra trunk forward
+# for memory this arm's shape doesn't need -- measured on an A100-80GB at this
+# arm's exact production shape (batch 128, seq 1542 = episode_length 6 *
+# (num_patches 256 + 1), d512/L8), trunk fwd+bwd: checkpoint=True 1129ms/8.8GB
+# vs checkpoint=False 874ms/33.1GB (1.29x), out of 80GB available. Every
+# patch_policy arm inherits this var; the causal (CausalFrameTransformer) family
+# overrides it back to `true` in dinov2_dinowm_causal.yaml -- its windowed/flex
+# shape is not the one measured here, and is already documented to run tight on
+# memory even with checkpointing on (docs/decoder_only_kv_cache.md §13).
+trunk_checkpointing: false
+
 # batch 128 with linearly-scaled LR (baseline: 5e-5 @ 64). The clip11 train set
 # is ~1.97M samples (FT baseline zcglgth4: 308,038 steps @ batch 64 for 10
 # epochs) -> ~15.4k steps/epoch @ 128; cosine hits zero at the end of epoch 14.
