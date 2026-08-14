@@ -1,0 +1,63 @@
+# @package _global_
+---
+# ONNX export for a PatchPolicy checkpoint (3-camera arm). Deployment interface
+# mirrors the control_transformer export conventions, with one deliberate
+# difference (see load_for_export): 6 observation frames of already-cropped/
+# resized/ImageNet-normalized float RGB per camera in (1, 6, 1, 224, 224) --
+# normalization happens client-side (rsim's OnnxAgent), not in-graph, so this
+# stays consistent with a plain Identity image transform rather than
+# control_transformer's in-graph Normalize -- plus speed (km/h) and ego-frame
+# /100 waypoints. No action series needed -- PatchPolicy.forward never reads
+# the action chunk (it's a training-only target, see _features's docstring),
+# so gas/brake/steering/turn_signal are simply omitted here; Remapper/
+# StackFields propagate the missing fields as None instead of erroring.
+# Output: policy.continuous.{gas_pedal,brake_pedal,steering_angle} +
+# policy.discrete.turn_signal, decoded (argmax codes, immediate next action
+# only) via PatchPolicy._structure -- the same per-tick scalar contract
+# control_transformer exports use, so rsim's OnnxAgent needs no changes to
+# consume either.
+#
+#   just export-onnx export=yaak/patch_policy/finetuned \
+#       model.artifact=yaak/alex-tmp/model-l5kjqcew:v1 \
+#       f=/path/to/out.onnx
+
+model:
+  _target_: rmind.models.patch_policy.PatchPolicy.load_for_export
+  artifact: ???
+
+input:
+  data:
+    cam_front_left:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 3, 224, 224]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float
+      device: cpu
+      low: 0
+      high: 1
+
+    meta/VehicleMotion/speed:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 1]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 130
+
+    waypoints/xy_normalized:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 10, 2]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: -1.0
+      high: 1.0
+
+input_names:
+  - cam_front_left
+  - speed
+  - waypoints_xy_normalized
