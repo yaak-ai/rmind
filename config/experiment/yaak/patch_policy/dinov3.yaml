@@ -36,6 +36,13 @@ policy_embedding_dim: 512
 num_layers: 8
 num_heads: 8
 
+# Activation checkpointing on the trunk: true = every block, false = none, k =
+# every k-th. Off, because it buys memory we don't need at the price of a full
+# extra trunk forward (~22% of a training step): the real per-step footprint at
+# batch 128 is ~10GB of the A100's 80GB. Set to 2 if a bigger arm gets tight.
+# See docs/gpu_utilization_profiling.md.
+trunk_checkpointing: false
+
 # batch 128 with linearly-scaled LR (baseline: 5e-5 @ 64). The clip11 train set
 # is ~1.97M samples (FT baseline zcglgth4: 308,038 steps @ batch 64 for 10
 # epochs) -> ~15.4k steps/epoch @ 128; cosine hits zero at the end of epoch 9.

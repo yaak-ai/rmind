@@ -107,6 +107,7 @@ encoder:
   num_heads: ${num_heads}
   # episode_length frames x (num_patches + 1 speed token)
   max_sequence_length: "${eval:'${episode_length} * (${num_patches} + 1)'}"
+  checkpoint: ${trunk_checkpointing}
 
 tokenizer:
   _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact

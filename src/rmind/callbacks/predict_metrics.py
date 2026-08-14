@@ -10,6 +10,7 @@ from torch import Tensor
 
 from rmind.callbacks.loggers.common import _get_wandb_loggers
 from rmind.models.control_transformer import PredictionConfig
+from rmind.utils.profiling import maybe_profile
 
 
 class PredictMetricsCallback(Callback):
@@ -53,7 +54,16 @@ class PredictMetricsCallback(Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        predictions = pl_module.predict_step(batch)
+        # `predict_step` is called directly here rather than through Lightning's own
+        # strategy/loop machinery, so it never enters the trainer's precision context
+        # (e.g. bf16-mixed autocast) on its own -- it would otherwise silently run in
+        # fp32, doubling activation memory and losing the tensor-core kernels used
+        # everywhere else in train/val (see docs/gpu_utilization_profiling.md).
+        with (
+            trainer.precision_plugin.predict_step_context(),
+            maybe_profile("predict_step"),
+        ):
+            predictions = pl_module.predict_step(batch)
 
         clusters = (
             self._cluster_fn(batch, predictions)

@@ -8,6 +8,7 @@ from .loggers import (
     WandbWaypointsLogger,
 )
 from .logit_bias import LogitBiasSetter
+from .memory_stats import GpuMemoryStatsCallback
 from .predict_metrics import PredictMetricsCallback
 from .prediction import (
     DataFramePredictionWriter,
@@ -20,6 +21,7 @@ from .safe import SafeCallback
 __all__ = [
     "DataFramePredictionWriter",
     "FeaturePermutator",
+    "GpuMemoryStatsCallback",
     "LogitBiasSetter",
     "ModuleFreezer",
     "PredictMetricsCallback",
