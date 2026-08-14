@@ -13,15 +13,16 @@ from torch.nn import Module
 from torch.nn import functional as F
 from torch.optim import Optimizer
 from torch.utils._pytree import MappingKey  # noqa: PLC2701
+from torch.utils.checkpoint import checkpoint
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
 from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
-from rmind.components.transformer.utils import run_layer_stack
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
 from rmind.models.control_transformer import PredictionConfig
 from rmind.utils._wandb import LoadableFromArtifact
+from rmind.utils.profiling import maybe_profile
 from rmind.utils.pytree import key_get_default
 
 type Path = tuple[str, ...]
@@ -87,6 +88,11 @@ class BlockCausalTransformer(nn.Module):
     """Flattened-sequence encoder over `num_frames * tokens_per_frame` tokens with a
     learned 1D positional embedding and a block-causal attention mask
     (https://arxiv.org/pdf/2607.18236).
+
+    `checkpoint` sets the activation-checkpointing policy used during training:
+    `True` wraps every block, `False` none, an int `k` every k-th block. Wrapping
+    a block trades a full extra forward of it for the memory of its activations
+    -- worth paying only when memory is actually scarce.
     """
 
     @validate_call
@@ -101,8 +107,16 @@ class BlockCausalTransformer(nn.Module):
         resid_dropout: float = 0.1,
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 4,
+        checkpoint: bool | Annotated[int, Field(ge=1)] = True,
     ) -> None:
         super().__init__()
+
+        # normalized to "checkpoint every k-th block", 0 = never
+        match checkpoint:
+            case bool():
+                self._checkpoint_every: int = 1 if checkpoint else 0
+            case _:
+                self._checkpoint_every = checkpoint
 
         self.position_embedding = nn.Embedding(max_sequence_length, dim_model)
         nn.init.trunc_normal_(
@@ -121,12 +135,27 @@ class BlockCausalTransformer(nn.Module):
         ])
         self.norm = nn.LayerNorm(dim_model)
 
+    def _should_checkpoint(self, index: int) -> bool:
+        return (
+            self.training
+            and self._checkpoint_every > 0
+            and index % self._checkpoint_every == 0
+        )
+
     @override
     def forward(self, src: Tensor, *, num_frames: int) -> Tensor:
         _, seq_len, _ = src.shape
         x = src + self.position_embedding(torch.arange(seq_len, device=src.device))
         mask = block_causal_mask(num_frames, seq_len // num_frames, device=src.device)
-        x = run_layer_stack(self.layers, x, mask, training=self.training)
+        # NOTE: deliberately not `run_layer_stack` -- that helper is shared with
+        # ControlTransformer's encoder/decoder, so an all-or-nothing checkpointing
+        # policy there is not the right one here
+        for i, layer in enumerate(self.layers):
+            x = (
+                checkpoint(layer, x, mask, use_reentrant=False)
+                if self._should_checkpoint(i)
+                else layer(x, mask)
+            )
         return self.norm(x)
 
 
@@ -511,7 +540,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
-        metrics = self._compute_metrics(batch)
+        # Optional profiling: set environment variable `TORCH_PROFILER` to enable.
+        # If `TORCH_PROFILER_DIR` is set, a chrome trace will be written there.
+        with maybe_profile(f"{prefix}_step"):
+            metrics = self._compute_metrics(batch)
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
         metrics["loss", "total"] = losses.sum(reduce=True)

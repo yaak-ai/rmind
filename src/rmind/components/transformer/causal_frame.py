@@ -113,8 +113,7 @@ from torch.nn.attention.flex_attention import (
     create_block_mask,
     flex_attention,
 )
-
-from rmind.components.transformer.utils import run_layer_stack
+from torch.utils.checkpoint import checkpoint
 
 __all__ = [
     "AttentionImpl",
@@ -546,6 +545,12 @@ class CausalFrameTransformer(nn.Module):
     `forward(src, *, num_frames)` signature -- plus a `step` that consumes and
     extends a KV cache. See the module docstring for the positional scheme and
     the cache contract.
+
+    `checkpoint` sets the activation-checkpointing policy used by `forward` while
+    training: `True` wraps every block, `False` none, an int `k` every k-th
+    block. Wrapping a block trades a full extra forward of it for the memory of
+    its activations. `step` (the KV-cached decode path) never checkpoints --
+    it is inference-only and the export target.
     """
 
     def __init__(  # noqa: PLR0913
@@ -564,8 +569,17 @@ class CausalFrameTransformer(nn.Module):
         hidden_layer_multiplier: int = 4,
         attention_impl: AttentionImpl = "sdpa",
         drop_path_rate: float = 0.0,
+        checkpoint: bool | int = True,
     ) -> None:
         super().__init__()
+        # normalized to "checkpoint every k-th block", 0 = never
+        if isinstance(checkpoint, bool):
+            self._checkpoint_every: int = 1 if checkpoint else 0
+        elif checkpoint >= 1:
+            self._checkpoint_every = checkpoint
+        else:
+            msg = f"checkpoint must be a bool or an int >= 1, got {checkpoint!r}"
+            raise ValueError(msg)
         # There is no learned positional table over the flattened sequence any
         # more, so this trunk has no intrinsic maximum length. The argument
         # exists so the hydra `encoder` node can be overridden in place (the
@@ -628,6 +642,13 @@ class CausalFrameTransformer(nn.Module):
         idx = torch.arange(self.tokens_per_frame, device=device)
         return self.intra_position_embedding(idx).repeat(num_frames, 1)
 
+    def _should_checkpoint(self, index: int) -> bool:
+        return (
+            self.training
+            and self._checkpoint_every > 0
+            and index % self._checkpoint_every == 0
+        )
+
     @override
     def forward(self, src: Tensor, *, num_frames: int, frame_offset: int = 0) -> Tensor:
         """Full-sequence forward over `num_frames * tokens_per_frame` tokens.
@@ -661,7 +682,15 @@ class CausalFrameTransformer(nn.Module):
             )
         )
 
-        x = run_layer_stack(self.layers, x, cos, sin, mask, training=self.training)
+        # NOTE: deliberately not `run_layer_stack` -- that helper is shared with
+        # ControlTransformer's encoder/decoder, so an all-or-nothing checkpointing
+        # policy there is not the right one here
+        for i, layer in enumerate(self.layers):
+            x = (
+                checkpoint(layer, x, cos, sin, mask, use_reentrant=False)
+                if self._should_checkpoint(i)
+                else layer(x, cos, sin, mask)
+            )
         return self.norm(x)
 
     def empty_cache(

@@ -116,6 +116,19 @@ defaults:
 episode_length: 32
 window: 16
 
+# Override dinov3.yaml's `trunk_checkpointing: false`: that default is measured
+# for the OTHER trunk (BlockCausalTransformer, dense 6-frame mask, batch 128 on
+# an 80GB A100) and does not transfer here. This arm's own shape is already
+# documented to run tight on memory WITH checkpointing on -- see
+# docs/decoder_only_kv_cache.md §13 (cam=1: 9.60 GiB measured at 768 frame-slots
+# on a 32GB 5090; cam=3 measured 11.35 GiB at the same slot budget, batch 8,
+# `batch_size: 24` OOMs outright). Disabling checkpointing plausibly multiplies
+# that by something in the ballpark of the ~3.8x seen on the other trunk
+# (8.8 -> 33.1 GB, dinov3.yaml), which would not fit -- not remeasured for this
+# windowed/flex shape, so leave it on until `tests/bench_causal_frame.py trunk`
+# is extended with a checkpoint=False row to check.
+trunk_checkpointing: true
+
 model:
   encoder:
     _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
