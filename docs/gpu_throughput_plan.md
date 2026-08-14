@@ -179,6 +179,33 @@ Peak allocated goes ~9.4 -> ~36 GB on a real step. Still less than half the card
 larger arm (e.g. `dinov3_vitb`) gets tight, set `trunk_checkpointing: 2` rather than
 shrinking the batch.
 
+**Gumbel-max code sampling — the per-step `cudaStreamSynchronize` is gone.**
+
+`_sample_codes` (`src/rmind/models/patch_policy.py`) sampled via
+`torch.multinomial(logits.softmax(-1), 1)`, whose ATen validity check does an
+`aten::_assert_async` — a real device-to-host sync, every train step, reached from
+`_compute_metrics`'s `sampled_recon` diagnostic (`sample_codes` defaults to `True`, no
+config override). This is the signature Update 1 of the profiling doc flagged and
+Update 6 left unresolved. Replaced with Gumbel-max:
+`(logits + gumbel_noise).argmax(-1)` draws from the same categorical, with no softmax,
+no multinomial, no sync.
+
+- `src/rmind/models/patch_policy.py`: `_sample_codes` rewritten; feeds both
+  `_compute_metrics` (train) and `_predict_chunk`/`predict_step` (inference).
+- Verified on the A100: a `torch.profiler` CPU trace of the old path shows
+  `aten::_assert_async` (plus `aten::any`/`aten::eq`/`aten::ge`/`aten::lt` bookkeeping
+  around it); the new path's trace has zero assert/sync ops.
+- Verified distributional equivalence: empirical code histograms from both samplers
+  match the analytic softmax to ~0.2% at 200k draws on fixed quantizer-shaped logits
+  (g=4, c=16), and match each other to the same tolerance — not per-draw equality, the
+  distributions.
+- `tests/test_patch_policy.py` — 12/12 pass, unchanged.
+
+Not touched: `_sample_codes_seeded` in `scripts/offset_cancellation_probe.py`, which
+intentionally reproduces "the pre-fix training-time sampling path" for auditing, and
+`JointPolicy._sample_codes` (`components/objectives/joint_policy.py`) — out of scope,
+this plan only covers `PatchPolicy`.
+
 ### 1. Attention — pending the §4 decision. Worth ~379 ms/step, the largest single item.
 
 If option A is chosen: replace `nn.MultiheadAttention` in `TransformerBlock`
@@ -188,7 +215,7 @@ If option A is chosen: replace `nn.MultiheadAttention` in `TransformerBlock`
   `src/rmind/components/transformer/attention.py` — follow it, and **keep
   `in_proj_weight`/`out_proj` parameter names and shapes** so existing checkpoints still
   load.
-- Build the `BlockMask` **once** and cache it (see item 4), not per forward.
+- Build the `BlockMask` **once** and cache it (see item 3), not per forward.
   `create_block_mask(block_causal, B=None, H=None, Q_LEN=N, KV_LEN=N, device=...)` with
   `block_causal = lambda b, h, q, kv: (q // tokens_per_frame) >= (kv // tokens_per_frame)`.
   Note the inverted convention vs `block_causal_mask`, which returns True = *blocked*.
@@ -196,30 +223,7 @@ If option A is chosen: replace `nn.MultiheadAttention` in `TransformerBlock`
 - Verify equivalence against the current path with `attn_dropout=0` on both sides: outputs
   should match to bf16 tolerance (~1e-2 relative), not exactly — different reduction order.
 
-### 2. Remove the per-step `cudaStreamSynchronize`. Confirmed in production traces.
-
-`_sample_codes` (`src/rmind/models/patch_policy.py`) calls `torch.multinomial`, whose ATen
-validity check does `.item<bool>()` on a bool scalar. In the real v5 `train_step` trace
-this shows up as **~140 ms of CPU time** in `aten::is_nonzero` / `aten::item` /
-`aten::_local_scalar_dense` per forward window.
-
-This is the signature Update 1 of the profiling doc flagged and Update 6 left unresolved.
-Update 6 correctly ruled out the two Lightning-level checks (they run outside the profiled
-scope) but did not find the real call site: it is `torch.multinomial`, reached every train
-step from `_compute_metrics` (the `sampled_recon` diagnostic), and `sample_codes` defaults
-to `True` with no config override.
-
-Beyond its own cost, a per-step sync drains the CUDA queue, so the GPU has nothing queued
-to hide host hiccups behind — it converts dataloader jitter directly into GPU idle.
-
-**Fix:** Gumbel-max — `(logits + gumbel_noise).argmax(dim=-1)`. Same sampling distribution,
-no sync, and cheaper (drops both the softmax and the multinomial kernel). Applies to
-`predict_step` too.
-
-**Verify:** distribution equality over many draws on a fixed batch (compare code
-histograms), *not* per-draw equality. Then re-check with the sync detector below.
-
-### 3. Cut the 45% wasted host data path.
+### 2. Cut the 45% wasted host data path.
 
 The dataset is built at `clip_length = episode_length(6) + clip_horizon(6) - 1 = 11` so it
 can be shared with the control_transformer configs. `rbyte.Dataset.get_batch` fetches
@@ -232,29 +236,29 @@ needed; 1408 JPEGs are decoded where 768 are needed; the prefetch queue holds ~1
 host RAM where ~10 GB would do. In the v5 trace `aten::to` / `_to_copy` / `copy_` total
 **~765 ms of CPU time** per forward window — the largest CPU cost in the trace.
 
-- **3a.** Override `on_before_batch_transfer` on `PatchPolicy` to narrow the image tensor
+- **2a.** Override `on_before_batch_transfer` on `PatchPolicy` to narrow the image tensor
   to `episode_length` frames on the CPU side. Note it must address the **pre-`Remapper`**
   layout (`data/cam_front_left`), not `self.image`. ~15 lines, no numerics change.
-- **3b.** Launch-flag experiments, one at a time:
+- **2b.** Launch-flag experiments, one at a time:
   - `datamodule.train.method=process` — today `method: thread` runs all dataloading *inside
     the training process*, where the tensordict/polars glue in `get_batch` holds the GIL and
     contends with the thread that launches CUDA kernels. This matches the doc's unexplained
     "the calling thread itself not getting scheduled" signature. `--shm-size=32g` is already
-    set; after 3a the in-flight set is ~10 GB.
+    set; after 2a the in-flight set is ~10 GB.
   - `+datamodule.train.in_order=false` — `torchdata`'s `ParallelMapper` defaults to
     `in_order=True`, so one slow NFS batch head-of-line-blocks the queue. Training is
     shuffled anyway.
-- **3c.** `ConcurrentPathTensorSource.__getitem__`
+- **2c.** `ConcurrentPathTensorSource.__getitem__`
   (`src/rmind/io/path_tensor_source.py`) builds and tears down a
   `ThreadPoolExecutor(max_workers=8)` on *every call* — once per drive-group per batch.
   Hoist it to an instance-level pool.
-- **3d.** (only if 3a shows decode, not transfer, is binding) Stop reading the 5 unused
+- **2d.** (only if 2a shows decode, not transfer, is binding) Stop reading the 5 unused
   frames at all. `get_batch` derives what to fetch from `batch_data[stream_config.index]`,
   so this needs a 6-wide index column for the `cam_front_left` stream: either a narrowed
   column in `config/_templates/dataset/yaak/train.yaml` (invalidates `.rbyte_cache`, needs
   an index rebuild) or a thin `rbyte.Dataset` subclass in `rmind.io`. Prefer the latter.
 
-### 4. `torch.compile` the trunk + cache the mask.
+### 3. `torch.compile` the trunk + cache the mask.
 
 Reuse the existing wrapper — `rmind.utils.functional.compiled` is already wired for
 `ControlTransformer` at `config/model/yaak/control_transformer/raw.yaml`. It mutates in
@@ -274,7 +278,7 @@ buffer keyed by `num_frames` — prior art at `src/rmind/components/episode.py:1
 Shape note: train has `drop_last: true` so batch is a constant 128; val does not, so expect
 one recompile on the final val batch.
 
-### 5. Not worth doing (measured/derived, recorded so nobody re-litigates)
+### 4. Not worth doing (measured/derived, recorded so nobody re-litigates)
 
 - **bool instead of float attention mask** — 70.7 vs 70.6 ms, bit-identical output.
 - **Optimizing the tokenizers or heads** — `ActionTokenizer`/`WaypointsTokenizer` are ~5
@@ -286,7 +290,7 @@ one recompile on the final val batch.
   `limit_*_batches` runs.
 - **Raising `num_workers`** — already A/B'd in the doc (Update 2), no effect.
 
-### 6. Deferred, costed: precomputed frozen DINOv3 features
+### 5. Deferred, costed: precomputed frozen DINOv3 features
 
 The image transform is fully deterministic (CenterCrop/Resize/ToDtype/Normalize — no
 augmentation), so caching is exactly equivalent. Removes the ViT from the step entirely
@@ -327,7 +331,10 @@ ______________________________________________________________________
 1. **Still to build (Phase 0 item, not yet done):** gate
    `torch.cuda.set_sync_debug_mode("warn")` behind an env var next to `TORCH_PROFILER` in
    `src/rmind/utils/profiling.py`. Turns every implicit device sync into a warning with a
-   Python traceback — settles item 2 definitively instead of by op-name inference.
+   Python traceback. The Gumbel-max fix above was confirmed by op-name inference
+   (`aten::_assert_async` present/absent under `torch.profiler`) rather than this — the
+   hook would have settled it more directly, and remains useful as a standing regression
+   guard against future implicit syncs.
 1. **If you re-profile, fix the window first.** `maybe_profile` currently wraps only
    `_compute_metrics`, so it cannot see backward (§1). To profile a whole step, the profiler
    has to wrap the Lightning training step, e.g. via a `Callback` around
