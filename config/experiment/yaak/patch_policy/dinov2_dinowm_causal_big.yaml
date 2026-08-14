@@ -1,0 +1,68 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal
+  - _self_
+
+# ---------------------------------------------------------------------------
+# CAPACITY SCALING ON THE CAUSAL DECODER
+# ---------------------------------------------------------------------------
+# Question: what does the bigger trunk buy the decoder-only causal arm? The
+# capacity scaling was measured on the BLOCK-CAUSAL arm (dinov2_dinowm_big,
+# denim-morning-567: 12L/768d/12H, ~85M trunk vs 31.5M at 8L/512d, ~3.4x FLOPs)
+# and never on the causal one. The causal arm (vague-shape-587) is the variant
+# that succeeded in on-car closed loop -- v2 braked better in turns than v0 --
+# so it is the line worth scaling.
+#
+# These three knobs are the whole capacity change; `policy_embedding_dim` also
+# drives the code/offset heads' in_channels, patch_projection.out_features,
+# speed_embedding.embedding_dim and the trunk LayerNorm (see
+# config/model/yaak/patch_policy/raw.yaml).
+policy_embedding_dim: 768
+num_layers: 12
+num_heads: 12
+
+model:
+  encoder:
+    # 0.1 -> 0.2: stochastic depth scales with DEPTH (timm convention), and this
+    # trunk is 12 layers rather than 8. Cheap, convention-backed insurance.
+    #
+    # Deliberately NOT tuned harder than this. vague-shape's val rises
+    # MONOTONICALLY from its first validation (loss/total 5.58 -> 6.92, and
+    # offset 0.00728 -> 0.00890 -- offset is plain L1, so this is not the H6
+    # focal-calibration artifact), which looks like a mandate for heavy
+    # regularization. It is not: the LATER checkpoint of that same run (v2) beat
+    # the earlier one (v0) on the CAR. Offline metrics on this architecture do
+    # not track deployment -- H8 was falsified at rho=+0.00 against corrected
+    # closed-loop distance. Tuning regularization against val would be tuning
+    # against a signal we have repeatedly shown is not the objective.
+    # => keep every epoch checkpoint and SELECT ON CLOSED LOOP.
+    drop_path_rate: 0.2
+
+  offset_head:
+    # Staged fix #1, reserved in the ledger for "the NEXT causal restart".
+    # torchvision.ops.MLP defaults to activation_layer=nn.ReLU; the offset head's
+    # dead-unit fraction climbed 0.29 -> 0.83 over 27k steps under wd=0.1.
+    # GELU removes the dying-ReLU mechanism WITHOUT touching decay, so wd stays
+    # 0.1 as the overfit control (zeroing it would trade dead-frac for overfit --
+    # stellar/dashing val offset rose 14-21% ep2->10).
+    # NOT bundled with the SmoothL1 offset loss (staged #3) -- that stays out so
+    # this change is attributable.
+    activation_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.GELU
+
+  # Argmax everywhere. `_sample_codes` is reached from exactly two places --
+  # `_predict_chunk` (the PredictMetricsCallback cluster metrics) and the
+  # `sampled_recon` metric, which is `.detach()`ed. NO loss path touches it: the
+  # code losses run on logits vs target_codes and the offset is teacher-forced at
+  # the ground-truth codes. So sampling only ever added variance to the numbers
+  # we read, and the ledger already flags the predict/* cluster metrics as
+  # "entangled with entropy collapse" because of it.
+  # Serving is a separate decision (sampled decoding is what escapes the
+  # standstill freeze); sampled metrics can be recomputed offline from any
+  # checkpoint if a serving comparison needs them.
+  sample_codes: false
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal_big]
