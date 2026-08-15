@@ -1,0 +1,28 @@
+loaded 6 val batches
+===== armM_v4 =====
+static embedding-row L2 norms:
+  max_speed rows: mean 0.1585 min 0.0850 max 0.1822
+  speed rows    : mean 0.7591 min 0.5863 max 0.9191
+  per-class max_speed norms: {0: 0.1731, 1: 0.1519, 2: 0.085, 3: 0.1373, 4: 0.1677, 5: 0.1822, 6: 0.1759, 7: 0.1698, 8: 0.1792, 9: 0.1778, 10: 0.1645, 11: 0.1561, 12: 0.1398}
+  pairwise row distance: mean 0.1957 max 0.2289
+live per-token L2 norm in the trunk input:
+  patch tokens : mean 15.9819  p50 16.1726  n=294912
+  speed token  : mean 0.7909  p50 0.7737
+  max_speed tok: mean 0.1731  p50 0.1731
+  RATIO max_speed / patch : 0.01083
+  RATIO max_speed / speed : 0.21879
+  share of total frame-block norm mass: 0.000042
+===== armMV_v4 =====
+static embedding-row L2 norms:
+  max_speed rows: mean 0.2387 min 0.1776 max 0.2652
+  speed rows    : mean 0.7595 min 0.5997 max 0.9254
+  per-class max_speed norms: {0: 0.2388, 1: 0.2278, 2: 0.1776, 3: 0.2392, 4: 0.2528, 5: 0.2248, 6: 0.2524, 7: 0.26, 8: 0.2428, 9: 0.2538, 10: 0.2652, 11: 0.2363, 12: 0.231}
+  pairwise row distance: mean 0.3191 max 0.4139
+live per-token L2 norm in the trunk input:
+  patch tokens : mean 15.9890  p50 16.1748  n=294912
+  speed token  : mean 0.7923  p50 0.7762
+  max_speed tok: mean 0.2388  p50 0.2388
+  RATIO max_speed / patch : 0.01494
+  RATIO max_speed / speed : 0.30144
+  share of total frame-block norm mass: 0.000058
+===NORMDONE===
