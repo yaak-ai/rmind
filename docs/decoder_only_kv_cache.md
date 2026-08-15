@@ -224,32 +224,50 @@ leaves the 333 ms tick at 64 frames (§9) while still using only an eighth of RA
 
 ```python
 # --- once, at engine load: the graph is the authority on every cache dimension
-for name in ("inputs_past_k", "inputs_past_v", "inputs_cache_bias",
-             "inputs_rope_cos", "inputs_rope_sin", "new_k", "new_v"):
+for name in (
+    "inputs_past_k",
+    "inputs_past_v",
+    "inputs_cache_bias",
+    "inputs_rope_cos",
+    "inputs_rope_sin",
+    "new_k",
+    "new_v",
+):
     expected = tuple(engine.get_tensor_shape(name))
-    if tuple(buffers[name].shape) != expected:      # set_tensor_address does NOT check
+    if tuple(buffers[name].shape) != expected:  # set_tensor_address does NOT check
         raise ValueError(f"{name}: engine wants {expected}, got {buffers[name].shape}")
 layers, _, heads, cache_tokens, head_dim = engine.get_tensor_shape("inputs_past_k")
-tokens_per_frame = engine.get_tensor_shape("new_k")[3]      # 257
-cache_frames = cache_tokens // tokens_per_frame             # context - 1
+tokens_per_frame = engine.get_tensor_shape("new_k")[3]  # 257
+cache_frames = cache_tokens // tokens_per_frame  # context - 1
+
 
 # --- on engage / disengage / manual override, wherever the action plan is cleared
 def reset_cache():
-    cache_bias.fill_(-1e4)     # every slot invalid; K/V contents then do not matter
-    frame_index = 0            # RoPE counter; fp64 host-side, monotone per episode
+    cache_bias.fill_(-1e4)  # every slot invalid; K/V contents then do not matter
+    frame_index = 0  # RoPE counter; fp64 host-side, monotone per episode
+
 
 # --- per tick
 rope_cos, rope_sin = frame_rope_cos_sin(frame_index, head_dim=head_dim, base=1000.0)
-out = engine.run(image=frame, speed=..., waypoints=...,
-                 past_k=past_k, past_v=past_v, cache_bias=cache_bias,
-                 rope_cos=rope_cos, rope_sin=rope_sin)
+out = engine.run(
+    image=frame,
+    speed=...,
+    waypoints=...,
+    past_k=past_k,
+    past_v=past_v,
+    cache_bias=cache_bias,
+    rope_cos=rope_cos,
+    rope_sin=rope_sin,
+)
 
 # ring advance: write into ONE slot and move nothing else
-slot = slice((frame_index % cache_frames) * tokens_per_frame,
-             (frame_index % cache_frames + 1) * tokens_per_frame)
+slot = slice(
+    (frame_index % cache_frames) * tokens_per_frame,
+    (frame_index % cache_frames + 1) * tokens_per_frame,
+)
 past_k[..., slot, :] = out["new_k"]
 past_v[..., slot, :] = out["new_v"]
-cache_bias[..., slot] = 0.0     # after the first `cache_frames` ticks: all zeros
+cache_bias[..., slot] = 0.0  # after the first `cache_frames` ticks: all zeros
 frame_index += 1
 ```
 
