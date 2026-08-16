@@ -35,6 +35,8 @@ class JointPolicyObjective(Objective):
         self,
         *,
         tokenizer: InstanceOf[Module],
+        condition: InstanceOf[Module],
+        query: Path,
         decoder: InstanceOf[Module],
         code_head: InstanceOf[Module],
         offset_head: InstanceOf[Module],
@@ -47,6 +49,8 @@ class JointPolicyObjective(Objective):
 
         self.norm: Module | None = norm
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        self.condition = condition
+        self.query: Path = query
         self.decoder = decoder
         self.code_head = code_head
         self.offset_head = offset_head
@@ -79,12 +83,22 @@ class JointPolicyObjective(Objective):
         k_os = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
         observation_summary = last.select(k_os).parse(embedding).get(k_os)  # (b, 64, d)
 
+        patches = episode.get(self.query)[:, -1]  # (b, p, d)
+        # observation_summary routes attention over patches without entering the values
+        key_policy = self.condition({
+            "query": patches,
+            "key": observation_summary,
+            "value": observation_summary,
+        })
+
         mask = episode.embeddings.get((Modality.UTILITY, "mask"))[
             :, -1, [3]
         ]  # (b, 1, d)
-        return self.decoder({"query": mask, "context": observation_summary}).squeeze(
-            -2
-        )  # (b, d)
+        return self.decoder({
+            "query": mask,
+            "key": key_policy,
+            "value": patches,
+        }).squeeze(-2)  # (b, d)
 
     def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """VQ-BeT joint code prediction with a code-conditioned offset."""
@@ -92,14 +106,14 @@ class JointPolicyObjective(Objective):
         g, c = quantizer.num_quantizers, quantizer.codebook_size
 
         code_logits = rearrange(self.code_head(features), "b (g c) -> b g c", g=g, c=c)
+        codes = code_logits.argmax(dim=-1)
+
         if self.sample_codes:
             codes = rearrange(
                 torch.multinomial(code_logits.softmax(dim=-1).reshape(-1, c), 1),
                 "(b g) 1 -> b g",
                 g=g,
             )
-        else:
-            codes = code_logits.argmax(dim=-1)
 
         offsets = rearrange(
             self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
@@ -211,6 +225,9 @@ class JointPolicyObjective(Objective):
             chunk = (tokenizer.invert(codes) + offset).unflatten(
                 -1, (-1, action_space)
             )  # (b, action_horizon, action_space)
+            offset_unflat = offset.unflatten(
+                -1, (-1, action_space)
+            )  # (b, action_horizon, action_space)
             actions = TensorDict({
                 "continuous": TensorDict({
                     "gas_pedal": chunk[..., 0],
@@ -221,6 +238,13 @@ class JointPolicyObjective(Objective):
                     "turn_signal": torch.bucketize(
                         chunk[..., 3] * 2, torch.tensor([0.5, 1.5], device=chunk.device)
                     )
+                }),
+                "codes": codes.float(),  # (b, num_quantizers)
+                "offset": TensorDict({
+                    "gas_pedal": offset_unflat[..., 0],
+                    "brake_pedal": offset_unflat[..., 1],
+                    "steering_angle": offset_unflat[..., 2],
+                    "turn_signal": offset_unflat[..., 3],
                 }),
             })
             predictions[key] = Prediction(value=actions, time_index=time_index)

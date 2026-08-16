@@ -230,7 +230,7 @@ class EpisodeBuilder(Module):
     ) -> TensorDict:
         t = embeddings.batch_size[1]
 
-        roles = torch.arange(self.role_encoding.num_embeddings, device=device)  # ty:ignore[no-matching-overload]
+        roles = torch.arange(self.role_encoding[0].num_embeddings, device=device)  # ty:ignore[no-matching-overload]
         role_embeddings = self.role_encoding(roles)
 
         return tree_map_with_path(

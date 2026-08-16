@@ -30,6 +30,8 @@ class MemoryExtractionObjective(Objective):
         self,
         *,
         norm: InstanceOf[Module] | None = None,
+        condition: InstanceOf[Module],
+        query: tuple[str, ...],
         decoder: InstanceOf[Module],
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
@@ -38,13 +40,14 @@ class MemoryExtractionObjective(Objective):
         super().__init__()
 
         self.norm: Module | None = norm
+        self.condition: Module = condition
+        self.query: tuple[str, ...] = query
         self.decoder = decoder
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
 
-    @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+    def _features(self, *, episode: Episode, embedding: Tensor) -> Tensor:
         if self.norm is not None:
             embedding = self.norm(embedding)
 
@@ -55,8 +58,19 @@ class MemoryExtractionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
+        patches = episode.get(self.query)[:, 1:]  # (b, t-1, p, d)
+        # observation_history routes attention over patches without entering the values
+        key_mem = self.condition({
+            "query": patches,
+            "key": obs_history,
+            "value": obs_history,
+        })
         mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [2]]
-        features = self.decoder({"query": mask, "context": obs_history})
+        return self.decoder({"query": mask, "key": key_mem, "value": patches})
+
+    @override
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+        features = self._features(episode=episode, embedding=embedding)
 
         logits = self.heads(features)
 
@@ -87,9 +101,6 @@ class MemoryExtractionObjective(Objective):
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         b, t = episode.input.batch_size
 
-        if self.norm is not None:
-            embedding = self.norm(embedding)
-
         timestep_index = slice(1, None)
         time_index = torch.arange(t).expand(b, -1)[:, timestep_index]
 
@@ -106,15 +117,7 @@ class MemoryExtractionObjective(Objective):
             ObjectivePredictionKey.PREDICTION_PROBS,
             ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
         }:
-            obs_history = (
-                episode
-                .index[1:]
-                .select(k := (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY))
-                .parse(embedding)
-                .get(k)
-            )
-            mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [2]]
-            features = self.decoder({"query": mask, "context": obs_history})
+            features = self._features(episode=episode, embedding=embedding)
 
             logits = TensorDict(self.heads(features), batch_size=[b, t - 1])
 
@@ -135,7 +138,7 @@ class MemoryExtractionObjective(Objective):
 
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
-                    embedding
+                    embedding if self.norm is None else self.norm(embedding)
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

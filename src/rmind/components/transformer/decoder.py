@@ -50,11 +50,16 @@ class CrossAttentionDecoderBlock(nn.Module):
         )
 
     @override
-    def forward(self, x: Tensor, context: Tensor) -> Tensor:
+    def forward(
+        self, x: Tensor, key: Tensor, value: Tensor | None = None
+    ) -> Tensor:
         residual = x
         x_norm = self.cross_attn_norm(x)
         cross_attn_out, _ = self.cross_attn(
-            query=x_norm, key=context, value=context, need_weights=False
+            query=x_norm,
+            key=key,
+            value=key if value is None else value,
+            need_weights=False,
         )
         x = residual + self.cross_attn_resid_drop(cross_attn_out)
 
@@ -98,8 +103,12 @@ class CrossAttentionDecoder(nn.Module):
         ])
 
     @override
-    def forward(self, x: Tensor, context: Tensor) -> Tensor:
-        return run_layer_stack(self.layers, x, context, training=self.training)
+    def forward(
+        self, query: Tensor, key: Tensor, value: Tensor | None = None
+    ) -> Tensor:
+        return run_layer_stack(
+            self.layers, query, key, value, training=self.training
+        )
 
 
 @final
@@ -108,14 +117,15 @@ class CrossAttentionDecoderHead(nn.Module):
         model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
         query: Tensor
-        context: Tensor
+        key: Tensor
+        value: Tensor | None = None
 
         @model_validator(mode="after")
         def _validate_shapes(self) -> Self:
-            if self.query.ndim != self.context.ndim or self.query.ndim not in {3, 4}:
+            if self.query.ndim != self.key.ndim or self.query.ndim not in {3, 4}:
                 msg = (
-                    "query/context must both be 3D or 4D with matching ndim, "
-                    f"got query={self.query.ndim}D, context={self.context.ndim}D"
+                    "query/key must both be 3D or 4D with matching ndim, "
+                    f"got query={self.query.ndim}D, key={self.key.ndim}D"
                 )
                 raise ValueError(msg)
             return self
@@ -130,21 +140,23 @@ class CrossAttentionDecoderHead(nn.Module):
     @override
     def forward(self, input: Input | dict[str, Tensor]) -> Tensor:
         if isinstance(input, dict):
-            query, context = input["query"], input["context"]
+            query, key = input["query"], input["key"]
+            value = input.get("value")
         else:
-            query, context = input.query, input.context
+            query, key, value = input.query, input.key, input.value
 
         if query.ndim == 4:  # noqa: PLR2004
             b, t, sq, d = query.shape
-            _, _, sc, _ = context.shape
 
-            query_flat = query.reshape(b * t, sq, d)
-            context_flat = context.reshape(b * t, sc, d)
+            def flatten(x: Tensor | None) -> Tensor | None:
+                return None if x is None else x.reshape(b * t, x.shape[2], x.shape[3])
 
-            decoded = self.decoder(query_flat, context_flat)
+            decoded = self.decoder(
+                query.reshape(b * t, sq, d), flatten(key), flatten(value)
+            )
             output = self.output_projection(decoded)
 
-            return output.reshape(b, t, sq, d)
+            return output.reshape(b, t, sq, -1)
 
-        decoded = self.decoder(query, context)
+        decoded = self.decoder(query, key, value)
         return self.output_projection(decoded)

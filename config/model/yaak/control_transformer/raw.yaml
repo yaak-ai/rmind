@@ -364,14 +364,7 @@ episode_builder:
         in_features: ${encoder_embedding_dim}
         out_features: ${encoder_embedding_dim}
 
-  token_mask:
-    _target_: rmind.components.nn.TokenMask
-    tokens:
-      - [observation, image, cam_front_left]
-      - [observation, continuous, speed]
-      - [observation, context, waypoints]
-    schedule: [0.10, 0.10, 0.10, 0.10, 0.25, 0.30, 0.45, 0.60, 0.70, 0.90]
-    noise_fraction: 0.0
+  token_mask: null
 
   attention_mask_builder:
     _target_: rmind.components.mask.FactorizedCausalAttentionMaskBuilder
@@ -410,6 +403,21 @@ objectives:
       norm:
         _target_: torch.nn.LayerNorm
         normalized_shape: ${encoder_embedding_dim}
+      condition:
+        _target_: rmind.components.transformer.CrossAttentionDecoderHead
+        decoder:
+          _target_: rmind.components.transformer.CrossAttentionDecoder
+          dim_model: ${encoder_embedding_dim}
+          num_layers: 1
+          num_heads: 4
+          attn_dropout: 0.1
+          resid_dropout: 0.1
+          mlp_dropout: 0.1
+          hidden_layer_multiplier: 1
+          self_attn: false
+        output_projection:
+          _target_: torch.nn.Identity
+      query: [embeddings, image, cam_front_left]
       decoder:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:
@@ -459,37 +467,24 @@ objectives:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
         embedding_dim: ${image_embedding_dim}
-      projections:
-        _target_: rmind.components.containers.ModuleDict
-        modules:
-          continuous:
-            speed:
-              _target_: torch.nn.Identity
-          summary:
-            observation_summary:
-              _target_: torch.nn.Sequential
-              _args_:
-                - _target_: rmind.components.nn.Linear
-                  in_features:
-                    _target_: operator.mul
-                    _args_:
-                      - 2
-                      - ${encoder_embedding_dim}
-                  out_features: ${encoder_embedding_dim}
-
+      condition:
+        _target_: rmind.components.transformer.CrossAttentionDecoderHead
+        decoder:
+          _target_: rmind.components.transformer.CrossAttentionDecoder
+          dim_model: ${image_embedding_dim}
+          num_layers: 1
+          num_heads: 4
+          attn_dropout: 0.1
+          resid_dropout: 0.1
+          mlp_dropout: 0.1
+          hidden_layer_multiplier: 1
+          self_attn: false
+        output_projection:
+          _target_: torch.nn.Identity
+      query: [input_embeddings, image, cam_front_left]
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          continuous:
-            speed:
-              _target_: rmind.components.nn.Linear
-              in_features:
-                _target_: operator.mul
-                _args_:
-                  - 2
-                  - ${encoder_embedding_dim}
-              out_features: ${speed_bins}
-              bias: False
           summary:
             observation_summary:
               _target_: rmind.components.transformer.CrossAttentionDecoderHead
@@ -508,17 +503,12 @@ objectives:
                 out_features: ${image_embedding_dim}
 
       targets:
-        continuous:
-          speed: [input_tokens, continuous, speed]
         summary:
           observation_summary: [input_embeddings, image, cam_front_left]
 
       losses:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          continuous:
-            speed:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
           summary:
             observation_summary:
               _target_: rmind.components.loss.GramAnchoringLoss
@@ -531,6 +521,21 @@ objectives:
       norm:
         _target_: torch.nn.LayerNorm
         normalized_shape: ${encoder_embedding_dim}
+      condition:
+        _target_: rmind.components.transformer.CrossAttentionDecoderHead
+        decoder:
+          _target_: rmind.components.transformer.CrossAttentionDecoder
+          dim_model: ${encoder_embedding_dim}
+          num_layers: 1
+          num_heads: 4
+          attn_dropout: 0.1
+          resid_dropout: 0.1
+          mlp_dropout: 0.1
+          hidden_layer_multiplier: 1
+          self_attn: false
+        output_projection:
+          _target_: torch.nn.Identity
+      query: [embeddings, image, cam_front_left]
       decoder:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:
@@ -600,5 +605,5 @@ lr_scheduler:
   interval: step
   scheduler:
     _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
-    num_warmup_steps: 25000
-    num_training_steps: 250000
+    num_warmup_steps: 100000
+    num_training_steps: 200000

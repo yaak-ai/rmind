@@ -32,6 +32,8 @@ class JointInverseDynamicsObjective(Objective):
         self,
         *,
         tokenizer: InstanceOf[ModuleDict],
+        condition: InstanceOf[Module],
+        query: tuple[str, ...],
         decoder: InstanceOf[Module],
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict],
@@ -41,11 +43,30 @@ class JointInverseDynamicsObjective(Objective):
         super().__init__()
 
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        self.condition = condition
         self.decoder = decoder
         self.heads = heads
         self.losses = losses
         self.targets: CodeTargets = targets
+        self.query: tuple[str, ...] = query
         self.norm: Module | None = norm
+
+    def _features(self, *, episode: Episode, embedding: Tensor) -> Tensor:
+        if self.norm is not None:
+            embedding = self.norm(embedding)
+        k = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
+        obs_summary = episode.index.select(k).parse(embedding).get(k)  # (b, t, 64, d)
+        query = episode.get(self.query)  # (b, t, p, d)
+        key_inv = self.condition({"query": query, "key": obs_summary, "value": obs_summary})
+        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[
+            :, :, [1]
+        ]  # (b, t, 1, d)
+        features = self.decoder({
+            "query": mask,
+            "key": key_inv,
+            "value": query,
+        })
+        return features.squeeze(-2)[:, :-1]
 
     @override
     def train(self, mode: bool = True) -> "JointInverseDynamicsObjective":
@@ -55,17 +76,7 @@ class JointInverseDynamicsObjective(Objective):
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
-        if self.norm is not None:
-            embedding = self.norm(embedding)
-        k = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
-        obs_summary = episode.index.select(k).parse(embedding).get(k)  # (b, t, 64, d)
-        mask = episode.embeddings.get((Modality.UTILITY, "mask"))[
-            :, :, [1]
-        ]  # (b, t, 1, d)
-        # single mask query cross-attends the observation_summary latents
-        features = self.decoder({"query": mask, "context": obs_summary}).squeeze(-2)[
-            :, :-1
-        ]
+        features = self._features(episode=episode, embedding=embedding)
         (tokenizer,) = tree_leaves(self.tokenizer)
         g = tokenizer.quantizer.num_quantizers
 
@@ -111,14 +122,7 @@ class JointInverseDynamicsObjective(Objective):
             )
 
         if ObjectivePredictionKey.PREDICTION_VALUE in keys:
-            if self.norm is not None:
-                embedding = self.norm(embedding)
-            k = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
-            obs_summary = episode.index.select(k).parse(embedding).get(k)
-            mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, :, [1]]
-            features = self.decoder({"query": mask, "context": obs_summary}).squeeze(
-                -2
-            )[:, :-1]
+            features = self._features(episode=episode, embedding=embedding)
             (tokenizer,) = tree_leaves(self.tokenizer)
             g = tokenizer.quantizer.num_quantizers
 

@@ -44,6 +44,24 @@ hparams_jq: |
           "_target_": "torch.nn.LayerNorm",
           "normalized_shape": 384
         },
+        "condition": {
+          "_target_": "rmind.components.transformer.CrossAttentionDecoderHead",
+          "decoder": {
+            "_target_": "rmind.components.transformer.CrossAttentionDecoder",
+            "dim_model": 384,
+            "num_layers": 1,
+            "num_heads": 4,
+            "attn_dropout": 0.1,
+            "resid_dropout": 0.1,
+            "mlp_dropout": 0.1,
+            "hidden_layer_multiplier": 1,
+            "self_attn": false
+          },
+          "output_projection": {
+            "_target_": "torch.nn.Identity"
+          }
+        },
+        "query": ["embeddings", "image", "cam_front_left"],
         "decoder": {
           "_target_": "rmind.components.transformer.CrossAttentionDecoderHead",
           "decoder": {
@@ -89,7 +107,7 @@ hparams_jq: |
       }
     }
   }
-  | .episode_builder.token_mask.schedule = [0.10, 0.10, 0.10, 0.10, 0.25, 0.30, 0.45, 0.60, 0.70, 0.90]
+  | .episode_builder.token_mask = null
   | .lr_scheduler = {
     "interval": "step",
     "scheduler": {

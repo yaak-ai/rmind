@@ -54,10 +54,6 @@ schema:
   #@ end
 
   #@ predictions = {
-  #@     "forward_dynamics": {
-  #@         k: {"continuous": ["speed"]}
-  #@         for k in ["ground_truth", "prediction_value", "score_l1", "score_logprob"]
-  #@     },
   #@     "inverse_dynamics": {
   #@         k: {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"]}
   #@         for k in ["ground_truth" ,"prediction_value", "score_l1", "score_logprob"]

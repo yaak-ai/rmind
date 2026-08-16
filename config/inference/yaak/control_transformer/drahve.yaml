@@ -468,3 +468,33 @@ trainer:
               columns:
                 scalars: [prediction, policy, prediction_value, value, discrete, turn_signal]
               time_index: ${time_index}
+
+          prediction/torch/codes:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [prediction, policy, prediction_value, value, codes]
+              time_index: ${time_index}
+
+          prediction/torch/offset/gas_pedal:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [prediction, policy, prediction_value, value, offset, gas_pedal]
+              time_index: ${time_index}
+
+          prediction/torch/offset/brake_pedal:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [prediction, policy, prediction_value, value, offset, brake_pedal]
+              time_index: ${time_index}
+
+          prediction/torch/offset/steering_angle:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [prediction, policy, prediction_value, value, offset, steering_angle]
+              time_index: ${time_index}
+
+          prediction/torch/offset/turn_signal:
+            - _target_: rerun.Scalars.columns
+              columns:
+                scalars: [prediction, policy, prediction_value, value, offset, turn_signal]
+              time_index: ${time_index}

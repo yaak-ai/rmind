@@ -2,13 +2,12 @@ from collections.abc import Set as AbstractSet
 from typing import Any, final, override
 
 import torch
-from einops import pack, repeat
+from einops import repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
-from torch.nn import functional as F
 from torch.utils._pytree import tree_map  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken
@@ -22,6 +21,8 @@ from rmind.components.objectives.base import (
     Targets,
 )
 
+type Features = dict[str, dict[str, dict[str, Tensor]]]
+
 
 @final
 class ForwardDynamicsPredictionObjective(Objective):
@@ -30,61 +31,68 @@ class ForwardDynamicsPredictionObjective(Objective):
         self,
         *,
         norm: InstanceOf[Module] | None = None,
+        condition: InstanceOf[Module],
+        query: tuple[str, ...],
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
-        projections: InstanceOf[ModuleDict] | None = None,
         patch_pos_embed: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
         self.norm: Module | None = norm
+        self.condition: Module = condition
+        self.query: tuple[str, ...] = query
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
-        self.projections: ModuleDict | None = projections
         self.patch_pos_embed: Module | None = patch_pos_embed
 
-    @override
-    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
+    def _features(self, *, episode: Episode, embedding: Tensor) -> Features:
         if self.norm is not None:
             embedding = self.norm(embedding)
 
-        index = episode.index[:-1]  # all but last timestep
-
-        observation_keys = self.heads.tree_paths()
-        observations = index.select(*observation_keys).parse(embedding)
-        action_summary = (
-            index
-            .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
+        summary = (
+            episode
+            .index[:-1]  # all but last timestep
+            .select(
+                k_os := (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
+                k_as := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY),
+            )
             .parse(embedding)
-            .get(k)
         )
+        context = torch.cat(
+            [summary.get(k_os), summary.get(k_as)], dim=-2
+        )  # (b, t-1, 65, d)
 
-        features: TensorDict = observations.apply(
-            lambda obs: pack([obs, action_summary.broadcast_to(obs.shape)], "b t p *")[
-                0
-            ]
-        )
-        features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]
-        _, _, n_patches, _ = episode.embeddings.get((
-            Modality.IMAGE,
-            "cam_front_left",
-        )).shape
+        patches = episode.get(self.query)[:, :-1]  # (b, t-1, p, d)
         mask_tokens = repeat(
             episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [0]],
             "b t 1 d -> b t n d",
-            n=n_patches,
+            n=patches.shape[-2],
         )
         if self.patch_pos_embed is not None:
             mask_tokens = self.patch_pos_embed(mask_tokens)
-        features_projected[Modality.SUMMARY] = tree_map(
-            lambda x: {"query": mask_tokens, "context": x},
-            features_projected[Modality.SUMMARY],
-        )
+
+        return {
+            Modality.SUMMARY: {
+                SummaryToken.OBSERVATION_SUMMARY: {
+                    "query": mask_tokens,
+                    "key": self.condition({
+                        "query": patches,
+                        "key": context,
+                        "value": context,
+                    }),
+                    "value": patches,
+                }
+            }
+        }
+
+    @override
+    def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
         logits = self.heads(
-            features_projected,
-            is_leaf=lambda x: isinstance(x, dict) and "query" in x and "context" in x,
+            self._features(episode=episode, embedding=embedding),
+            is_leaf=lambda x: isinstance(x, dict) and "query" in x,
         )
 
         targets = tree_map(
@@ -104,143 +112,19 @@ class ForwardDynamicsPredictionObjective(Objective):
         }
 
     @override
-    def predict(  # noqa: PLR0914
+    def predict(
         self,
         *,
         episode: Episode,
         embedding: Tensor,
         keys: AbstractSet[ObjectivePredictionKey],
-        tokenizers: ModuleDict | None = None,
         **kwargs: Any,
     ) -> TensorDict:
-        if self.norm is not None:
-            embedding = self.norm(embedding)
-
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
-        b, t = episode.input.batch_size
 
-        if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
-            predictions[key] = Prediction(
-                value=episode.input.select(*self.heads.tree_paths(), strict=False)
+        if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
+            predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
+                embedding if self.norm is None else self.norm(embedding)
             )
-
-        if keys & {
-            ObjectivePredictionKey.PREDICTION_VALUE,
-            ObjectivePredictionKey.PREDICTION_PROBS,
-            ObjectivePredictionKey.SCORE_LOGPROB,
-            ObjectivePredictionKey.SCORE_L1,
-            ObjectivePredictionKey.SUMMARY_EMBEDDINGS,
-        }:
-            index = episode.index[:-1]  # all but last timestep
-            observation_keys = self.heads.tree_paths()
-            observations = index.select(*observation_keys).parse(embedding)
-            action_summary = (
-                index
-                .select(k := (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY))
-                .parse(embedding)
-                .get(k)
-            )
-
-            features: TensorDict = observations.apply(
-                lambda obs: pack(
-                    [obs, action_summary.broadcast_to(obs.shape)], "b t p *"
-                )[0]
-            )
-            features_projected = self.projections(features.to_dict())  # ty:ignore[call-non-callable]
-            _, _, n_patches, _ = episode.embeddings.get((
-                Modality.IMAGE,
-                "cam_front_left",
-            )).shape
-
-            mask_tokens = repeat(
-                episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [0]],
-                "b t 1 d -> b t n d",
-                n=n_patches,
-            )
-            if self.patch_pos_embed is not None:
-                mask_tokens = self.patch_pos_embed(mask_tokens)
-
-            features_projected[Modality.SUMMARY] = tree_map(
-                lambda x: {"query": mask_tokens, "context": x},
-                features_projected[Modality.SUMMARY],
-            )
-
-            logits = TensorDict(
-                self.heads(
-                    features_projected,
-                    is_leaf=lambda x: (
-                        isinstance(x, dict) and "query" in x and "context" in x
-                    ),
-                ),
-                batch_size=[b, t - 1],
-            )
-
-            # all but first
-            timestep_index = slice(1, None)
-            time_index = torch.arange(t).expand(b, -1)[:, timestep_index]
-
-            if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
-                predictions[key] = Prediction(
-                    value=(
-                        logits
-                        .exclude(Modality.SUMMARY)
-                        .apply(lambda x: x.argmax(dim=-1))
-                        .named_apply(  # ty:ignore[unresolved-attribute]
-                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
-                            nested_keys=True,
-                        )
-                    ),
-                    time_index=time_index,
-                )
-
-            if (key := ObjectivePredictionKey.PREDICTION_PROBS) in keys:
-                predictions[key] = Prediction(
-                    value=logits.exclude(Modality.SUMMARY).apply(
-                        lambda x: x.softmax(dim=-1)
-                    ),
-                    time_index=time_index,
-                )
-
-            if (key := ObjectivePredictionKey.SCORE_LOGPROB) in keys:
-                """Finds log prob of the correct token at each timestep."""
-
-                predictions[key] = Prediction(
-                    value=(
-                        logits
-                        .exclude(Modality.SUMMARY)
-                        .apply(lambda x: x.softmax(dim=-1))
-                        .apply(Rearrange("b t 1 d -> b t d"))  # ty:ignore[unresolved-attribute]
-                        .apply(  # ty:ignore[unresolved-attribute]
-                            lambda probs, tokens: probs.gather(dim=-1, index=tokens),
-                            episode.input_tokens[:, timestep_index],  # ty:ignore[invalid-argument-type]
-                        )
-                        .apply(lambda x: -torch.log(x))  # ty:ignore[unresolved-attribute]
-                    ),
-                    time_index=time_index,
-                )
-
-            if (key := ObjectivePredictionKey.SCORE_L1) in keys:
-                predictions[key] = Prediction(
-                    value=(
-                        logits
-                        .exclude(Modality.SUMMARY)
-                        .apply(lambda x: x.argmax(dim=-1))
-                        .named_apply(  # ty:ignore[unresolved-attribute]
-                            lambda k, v: tokenizers.get_deepest(k).invert(v),  # ty:ignore[call-non-callable, unresolved-attribute]
-                            nested_keys=True,
-                        )
-                        .apply(  # ty:ignore[unresolved-attribute]
-                            lambda pred, gt: F.l1_loss(pred, gt, reduction="none"),
-                            episode.input[:, timestep_index],  # ty:ignore[invalid-argument-type]
-                            nested_keys=True,
-                        )
-                    ),
-                    time_index=time_index,
-                )
-
-            if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
-                predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
-                    embedding
-                )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
