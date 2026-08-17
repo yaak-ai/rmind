@@ -1,0 +1,38 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal
+  - _self_
+
+# LFG auxiliary per-patch supervision on the CausalFrameTransformer trunk
+# (lfg_aux_supervision_task.md §6). Linear probes on the 256 non-readout patch
+# tokens against offline LFG segmentation/motion labels
+# (/nasa/drives/yaak/lfg_labels/v1, Stage 1). Start with linear heads; if
+# segmentation accuracy saturates early (the signal isn't shaping the trunk),
+# deepen to a 2-layer MLP rather than raising the weight.
+#
+# `aux_weights` is the one hyperparameter that matters (§6). Gate order:
+#   1. aux_weights: {segmentation: 0.0, motion: 0.0} must reproduce the
+#      dinov2_dinowm_causal baseline training curve (§7.3) -- run this FIRST.
+#   2. Only then sweep {0.03, 0.1, 0.3}, judged on offset_argmax_recon_last /
+#      code_acc_joint_last (§7.4), not val/loss/code_*.
+# Change ONLY aux_weights between arms (§7.5) -- everything else here is fixed.
+model:
+  aux_heads:
+    _target_: rmind.components.containers.ModuleDict
+    modules:
+      segmentation:
+        _target_: rmind.components.nn.Linear
+        in_features: ${policy_embedding_dim}
+        out_features: 7
+      motion:
+        _target_: rmind.components.nn.Linear
+        in_features: ${policy_embedding_dim}
+        out_features: 1
+  aux_weights:
+    segmentation: 0.0
+    motion: 0.0
+  aux_purity_min: 0.6
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal, lfg_aux]
