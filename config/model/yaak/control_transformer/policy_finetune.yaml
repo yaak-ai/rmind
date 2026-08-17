@@ -49,8 +49,8 @@ hparams_jq: |
           "decoder": {
             "_target_": "rmind.components.transformer.CrossAttentionDecoder",
             "dim_model": 384,
-            "num_layers": 1,
-            "num_heads": 4,
+            "num_layers": ${num_layers_condition},
+            "num_heads": ${num_heads_condition},
             "attn_dropout": 0.1,
             "resid_dropout": 0.1,
             "mlp_dropout": 0.1,
@@ -61,7 +61,7 @@ hparams_jq: |
             "_target_": "torch.nn.Identity"
           }
         },
-        "query": ["embeddings", "image", "cam_front_left"],
+        "query": ["input_embeddings", "image", "cam_front_left"],
         "decoder": {
           "_target_": "rmind.components.transformer.CrossAttentionDecoderHead",
           "decoder": {
