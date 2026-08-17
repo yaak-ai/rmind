@@ -423,8 +423,8 @@ objectives:
         decoder:
           _target_: rmind.components.transformer.CrossAttentionDecoder
           dim_model: ${encoder_embedding_dim}
-          num_layers: ${num_layers_condition}
-          num_heads: ${num_heads_condition}
+          num_layers: 2
+          num_heads: 4
           attn_dropout: 0.1
           resid_dropout: 0.1
           mlp_dropout: 0.1
