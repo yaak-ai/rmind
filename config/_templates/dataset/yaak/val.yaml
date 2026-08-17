@@ -27,6 +27,17 @@ streams:
           fastdct: true
           fastupsample: true
 
+  lfg_labels:
+    index: meta/ImageMetadata.cam_front_left/frame_idx
+    sources:
+      #@ for/end drive_id in drives:
+      (@=drive_id@):
+        _target_: rbyte.io.PathTensorSource
+        path: "${paths.lfg_labels}/(@=drive_id@)/{:09d}.bin"
+        decoder:
+          _target_: rmind.utils.lfg_labels.decode_lfg_label
+          _partial_: true
+
 samples:
   inputs:
     input_id:

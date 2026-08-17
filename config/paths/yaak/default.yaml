@@ -1,4 +1,5 @@
 ---
 data: /nasa/drives/yaak/data
+lfg_labels: /nasa/drives/yaak/lfg_labels/v1
 rbyte:
   cache: .rbyte_cache

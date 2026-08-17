@@ -3,5 +3,9 @@
 # `verda-nas` (mount: nfs.fin-01.datacrunch.io:/verda-nas-33cba3e6, ro,nolock).
 # Layout mirrors /nasa/drives/yaak/data (drive dirs at the root).
 data: /mnt/verda-nas
+# NOTE: the Stage 1 labelling job (lfg_aux_supervision_results.md) only wrote to
+# /nasa/drives/yaak/lfg_labels/v1 on the local host; this path is not yet populated on
+# verda-nas. Sync (or re-run labelling) before training with this arm on Verda.
+lfg_labels: /mnt/verda-nas/lfg_labels/v1
 rbyte:
   cache: .rbyte_cache

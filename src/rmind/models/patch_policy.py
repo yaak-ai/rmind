@@ -163,10 +163,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         offset_head: HydraConfig[Module] | InstanceOf[Module],
         losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        # per-patch auxiliary supervision from offline LFG labels (train-only;
+        # see lfg_aux_supervision_task.md). `aux_heads` supplies a submodule per
+        # aux loss term (currently "segmentation", "motion"), each mapping the
+        # trunk's per-patch tokens to that term's logits.
+        aux_heads: HydraConfig[ModuleDict] | InstanceOf[ModuleDict] | None = None,
+        aux_weights: dict[str, float] | None = None,
+        aux_purity_min: float = 0.6,
         image: Path = ("image", "cam_front_left"),
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
         chunk: Path = ("joint_actions",),
+        lfg_labels: Path = ("context", "lfg"),
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
@@ -217,18 +225,33 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
         self.norm: Module | None = init_hydra_param(hparams, "norm", norm)
 
+        self.aux_heads: ModuleDict | None = init_hydra_param(
+            hparams, "aux_heads", aux_heads
+        )
+        if self.aux_heads is not None:
+            missing = set(self.aux_heads.keys()) - set((aux_weights or {}).keys())
+            if missing:
+                msg = f"aux_weights missing entries for aux_heads {sorted(missing)!r}"
+                raise ValueError(msg)
+        self.aux_weights = aux_weights
+        self.aux_purity_min = aux_purity_min
+
         self.image: Path = image
         self.speed: Path = speed
         self.waypoints: Path = waypoints
         self.chunk: Path = chunk
+        self.lfg_labels: Path = lfg_labels
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
         hparams |= {
+            "aux_weights": aux_weights,
+            "aux_purity_min": aux_purity_min,
             "image": image,
             "speed": speed,
             "waypoints": waypoints,
             "chunk": chunk,
+            "lfg_labels": lfg_labels,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "offset_scale": offset_scale,
@@ -367,14 +390,23 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise ValueError(msg)
         self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
 
-    def _features(
+    def _encode(
         self, batch: Any, *, require_chunk: bool = True
-    ) -> tuple[Tensor, Tensor | None]:
-        """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
+    ) -> tuple[Mapping[str, Any], Tensor, Tensor, Tensor | None]:
+        """Transformed `inputs`, readout features `(b, t, d)`, the full token block
+        `(b, t, k, d)`, and the action chunks `(b, t, h, a)`.
 
         The chunk is only a TARGET (and never feeds the features), so callers on
         the inference path (`forward`, ONNX export) pass `require_chunk=False`
         and may omit the action series from the batch entirely.
+
+        `blocks` is the trunk output for EVERY token in the frame (speed token at
+        index 0, patches at 1..P), taken BEFORE `self.norm` -- that norm is the
+        policy readout's own, and reusing it for the aux heads (`_aux_metrics`)
+        would be wrong (`CausalFrameTransformer` already applies its own final
+        `LayerNorm` upstream of this). `_compute_metrics` calls this directly (rather
+        than `_features`) because it also needs `inputs` to fetch the LFG labels, and
+        `input_transform` must only run once per batch.
         """
         inputs = self.input_transform(batch)
 
@@ -389,14 +421,26 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         embedding = self.encoder(
             rearrange(tokens, "b t k d -> b (t k) d"), num_frames=num_frames
         )
-        features = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)[
-            :, :, -1
-        ]  # last patch token per frame
+        blocks = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)
+        features = blocks[:, :, -1]  # last patch token per frame
 
         if self.norm is not None:
             features = self.norm(features)
 
-        return features, chunk
+        return inputs, features, blocks, chunk
+
+    def _features(
+        self, batch: Any, *, require_chunk: bool = True
+    ) -> tuple[Tensor, Tensor, Tensor | None]:
+        """Readout features `(b, t, d)`, the full token block `(b, t, k, d)`, and chunks.
+
+        See `_encode` -- this is a thin wrapper that drops `inputs` for the callers
+        that don't need it.
+        """
+        _inputs, features, blocks, chunk = self._encode(
+            batch, require_chunk=require_chunk
+        )
+        return features, blocks, chunk
 
     # VQ-BeT joint head -- mirrors `JointPolicyObjective` (incl. the teacher-forced
     # offset fix) with a leading (b, t) batch instead of (b,).
@@ -448,8 +492,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             (-1, self.tokenizer._action_features),  # noqa: SLF001
         )
 
-    def _compute_metrics(self, batch: Any) -> TensorDict:
-        features, chunk = self._features(batch)  # (b, t, d), (b, t, h, a)
+    def _compute_metrics(self, batch: Any) -> TensorDict:  # noqa: PLR0914
+        inputs, features, blocks, chunk = self._encode(batch)
         tokenizer = self.tokenizer
 
         with torch.no_grad():
@@ -496,7 +540,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             sampled_recon=sampled_recon,
         )
 
-        return TensorDict({"policy": {"loss": losses, "metric": metrics}})
+        result = {"policy": {"loss": losses, "metric": metrics}}
+        if self.aux_heads is not None:
+            labels = self._get(inputs, self.lfg_labels)
+            assert labels is not None  # noqa: S101 -- `required=True` by default, raises otherwise
+            aux_losses, aux_metrics = self._aux_metrics(blocks, labels)
+            result["aux"] = {"loss": aux_losses, "metric": aux_metrics}
+        return TensorDict(result)
 
     def _readout_metrics(  # noqa: PLR0913
         self,
@@ -585,6 +635,56 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         return metrics
 
+    def _aux_metrics(
+        self, blocks: Tensor, labels: Tensor
+    ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
+        """Per-patch auxiliary losses against the cached LFG labels.
+
+        `blocks` is `(b, t, 257, d)`; patches are indices 1..256 in row-major 16x16
+        order, matching the label planes. `labels` is `(b, t, 4, 16, 16)` uint8
+        (see `rmind.utils.lfg_labels.decode_lfg_label`).
+        """
+        assert self.aux_heads is not None  # noqa: S101 -- only called when set, see _compute_metrics
+        assert self.aux_weights is not None  # noqa: S101
+
+        tokens = blocks[:, :, 1:]  # (b, t, 256, d)
+
+        seg_target = labels[:, :, 0].flatten(-2).long()  # (b, t, 256)
+        purity = labels[:, :, 1].flatten(-2).float() / 255.0
+        motion = labels[:, :, 2].flatten(-2).float() / 255.0
+        conf = labels[:, :, 3].flatten(-2).float() / 255.0
+
+        # confidence-weighted, and boundary-straddling patches dropped entirely
+        weight = conf * (purity >= self.aux_purity_min)
+        denom = weight.sum().clamp(min=1.0)
+
+        losses: dict[str, Tensor] = {}
+        metrics: dict[str, Tensor] = {}
+
+        seg_logits = self.aux_heads["segmentation"](tokens)  # (b, t, 256, 7)
+        seg_nll = F.cross_entropy(
+            rearrange(seg_logits, "b t p c -> (b t p) c"),
+            seg_target.flatten(),
+            reduction="none",
+        ).view_as(weight)
+        losses["segmentation"] = (seg_nll * weight).sum() / denom
+
+        motion_logit = self.aux_heads["motion"](tokens)[..., 0]  # (b, t, 256)
+        motion_bce = F.binary_cross_entropy_with_logits(
+            motion_logit, motion, reduction="none"
+        )
+        losses["motion"] = (motion_bce * weight).sum() / denom
+
+        with torch.no_grad():
+            correct = (seg_logits.argmax(dim=-1) == seg_target).float()
+            metrics["segmentation_acc"] = (correct * weight).sum() / denom
+            metrics["motion_mae"] = (
+                (motion_logit.sigmoid() - motion).abs() * weight
+            ).sum() / denom
+            metrics["supervised_fraction"] = (weight > 0).float().mean()
+
+        return {k: v * self.aux_weights[k] for k, v in losses.items()}, metrics
+
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
         metrics = self._compute_metrics(batch)
 
@@ -617,7 +717,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
     @override
     def forward(self, batch: Any) -> TensorDict:
-        features, _ = self._features(batch, require_chunk=False)
+        features, _blocks, _chunk = self._features(batch, require_chunk=False)
         chunk = self._predict_chunk(features[:, -1])
         return TensorDict({"policy": {"joint_actions": chunk}})
 
@@ -723,7 +823,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         tokenizer = self.tokenizer
 
-        features, chunk = self._features(batch)
+        features, _blocks, chunk = self._features(batch)
         features = features[:, -1]  # predict from the newest frame only
 
         b, t = chunk.shape[:2]

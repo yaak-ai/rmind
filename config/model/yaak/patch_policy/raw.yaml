@@ -19,6 +19,7 @@ input_transform:
 
         context:
           waypoints: [data, waypoints/xy_normalized]
+          lfg: [data, lfg_labels]
 
         discrete:
           turn_signal: [data, meta/VehicleState/turn_signal]

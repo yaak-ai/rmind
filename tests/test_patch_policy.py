@@ -7,6 +7,7 @@ and equivalence of the batched `_gather_offset` with the joint-policy original.
 
 from typing import Any, override
 
+import pytest
 import torch
 from tensordict import TensorDict
 from torch import Tensor
@@ -42,6 +43,8 @@ LATENT_DIM = 8
 NUM_QUANTIZERS = 2
 CODEBOOK_SIZE = 4
 SPEED_BINS = 8
+AUX_SEG_CLASSES = 7
+AUX_GRID = (2, 2)  # H * W must equal NUM_PATCHES
 
 
 def _make_tokenizer() -> ActionTokenizer:
@@ -97,7 +100,12 @@ class _GoalEncoderStub(Module):
 
 
 def _make_model(
-    *, teacher_force_offset: bool = True, fusion_norm: bool = False
+    *,
+    teacher_force_offset: bool = True,
+    fusion_norm: bool = False,
+    aux_heads: ModuleDict | None = None,
+    aux_weights: dict[str, float] | None = None,
+    aux_purity_min: float = 0.6,
 ) -> PatchPolicy:
     return PatchPolicy(
         fusion_norm=fusion_norm,
@@ -119,6 +127,9 @@ def _make_model(
         offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * ACTION_DIM]),
         losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
         norm=torch.nn.LayerNorm(POLICY_DIM),
+        aux_heads=aux_heads,
+        aux_weights=aux_weights,
+        aux_purity_min=aux_purity_min,
         sample_codes=False,
         teacher_force_offset=teacher_force_offset,
         prediction_config=PredictionConfig(
@@ -132,7 +143,31 @@ def _make_model(
     ).eval()
 
 
-def _make_batch() -> dict:
+def _make_aux_heads() -> ModuleDict:
+    return ModuleDict(
+        modules={
+            "segmentation": Linear(POLICY_DIM, AUX_SEG_CLASSES),
+            "motion": Linear(POLICY_DIM, 1),
+        }
+    )
+
+
+def _make_lfg_labels(generator: torch.Generator) -> Tensor:
+    """`(b, t, 4, *AUX_GRID)` uint8, matching `rmind.utils.lfg_labels.decode_lfg_label`'s
+    layout (seg_label, seg_purity, motion, confidence)."""
+    seg_label = torch.randint(
+        0,
+        AUX_SEG_CLASSES,
+        (BATCH_SIZE, EPISODE_LENGTH, 1, *AUX_GRID),
+        generator=generator,
+    )
+    purity_motion_conf = torch.randint(
+        0, 256, (BATCH_SIZE, EPISODE_LENGTH, 3, *AUX_GRID), generator=generator
+    )
+    return torch.cat([seg_label, purity_motion_conf], dim=2).to(torch.uint8)
+
+
+def _make_batch(*, with_lfg: bool = False) -> dict:
     generator = torch.Generator().manual_seed(0)
     chunk = torch.rand(
         (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS), generator=generator
@@ -140,7 +175,7 @@ def _make_batch() -> dict:
     chunk[..., 3] = torch.randint(
         0, 3, chunk[..., 3].shape, generator=generator
     ).float()
-    return {
+    batch = {
         "image": {
             "cam_front_left": torch.randn(
                 (BATCH_SIZE, EPISODE_LENGTH, NUM_PATCHES, IMAGE_DIM),
@@ -158,6 +193,9 @@ def _make_batch() -> dict:
         },
         "joint_actions": chunk,
     }
+    if with_lfg:
+        batch["context"]["lfg"] = _make_lfg_labels(generator)
+    return batch
 
 
 def test_block_causal_mask() -> None:
@@ -181,7 +219,7 @@ def test_features_and_metrics_shapes() -> None:
     model = _make_model()
     batch = _make_batch()
 
-    features, chunk = model._features(batch)  # noqa: SLF001
+    features, _blocks, chunk = model._features(batch)  # noqa: SLF001
     assert features.shape == (BATCH_SIZE, EPISODE_LENGTH, POLICY_DIM)
     assert chunk.shape == (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS)
 
@@ -263,7 +301,7 @@ def test_teacher_forcing_gradient_routing() -> None:
     model = _make_model(teacher_force_offset=True)
     batch = _make_batch()
 
-    features, chunk = model._features(batch)  # noqa: SLF001
+    features, _blocks, chunk = model._features(batch)  # noqa: SLF001
     with torch.no_grad():
         target_codes = model.tokenizer(chunk)
         target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
@@ -323,7 +361,7 @@ def test_readout_is_causally_valid() -> None:
     model = _make_model()
     batch = _make_batch()
 
-    features, _ = model._features(batch)  # noqa: SLF001
+    features, _blocks, _ = model._features(batch)  # noqa: SLF001
 
     perturbed = _make_batch()
     perturbed["image"]["cam_front_left"] = batch["image"]["cam_front_left"].clone()
@@ -335,7 +373,7 @@ def test_readout_is_causally_valid() -> None:
     perturbed["continuous"]["speed"][:, -1] = 100.0
     perturbed["context"]["waypoints"][:, -1] += 1.0
 
-    features_perturbed, _ = model._features(perturbed)  # noqa: SLF001
+    features_perturbed, _blocks, _ = model._features(perturbed)  # noqa: SLF001
 
     torch.testing.assert_close(features[:, :-1], features_perturbed[:, :-1])
     assert not torch.allclose(features[:, -1], features_perturbed[:, -1])
@@ -425,7 +463,7 @@ def _assert_argmax_decode_matches(
 ) -> None:
     """Recompute the argmax decode independently -- it must match exactly."""
     with torch.no_grad():
-        features, chunk = model._features(batch)  # noqa: SLF001
+        features, _blocks, chunk = model._features(batch)  # noqa: SLF001
         target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
         code_logits, offsets = model._heads(features)  # noqa: SLF001
         codes = code_logits.argmax(dim=-1)
@@ -467,7 +505,7 @@ def test_readout_is_the_last_patch_token_not_the_speed_token() -> None:
         return out
 
     model.encoder.forward = _capture  # type: ignore[method-assign]
-    features, _ = model._features(batch)  # noqa: SLF001
+    features, _blocks, _ = model._features(batch)  # noqa: SLF001
     model.encoder.forward = encoder_forward  # type: ignore[method-assign]
 
     embedding = captured["embedding"]  # (b, t * k, d), pre-norm
@@ -503,7 +541,7 @@ def test_teacher_forcing_routes_the_offset_loss_through_ground_truth_codes() -> 
     offset_loss = model._compute_metrics(batch)["policy", "loss", "offset"]  # noqa: SLF001
 
     with torch.no_grad():
-        features, chunk = model._features(batch)  # noqa: SLF001
+        features, _blocks, chunk = model._features(batch)  # noqa: SLF001
         target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
         _, offsets = model._heads(features)  # noqa: SLF001
         target_codes = model.tokenizer(chunk)
@@ -522,3 +560,171 @@ def test_teacher_forcing_routes_the_offset_loss_through_ground_truth_codes() -> 
     free.sample_codes = True
     free_loss = free._compute_metrics(batch)["policy", "loss", "offset"]  # noqa: SLF001
     assert not torch.allclose(free_loss, expected)
+
+
+# --- LFG auxiliary supervision (lfg_aux_supervision_task.md, stage 3) ---
+
+
+def test_aux_heads_absent_by_default() -> None:
+    """No `aux_heads` -> no `"aux"` group at all, and the trunk output block's
+    non-readout positions are simply unused (as before this stage)."""
+    model = _make_model()
+    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+    assert "aux" not in metrics.keys()  # noqa: SIM118
+
+
+def test_aux_weights_missing_entry_raises() -> None:
+    """`aux_weights` must cover every `aux_heads` key -- a silently-unweighted
+    (i.e. weight=1) aux term would be an easy way to blow up the total loss."""
+    with pytest.raises(ValueError, match="aux_weights"):
+        _make_model(aux_heads=_make_aux_heads(), aux_weights={"segmentation": 0.1})
+
+
+def test_aux_metrics_shapes_and_weighting() -> None:
+    model = _make_model(
+        aux_heads=_make_aux_heads(),
+        aux_weights={"segmentation": 0.1, "motion": 0.3},
+        aux_purity_min=0.0,  # keep every patch supervised for this shape/weight check
+    )
+    batch = _make_batch(with_lfg=True)
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    aux_losses = metrics["aux", "loss"]
+    aux_metrics = metrics["aux", "metric"]
+
+    assert set(aux_losses.keys()) == {"segmentation", "motion"}
+    for value in aux_losses.values():
+        assert value.isfinite()
+        assert value.ndim == 0
+
+    for key in ("segmentation_acc", "motion_mae", "supervised_fraction"):
+        assert aux_metrics[key].isfinite()
+    torch.testing.assert_close(  # aux_purity_min=0.0
+        aux_metrics["supervised_fraction"], torch.tensor(1.0)
+    )
+
+
+def test_aux_weight_scaling_matches_unweighted_terms() -> None:
+    """Recompute the aux losses with `aux_weights=1` and confirm the weighted
+    model's logged losses equal `weight * unweighted_term` -- `_step` sums
+    `loss/*` unweighted, so the weighting MUST happen inside `_aux_metrics`."""
+    torch.manual_seed(0)
+    weights = {"segmentation": 0.1, "motion": 0.3}
+    weighted = _make_model(
+        aux_heads=_make_aux_heads(), aux_weights=weights, aux_purity_min=0.0
+    )
+    torch.manual_seed(0)
+    unweighted = _make_model(
+        aux_heads=_make_aux_heads(),
+        aux_weights={"segmentation": 1.0, "motion": 1.0},
+        aux_purity_min=0.0,
+    )
+    unweighted.load_state_dict(weighted.state_dict())
+
+    batch = _make_batch(with_lfg=True)
+    weighted_losses = weighted._compute_metrics(batch)["aux", "loss"]  # noqa: SLF001
+    unweighted_losses = unweighted._compute_metrics(batch)["aux", "loss"]  # noqa: SLF001
+
+    for key, weight in weights.items():
+        torch.testing.assert_close(
+            weighted_losses[key], weight * unweighted_losses[key]
+        )
+
+
+def test_aux_purity_min_masks_low_purity_patches() -> None:
+    """Patches below `aux_purity_min` must be dropped entirely -- confirmed by
+    checking `supervised_fraction`, not just that the loss changed."""
+    model = _make_model(
+        aux_heads=_make_aux_heads(),
+        aux_weights={"segmentation": 1.0, "motion": 1.0},
+        aux_purity_min=0.5,
+    )
+    batch = _make_batch(with_lfg=True)
+    labels = batch["context"]["lfg"]
+
+    # force half the patches (by flat index within the grid) below/above the
+    # purity threshold, deterministically
+    purity = labels[:, :, 1].flatten(-2).clone()
+    low = torch.zeros_like(purity, dtype=torch.bool)
+    low[..., : low.shape[-1] // 2] = True
+    purity_flat = torch.where(
+        low, torch.tensor(50, dtype=torch.uint8), torch.tensor(200, dtype=torch.uint8)
+    )
+    labels[:, :, 1] = purity_flat.reshape(labels[:, :, 1].shape)
+    # confidence must be > 0 for the surviving patches to actually contribute
+    labels[:, :, 3] = 255
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    expected_fraction = 1.0 - (low.float().mean().item())
+    torch.testing.assert_close(
+        metrics["aux", "metric", "supervised_fraction"], torch.tensor(expected_fraction)
+    )
+
+
+def test_aux_zero_confidence_masks_patches() -> None:
+    """`confidence=0` must zero a patch's contribution even at full purity."""
+    model = _make_model(
+        aux_heads=_make_aux_heads(),
+        aux_weights={"segmentation": 1.0, "motion": 1.0},
+        aux_purity_min=0.0,
+    )
+    batch = _make_batch(with_lfg=True)
+    batch["context"]["lfg"][:, :, 3] = 0  # confidence
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    torch.testing.assert_close(
+        metrics["aux", "metric", "supervised_fraction"], torch.tensor(0.0)
+    )
+    for key in ("segmentation", "motion"):
+        torch.testing.assert_close(metrics["aux", "loss", key], torch.tensor(0.0))
+
+
+def test_aux_gradients_reach_trunk_not_frozen_modules() -> None:
+    """Aux gradients must flow into the trunk / aux heads and NOT into the
+    permanently-frozen `image_encoder`, `goal_encoder`, `tokenizer` (brief §5.4)."""
+    model = _make_model(
+        aux_heads=_make_aux_heads(),
+        aux_weights={"segmentation": 0.1, "motion": 0.1},
+        aux_purity_min=0.0,
+    )
+    batch = _make_batch(with_lfg=True)
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    aux_loss = metrics["aux", "loss"].sum(reduce=True)
+    aux_loss.backward()
+
+    assert model.aux_heads is not None
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.aux_heads.parameters()
+    )
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.encoder.parameters()
+    )
+    for frozen in (model.tokenizer, model.goal_encoder):
+        assert all(p.grad is None for p in frozen.parameters())
+    # image_encoder is Identity() in this test (no parameters) -- assert the
+    # no_grad contract at the source instead
+    assert all(not p.requires_grad for p in model.image_encoder.parameters())
+
+
+def test_aux_loss_does_not_perturb_policy_metrics() -> None:
+    """A `PatchPolicy` with `aux_heads` attached must reproduce the exact same
+    `policy` loss/metric values as one without -- the aux branch is additive and
+    must not perturb `_encode`'s shared computation (brief §7.3's premise)."""
+    torch.manual_seed(0)
+    plain = _make_model()
+    torch.manual_seed(0)
+    with_aux = _make_model(
+        aux_heads=_make_aux_heads(), aux_weights={"segmentation": 0.0, "motion": 0.0}
+    )
+    with_aux.load_state_dict(plain.state_dict(), strict=False)
+
+    batch = _make_batch(with_lfg=True)
+    plain_metrics = plain._compute_metrics(batch)  # noqa: SLF001
+    aux_metrics = with_aux._compute_metrics(batch)  # noqa: SLF001
+
+    torch.testing.assert_close(
+        plain_metrics["policy"].to_dict(), aux_metrics["policy"].to_dict()
+    )
