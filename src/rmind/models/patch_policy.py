@@ -436,13 +436,15 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return torch.tanh(offset / self.offset_scale) * self.offset_scale
 
     def _sample_codes(self, code_logits: Tensor) -> Tensor:
-        *batch, g, c = code_logits.shape
         if self.sample_codes:
-            return rearrange(
-                torch.multinomial(code_logits.softmax(dim=-1).reshape(-1, c), 1),
-                "(b g) 1 -> b g",
-                g=g,
-            ).reshape(*batch, g)
+            # Gumbel-max: (logits + Gumbel noise).argmax(-1) draws from the same
+            # categorical as torch.multinomial(logits.softmax(-1), 1), but skips the
+            # softmax kernel and, critically, the multinomial CPU sync -- its validity
+            # check does `.item<bool>()` on a bool scalar, forcing a
+            # cudaStreamSynchronize every step this runs (every train step, via the
+            # sampled_recon diagnostic in `_compute_metrics`).
+            gumbel_noise = -torch.log(-torch.log(torch.rand_like(code_logits)))
+            return (code_logits + gumbel_noise).argmax(dim=-1)
         return code_logits.argmax(dim=-1)
 
     def _predict_chunk(self, features: Tensor) -> Tensor:
