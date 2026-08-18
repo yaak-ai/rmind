@@ -62,6 +62,9 @@ samples:
 
   executor:
     _target_: concurrent.futures.ProcessPoolExecutor
+    # see train.yaml -- bounds peak memory during the samples build, which
+    # OOM-killed the full-corpus build unbounded at os.cpu_count() workers.
+    max_workers: 8
     mp_context:
       _target_: multiprocessing.get_context
       method: forkserver
