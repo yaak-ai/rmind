@@ -1,12 +1,63 @@
+from functools import lru_cache
 from typing import TYPE_CHECKING, cast, final
 
 import torch
 from torch import Tensor
 from torch.nn import Module
 from vector_quantize_pytorch import ResidualVQ as RVQ  # noqa: N817
+from vector_quantize_pytorch import vector_quantize_pytorch as _vqp
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+@lru_cache(maxsize=None)
+def _cached_zero(device: torch.device) -> Tensor:
+    return torch.zeros((), device=device)
+
+
+def _patch_vq_loss_init() -> None:
+    """Patch `VectorQuantize.forward`'s per-call loss-accumulator init.
+
+    `vector_quantize_pytorch.py:1263` does
+    `loss = tensor(0., device=device, requires_grad=self.training)` on
+    *every* forward call, for *every* quantizer level, on *every* step --
+    a host-allocated Python float copied to GPU synchronously. Profiling
+    (PROFILING_NOTES.md §7) found this to be the single largest source of
+    per-step stall: `cudaStreamSynchronize` drains the entire pending kernel
+    queue at that point, so the deepest/last-called quantizer level pays for
+    the whole step's accumulated GPU work so far (~123ms + ~33ms, ~52% of
+    step wall time combined).
+
+    The library itself already registers a `self.zero` buffer for exactly
+    this purpose (line 954) but doesn't reuse it at line 1263 -- this looks
+    like an oversight upstream rather than an intentional per-call
+    allocation. Not easily patched in-place (third-party, and the exact line
+    is buried inside a large `forward`), so this replaces the module-level
+    `tensor` symbol `vector_quantize_pytorch.py` calls into with a wrapper
+    that intercepts only that exact call signature (`tensor(0., device=...,
+    requires_grad=...)` -- distinctive within that file, see the assertion
+    below) and returns a cached GPU-resident zero instead. Every other
+    `tensor(...)` call in that module (kmeans-init flags, buffer inits,
+    etc.) is passed through unchanged.
+    """
+    real_tensor = _vqp.tensor
+
+    def patched_tensor(*args: object, **kwargs: object) -> Tensor:
+        if (
+            len(args) == 1
+            and args[0] == 0.0
+            and set(kwargs) <= {"device", "requires_grad"}
+            and "device" in kwargs
+        ):
+            zero = _cached_zero(cast("torch.device", kwargs["device"]))
+            return zero.requires_grad_(bool(kwargs.get("requires_grad", False)))
+        return real_tensor(*args, **kwargs)
+
+    _vqp.tensor = patched_tensor
+
+
+_patch_vq_loss_init()
 
 
 @final
