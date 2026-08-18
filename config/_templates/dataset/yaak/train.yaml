@@ -701,6 +701,17 @@ samples:
 
   executor:
     _target_: concurrent.futures.ProcessPoolExecutor
+    # unset, ProcessPoolExecutor defaults to os.cpu_count() -- on a 40-core
+    # shared host that lets `scheduling_strategy: eager` fire off up to 40
+    # drives' worth of `filtered`/`samples` (DuckDB spatial query +
+    # DataFrameGroupByDynamic.agg(pl.all()...), which materializes full
+    # per-window list-columns for every raw field) concurrently, all held in
+    # the parent process pending pipefunc's file_array write. That is what
+    # OOM-killed rmind-train at ~50GB RSS building the full 660-drive corpus
+    # (2026-08-18, see lfg_aux_supervision_results.md). Bounding concurrency
+    # here trades wall-clock for a predictable memory ceiling; raise it back
+    # up on a quieter or higher-memory host.
+    max_workers: 8
     mp_context:
       _target_: multiprocessing.get_context
       method: forkserver
