@@ -30,6 +30,7 @@ def maybe_profile(tag: str) -> Iterator[None]:
             ],
             record_shapes=True,
             profile_memory=True,
+            with_stack=True,
         )
     except Exception:  # noqa: BLE001 -- profiling must never break training
         logger.warning("torch profiler setup failed, running unprofiled", tag=tag)
