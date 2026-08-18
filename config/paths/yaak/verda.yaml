@@ -4,8 +4,10 @@
 # Layout mirrors /nasa/drives/yaak/data (drive dirs at the root).
 data: /mnt/verda-nas
 # NOTE: the Stage 1 labelling job (lfg_aux_supervision_results.md) only wrote to
-# /nasa/drives/yaak/lfg_labels/v1 on the local host; this path is not yet populated on
-# verda-nas. Sync (or re-run labelling) before training with this arm on Verda.
-lfg_labels: /mnt/verda-nas/lfg_labels/v1
+# /nasa/drives/yaak/lfg_labels on the local host; this path is not yet populated on verda-nas.
+# Sync before training with this arm on Verda -- and sync `v1` then re-run
+# `scripts/lfg_required_frames.py link` there rather than copying the hardlink tree, since
+# rsync without -H would expand 2.15M hardlinks into 2.15M real files.
+lfg_labels: /mnt/verda-nas/lfg_labels/v1_nearest
 rbyte:
   cache: .rbyte_cache

@@ -447,13 +447,184 @@ share the shape but at 5/15/3 drives, where it does not matter. Left alone becau
 different experiment line, not this arm — but the `executor` mapping above is a drop-in for it and
 costs nothing.
 
+## 12. The labelled frame set is wrong: brief SS1.3's `frame_idx % 10 == 0` premise is false (2026-08-18)
+
+With SS11.2 fixed, the samples build **completed** — full 655-drive corpus in ~15 min (12:22 → 12:37),
+`samples_with_id.cloudpickle` written, no OOM, so SS11 is closed. The run then died in the
+*dataloader*:
+
+```
+FileNotFoundError: /nasa/drives/yaak/lfg_labels/v1/Niro104-HQ/2022-12-20--13-57-20/000006595.bin
+```
+
+`6595 % 10 == 5`. **Brief SS1.3 is wrong**, and Stage 1 labelled the wrong frames.
+
+### 12.1 Mechanism
+
+The sampler is
+`DataFrameGroupByDynamic(index_column=".../frame_idx", every="${episode_stride}i", period=…,
+gather_every=${episode_step})`. `every: "10i"` puts *window boundaries* at multiples of 10 in
+frame_idx — which is what the brief latched onto — but `gather_every: 10` then takes every 10th
+**surviving row** inside a window, and the upstream `filtered` DuckDB query drops rows
+(`gear == '3'`, speed/pedal ranges, `COLUMNS(*) IS NOT NULL`). So each window's first row sits at
+whatever offset survived filtering. Measured on `Niro101-HQ/2023-04-02--10-08-57`: the step within a
+clip is 10 for **86904/86904** consecutive pairs, but clip starts are at phase 2 (2413 clips) and
+phase 1 (1 clip) — never 0. Drives also start their JPEG numbering at 1, not 0.
+
+### 12.2 Scope
+
+Measured with `scripts/lfg_required_frames.py` against the built `samples_cast` outputs:
+
+| | required | missing from v1 | drives affected |
+|---|---|---|---|
+| train (655 drives) | 2,136,677 | 2,016,880 (94.4%) | 628/655 |
+| val (5 drives) | 17,778 | 14,712 (82.8%) | 4/5 |
+| **total (660)** | **2,154,455** | **2,031,592 (94.3%)** | **632/660** |
+
+Required-frame `frame_idx % 10` histogram: `{0: 119797, 1: 84677, 2: 108235, 3: 57427, 4: 100054,
+5: 171528, 6: 608683, 7: 519660, 8: 239985, 9: 126631}` — phase 0 is only **5.6%** of what is
+needed, and the mode is phase 6. The 2.72M labels v1 holds are not wrong, they just answer a
+different question; only ~120k of them are usable.
+
+The crashing frame cross-checks: `6595` **is** in the required set for that drive, whose phases are
+`{5, 6}`.
+
+Note that SS11.2's end-to-end val check passed only by luck — it fetched `ds[0]`, which comes from
+`Niro115-HQ/2023-05-16--10-47-33`, the one val drive that happens to be phase 0 and fully covered.
+
+### 12.3 Fix
+
+- **`scripts/lfg_required_frames.py`** (new). `extract` reads the built `samples_cast` outputs
+  (one per-drive file at a time, so memory stays flat instead of materializing the 14.5 GB table)
+  and emits `{drive_id: [frame_idx, …]}` as JSON. `verify` diffs a label root's manifests against
+  that JSON and **exits 1** if anything is missing — the gate that was absent before, cheap enough
+  to run before every launch. Runs in the rmind venv; the JSON is the interface to the LFG venv.
+- **`scripts/lfg_label_drives.py`**: new `--frames-from <json>` labels exactly the required frames;
+  `--drive` now defaults to every drive in that JSON. `--skip-existing` skips frames that already
+  have a full-size `.bin`, so a crash mid-run resumes rather than restarting an ~18 h job. Missing
+  *JPEGs* now fail that drive immediately rather than surfacing later. The manifest records
+  `frame_selection` (`required-set` vs `stride-10`) and is derived from what is actually on disk,
+  so it stays an honest coverage record under any combination of the flags. The old stride mode
+  remains but warns that its output must not be trained on.
+- Generated `/nasa/drives/yaak/lfg_labels/required_frames_clip37.json` — **660 drives, 2,154,455
+  frames**.
+
+Smoke-tested on the drive that crashed: `--frames-from` wrote 30 labels starting at frame 185
+(matching the required prefix exactly, all 1024 bytes); a `--skip-existing` rerun reported
+`75 written, 75 already present, 150 total`, consistent with the 150 `.bin` files on disk.
+
+**Caveat on coupling:** the required set depends on the dataset config (the `filtered` query,
+`clip_length`, `episode_stride`/`episode_step`, drive list). The JSON records the run folders it
+came from; re-extract after changing any of them, and re-run `verify` before training.
+
+### 12.4 Nearest-timestep reuse — avoids the relabelling run entirely
+
+Before spending 18 h of GPU, the obvious question: the required frames are stride-10 at a fixed
+per-drive phase, so v1 already has a label within a few frames of every one of them. Is that close
+enough?
+
+**Offset distribution** (weighted by frames, over all 2,154,455):
+
+| offset (frames) | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| share | 5.7% | 9.9% | 16.5% | 26.9% | **32.9%** | 8.2% |
+
+Mean 2.96 frames = **99 ms** at 30 Hz; worst case 5 frames = 167 ms. The offset is systematic per
+drive, not random jitter.
+
+**Measured substitution cost.** Labelled the true-phase required frames for 6 drives spanning every
+offset (150 frames each, 900 total) and compared each against v1's nearest label:
+
+| drive | offset | seg agree (supervised patches) | motion MAE | ref: 10 frames apart |
+|---|---|---|---|---|
+| Niro101-HQ/2023-05-09--12-24-00 | 0 | **100.0%** | **0.0000** | 94.4% / 0.0333 |
+| Niro101-HQ/2023-01-01--12-01-47 | 1 | 100.0% | 0.0071 | 98.7% / 0.0099 |
+| Niro101-HQ/2022-12-30--09-23-51 | 2 | 98.7% | 0.0199 | 96.3% / 0.0157 |
+| Niro096-HQ/2023-01-11--13-47-36 | 3 | 98.7% | 0.0114 | 96.5% / 0.0128 |
+| Niro101-HQ/2022-12-25--09-58-33 | 4 | 98.1% | 0.0139 | 95.5% / 0.0139 |
+| Niro101-HQ/2023-04-06--14-43-08 | 4–5 | 98.6% | 0.0202 | 96.9% / 0.0126 |
+
+`seg agree` is per-patch dominant-class agreement over the patches the aux loss actually supervises
+(`purity >= 0.6` and `confidence > 0`). The **offset-0 row is the control**: relabelling those frames
+reproduced v1 **bit-identically on all 150 frames**, so LFG labelling here is deterministic and the
+residual in the other rows really is the temporal gap, not run-to-run noise.
+
+The right yardstick is the last column — one full sample step (10 frames, 333 ms) is the natural
+granularity of this supervision, and it moves 3.1–5.6% of patches. Substituting the nearest label
+costs **1.3–1.9%**, i.e. about a third of one sample step, exactly as the mean offset of 2.96/10
+predicts. On a teacher that is itself a distilled pseudo-label (brief §8 calls motion "the noisiest"),
+feeding a `weight: 0.1` auxiliary regularizer, that is not a meaningful degradation.
+
+**Implementation: `scripts/lfg_required_frames.py link`.** Builds a tree keyed by the frame indices
+the pipeline requests, each entry a **hardlink** to v1's nearest label — same inode, so zero extra
+bytes and no extra indirection on the training read path (symlinks would add an NFS resolution hop
+per read). Measured `os.link` throughput on `/nasa`: **~5000/s → ~7 minutes** for all 2.15M, versus
+~18 h of GPU. Nearest is found by bisecting the source manifest's real frame set rather than assuming
+a multiple of 10, so gaps in the source widen the reported offset instead of mislinking; anything
+beyond `--max-offset` (default 5) is left unresolved and reported rather than linked. Each drive's
+destination manifest records `frame_selection: "nearest-linked"`, the source root, `max_offset`, and
+the per-drive offset histogram, so nothing downstream can mistake this for exactly-labelled data.
+
+**Executed on the full corpus.** 2,154,436 of 2,154,455 frames linked in ~11 min; realised offset
+histogram `{0: 122863, 1: 212908, 2: 355618, 3: 578547, 4: 708870, 5: 175630}`, mean 2.96 frames.
+
+The residue was **19 frames** (0.0009%) where the nearest v1 label was 6–7 frames away — mostly
+drive starts (frame 3, 4, 9, whose nearest phase-0 label is 10) plus a few v1 gaps. `link
+--unresolved-out` emits those as a `--frames-from` JSON, so they were labelled **exactly** with
+`lfg_label_drives.py` (seconds of GPU) straight into the same tree; re-running `link` then folded
+them into the coverage manifests. Final state: **2,154,455 / 2,154,455 covered, 0 unresolved**, and
+`verify` exits 0.
+
+Fixing that revealed an ordering bug worth noting: `link` originally checked `offset > max_offset`
+*before* checking whether the destination already existed, so a frame filled in with a real label
+would have been reported unresolved forever and omitted from the manifest. Existence now takes
+precedence — an existing destination satisfies the frame whatever its provenance.
+
+Spot-checks: the frame that crashed the run (`Niro104…/000006595.bin`) resolves to the same inode as
+v1's `000006590.bin` with matching bytes.
+
+**Gate 7.2, done properly.** The original check only fetched `ds[0]` and so could not have caught
+this. Re-run over the first, middle and last sample of **every** val drive, asserting the delivered
+`data/lfg_labels` tensor `(37, 4, 16, 16) uint8` equals `decode_lfg_label` of the on-disk bytes for
+the same `frame_idx`: **555 (frame, label) pairs byte-identical across all 5 drives — PASS**,
+including the 4 drives that were previously broken.
+
+`paths.lfg_labels` now points at `v1_nearest` in both `default.yaml` and `verda.yaml`. Note for
+Verda: sync `v1` and re-run `link` there rather than copying the tree — `rsync` without `-H` would
+expand 2.15M hardlinks into 2.15M real files.
+
+### 12.5 If exact labels are ever wanted (optional, ~18 h GPU)
+
+§12.4 makes this unnecessary for now, but if the ~1.5% label noise ever needs eliminating — e.g. if
+the aux loss turns out to be sensitive to it, or a later pass uses the geometry heads (brief §9),
+where a 99 ms offset matters far more than it does for coarse semantics — the tooling is in place:
+
+```bash
+/nasa/tools/lfg/.venv/bin/python scripts/lfg_label_drives.py \
+    --lfg-repo /nasa/tools/lfg --checkpoint /nasa/tools/lfg/lfg_seg_motion_m3n3.pt \
+    --output-root /nasa/drives/yaak/lfg_labels/v2 \
+    --frames-from /nasa/drives/yaak/lfg_labels/required_frames_clip37.json \
+    --skip-existing
+```
+
+2,031,592 frames at the original run's measured rate (2,719,328 frames in 24.4 h ≈ 112k frames/h)
+≈ **18 h** on the 5090; `--skip-existing` makes it resumable. Pilot on
+`config/dataset/yaak/train_subset30.yaml`'s 30 drives (~98k frames, ~1 h) first, then point
+`paths.lfg_labels` at `v2` and re-run `verify`.
+
+Geometry targets in particular would need this: point maps and poses are up to scale/shift and move
+with the vehicle, so a fixed ~99 ms offset is a real error there, unlike for dominant-class semantics.
+
+Also still open: the SS7.3 zero-weight control at the training-curve level has never run, and the
+`aux_weights=0.1` arm should not be judged before it does.
+
 ## 10. Next steps
 
 1. Stage 4: `config/experiment/yaak/patch_policy/dinov2_dinowm_causal_lfgaux.yaml` per brief §6 —
-   **added**. §11.2 is fixed but the fix is **not yet exercised at full-corpus scale**: commit the
-   two templates, `just docker-build`, then re-run *without* the now-invalid
-   `++…executor.max_workers=8` overrides. Watch the parent's RSS through the samples build — it
-   should top out near 30 GB (14.5 GB table + the `to_torch` copy), not ~100 GB.
+   **added**. §11 (the OOM) is **closed**: the full 655-drive samples build completed in ~15 min
+   with the executor fix. §12 (94% of required labels missing) is resolved by the `v1_nearest`
+   hardlink tree (§12.4) at a measured ~1.5% label-agreement cost and no GPU time. Remaining to
+   launch: rebuild the image (it bakes `config/`) and re-run `verify` as the gate.
 1. The §7.3 zero-weight-control gate at the **training-curve** level (not just the unit-test
    analogue above) — run it and diff against the `dinov2_dinowm_causal` baseline curve before any
    nonzero-weight arm. Blocked on getting any run past the samples build (§11).

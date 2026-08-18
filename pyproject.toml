@@ -146,6 +146,24 @@ ignore = [
 
 [tool.ruff.lint.extend-per-file-ignores]
 "tests/**/*.py" = ["S101", "S301", "S403"]
+# `scripts/` holds standalone operational CLI tools, not library code, and gets a reduced ruleset.
+# T201 in particular MUST stay ignored here: printing is these scripts' interface, and with
+# `fix = true` + `unsafe-fixes = true` its autofix silently DELETES every print statement.
+"scripts/**/*.py" = [
+  "ANN001", # untyped `model` (the LFG type is only importable at runtime)
+  "BLE001", # one bad drive must not kill a multi-hour batch
+  "PLC0415", # LFG must be imported after sys.path.insert(--lfg-repo)
+  "PLC2701", # pipefunc._utils.load is the only reader for its file_array format
+  "PLR0913", # argument-threading CLI entry points
+  "PLR0914",
+  "PLR0915",
+  "PLR0917",
+  "S101", # assert as a cheap invariant check
+  "S404", # subprocess, for `git rev-parse` provenance
+  "S603",
+  "S607",
+  "T201", # print is the interface (see above)
+]
 
 [tool.ruff.lint.isort]
 split-on-trailing-comma = false

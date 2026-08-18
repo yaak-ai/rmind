@@ -1,5 +1,10 @@
 ---
 data: /nasa/drives/yaak/data
-lfg_labels: /nasa/drives/yaak/lfg_labels/v1
+# `v1` holds labels at `frame_idx % 10 == 0`, which is NOT what the sampler requests -- see
+# lfg_aux_supervision_results.md SS12. `v1_nearest` is a hardlink tree keyed by the frame indices the
+# pipeline actually asks for, each pointing at v1's nearest label (<=5 frames / 167 ms away; measured
+# cost ~1.5% of per-patch class agreement). Regenerate with `scripts/lfg_required_frames.py link`
+# after any dataset-config change that moves the sampled frames.
+lfg_labels: /nasa/drives/yaak/lfg_labels/v1_nearest
 rbyte:
   cache: .rbyte_cache
