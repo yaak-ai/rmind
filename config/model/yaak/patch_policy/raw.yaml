@@ -48,7 +48,7 @@ input_transform:
               dtype:
                 _target_: hydra.utils.get_object
                 path: torch.float32
-            - _target_: torchvision.transforms.v2.Normalize
+            - _target_: rmind.components.norm.ImageNormalize
               mean: [0.485, 0.456, 0.406]
               std: [0.229, 0.224, 0.225]
 
