@@ -217,6 +217,9 @@ episode_builder:
             img_size: [256, 256]
           - _target_: einops.layers.torch.Rearrange
             pattern: "... c h w -> ... (h w) c"
+          - _target_: torch.nn.LayerNorm
+            normalized_shape: ${image_embedding_dim}
+            elementwise_affine: false
 
       continuous:
         speed:
