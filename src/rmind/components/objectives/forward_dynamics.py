@@ -33,6 +33,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         norm: InstanceOf[Module] | None = None,
         condition: InstanceOf[Module],
         query: tuple[str, ...],
+        query_norm: InstanceOf[Module] | None = None,
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
@@ -43,6 +44,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.norm: Module | None = norm
         self.condition: Module = condition
         self.query: tuple[str, ...] = query
+        self.query_norm: Module | None = query_norm
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
@@ -66,6 +68,11 @@ class ForwardDynamicsPredictionObjective(Objective):
         )  # (b, t-1, 65, d)
 
         patches = episode.get(self.query)[:, :-1]  # (b, t-1, p, d)
+        query = patches.clone()
+
+        if self.query_norm is not None:
+            query = self.query_norm(query)
+
         mask_tokens = repeat(
             episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [0]],
             "b t 1 d -> b t n d",
@@ -79,11 +86,11 @@ class ForwardDynamicsPredictionObjective(Objective):
                 SummaryToken.OBSERVATION_SUMMARY: {
                     "query": mask_tokens,
                     "key": self.condition({
-                        "query": patches,
+                        "query": query,
                         "key": context,
                         "value": context,
                     }),
-                    "value": patches,
+                    "value": query,
                 }
             }
         }

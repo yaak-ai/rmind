@@ -217,9 +217,6 @@ episode_builder:
             img_size: [256, 256]
           - _target_: einops.layers.torch.Rearrange
             pattern: "... c h w -> ... (h w) c"
-          - _target_: torch.nn.LayerNorm
-            normalized_shape: ${image_embedding_dim}
-            elementwise_affine: false
 
       continuous:
         speed:
@@ -421,6 +418,9 @@ objectives:
         output_projection:
           _target_: torch.nn.Identity
       query: [input_embeddings, image, cam_front_left]
+      query_norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       decoder:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:
@@ -485,6 +485,9 @@ objectives:
         output_projection:
           _target_: torch.nn.Identity
       query: [input_embeddings, image, cam_front_left]
+      query_norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -539,6 +542,9 @@ objectives:
         output_projection:
           _target_: torch.nn.Identity
       query: [input_embeddings, image, cam_front_left]
+      query_norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       decoder:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:

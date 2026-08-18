@@ -32,6 +32,7 @@ class MemoryExtractionObjective(Objective):
         norm: InstanceOf[Module] | None = None,
         condition: InstanceOf[Module],
         query: tuple[str, ...],
+        query_norm: InstanceOf[Module] | None = None,
         decoder: InstanceOf[Module],
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
@@ -42,6 +43,7 @@ class MemoryExtractionObjective(Objective):
         self.norm: Module | None = norm
         self.condition: Module = condition
         self.query: tuple[str, ...] = query
+        self.query_norm: Module | None = query_norm
         self.decoder = decoder
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
@@ -58,15 +60,17 @@ class MemoryExtractionObjective(Objective):
             .parse(embedding)
             .get(k)
         )
-        patches = episode.get(self.query)[:, 1:]  # (b, t-1, p, d)
+        query = episode.get(self.query)[:, 1:]  # (b, t-1, p, d)
+        if self.query_norm is not None:
+            query = self.query_norm(query)
         # observation_history routes attention over patches without entering the values
         key_mem = self.condition({
-            "query": patches,
+            "query": query,
             "key": obs_history,
             "value": obs_history,
         })
         mask = episode.embeddings.get((Modality.UTILITY, "mask"))[:, 1:, [2]]
-        return self.decoder({"query": mask, "key": key_mem, "value": patches})
+        return self.decoder({"query": mask, "key": key_mem, "value": query})
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
