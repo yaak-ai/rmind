@@ -49,14 +49,25 @@ samples:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324
 
+  # see train.yaml for why the two mapspec-less reduce steps get a thread
+  # executor rather than the default process pool.
   executor:
-    _target_: concurrent.futures.ProcessPoolExecutor
-    # see train.yaml -- bounds peak memory during the samples build, which
-    # OOM-killed the full-corpus build unbounded at os.cpu_count() workers.
-    max_workers: 8
-    mp_context:
-      _target_: multiprocessing.get_context
-      method: forkserver
+    "":
+      _target_: concurrent.futures.ProcessPoolExecutor
+      # see train.yaml -- bounds peak memory during the samples build, which
+      # OOM-killed the full-corpus build unbounded at os.cpu_count() workers.
+      max_workers: 8
+      mp_context:
+        _target_: multiprocessing.get_context
+        method: forkserver
+
+    samples_aggregated:
+      _target_: concurrent.futures.ThreadPoolExecutor
+      max_workers: 1
+
+    samples_with_id:
+      _target_: concurrent.futures.ThreadPoolExecutor
+      max_workers: 1
 
   storage: file_array
   run_folder: ${paths.rbyte.cache}/yaak/val/clip${clip_length}/samples
