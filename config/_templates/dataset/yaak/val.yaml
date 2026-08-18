@@ -18,7 +18,7 @@ streams:
     sources:
       #@ for/end drive_id in drives:
       (@=drive_id@):
-        _target_: rbyte.io.PathTensorSource
+        _target_: rmind.io.ConcurrentPathTensorSource
         path: "${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324/{:09d}.jpg"
         decoder:
           _target_: simplejpeg.decode_jpeg
