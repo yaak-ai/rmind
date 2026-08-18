@@ -254,12 +254,209 @@ all passing:
 regressed from the `_features` signature change; result pending at time of writing this section —
 see the addendum below once it completes.
 
+## 11. Stage 4 — two distinct OOMs blocking the first training run (2026-08-18)
+
+`config/experiment/yaak/patch_policy/dinov2_dinowm_causal_lfgaux.yaml` was added per brief §6
+(linear `segmentation`/`motion` aux heads on `dinov2_dinowm_causal`, `aux_weights` defaulted to
+`{segmentation: 0.0, motion: 0.0}` in the committed file so the file itself *is* the §7.3
+zero-weight control). Every docker attempt at running it against the full 655+5-drive corpus has
+died before a single training step logs, on the host's shared 40-core / 188 GB machine. Two
+separate root causes, confirmed via `journalctl -k`, not one:
+
+### 11.1 Per-drive samples build — unbounded `ProcessPoolExecutor` (fixed)
+
+`samples.executor` in `config/_templates/dataset/yaak/{train,val}.yaml` was a bare
+`ProcessPoolExecutor` with no `max_workers`, defaulting to `os.cpu_count()` (40). With
+`scheduling_strategy: eager`, pipefunc fires the `filtered` → `samples` stage (a DuckDB spatial
+query plus `DataFrameGroupByDynamic.agg(pl.all()...)`, which materializes full per-window
+list-columns for every raw field) for up to 40 of the 660 drives at once, all held in the parent
+process pending pipefunc's `file_array` write. This OOM-killed `rmind-train` itself twice:
+
+```
+Aug 18 08:08:14 kernel: Out of memory: Killed process 446678 (rmind-train) anon-rss:49428552kB
+Aug 18 08:30:48 kernel: Out of memory: Killed process 781095 (rmind-train) anon-rss:49757520kB
+```
+
+Not caused by the LFG work: `lfg_labels` is a lazy `PathTensorSource`, read outside this cached
+samples pipeline entirely (§7 above) — it contributes nothing to this build's memory footprint.
+This is a pre-existing property of the full-corpus build that this arm's docker run was simply the
+first thing to exercise at full scale under today's host memory contention.
+
+**Fix applied** (commit `094563b`): capped `executor.max_workers: 8` in both templates,
+regenerated `config/dataset/yaak/{train,val}.yaml`. Trades wall-clock for a predictable ceiling;
+can be raised per-run on a quieter/higher-memory host via
+`++datamodule.{train,val}.dataset.samples.executor.max_workers=N` without touching the template
+default.
+
+### 11.2 Full-corpus reduce step — process-pool round-trip of the whole corpus table (fixed)
+
+With `max_workers` capped (via CLI override, `++...max_workers=8`, on top of the pre-fix image
+`rmind:352620a...`), the per-drive stage completed, but the run then died a *third* time with a
+different signature — `BrokenProcessPool` surfaced in the app during
+`partial(samples_aggregated=shape: (1_939_159, 11), ...)` → `polars.DataFrame.with_row_index`.
+`docker inspect` confirmed `OOMKilled=true`, and `journalctl -k` pinned it precisely:
+
+```
+Aug 18 10:18:02 kernel: Out of memory: Killed process 1189332 (python3) anon-rss:53307156kB
+```
+
+Root cause is structurally different from §11.1 and **not addressed by `max_workers`** — but it is
+also *not* "one process legitimately needing 53 GB", which is what the first pass of this section
+assumed. The corpus table is only ~14.5 GB; the OOM came from **serializing it across a process
+boundary**, which costs ~4× that.
+
+**The measurements** (taken 2026-08-18 against the surviving `samples_cast` outputs of the failed
+run, so these are the real numbers for this corpus, not estimates):
+
+| quantity | value |
+|---|---|
+| final table | 1,939,159 rows × 11 cols, **7548 B/row** → **14.5 GB in memory** |
+| all 655 `samples_cast` parts loaded | 14.5 GB (pipefunc stores them as *parquet*, hence only 318 MB on disk) |
+| `DataFrameConcater` (`rechunk=False`) | **+0 GB** — polars keeps the 655 chunks by reference |
+| `with_row_index` | **+0 GB** — prepends a 1-chunk index column; `n_chunks("all") == [1, 655, 655…]`, i.e. it does *not* rechunk the data columns |
+| **both reduce steps back-to-back, single process** | **14.5 GB peak** |
+| what actually happened (two processes) | **~92 GB**: 42 GB parent + 50 GB worker |
+
+Per-column shares of that 7548 B/row confirm where the bulk is: `waypoints/xy_normalized` and
+`waypoints/xy` are 2960 B/row **each** (37 × 10 × 2 f32) = 78% of the table between them.
+
+**Mechanism.** `samples_aggregated` and `samples_with_id` are the pipeline's only `mapspec`-less
+functions, so pipefunc runs each exactly once — but it materializes a `mapspec`-less function's
+kwargs **in the parent** (`pipefunc.map._run._func_kwargs` → `_load_from_store(p, store).value`)
+and only *then* submits the call to the executor (`_maybe_execute_single` → `_submit`). With a
+`ProcessPoolExecutor` that means the whole 14.5 GB table is paid for four times over:
+
+1. parent materializes the table from the store — 14.5 GB
+2. parent pickles it for the worker — +14.5 GB
+3. worker unpickles — 14.5 GB
+4. worker holds the live frame while computing — +14.5 GB
+
+Which is exactly the observed `rmind-train` 42 GB + `python3` 50 GB. The kernel report also shows
+this was a **global** OOM at ~183 GB of 188 GB total RSS, not a cgroup limit: the run's ~104 GB
+(both of the above plus 8 idle pool workers at ~1.3 GB each) plus a **36 GB job from another user**
+(`harsimrat`, a notebook kernel — gone by the time this was diagnosed) plus the rest of the host.
+So host contention was a genuine co-factor, but the run's own ~104 GB was the avoidable part.
+
+**Fix applied.** pipefunc accepts a **per-output-name executor mapping**, with `""` as the default
+key (`pipefunc.map._run._executor_for_func`), and rbyte passes it straight through
+(`PipelineHydraConfig.executor: HydraConfig[Executor] | dict[OUTPUT_TYPE, HydraConfig[Executor]]`,
+instantiated leaf-wise via `tree_map` in `Dataset._build_samples`). So in
+`config/_templates/dataset/yaak/{train,val}.yaml` the `executor` became a mapping:
+
+```yaml
+  executor:
+    "":                  # every mapped, per-drive step -- unchanged from §11.1
+      _target_: concurrent.futures.ProcessPoolExecutor
+      max_workers: 8
+      mp_context: { _target_: multiprocessing.get_context, method: forkserver }
+    samples_aggregated:   # the two reduce steps stay in-process
+      _target_: concurrent.futures.ThreadPoolExecutor
+      max_workers: 1
+    samples_with_id:
+      _target_: concurrent.futures.ThreadPoolExecutor
+      max_workers: 1
+```
+
+A thread executor keeps both reduce steps in the parent process, so steps 2–4 above disappear and
+the table exists exactly once: **14.5 GB instead of ~92 GB**. Nothing is given up — neither step is
+parallel over drives, so there was never any concurrency to lose, and polars releases the GIL for
+the concat/collect.
+
+**Verification.** Two checks, both run before touching the real corpus:
+
+1. The empty-string key survives OmegaConf → pydantic (`extra="allow"`) → `tree_map` and
+   instantiates to `{'': ProcessPoolExecutor, 'samples_aggregated': ThreadPoolExecutor,
+   'samples_with_id': ThreadPoolExecutor}`. `config/dataset/yaak/{train,val}.yaml` regenerated and
+   re-parsed (655 / 5 drives, both streams present).
+2. A minimal pipeline with the same shape (one mapped step + two `mapspec`-less reduce steps) where
+   each reduce step reports `os.getpid()`, run through the same
+   `PipelineHydraConfig` → `tree_map` → `pipeline.map(executor=...)` path:
+
+   ```
+   parent pid: 1838688
+   BEFORE (single ProcessPoolExecutor): {'pid': 1838823, 'pid_b': 1838824}
+   AFTER  (per-output dict w/ threads): {'pid': 1838688, 'pid_b': 1838688}
+   ```
+
+   Note the *two different* worker pids in the BEFORE case: the reduce steps do not even share a
+   worker, so with `return_results: false` the table makes **two** independent round trips
+   (parent → worker A → store, then store → parent → worker B), each paying the 4× above. That is
+   worse than the original reading of this section and explains why the parent was still holding
+   42 GB at the moment the second step's worker died.
+3. **End-to-end A/B through the real `rbyte.Dataset.from_config`**, same experiment config, same
+   drives, only the `executor` shape differing (the control arm rewrites the composed config back
+   to the pre-fix scalar). Identical datasets, no wall-clock penalty:
+
+   | arm | `executor` | result | time | peak RSS |
+   |---|---|---|---|---|
+   | control | scalar `ProcessPoolExecutor` | `len=2994` | 18 s | 1.06 GB |
+   | fixed | `{'': Process, samples_aggregated: Thread, samples_with_id: Thread}` | `len=2994` | 16 s | 1.02 GB |
+
+   The real 5-drive `val` config then built clean with the fix: `len=14365` in 39 s, peak 1.30 GB,
+   both streams (`cam_front_left`, `lfg_labels`) present and `ds[0]` materializing a `Batch`.
+
+Also asserted programmatically against the *generated* configs that the set of `mapspec`-less
+functions equals the set of thread-executor keys, for both `train.yaml` and `val.yaml` — i.e. no
+reduce step was missed.
+
+**Two operational consequences of this change — both will bite the next run if missed:**
+
+- **The image must be rebuilt.** `Dockerfile` does `COPY . .` and `just train-unsafe` depends on
+  `generate-config`, so the container regenerates `config/dataset/` from the *baked-in* templates.
+  Editing the host templates has no effect on `rmind:352620a…`. And `just docker-build` runs
+  `check-git`, so the fix has to be committed and pushed first. `config/dataset/*` is gitignored —
+  only the two templates need committing.
+- **Drop the `++…executor.max_workers=8` CLI overrides.** They were correct against the old scalar
+  `executor`; against the mapping they inject a fourth key next to `""`/`samples_aggregated`/
+  `samples_with_id` and pydantic rejects the whole config
+  (`ValidationError: executor.HydraConfig[Executor]._target_ Field required`) — verified. They are
+  also redundant: `max_workers: 8` is now the template default.
+
+**Expected new ceiling for the full-corpus run**, ~45 GB rather than ~104 GB: 14.5 GB for the
+reduce steps, then `Dataset.from_config`'s `to_torch(...)` makes one more full copy while
+`sample_df` is still alive (~29 GB peak) before the frame is dropped, plus ~10 GB of idle pool
+workers and torch/CUDA init. Steady-state training then holds ~14 GB of `TensorDict` — and note the
+dataloader is `method: thread` (`config/datamodule/yaak/train.yaml`), so that table is held **once**,
+not once per worker.
+
+**Two things deliberately *not* changed:**
+
+- **`resume`.** Every retry so far redid the full ~30-minute build from scratch: pipefunc's
+  `resume` defaults to `False`, which means `_cleanup_run_folder(run_folder)` wipes the outputs on
+  start (confirmed from mtimes — the last run rebuilt `meta` at 09:48 → `samples_cast` at 10:06 →
+  `samples_aggregated` at 10:14 → OOM at 10:18). Only the 13 GB of `cache: true` disk cache at the
+  `paths.rbyte.cache` root persists. Because `BasePipelineConfig` is `extra="allow"`, `resume` can
+  be turned on per-run from the CLI —
+  `++datamodule.train.dataset.samples.resume=true` — which will pick up an interrupted build
+  instead of restarting it. Left **off** by default on purpose: a stale run folder would otherwise
+  be silently reused after a pipeline edit.
+- **Shrinking the payload.** Dropping the redundant world-frame `waypoints/xy` column would cut the
+  table 39% (7548 → 4588 B/row, 14.5 → 8.8 GB), and `patch_policy` only consumes
+  `waypoints/xy_normalized` (`config/model/yaak/patch_policy/raw.yaml`). But `train.yaml`/`val.yaml`
+  are shared with `control_transformer` experiments whose callbacks
+  (`trainer/callbacks/{pretrain,finetune}.yaml`) do read raw `waypoints/xy`, so this needs a
+  patch_policy-scoped dataset variant rather than a blanket template edit. Not needed now that the
+  4× amplification is gone; it is the next lever if memory ever gets tight again.
+
+### 11.3 The same latent bug in `action_train.yaml` (not fixed — different experiment line)
+
+`config/_templates/dataset/yaak/action_train.yaml` is also a 655-drive config with the identical
+two `mapspec`-less reduce steps *and* a still-uncapped `ProcessPoolExecutor` (no `max_workers`), so
+it carries both §11.1 and §11.2 unfixed. `action_val.yaml`, `predict.yaml` and `train_debug.yaml`
+share the shape but at 5/15/3 drives, where it does not matter. Left alone because it belongs to a
+different experiment line, not this arm — but the `executor` mapping above is a drop-in for it and
+costs nothing.
+
 ## 10. Next steps
 
-1. Stage 4: `config/experiment/yaak/patch_policy/dinov2_dinowm_causal_lfgaux.yaml` per brief §6.
+1. Stage 4: `config/experiment/yaak/patch_policy/dinov2_dinowm_causal_lfgaux.yaml` per brief §6 —
+   **added**. §11.2 is fixed but the fix is **not yet exercised at full-corpus scale**: commit the
+   two templates, `just docker-build`, then re-run *without* the now-invalid
+   `++…executor.max_workers=8` overrides. Watch the parent's RSS through the samples build — it
+   should top out near 30 GB (14.5 GB table + the `to_torch` copy), not ~100 GB.
 1. The §7.3 zero-weight-control gate at the **training-curve** level (not just the unit-test
    analogue above) — run it and diff against the `dinov2_dinowm_causal` baseline curve before any
-   nonzero-weight arm.
+   nonzero-weight arm. Blocked on getting any run past the samples build (§11).
 1. The weight sweep `{0.03, 0.1, 0.3}` per brief §6, judged on §7.4's metrics
    (`offset_argmax_recon_last`, `code_acc_joint_last`), not `val/loss/code_*`.
 1. Still open from Stage 2/1: the CC BY-NC 4.0 licence question, and syncing labels to

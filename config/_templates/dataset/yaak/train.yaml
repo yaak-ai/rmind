@@ -710,22 +710,50 @@ samples:
       #@ for/end drive_id in drives:
       - ${paths.data}/(@=drive_id@)/frames/cam_front_left.pii.mp4/576x324
 
+  # pipefunc accepts a per-output-name executor mapping, with "" as the default
+  # (see pipefunc.map._run._executor_for_func). The two reduce steps must NOT
+  # run in a process pool -- see the comment on the ThreadPoolExecutor below.
   executor:
-    _target_: concurrent.futures.ProcessPoolExecutor
-    # unset, ProcessPoolExecutor defaults to os.cpu_count() -- on a 40-core
-    # shared host that lets `scheduling_strategy: eager` fire off up to 40
-    # drives' worth of `filtered`/`samples` (DuckDB spatial query +
-    # DataFrameGroupByDynamic.agg(pl.all()...), which materializes full
-    # per-window list-columns for every raw field) concurrently, all held in
-    # the parent process pending pipefunc's file_array write. That is what
-    # OOM-killed rmind-train at ~50GB RSS building the full 660-drive corpus
-    # (2026-08-18, see lfg_aux_supervision_results.md). Bounding concurrency
-    # here trades wall-clock for a predictable memory ceiling; raise it back
-    # up on a quieter or higher-memory host.
-    max_workers: 8
-    mp_context:
-      _target_: multiprocessing.get_context
-      method: forkserver
+    "":
+      _target_: concurrent.futures.ProcessPoolExecutor
+      # unset, ProcessPoolExecutor defaults to os.cpu_count() -- on a 40-core
+      # shared host that lets `scheduling_strategy: eager` fire off up to 40
+      # drives' worth of `filtered`/`samples` (DuckDB spatial query +
+      # DataFrameGroupByDynamic.agg(pl.all()...), which materializes full
+      # per-window list-columns for every raw field) concurrently, all held in
+      # the parent process pending pipefunc's file_array write. That is what
+      # OOM-killed rmind-train at ~50GB RSS building the full 660-drive corpus
+      # (2026-08-18, see lfg_aux_supervision_results.md). Bounding concurrency
+      # here trades wall-clock for a predictable memory ceiling; raise it back
+      # up on a quieter or higher-memory host.
+      max_workers: 8
+      mp_context:
+        _target_: multiprocessing.get_context
+        method: forkserver
+
+    # `samples_aggregated` (DataFrameConcater) and `samples_with_id`
+    # (with_row_index) are the pipeline's only mapspec-less functions: each runs
+    # once over *all* drives, so its argument is the whole ~14.5GB corpus table
+    # (1.94M rows x 7548 B/row at clip_length=37). pipefunc materializes a
+    # mapspec-less function's kwargs in the parent (`_func_kwargs` ->
+    # `_load_from_store(...).value`) and only then submits, so a *process* pool
+    # pays ~4x that table: parent frame + parent pickle buffer + worker unpickle
+    # buffer + worker frame. Measured: 42GB in the parent plus 50GB in the
+    # worker, which is what globally OOM-killed the full-corpus build on
+    # 2026-08-18 (a 36GB job from another user was also resident).
+    #
+    # A thread executor keeps both steps in the parent process, so the table is
+    # never serialized and exists exactly once: measured peak 14.5GB for both
+    # steps back to back, vs ~92GB across the two processes. Neither step is
+    # CPU-parallel over drives, so nothing is lost by not using a process here;
+    # polars releases the GIL for the concat/collect anyway.
+    samples_aggregated:
+      _target_: concurrent.futures.ThreadPoolExecutor
+      max_workers: 1
+
+    samples_with_id:
+      _target_: concurrent.futures.ThreadPoolExecutor
+      max_workers: 1
 
   storage: file_array
   run_folder: ${paths.rbyte.cache}/yaak/train/clip${clip_length}/samples
