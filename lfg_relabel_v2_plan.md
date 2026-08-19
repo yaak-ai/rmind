@@ -246,3 +246,48 @@ alive.
 live run's `.rbyte_cache_causal32_lfgaux`. pipefunc's `resume=False` default wipes a run folder on
 start, and filter-node outputs are keyed by output name only — so instantiating a dataset against a
 live run's cache can wipe or cross-contaminate it.
+
+### 9.6 Pilot result (2026-08-19)
+
+35 drives (`train_subset30` + the 5 val drives, added so the §7.2 gate had labelled val data),
+121,193 frames, **1.41 h wall clock at 83.9k frames/h**, contended with the 0.03 aux arm throughout.
+**0 failures**, no `failures.json`.
+
+| gate | result |
+|---|---|
+| coverage (`verify` against the 35-drive subset) | **exit 0** — 121,193 required, 0 missing, 35/35 drives |
+| blob size sweep | 121,193 `.bin` files, **all exactly 1024 bytes**, count matches the required total exactly |
+| §7.1 spatial, `Niro096-HQ/2023-01-11--13-47-36` | **PASS** — road class 0: 92.9% bottom rows vs 0.0% top; sky class 5: 81.1% top |
+| §7.1 spatial, `Niro131-HQ/2023-05-25--06-06-30` (14,353 frames) | **PASS** — 98.3% vs 0.0%; sky 69.4% top |
+| `v2` vs `v1_nearest` divergence, 3,500 frames / 35 drives | seg agreement **0.9877** over 817,084 supervised patches, motion MAE **0.0131** |
+
+The divergence number is the substantive result: it reproduces §12.4's 6-drive/900-frame estimate
+(0.98-0.99 agreement, MAE 0.01-0.02) at 35-drive scale, from the opposite direction (exact labels as
+reference). So the exact relabelling corrects **~1.2% of supervised patches** relative to the
+hardlink tree — confirming both that `v1_nearest` was a sound approximation for a `weight: 0.1`
+regularizer, and that nothing beyond the temporal offset (and the deliberate `--gap-split`
+recomposition) differs between the two roots.
+
+### 9.7 Full run
+
+Launched 2026-08-19 07:22 UTC, PID 2771157, log `~/lfg_v2_logs/full.log`, all 660 drives with
+`--resume-drives` (the 35 pilot drives are skipped as they come up in sorted order).
+
+Steady state **82.6k frames/h** contended; 2,033,262 frames left to label after the pilot, so
+**ETA ~24.6 h** (~2026-08-20 08:00 UTC). Faster if the 0.03 aux arm finishes first. Zero failures
+through the first 9 drives.
+
+### 9.8 §7.2 round-trip: in progress
+
+The val dataset instantiates correctly against `v2` with the isolated cache
+(`paths.rbyte.cache=.rbyte_cache_lfg_gate`, 14,365 val samples), but `cmd_roundtrip` needs two fixes
+found on first run:
+
+1. `sample["meta"]` is invalid — the sample is a tensorclass, so `meta`/`data` are attributes.
+1. `_per_drive_probe_indices` scans every sample to find per-drive spans, but `__getitem__`
+   materializes ~37 frames of JPEG per sample; at 14,365 samples that is not viable. Read the
+   drive ids from the dataset's samples table instead, or locate boundaries by sparse probe +
+   bisection.
+
+Note each invocation pays a fresh val samples build (~minutes): pipefunc's `resume=False` wipes the
+run folder on start, so the isolated cache does not make the second run cheaper.
