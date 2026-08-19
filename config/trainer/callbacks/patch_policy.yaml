@@ -4,6 +4,15 @@
 - _target_: pytorch_lightning.callbacks.ModelCheckpoint
   every_n_epochs: 1
   save_on_train_epoch_end: True
+# Mid-epoch safety net: one epoch on the full train set is ~106k steps (~4 days),
+# so an epoch-only checkpoint leaves a run with nothing on disk for days at a time.
+# This must be a SEPARATE callback -- ModelCheckpoint rejects every_n_train_steps
+# and every_n_epochs on the same instance ("should be mutually exclusive").
+# monitor is unset, so save_top_k=1 just keeps rewriting the latest snapshot.
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_train_steps: 5000
+  save_top_k: 1
+  filename: "step-{step}"
 - _target_: pytorch_lightning.callbacks.LearningRateMonitor
   logging_interval: step
 - _target_: rmind.callbacks.GpuMemoryStatsCallback

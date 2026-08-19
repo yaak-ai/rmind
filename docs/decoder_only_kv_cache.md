@@ -1120,3 +1120,128 @@ Two traps this check walked into, both worth remembering:
   the road on the baseline arm. Do not quote 2/200 as a deployment rate.
 - **Margins are per-checkpoint.** Re-run §12.5 and §12.6 for every checkpoint
   before serving it below fp32. A verdict cannot be inherited from a sibling.
+
+## 13. cam=3 training OOMs: `window` is not the lever, `batch_size` is
+
+`ead564b` ("add cam_left_forward/cam_right_forward to the causal PatchPolicy
+arm") generalized `PatchPolicy` from a single `image` path to a `cameras:
+tuple[str, ...]` hparam, and added `dinov2_dinowm_causal_3cam.yaml` on top of
+`dinov2_dinowm_causal.yaml`. Per its own comment, the change is contained to
+`tokens_per_frame`: `256 * num_cameras + 1` (257 -> 769 at `cam=3`) and
+`max_sequence_length` — "the trunk itself needed no changes, since it only ever
+sees an opaque `tokens_per_frame`". Everything else (`window: 16`,
+`episode_length: 32`, `batch_size: 24`, `attention_impl: flex`) is inherited
+unmodified from the cam=1 arm, whose §11.5 recipe was measured — not
+guessed — at `tokens_per_frame=257`. §0's warning ("none of those
+latency/memory/margin numbers can be scaled by ×cam") is exactly what bit here:
+the `batch_size: 24` survived the inheritance uncorrected, 3× too large for
+`tokens_per_frame=769`.
+
+### 13.1 What the run actually hit
+
+wandb `alex-tmp/035euhok` / container `71ee898ee9fc`, command:
+
+```
+just train-unsafe experiment=yaak/patch_policy/dinov2_dinowm_causal_3cam \
+  ++datamodule.train.batch_size=16 datamodule.train.num_workers=2 \
+  wandb.project=alex-tmp paths.rbyte.cache=.rbyte_cache_32step \
+  "++wandb.tags=[patch_policy,dinov2_dinowm_causal,3cam,window_10]"
+```
+
+Two things about this command before the OOM itself:
+
+- **The `window_10` tag is a false record.** No `model.encoder.window=10`
+  override is in the command, so the run trained at the inherited `window: 16`
+  — the tag describes an experiment that was not actually run. Caught from the
+  container's own `docker inspect .Config.Cmd`, not from wandb config (worth
+  checking wandb's logged `model/encoder/window` on any run before trusting a
+  tag).
+- **`datamodule.val.batch_size` was never overridden.** `train_3cam.yaml` sets
+  it to `32` (the cam=1-tuned value, same as `train.yaml`) and nothing in
+  `dinov2_dinowm_causal_3cam.yaml` or the command touches it.
+
+The traceback (`docker logs 71ee898ee9fc`) OOMs inside `on_validation_batch_end`
+-> `PatchPolicy.predict_step` -> `CausalFrameTransformer.forward`, on a
+`[24608, 64]` tensor (`24608 = 32 (val batch) × 769 (tokens_per_frame)`) trying
+to allocate 6.01 GiB with only 4.78 GiB free — **25.82 GiB was already
+allocated by PyTorch before validation's own forward pass finished**. So this
+was not a training-step OOM; training at `batch=16` survived. Validation, still
+at the untouched default of `batch=32`, is what didn't.
+
+### 13.2 Measured: `window` does not move peak memory at fixed batch
+
+Re-ran the exact arm (512d/8H/8L, `tokens_per_frame=769`, `episode_length=32`,
+`attention_impl=flex`, bf16, gradient checkpointing, AdamW) inside
+`rmind:b900e8e...` on the same RTX 5090, one fresh container per data point
+(a shared process re-triggers dynamo's 8-shape recompile-limit fallback to
+eager `flex_attention` and the allocator-fragmentation trap §11.5 already
+warns about — both hit and discarded before these numbers):
+
+| window | batch | train step peak (fwd+bwd+ckpt+AdamW) |
+| ------ | ----- | ------------------------------------- |
+| 16     | 24    | **OOM**                                |
+| 16     | 20    | 27792 MiB                              |
+| 16     | 16    | 22311 MiB                              |
+| 16     | 12    | 16830 MiB                              |
+| 16     | 8     | 11348 MiB                              |
+| 10     | 24    | **OOM**                                |
+| 10     | 20    | 27793 MiB                              |
+| 10     | 16    | **22311 MiB**                          |
+
+`window: 16 -> 10` changes peak memory by **0 MiB** at every batch tested
+(22311 vs 22311 at batch 16; 27792 vs 27793 at batch 20 — noise). This is §11.5
+restated, not contradicted: *"holding frame-slots constant is [the memory
+lever]... block-sparsity is worth only another 2-5%."* `window` gates how many
+past frames the block-sparse mask lets each frame attend to — it moves
+*attention compute* (§9's linear-in-context slope) — but under gradient
+checkpointing the dominant term is the per-token residual/MLP activation at
+checkpoint boundaries, which scales with `batch × frames × tokens_per_frame`
+and has no `window` in it at all. **Dropping `window` to 10 will not fix this
+OOM.** It's a legitimate lever for serving latency/context depth (§9) or for a
+deliberate train/infer behavior change (§10.2) — not for VRAM.
+
+### 13.3 Measured: what validation actually costs
+
+Isolated no-`grad` forward, trunk only (excludes the frozen ViT and every other
+`PatchPolicy` head, so these are a *floor*, not the full validation cost):
+
+| val batch | peak (no_grad forward, trunk only) |
+| --------- | ------------------------------------ |
+| 32        | 17874 MiB                            |
+| 8         | 7037 MiB                             |
+
+`val.batch_size=32` alone needs almost 18 GiB just in the trunk, on top of
+whatever training already left resident — which is exactly the shape of the
+crash: `train.batch_size=16` alone peaks at 22.3 GiB (§13.2), and the real
+pipeline (ViT + trunk + VQ-BeT heads) landed at the observed 26.54 GiB before
+validation added its own forward on top of that.
+
+### 13.4 The fix
+
+Neither knob that was actually touched (`train.batch_size=16`, an untouched
+`window_10` tag) addressed the real problem. Two batch sizes need scaling down
+together, matched to `cam=3`'s 3× `tokens_per_frame`, not to `window`:
+
+```
+just train-unsafe experiment=yaak/patch_policy/dinov2_dinowm_causal_3cam \
+  datamodule.train.batch_size=8 \
+  datamodule.val.batch_size=8 \
+  datamodule.train.num_workers=8 \
+  wandb.project=alex-tmp \
+  "++wandb.tags=[patch_policy,dinov2_dinowm_causal,3cam,docker]"
+```
+
+`batch=8` trunk-only peaks at 11.3 GiB train / 7.0 GiB val (§13.2/§13.3);
+adding the ViT forward and heads on top of either has multiple GiB of slack
+before the 31.36 GiB the container actually reports as available (the driver
+and other host processes already account for the gap to the card's nominal
+32 GiB). `batch=12` (16.8 GiB train) is a plausible next step up if a run at 8
+shows comfortable headroom in practice, but `batch=16` measured only ~4.8 GiB
+free *before* validation ran at all, which is too tight to also survive a val
+pass safely — that margin, not `window`, is what a real fix has to buy back.
+If throughput at low batch is a problem, `+trainer.accumulate_grad_batches=N`
+recovers the effective batch size without adding peak activation memory
+(gradient accumulation reuses the same activation buffer per micro-batch);
+the schedule arithmetic (`lr_total_steps`, `lr_warmup_steps`) still needs
+rederiving against whatever batch is finally used, same as `_80gb.yaml` does
+for its batch bump.
