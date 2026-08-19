@@ -145,21 +145,19 @@ def cmd_roundtrip(args: argparse.Namespace) -> int:
         )
         dataset = hydra.utils.instantiate(cfg.datamodule.val.dataset)
 
-    n_checked = n_bad = 0
-    total = len(dataset)
-    print(f"val dataset: {total} samples")
-    indices = _per_drive_probe_indices(dataset, total)
+    probes = _probe_indices(dataset.meta)
+    print(f"val dataset: {len(dataset)} samples; probing {len(probes)} of them")
 
-    for i in indices:
-        sample = dataset[i]
-        drive_id = _sample_drive_id(sample)
-        labels = np.asarray(sample["data"]["lfg_labels"])
-        frame_indices = np.asarray(
-            sample["meta"]["ImageMetadata.cam_front_left"]["frame_idx"]
-        ).ravel()
+    n_checked = n_bad = 0
+    for index, drive_id in probes:
+        sample = dataset[index]
+        labels = np.asarray(sample.data["lfg_labels"])
+        frame_key = _frame_idx_key(sample.data)
+        frame_indices = np.asarray(sample.data[frame_key]).ravel()
         if labels.shape[0] != frame_indices.shape[0]:
             print(
-                f"sample {i}: {labels.shape[0]} labels vs {frame_indices.shape[0]} frame_idx",
+                f"sample {index}: {labels.shape[0]} labels vs "
+                f"{frame_indices.shape[0]} frame_idx values",
                 file=sys.stderr,
             )
             return 1
@@ -172,36 +170,51 @@ def cmd_roundtrip(args: argparse.Namespace) -> int:
             n_checked += 1
             if not np.array_equal(labels[slot], decode_lfg_label(raw)):
                 n_bad += 1
-                print(f"MISMATCH sample {i} slot {slot} frame {int(frame_idx)} {path}", file=sys.stderr)
+                print(
+                    f"MISMATCH sample {index} slot {slot} frame {int(frame_idx)} {path}",
+                    file=sys.stderr,
+                )
 
-    print(f"SS7.2: {n_checked} (frame, label) pairs checked, {n_bad} mismatched")
+    print(
+        f"SS7.2: {n_checked} (frame, label) pairs across "
+        f"{len({d for _, d in probes})} drives, {n_bad} mismatched"
+    )
     if n_bad:
         return 1
     print("SS7.2 PASS")
     return 0
 
 
-def _sample_drive_id(sample) -> str:
-    value = sample["meta"]["input_id"]
-    if isinstance(value, (list, tuple, np.ndarray)):
-        value = np.asarray(value).ravel()[0]
-    return str(value)
+def _probe_indices(meta) -> list[tuple[int, str]]:
+    """First, middle and last sample index of every drive, as `(index, drive_id)`.
 
-
-def _per_drive_probe_indices(dataset, total: int) -> list[int]:
-    """First, middle and last sample index of every drive in the dataset.
-
-    Scans `input_id` per sample rather than assuming contiguous per-drive blocks.
+    Read from the samples table (`Dataset.meta`, one row per sample) rather than by fetching
+    samples: `__getitem__` materializes every JPEG of the clip, so scanning 14k val samples to
+    find drive boundaries would cost more than the check itself.
     """
     spans: dict[str, list[int]] = {}
-    for i in range(total):
-        drive_id = _sample_drive_id(dataset[i])
-        spans.setdefault(drive_id, []).append(i)
-    indices: list[int] = []
+    for i, drive_id in enumerate(meta["input_id"].to_list()):
+        spans.setdefault(str(drive_id), []).append(i)
+    probes: list[tuple[int, str]] = []
     for drive_id, idxs in sorted(spans.items()):
-        indices += sorted({idxs[0], idxs[len(idxs) // 2], idxs[-1]})
-    print(f"probing {len(indices)} samples across {len(spans)} drives")
-    return indices
+        probes += [
+            (i, drive_id)
+            for i in sorted({idxs[0], idxs[len(idxs) // 2], idxs[-1]})
+        ]
+    return probes
+
+
+def _frame_idx_key(data):
+    """Locate the cam_front_left frame_idx column in a sample's TensorDict."""
+    for key in data.keys(include_nested=True, leaves_only=True):
+        name = key if isinstance(key, str) else "/".join(key)
+        if name.endswith("frame_idx") and "cam_front_left" in name:
+            return key
+    msg = (
+        "no cam_front_left frame_idx key in sample data; available keys: "
+        f"{sorted(str(k) for k in data.keys(include_nested=True, leaves_only=True))}"
+    )
+    raise KeyError(msg)
 
 
 def main() -> int:

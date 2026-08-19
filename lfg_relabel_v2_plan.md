@@ -277,17 +277,28 @@ Steady state **82.6k frames/h** contended; 2,033,262 frames left to label after 
 **ETA ~24.6 h** (~2026-08-20 08:00 UTC). Faster if the 0.03 aux arm finishes first. Zero failures
 through the first 9 drives.
 
-### 9.8 §7.2 round-trip: in progress
+### 9.8 §7.2 round-trip: PASS
 
-The val dataset instantiates correctly against `v2` with the isolated cache
-(`paths.rbyte.cache=.rbyte_cache_lfg_gate`, 14,365 val samples), but `cmd_roundtrip` needs two fixes
-found on first run:
+**555 (frame, label) pairs across all 5 val drives, 0 mismatched** — the delivered
+`data/lfg_labels` tensor equals `decode_lfg_label` of the on-disk `v2` bytes for the same
+`frame_idx`, on the first/middle/last sample of every val drive. Same 555-pair count as §12.4's
+re-run, now against exact labels. Val dataset: 14,365 samples, 15 probed.
 
-1. `sample["meta"]` is invalid — the sample is a tensorclass, so `meta`/`data` are attributes.
-1. `_per_drive_probe_indices` scans every sample to find per-drive spans, but `__getitem__`
-   materializes ~37 frames of JPEG per sample; at 14,365 samples that is not viable. Read the
-   drive ids from the dataset's samples table instead, or locate boundaries by sparse probe +
-   bisection.
+Two bugs in the gate itself (not the labels) had to be fixed first:
 
-Note each invocation pays a fresh val samples build (~minutes): pipefunc's `resume=False` wipes the
-run folder on start, so the isolated cache does not make the second run cheaper.
+1. `sample["meta"]` is invalid — the sample is a tensorclass. Drive ids now come from
+   `Dataset.meta`, a polars DataFrame with one row per sample.
+1. The per-drive span scan called `__getitem__` on all 14,365 samples, each of which materializes
+   ~37 frames of JPEG. Spans now come from that same table, so the check loads only the ~15 samples
+   it verifies. The frame_idx column key is discovered rather than hardcoded, and reports the
+   available keys if absent.
+
+Operational notes: each invocation pays a fresh val samples build (~1 min for 5 drives) because
+pipefunc's `resume=False` wipes the run folder on start, so the isolated cache does not make a
+re-run cheaper. That cache (`.rbyte_cache_lfg_gate/`, 133 MB) is untracked and not covered by
+`.gitignore`'s exact-match `.rbyte_cache` entry; it is safe to delete between runs.
+
+One transient failure worth recording: an earlier attempt died with `BrokenProcessPool` in
+`build_headings_denoised`. Not OOM — the kernel's most recent OOM kills were ~22 h old (§11's
+incidents) and 131 GB was free; `val.yaml` already carries the `max_workers: 8` fix. It succeeded on
+retry, so treat this build as occasionally flaky under load rather than broken.

@@ -19,8 +19,8 @@ ______________________________________________________________________
 | pilot job | 35 drives (`train_subset30` + the 5 val drives), 121,193 frames, log in the session scratchpad `pilot2.log`; was 2/35 done, 0 failures, ~81k frames/h |
 | full run | **not launched yet** — §3 below |
 | competing GPU job | PID 2216274, `dinov2_dinowm_causal_lfgaux` with `aux_weights=0.03`, started 2026-08-18 18:20:49, reads `v1_nearest`. Owner accepted sharing the GPU |
-| gates passed | equivalence (byte-identical, §9.2 of the plan), §7.1 spatial on `v2`, drive-level resume |
-| gates outstanding | §7.2 round-trip, 1024-byte sweep, `verify`, `v1_nearest`-vs-`v2` agreement |
+| gates passed on the 35 pilot drives | equivalence (byte-identical), §7.1 spatial ×2 drives, §7.2 round-trip (555 pairs, 0 mismatched), coverage `verify`, 1024-byte sweep, `v1_nearest` divergence (0.9877 seg agreement / 0.0131 motion MAE), drive-level resume |
+| gates outstanding | re-run all of the above against the **full** corpus once the run finishes (§4) |
 
 If the pilot process is gone, just run the §3 full-run command — `--resume-drives` skips whatever
 completed and relabels any partial drive from scratch.
@@ -113,12 +113,13 @@ This composes `train.yaml` with the `dinov2_dinowm_causal_lfgaux` experiment, in
 `datamodule.val.dataset`, and asserts the delivered `(37, 4, 16, 16)` uint8 tensor equals
 `decode_lfg_label` of the on-disk bytes for the first/middle/last sample of **every** val drive.
 It defaults to `paths.rbyte.cache=.rbyte_cache_lfg_gate` (override with `--rbyte-cache`) so it can
-never touch a live run's cache; the first invocation therefore builds val samples for 5 drives, which
-takes a few minutes. **This subcommand has not been run yet** — it is the one piece of new code
-without a successful execution behind it, so expect to debug it (most likely the `input_id` /
-`frame_idx` key paths in `_sample_drive_id` and `cmd_roundtrip`). The original v1 check only fetched
-`ds[0]`, which is why it missed the §12 phase bug on 4 of 5 drives — do not weaken it back to one
-sample.
+never touch a live run's cache; each invocation builds val samples for 5 drives (~1 min), since
+pipefunc's `resume=False` wipes the run folder on start. That cache dir is untracked and safe to
+delete. **PASSED against the pilot's val labels: 555 pairs across all 5 drives, 0 mismatched.**
+Re-run it after the full corpus run. The original v1 check only fetched `ds[0]`, which is why it
+missed the §12 phase bug on 4 of 5 drives — do not weaken it back to one sample. If the samples
+build dies with `BrokenProcessPool`, retry once before investigating: it is occasionally flaky under
+load.
 
 ### 4.3 §7.1 spatial alignment
 
