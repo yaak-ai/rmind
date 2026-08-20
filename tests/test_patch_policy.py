@@ -7,6 +7,7 @@ and equivalence of the batched `_gather_offset` with the joint-policy original.
 
 from typing import Any, override
 
+import pytest
 import torch
 from tensordict import TensorDict
 from torch import Tensor
@@ -17,7 +18,7 @@ from rmind.components.base import Modality
 from rmind.components.containers import ModuleDict
 from rmind.components.loss import FocalLoss
 from rmind.components.nn import Embedding
-from rmind.components.norm import Scaler, UniformBinner
+from rmind.components.norm import ImageNormalize, Scaler, UniformBinner
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.components.objectives.joint_policy import JointPolicyObjective
 from rmind.components.transformer.causal_frame import CausalFrameTransformer
@@ -28,6 +29,11 @@ from rmind.models.patch_policy import (
     BlockCausalTransformer,
     PatchPolicy,
     block_causal_mask,
+)
+from rmind.scripts.warm_start_ckpt import (
+    INTRA_POSITION_KEY,
+    _backfill_preprocessing_buffers,  # noqa: PLC2701
+    tile_intra_position_embedding,
 )
 
 BATCH_SIZE = 2
@@ -588,3 +594,131 @@ def test_teacher_forcing_routes_the_offset_loss_through_ground_truth_codes() -> 
     free.sample_codes = True
     free_loss = free._compute_metrics(batch)["policy", "loss", "offset"]  # noqa: SLF001
     assert not torch.allclose(free_loss, expected)
+
+
+def _causal_frame_encoder(*, tokens_per_frame: int) -> CausalFrameTransformer:
+    return CausalFrameTransformer(
+        dim_model=POLICY_DIM,
+        num_layers=2,
+        num_heads=2,
+        tokens_per_frame=tokens_per_frame,
+    )
+
+
+def test_tile_intra_position_embedding_preserves_the_readout_row() -> None:
+    torch.manual_seed(0)
+    src = torch.randn(NUM_PATCHES + 1, POLICY_DIM)
+
+    out = tile_intra_position_embedding(src, tokens_per_frame=3 * NUM_PATCHES + 1)
+
+    assert out.shape == (3 * NUM_PATCHES + 1, POLICY_DIM)
+    assert torch.equal(out[0], src[0])
+    assert torch.equal(out[1 : NUM_PATCHES + 1], src[1:])
+    # patch_policy.py:429 reads the LAST token of the frame as the readout --
+    # the property this function exists for.
+    assert torch.equal(out[-1], src[-1])
+
+
+def test_tile_intra_position_embedding_rejects_a_non_multiple() -> None:
+    src = torch.randn(NUM_PATCHES + 1, POLICY_DIM)
+
+    with pytest.raises(ValueError, match="multiple"):
+        tile_intra_position_embedding(src, tokens_per_frame=NUM_PATCHES + 2)
+
+
+def test_tiled_state_dict_loads_strictly_into_a_three_camera_model() -> None:
+    cameras_1cam = ("cam_front_left",)
+    cameras_3cam = ("cam_front_left", "cam_left_forward", "cam_right_forward")
+    tokens_per_frame_3cam = len(cameras_3cam) * NUM_PATCHES + 1
+
+    source = _make_model(
+        cameras=cameras_1cam,
+        encoder=_causal_frame_encoder(tokens_per_frame=NUM_PATCHES + 1),
+    )
+    target = _make_model(
+        cameras=cameras_3cam,
+        encoder=_causal_frame_encoder(tokens_per_frame=tokens_per_frame_3cam),
+    )
+
+    source_state = source.state_dict()
+    remapped = {
+        **source_state,
+        INTRA_POSITION_KEY: tile_intra_position_embedding(
+            source_state[INTRA_POSITION_KEY], tokens_per_frame=tokens_per_frame_3cam
+        ),
+    }
+    target.load_state_dict(remapped, strict=True)
+
+    # the "speed and cam_front_left parts transferred" claim, checked rather
+    # than assumed: bit-identical to the source, not just shape-compatible.
+    assert torch.equal(target.speed_embedding.weight, source.speed_embedding.weight)
+    assert torch.equal(target.patch_projection.weight, source.patch_projection.weight)
+    assert torch.equal(target.code_head[0].weight, source.code_head[0].weight)
+
+
+def test_warm_started_model_runs_a_training_step() -> None:
+    cameras_1cam = ("cam_front_left",)
+    cameras_3cam = ("cam_front_left", "cam_left_forward", "cam_right_forward")
+    tokens_per_frame_3cam = len(cameras_3cam) * NUM_PATCHES + 1
+
+    source = _make_model(
+        cameras=cameras_1cam,
+        encoder=_causal_frame_encoder(tokens_per_frame=NUM_PATCHES + 1),
+    )
+    target = _make_model(
+        cameras=cameras_3cam,
+        encoder=_causal_frame_encoder(tokens_per_frame=tokens_per_frame_3cam),
+    )
+
+    source_state = source.state_dict()
+    remapped = {
+        **source_state,
+        INTRA_POSITION_KEY: tile_intra_position_embedding(
+            source_state[INTRA_POSITION_KEY], tokens_per_frame=tokens_per_frame_3cam
+        ),
+    }
+    target.load_state_dict(remapped, strict=True)
+
+    batch = _make_batch(cameras=cameras_3cam)
+    losses = target._compute_metrics(batch)["policy", "loss"]  # noqa: SLF001
+    for value in losses.values():
+        assert value.isfinite()
+
+
+def test_backfill_preprocessing_buffers_fills_missing_input_transform_buffers() -> None:
+    """Reproduces a real source checkpoint predating `ImageNormalize` (a
+    `torchvision.transforms.v2.Normalize` drop-in that pre-registers
+    `mean`/`std` as buffers): its `input_transform` was stateless, so its
+    checkpoint has NO `input_transform.*` keys at all.
+    """
+    model = _make_model()
+    normalize = ImageNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+    model.input_transform = Sequential(normalize)
+    source_state = {
+        key: value
+        for key, value in model.state_dict().items()
+        if not key.startswith("input_transform.")
+    }
+
+    filled = _backfill_preprocessing_buffers(model, source_state)
+
+    assert torch.equal(filled["input_transform.0.mean"], normalize.mean)
+    assert torch.equal(filled["input_transform.0.std"], normalize.std)
+    assert set(filled) - {"input_transform.0.mean", "input_transform.0.std"} == set(
+        source_state
+    )
+
+
+def test_backfill_preprocessing_buffers_does_not_mask_other_missing_keys() -> None:
+    """A missing key OUTSIDE `input_transform` is real drift, not a benign
+    preprocessing-constant gap -- it must stay missing so `strict=True` still
+    catches it. This function must not become a general `strict=False` escape
+    hatch.
+    """
+    model = _make_model()
+    source_state = dict(model.state_dict())
+    del source_state["speed_embedding.weight"]
+
+    filled = _backfill_preprocessing_buffers(model, source_state)
+
+    assert "speed_embedding.weight" not in filled

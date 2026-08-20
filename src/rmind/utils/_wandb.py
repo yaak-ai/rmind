@@ -3,10 +3,8 @@ from typing import Any, Self
 
 
 class LoadableFromArtifact:
-    @classmethod
-    def load_from_wandb_artifact(
-        cls, artifact: str, filename: str = "model.ckpt", **kwargs: Any
-    ) -> Self:
+    @staticmethod
+    def download_wandb_artifact(artifact: str, filename: str = "model.ckpt") -> Path:
         import wandb  # noqa: PLC0415
 
         run = wandb.run
@@ -17,6 +15,11 @@ class LoadableFromArtifact:
         )
 
         artifact_dir = artifact_obj.download()
-        ckpt_path = Path(artifact_dir) / filename
+        return Path(artifact_dir) / filename
 
+    @classmethod
+    def load_from_wandb_artifact(
+        cls, artifact: str, filename: str = "model.ckpt", **kwargs: Any
+    ) -> Self:
+        ckpt_path = cls.download_wandb_artifact(artifact, filename)
         return cls.load_from_checkpoint(ckpt_path, **kwargs)  # ty:ignore[unresolved-attribute]
