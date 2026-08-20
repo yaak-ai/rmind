@@ -508,6 +508,7 @@ objectives:
                 attn_dropout: 0.1
                 resid_dropout: 0.1
                 mlp_dropout: 0.1
+                self_attn: true
                 hidden_layer_multiplier: 1
               final_norm:
                 _target_: torch.nn.Identity
