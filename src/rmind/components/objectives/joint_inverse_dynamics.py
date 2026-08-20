@@ -38,7 +38,6 @@ class JointInverseDynamicsObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict],
         targets: CodeTargets,
-        norm: InstanceOf[Module] | None = None,
         query_norm: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
@@ -50,12 +49,10 @@ class JointInverseDynamicsObjective(Objective):
         self.losses = losses
         self.targets: CodeTargets = targets
         self.query: tuple[str, ...] = query
-        self.norm: Module | None = norm
         self.query_norm: Module | None = query_norm
 
     def _features(self, *, episode: Episode, embedding: Tensor) -> Tensor:
-        if self.norm is not None:
-            embedding = self.norm(embedding)
+
         k = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
         obs_summary = episode.index.select(k).parse(embedding).get(k)  # (b, t, 64, d)
         query = episode.get(self.query)  # (b, t, p, d)

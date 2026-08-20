@@ -131,11 +131,15 @@ class CrossAttentionDecoderHead(nn.Module):
             return self
 
     def __init__(
-        self, decoder: CrossAttentionDecoder, output_projection: nn.Linear
+        self,
+        decoder: CrossAttentionDecoder,
+        output_projection: nn.Module,
+        final_norm: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.decoder = decoder
         self.output_projection = output_projection
+        self.final_norm = nn.Identity() if final_norm is None else final_norm
 
     @override
     def forward(self, input: Input | dict[str, Tensor]) -> Tensor:
@@ -154,9 +158,9 @@ class CrossAttentionDecoderHead(nn.Module):
             decoded = self.decoder(
                 query.reshape(b * t, sq, d), flatten(key), flatten(value)
             )
-            output = self.output_projection(decoded)
+            output = self.output_projection(self.final_norm(decoded))
 
             return output.reshape(b, t, sq, -1)
 
         decoded = self.decoder(query, key, value)
-        return self.output_projection(decoded)
+        return self.output_projection(self.final_norm(decoded))

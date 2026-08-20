@@ -29,7 +29,6 @@ class MemoryExtractionObjective(Objective):
     def __init__(
         self,
         *,
-        norm: InstanceOf[Module] | None = None,
         condition: InstanceOf[Module],
         query: tuple[str, ...],
         query_norm: InstanceOf[Module] | None = None,
@@ -40,7 +39,6 @@ class MemoryExtractionObjective(Objective):
     ) -> None:
         super().__init__()
 
-        self.norm: Module | None = norm
         self.condition: Module = condition
         self.query: tuple[str, ...] = query
         self.query_norm: Module | None = query_norm
@@ -50,8 +48,6 @@ class MemoryExtractionObjective(Objective):
         self.targets: Targets | None = targets
 
     def _features(self, *, episode: Episode, embedding: Tensor) -> Tensor:
-        if self.norm is not None:
-            embedding = self.norm(embedding)
 
         obs_history = (
             episode
@@ -142,7 +138,7 @@ class MemoryExtractionObjective(Objective):
 
             if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
                 predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
-                    embedding if self.norm is None else self.norm(embedding)
+                    embedding
                 )
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

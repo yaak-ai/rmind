@@ -30,7 +30,6 @@ class ForwardDynamicsPredictionObjective(Objective):
     def __init__(  # noqa: PLR0913
         self,
         *,
-        norm: InstanceOf[Module] | None = None,
         condition: InstanceOf[Module],
         query: tuple[str, ...],
         query_norm: InstanceOf[Module] | None = None,
@@ -41,7 +40,6 @@ class ForwardDynamicsPredictionObjective(Objective):
     ) -> None:
         super().__init__()
 
-        self.norm: Module | None = norm
         self.condition: Module = condition
         self.query: tuple[str, ...] = query
         self.query_norm: Module | None = query_norm
@@ -51,8 +49,6 @@ class ForwardDynamicsPredictionObjective(Objective):
         self.patch_pos_embed: Module | None = patch_pos_embed
 
     def _features(self, *, episode: Episode, embedding: Tensor) -> Features:
-        if self.norm is not None:
-            embedding = self.norm(embedding)
 
         summary = (
             episode
@@ -130,8 +126,6 @@ class ForwardDynamicsPredictionObjective(Objective):
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
 
         if (key := ObjectivePredictionKey.SUMMARY_EMBEDDINGS) in keys:
-            predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(
-                embedding if self.norm is None else self.norm(embedding)
-            )
+            predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(embedding)
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

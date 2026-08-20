@@ -24,6 +24,7 @@ class TransformerEncoder(nn.Module):
         mlp_dropout: float = 0.1,
         hidden_layer_multiplier: int = 1,
         emb_norm: InstanceOf[nn.Module] | None = None,
+        final_norm: InstanceOf[nn.Module] | None = None,
         rope: InstanceOf[nn.Module] | None = None,
     ) -> None:
         super().__init__()
@@ -40,6 +41,7 @@ class TransformerEncoder(nn.Module):
             for _ in range(num_layers)
         ])
         self.emb_norm: nn.Module | None = emb_norm
+        self.final_norm: nn.Module | None = final_norm if final_norm else nn.Identity()
 
     @override
     def forward(self, *, src: Tensor, mask: FactorizedAttentionMask) -> Tensor:
@@ -51,6 +53,7 @@ class TransformerEncoder(nn.Module):
             mask.temporal.mask_tensor,
             training=self.training,
         )
+        out = self.final_norm(out)
         return rearrange(out, "b t s d -> b (t s) d")
 
 

@@ -384,6 +384,9 @@ encoder:
     emb_norm:
       _target_: torch.nn.LayerNorm
       normalized_shape: ${encoder_embedding_dim}
+    final_norm:
+      _target_: torch.nn.LayerNorm
+      normalized_shape: ${encoder_embedding_dim}
     rope:
       _target_: rmind.components.position_encoding.RotaryPositionalEmbeddings
       dim:
@@ -400,9 +403,6 @@ objectives:
   modules:
     inverse_dynamics:
       _target_: rmind.components.objectives.joint_inverse_dynamics.JointInverseDynamicsObjective
-      norm:
-        _target_: torch.nn.LayerNorm
-        normalized_shape: ${encoder_embedding_dim}
       condition:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:
@@ -414,7 +414,10 @@ objectives:
           resid_dropout: 0.1
           mlp_dropout: 0.1
           hidden_layer_multiplier: 1
-          self_attn: false
+          self_attn: true
+        final_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: ${encoder_embedding_dim}
         output_projection:
           _target_: torch.nn.Identity
       query: [input_embeddings, image, cam_front_left]
@@ -433,6 +436,9 @@ objectives:
           mlp_dropout: 0.1
           hidden_layer_multiplier: 1
           self_attn: false
+        final_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: ${encoder_embedding_dim}
         output_projection:
           _target_: torch.nn.Identity
       tokenizer:
@@ -463,9 +469,6 @@ objectives:
 
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective
-      norm:
-        _target_: torch.nn.LayerNorm
-        normalized_shape: ${encoder_embedding_dim}
       patch_pos_embed:
         _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
         grid_size: [16, 16]
@@ -481,7 +484,10 @@ objectives:
           resid_dropout: 0.1
           mlp_dropout: 0.1
           hidden_layer_multiplier: 1
-          self_attn: false
+          self_attn: true
+        final_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: ${encoder_embedding_dim}
         output_projection:
           _target_: torch.nn.Identity
       query: [input_embeddings, image, cam_front_left]
@@ -503,6 +509,8 @@ objectives:
                 resid_dropout: 0.1
                 mlp_dropout: 0.1
                 hidden_layer_multiplier: 1
+              final_norm:
+                _target_: torch.nn.Identity
               output_projection:
                 _target_: rmind.components.nn.Linear
                 in_features: ${image_embedding_dim}
@@ -524,9 +532,6 @@ objectives:
 
     memory_extraction:
       _target_: rmind.components.objectives.MemoryExtractionObjective
-      norm:
-        _target_: torch.nn.LayerNorm
-        normalized_shape: ${encoder_embedding_dim}
       condition:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:
@@ -538,7 +543,10 @@ objectives:
           resid_dropout: 0.1
           mlp_dropout: 0.1
           hidden_layer_multiplier: 1
-          self_attn: false
+          self_attn: true
+        final_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: ${encoder_embedding_dim}
         output_projection:
           _target_: torch.nn.Identity
       query: [input_embeddings, image, cam_front_left]
@@ -557,6 +565,9 @@ objectives:
           mlp_dropout: 0.1
           hidden_layer_multiplier: 1
           self_attn: false
+        final_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: ${encoder_embedding_dim}
         output_projection:
           _target_: torch.nn.Identity
       heads:

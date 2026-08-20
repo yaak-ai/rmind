@@ -37,20 +37,20 @@ class JointPolicyObjective(Objective):
         tokenizer: InstanceOf[Module],
         condition: InstanceOf[Module],
         query: Path,
+        query_norm: InstanceOf[Module] | None = None,
         decoder: InstanceOf[Module],
         code_head: InstanceOf[Module],
         offset_head: InstanceOf[Module],
         losses: InstanceOf[ModuleDict],
         chunk: Path,
-        norm: InstanceOf[Module] | None = None,
         sample_codes: bool = True,
     ) -> None:
         super().__init__()
 
-        self.norm: Module | None = norm
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
         self.condition = condition
         self.query: Path = query
+        self.query_norm: Module | None = query_norm
         self.decoder = decoder
         self.code_head = code_head
         self.offset_head = offset_head
@@ -76,14 +76,14 @@ class JointPolicyObjective(Objective):
         return TensorDict({"joint_actions": chunk})
 
     def _features(self, episode: Episode, embedding: Tensor) -> Tensor:
-        if self.norm is not None:
-            embedding = self.norm(embedding)
 
         last = episode.index[-1]
         k_os = (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY)
         observation_summary = last.select(k_os).parse(embedding).get(k_os)  # (b, 64, d)
 
         patches = episode.get(self.query)[:, -1]  # (b, p, d)
+        if self.query_norm is not None:
+            patches = self.query_norm(patches)
         # observation_summary routes attention over patches without entering the values
         key_policy = self.condition({
             "query": patches,

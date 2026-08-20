@@ -40,10 +40,6 @@ hparams_jq: |
     "modules": {
       "policy": {
         "_target_": "rmind.components.objectives.joint_policy.JointPolicyObjective",
-        "norm": {
-          "_target_": "torch.nn.LayerNorm",
-          "normalized_shape": 384
-        },
         "condition": {
           "_target_": "rmind.components.transformer.CrossAttentionDecoderHead",
           "decoder": {
@@ -55,13 +51,21 @@ hparams_jq: |
             "resid_dropout": 0.1,
             "mlp_dropout": 0.1,
             "hidden_layer_multiplier": 1,
-            "self_attn": false
+            "self_attn": true
+          },
+          "final_norm": {
+            "_target_": "torch.nn.LayerNorm",
+            "normalized_shape": 384
           },
           "output_projection": {
             "_target_": "torch.nn.Identity"
           }
         },
         "query": ["input_embeddings", "image", "cam_front_left"],
+        "query_norm": {
+            "_target_": "torch.nn.LayerNorm",
+            "normalized_shape": 384
+          },
         "decoder": {
           "_target_": "rmind.components.transformer.CrossAttentionDecoderHead",
           "decoder": {
@@ -74,6 +78,10 @@ hparams_jq: |
             "mlp_dropout": 0.1,
             "hidden_layer_multiplier": 1,
             "self_attn": false
+          },
+          "final_norm": {
+            "_target_": "torch.nn.LayerNorm",
+            "normalized_shape": 384
           },
           "output_projection": {
             "_target_": "rmind.components.nn.Linear",
