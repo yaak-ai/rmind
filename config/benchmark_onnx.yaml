@@ -14,9 +14,31 @@ warmup: 1
 image_size: null
 # "video" decodes cam_front_left.pii.mp4; "jpg" reads the pre-extracted
 # frames/cam_front_left.pii.mp4/<W>x<H>/*.jpg instead (see /home/alex/data/
-# dvc.yaml's extract_frames stage). Override to frame_sources=[video,jpg] to
-# run every backend against both and compare predictions side by side.
+# dvc.yaml's extract_frames stage). "video_jpeg" decodes video like "video"
+# but also round-trips the frame through ffmpeg's real mjpeg encoder at
+# jpeg_qv= below, emulating that pipeline's JPEG-compression step (no
+# scale_npp/CUDA needed for this, just `ffmpeg` on PATH — see
+# _simulate_offline_jpeg in benchmark_onnx.py). Override e.g.
+# frame_sources=[video,jpg,video_jpeg] to run every backend against all
+# three and compare predictions side by side.
+# "ffmpeg" is the baseline source: it re-runs the extract_frames ffmpeg
+# command itself (NVDEC decode + GPU resize in NV12 + real mjpeg), so it shows
+# the best any inference-side preprocessing can do — 1.59 uint8 MAE vs the real
+# training jpgs, where "video_jpeg" reaches 3.80 and "video" 4.42. Needs ffmpeg
+# on PATH and (unless ffmpeg_hwaccel=false) a CUDA device.
 frame_sources: [video]
+# ffmpeg mjpeg -q:v (2..31, lower=better) used by the "video_jpeg" source —
+# 16 matches the offline extraction pipeline's own `-q:v 16` and reproduces
+# the real training jpgs' quantization tables byte-for-byte (asserted in
+# tests/test_benchmark_onnx_preprocessing.py against real drive data). This is
+# NOT a libjpeg 0-100 quality — see _simulate_offline_jpeg in
+# benchmark_onnx.py for why no libjpeg quality value can express these tables.
+jpeg_qv: 16
+# "ffmpeg" source only: run extract_frames' real NVDEC decode + scale_cuda
+# resize (in NV12, like scale_npp). Set false to fall back to a software resize,
+# still in NV12 — measured 2.84 vs 1.59 uint8 MAE against the real training
+# jpgs, so only use it where no CUDA device is available.
+ffmpeg_hwaccel: true
 
 # override per run, e.g.:
 #   onnx=/path/to/model.onnx wandb_model=yaak/rmind/model-XXXXXXXX:vN

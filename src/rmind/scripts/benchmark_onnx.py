@@ -19,10 +19,25 @@ NOTE in _WandbBackend.run.
 (default) decodes cam_front_left.pii.mp4; "jpg" reads dvc.yaml's
 pre-extracted frames/cam_front_left.pii.mp4/<W>x<H>/*.jpg instead — the
 same fixed-size JPEGs training itself was built from, skipping
-_preprocess_image's approximate video-decode downscale. Pass both
-(frame_sources=[video,jpg]) to run every backend against both sources —
-every table then carries one row/column per (backend, source) pair, and
-_print_validation's pairwise diff covers source-vs-source too.
+_preprocess_image's approximate video-decode downscale. "video_jpeg"
+decodes video like "video" but additionally round-trips the downscaled
+frame through ffmpeg's mjpeg quantization tables at `jpeg_qv=` (default
+16, matching the offline extraction pipeline's `-q:v 16` — byte-identical
+DQT against the real training jpgs, asserted in
+tests/test_benchmark_onnx_preprocessing.py) before continuing preprocessing —
+this emulates the offline pipeline's JPEG-compression step without
+needing `scale_npp` (that resampling kernel still has no local
+equivalent; only the *encode* half is reproduced here). "ffmpeg" is the
+BASELINE: it re-runs extract_frames' own ffmpeg command (NVDEC hevc
+decode, GPU resize in NV12, real mjpeg encoder), substituting only
+scale_cuda for the unavailable scale_npp, so it shows how close any
+inference-side preprocessing can get — 1.59 uint8 MAE against the real
+training jpgs, vs 3.80 for "video_jpeg" and 4.42 for "video" (two
+adjacent real frames differ by 1.34). Pass multiple
+(e.g. frame_sources=[video,jpg,video_jpeg]) to run every backend against
+all of them — every table then carries one row/column per (backend,
+source) pair, and _print_validation's pairwise diff covers
+source-vs-source too.
 
 Usage:
     # ONNX only (compare with driver's benchmark_all_models.py)
@@ -43,6 +58,11 @@ Usage:
     just benchmark-onnx \\
         onnx=~/rmind/outputs/.../model.onnx \\
         frame_sources=[video,jpg]
+
+    # ...plus a video source that also simulates the offline JPEG re-encode
+    just benchmark-onnx \\
+        onnx=~/rmind/outputs/.../model.onnx \\
+        frame_sources=[video,jpg,video_jpeg]
 """
 
 from __future__ import annotations
@@ -327,7 +347,47 @@ class _WaypointLoader:
 _CENTER_CROP_SIZE = (320, 576)  # (H, W)
 
 
-def _preprocess_image(image: np.ndarray, image_size: tuple[int, int]) -> np.ndarray:
+# The offline dvc.yaml extract_frames stage's ffmpeg command ends in
+# `-f image2 -q:v 16 ...`. That -q:v is ffmpeg's native mjpeg quantizer scale
+# (2-31, lower=better) -- NOT a 0-100 libjpeg "quality", and no libjpeg
+# quality reproduces its table: the closest (quality 50) is still ~20 mean
+# absolute DQT coefficients away, and passing 16 straight through as a libjpeg
+# quality -- which this module used to do -- is the single worst match in the
+# whole 0-100 sweep (~96 away), i.e. drastically over-compressed. That bug
+# made the "video_jpeg" source land *further* from the real training jpgs than
+# plain "video" (5.59 vs 4.31 uint8 MAE) when its whole purpose is to land
+# closer (3.83).
+#
+# ffmpeg builds the table itself, scaling ff_mpeg1_default_intra_matrix by the
+# requested -q:v: the DC coefficient stays pinned at 8, and every AC
+# coefficient becomes base times qv floor-divided by 8, clamped to 1..255.
+# Verified byte-identical to `ffmpeg -q:v N -pix_fmt yuvj420p` for every N in
+# 2..31, and the qv=16 table reproduces the embedded DQT of the real training
+# jpgs under <data_dir>/frames/cam_front_left.pii.mp4/576x324/ exactly (all 64
+# coefficients; extract_frames emits a single table shared by luma and chroma)
+# -- see tests/test_benchmark_onnx_preprocessing.py, which asserts this
+# against real drive data.
+#
+# This is a pure encoder-side setting, independent of the decode/scale half of
+# that pipeline (which uses scale_npp and has no local equivalent, see
+# _preprocess_image's docstring).
+# The actual implementation lives in rmind.utils.jpeg so non-training
+# consumers (drivr's live camera pipeline) can reuse this exact, tested
+# quantization logic without reaching into script internals. Re-exported here
+# under their original private names for tests/test_benchmark_onnx_preprocessing.py.
+from rmind.utils.jpeg import (  # noqa: E402
+    DEFAULT_JPEG_QV as _DEFAULT_JPEG_QV,
+    FFMPEG_MJPEG_BASE_QTABLE as _FFMPEG_MJPEG_BASE_QTABLE,
+    JPEG_QV_RANGE as _JPEG_QV_RANGE,
+    JPEG_SUBSAMPLING_420 as _JPEG_SUBSAMPLING_420,
+    ffmpeg_mjpeg_qtable as _ffmpeg_mjpeg_qtable,
+    simulate_offline_jpeg as _simulate_offline_jpeg,
+)
+
+
+def _preprocess_image(
+    image: np.ndarray, image_size: tuple[int, int], *, jpeg_qv: int | None = None
+) -> np.ndarray:
     """HWC uint8 → resize → center crop → resize → scale → normalize → CHW float32.
 
     Mirrors raw.yaml's image input_transform end to end (Rearrange ->
@@ -339,6 +399,11 @@ def _preprocess_image(image: np.ndarray, image_size: tuple[int, int]) -> np.ndar
     this benchmark runs is built from the hparams_jq-stripped config, so none
     of them do this internally anymore — see
     tests/test_benchmark_onnx_preprocessing.py for the equivalence proof.
+
+    `jpeg_qv`, when set (frame_sources=[video_jpeg]), additionally round-trips
+    the downscaled frame through ffmpeg's real mjpeg encoder — see
+    _simulate_offline_jpeg. Only meaningful for video-decoded frames; the
+    "jpg" source is already real compressed data and never passes this.
     """
     import cv2  # noqa: PLC0415
     from torchvision.transforms import v2 as T  # noqa: PLC0415
@@ -357,6 +422,9 @@ def _preprocess_image(image: np.ndarray, image_size: tuple[int, int]) -> np.ndar
     # video-vs-jpg investigation.
     h, w = DEFAULT_IMAGE_SIZE
     native_hwc = cv2.resize(image, (w, h), interpolation=cv2.INTER_CUBIC)
+
+    if jpeg_qv is not None:
+        native_hwc = _simulate_offline_jpeg(native_hwc, qv=jpeg_qv)
 
     # uint8 throughout crop/resize (matching ToDtype running *after* Resize in
     # raw.yaml) to minimize rounding drift relative to the real pipeline.
@@ -434,7 +502,150 @@ class _JpgFrameSource:
         pass
 
 
-_FrameSource = _VideoFrameSource | _JpgFrameSource
+# /home/alex/data/dvc.yaml's extract_frames stage, verbatim:
+#
+#   ffmpeg -y -vsync 0 -threads 0 -hwaccel cuda -hwaccel_output_format cuda
+#          -c:v hevc_cuvid -i <video>
+#          -filter_complex "scale_npp=576:324,hwdownload,format=nv12"
+#          -f image2 -q:v 16 <out>/%09d.jpg
+#
+# The "ffmpeg" frame source reproduces this, so it is the best case any
+# inference-side preprocessing can reach: real NVDEC hevc decode, the resize
+# done in NV12 (chroma at half resolution, never round-tripping through RGB --
+# which is what the cv2 path cannot reproduce), and the real mjpeg encoder.
+#
+# One substitution: scale_npp is unavailable outside NVIDIA's proprietary NPP
+# build, so scale_cuda stands in. That single difference is the whole residual:
+# measured against the real training jpgs (uint8 MAE, 576x324),
+#
+#   ffmpeg + scale_cuda bicubic (this source) 1.59   <- the floor
+#   ffmpeg + scale_cuda bilinear             2.40
+#   ffmpeg software scale, still in NV12      2.84
+#   cv2 INTER_CUBIC + mjpeg q16 ("video_jpeg") 3.80
+#   cv2 INTER_CUBIC alone ("video")           4.42
+#   two ADJACENT real training frames         1.34
+#
+# so the ideal case lands just above one frame of scene motion, and ~2.4x
+# closer than the best pure-Python path.
+_FFMPEG_INTERP_ALGO = "bicubic"  # scale_cuda's default; also its closest to NPP
+# -vsync 0 is a deprecated global spelling of this output option; byte-identical
+# output was verified against extract_frames' own `-vsync 0` on real drive data.
+_FFMPEG_FPS_MODE = "passthrough"
+# Frames are extracted in blocks so consecutive episodes reuse one ffmpeg run.
+# `select` counts decoded frames, so a block costs a decode from frame 0 up to
+# its end (~3s for 512 frames at start_frame~2900 on an RTX 5090); this keeps
+# indexing exact, which -ss seeking would not.
+_FFMPEG_BLOCK_FRAMES = 512
+
+
+class _FfmpegFrameSource:
+    """Re-runs extract_frames' own ffmpeg command to produce frames.
+
+    The baseline source: every other source approximates this pipeline, so the
+    gap between "ffmpeg" and "jpg" is the irreducible floor (scale_npp vs
+    scale_cuda) and any source further from "jpg" than this one is losing
+    something recoverable. Frames come out already at DEFAULT_IMAGE_SIZE and
+    already mjpeg-compressed, exactly like the "jpg" source, so _preprocess_image
+    must NOT additionally apply jpeg_qv to them.
+    """
+
+    # _load_batch builds a fresh source per episode while consecutive episodes
+    # overlap by 5 of their 6 frames, so extraction is cached for the life of
+    # the process rather than per instance — otherwise every episode re-runs
+    # ffmpeg over the same block.
+    _tmpdir: ClassVar[Any] = None
+    _blocks: ClassVar[set[tuple[str, bool, int]]] = set()
+
+    def __init__(self, video_path: Path, *, hwaccel: bool = True) -> None:
+        import shutil  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        if shutil.which("ffmpeg") is None:
+            msg = "frame_sources=[ffmpeg] needs `ffmpeg` on PATH"
+            raise RuntimeError(msg)
+        self._video_path = video_path
+        self._hwaccel = hwaccel
+        if type(self)._tmpdir is None:  # noqa: SLF001
+            type(self)._tmpdir = tempfile.TemporaryDirectory(  # noqa: SLF001
+                prefix="rmind-ffmpeg-frames-"
+            )
+        self._root = Path(type(self)._tmpdir.name)  # noqa: SLF001
+
+    def _extract_block(self, block: int) -> Path:
+        import subprocess  # noqa: PLC0415, S404 — fixed argv, no shell
+
+        key = (str(self._video_path), self._hwaccel, block)
+        out_dir = self._root / f"{'hw' if self._hwaccel else 'sw'}-{block}"
+        if key in type(self)._blocks:  # noqa: SLF001
+            return out_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        first = block * _FFMPEG_BLOCK_FRAMES
+        last = first + _FFMPEG_BLOCK_FRAMES - 1
+        height, width = DEFAULT_IMAGE_SIZE
+        decode: list[str] = []
+        if self._hwaccel:
+            decode = [
+                "-hwaccel", "cuda",
+                "-hwaccel_output_format", "cuda",
+                "-c:v", "hevc_cuvid",
+            ]  # fmt: skip
+            scale = f"scale_cuda={width}:{height}:interp_algo={_FFMPEG_INTERP_ALGO}"
+            chain = f"{scale},hwdownload,format=nv12"
+        else:
+            # keep the resize in NV12 like the real pipeline, minus the GPU
+            chain = f"format=nv12,scale={width}:{height},format=nv12"
+
+        command = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-threads", "0",
+            *decode,
+            "-i", str(self._video_path),
+            "-filter_complex", rf"select='between(n\,{first}\,{last})',{chain}",
+            "-fps_mode", _FFMPEG_FPS_MODE,
+            "-frames:v", str(_FFMPEG_BLOCK_FRAMES),
+            "-f", "image2",
+            "-q:v", str(_DEFAULT_JPEG_QV),
+            str(out_dir / _JPG_FILENAME_PATTERN.replace("{idx:09d}", "%09d")),
+        ]  # fmt: skip
+        result = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+        if result.returncode != 0:
+            msg = (
+                f"ffmpeg failed extracting frames {first}..{last} "
+                f"(hwaccel={self._hwaccel}): {result.stderr.strip()[:500]}"
+            )
+            raise RuntimeError(msg)
+
+        type(self)._blocks.add(key)  # noqa: SLF001
+        logger.debug(
+            "ffmpeg extracted frame block",
+            frames=f"{first}..{last}",
+            hwaccel=self._hwaccel,
+        )
+        return out_dir
+
+    def read(self, frame_idx: int) -> np.ndarray:
+        import cv2  # noqa: PLC0415
+
+        block, offset = divmod(frame_idx, _FFMPEG_BLOCK_FRAMES)
+        # ffmpeg's image2 muxer numbers the SELECTED frames 1-based, so the
+        # block's first frame is file 1 — same convention as extract_frames'
+        # whole-video run, just rebased (see _JPG_INDEX_OFFSET).
+        path = self._extract_block(block) / _JPG_FILENAME_PATTERN.format(
+            idx=offset + _JPG_INDEX_OFFSET
+        )
+        frame_bgr = cv2.imread(str(path))
+        if frame_bgr is None:
+            msg = f"Cannot read ffmpeg-extracted frame {frame_idx} at {path}"
+            raise ValueError(msg)
+        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+    def close(self) -> None:
+        # extracted blocks are process-wide (see _blocks); the TemporaryDirectory
+        # cleans itself up at interpreter exit
+        pass
+
+
+_FrameSource = _VideoFrameSource | _JpgFrameSource | _FfmpegFrameSource
 
 
 def _jpg_frames_dir(data_dir: Path) -> Path:
@@ -454,11 +665,16 @@ class _BatchRequest:
     start_frame: int
     frame_step: int
     image_size: tuple[int, int]
-    source: str = "video"  # "video" | "jpg"
+    source: str = "video"  # "video" | "jpg" | "video_jpeg" | "ffmpeg"
+    jpeg_qv: int = _DEFAULT_JPEG_QV  # only applied when source == "video_jpeg"
+    ffmpeg_hwaccel: bool = True  # only applied when source == "ffmpeg"
 
     def make_frame_source(self) -> _FrameSource:
         if self.source == "jpg":
             return _JpgFrameSource(self.frames_dir)
+        if self.source == "ffmpeg":
+            return _FfmpegFrameSource(self.video_path, hwaccel=self.ffmpeg_hwaccel)
+        # "video" and "video_jpeg" both decode video
         return _VideoFrameSource(self.video_path)
 
 
@@ -468,7 +684,8 @@ def _read_timestep(
     frame_rgb = source.read(frame_idx)
     state = request.metadata.get_state_for_frame(frame_idx)
     gnss = request.metadata.get_gnss_for_frame(frame_idx)
-    image = _preprocess_image(frame_rgb, request.image_size)
+    jpeg_qv = request.jpeg_qv if request.source == "video_jpeg" else None
+    image = _preprocess_image(frame_rgb, request.image_size, jpeg_qv=jpeg_qv)
     wp = request.waypoints.get_for_gnss(gnss)
     return image, state, wp
 
@@ -639,7 +856,7 @@ class _WandbBackend:
             self.model = PatchPolicy.load_for_export(artifact).eval()
             self.is_patch_policy = True
         else:
-            from rmind.models.control_transformer import ControlTransformer  # noqa: PLC0415
+            from rmind.models.control_transformer import ControlTransformer
 
             if hparams_jq is None:
                 # _validate_config should have already rejected this — defense in depth.
@@ -850,6 +1067,8 @@ def _print_error_table(
 def _print_validation(
     labels: Sequence[str], all_preds: dict[str, list[Predictions]]
 ) -> None:
+    from tabulate import tabulate  # noqa: PLC0415
+
     labels = list(labels)
     sep = "=" * 100
     print("\nVALIDATION CHECKS")  # noqa: T201
@@ -858,28 +1077,46 @@ def _print_validation(
         print("  Only one backend — no cross-model comparison.")  # noqa: T201
         return
 
+    # Max is a single-frame statistic: one VQ-head bin flip on a near-tie frame
+    # dominates it (see frame_source_parity_report.md), so it alone makes a
+    # source pair look wildly discordant even when the rest of the run agrees
+    # tightly. p95/p99 sit between that and the median's blindness to tails.
+    rows = []
+    any_violation = False
     for i in range(len(labels)):
         for j in range(i + 1, len(labels)):
             la, lb = labels[i], labels[j]
             pa, pb = all_preds[la], all_preds[lb]
-            gas_max = max(abs(a.gas - b.gas) for a, b in zip(pa, pb, strict=False))
-            brake_max = max(
-                abs(a.brake - b.brake) for a, b in zip(pa, pb, strict=False)
-            )
-            steer_max = max(
-                abs(a.steer - b.steer) for a, b in zip(pa, pb, strict=False)
-            )
-            ok = (
-                gas_max <= _VALIDATION_TOLERANCE
-                and brake_max <= _VALIDATION_TOLERANCE
-                and steer_max <= _VALIDATION_TOLERANCE
-            )
-            icon = "✓" if ok else "⚠"
-            verb = "agree within" if ok else "diffs exceed"
-            print(  # noqa: T201
-                f"{icon} {la} vs {lb} {verb} tolerance "
-                f"(max: gas={gas_max:.8f}, brake={brake_max:.8f}, steer={steer_max:.8f})"
-            )
+            for chan in ("gas", "brake", "steer"):
+                diffs = np.abs([
+                    getattr(a, chan) - getattr(b, chan)
+                    for a, b in zip(pa, pb, strict=False)
+                ])
+                chan_max = float(np.max(diffs))
+                ok = chan_max <= _VALIDATION_TOLERANCE
+                any_violation |= not ok
+                rows.append([
+                    f"{la} vs {lb}",
+                    chan,
+                    f"{np.median(diffs):.8f}",
+                    f"{np.percentile(diffs, 95):.8f}",
+                    f"{np.percentile(diffs, 99):.8f}",
+                    f"{chan_max:.8f}",
+                    "✓" if ok else "⚠",
+                ])
+
+    print(  # noqa: T201
+        tabulate(
+            rows,
+            headers=["Pair", "Chan", "Median", "P95", "P99", "Max", "OK?"],
+            tablefmt="grid",
+        )
+    )
+    if any_violation:
+        print(  # noqa: T201
+            "  ⚠ rows above tolerance may be a single bin-flip frame, not a"
+            " systemic diff — compare Max against P99 to tell them apart."
+        )
 
 
 def _print_per_episode(
@@ -890,7 +1127,7 @@ def _print_per_episode(
     labels = list(labels)
     headers = (
         ["Ep", "Frame", "Chan"]
-        + [f"T={i}" for i in range(NUM_TIMESTEPS)]
+        # + [f"T={i}" for i in range(NUM_TIMESTEPS)]
         + ["GT"]
         + labels
     )
@@ -906,13 +1143,13 @@ def _print_per_episode(
             ("steer", "steer", gt.steer),
         ]:
             hist = row[f"history_{chan_key}"]
-            t_vals = [f"{v:.6f}" for v in hist]
+            [f"{v:.6f}" for v in hist]
             pred_vals = [f"{row[f'{lbl}_{chan_key}']:.6f}" for lbl in labels]
             table_rows.append([
                 ep,
                 frame,
                 chan_label,
-                *t_vals,
+                # *t_vals,
                 f"{gt_val:.6f}",
                 *pred_vals,
             ])
@@ -964,7 +1201,7 @@ def _print_summary_footer(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
-_VALID_FRAME_SOURCES = frozenset({"video", "jpg"})
+_VALID_FRAME_SOURCES = frozenset({"video", "jpg", "video_jpeg", "ffmpeg"})
 
 
 class Config(BaseModel):
@@ -985,9 +1222,26 @@ class Config(BaseModel):
     # dvc.yaml's pre-extracted frames/cam_front_left.pii.mp4/<W>x<H>/*.jpg
     # instead — the same fixed-size JPEGs training itself was built from, so
     # it skips _preprocess_image's approximate downscale-to-native-size step.
-    # Pass both (e.g. frame_sources=[video,jpg]) to run every backend against
-    # both sources and compare predictions side by side.
+    # "video_jpeg" decodes video like "video" but also round-trips the
+    # downscaled frame through ffmpeg's real mjpeg encoder at jpeg_qv= (see
+    # _simulate_offline_jpeg), emulating the offline pipeline's JPEG-encode
+    # step without needing scale_npp. "ffmpeg" re-runs extract_frames' own
+    # command (see _FfmpegFrameSource) and is the baseline every other source
+    # approximates. Pass multiple (e.g.
+    # frame_sources=[video,jpg,video_jpeg,ffmpeg]) to run every backend
+    # against all of them and compare predictions side by side.
     frame_sources: Sequence[str] = ("video",)
+    # ffmpeg mjpeg -q:v (2..31, lower=better) used by the "video_jpeg" source
+    # — see _simulate_offline_jpeg for why 16 is the confirmed default. Sweep
+    # it on a single source to probe the model's sensitivity to compression;
+    # that is a cleaner test than comparing decode paths, whose pixel
+    # differences sit near the quantization floor either way.
+    jpeg_qv: int = _DEFAULT_JPEG_QV
+    # "ffmpeg" source: run extract_frames' real NVDEC + scale_cuda + mjpeg
+    # chain (the baseline). Set false to swap the GPU resize for a software
+    # one, still in NV12 — measured 2.84 vs 1.59 uint8 MAE against the real
+    # training jpgs, so only use it where CUDA is unavailable.
+    ffmpeg_hwaccel: bool = True
 
     @field_validator("onnx", "wandb_model", mode="before")
     @classmethod
@@ -1008,8 +1262,17 @@ class Config(BaseModel):
             raise ValueError(msg)
         bad = sorted(set(v) - _VALID_FRAME_SOURCES)
         if bad:
-            msg = f"Unknown frame_sources {bad} (expected {sorted(_VALID_FRAME_SOURCES)})"
+            msg = (
+                f"Unknown frame_sources {bad} (expected {sorted(_VALID_FRAME_SOURCES)})"
+            )
             raise ValueError(msg)
+        return v
+
+    @field_validator("jpeg_qv")
+    @classmethod
+    def _check_jpeg_qv(cls, v: int) -> int:
+        # fail here rather than mid-run on the first video_jpeg frame
+        _ffmpeg_mjpeg_qtable(v)
         return v
 
 
@@ -1044,7 +1307,7 @@ def _validate_config(
             msg = f"Missing: {config.data_dir / fname}"
             raise FileNotFoundError(msg)
 
-    if "video" in config.frame_sources:
+    if {"video", "video_jpeg", "ffmpeg"} & set(config.frame_sources):
         video_path = config.data_dir / "cam_front_left.pii.mp4"
         if not video_path.exists():
             msg = f"Missing: {video_path}"
@@ -1082,11 +1345,7 @@ def _build_backends(
             msg = "wandb_model= requires export=..."
             raise ValueError(msg)
         for idx, artifact in enumerate(wandb_artifacts):
-            label = (
-                "PyTorch"
-                if len(wandb_artifacts) == 1
-                else f"PyTorch {idx + 1}"
-            )
+            label = "PyTorch" if len(wandb_artifacts) == 1 else f"PyTorch {idx + 1}"
             backends[label] = _WandbBackend(
                 artifact, target=target, hparams_jq=hparams_jq, strict=strict
             )
@@ -1271,6 +1530,8 @@ def main(cfg: DictConfig) -> None:
         frame_step=config.frame_step,
         image_size=image_size,
         source=config.frame_sources[0],
+        jpeg_qv=config.jpeg_qv,
+        ffmpeg_hwaccel=config.ffmpeg_hwaccel,
     )
 
     _warmup_backends(
