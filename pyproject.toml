@@ -50,16 +50,24 @@ rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 
 [project.optional-dependencies]
+# onnxruntime and onnxruntime-gpu install the same `onnxruntime` module, so
+# whichever lands last in a shared venv wins the import. These must carry the
+# same platform split as the `benchmark` group below: without it, a
+# `uv sync --all-extras --all-groups` puts BOTH in the venv, the CPU wheel wins,
+# and every ONNX benchmark silently runs on CPU against a CUDA PyTorch model
+# (~750 ms vs ~35 ms) while the timing table still reports "GPU".
 export = [
   "onnx>=1.22.0",
-  "onnxruntime>=1.27.0",
+  "onnxruntime-gpu>=1.27.0; sys_platform == 'linux'",
+  "onnxruntime>=1.27.0; sys_platform != 'linux'",
   "onnxscript>=0.7.0",
 ]
 predict = [
   "wandb>=0.27.2",
   "rbyte[video,visualize]",
   "torchcodec",  # transitive dependency of rbyte; only here so we can configure [tool.uv.sources.torchcodec] (https://github.com/astral-sh/uv/issues/8253)
-  "onnxruntime>=1.27.0",
+  "onnxruntime-gpu>=1.27.0; sys_platform == 'linux'",
+  "onnxruntime>=1.27.0; sys_platform != 'linux'",
   "tensorrt-cu12==11.1.0.106; sys_platform == 'linux'",
 ]
 train = [
@@ -80,8 +88,18 @@ dev = [
   "wat-inspector",
 ]
 benchmark = [
-  "onnxruntime>=1.23.1",
+  # onnxruntime-gpu supplies CUDAExecutionProvider so the benchmark compares ONNX and
+  # PyTorch on the same device (cross-device float noise flips the PatchPolicy VQ head's
+  # code argmax on near-tie frames, which reads as a bogus tolerance failure). It is the
+  # same `onnxruntime` module as the CPU wheel, so exactly one of the two may be
+  # installed; the CUDA 13 / cuDNN 9 libs it dlopens already come in with torch's cu130
+  # wheels, hence no [cuda,cudnn] extras here.
+  "onnxruntime-gpu>=1.27.0; sys_platform == 'linux'",
+  "onnxruntime>=1.23.1; sys_platform != 'linux'",
   "opencv-python-headless",
+  # the only encoder here that accepts explicit JPEG quantization tables, which
+  # the "video_jpeg" frame source needs to match extract_frames' ffmpeg -q:v
+  "pillow>=12.2.0",
   "pyproj>=3.6.0",
   "tabulate>=0.9.0",
   "wandb>=0.24.2",
@@ -123,6 +141,7 @@ DEP004 = [
 
 [tool.deptry.package_module_name_map]
 hydra-core = "hydra"
+onnxruntime-gpu = "onnxruntime"
 opencv-python-headless = "cv2"
 tensordict-nightly = "tensordict"
 tensorrt-cu13 = "tensorrt"

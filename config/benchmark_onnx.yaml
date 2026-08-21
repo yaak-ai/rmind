@@ -21,13 +21,19 @@ image_size: null
 # _simulate_offline_jpeg in benchmark_onnx.py). Override e.g.
 # frame_sources=[video,jpg,video_jpeg] to run every backend against all
 # three and compare predictions side by side.
-# "ffmpeg" is the baseline source: it re-runs the extract_frames ffmpeg
-# command itself (NVDEC decode + GPU resize in NV12 + real mjpeg), so it shows
-# the best any inference-side preprocessing can do — 1.59 uint8 MAE vs the real
-# training jpgs, where "video_jpeg" reaches 3.80 and "video" 4.42. Needs ffmpeg
-# on PATH and (unless ffmpeg_hwaccel=false) a CUDA device.
+# "ffmpeg" re-runs the extract_frames ffmpeg command itself (NVDEC decode + GPU
+# resize in NV12 + real mjpeg): 1.59 uint8 MAE vs the real training jpgs, where
+# "video_jpeg" reaches 3.80 and "video" 4.42. Needs ffmpeg on PATH and (unless
+# ffmpeg_hwaccel=false) a CUDA device.
+# "torch_nv12" is the *deployable* path: the same NVDEC decode, but the resize
+# and quantization done as GPU tensor ops by rmind.utils.frame_parity — which is
+# what drivr runs on the car, where shelling out to ffmpeg per frame is not an
+# option. It measures 1.13, i.e. BELOW the ffmpeg baseline, because its
+# Catmull-Rom matches scale_npp (what training used) better than scale_cuda
+# does. Include it alongside "ffmpeg" and "jpg" to see both.
 frame_sources: [video]
-# ffmpeg mjpeg -q:v (2..31, lower=better) used by the "video_jpeg" source —
+# ffmpeg mjpeg -q:v (2..31, lower=better) used by the "video_jpeg" and
+# "torch_nv12" sources —
 # 16 matches the offline extraction pipeline's own `-q:v 16` and reproduces
 # the real training jpgs' quantization tables byte-for-byte (asserted in
 # tests/test_benchmark_onnx_preprocessing.py against real drive data). This is

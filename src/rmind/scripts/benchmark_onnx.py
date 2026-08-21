@@ -85,6 +85,29 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from rmind.utils import frame_parity
+from rmind.utils.jpeg import DEFAULT_JPEG_QV as _DEFAULT_JPEG_QV
+from rmind.utils.jpeg import FFMPEG_MJPEG_BASE_QTABLE as _FFMPEG_MJPEG_BASE_QTABLE
+from rmind.utils.jpeg import JPEG_QV_RANGE as _JPEG_QV_RANGE
+from rmind.utils.jpeg import JPEG_SUBSAMPLING_420 as _JPEG_SUBSAMPLING_420
+from rmind.utils.jpeg import ffmpeg_mjpeg_qtable as _ffmpeg_mjpeg_qtable
+from rmind.utils.jpeg import simulate_offline_jpeg as _simulate_offline_jpeg
+
+# Re-exported under their original private names for
+# tests/test_benchmark_onnx_preprocessing.py. `_FFMPEG_MJPEG_BASE_QTABLE`,
+# `_JPEG_QV_RANGE` and `_JPEG_SUBSAMPLING_420` are unused *in this module* and
+# exist only for those tests, so `__all__` keeps ruff's unused-import fix from
+# deleting them — which it did once, taking 6 tests with it.
+__all__ = [
+    "_DEFAULT_JPEG_QV",
+    "_FFMPEG_MJPEG_BASE_QTABLE",
+    "_JPEG_QV_RANGE",
+    "_JPEG_SUBSAMPLING_420",
+    "_ffmpeg_mjpeg_qtable",
+    "_simulate_offline_jpeg",
+    "main",
+]
+
 logger = structlog.get_logger(__name__)
 
 EMBED_DIM = 384
@@ -371,18 +394,9 @@ _CENTER_CROP_SIZE = (320, 576)  # (H, W)
 # This is a pure encoder-side setting, independent of the decode/scale half of
 # that pipeline (which uses scale_npp and has no local equivalent, see
 # _preprocess_image's docstring).
-# The actual implementation lives in rmind.utils.jpeg so non-training
-# consumers (drivr's live camera pipeline) can reuse this exact, tested
-# quantization logic without reaching into script internals. Re-exported here
-# under their original private names for tests/test_benchmark_onnx_preprocessing.py.
-from rmind.utils.jpeg import (  # noqa: E402
-    DEFAULT_JPEG_QV as _DEFAULT_JPEG_QV,
-    FFMPEG_MJPEG_BASE_QTABLE as _FFMPEG_MJPEG_BASE_QTABLE,
-    JPEG_QV_RANGE as _JPEG_QV_RANGE,
-    JPEG_SUBSAMPLING_420 as _JPEG_SUBSAMPLING_420,
-    ffmpeg_mjpeg_qtable as _ffmpeg_mjpeg_qtable,
-    simulate_offline_jpeg as _simulate_offline_jpeg,
-)
+# The actual implementation lives in rmind.utils.jpeg so non-training consumers
+# (drivr's live camera pipeline) can reuse this exact, tested quantization logic
+# without reaching into script internals; imported at the top of this file.
 
 
 def _preprocess_image(
@@ -645,7 +659,187 @@ class _FfmpegFrameSource:
         pass
 
 
-_FrameSource = _VideoFrameSource | _JpgFrameSource | _FfmpegFrameSource
+# `select` counts decoded frames, so every block costs a decode from frame 0 —
+# the same tradeoff _FfmpegFrameSource makes, and the reason to keep blocks
+# large. What makes that affordable here is caching the *processed* 576x324
+# frames rather than the native nv12 they came from: 0.5 MB/frame instead of
+# 3.1, so a 512-frame block is ~265 MB rather than ~1.6 GB.
+_NV12_BLOCK_FRAMES = _FFMPEG_BLOCK_FRAMES
+
+
+class _TorchNv12FrameSource:
+    """Decodes to nv12, then does the whole resize/quantize chain in torch.
+
+    The deployable counterpart to `_FfmpegFrameSource`: it uses the *same* NVDEC
+    decode, so the difference between the two sources is purely what happens to
+    the pixels afterwards — ffmpeg's `scale_cuda` + real mjpeg encoder, versus
+    `rmind.utils.frame_parity` doing the same arithmetic as GPU tensor ops.
+
+    That module is what `drivr` runs on the car, where shelling out to ffmpeg per
+    frame is not an option. Scoring it here, in the same tables as the sources it
+    is meant to replace, is the point: it measured *below* the ffmpeg baseline
+    (1.13 vs 1.58 uint8 MAE against the real training jpgs).
+
+    Frames come out already at DEFAULT_IMAGE_SIZE and already quantized, exactly
+    like "jpg" and "ffmpeg", so _preprocess_image must NOT apply jpeg_qv to them.
+    """
+
+    # cached process-wide for the same reason _FfmpegFrameSource's blocks are:
+    # _load_batch builds a fresh source per episode and consecutive episodes
+    # share 5 of their 6 frames
+    _blocks: ClassVar[dict[tuple[str, int, int], list[np.ndarray]]] = {}
+    _native_hw_cache: ClassVar[dict[str, tuple[int, int]]] = {}
+
+    def __init__(
+        self,
+        video_path: Path,
+        image_size: tuple[int, int],
+        *,
+        qv: int = _DEFAULT_JPEG_QV,
+    ) -> None:
+        import shutil  # noqa: PLC0415
+
+        if shutil.which("ffmpeg") is None:
+            msg = "frame_sources=[torch_nv12] needs `ffmpeg` on PATH to decode"
+            raise RuntimeError(msg)
+        self._video_path = video_path
+        self._image_size = image_size
+        self._qv = qv
+        self._resamplers: frame_parity.Resamplers | None = None
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    @property
+    def _native_hw(self) -> tuple[int, int]:
+        """The video's own resolution, probed once per path per process.
+
+        Cached on the class, not the instance: _load_batch builds a fresh source
+        per episode, so an instance attribute would either re-run ffprobe 20
+        times or — as it did — be left unset on every instance that hits the
+        block cache instead of decoding.
+        """
+        key = str(self._video_path)
+        if key not in type(self)._native_hw_cache:  # noqa: SLF001
+            type(self)._native_hw_cache[key] = self._probe_native_hw()  # noqa: SLF001
+        return type(self)._native_hw_cache[key]  # noqa: SLF001
+
+    def _probe_native_hw(self) -> tuple[int, int]:
+        import shutil  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415, S404 — fixed argv, no shell
+
+        result = subprocess.run(  # noqa: S603
+            [
+                shutil.which("ffprobe") or "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0:s=x",
+                str(self._video_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        width, height = (int(v) for v in result.stdout.strip().split("x"))
+        return height, width
+
+    def _extract_block(self, block: int) -> list[np.ndarray]:
+        """Decode one block and run the whole parity chain over it, cached.
+
+        The chain runs here rather than per `read` so the cache holds finished
+        576x324 frames: a block is then ~265 MB instead of the ~1.6 GB the native
+        nv12 would take, which is what lets blocks be large enough that each
+        decode-from-frame-0 is amortized over many episodes.
+
+        Raises:
+            RuntimeError: if ffmpeg fails to decode the block.
+        """
+        import subprocess  # noqa: PLC0415, S404 — fixed argv, no shell
+
+        key = (str(self._video_path), block, self._qv)
+        cached = type(self)._blocks.get(key)  # noqa: SLF001
+        if cached is not None:
+            return cached
+
+        height, width = self._native_hw
+        first = block * _NV12_BLOCK_FRAMES
+        last = first + _NV12_BLOCK_FRAMES - 1
+
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-threads", "0",
+            "-i", str(self._video_path),
+            "-filter_complex", rf"select='between(n\,{first}\,{last})',format=nv12",
+            "-fps_mode", _FFMPEG_FPS_MODE,
+            "-frames:v", str(_NV12_BLOCK_FRAMES),
+            "-f", "rawvideo", "-pix_fmt", "nv12", "-",
+        ]  # fmt: skip
+        result = subprocess.run(command, capture_output=True, check=False)  # noqa: S603
+        if result.returncode != 0:
+            msg = (
+                f"ffmpeg failed decoding nv12 frames {first}..{last}: "
+                f"{result.stderr.decode(errors='replace').strip()[:500]}"
+            )
+            raise RuntimeError(msg)
+
+        frame_bytes = height * width * 3 // 2
+        count = len(result.stdout) // frame_bytes
+        if self._resamplers is None:
+            self._resamplers = frame_parity.resamplers_for(
+                self._native_hw, self._image_size, device=self._device
+            )
+        frames = [
+            self._to_training_frame(
+                np.frombuffer(
+                    result.stdout, np.uint8, count=frame_bytes, offset=k * frame_bytes
+                )
+            )
+            for k in range(count)
+        ]
+        # bounded: only the most recent blocks are ever revisited, so keeping
+        # every block of a long drive would grow without limit
+        if len(type(self)._blocks) >= 2:  # noqa: SLF001, PLR2004
+            type(self)._blocks.pop(next(iter(type(self)._blocks)))  # noqa: SLF001
+        type(self)._blocks[key] = frames  # noqa: SLF001
+        logger.debug("decoded nv12 block", frames=f"{first}..{last}", count=count)
+        return frames
+
+    def _to_training_frame(self, nv12: np.ndarray) -> np.ndarray:
+        if self._resamplers is None:  # set by _extract_block before it calls this
+            msg = "_to_training_frame called before the resamplers were built"
+            raise RuntimeError(msg)
+        buffer = torch.frombuffer(bytearray(nv12), dtype=torch.uint8)
+        luma, chroma = frame_parity.nv12_to_planes(
+            buffer.to(self._device), *self._native_hw
+        )
+        rgb = frame_parity.to_training_frame(
+            luma,
+            chroma,
+            resamplers=self._resamplers,
+            # the training videos are limited range (`ffprobe` says color_range=tv)
+            limited_range=True,
+            qv=self._qv,
+        )
+        return rgb[0].permute(1, 2, 0).cpu().numpy()
+
+    def read(self, frame_idx: int) -> np.ndarray:
+        block, offset = divmod(frame_idx, _NV12_BLOCK_FRAMES)
+        frames = self._extract_block(block)
+        if offset >= len(frames):
+            msg = f"frame {frame_idx} past the end of its nv12 block"
+            raise ValueError(msg)
+        return frames[offset]
+
+    def close(self) -> None:
+        # decoded blocks are process-wide and bounded (see _blocks)
+        pass
+
+
+_FrameSource = (
+    _VideoFrameSource | _JpgFrameSource | _FfmpegFrameSource | _TorchNv12FrameSource
+)
 
 
 def _jpg_frames_dir(data_dir: Path) -> Path:
@@ -665,7 +859,7 @@ class _BatchRequest:
     start_frame: int
     frame_step: int
     image_size: tuple[int, int]
-    source: str = "video"  # "video" | "jpg" | "video_jpeg" | "ffmpeg"
+    source: str = "video"  # one of _VALID_FRAME_SOURCES
     jpeg_qv: int = _DEFAULT_JPEG_QV  # only applied when source == "video_jpeg"
     ffmpeg_hwaccel: bool = True  # only applied when source == "ffmpeg"
 
@@ -674,6 +868,10 @@ class _BatchRequest:
             return _JpgFrameSource(self.frames_dir)
         if self.source == "ffmpeg":
             return _FfmpegFrameSource(self.video_path, hwaccel=self.ffmpeg_hwaccel)
+        if self.source == "torch_nv12":
+            return _TorchNv12FrameSource(
+                self.video_path, DEFAULT_IMAGE_SIZE, qv=self.jpeg_qv
+            )
         # "video" and "video_jpeg" both decode video
         return _VideoFrameSource(self.video_path)
 
@@ -1201,7 +1399,7 @@ def _print_summary_footer(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
-_VALID_FRAME_SOURCES = frozenset({"video", "jpg", "video_jpeg", "ffmpeg"})
+_VALID_FRAME_SOURCES = frozenset({"video", "jpg", "video_jpeg", "ffmpeg", "torch_nv12"})
 
 
 class Config(BaseModel):
@@ -1307,7 +1505,7 @@ def _validate_config(
             msg = f"Missing: {config.data_dir / fname}"
             raise FileNotFoundError(msg)
 
-    if {"video", "video_jpeg", "ffmpeg"} & set(config.frame_sources):
+    if {"video", "video_jpeg", "ffmpeg", "torch_nv12"} & set(config.frame_sources):
         video_path = config.data_dir / "cam_front_left.pii.mp4"
         if not video_path.exists():
             msg = f"Missing: {video_path}"
