@@ -19,9 +19,25 @@ input_transform:
 
         context:
           waypoints: [data, waypoints/xy_normalized]
+          heading: [data, headings_denoised/heading]
+          time_stamp: [data, meta/ImageMetadata.cam_front_left/time_stamp]
 
         discrete:
           turn_signal: [data, meta/VehicleState/turn_signal]
+
+    # dead-reckoned per-frame trajectory ground truth (DrivoR, arXiv:2601.05083)
+    # for the auxiliary trajectory head below -- MUST run before `ChunkFields`,
+    # on the raw un-narrowed `context.heading`/`context.time_stamp`/
+    # `continuous.speed` (still spanning the full clip, not yet truncated to
+    # `episode_length`), and write into the EXISTING `context` key so the
+    # `ModuleDict` stage further down doesn't need a new entry.
+    - _target_: rmind.components.nn.TrajectoryTarget
+      speed: [continuous, speed]
+      heading: [context, heading]
+      time_stamp: [context, time_stamp]
+      out: [context, trajectory_target]
+      episode_length: ${episode_length}
+      num_poses: ${trajectory_horizon}
 
     - _target_: rmind.components.nn.ChunkFields
       episode_length: ${episode_length}
@@ -128,6 +144,20 @@ offset_head:
   in_channels: ${policy_embedding_dim}
   hidden_channels: [1024, 1024, 1536] # 4 quantizers x 16 codes x 24 action dims
 
+# auxiliary, non-VQ trajectory head (DrivoR, arXiv:2601.05083): direct
+# multi-hypothesis regression from the SAME readout features as code_head/
+# offset_head above, no cross-attention decoder, no tokenizer.
+trajectory_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels:
+    [
+      1024,
+      1024,
+      "${eval:'${num_trajectory_hypotheses} * ${trajectory_horizon} * 3'}",
+    ] # num_trajectory_hypotheses x trajectory_horizon x (x, y, heading)
+num_trajectory_hypotheses: ${num_trajectory_hypotheses}
+
 losses:
   _target_: rmind.components.containers.ModuleDict
   modules:
@@ -135,6 +165,9 @@ losses:
       _target_: rmind.components.loss.FocalLoss
     offset:
       _target_: torch.nn.L1Loss
+    trajectory:
+      _target_: rmind.components.loss.WinnerTakesAllPoseLoss
+      heading_weight: ${trajectory_heading_weight}
 
 teacher_force_offset: ${teacher_force_offset}
 

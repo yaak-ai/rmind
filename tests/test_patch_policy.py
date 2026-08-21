@@ -14,7 +14,7 @@ from torchvision.ops import MLP
 
 from rmind.components.base import Modality
 from rmind.components.containers import ModuleDict
-from rmind.components.loss import FocalLoss
+from rmind.components.loss import FocalLoss, WinnerTakesAllPoseLoss
 from rmind.components.nn import Embedding
 from rmind.components.norm import Scaler, UniformBinner
 from rmind.components.objectives.base import ObjectivePredictionKey
@@ -41,6 +41,8 @@ LATENT_DIM = 8
 NUM_QUANTIZERS = 2
 CODEBOOK_SIZE = 4
 SPEED_BINS = 8
+TRAJECTORY_HORIZON = 4
+NUM_TRAJECTORY_HYPOTHESES = 3
 
 
 def _make_tokenizer() -> ActionTokenizer:
@@ -96,8 +98,15 @@ class _GoalEncoderStub(Module):
 
 
 def _make_model(
-    *, teacher_force_offset: bool = True, fusion_norm: bool = False
+    *,
+    teacher_force_offset: bool = True,
+    fusion_norm: bool = False,
+    with_trajectory_head: bool = False,
 ) -> PatchPolicy:
+    losses = {"code": FocalLoss(), "offset": L1Loss()}
+    if with_trajectory_head:
+        losses["trajectory"] = WinnerTakesAllPoseLoss()
+
     return PatchPolicy(
         fusion_norm=fusion_norm,
         input_transform=Identity(),
@@ -116,7 +125,13 @@ def _make_model(
         tokenizer=_make_tokenizer(),
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
         offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * ACTION_DIM]),
-        losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
+        trajectory_head=(
+            MLP(POLICY_DIM, [16, NUM_TRAJECTORY_HYPOTHESES * TRAJECTORY_HORIZON * 3])
+            if with_trajectory_head
+            else None
+        ),
+        num_trajectory_hypotheses=NUM_TRAJECTORY_HYPOTHESES,
+        losses=ModuleDict(modules=losses),
         norm=torch.nn.LayerNorm(POLICY_DIM),
         sample_codes=False,
         teacher_force_offset=teacher_force_offset,
@@ -131,7 +146,7 @@ def _make_model(
     ).eval()
 
 
-def _make_batch() -> dict:
+def _make_batch(*, with_trajectory_target: bool = False) -> dict:
     generator = torch.Generator().manual_seed(0)
     chunk = torch.rand(
         (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS), generator=generator
@@ -139,7 +154,7 @@ def _make_batch() -> dict:
     chunk[..., 3] = torch.randint(
         0, 3, chunk[..., 3].shape, generator=generator
     ).float()
-    return {
+    batch = {
         "image": {
             "cam_front_left": torch.randn(
                 (BATCH_SIZE, EPISODE_LENGTH, NUM_PATCHES, IMAGE_DIM),
@@ -157,6 +172,11 @@ def _make_batch() -> dict:
         },
         "joint_actions": chunk,
     }
+    if with_trajectory_target:
+        batch["context"]["trajectory_target"] = torch.randn(
+            (BATCH_SIZE, EPISODE_LENGTH, TRAJECTORY_HORIZON, 3), generator=generator
+        )
+    return batch
 
 
 def test_block_causal_mask() -> None:
@@ -180,7 +200,7 @@ def test_features_and_metrics_shapes() -> None:
     model = _make_model()
     batch = _make_batch()
 
-    features, chunk = model._features(batch)  # noqa: SLF001
+    features, chunk, _ = model._features(batch)  # noqa: SLF001
     assert features.shape == (BATCH_SIZE, EPISODE_LENGTH, POLICY_DIM)
     assert chunk.shape == (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS)
 
@@ -262,7 +282,7 @@ def test_teacher_forcing_gradient_routing() -> None:
     model = _make_model(teacher_force_offset=True)
     batch = _make_batch()
 
-    features, chunk = model._features(batch)  # noqa: SLF001
+    features, chunk, _ = model._features(batch)  # noqa: SLF001
     with torch.no_grad():
         target_codes = model.tokenizer(chunk)
         target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
@@ -322,7 +342,7 @@ def test_readout_is_causally_valid() -> None:
     model = _make_model()
     batch = _make_batch()
 
-    features, _ = model._features(batch)  # noqa: SLF001
+    features, _, _ = model._features(batch)  # noqa: SLF001
 
     perturbed = _make_batch()
     perturbed["image"]["cam_front_left"] = batch["image"]["cam_front_left"].clone()
@@ -334,7 +354,7 @@ def test_readout_is_causally_valid() -> None:
     perturbed["continuous"]["speed"][:, -1] = 100.0
     perturbed["context"]["waypoints"][:, -1] += 1.0
 
-    features_perturbed, _ = model._features(perturbed)  # noqa: SLF001
+    features_perturbed, _, _ = model._features(perturbed)  # noqa: SLF001
 
     torch.testing.assert_close(features[:, :-1], features_perturbed[:, :-1])
     assert not torch.allclose(features[:, -1], features_perturbed[:, -1])
@@ -381,3 +401,60 @@ def test_fusion_norm_calibration_deterministic() -> None:
     torch.manual_seed(7)
     b = _make_model(fusion_norm=True)
     torch.testing.assert_close(a.fusion_goal_gain, b.fusion_goal_gain)
+
+
+def test_trajectory_head_absent_by_default() -> None:
+    """The auxiliary trajectory head is opt-in: a model built without it must
+    behave exactly as before it existed."""
+    model = _make_model()
+    assert model.trajectory_head is None
+
+    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+    assert "trajectory" not in metrics["policy", "loss"].keys()  # noqa: SIM118
+
+    predictions = model.predict_step(_make_batch())
+    assert "trajectory" not in predictions.keys()  # noqa: SIM118
+
+
+def test_trajectory_head_metrics_and_gradients() -> None:
+    model = _make_model(with_trajectory_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    losses = metrics["policy", "loss"]
+    assert "trajectory" in losses.keys()  # noqa: SIM118
+    assert losses["trajectory"].isfinite()
+    assert metrics["policy", "metric", "trajectory_loss_xy"].isfinite()
+    assert metrics["policy", "metric", "trajectory_loss_heading"].isfinite()
+    assert metrics["policy", "metric", "trajectory_best_index_unique_frac"].isfinite()
+
+    losses.sum(reduce=True).backward()
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.trajectory_head.parameters()
+    )
+
+
+def test_trajectory_head_predict_step() -> None:
+    model = _make_model(with_trajectory_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    predictions = model.predict_step(batch)
+
+    assert predictions["trajectory", "prediction"].shape == (
+        BATCH_SIZE,
+        NUM_TRAJECTORY_HYPOTHESES,
+        TRAJECTORY_HORIZON,
+        3,
+    )
+    assert predictions["trajectory", "best_prediction"].shape == (
+        BATCH_SIZE,
+        TRAJECTORY_HORIZON,
+        3,
+    )
+    assert predictions["trajectory", "best_index"].shape == (BATCH_SIZE,)
+    assert predictions["trajectory", "ground_truth"].shape == (
+        BATCH_SIZE,
+        TRAJECTORY_HORIZON,
+        3,
+    )

@@ -20,6 +20,19 @@ clip_horizon: 6
 clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
 clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 
+# auxiliary trajectory head (DrivoR, arXiv:2601.05083): direct multi-hypothesis
+# regression + winner-takes-all pose loss, no VQ. Each anchor's future poses
+# are `t0+1 .. t0+trajectory_horizon` (unlike `action_horizon`'s chunk, which
+# STARTS at `t0` itself), so fitting inside the clip's existing future slack
+# needs `trajectory_horizon <= clip_horizon - 1`, not `<= clip_horizon` --
+# `rolling_dead_reckoned_trajectory` raises `ValueError` if this is violated.
+# `5` (one less than `clip_horizon`) is the largest value that avoids a
+# `clip_length` bump (and dataset rebuild); raising it further requires
+# bumping `clip_horizon` too.
+trajectory_horizon: 5
+num_trajectory_hypotheses: 5
+trajectory_heading_weight: 0.1
+
 # frozen encoders
 image_encoder_name: vit_small_patch16_dinov3.lvd1689m
 image_resize: [256, 256] # 256 / patch 16 -> 16x16 = 256 patch tokens
