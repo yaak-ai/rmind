@@ -87,7 +87,11 @@ ARMS = {
 }
 IMAGE_HW = 224  # dinov2 arms; 256 for dinov3
 NUM_PATCHES = 256
-TOKENS_PER_FRAME = NUM_PATCHES + 1  # speed token prepended
+# speed token prepended; ONLY the legacy layout. A `use_readout_token` policy has
+# `NUM_PATCHES + 1 + num_register_tokens + 1` tokens per frame -- everywhere that
+# matters the geometry is derived from the trunk (`trunk.tokens_per_frame`), and
+# the random-init path below cross-derives it from the instantiated policy.
+TOKENS_PER_FRAME = NUM_PATCHES + 1
 NUM_WAYPOINTS = 10
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 
@@ -161,7 +165,7 @@ def decoder_model_and_args(  # noqa: PLR0914
     *,
     artifact: str | None = None,
     ckpt: str | None = None,
-) -> tuple[Module, tuple[dict[str, Tensor]], tuple[int, int, int, int]]:
+) -> tuple[PatchPolicyDecoderStep, tuple[dict[str, Tensor]], tuple[int, int, int, int]]:
     """The decoder step: ONE new frame against a cache of `context - 1` frames."""  # noqa: DOC501
     if artifact is not None or ckpt is not None:
         # Trained: the architecture comes from the checkpoint's hparams and the
@@ -208,11 +212,16 @@ def decoder_model_and_args(  # noqa: PLR0914
             msg = "--context is required for a randomly initialized export"
             raise ValueError(msg)
         policy, dim, layers, heads = build_policy(arm, episode_length=1)
+        # derive the frame width from the policy's layout, not the legacy constant:
+        # a `use_readout_token` arm appends register + readout tokens to the frame
+        tokens_per_frame = TOKENS_PER_FRAME
+        if getattr(policy, "use_readout_token", False):
+            tokens_per_frame += getattr(policy, "num_register_tokens", 0) + 1
         policy.encoder = CausalFrameTransformer(
             dim_model=dim,
             num_layers=layers,
             num_heads=heads,
-            tokens_per_frame=TOKENS_PER_FRAME,
+            tokens_per_frame=tokens_per_frame,
             window=context,
         ).eval()
 
@@ -331,7 +340,7 @@ def main() -> None:
             heads=heads,
             head_dim=head_dim,
             cache_frames=cache_frames,
-            cached_keys=cache_frames * TOKENS_PER_FRAME,
+            cached_keys=cache_frames * model.trunk.tokens_per_frame,
         )
     logger.info(
         "parameters",
