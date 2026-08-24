@@ -201,6 +201,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
+        neighbor_smoothing_tau: float | None = None,
         fusion_norm: bool = False,
         fusion_goal_rms: float | None = None,
         optimizer: HydraConfig[Optimizer] | None = None,
@@ -255,6 +256,28 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
+        # neighbour-aware label smoothing (OPT-IN, default None = off): spread the
+        # code loss's smoothing mass by decoded-action distance instead of
+        # uniformly. See _neighbor_smoothing_targets for the construction and
+        # FocalLoss.forward for how the target replaces the uniform term.
+        self.neighbor_smoothing_tau = neighbor_smoothing_tau
+        if neighbor_smoothing_tau is not None:
+            # deferred to dodge a circular import (loss.py has no such cycle
+            # today, but this mirrors load_for_export's local-import pattern)
+            from rmind.components.loss import FocalLoss  # noqa: PLC0415
+
+            if neighbor_smoothing_tau <= 0.0:
+                msg = (
+                    f"neighbor_smoothing_tau must be > 0, got {neighbor_smoothing_tau}"
+                )
+                raise ValueError(msg)
+            if not isinstance(self.losses["code"], FocalLoss):
+                msg = (
+                    "neighbor_smoothing_tau requires losses['code'] to be a "
+                    "rmind.components.loss.FocalLoss (it is the only code loss "
+                    f"accepting a smoothing target), got {type(self.losses['code'])}"
+                )
+                raise TypeError(msg)
         hparams |= {
             "cameras": cameras,
             "speed": speed,
@@ -263,6 +286,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "offset_scale": offset_scale,
+            "neighbor_smoothing_tau": neighbor_smoothing_tau,
             "fusion_norm": fusion_norm,
         }
 
@@ -482,6 +506,43 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             return (code_logits + gumbel_noise).argmax(dim=-1)
         return code_logits.argmax(dim=-1)
 
+    def _neighbor_smoothing_targets(self, target_codes: Tensor) -> Tensor:
+        """Distance-aware smoothing targets `W = softmax(-d_q / tau)`, `(*b, g, c)`.
+
+        Uniform smoothing puts half its mass on the farther half of the codebook.
+        Instead, weight each candidate code by how close its DECODED action chunk
+        is to the ground truth, using EXACT PREFIX-CONDITIONED distances
+
+            d_q(c) = mean_a | invert(gt_codes with q<-c) - invert(gt_codes) |
+
+        i.e. substitute candidate `c` at quantizer `q` while holding the OTHER
+        quantizers at ground truth, and decode through the frozen RVQ. A static
+        per-quantizer 16x16 codebook-distance table is NOT valid here: RVQ
+        levels q>=1 encode residuals, so a code's decoded contribution depends
+        on the prefix (measured additivity error 2.5e-2, about half the L1 at
+        stake). Distances are the MEAN of |.| over the action dim -- the same
+        reduction as the L1 offset loss -- so `tau` is in normalized-action
+        units per dim.
+
+        Cost: g*c (= 64) vectorised `invert` calls over the full batch,
+        measured ~70-76 ms/batch, ~4% of a 1.7 s step.
+        """
+        tokenizer = self.tokenizer
+        quantizer = tokenizer.quantizer
+        g, c = quantizer.num_quantizers, quantizer.codebook_size
+
+        with torch.no_grad():
+            base = tokenizer.invert(target_codes)  # (*b, action_dim)
+            distances = base.new_empty(*target_codes.shape[:-1], g, c)
+            for q in range(g):
+                for code in range(c):
+                    candidate = target_codes.clone()
+                    candidate[..., q] = code
+                    distances[..., q, code] = (
+                        (tokenizer.invert(candidate) - base).abs().mean(dim=-1)
+                    )
+            return torch.softmax(-distances / self.neighbor_smoothing_tau, dim=-1)
+
     def _predict_chunk(self, features: Tensor) -> Tensor:
         """Decode `invert(codes) + offset` -> `(*b, horizon, action_features)`."""
         code_logits, offsets = self._heads(features)
@@ -492,6 +553,37 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             -1,
             (-1, self.tokenizer._action_features),  # noqa: SLF001
         )
+
+    def _code_losses(
+        self, code_logits: Tensor, target_codes: Tensor
+    ) -> dict[str, Tensor]:
+        """Per-quantizer classification against the ground-truth codes, supervised
+        at every frame's readout token (https://arxiv.org/pdf/2607.18236 section
+        2.2). With `neighbor_smoothing_tau` set, FocalLoss's uniform smoothing
+        term is replaced by the distance-aware target from
+        `_neighbor_smoothing_targets`.
+        """
+        smoothing_targets = (
+            self._neighbor_smoothing_targets(target_codes)
+            if self.neighbor_smoothing_tau is not None
+            else None
+        )
+
+        losses: dict[str, Tensor] = {}
+        for q in range(self.tokenizer.quantizer.num_quantizers):
+            code_loss_args = (
+                rearrange(code_logits[..., q, :], "b t c -> (b t) c"),
+                rearrange(target_codes[..., q], "b t -> (b t)"),
+            )
+            losses[f"code_{q}"] = (
+                self.losses["code"](*code_loss_args)
+                if smoothing_targets is None
+                else self.losses["code"](
+                    *code_loss_args,
+                    rearrange(smoothing_targets[..., q, :], "b t c -> (b t) c"),
+                )
+            )
+        return losses
 
     def _compute_metrics(self, batch: Any) -> TensorDict:
         features, chunk = self._features(batch)  # (b, t, d), (b, t, h, a)
@@ -505,15 +597,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         code_logits, offsets = self._heads(features)  # (b, t, g, c), (b, t, g, c, a)
 
-        losses: dict[str, Tensor] = {}
-
-        # per-quantizer classification against the ground-truth codes, supervised at
-        # every frame's readout token (https://arxiv.org/pdf/2607.18236 section 2.2)
-        for q in range(tokenizer.quantizer.num_quantizers):
-            losses[f"code_{q}"] = self.losses["code"](
-                rearrange(code_logits[..., q, :], "b t c -> (b t) c"),
-                rearrange(target_codes[..., q], "b t -> (b t)"),
-            )
+        losses: dict[str, Tensor] = self._code_losses(code_logits, target_codes)
 
         # reconstruction as inference does it, logged for train-curve comparability.
         # Only meaningful when codes are actually SAMPLED: with sample_codes=false
