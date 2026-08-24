@@ -7,6 +7,7 @@ and equivalence of the batched `_gather_offset` with the joint-policy original.
 
 from typing import Any, override
 
+import pytest
 import torch
 from tensordict import TensorDict
 from torch import Tensor
@@ -101,9 +102,12 @@ def _make_model(
     teacher_force_offset: bool = True,
     fusion_norm: bool = False,
     sample_codes: bool = False,
+    neighbor_smoothing_tau: float | None = None,
+    losses: ModuleDict | None = None,
 ) -> PatchPolicy:
     return PatchPolicy(
         fusion_norm=fusion_norm,
+        neighbor_smoothing_tau=neighbor_smoothing_tau,
         input_transform=Identity(),
         # tests feed pre-extracted patch features (b, t, p, d) directly
         image_encoder=Identity(),
@@ -120,7 +124,9 @@ def _make_model(
         tokenizer=_make_tokenizer(),
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
         offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * ACTION_DIM]),
-        losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
+        losses=losses
+        if losses is not None
+        else ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
         norm=torch.nn.LayerNorm(POLICY_DIM),
         sample_codes=sample_codes,
         teacher_force_offset=teacher_force_offset,
@@ -222,6 +228,48 @@ def test_non_teacher_forced_offset_loss_without_sampling() -> None:
 
     assert metrics["policy", "loss", "offset"].isfinite()
     assert "offset_sampled_recon" not in set(metrics["policy", "metric"].keys())
+
+
+def test_neighbor_smoothing_targets_and_loss() -> None:
+    model = _make_model(
+        neighbor_smoothing_tau=0.02,
+        losses=ModuleDict(
+            modules={"code": FocalLoss(label_smoothing=0.1), "offset": L1Loss()}
+        ),
+    )
+    batch = _make_batch()
+
+    target_codes = model.tokenizer(batch["joint_actions"])
+    weights = model._neighbor_smoothing_targets(target_codes)  # noqa: SLF001
+    assert weights.shape == (BATCH_SIZE, EPISODE_LENGTH, NUM_QUANTIZERS, CODEBOOK_SIZE)
+    assert torch.allclose(weights.sum(-1), torch.ones_like(weights.sum(-1)))
+    # the ground-truth code is at decoded distance 0 -> largest weight
+    assert torch.equal(weights.argmax(-1), target_codes)
+
+    # the smoothing term must actually change the code losses vs uniform
+    uniform_model = _make_model(
+        losses=ModuleDict(
+            modules={"code": FocalLoss(label_smoothing=0.1), "offset": L1Loss()}
+        )
+    )
+    uniform_model.load_state_dict(model.state_dict())
+    smoothed = model._compute_metrics(batch)["policy", "loss"]  # noqa: SLF001
+    uniform = uniform_model._compute_metrics(batch)["policy", "loss"]  # noqa: SLF001
+    assert not torch.allclose(smoothed["code_0"], uniform["code_0"])
+    # the offset loss is untouched by the code-smoothing change
+    assert torch.allclose(smoothed["offset"], uniform["offset"])
+
+
+def test_neighbor_smoothing_requires_focal_loss() -> None:
+    with pytest.raises(TypeError, match="neighbor_smoothing_tau"):
+        _make_model(
+            neighbor_smoothing_tau=0.02,
+            losses=ModuleDict(
+                modules={"code": torch.nn.CrossEntropyLoss(), "offset": L1Loss()}
+            ),
+        )
+    with pytest.raises(ValueError, match="neighbor_smoothing_tau"):
+        _make_model(neighbor_smoothing_tau=0.0)
 
 
 def test_frozen_modules_receive_no_grad() -> None:
