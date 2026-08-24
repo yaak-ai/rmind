@@ -1,11 +1,17 @@
 """KV-cached one-tick decode step for `PatchPolicy` -- the deployment export target.
 
 Per tick the graph encodes exactly ONE new frame per camera (1 speed token
-prepended to `cam * 256` goal-fused patch tokens, `cam = len(policy.cameras)`,
-= `tokens_per_frame` queries -- 257 at `cam=1`, 769 at `cam=3`), runs those
-queries against the cached K/V of the past frames, and returns the action chunk
-plus the new frame's K/V. Old frames are never re-encoded and never re-attended
-to each other.
+prepended to `cam * 256` goal-fused patch tokens, `cam = len(policy.cameras)`),
+runs those queries against the cached K/V of the past frames, and returns the
+action chunk plus the new frame's K/V. Old frames are never re-encoded and never
+re-attended to each other.
+
+The query count per tick is the trunk's `tokens_per_frame`: 257 at `cam=1`, 769
+at `cam=3`, and with `use_readout_token` each frame additionally gains
+`num_register_tokens` register tokens plus a learned readout token (e.g.
+257 + 2 + 1 = 260 at `cam=1`). Every literal `257` in the shape table below is
+really that count -- read it from `step.trunk.tokens_per_frame`, and note the
+cache/bias/`new_k`/`new_v` bindings all scale with it.
 
 Runtime contract (drivr)
 ------------------------
@@ -173,7 +179,8 @@ class PatchPolicyDecoderStep(nn.Module):
             readout_only_final_block=self.readout_only_final_block,
         )
 
-        features = out[:, -1]  # the frame's last patch token = the readout position
+        features = out[:, -1]  # the frame's last token = the readout position
+        # (the learned readout token with `use_readout_token`, else the last patch)
         if policy.norm is not None:
             features = policy.norm(features)
 

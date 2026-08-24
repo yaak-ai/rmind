@@ -21,7 +21,10 @@ from rmind.components.nn import Embedding
 from rmind.components.norm import ImageNormalize, Scaler, UniformBinner
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.components.objectives.joint_policy import JointPolicyObjective
-from rmind.components.transformer.causal_frame import CausalFrameTransformer
+from rmind.components.transformer.causal_frame import (
+    CausalFrameTransformer,
+    frame_rope_cos_sin,
+)
 from rmind.components.vq import ResidualVQ
 from rmind.models.action_tokenizer import ActionTokenizer
 from rmind.models.control_transformer import PredictionConfig
@@ -103,7 +106,7 @@ class _GoalEncoderStub(Module):
         return self.encode(waypoints)
 
 
-def _make_model(
+def _make_model(  # noqa: PLR0913
     *,
     teacher_force_offset: bool = True,
     fusion_norm: bool = False,
@@ -112,10 +115,17 @@ def _make_model(
     sample_codes: bool = False,
     neighbor_smoothing_tau: float | None = None,
     losses: ModuleDict | None = None,
+    use_readout_token: bool = False,
+    num_register_tokens: int = 0,
 ) -> PatchPolicy:
+    tokens_per_frame = len(cameras) * NUM_PATCHES + 1
+    if use_readout_token:
+        tokens_per_frame += num_register_tokens + 1
     return PatchPolicy(
         fusion_norm=fusion_norm,
         neighbor_smoothing_tau=neighbor_smoothing_tau,
+        use_readout_token=use_readout_token,
+        num_register_tokens=num_register_tokens,
         input_transform=Identity(),
         # tests feed pre-extracted patch features (b, t, p, d) directly
         image_encoder=Identity(),
@@ -130,7 +140,7 @@ def _make_model(
             dim_model=POLICY_DIM,
             num_layers=2,
             num_heads=2,
-            max_sequence_length=EPISODE_LENGTH * (len(cameras) * NUM_PATCHES + 1),
+            max_sequence_length=EPISODE_LENGTH * tokens_per_frame,
         ),
         tokenizer=_make_tokenizer(),
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
@@ -795,3 +805,181 @@ def test_backfill_preprocessing_buffers_does_not_mask_other_missing_keys() -> No
     filled = _backfill_preprocessing_buffers(model, source_state)
 
     assert "speed_embedding.weight" not in filled
+
+
+# --------------------------------------------------------------------------- #
+# dedicated readout + register tokens (opt-in)
+# --------------------------------------------------------------------------- #
+
+NUM_REGISTERS = 2
+READOUT_TOKENS_PER_FRAME = NUM_PATCHES + 1 + NUM_REGISTERS + 1
+
+
+def _frame_inputs(
+    batch: dict, cameras: tuple[str, ...] = ("cam_front_left",)
+) -> tuple[Tensor, Tensor, Tensor]:
+    """`_frame_tokens` takes images already stacked on a camera axis
+    `(b, t, cam, ...)` -- even at cam=1 -- so mirror what `_features` does."""
+    return (
+        torch.stack([batch["image"][camera] for camera in cameras], dim=2),
+        batch["continuous"]["speed"],
+        batch["context"]["waypoints"],
+    )
+
+
+def test_readout_and_register_token_layout() -> None:
+    """[speed, patches..., register_0, register_1, READOUT]: the readout is LAST
+    (so `[:, :, -1]` picks the learned token) and the registers sit just before
+    it, never at the readout position.
+    """
+    model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
+    tokens = model._frame_tokens(*_frame_inputs(_make_batch()))  # noqa: SLF001
+
+    assert tokens.shape == (
+        BATCH_SIZE,
+        EPISODE_LENGTH,
+        READOUT_TOKENS_PER_FRAME,
+        POLICY_DIM,
+    )
+    assert model.readout_token is not None
+    assert model.register_tokens is not None
+    torch.testing.assert_close(
+        tokens[:, :, -1],
+        model.readout_token.reshape(1, 1, -1).expand(BATCH_SIZE, EPISODE_LENGTH, -1),
+    )
+    torch.testing.assert_close(
+        tokens[:, :, -(NUM_REGISTERS + 1) : -1],
+        model.register_tokens.reshape(1, 1, NUM_REGISTERS, -1).expand(
+            BATCH_SIZE, EPISODE_LENGTH, -1, -1
+        ),
+    )
+
+    # hparams round-trip (load_for_export / continuation reload from these)
+    assert model.hparams["use_readout_token"] is True
+    assert model.hparams["num_register_tokens"] == NUM_REGISTERS
+
+
+def test_readout_token_default_off_preserves_current_layout() -> None:
+    """Default-off: existing arms keep the last-image-patch readout, no new
+    parameters, identical token block."""
+    model = _make_model()
+    assert model.readout_token is None
+    assert model.register_tokens is None
+    assert model.hparams["use_readout_token"] is False
+
+    tokens = model._frame_tokens(*_frame_inputs(_make_batch()))  # noqa: SLF001
+    assert tokens.shape == (BATCH_SIZE, EPISODE_LENGTH, NUM_PATCHES + 1, POLICY_DIM)
+    assert not any(
+        name in {"readout_token", "register_tokens"}
+        for name, _ in model.named_parameters()
+    )
+
+
+def test_register_tokens_without_readout_are_rejected() -> None:
+    """A register at `[:, :, -1]` would be read from, which registers must never
+    be -- constructor-time error, not a silent mis-readout."""
+    with pytest.raises(ValueError, match="use_readout_token"):
+        _make_model(num_register_tokens=1)
+
+
+def test_readout_and_register_tokens_receive_gradient() -> None:
+    """The readout token feeds the heads directly; the registers feed them via
+    attention (K/V) -- both must train."""
+    model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
+    model.train()
+    loss = model._compute_metrics(_make_batch())["policy", "loss"].sum(  # noqa: SLF001
+        reduce=True
+    )
+    loss.backward()
+    assert model.readout_token is not None
+    assert model.register_tokens is not None
+    assert model.readout_token.grad is not None
+    assert model.readout_token.grad.abs().sum() > 0
+    assert model.register_tokens.grad is not None
+    assert model.register_tokens.grad.abs().sum() > 0
+
+
+def test_readout_token_metrics_and_losses_finite() -> None:
+    # both decode modes: the sampled metrics only exist under sample_codes=True,
+    # so assert finiteness over whatever the mode actually emits.
+    for sample_codes in (False, True):
+        model = _make_model(
+            use_readout_token=True,
+            num_register_tokens=NUM_REGISTERS,
+            sample_codes=sample_codes,
+        )
+        metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+        for value in metrics["policy", "loss"].values():
+            assert value.isfinite()
+        for value in metrics["policy", "metric"].values():
+            assert value.isfinite()
+        assert ("offset_sampled_recon" in metrics["policy", "metric"]) is sample_codes
+
+
+def test_encoder_tokens_per_frame_mismatch_raises() -> None:
+    """Enabling the readout layout without re-gearing the trunk must fail loudly
+    at the first forward, not diverge at serving time."""
+    trunk = CausalFrameTransformer(
+        dim_model=POLICY_DIM,
+        num_layers=1,
+        num_heads=2,
+        tokens_per_frame=NUM_PATCHES + 1,  # stale: misses registers + readout
+        window=2,
+    )
+    model = _make_model(
+        use_readout_token=True, num_register_tokens=NUM_REGISTERS, encoder=trunk
+    )
+    with pytest.raises(ValueError, match="tokens_per_frame"):
+        model._features(_make_batch())  # noqa: SLF001
+
+
+def test_readout_token_streaming_matches_full_forward() -> None:  # noqa: PLR0914
+    """KV-cache gate for the widened frame: streaming one widened frame block
+    per tick against a ring of `window - 1` frames equals the full windowed
+    forward at every frame's readout -- the same equivalence
+    tests/test_causal_frame.py gates at k=17/257, here through the actual
+    `PatchPolicy` token pipeline with registers + readout appended.
+    """
+    window = 2
+    trunk = CausalFrameTransformer(
+        dim_model=POLICY_DIM,
+        num_layers=2,
+        num_heads=2,
+        tokens_per_frame=READOUT_TOKENS_PER_FRAME,
+        window=window,
+    )
+    model = _make_model(
+        use_readout_token=True, num_register_tokens=NUM_REGISTERS, encoder=trunk
+    )
+    batch = _make_batch()
+
+    with torch.no_grad():
+        features, _ = model._features(batch)  # noqa: SLF001  # full windowed forward
+
+        tokens = model._frame_tokens(*_frame_inputs(batch))  # noqa: SLF001
+        k = READOUT_TOKENS_PER_FRAME
+        past_k, past_v, bias = trunk.empty_cache(
+            batch_size=BATCH_SIZE, cache_frames=window - 1
+        )
+        readouts = []
+        for t in range(EPISODE_LENGTH):
+            cos, sin = frame_rope_cos_sin(
+                torch.tensor(t), head_dim=trunk.head_dim, base=trunk.rope_base
+            )
+            out, new_k, new_v = trunk.step(
+                tokens[:, t],
+                past_k=past_k,
+                past_v=past_v,
+                cos=cos,
+                sin=sin,
+                cache_bias=bias,
+            )
+            readouts.append(out[:, -1])
+            past_k = torch.cat((past_k[..., k:, :], new_k), dim=-2)
+            past_v = torch.cat((past_v[..., k:, :], new_v), dim=-2)
+            bias = torch.cat((bias[..., k:], torch.zeros_like(bias[..., :k])), dim=-1)
+        streamed = torch.stack(readouts, dim=1)
+        if model.norm is not None:
+            streamed = model.norm(streamed)
+
+    torch.testing.assert_close(streamed, features, rtol=0, atol=1e-5)

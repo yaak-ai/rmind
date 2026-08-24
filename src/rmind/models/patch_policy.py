@@ -170,9 +170,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     `T x (P + 1)` sequence is flattened,
     given a learned 1D positional embedding, and run through a block-causal
     transformer (bidirectional intra-frame, causal inter-frame). Each frame's LAST
-    patch token predicts that frame's action chunk with the VQ-BeT joint head from
+    token predicts that frame's action chunk with the VQ-BeT joint head from
     `JointPolicyObjective` (frozen residual-VQ chunk tokenizer; focal code loss +
     teacher-forced L1 offset).
+
+    Readout position (opt-in, `use_readout_token`): by default the last token of a
+    frame is the last image patch -- fragile, and with multiple cameras arbitrary
+    (it depends on which camera happens to be last). With `use_readout_token` the
+    frame layout becomes
+
+        [ speed, camera patches..., register_0..register_{R-1}, READOUT ]
+
+    so `[:, :, -1]` picks a LEARNED readout token instead of a picture of the
+    road. The `num_register_tokens` register tokens exist to absorb the
+    attention-sink role (https://arxiv.org/abs/2309.16588) and are never read
+    from -- they sit BEFORE the readout token precisely so the readout stays
+    last. This changes `tokens_per_frame` (257 -> 257 + R + 1), which the
+    encoder/serving configs must mirror (`CausalFrameTransformer.tokens_per_frame`,
+    `BlockCausalTransformer.max_sequence_length`, KV-cache/export geometry).
     """
 
     @validate_call
@@ -204,6 +219,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         neighbor_smoothing_tau: float | None = None,
         fusion_norm: bool = False,
         fusion_goal_rms: float | None = None,
+        use_readout_token: bool = False,
+        num_register_tokens: int = 0,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -288,7 +305,17 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "offset_scale": offset_scale,
             "neighbor_smoothing_tau": neighbor_smoothing_tau,
             "fusion_norm": fusion_norm,
+            "use_readout_token": use_readout_token,
+            "num_register_tokens": num_register_tokens,
         }
+
+        # opt-in dedicated readout + register tokens (default off: existing arms
+        # and checkpoints keep the last-image-patch readout unchanged)
+        self.use_readout_token = use_readout_token
+        self.num_register_tokens = num_register_tokens
+        self._init_readout_tokens(
+            use_readout_token=use_readout_token, num_register_tokens=num_register_tokens
+        )
 
         # scale-balanced feature fusion: LayerNorm + learnable gain on the patch
         # side (encoder-agnostic scale; DINO token-norm spread is negligible so
@@ -341,8 +368,73 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise KeyError(msg)
         return value
 
+    def _init_readout_tokens(
+        self, *, use_readout_token: bool, num_register_tokens: int
+    ) -> None:
+        """Learned per-frame READOUT and REGISTER token embeddings (see class doc).
+
+        Deliberately EXCLUDED from the `fusion_norm` scale calibration:
+        `fusion_patch_norm`/`fusion_goal_gain` balance the two FROZEN encoder
+        streams that are concatenated ahead of `patch_projection`, where no
+        gradient can ever fix a scale mismatch. The readout/register tokens are
+        free parameters born directly in model space (post-projection) -- the same
+        status as `speed_embedding` and the trunk's positional embeddings, neither
+        of which participates in the calibration -- so gradient descent sets their
+        scale, and folding them through the 1/RMS goal gain would merely rescale
+        their init. They are initialized with the trunc_normal(std=0.02) the
+        trunks already use for learned positional tokens, and their norms are
+        logged in `quality/token_norm/*` next to patch/speed/goal so any drift in
+        the balance is visible rather than silent.
+
+        Raises:
+            ValueError: on a negative register count, on registers without the
+                readout token (a register would then occupy the `[:, :, -1]`
+                readout slot and be read from, which registers must never be),
+                or when the policy width cannot be inferred.
+        """
+        if num_register_tokens < 0:
+            msg = f"num_register_tokens must be >= 0, got {num_register_tokens}"
+            raise ValueError(msg)
+        if num_register_tokens and not use_readout_token:
+            msg = (
+                "num_register_tokens > 0 requires use_readout_token=True: the "
+                "readout is the LAST token of a frame, so without a dedicated "
+                "readout token the last register would be read from -- and "
+                "registers exist precisely to absorb attention without being read"
+            )
+            raise ValueError(msg)
+
+        if not use_readout_token:
+            self.readout_token: nn.Parameter | None = None
+            self.register_tokens: nn.Parameter | None = None
+            return
+
+        dim = getattr(self.patch_projection, "out_features", None) or getattr(
+            self.speed_embedding, "embedding_dim", None
+        )
+        if dim is None:
+            msg = (
+                "use_readout_token: cannot infer the policy width -- "
+                "patch_projection has no out_features and speed_embedding has "
+                "no embedding_dim"
+            )
+            raise ValueError(msg)
+
+        self.readout_token = nn.Parameter(torch.empty(dim))
+        nn.init.trunc_normal_(self.readout_token, mean=0.0, std=0.02, a=-0.04, b=0.04)
+        if num_register_tokens:
+            self.register_tokens = nn.Parameter(torch.empty(num_register_tokens, dim))
+            nn.init.trunc_normal_(
+                self.register_tokens, mean=0.0, std=0.02, a=-0.04, b=0.04
+            )
+        else:
+            self.register_tokens = None
+
     def _frame_tokens(self, images: Tensor, speed: Tensor, waypoints: Tensor) -> Tensor:
-        """Per-frame token blocks `(b, t, cam*p + 1, d)` -- everything below the trunk.
+        """Per-frame token blocks `(b, t, k, d)` -- everything below the trunk.
+
+        `k = cam*p + 1` by default; `k = cam*p + 1 + num_register_tokens + 1`
+        with `use_readout_token` (see the class docstring for the layout).
 
         `images` is `(b, t, cam, c, h, w)`, `cam = len(self.cameras)` -- even a
         single-camera model stacks to a `cam=1` axis, so this is the one code path
@@ -375,8 +467,20 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
 
-        # speed first so the frame block ends on a patch token (the readout position)
-        return torch.cat([speed_token, patches], dim=-2)  # (b, t, p + 1, d)
+        # speed first so the frame block ENDS on the readout position: the learned
+        # readout token when `use_readout_token`, else the last patch token
+        parts = [speed_token, patches]
+        b, t = patches.shape[:2]
+        if self.register_tokens is not None:
+            parts.append(
+                self.register_tokens.reshape(1, 1, -1, patches.shape[-1]).expand(
+                    b, t, -1, -1
+                )
+            )
+        if self.readout_token is not None:
+            parts.append(self.readout_token.reshape(1, 1, 1, -1).expand(b, t, 1, -1))
+
+        return torch.cat(parts, dim=-2)  # (b, t, k, d)
 
     def _init_fusion_norm(self, fusion_goal_rms: float | None) -> None:
         """Build the scale-balanced fusion parameters (see __init__).
@@ -438,6 +542,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         The chunk is only a TARGET (and never feeds the features), so callers on
         the inference path (`forward`, ONNX export) pass `require_chunk=False`
         and may omit the action series from the batch entirely.
+
+        Raises:
+            ValueError: if the encoder was built for a different
+                `tokens_per_frame` than the frame layout produces (e.g.
+                `use_readout_token`/`num_register_tokens` changed without
+                updating the encoder/serving geometry).
         """
         inputs = self.input_transform(batch)
 
@@ -451,14 +561,29 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         )  # (b, t, cam, c, h, w)
 
         tokens = self._frame_tokens(images, speed, waypoints)
-        _, num_frames, _, _ = tokens.shape
+        _, num_frames, tokens_per_frame, _ = tokens.shape
+
+        # the causal trunk's mask/RoPE/KV-cache geometry is built from ITS
+        # `tokens_per_frame`; a layout mismatch must fail here, loudly, not
+        # diverge at serving time
+        encoder_k = getattr(self.encoder, "tokens_per_frame", None)
+        if encoder_k is not None and encoder_k != tokens_per_frame:
+            msg = (
+                f"frame layout produces {tokens_per_frame} tokens per frame "
+                f"(use_readout_token={self.use_readout_token}, "
+                f"num_register_tokens={self.num_register_tokens}) but the "
+                f"encoder was built with tokens_per_frame={encoder_k}; update "
+                "the encoder config (and the KV-cache/export geometry with it)"
+            )
+            raise ValueError(msg)
 
         embedding = self.encoder(
             rearrange(tokens, "b t k d -> b (t k) d"), num_frames=num_frames
         )
         features = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)[
             :, :, -1
-        ]  # last patch token per frame
+        ]  # last token per frame: the learned readout token when
+        # `use_readout_token`, else the last patch token
 
         if self.norm is not None:
             features = self.norm(features)

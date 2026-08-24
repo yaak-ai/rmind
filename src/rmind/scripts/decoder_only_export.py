@@ -95,10 +95,21 @@ NUM_WAYPOINTS = 10
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 
 
-def tokens_per_frame(num_cameras: int) -> int:
+def tokens_per_frame(
+    num_cameras: int, *, use_readout_token: bool = False, num_register_tokens: int = 0
+) -> int:
     """`num_cameras * NUM_PATCHES + 1` -- the speed token plus every camera's
-    patches (257 at `num_cameras=1`, 769 at `num_cameras=3`)."""
-    return NUM_PATCHES * num_cameras + 1
+    patches (257 at `num_cameras=1`, 769 at `num_cameras=3`). With
+    `use_readout_token` the frame additionally carries `num_register_tokens`
+    register tokens plus one readout token (260 at `num_cameras=1`, 2 registers).
+
+    Only the RANDOM-INIT export path needs this: on a checkpoint the geometry
+    comes from the trained trunk's own `tokens_per_frame`.
+    """
+    k = NUM_PATCHES * num_cameras + 1
+    if use_readout_token:
+        k += num_register_tokens + 1
+    return k
 
 
 def build_policy(arm: str, *, episode_length: int) -> tuple[Any, int, int, int]:
@@ -175,7 +186,9 @@ def decoder_model_and_args(  # noqa: PLR0914
     *,
     artifact: str | None = None,
     ckpt: str | None = None,
-) -> tuple[Module, tuple[dict[str, Tensor]], tuple[int, int, int, int, int]]:
+) -> tuple[
+    PatchPolicyDecoderStep, tuple[dict[str, Tensor]], tuple[int, int, int, int, int]
+]:
     """The decoder step: ONE new frame against a cache of `context - 1` frames."""  # noqa: DOC501
     if artifact is not None or ckpt is not None:
         # Trained: the architecture comes from the checkpoint's hparams and the
@@ -226,7 +239,13 @@ def decoder_model_and_args(  # noqa: PLR0914
             dim_model=dim,
             num_layers=layers,
             num_heads=heads,
-            tokens_per_frame=tokens_per_frame(len(policy.cameras)),
+            # derive the frame width from the policy's OWN layout -- cameras, and
+            # the register + readout tokens a `use_readout_token` arm appends
+            tokens_per_frame=tokens_per_frame(
+                len(policy.cameras),
+                use_readout_token=getattr(policy, "use_readout_token", False),
+                num_register_tokens=getattr(policy, "num_register_tokens", 0),
+            ),
             window=context,
         ).eval()
 
