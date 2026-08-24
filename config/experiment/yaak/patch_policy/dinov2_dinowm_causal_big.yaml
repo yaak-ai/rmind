@@ -89,7 +89,7 @@ wandb:
     # --- deliberately held fixed, so the trunk change is readable
     - same:eff_bs24
     - same:lr1e-4
-    - same:246k_steps
+    - same:readout_budget_189M
     - same:window16
     - same:ep_len32
     - same:label_smooth0.1
@@ -114,9 +114,10 @@ wandb:
     Episode tiling stride 10 -> 31 (dinov2_dinowm_causal §3: 10.0% -> 99.9% frame
     coverage, 36.9x -> 1.19x ViT reuse; val pinned to the old stride-10 grid).
 
-    HELD CONSTANT so the trunk change is readable: effective batch 24, lr 1e-4, 246k
-    steps / 19.7k warmup, window 16, episode_length 32, label_smoothing 0.1, code_head
-    wd 0.2, fusion_norm + fusion_goal_rms 0.077.
+    HELD CONSTANT so the trunk change is readable: effective batch 24, lr 1e-4, the
+    ~189M-readout budget (now 9 stride-31 epochs, cosine sized 243k / warmup 19.4k),
+    window 16, episode_length 32, label_smoothing 0.1, code_head wd 0.2,
+    fusion_norm + fusion_goal_rms 0.077.
 
     SELECTION: select on CLOSED LOOP, not val. On this architecture val rises
     monotonically from the first validation while on-car behaviour improved; H8

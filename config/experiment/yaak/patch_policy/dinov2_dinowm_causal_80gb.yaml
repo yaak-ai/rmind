@@ -24,11 +24,15 @@ defaults:
 # batch 96 (3072 slots, ~38 GiB trunk at 512-d) is the next step if a smoke run
 # shows room, but re-derive the schedule below before trying it.
 #
-# Schedule: 1.97M / 64 = ~30.8k steps/epoch. Today's 15-epoch/231k-step plan is
-# 177M supervised readouts; at 64 x 32 = 2048 readouts/step that is ~86.6k steps,
-# i.e. ~2.8 epochs again -- the readout budget is what is being held constant, not
-# the epoch count. `max_epochs: 3` -> 92.4k steps, and `lr_total_steps` must match
-# that or the cosine schedule oscillates back up (it has no clamp).
+# Schedule (re-derived for the stride-31 retile inherited from
+# dinov2_dinowm_causal §3-4): 635k clips/epoch / 64 = ~9.9k steps/epoch.
+# The readout budget is what is being held constant, not the epoch count:
+# the inherited `max_epochs: 9` -> ~89.3k steps = ~183M readouts at 2048
+# readouts/step, the same ~189M budget as the main arm. `lr_total_steps` =
+# 9 x 10,200 (10.2k is an UPPER bound on the 9.9k steps/epoch estimate: the
+# cosine has no clamp and oscillates back up past num_training_steps, while
+# undershooting is benign). Warmup keeps the 8% ratio. The inherited
+# val_check_interval 0.5 -> val every ~5k steps, 18 points per run.
 #
 # NOTE the larger batch is 2.67x today's 768 readouts per step, so this is also a
 # 2.67x larger effective batch: scale `lr` accordingly (1e-4 * sqrt(2.67) ~ 1.6e-4
@@ -38,8 +42,8 @@ datamodule:
   train:
     batch_size: 64
 
-lr_warmup_steps: 7400
-lr_total_steps: 92400
+lr_warmup_steps: 7350
+lr_total_steps: 91800
 
 wandb:
   tags: [patch_policy, dinov2_dinowm_causal, causal_80gb]
