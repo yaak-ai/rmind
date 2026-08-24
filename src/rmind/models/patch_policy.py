@@ -399,7 +399,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         else:
             self.register_tokens = None
 
-    def _frame_tokens(self, images: Tensor, speed: Tensor, waypoints: Tensor) -> Tensor:
+    def _frame_tokens(
+        self,
+        images: Tensor,
+        speed: Tensor,
+        waypoints: Tensor,
+        *,
+        token_norms: dict[str, Tensor] | None = None,
+    ) -> Tensor:
         """Per-frame token blocks `(b, t, k, d)` -- everything below the trunk.
 
         `k = p + 1` by default; `k = p + 1 + num_register_tokens + 1` with
@@ -409,6 +416,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         (`rmind.models.patch_policy_decoder.PatchPolicyDecoderStep`) runs the
         identical per-frame pipeline on ONE frame. Nothing here is temporal, which
         is exactly why one new frame per tick is sufficient.
+
+        `token_norms`, if given, is filled with gradient-free mean L2 norms per
+        token type (`speed`/`patch`/`goal` activations entering the trunk, plus
+        the `register`/`readout` embedding parameters when enabled) -- the
+        training-quality signal that guards against one token type's scale
+        running away. It is an out-parameter (rather than module state) so the
+        `torch.export`ed serving graphs never see a module mutation.
         """
         with torch.no_grad():
             patches = self.image_encoder(images)  # (b, t, p, d_img)
@@ -440,6 +454,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
         if self.readout_token is not None:
             parts.append(self.readout_token.reshape(1, 1, 1, -1).expand(b, t, 1, -1))
+
+        if token_norms is not None:
+            with torch.no_grad():
+                token_norms["speed"] = speed_token.detach().norm(dim=-1).mean()
+                token_norms["patch"] = patches.detach().norm(dim=-1).mean()
+                token_norms["goal"] = goal.detach().norm(dim=-1).mean()
+                if self.register_tokens is not None:
+                    token_norms["register"] = (
+                        self.register_tokens.detach().norm(dim=-1).mean()
+                    )
+                if self.readout_token is not None:
+                    token_norms["readout"] = self.readout_token.detach().norm()
 
         return torch.cat(parts, dim=-2)  # (b, t, k, d)
 
@@ -496,7 +522,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
 
     def _features(
-        self, batch: Any, *, require_chunk: bool = True
+        self,
+        batch: Any,
+        *,
+        require_chunk: bool = True,
+        token_norms: dict[str, Tensor] | None = None,
     ) -> tuple[Tensor, Tensor | None]:
         """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
 
@@ -517,7 +547,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         waypoints = self._get(inputs, self.waypoints)  # (b, t, n, 2)
         chunk = self._get(inputs, self.chunk, required=require_chunk)
 
-        tokens = self._frame_tokens(images, speed, waypoints)
+        tokens = self._frame_tokens(images, speed, waypoints, token_norms=token_norms)
         _, num_frames, tokens_per_frame, _ = tokens.shape
 
         # the causal trunk's mask/RoPE/KV-cache geometry is built from ITS
@@ -665,8 +695,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
         return losses
 
-    def _compute_metrics(self, batch: Any) -> TensorDict:
-        features, chunk = self._features(batch)  # (b, t, d), (b, t, h, a)
+    def _compute_metrics(
+        self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
+    ) -> TensorDict:
+        features, chunk = self._features(
+            batch, token_norms=token_norms
+        )  # (b, t, d), (b, t, h, a)
         tokenizer = self.tokenizer
 
         with torch.no_grad():
@@ -814,7 +848,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return metrics
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
-        metrics = self._compute_metrics(batch)
+        token_norms: dict[str, Tensor] = {}
+        metrics = self._compute_metrics(batch, token_norms=token_norms)
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
         metrics["loss", "total"] = losses.sum(reduce=True)
@@ -828,6 +863,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             },
             sync_dist=True,
         )
+
+        # per-token-type norm tracking under the TrainingQualityLogger's
+        # `quality/` prefix -- the guard against a token type's scale (readout/
+        # register embeddings especially) drifting away from the fusion balance
+        if token_norms:
+            self.log_dict(
+                {
+                    f"quality/token_norm/{prefix}/{name}": value
+                    for name, value in token_norms.items()
+                },
+                sync_dist=True,
+            )
 
         return {"loss": metrics["loss", "total"]}
 

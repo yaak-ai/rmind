@@ -718,6 +718,26 @@ def test_readout_token_metrics_and_losses_finite() -> None:
         assert ("offset_sampled_recon" in metrics["policy", "metric"]) is sample_codes
 
 
+def test_token_norm_tracking() -> None:
+    """B2: per-token-type norms for the quality metrics -- patch/speed/goal always,
+    register/readout only when the opt-in layout is on."""
+    batch = _make_batch()
+
+    norms: dict[str, Tensor] = {}
+    model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
+    model._compute_metrics(batch, token_norms=norms)  # noqa: SLF001
+    assert set(norms) == {"speed", "patch", "goal", "register", "readout"}
+    for name, value in norms.items():
+        assert value.isfinite(), name
+        assert float(value) > 0, name
+        assert not value.requires_grad, name
+
+    off_norms: dict[str, Tensor] = {}
+    off = _make_model()
+    off._compute_metrics(batch, token_norms=off_norms)  # noqa: SLF001
+    assert set(off_norms) == {"speed", "patch", "goal"}
+
+
 def test_encoder_tokens_per_frame_mismatch_raises() -> None:
     """Enabling the readout layout without re-gearing the trunk must fail loudly
     at the first forward, not diverge at serving time."""
