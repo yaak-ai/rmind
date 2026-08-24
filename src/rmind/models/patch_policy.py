@@ -470,10 +470,19 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 rearrange(target_codes[..., q], "b t -> (b t)"),
             )
 
-        # reconstruction as inference does it, logged for train-curve comparability
-        codes = self._sample_codes(code_logits)
-        sampled_chunk = tokenizer.invert(codes) + self._offset(offsets, codes)
-        sampled_recon = self.losses["offset"](sampled_chunk.detach(), target)
+        # reconstruction as inference does it, logged for train-curve comparability.
+        # Only meaningful when codes are actually SAMPLED: with sample_codes=false
+        # `_sample_codes` degenerates to argmax and this would duplicate the
+        # offset_argmax_recon* metrics while misrepresenting the argmax nature of
+        # serving -- so skip the whole computation (multinomial + invert + gather +
+        # two L1s), not just the logging.
+        sampled_chunk: Tensor | None = None
+        sampled_recon: Tensor | None = None
+        if self.sample_codes or not self.teacher_force_offset:
+            codes = self._sample_codes(code_logits)
+            sampled_chunk = tokenizer.invert(codes) + self._offset(offsets, codes)
+            if self.sample_codes:
+                sampled_recon = self.losses["offset"](sampled_chunk.detach(), target)
 
         if self.teacher_force_offset:
             # offset supervised at the GROUND-TRUTH codes (teacher forcing), so each
@@ -481,8 +490,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             predicted_chunk = tokenizer.invert(target_codes) + self._offset(
                 offsets, target_codes
             )
-        else:
+        elif sampled_chunk is not None:
             predicted_chunk = sampled_chunk
+        else:  # unreachable: the decode above always runs when not teacher forcing
+            msg = "sampled_chunk must exist when teacher_force_offset is False"
+            raise RuntimeError(msg)
 
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
@@ -506,18 +518,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         target_codes: Tensor,
         target: Tensor,
         predicted_chunk: Tensor,
-        sampled_chunk: Tensor,
-        sampled_recon: Tensor,
+        sampled_chunk: Tensor | None = None,
+        sampled_recon: Tensor | None = None,
     ) -> dict[str, Tensor]:
         """Gradient-free diagnostics at the deployed readout.
 
         The training losses average over all T readouts (contexts of 1..T
         frames), whereas `JointPolicyObjective` only ever scores the newest
         frame -- these make the two comparable.
+
+        `sampled_chunk`/`sampled_recon` are None when `sample_codes` is false:
+        sampling is an eval-only decode mode, and with argmax serving the
+        sampled metrics would just duplicate `offset_argmax_recon*`.
         """
         tokenizer = self.tokenizer
         with torch.no_grad():
-            metrics: dict[str, Tensor] = {"offset_sampled_recon": sampled_recon}
+            metrics: dict[str, Tensor] = {}
+            if sampled_recon is not None:
+                metrics["offset_sampled_recon"] = sampled_recon
             for q in range(tokenizer.quantizer.num_quantizers):
                 metrics[f"code_{q}_last"] = self.losses["code"](
                     code_logits[:, -1, q, :], target_codes[:, -1, q]
@@ -525,9 +543,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             metrics["offset_last"] = self.losses["offset"](
                 predicted_chunk[:, -1], target[:, -1]
             )
-            metrics["offset_sampled_recon_last"] = self.losses["offset"](
-                sampled_chunk[:, -1].detach(), target[:, -1]
-            )
+            if sampled_recon is not None and sampled_chunk is not None:
+                metrics["offset_sampled_recon_last"] = self.losses["offset"](
+                    sampled_chunk[:, -1].detach(), target[:, -1]
+                )
 
             # ARGMAX decode -- exactly what inference emits when `sample_codes=false`,
             # i.e. what the exported engine actually serves. This is a DEPLOYMENT-aligned
