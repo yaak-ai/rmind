@@ -109,6 +109,7 @@ def _make_model(
     fusion_norm: bool = False,
     cameras: tuple[str, ...] = ("cam_front_left",),
     encoder: Module | None = None,
+    sample_codes: bool = False,
 ) -> PatchPolicy:
     return PatchPolicy(
         fusion_norm=fusion_norm,
@@ -133,7 +134,7 @@ def _make_model(
         offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * ACTION_DIM]),
         losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
         norm=torch.nn.LayerNorm(POLICY_DIM),
-        sample_codes=False,
+        sample_codes=sample_codes,
         teacher_force_offset=teacher_force_offset,
         prediction_config=PredictionConfig(
             objectives={
@@ -208,7 +209,32 @@ def test_features_and_metrics_shapes() -> None:
     }
     for value in losses.values():
         assert value.isfinite()
+    # sample_codes=False: sampling is an eval-only decode mode, so the sampled
+    # metrics are neither computed nor logged (they would just duplicate
+    # offset_argmax_recon* while misrepresenting argmax serving)
+    metric_keys = set(metrics["policy", "metric"].keys())
+    assert "offset_sampled_recon" not in metric_keys
+    assert "offset_sampled_recon_last" not in metric_keys
+    assert metrics["policy", "metric", "offset_argmax_recon"].isfinite()
+
+
+def test_sampled_metrics_present_when_sampling() -> None:
+    model = _make_model(sample_codes=True)
+    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+
     assert metrics["policy", "metric", "offset_sampled_recon"].isfinite()
+    assert metrics["policy", "metric", "offset_sampled_recon_last"].isfinite()
+
+
+def test_non_teacher_forced_offset_loss_without_sampling() -> None:
+    # sample_codes=False + teacher_force_offset=False: the offset loss is
+    # supervised at the argmax decode; it must still exist and be finite even
+    # though the sampled METRICS are dropped
+    model = _make_model(sample_codes=False, teacher_force_offset=False)
+    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+
+    assert metrics["policy", "loss", "offset"].isfinite()
+    assert "offset_sampled_recon" not in set(metrics["policy", "metric"].keys())
 
 
 def test_multi_camera_stacks_patches_in_camera_order() -> None:
