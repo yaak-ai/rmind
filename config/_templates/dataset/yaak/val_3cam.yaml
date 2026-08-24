@@ -92,7 +92,9 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: ${paths.rbyte.cache}/yaak/val_3cam/clip${clip_length}/samples
+  # val is pinned to its own stride so the train retile never moves the val
+  # clip set; keyed so a stride change cannot reuse the previous store.
+  run_folder: "${paths.rbyte.cache}/yaak/val_3cam/clip${clip_length}/stride${oc.select:val_episode_stride,${episode_stride}}/samples"
   scheduling_strategy: eager
   return_results: false
   persist_memory: false
@@ -458,7 +460,8 @@ samples:
         func:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
-          every: "${episode_stride}i"
+          # val stays on the pre-retile grid for run-to-run comparability
+          every: "${oc.select:val_episode_stride,${episode_stride}}i"
           period: ${clip_period}
           closed: left
           gather_every: ${episode_step}
