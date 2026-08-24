@@ -85,6 +85,7 @@ wandb:
     - chg:samplecodes_on_to_off
     - chg:drives_655_to_654
     - chg:1gpu_to_ddp2x4090
+    - chg:stride10_to_31_tiling
     # --- deliberately held fixed, so the trunk change is readable
     - same:eff_bs24
     - same:lr1e-4
@@ -110,6 +111,8 @@ wandb:
     logged numbers). Train drives 655 -> 654 (dropped Niro115-HQ/2023-05-19--07-08-01:
     bad left-cam quality, likely a mislabelled student drive; no val/predict split
     changes). 1 GPU -> DDP 2x RTX 4090, per-rank batch 12 (rmind#259 sharded loader).
+    Episode tiling stride 10 -> 31 (dinov2_dinowm_causal §3: 10.0% -> 99.9% frame
+    coverage, 36.9x -> 1.19x ViT reuse; val pinned to the old stride-10 grid).
 
     HELD CONSTANT so the trunk change is readable: effective batch 24, lr 1e-4, 246k
     steps / 19.7k warmup, window 16, episode_length 32, label_smoothing 0.1, code_head

@@ -76,11 +76,46 @@ defaults:
 # than what runs today, so this recipe does not trade serving cost for context.
 #
 # ---------------------------------------------------------------------------
-# 3. BATCH AND SCHEDULE ARITHMETIC
+# 3. EPISODE TILING: `episode_stride: 31` + rotatable grid phase
+# ---------------------------------------------------------------------------
+# With the old stride 10 (= episode_step), consecutive clips shared 31 of 32
+# encoded frames: 36.9x ViT reuse per epoch, and -- because stride and step are
+# BOTH 10 -- the grid only ever touched ONE of the 10 raw-frame phases, so 90%
+# of extracted frames were never read by anything, ever (10.0% frame coverage,
+# simulated at episode_length 32 / step 10 / clip_length 37; the sampler grid
+# is deterministic, so every epoch saw the identical clip set).
+#
+# stride 31 (coprime to step 10, so successive clip starts rotate through all
+# raw-frame phases):
+#
+#   stride  10:   1 reachable phase, 10.0% frame coverage, 36.9x reuse
+#   stride  21:  99.9% coverage, 1.76x reuse
+#   stride  31:  99.9% coverage, 1.19x reuse   <- this recipe
+#   stride 101:  36.6% coverage;  stride 321: 11.5% coverage  (do NOT use:
+#                wider than the clip span 361, frames between grids unreachable)
+#
+# `episode_offset` (default 0) drops the first N raw frames of each train drive
+# before the grid is laid down, shifting every clip start by N (verified against
+# polars group_by_dynamic semantics: start_by=datapoint anchors at the first
+# row). Rotating it in [0, 31) breaks exact-clip-boundary memorisation.
+# LIMITATION, stated plainly: the offset is baked at LAUNCH, not per epoch --
+# rbyte builds the sample table once at datamodule instantiation (~30 min),
+# locks it into shared memory, and pipefunc wipes + rebuilds the samples store
+# every launch; a within-launch per-epoch rotation would need a per-epoch
+# rebuild (DDP-concurrent writes corrupt the single-writer store). So: rotate
+# `episode_offset = start_epoch % 31` on every restart/continuation segment.
+# A fixed offset 0 already gets the full 99.9% coverage above.
+#
+# val is pinned to the old grid (`val_episode_stride: 10`) so val metrics stay
+# comparable with every earlier causal run; the train retile does not move the
+# val clip set.
+#
+# ---------------------------------------------------------------------------
+# 4. BATCH AND SCHEDULE ARITHMETIC
 # ---------------------------------------------------------------------------
 # batch 24 x 32 frames = 768 frame-slots and 768 readouts per step: identical to
 # today's batch 128 x 6. The loss means over `(b t)` readouts, so the gradient's
-# scale is unchanged and `lr` is left at 1e-4 (see §4 for the caveat).
+# scale is unchanged and `lr` is left at 1e-4 (see §5 for the caveat).
 #
 # The clip11 train set is ~1.97M samples (FT baseline zcglgth4: 308,038 steps @
 # batch 64 for 10 epochs). Raising `episode_length` does NOT materially change
@@ -99,7 +134,7 @@ defaults:
 # `num_training_steps`. Warmup keeps today's 8% ratio.
 #
 # ---------------------------------------------------------------------------
-# 4. WHAT TO WATCH
+# 5. WHAT TO WATCH
 # ---------------------------------------------------------------------------
 # * `attn_dropout: 0.0` is REQUIRED: FlexAttention has no `dropout_p` and the
 #   trunk raises rather than silently dropping it. `raw.yaml` does not set it, so
@@ -115,6 +150,13 @@ defaults:
 # * 80 GB nodes: see dinov2_dinowm_causal_80gb.yaml, which only raises the batch.
 episode_length: 32
 window: 16
+
+# episode tiling (§3): non-overlapping-ish grid, all raw-frame phases reachable
+episode_stride: 31
+# rotate to `start_epoch % 31` on each restart/continuation segment (§3)
+episode_offset: 0
+# keep val on the pre-retile grid for run-to-run comparability (§3)
+val_episode_stride: 10
 
 model:
   encoder:
