@@ -2,5 +2,8 @@
 data: ${hydra:runtime.cwd}/data/palletjack
 cards: ${paths.data}/cards
 background: ${paths.data}/background
+# real recordings: read-only job dirs, and our prepared sample tables
+d12: /nasa/team-space/nikita/data/d12
+d12_samples: ${paths.data}/d12
 rbyte:
   cache: .rbyte_cache

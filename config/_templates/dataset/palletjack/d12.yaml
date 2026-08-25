@@ -1,0 +1,47 @@
+#@yaml/text-templated-strings
+
+#@ jobs = [
+#@    'f70ee956-4941-4b44-ad85-89a3652692ab',
+#@ ]
+#@ cameras = ['cam_fork', 'cam_left_forward', 'cam_right_forward']
+
+---
+# Real D12 recordings: `data.mcap` for the actuations, one `video.mp4` per camera.
+# Sample table is precomputed by `rmind.scripts.prepare_d12`, which owns the
+# clock alignment (see that module's docstring - the video timeline is nominal,
+# so the mcap's own per-frame topic is the only real timebase).
+#
+# Each camera is its own stream with its own frame-index column: the cameras run
+# on independent clocks and drop frames independently, so their frames are
+# matched to the reference timeline by timestamp rather than by index. (Note the
+# containers advertise r_frame_rate 60 for two of the three cameras, but the
+# real rate is ~30fps for all of them - nb_frames/duration, not the nominal field.)
+_target_: rbyte.Dataset.from_config
+_recursive_: false
+_convert_: all
+streams:
+  #@ for/end camera in cameras:
+  (@=camera@):
+    index: (@=camera@)/frame_idx
+    sources:
+      #@ for/end job_id in jobs:
+      (@=job_id@):
+        _target_: rbyte.streams.video.TorchCodecVideoSource
+        source: ${paths.d12}/(@=job_id@)/videos/(@=camera@)/video.mp4
+        dimension_order: NCHW
+
+samples:
+  inputs:
+    source:
+      #@ for/end job_id in jobs:
+      - ${paths.d12_samples}/(@=job_id@)/samples.parquet
+
+  pipeline:
+    _target_: pipefunc.Pipeline
+    validate_type_annotations: false
+    functions:
+      - _target_: pipefunc.PipeFunc
+        output_name: samples
+        func:
+          _target_: hydra.utils.get_object
+          path: polars.read_parquet
