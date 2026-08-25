@@ -1,3 +1,4 @@
+import operator
 from collections.abc import Mapping
 from typing import Annotated, Any, final, override
 
@@ -147,19 +148,20 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         """
         from torch.nn import Identity  # noqa: PLC0415
 
-        if (checkpoint_path is None) == (artifact is None):
-            msg = "specify exactly one of `checkpoint_path`, `artifact`"
-            raise ValueError(msg)
+        match (checkpoint_path, artifact):
+            case (str() as path, None):
+                model = cls.load_from_checkpoint(
+                    path, map_location="cpu", weights_only=False
+                )
 
-        model = (
-            cls.load_from_checkpoint(
-                checkpoint_path, map_location="cpu", weights_only=False
-            )
-            if checkpoint_path is not None
-            else cls.load_from_wandb_artifact(
-                artifact, filename="model.ckpt", map_location="cpu", weights_only=False
-            )
-        )
+            case (None, str() as ref):
+                model = cls.load_from_wandb_artifact(
+                    ref, filename="model.ckpt", map_location="cpu", weights_only=False
+                )
+
+            case _:
+                msg = "specify exactly one of `checkpoint_path`, `artifact`"
+                raise ValueError(msg)
         for key, value in kwargs.items():
             setattr(model, key, value)
 
@@ -175,19 +177,24 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         return model.eval()
 
     @override
-    def train(self, mode: bool = True) -> "PatchPolicyContinuous":  # noqa: FBT001, FBT002
+    def train(self, mode: bool = True) -> "PatchPolicyContinuous":
         super().train(mode)
         self.image_encoder.eval()
         return self
 
     @staticmethod
-    def _get(
-        inputs: Mapping[str, Any], path: Path, *, required: bool = True
-    ) -> Tensor | None:
+    def _get(inputs: Mapping[str, Any], path: Path) -> Tensor:
+        """Fetch a required input from the transformed batch.
+
+        Raises:
+            KeyError: if `path` is absent, which for this model is always a
+                configuration error rather than an optional field.
+        """
         value = key_get_default(inputs, tuple(map(MappingKey, path)), None)
-        if value is None and required:
+        if value is None:
             msg = f"input {path!r} missing from transformed batch"
             raise KeyError(msg)
+
         return value
 
     def _frame_tokens(self, images: Tensor, speed: Tensor) -> Tensor:
@@ -220,7 +227,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         """Gaussian mean per actuation, shaped like `features`' leading axes."""
         logits = self.heads(features)
 
-        return TensorDict(logits).apply(lambda x: x[..., 0])  # ty:ignore[invalid-return-type]
+        return TensorDict(logits).apply(operator.itemgetter((..., 0)))  # ty:ignore[invalid-return-type]
 
     @override
     def forward(self, batch: Any) -> TensorDict:
