@@ -45,6 +45,23 @@ def block_causal_mask(
     return frames[None, :] > frames[:, None]
 
 
+def modality_transform(input_transform: Module) -> ModuleDict:
+    """The per-modality `ModuleDict` stage of an `input_transform` Sequential.
+
+    Its position shifts with optional stages ahead of it (e.g. `TrajectoryTarget`
+    ahead of `ChunkFields`), so callers that need to reach into it (export's
+    `Normalize` swap) must look it up by type rather than assume a fixed index.
+
+    Raises:
+        ValueError: if no `ModuleDict` stage is found.
+    """
+    for module in input_transform.modules():
+        if isinstance(module, ModuleDict):
+            return module
+    msg = f"no ModuleDict stage found in {input_transform!r}"
+    raise ValueError(msg)
+
+
 @final
 class TransformerBlock(nn.Module):
     """Pre-LN GPT block (minGPT-style, as used by the VQ-BeT policy trunk)."""
@@ -668,8 +685,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         for key, value in kwargs.items():
             setattr(model, key, value)
         model.sample_codes = False
-        # index 2 of the input_transform Sequential is the per-modality ModuleDict
-        model.input_transform[2]["image"] = Normalize(
+        # the per-modality ModuleDict's position in the input_transform Sequential
+        # shifts with optional stages ahead of it (e.g. TrajectoryTarget), so find
+        # it by type rather than a fixed index.
+        modality_transform(model.input_transform)["image"] = Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
         )
         return model.eval()
