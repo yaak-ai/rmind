@@ -1,0 +1,11 @@
+---
+# The patch-policy trunk shares no parameter names with the control transformer,
+# so there is nothing to warm-start; the ViT is frozen inside the model itself.
+- _target_: pytorch_lightning.callbacks.TQDMProgressBar
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 2
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step

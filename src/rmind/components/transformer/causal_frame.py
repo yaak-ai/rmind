@@ -269,12 +269,18 @@ def frame_rope_cos_sin(
     head_dim: int,
     base: float = 1000.0,
     dtype: torch.dtype = torch.float32,
+    compute_dtype: torch.dtype = torch.float64,
 ) -> tuple[Tensor, Tensor]:
     """`cos`/`sin` of shape `(*frame_index.shape, head_dim)` for frame RoPE.
 
-    Computed in float64 so a long-episode absolute frame counter stays exact,
-    then cast to `dtype` -- float32 by default, which is the serving contract
-    (drivr computes these host-side and feeds them as engine inputs). `head_dim`
+    Computed in `compute_dtype` (float64 by default) so a long-episode absolute
+    frame counter stays exact, then cast to `dtype` -- float32 by default, which
+    is the serving contract (drivr computes these host-side and feeds them as
+    engine inputs). Set `compute_dtype=torch.float32` to keep cos/sin out of
+    float64 when the trunk must compute them INSIDE an exported graph: neither
+    onnxruntime's CPU kernel nor TensorRT implements float64 `Cos`. That costs
+    exactness only once the absolute frame index is large enough for float32 to
+    round it, which a fixed short serving buffer never reaches. `head_dim`
     must be even; the half-split (GPT-NeoX/Llama) pairing is used, matching every
     mainstream `torch.export`-friendly RoPE implementation.
 
@@ -289,10 +295,10 @@ def frame_rope_cos_sin(
         msg = f"head_dim must be even for RoPE, got {head_dim}"
         raise ValueError(msg)
     inv_freq = base ** (
-        -torch.arange(0, head_dim, 2, dtype=torch.float64, device=frame_index.device)
+        -torch.arange(0, head_dim, 2, dtype=compute_dtype, device=frame_index.device)
         / head_dim
     )
-    angle = frame_index.to(torch.float64)[..., None] * inv_freq
+    angle = frame_index.to(compute_dtype)[..., None] * inv_freq
     return (
         torch.cat((angle.cos(), angle.cos()), dim=-1).to(dtype),
         torch.cat((angle.sin(), angle.sin()), dim=-1).to(dtype),
@@ -570,6 +576,7 @@ class CausalFrameTransformer(nn.Module):
         attention_impl: AttentionImpl = "sdpa",
         drop_path_rate: float = 0.0,
         checkpoint: bool | int = True,
+        rope_compute_dtype: torch.dtype = torch.float64,
     ) -> None:
         super().__init__()
         # normalized to "checkpoint every k-th block", 0 = never
@@ -611,6 +618,9 @@ class CausalFrameTransformer(nn.Module):
         self.tokens_per_frame = tokens_per_frame
         self.window = window
         self.rope_base = rope_base
+        # float32 keeps the exported graph free of float64 Cos/Sin, which
+        # onnxruntime-CPU and TensorRT have no kernel for; see frame_rope_cos_sin
+        self.rope_compute_dtype = rope_compute_dtype
         self.attention_impl = attention_impl
 
         # frame-RELATIVE intra-frame position: tiled onto every frame, so it is
@@ -691,7 +701,10 @@ class CausalFrameTransformer(nn.Module):
         x = src + self._intra(num_frames, src.device)
         frames = torch.arange(seq_len, device=src.device) // k + frame_offset
         cos, sin = frame_rope_cos_sin(
-            frames, head_dim=self.head_dim, base=self.rope_base
+            frames,
+            head_dim=self.head_dim,
+            base=self.rope_base,
+            compute_dtype=self.rope_compute_dtype,
         )
         cos, sin = cos.to(src.dtype), sin.to(src.dtype)
         mask: Tensor | BlockMask = (

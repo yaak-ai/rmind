@@ -1,0 +1,135 @@
+---
+# Palletjack policy on the patch-policy trunk, with continuous Gaussian heads.
+#
+# Trunk is `patch_policy.PatchPolicy`'s, unchanged in shape: frozen ViT patches
+# -> policy width, an embedded speed token per frame, causal-over-frames trunk,
+# each frame's last patch token as the readout. The VQ-BeT code/offset head is
+# replaced by one Gaussian head per actuation - see the model docstring for why
+# (no recorded actions to fit a residual-VQ chunk tokenizer to).
+#
+# The paper's goal-latent fusion is absent: no route indoors, so patches project
+# from `image_embedding_dim` alone rather than `+ waypoint_latent_dim`.
+_target_: rmind.models.patch_policy_continuous.PatchPolicyContinuous
+_recursive_: false
+_convert_: all
+
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: rmind.components.nn.Remapper
+      paths:
+        image:
+          cam_left_backward: [data, cam_left_backward]
+
+        continuous:
+          speed: [data, speed]
+          traction: [data, traction]
+          steering: [data, steering]
+          fork1: [data, fork1]
+
+    - _target_: rmind.components.containers.ModuleDict
+      modules:
+        image: ${image_transform}
+
+        continuous:
+          _target_: rmind.components.nn.AtLeast3D
+
+image_encoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.timm_backbone.TimmBackbone
+      model_name: ${image_encoder_name}
+      out_indices: [10]
+      img_size: ${image_resize}
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... c h w -> ... (h w) c"
+
+# T x P x D -> policy width (no goal latent concatenated)
+patch_projection:
+  _target_: rmind.components.nn.Linear
+  in_features: ${image_embedding_dim}
+  out_features: ${policy_embedding_dim}
+
+speed_tokenizer:
+  _target_: rmind.components.norm.UniformBinner
+  range: [0.0, 15.0]
+  bins: ${speed_bins}
+
+speed_embedding:
+  _target_: rmind.components.nn.Embedding
+  num_embeddings: ${speed_bins}
+  embedding_dim: ${policy_embedding_dim}
+
+# decoder-only trunk: causal over frame blocks, bidirectional within a frame
+encoder:
+  _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
+  dim_model: ${policy_embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  tokens_per_frame: "${eval:'${num_patches} + 1'}"
+  window: ${window}
+  attention_impl: ${attention_impl}
+  attn_dropout: 0.0
+  rope_base: 1000.0
+
+norm:
+  _target_: torch.nn.LayerNorm
+  normalized_shape: ${policy_embedding_dim}
+
+# (mean, log-variance) per actuation, as in the control-transformer policy
+heads:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    continuous:
+      traction:
+        _target_: torchvision.ops.MLP
+        in_channels: ${policy_embedding_dim}
+        hidden_channels: ["${policy_embedding_dim}", 2]
+        bias: false
+      steering:
+        _target_: torchvision.ops.MLP
+        in_channels: ${policy_embedding_dim}
+        hidden_channels: ["${policy_embedding_dim}", 2]
+        bias: false
+      fork1:
+        _target_: torchvision.ops.MLP
+        in_channels: ${policy_embedding_dim}
+        hidden_channels: ["${policy_embedding_dim}", 2]
+        bias: false
+
+targets:
+  continuous:
+    traction: [continuous, traction]
+    steering: [continuous, steering]
+    fork1: [continuous, fork1]
+
+losses:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    continuous:
+      traction:
+        _target_: rmind.components.loss.GaussianNLLLoss
+      steering:
+        _target_: rmind.components.loss.GaussianNLLLoss
+      fork1:
+        _target_: rmind.components.loss.GaussianNLLLoss
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: ${lr}
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}

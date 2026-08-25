@@ -87,14 +87,31 @@ def _outputs(session: ort.InferenceSession) -> dict[str, str]:
     return resolved
 
 
+def _feed(session: ort.InferenceSession, frames: np.ndarray) -> dict[str, np.ndarray]:
+    """Bind `frames` to the camera input and zeros to any auxiliary input.
+
+    The control-transformer graph takes the camera alone; the patch-policy trunk
+    also takes a `speed` token, which the card rig has no source for and trained
+    at constant zero. Binding by name keeps one checker valid for both.
+    """
+    feed: dict[str, np.ndarray] = {}
+    for spec in session.get_inputs():
+        if spec.name.startswith("cam"):
+            feed[spec.name] = frames
+        else:
+            shape = [d if isinstance(d, int) else 1 for d in spec.shape]
+            feed[spec.name] = np.zeros(shape, dtype=np.float32)
+
+    return feed
+
+
 def run(
     session: ort.InferenceSession, path: Path, *, episode_length: int
 ) -> dict[str, float]:
-    (input_name,) = (i.name for i in session.get_inputs())
     outputs = _outputs(session)
     results = session.run(
         list(outputs.values()),
-        {input_name: _preprocess(path, episode_length=episode_length)},
+        _feed(session, _preprocess(path, episode_length=episode_length)),
     )
 
     return {

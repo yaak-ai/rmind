@@ -1,0 +1,117 @@
+# @package _global_
+
+# Command-card overfit on the patch-policy trunk - the counterpart of
+# `experiment/palletjack/control_transformer/overfit_cards`, same data and same
+# deployed contract, different trunk and head.
+#
+#   just generate-cards
+#   uv run python -m rmind.scripts.prepare_background
+#   just train experiment=palletjack/patch_policy/overfit_cards
+#
+# Unlike the control-transformer rig there is nothing to warm-start from: the
+# trunk shares no parameter names with it, and the ViT comes pretrained from timm
+# regardless. So this trains from scratch and needs the longer schedule.
+defaults:
+  - /model: palletjack/patch_policy/policy
+  - /datamodule: palletjack/cards_with_background
+  - /trainer: default
+  - /trainer/callbacks: palletjack_patch_policy
+  - /paths: palletjack/default
+  - /wandb: yaak/rmind
+  - _self_
+
+episode_length: 6
+
+# frozen encoder, matching the control-transformer rig so the two are comparable
+image_encoder_name: vit_small_patch16_dinov3.lvd1689m
+image_resize: [256, 256] # 256 / patch 16 -> 16x16 = 256 patch tokens
+image_embedding_dim: 384
+num_patches: 256
+
+# `window == episode_length`: the clip is 6 frames and serving uses the same
+# depth, so plain block-causal. See the yaak causal config for why the two are
+# usually different - that reasoning needs clips longer than the window, which a
+# 6-frame kit buffer does not have.
+window: 6
+# a dense bool mask disqualifies SDPA's flash backend, but at 6 frames the window
+# buys nothing anyway, and `flex` needs a Triton compile per shape
+attention_impl: sdpa
+
+policy_embedding_dim: 512
+num_layers: 8
+num_heads: 8
+
+speed_bins: 64
+
+# 448 card + 362 background episodes / batch 8 = 101 steps per epoch.
+# Batch is small because the trunk holds 6 x 257 = 1542 tokens per sample.
+# 26.4M trainable params from scratch over 810 episodes: 50 epochs left RIGHT
+# steering at 0.20 against a 0.30 target, so the schedule is 3x that.
+lr: 1e-4
+lr_warmup_steps: 500
+lr_total_steps: 15150
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 25
+  precision: "bf16-mixed"
+  gradient_clip_val: 1.0
+  log_every_n_steps: 50
+
+datamodule:
+  train:
+    batch_size: 8
+  val:
+    batch_size: 8
+
+# Same augmentation as the control-transformer rig - see that experiment for why
+# each entry is there. `TrainOnly` keeps it out of validation and the export.
+image_transform:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... h w c -> ... c h w"
+    - _target_: torchvision.transforms.v2.CenterCrop
+      size: [320, 576]
+    - _target_: torchvision.transforms.v2.Resize
+      size: ${image_resize}
+    - _target_: torchvision.transforms.v2.ToDtype
+      scale: true
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+    - _target_: rmind.components.nn.TrainOnly
+      module:
+        _target_: torch.nn.Sequential
+        _args_:
+          - _target_: torchvision.transforms.v2.RandomResizedCrop
+            size: ${image_resize}
+            scale: [0.5, 1.0]
+            ratio: [0.75, 1.3333]
+            antialias: true
+          - _target_: torchvision.transforms.v2.RandomPerspective
+            distortion_scale: 0.4
+            p: 0.85
+            fill: 0.5
+          - _target_: torchvision.transforms.v2.RandomAffine
+            degrees: 20
+            translate: [0.12, 0.12]
+            scale: [0.5, 1.0]
+            shear: 10
+            fill: 0.5
+          - _target_: rmind.components.nn.RandomIlluminationGradient
+            factor: [0.6, 1.4]
+          - _target_: torchvision.transforms.v2.ColorJitter
+            brightness: 0.55
+            contrast: 0.5
+            saturation: 0.4
+            hue: 0.05
+          - _target_: torchvision.transforms.v2.GaussianBlur
+            kernel_size: 9
+            sigma: [0.1, 4.0]
+    - _target_: torchvision.transforms.v2.Normalize
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+wandb:
+  tags: [palletjack, patch_policy, cards]
