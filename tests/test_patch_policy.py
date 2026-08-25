@@ -268,8 +268,14 @@ def test_neighbor_smoothing_targets_and_loss() -> None:
         )
     )
     uniform_model.load_state_dict(model.state_dict())
-    smoothed = cast("dict[str, Tensor]", model._compute_metrics(batch)["policy", "loss"])  # noqa: SLF001
-    uniform = cast("dict[str, Tensor]", uniform_model._compute_metrics(batch)["policy", "loss"])  # noqa: SLF001
+    smoothed = cast(
+        "dict[str, Tensor]",
+        model._compute_metrics(batch)["policy", "loss"],  # noqa: SLF001
+    )
+    uniform = cast(
+        "dict[str, Tensor]",
+        uniform_model._compute_metrics(batch)["policy", "loss"],  # noqa: SLF001
+    )
     assert not torch.allclose(smoothed["code_0"], uniform["code_0"])
     # the offset loss is untouched by the code-smoothing change
     assert torch.allclose(smoothed["offset"], uniform["offset"])
