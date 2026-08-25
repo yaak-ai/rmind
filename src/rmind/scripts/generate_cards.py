@@ -207,6 +207,9 @@ def build_samples(
     return pl.DataFrame(
         {
             "input_id": ["cards"] * (len(cards) * repeats),
+            # the patch-policy trunk prepends a speed token per frame; a held-up
+            # card is a standing-still command, and the rig has no speed source
+            "speed": [[0.0] * episode_length for _ in cards for _ in range(repeats)],
             "frame_idx": [
                 [i] * episode_length for i in range(len(cards)) for _ in range(repeats)
             ],
@@ -222,6 +225,7 @@ def build_samples(
         },
         schema={
             "input_id": pl.String,
+            "speed": pl.Array(pl.Float32, episode_length),
             "frame_idx": pl.Array(pl.Int32, episode_length),
             "traction": pl.Array(pl.Float32, episode_length),
             "steering": pl.Array(pl.Float32, episode_length),

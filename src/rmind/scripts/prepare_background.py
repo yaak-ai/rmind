@@ -113,6 +113,8 @@ def build_samples(
     return pl.DataFrame(
         {
             "input_id": ["background"] * len(windows),
+            # no CAN decode: zero, like the cards. See generate_cards.
+            "speed": zeros,
             "frame_idx": windows,
             "traction": zeros,
             "steering": zeros,
@@ -120,6 +122,7 @@ def build_samples(
         },
         schema={
             "input_id": pl.String,
+            "speed": pl.Array(pl.Float32, episode_length),
             "frame_idx": pl.Array(pl.Int32, episode_length),
             "traction": pl.Array(pl.Float32, episode_length),
             "steering": pl.Array(pl.Float32, episode_length),

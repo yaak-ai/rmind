@@ -1,0 +1,290 @@
+from collections.abc import Mapping
+from typing import Annotated, Any, final, override
+
+import pytorch_lightning as pl
+import torch
+from einops import rearrange
+from pydantic import Field, InstanceOf, validate_call
+from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
+from tensordict import TensorDict
+from torch import Tensor
+from torch.nn import Module
+from torch.optim import Optimizer
+from torch.utils._pytree import MappingKey  # noqa: PLC2701
+
+from rmind.components import optimizers
+from rmind.components.containers import ModuleDict
+from rmind.config import HydraConfig, init_hydra_param
+from rmind.models.action_tokenizer import LRSchedulerHydraConfig
+from rmind.models.control_transformer import PredictionConfig
+from rmind.utils._wandb import LoadableFromArtifact
+from rmind.utils.pytree import key_get_default
+
+type Path = tuple[str, ...]
+
+
+@final
+class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
+    """Patch-policy trunk with one continuous Gaussian head per actuation.
+
+    The trunk is `patch_policy.PatchPolicy`'s, unchanged in shape: frozen ViT
+    patch features `(P, D)` projected to the policy width, an embedded speed
+    token prepended so each frame block ends on a patch token, the flattened
+    `T x (P + 1)` sequence run through a block-causal trunk (bidirectional
+    intra-frame, causal inter-frame), and each frame's LAST patch token taken as
+    that frame's readout. `encoder` accepts either
+    `patch_policy.BlockCausalTransformer` or
+    `components.transformer.causal_frame.CausalFrameTransformer` - the same
+    `forward(src, *, num_frames)` contract.
+
+    What differs is the head, and why:
+
+    `PatchPolicy` reads out with VQ-BeT - a frozen residual-VQ chunk tokenizer
+    plus code and offset heads - which requires an `ActionTokenizer` fitted to
+    real action chunks. An embodiment with no recorded actions has nothing to fit
+    one to, so this variant regresses each actuation directly with a Gaussian
+    head (mean, log-variance), the same parameterization the control-transformer
+    policy uses. That keeps the deployed contract to named scalars per actuation
+    rather than codes to be decoded on the vehicle.
+
+    The paper's goal-latent fusion is also absent: there is no route to encode
+    indoors, so patches project from `D` alone rather than `D + G`.
+
+    Every frame is a supervised readout, as in `PatchPolicy` - a `T`-frame clip
+    yields `T` targets from one frozen-ViT pass. `forward` returns only the last
+    frame's, which is what the vehicle acts on.
+    """
+
+    @validate_call
+    def __init__(  # noqa: PLR0913
+        self,
+        *,
+        input_transform: HydraConfig[Module] | InstanceOf[Module],
+        image_encoder: HydraConfig[Module] | InstanceOf[Module],
+        patch_projection: HydraConfig[Module] | InstanceOf[Module],
+        speed_tokenizer: HydraConfig[Module] | InstanceOf[Module],
+        speed_embedding: HydraConfig[Module] | InstanceOf[Module],
+        encoder: HydraConfig[Module] | InstanceOf[Module],
+        heads: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
+        losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
+        targets: Mapping[str, Mapping[str, Path]],
+        norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        image: Path = ("image", "cam_left_backward"),
+        speed: Path = ("continuous", "speed"),
+        optimizer: HydraConfig[Optimizer] | None = None,
+        lr_scheduler: LRSchedulerHydraConfig | None = None,
+        prediction_config: Annotated[
+            PredictionConfig, Field(default_factory=PredictionConfig)
+        ],
+    ) -> None:
+        super().__init__()
+
+        hparams: dict[str, Any] = {}
+
+        self.input_transform = init_hydra_param(
+            hparams, "input_transform", input_transform
+        )
+        self.image_encoder = init_hydra_param(hparams, "image_encoder", image_encoder)
+        self.patch_projection = init_hydra_param(
+            hparams, "patch_projection", patch_projection
+        )
+        self.speed_tokenizer = init_hydra_param(
+            hparams, "speed_tokenizer", speed_tokenizer
+        )
+        self.speed_embedding = init_hydra_param(
+            hparams, "speed_embedding", speed_embedding
+        )
+        self.encoder = init_hydra_param(hparams, "encoder", encoder)
+        self.heads = init_hydra_param(hparams, "heads", heads)
+        self.losses = init_hydra_param(hparams, "losses", losses)
+        self.norm = (
+            init_hydra_param(hparams, "norm", norm) if norm is not None else None
+        )
+
+        # the ViT is a feature extractor here, exactly as in PatchPolicy
+        self.image_encoder.requires_grad_(False).eval()  # noqa: FBT003
+
+        self.targets: Mapping[str, Mapping[str, Path]] = targets
+        self.image: Path = image
+        self.speed: Path = speed
+
+        if optimizer is not None:
+            hparams["optimizer"] = optimizer.model_dump()
+        self.optimizer: HydraConfig[Optimizer] | None = optimizer
+
+        if lr_scheduler is not None:
+            hparams["lr_scheduler"] = lr_scheduler.model_dump()
+        self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
+
+        self.prediction_config = prediction_config
+        hparams["targets"] = targets
+        hparams["image"] = image
+        hparams["speed"] = speed
+        self.save_hyperparameters(hparams)
+
+    @classmethod
+    def load_for_export(
+        cls,
+        *,
+        checkpoint_path: str | None = None,
+        artifact: str | None = None,
+        **kwargs: Any,
+    ) -> "PatchPolicyContinuous":
+        """Load a checkpoint configured for deployment export (ONNX).
+
+        Follows the control-transformer export convention rather than
+        `PatchPolicy.load_for_export`'s: the in-model image pipeline is replaced
+        by Identity, so deployment supplies frames that are already cropped,
+        resized AND ImageNet-normalized. That is what the kit's existing binding
+        produces, and `scripts.check_cards_onnx._preprocess` is its reference.
+
+        The action fields stay in the `Remapper` but resolve to `None` at
+        inference, which the per-modality `ModuleDict` passes through - they are
+        training targets only, and `forward` never reads them.
+
+        Raises:
+            ValueError: unless exactly one of `checkpoint_path`, `artifact` is given.
+        """
+        from torch.nn import Identity  # noqa: PLC0415
+
+        if (checkpoint_path is None) == (artifact is None):
+            msg = "specify exactly one of `checkpoint_path`, `artifact`"
+            raise ValueError(msg)
+
+        model = (
+            cls.load_from_checkpoint(
+                checkpoint_path, map_location="cpu", weights_only=False
+            )
+            if checkpoint_path is not None
+            else cls.load_from_wandb_artifact(
+                artifact, filename="model.ckpt", map_location="cpu", weights_only=False
+            )
+        )
+        for key, value in kwargs.items():
+            setattr(model, key, value)
+
+        # index 1 of the input_transform Sequential is the per-modality ModuleDict
+        model.input_transform[1]["image"] = Identity()
+
+        # RoPE defaults to float64 for exact long-episode frame counters; neither
+        # onnxruntime-CPU nor TensorRT has a float64 Cos kernel, and a fixed
+        # 6-frame serving buffer is nowhere near float32's rounding threshold
+        if hasattr(model.encoder, "rope_compute_dtype"):
+            model.encoder.rope_compute_dtype = torch.float32
+
+        return model.eval()
+
+    @override
+    def train(self, mode: bool = True) -> "PatchPolicyContinuous":  # noqa: FBT001, FBT002
+        super().train(mode)
+        self.image_encoder.eval()
+        return self
+
+    @staticmethod
+    def _get(
+        inputs: Mapping[str, Any], path: Path, *, required: bool = True
+    ) -> Tensor | None:
+        value = key_get_default(inputs, tuple(map(MappingKey, path)), None)
+        if value is None and required:
+            msg = f"input {path!r} missing from transformed batch"
+            raise KeyError(msg)
+        return value
+
+    def _frame_tokens(self, images: Tensor, speed: Tensor) -> Tensor:
+        """Per-frame token blocks `(b, t, p + 1, d)`, nothing temporal."""
+        with torch.no_grad():
+            patches = self.image_encoder(images)  # (b, t, p, d_img)
+
+        patches = self.patch_projection(patches)  # (b, t, p, d)
+        speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
+
+        # speed first so the frame block ends on a patch token (the readout position)
+        return torch.cat([speed_token, patches], dim=-2)
+
+    def _features(self, batch: Any) -> Tensor:
+        """Per-frame readout features `(b, t, d)`."""
+        inputs = self.input_transform(batch)
+        tokens = self._frame_tokens(
+            self._get(inputs, self.image), self._get(inputs, self.speed)
+        )
+        _, num_frames, _, _ = tokens.shape
+
+        embedding = self.encoder(
+            rearrange(tokens, "b t k d -> b (t k) d"), num_frames=num_frames
+        )
+        features = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)[:, :, -1]
+
+        return self.norm(features) if self.norm is not None else features
+
+    def _predict(self, features: Tensor) -> TensorDict:
+        """Gaussian mean per actuation, shaped like `features`' leading axes."""
+        logits = self.heads(features)
+
+        return TensorDict(logits).apply(lambda x: x[..., 0])  # ty:ignore[invalid-return-type]
+
+    @override
+    def forward(self, batch: Any) -> TensorDict:
+        # only the last frame's readout is acted on
+        features = self._features(batch)[:, -1:]
+
+        return TensorDict({"policy": self._predict(features)})
+
+    def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
+        inputs = self.input_transform(batch)
+        features = self._features(batch)
+        logits = self.heads(features)
+
+        # every frame is a readout, so targets keep their full time axis
+        targets = {
+            modality: {
+                name: self._get(inputs, path).squeeze(-1)
+                for name, path in names.items()
+            }
+            for modality, names in self.targets.items()
+        }
+        losses = self.losses(logits, targets)
+
+        metrics = TensorDict({"loss": losses})
+        total = metrics.sum(reduce=True)
+        metrics["loss", "total"] = total
+
+        self.log_dict(
+            {
+                "/".join([prefix, *k]): v
+                for k, v in metrics.detach().items(
+                    include_nested=True, leaves_only=True
+                )
+            },
+            sync_dist=True,
+        )
+
+        return {"loss": total}
+
+    @override
+    def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
+        return self._step(batch, "train")
+
+    @override
+    def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
+        return self._step(batch, "val")
+
+    @override
+    def configure_optimizers(self) -> OptimizerLRScheduler:
+        if self.optimizer is None:
+            msg = "optimizer not specified"
+            raise ValueError(msg)
+
+        match self.optimizer.target:
+            case optimizers.SelectiveAdamW:
+                optimizer = self.optimizer.instantiate(module=self)
+            case _:
+                optimizer = self.optimizer.instantiate(params=self.parameters())
+
+        if self.lr_scheduler is not None:
+            scheduler = self.lr_scheduler.scheduler.instantiate(optimizer=optimizer)
+            lr_scheduler = {"scheduler": scheduler} | self.lr_scheduler.model_dump(
+                exclude={"scheduler"}
+            )
+            return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
+
+        return {"optimizer": optimizer}
