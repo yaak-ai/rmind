@@ -5,5 +5,7 @@ background: ${paths.data}/background
 # real recordings: read-only job dirs, and our prepared sample tables
 d12: /nasa/team-space/nikita/data/d12
 d12_samples: ${paths.data}/d12
+# JPEGs at model resolution, from scripts/extract_d12_frames.sh
+d12_frames: ${paths.data}/d12_frames
 rbyte:
   cache: .rbyte_cache

@@ -1,0 +1,25 @@
+# @package _global_
+
+# All three cameras, concatenated along the patch axis: 3 x 144 + 1 speed = 433
+# tokens per frame, against 145 for the single-camera arm. Cameras cost sequence
+# length, not parameters, and attention is quadratic in it - hence the smaller
+# batch. Frames are aligned across cameras by timestamp in `prepare_d12`.
+defaults:
+  - /experiment/palletjack/patch_policy/d12
+  - _self_
+
+cameras: [cam_fork, cam_left_forward, cam_right_forward]
+num_cameras: 3
+image_remap:
+  cam_fork: [data, cam_fork]
+  cam_left_forward: [data, cam_left_forward]
+  cam_right_forward: [data, cam_right_forward]
+
+datamodule:
+  train:
+    batch_size: 4
+  val:
+    batch_size: 4
+
+wandb:
+  tags: [palletjack, patch_policy, d12, 3cam]
