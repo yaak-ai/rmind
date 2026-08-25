@@ -185,6 +185,42 @@ episode_offset: 0
 val_episode_stride: 10
 
 model:
+  # ARGMAX EVERYWHERE. Set at the BASE causal arm so 80gb / big / readout / 3cam
+  # / traj all inherit it from one place.
+  #
+  # Sampling is never used at TRAINING time and is not what we serve: serving
+  # takes the argmax, the TRT engines are exported argmax, and the whole parity
+  # story (0/200 decision changes) is an argmax story. Sampled eval metrics only
+  # disagreed with the thing we deploy.
+  #
+  # Safe to flip: `teacher_force_offset: true` (dinov3.yaml, inherited) means
+  # `predicted_chunk` comes from GROUND-TRUTH codes, so `sampled_chunk` never
+  # feeds a gradient and `sampled_recon` is `.detach()`ed. Metrics-only change;
+  # gradients are bit-identical.
+  #
+  # CAUTION -- the flags interact: with sample_codes false you MUST keep
+  # teacher_force_offset true, or `predicted_chunk` has no source and the model
+  # raises. That guard is deliberate. Note this belongs on the `model:` node and
+  # NOT top-level: unlike teacher_force_offset (which raw.yaml interpolates from
+  # a top-level var) there is no top-level `sample_codes`, so a top-level key
+  # would be a silent no-op.
+  sample_codes: false
+
+  # Which action channels define "neighbouring" for the OPT-IN distance-aware
+  # label smoothing (inert while neighbor_smoothing_tau is null).
+  # MEASURED 2026-08-25: with all four channels, turn_signal contributes 38.9%
+  # of d_q(c) -- more than gas (21.2%) or steer (25.7%) -- despite being
+  # CATEGORICAL (left/none/right has no metric, so "half a signal away" is
+  # meaningless) and having by far the widest dynamic range (p95 0.499, p99
+  # 0.9997, max 1.27 vs 0.02-0.09). Left in, a code differing only in indicator
+  # state is punished like a trajectory error. [0, 1, 2] = gas, brake, steer.
+  #
+  # tau CAVEAT: dropping turn_signal shrinks the mean distance 0.069 -> ~0.042
+  # (x0.61), so a tau calibrated on all four channels becomes effectively
+  # SHARPER; the 0.02 measured earlier scales to ~0.012. Re-measure the
+  # mass-on-far-half curve before trusting either value.
+  neighbor_smoothing_channels: [0, 1, 2]
+
   encoder:
     _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
     tokens_per_frame: "${eval:'${num_patches} + 1'}"
