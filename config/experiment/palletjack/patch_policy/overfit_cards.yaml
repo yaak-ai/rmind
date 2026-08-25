@@ -22,6 +22,12 @@ defaults:
 
 episode_length: 6
 
+# the card rig is single-camera; the model stacks a cam=1 axis regardless
+cameras: [cam_left_backward]
+num_cameras: 1
+image_remap:
+  cam_left_backward: [data, cam_left_backward]
+
 # frozen encoder, matching the control-transformer rig so the two are comparable
 image_encoder_name: vit_small_patch16_dinov3.lvd1689m
 image_resize: [256, 256] # 256 / patch 16 -> 16x16 = 256 patch tokens
