@@ -1,0 +1,63 @@
+# @package _global_
+---
+# ONNX export for the D12 policy, all three cameras.
+#
+#   in   cam_fork / cam_left_forward / cam_right_forward  float32 [1, 6, 3, 144, 256]
+#   in   speed                                            float32 [1, 6, 1]
+#   out  policy.continuous.{traction,steering,fork1}       float32 [1, 1]
+#
+# The three bindings must be FRAME-ALIGNED by the caller. On the vehicle the
+# cameras run on independent clocks and drop frames independently; `prepare_d12`
+# aligns them by timestamp for training, and nothing inside the graph can check
+# that the same holds at serving time.
+model:
+  _target_: rmind.models.patch_policy_continuous.PatchPolicyContinuous.load_for_export
+  checkpoint_path: ???
+
+input:
+  data:
+    cam_fork:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 3, 144, 256]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float
+      device: cpu
+      low: -3
+      high: 3
+
+    cam_left_forward:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 3, 144, 256]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float
+      device: cpu
+      low: -3
+      high: 3
+
+    cam_right_forward:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 3, 144, 256]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float
+      device: cpu
+      low: -3
+      high: 3
+
+    speed:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 1]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 0
+
+input_names:
+  - cam_fork
+  - cam_left_forward
+  - cam_right_forward
+  - speed

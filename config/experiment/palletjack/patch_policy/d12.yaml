@@ -1,14 +1,16 @@
 # @package _global_
 
-# Real D12 recordings on the patch-policy trunk, three cameras.
+# Real D12 recordings on the patch-policy trunk.
 #
-#   uv run python -m rmind.scripts.prepare_d12 --job-dir /nasa/team-space/nikita/data/d12/{job-id}
+#   bash src/rmind/scripts/extract_d12_frames.sh /nasa/team-space/nikita/data/d12/<job-id>
+#   uv run python -m rmind.scripts.prepare_d12 --job-dir /nasa/team-space/nikita/data/d12/<job-id>
 #   just train experiment=palletjack/patch_policy/d12
 #
-# Cameras are concatenated along the patch axis, so three cameras cost sequence
-# length (3 * 256 + 1 = 769 tokens per frame) rather than parameters. Frames are
-# aligned across cameras by timestamp in `prepare_d12`, not by index - the
-# cameras run on independent clocks and drop frames independently.
+# LIMITED TO ONE CAMERA for now. The model and the dataset are both 3-camera
+# capable - the dataset declares all three streams and the trunk concatenates
+# cameras along the patch axis - but `cameras` here lists only cam_fork. Switch
+# to `experiment=palletjack/patch_policy/d12_3cam` for all three; nothing else
+# needs to change.
 defaults:
   - /model: palletjack/patch_policy/policy
   - /datamodule: palletjack/d12
@@ -20,17 +22,20 @@ defaults:
 
 episode_length: 6
 
-cameras: [cam_fork, cam_left_forward, cam_right_forward]
-num_cameras: 3
+cameras: [cam_fork]
+num_cameras: 1
 image_remap:
   cam_fork: [data, cam_fork]
-  cam_left_forward: [data, cam_left_forward]
-  cam_right_forward: [data, cam_right_forward]
 
 image_encoder_name: vit_small_patch16_dinov3.lvd1689m
-image_resize: [256, 256] # 256 / patch 16 -> 16x16 = 256 patch tokens per camera
+# 256x144 keeps the camera's 16:9 aspect and its full field of view. A square
+# 256x256 would either squash horizontally by 1.78x (what the card rig and the
+# yaak pipeline both do) or crop away 44% of the width. At patch 16 this is a
+# 16x9 grid = 144 patch tokens per camera, FEWER than a square 256's 256, so
+# correcting the aspect also costs less than the squashed version did.
+image_resize: [144, 256] # (H, W), as timm expects
 image_embedding_dim: 384
-num_patches: 256
+num_patches: 144
 
 window: 6
 attention_impl: sdpa
@@ -51,33 +56,52 @@ trainer:
   gradient_clip_val: 1.0
   log_every_n_steps: 10
 
-# 3 cameras x 6 frames of 1080p decode per sample, and a 769-token frame block:
-# the sequence is 3x the single-camera one and attention is quadratic in it, so
-# the batch is small. Upstream hit OOM at cam=3 on the yaak batch sizes.
 datamodule:
   train:
-    batch_size: 2
+    batch_size: 8
   val:
-    batch_size: 2
+    batch_size: 8
 
-# D12 frames are 1920x1080 straight off the camera, NOT the 576x324 the card rig
-# renders, so this resizes rather than reusing the cards' CenterCrop([320, 576])
-# - that crop would take a small central patch of a 1080p frame. 1920x1080 is
-# already 16:9, so a plain resize introduces no distortion.
+# Frames arrive already at 256x144 from extract_d12_frames.sh, so there is no
+# resize or crop here - only channel order, dtype, augmentation and normalize.
+#
+# NOTE the augmentation is deliberately mild, and deliberately NOT the card rig's.
+# That one models a printed sheet held up by hand (strong perspective, +/-20
+# degrees of rotation, illumination gradients); these cameras are bolted to the
+# truck, so that variation cannot occur and training on it would only cost
+# accuracy. No horizontal flip either: mirroring inverts steering while leaving
+# the label untouched.
 image_transform:
   _target_: torch.nn.Sequential
   _args_:
-    - _target_: torchvision.transforms.v2.Resize
-      size: ${image_resize}
-      antialias: true
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... h w c -> ... c h w"
     - _target_: torchvision.transforms.v2.ToDtype
       scale: true
       dtype:
         _target_: hydra.utils.get_object
         path: torch.float32
+    - _target_: rmind.components.nn.TrainOnly
+      module:
+        _target_: torch.nn.Sequential
+        _args_:
+          # lighting and exposure change through a shift; geometry barely does
+          - _target_: torchvision.transforms.v2.ColorJitter
+            brightness: 0.3
+            contrast: 0.25
+            saturation: 0.2
+            hue: 0.02
+          # small mount flex / calibration drift, not hand-held motion
+          - _target_: torchvision.transforms.v2.RandomAffine
+            degrees: 3
+            translate: [0.03, 0.03]
+            scale: [0.95, 1.05]
+          - _target_: torchvision.transforms.v2.GaussianBlur
+            kernel_size: 5
+            sigma: [0.1, 1.2]
     - _target_: torchvision.transforms.v2.Normalize
       mean: [0.485, 0.456, 0.406]
       std: [0.229, 0.224, 0.225]
 
 wandb:
-  tags: [palletjack, patch_policy, d12, 3cam]
+  tags: [palletjack, patch_policy, d12, cam_fork]

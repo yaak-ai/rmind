@@ -1,22 +1,21 @@
 # @package _global_
 ---
-# ONNX export for the 3-camera D12 policy.
+# ONNX export for the D12 policy, single camera (cam_fork).
 #
 #   just export-onnx export=palletjack/patch_policy/d12 \
 #     "model.checkpoint_path='/path/to/model.ckpt'"
 #
-#   in   cam_fork                     float32 [1, 6, 3, 256, 256]
-#   in   cam_left_forward             float32 [1, 6, 3, 256, 256]
-#   in   cam_right_forward            float32 [1, 6, 3, 256, 256]
+#   in   cam_fork                     float32 [1, 6, 3, 144, 256]
 #   in   speed                        float32 [1, 6, 1]
 #   out  policy.continuous.traction   float32 [1, 1]
 #   out  policy.continuous.steering   float32 [1, 1]
 #   out  policy.continuous.fork1      float32 [1, 1]
 #
-# One image binding per camera, and the caller owns crop/resize/normalize as with
-# every other palletjack graph. The three cameras must be frame-aligned by the
-# caller - they run on independent clocks on the vehicle; `prepare_d12` aligns
-# them by timestamp for training and the same has to hold at serving time.
+# 144x256 is the camera's own 16:9 aspect at patch-16 granularity (9x16 = 144
+# patch tokens). The caller owns crop/resize/normalize, as with every other
+# palletjack graph; `extract_d12_frames.sh` is the reference for the resize.
+#
+# For all three cameras use export=palletjack/patch_policy/d12_3cam.
 model:
   _target_: rmind.models.patch_policy_continuous.PatchPolicyContinuous.load_for_export
   checkpoint_path: ???
@@ -25,27 +24,7 @@ input:
   data:
     cam_fork:
       _target_: torch.testing.make_tensor
-      _args_: [1, 6, 3, 256, 256]
-      dtype:
-        _target_: hydra.utils.get_object
-        path: torch.float
-      device: cpu
-      low: -3
-      high: 3
-
-    cam_left_forward:
-      _target_: torch.testing.make_tensor
-      _args_: [1, 6, 3, 256, 256]
-      dtype:
-        _target_: hydra.utils.get_object
-        path: torch.float
-      device: cpu
-      low: -3
-      high: 3
-
-    cam_right_forward:
-      _target_: torch.testing.make_tensor
-      _args_: [1, 6, 3, 256, 256]
+      _args_: [1, 6, 3, 144, 256]
       dtype:
         _target_: hydra.utils.get_object
         path: torch.float
@@ -65,6 +44,4 @@ input:
 
 input_names:
   - cam_fork
-  - cam_left_forward
-  - cam_right_forward
   - speed
