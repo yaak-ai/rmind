@@ -13,14 +13,17 @@ _target_: rmind.models.patch_policy_continuous.PatchPolicyContinuous
 _recursive_: false
 _convert_: all
 
+cameras: ${cameras}
+
 input_transform:
   _target_: torch.nn.Sequential
   _convert_: all
   _args_:
     - _target_: rmind.components.nn.Remapper
       paths:
-        image:
-          cam_left_backward: [data, cam_left_backward]
+        # one entry per camera; supplied by the experiment so the same model
+        # config serves the 1-camera card rig and the 3-camera recordings
+        image: ${image_remap}
 
         continuous:
           speed: [data, speed]
@@ -67,7 +70,8 @@ encoder:
   dim_model: ${policy_embedding_dim}
   num_layers: ${num_layers}
   num_heads: ${num_heads}
-  tokens_per_frame: "${eval:'${num_patches} + 1'}"
+  # every camera adds its own patch block to the frame
+  tokens_per_frame: "${eval:'${num_cameras} * ${num_patches} + 1'}"
   window: ${window}
   attention_impl: ${attention_impl}
   attn_dropout: 0.0

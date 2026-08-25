@@ -29,11 +29,15 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
     """Patch-policy trunk with one continuous Gaussian head per actuation.
 
     The trunk is `patch_policy.PatchPolicy`'s, unchanged in shape: frozen ViT
-    patch features `(P, D)` projected to the policy width, an embedded speed
-    token prepended so each frame block ends on a patch token, the flattened
-    `T x (P + 1)` sequence run through a block-causal trunk (bidirectional
-    intra-frame, causal inter-frame), and each frame's LAST patch token taken as
-    that frame's readout. `encoder` accepts either
+    patch features `(P, D)` - concatenated along the patch axis across `cameras`,
+    each contributing its own `P` - projected to the policy width, an embedded
+    speed token prepended so each frame block ends on a patch token, the
+    flattened `T x (cam * P + 1)` sequence run through a block-causal trunk
+    (bidirectional intra-frame, causal inter-frame), and each frame's LAST patch
+    token taken as that frame's readout. Multiple cameras therefore cost sequence
+    length, not parameters, and the trunk needs no change - it sees only a larger
+    `tokens_per_frame`. Frames must already be aligned across cameras; for real
+    recordings `scripts.prepare_d12` does that by timestamp. `encoder` accepts either
     `patch_policy.BlockCausalTransformer` or
     `components.transformer.causal_frame.CausalFrameTransformer` - the same
     `forward(src, *, num_frames)` contract.
@@ -70,7 +74,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         targets: Mapping[str, Mapping[str, Path]],
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
-        image: Path = ("image", "cam_left_backward"),
+        cameras: tuple[str, ...] = ("cam_left_backward",),
         speed: Path = ("continuous", "speed"),
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
@@ -106,7 +110,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         self.image_encoder.requires_grad_(False).eval()  # noqa: FBT003
 
         self.targets: Mapping[str, Mapping[str, Path]] = targets
-        self.image: Path = image
+        self.cameras: tuple[str, ...] = cameras
         self.speed: Path = speed
 
         if optimizer is not None:
@@ -119,7 +123,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
 
         self.prediction_config = prediction_config
         hparams["targets"] = targets
-        hparams["image"] = image
+        hparams["cameras"] = cameras
         hparams["speed"] = speed
         self.save_hyperparameters(hparams)
 
@@ -198,11 +202,19 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         return value
 
     def _frame_tokens(self, images: Tensor, speed: Tensor) -> Tensor:
-        """Per-frame token blocks `(b, t, p + 1, d)`, nothing temporal."""
-        with torch.no_grad():
-            patches = self.image_encoder(images)  # (b, t, p, d_img)
+        """Per-frame token blocks `(b, t, cam * p + 1, d)`, nothing temporal.
 
-        patches = self.patch_projection(patches)  # (b, t, p, d)
+        `images` is `(b, t, cam, c, h, w)`; a single-camera model still stacks a
+        `cam=1` axis so there is one code path for both. Each camera contributes
+        its own `p` patches through the same frozen encoder and projection - no
+        new parameters, just a longer per-frame token block, which the trunk sees
+        only as a larger `tokens_per_frame`.
+        """
+        with torch.no_grad():
+            patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
+
+        patches = rearrange(patches, "b t cam p d -> b t (cam p) d")
+        patches = self.patch_projection(patches)  # (b, t, cam * p, d)
         speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
 
         # speed first so the frame block ends on a patch token (the readout position)
@@ -211,9 +223,12 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
     def _features(self, batch: Any) -> Tensor:
         """Per-frame readout features `(b, t, d)`."""
         inputs = self.input_transform(batch)
-        tokens = self._frame_tokens(
-            self._get(inputs, self.image), self._get(inputs, self.speed)
-        )
+        # one entry per configured camera, stacked on a dedicated axis so the
+        # frames stay aligned frame-for-frame across cameras
+        images = torch.stack(
+            [self._get(inputs, ("image", camera)) for camera in self.cameras], dim=2
+        )  # (b, t, cam, c, h, w)
+        tokens = self._frame_tokens(images, self._get(inputs, self.speed))
         _, num_frames, _, _ = tokens.shape
 
         embedding = self.encoder(
