@@ -570,7 +570,7 @@ def test_argmax_decode_metrics_are_the_deployment_path() -> None:
         *(f"code_acc_{q}_last" for q in range(NUM_QUANTIZERS)),
     }
     assert expected_keys <= set(cast("dict[str, Tensor]", metrics).keys()), (
-        f"missing: {expected_keys - set(cast("dict[str, Tensor]", metrics).keys())}"
+        f"missing: {expected_keys - set(cast('dict[str, Tensor]', metrics).keys())}"
     )
     for key in expected_keys:
         assert metrics[key].isfinite()
