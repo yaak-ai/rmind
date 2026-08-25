@@ -186,6 +186,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
         neighbor_smoothing_tau: float | None = None,
+        neighbor_smoothing_channels: tuple[int, ...] | None = None,
         fusion_norm: bool = False,
         fusion_goal_rms: float | None = None,
         use_readout_token: bool = False,
@@ -247,6 +248,19 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # uniformly. See _neighbor_smoothing_targets for the construction and
         # FocalLoss.forward for how the target replaces the uniform term.
         self.neighbor_smoothing_tau = neighbor_smoothing_tau
+        # Which ACTION CHANNELS define "neighbouring" (None = all of them).
+        # MEASURED 2026-08-25: with all four channels, `turn_signal` contributes
+        # 38.9% of d_q(c) -- more than gas (21.2%) or steer (25.7%). That is the
+        # largest single share, and it is the wrong kind of quantity twice over:
+        # turn_signal is CATEGORICAL (left/none/right has no metric, so "half a
+        # signal away" is meaningless) and it carries by far the widest dynamic
+        # range (p95 0.499, p99 0.9997, max 1.27 against 0.02-0.09 for the
+        # continuous channels). Left in, a code differing only in indicator state
+        # is penalised as if it were a trajectory error, and a code with the right
+        # indicator but a worse trajectory is rewarded. Default the causal arm to
+        # the continuous channels only; keep this configurable because whether
+        # turn_signal wants smoothing at all is still an open question.
+        self.neighbor_smoothing_channels = neighbor_smoothing_channels
         if neighbor_smoothing_tau is not None:
             # deferred to dodge a circular import (loss.py has no such cycle
             # today, but this mirrors load_for_export's local-import pattern)
@@ -271,6 +285,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "chunk": chunk,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
+            "neighbor_smoothing_channels": neighbor_smoothing_channels,
             "offset_scale": offset_scale,
             "neighbor_smoothing_tau": neighbor_smoothing_tau,
             "fusion_norm": fusion_norm,
@@ -641,16 +656,31 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         quantizer = tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
 
+        # The chunk is flattened (horizon, action_features) -> action_dim, so
+        # channel `j` lives at every index with `i % action_features == j`.
         with torch.no_grad():
             base = tokenizer.invert(target_codes)  # (*b, action_dim)
+
+            # action_dim is taken from the decoded tensor rather than a tokenizer
+            # attribute, so this does not depend on an API that may not exist.
+            channel_index: Tensor | None = None
+            if self.neighbor_smoothing_channels is not None:
+                nf = tokenizer._action_features  # noqa: SLF001
+                keep = set(self.neighbor_smoothing_channels)
+                channel_index = torch.tensor(
+                    [i for i in range(base.shape[-1]) if i % nf in keep],
+                    device=base.device,
+                )
+
             distances = base.new_empty(*target_codes.shape[:-1], g, c)
             for q in range(g):
                 for code in range(c):
                     candidate = target_codes.clone()
                     candidate[..., q] = code
-                    distances[..., q, code] = (
-                        (tokenizer.invert(candidate) - base).abs().mean(dim=-1)
-                    )
+                    delta = (tokenizer.invert(candidate) - base).abs()
+                    if channel_index is not None:
+                        delta = delta[..., channel_index]
+                    distances[..., q, code] = delta.mean(dim=-1)
             return torch.softmax(-distances / self.neighbor_smoothing_tau, dim=-1)
 
     def _predict_chunk(self, features: Tensor) -> Tensor:
