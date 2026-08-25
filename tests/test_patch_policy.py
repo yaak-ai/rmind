@@ -5,7 +5,7 @@ teacher-forced offset semantics inherited from `JointPolicyObjective` (#258),
 and equivalence of the batched `_gather_offset` with the joint-policy original.
 """
 
-from typing import Any, override
+from typing import Any, cast, override
 
 import pytest
 import torch
@@ -217,7 +217,7 @@ def test_features_and_metrics_shapes() -> None:
     assert chunk.shape == (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS)
 
     metrics = model._compute_metrics(batch)  # noqa: SLF001
-    losses = metrics["policy", "loss"]
+    losses = cast("dict[str, Tensor]", metrics["policy", "loss"])
     assert set(losses.keys()) == {
         *(f"code_{q}" for q in range(NUM_QUANTIZERS)),
         "offset",
@@ -227,7 +227,7 @@ def test_features_and_metrics_shapes() -> None:
     # sample_codes=False: sampling is an eval-only decode mode, so the sampled
     # metrics are neither computed nor logged (they would just duplicate
     # offset_argmax_recon* while misrepresenting argmax serving)
-    metric_keys = set(metrics["policy", "metric"].keys())
+    metric_keys = set(cast("dict[str, Tensor]", metrics["policy", "metric"]).keys())
     assert "offset_sampled_recon" not in metric_keys
     assert "offset_sampled_recon_last" not in metric_keys
     assert metrics["policy", "metric", "offset_argmax_recon"].isfinite()
@@ -249,7 +249,9 @@ def test_non_teacher_forced_offset_loss_without_sampling() -> None:
     metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
 
     assert metrics["policy", "loss", "offset"].isfinite()
-    assert "offset_sampled_recon" not in set(metrics["policy", "metric"].keys())
+    assert "offset_sampled_recon" not in set(
+        cast("dict[str, Tensor]", metrics["policy", "metric"]).keys()
+    )
 
 
 def test_multi_camera_stacks_patches_in_camera_order() -> None:
@@ -332,8 +334,8 @@ def test_neighbor_smoothing_targets_and_loss() -> None:
         )
     )
     uniform_model.load_state_dict(model.state_dict())
-    smoothed = model._compute_metrics(batch)["policy", "loss"]  # noqa: SLF001
-    uniform = uniform_model._compute_metrics(batch)["policy", "loss"]  # noqa: SLF001
+    smoothed = cast("dict[str, Tensor]", model._compute_metrics(batch)["policy", "loss"])  # noqa: SLF001
+    uniform = cast("dict[str, Tensor]", uniform_model._compute_metrics(batch)["policy", "loss"])  # noqa: SLF001
     assert not torch.allclose(smoothed["code_0"], uniform["code_0"])
     # the offset loss is untouched by the code-smoothing change
     assert torch.allclose(smoothed["offset"], uniform["offset"])
@@ -362,9 +364,9 @@ def test_frozen_modules_receive_no_grad() -> None:
     assert not model.goal_encoder.training
     assert not model.image_encoder.training
 
-    loss = model._compute_metrics(_make_batch())["policy", "loss"].sum(  # noqa: SLF001
-        reduce=True
-    )
+    loss = cast(  # noqa: SLF001
+        "TensorDict", model._compute_metrics(_make_batch())["policy", "loss"]
+    ).sum(reduce=True)
     loss.backward()
 
     assert all(p.grad is None for p in model.tokenizer.parameters())
@@ -520,7 +522,9 @@ def test_fusion_norm_balances_sources() -> None:
 
     assert model.fusion_patch_gain.requires_grad
     assert model.fusion_goal_gain.requires_grad
-    loss = model._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss = cast(  # noqa: SLF001
+        "TensorDict", model._compute_metrics(batch)["policy", "loss"]
+    ).sum(reduce=True)
     loss.backward()
     assert model.fusion_goal_gain.grad is not None
 
@@ -559,8 +563,8 @@ def test_argmax_decode_metrics_are_the_deployment_path() -> None:
         "code_acc_joint_last",
         *(f"code_acc_{q}_last" for q in range(NUM_QUANTIZERS)),
     }
-    assert expected_keys <= set(metrics.keys()), (
-        f"missing: {expected_keys - set(metrics.keys())}"
+    assert expected_keys <= set(cast("dict[str, Tensor]", metrics).keys()), (
+        f"missing: {expected_keys - set(cast("dict[str, Tensor]", metrics).keys())}"
     )
     for key in expected_keys:
         assert metrics[key].isfinite()
@@ -887,9 +891,9 @@ def test_readout_and_register_tokens_receive_gradient() -> None:
     attention (K/V) -- both must train."""
     model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
     model.train()
-    loss = model._compute_metrics(_make_batch())["policy", "loss"].sum(  # noqa: SLF001
-        reduce=True
-    )
+    loss = cast(  # noqa: SLF001
+        "TensorDict", model._compute_metrics(_make_batch())["policy", "loss"]
+    ).sum(reduce=True)
     loss.backward()
     assert model.readout_token is not None
     assert model.register_tokens is not None
