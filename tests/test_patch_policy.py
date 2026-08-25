@@ -370,8 +370,9 @@ def test_frozen_modules_receive_no_grad() -> None:
     assert not model.goal_encoder.training
     assert not model.image_encoder.training
 
-    loss = cast(  # noqa: SLF001
-        "TensorDict", model._compute_metrics(_make_batch())["policy", "loss"]
+    loss = cast(
+        "TensorDict",
+        model._compute_metrics(_make_batch())["policy", "loss"],  # noqa: SLF001
     ).sum(reduce=True)
     loss.backward()
 
@@ -528,8 +529,9 @@ def test_fusion_norm_balances_sources() -> None:
 
     assert model.fusion_patch_gain.requires_grad
     assert model.fusion_goal_gain.requires_grad
-    loss = cast(  # noqa: SLF001
-        "TensorDict", model._compute_metrics(batch)["policy", "loss"]
+    loss = cast(
+        "TensorDict",
+        model._compute_metrics(batch)["policy", "loss"],  # noqa: SLF001
     ).sum(reduce=True)
     loss.backward()
     assert model.fusion_goal_gain.grad is not None
@@ -897,8 +899,9 @@ def test_readout_and_register_tokens_receive_gradient() -> None:
     attention (K/V) -- both must train."""
     model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
     model.train()
-    loss = cast(  # noqa: SLF001
-        "TensorDict", model._compute_metrics(_make_batch())["policy", "loss"]
+    loss = cast(
+        "TensorDict",
+        model._compute_metrics(_make_batch())["policy", "loss"],  # noqa: SLF001
     ).sum(reduce=True)
     loss.backward()
     assert model.readout_token is not None
