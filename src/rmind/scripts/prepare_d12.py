@@ -1,10 +1,16 @@
-"""Build an rbyte sample table from a D12 job: `data.mcap` + per-camera `videos/`.
+"""Build an rbyte sample table from a D12 job: `data.mcap` + per-camera directories.
 
 Job layout (`/nasa/team-space/nikita/data/d12/{job-id}/`):
 
-    data.mcap                              protobuf + zstd, palleter.* schemas
-    videos/{camera}/video.mp4              h264 1920x1080, one file per camera
-    videos/{camera}/frame_info_{camera}.txt  "w,h,codec" then one ns stamp per frame
+    data.mcap                            protobuf + zstd, palleter.* schemas
+    job-id.txt                           the recording's UUID
+    {camera}/video.mp4                   h264 1920x1080, one per camera
+    {camera}/frame_info_{camera}.txt     "w,h,codec" then one ns stamp per frame
+    {camera}/frames/{W}x{H}/%06d.jpg     what training reads, from
+                                         `scripts/extract_d12_frames.sh`
+
+Job directories are named by datetime (`2026-08-25--13-44-11`), which is what the
+sample table records as `input_id`.
 
 Actuations come from the mcap and are already in convenient units:
 
@@ -130,7 +136,7 @@ def build(
 
     per_camera: dict[str, pl.DataFrame] = {}
     for camera in cameras:
-        camera_dir = job_dir / "videos" / camera
+        camera_dir = job_dir / camera
         if not (camera_dir / "video.mp4").is_file():
             msg = f"{camera}: no video.mp4 in {camera_dir}"
             raise ValueError(msg)
@@ -283,7 +289,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=Path("data/palletjack/d12"))
-    parser.add_argument("--cameras", nargs="+", default=list(CAMERAS))
+    parser.add_argument(
+        "--cameras",
+        nargs="+",
+        default=None,
+        help="default: every subdirectory of the job holding a video.mp4",
+    )
     parser.add_argument(
         "--reference",
         default="cam_fork",
@@ -308,10 +319,17 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    cameras = (
+        tuple(args.cameras)
+        if args.cameras
+        # jobs do not all carry the same camera set
+        else tuple(sorted(p.parent.name for p in args.job_dir.glob("*/video.mp4")))
+    )
+
     main(
         args.job_dir,
         args.output_dir,
-        cameras=tuple(args.cameras),
+        cameras=cameras,
         reference=args.reference,
         traction_source=args.traction_source,
         episode_length=args.episode_length,
