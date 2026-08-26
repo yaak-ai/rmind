@@ -165,6 +165,7 @@ def decoder_model_and_args(  # noqa: PLR0914
     *,
     artifact: str | None = None,
     ckpt: str | None = None,
+    decode: str = "argmax",
 ) -> tuple[PatchPolicyDecoderStep, tuple[dict[str, Tensor]], tuple[int, int, int, int]]:
     """The decoder step: ONE new frame against a cache of `context - 1` frames."""  # noqa: DOC501
     if artifact is not None or ckpt is not None:
@@ -225,7 +226,7 @@ def decoder_model_and_args(  # noqa: PLR0914
             window=context,
         ).eval()
 
-    step = PatchPolicyDecoderStep(policy=policy).eval()
+    step = PatchPolicyDecoderStep(policy=policy, decode=decode).eval()
 
     cache_frames = context - 1
     past_k, past_v, cache_bias = step.empty_cache(cache_frames=cache_frames)
@@ -291,6 +292,13 @@ def main() -> None:
         "where the architecture comes from the checkpoint's hparams",
     )
     parser.add_argument("--mode", choices=["baseline", "decoder"], required=True)
+    parser.add_argument(
+        "--decode",
+        choices=["argmax", "heads"],
+        default="argmax",
+        help="argmax: decode in-graph (default). heads: emit raw code_logits + "
+        "offsets for host-side decode (median-top-k, entropy-gated).",
+    )
     weights = parser.add_mutually_exclusive_group()
     weights.add_argument(
         "--artifact", help="trained wandb model artifact, e.g. yaak/rmind/model-<id>:v0"
@@ -331,7 +339,11 @@ def main() -> None:
         export_args: tuple[Any, ...] = baseline_args(args.context)
     else:
         model, export_args, shapes = decoder_model_and_args(
-            args.arm, args.context, artifact=args.artifact, ckpt=args.ckpt
+            args.arm,
+            args.context,
+            artifact=args.artifact,
+            ckpt=args.ckpt,
+            decode=args.decode,
         )
         layers, heads, head_dim, cache_frames = shapes
         logger.info(

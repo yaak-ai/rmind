@@ -78,7 +78,11 @@ class PatchPolicyDecoderStep(nn.Module):
     """
 
     def __init__(
-        self, *, policy: PatchPolicy, readout_only_final_block: bool = True
+        self,
+        *,
+        policy: PatchPolicy,
+        readout_only_final_block: bool = True,
+        decode: str = "argmax",
     ) -> None:
         super().__init__()
         if not isinstance(policy.encoder, CausalFrameTransformer):
@@ -93,6 +97,16 @@ class PatchPolicyDecoderStep(nn.Module):
         # output and MLP for the other 256 positions are discarded. K/V are still
         # produced for all 257 -- future frames attend to them.
         self.readout_only_final_block = readout_only_final_block
+        # "argmax": decode in-graph and emit the action chunk (today's behaviour).
+        # "heads":  emit the raw code logits + offset table and let the host decode.
+        # The heads form is what makes non-argmax rules (median-top-k, entropy-gated)
+        # servable at all: they either need RNG or a top-k enumeration that has no
+        # business inside a deterministic TRT engine. It also moves the ArgMax off
+        # the accelerator, which is where fp16 code flips come from.
+        if decode not in {"argmax", "heads"}:
+            msg = f"decode must be 'argmax' or 'heads', got {decode!r}"
+            raise ValueError(msg)
+        self.decode = decode
         self.register_buffer(
             "image_mean", torch.tensor(IMAGENET_MEAN).reshape(1, 1, 3, 1, 1)
         )
@@ -167,6 +181,17 @@ class PatchPolicyDecoderStep(nn.Module):
         # (the learned readout token with `use_readout_token`, else the last patch)
         if policy.norm is not None:
             features = policy.norm(features)
+
+        if self.decode == "heads":
+            # (b, g, c) and (b, g, c, action_dim). Names must match what drivr's
+            # is_heads_engine() looks for; export() derives ONNX output names by
+            # tree-flattening this dict, so the keys ARE the binding names.
+            code_logits, offsets = policy._heads(features)  # noqa: SLF001
+            return TensorDict({
+                "policy": {"code_logits": code_logits, "offsets": offsets},
+                "new_k": new_k,
+                "new_v": new_v,
+            })
 
         return TensorDict({
             "policy": {"joint_actions": policy._predict_chunk(features)},  # noqa: SLF001
