@@ -85,7 +85,13 @@ class SelectiveAdamW(AdamW):
                     weight_decay_param_blacklist.add(param_name)
 
                 case (
-                    "in_proj_weight" | "cls_token" | "reg_token" | "gamma_1" | "gamma_2"
+                    "in_proj_weight"
+                    | "cls_token"
+                    | "reg_token"
+                    | "readout_token"
+                    | "register_tokens"
+                    | "gamma_1"
+                    | "gamma_2"
                 ):
                     pass
 
