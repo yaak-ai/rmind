@@ -8,6 +8,8 @@
 #   in   cam_fork                     float32 [1, 6, 3, 144, 256]
 #   in   speed                        float32 [1, 6, 1]
 #   in   fork_above_300               float32 [1, 6, 1]  (0.0 / 1.0)
+#   in   relative_ego_pos             float32 [1, 6, 2]  ego-frame [fwd,lat] m
+#   in   relative_dropoff_pos         float32 [1, 6, 2]  ego-frame [fwd,lat] m
 #   out  policy.continuous.traction   float32 [1, 1]
 #   out  policy.continuous.steering   float32 [1, 1]
 #   out  policy.continuous.fork1      float32 [1, 1]
@@ -54,7 +56,32 @@ input:
       low: 0
       high: 1
 
+    # intention, ego-frame metres [fwd, lat]: pallet, and dropoff. The graph does
+    # the /10 + clamp, so the caller feeds raw metres. -5..5 covers the recorded
+    # approach distances.
+    relative_ego_pos:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 2]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: -5
+      high: 5
+
+    relative_dropoff_pos:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 2]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: -5
+      high: 5
+
 input_names:
   - cam_fork
   - speed
   - fork_above_300
+  - relative_ego_pos
+  - relative_dropoff_pos

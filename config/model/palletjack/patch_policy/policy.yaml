@@ -28,6 +28,11 @@ input_transform:
         continuous:
           speed: [data, speed]
           fork_above_300: [data, fork_above_300]
+          # intention: ego-frame [fwd, lat] metres to the pallet and to the
+          # dropoff. Absent from data on any arm that does not supply them, in
+          # which case they resolve to None and are simply not observed.
+          relative_ego_pos: [data, relative_ego_pos]
+          relative_dropoff_pos: [data, relative_dropoff_pos]
           traction: [data, traction]
           steering: [data, steering]
           fork1: [data, fork1]
