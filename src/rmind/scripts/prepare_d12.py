@@ -19,6 +19,19 @@ Actuations come from the mcap and are already in convenient units:
     fork1      linde/fork.fork1_pct                    percent -> /100 -> [-1, 1]
     speed      lindelot/vehicle_state.speed            m/s, for the speed token
 
+Observations (model inputs, not targets):
+
+    speed             lindelot/vehicle_state.speed             m/s
+    fork_above_300    lindelot/vehicle_state.fork_above_300    bool -> 0.0 / 1.0
+
+`fork_above_300` is a height switch on the mast: whether the fork is raised past
+300 mm. It is recorded together with a `_valid` companion, which is False for the
+first second or so of a job before the ECU has answered - those rows are dropped
+rather than passed off as a confident False, since "not lifted" and "don't know
+yet" are different states and the model would learn the wrong thing from the
+conflation. `fork_above_1300` exists in the same message but is constant on the
+jobs recorded so far, so it is not carried.
+
 CLOCKS -- the one thing to understand here. Three timebases are in play:
 
   * mcap `log_time`, which every signal shares. This is the join clock.
@@ -45,7 +58,7 @@ away.
 import argparse
 import json
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 import polars as pl
 from structlog import get_logger
@@ -57,12 +70,35 @@ CAMERAS: Final = ("cam_fork", "cam_left_forward", "cam_right_forward")
 # a skew needs at least two frames to be measurable
 MIN_FRAMES_FOR_SKEW: Final = 2
 
-# actuation name -> (mcap topic, field, scale). Scale brings percent to [-1, 1].
+
+class Signal(NamedTuple):
+    """One scalar column of the sample table, and where it comes from.
+
+    Everything lands as float32 whatever the wire type, because that is what the
+    model's continuous inputs and Gaussian heads take.
+    """
+
+    topic: str
+    field: str
+    scale: float = 1.0
+    dtype: pl.DataType = pl.Float32()
+    # companion boolean field that says the reading is meaningful; rows where it
+    # is False are dropped rather than trusted
+    valid_field: str | None = None
+
+
+# column name -> source. Scale brings percent to [-1, 1].
 SIGNALS: Final = {
-    "traction": ("linde/traction", "traction_pct", 0.01),
-    "steering": ("lindelot/adc", "steering_angle_normalised", 1.0),
-    "fork1": ("linde/fork", "fork1_pct", 0.01),
-    "speed": ("lindelot/vehicle_state", "speed", 1.0),
+    "traction": Signal("linde/traction", "traction_pct", 0.01),
+    "steering": Signal("lindelot/adc", "steering_angle_normalised"),
+    "fork1": Signal("linde/fork", "fork1_pct", 0.01),
+    "speed": Signal("lindelot/vehicle_state", "speed"),
+    "fork_above_300": Signal(
+        "lindelot/vehicle_state",
+        "fork_above_300",
+        dtype=pl.Boolean(),
+        valid_field="fork_above_300_valid",
+    ),
 }
 
 # alternative traction sources, selectable with --traction-source
@@ -71,6 +107,17 @@ TRACTION_SOURCES: Final = {
     "applied": ("lindelot/applied", "traction_pct"),
     "command": ("lindelot/vehicle_state", "traction_command_pct"),
 }
+
+
+def resolve_signal(name: str, traction_source: str) -> Signal:
+    """`SIGNALS[name]`, with traction redirected to the selected source."""
+    signal = SIGNALS[name]
+    if name != "traction":
+        return signal
+
+    topic, field = TRACTION_SOURCES[traction_source]
+
+    return signal._replace(topic=topic, field=field)
 
 
 def encoded_frame_count(camera_dir: Path, camera: str) -> int:
@@ -86,7 +133,6 @@ def read_mcap(
     """Decode the signal and per-camera frame topics into polars frames."""
     from rbyte.samples.mcap import McapReader, ProtobufDecoderFactory  # noqa: PLC0415
 
-    topic, field = TRACTION_SOURCES[traction_source]
     fields: dict[str, dict[str, pl.DataType | None]] = {
         f"cam_{c.removeprefix('cam_')}/frame": {
             "log_time": pl.Datetime("ns"),
@@ -94,11 +140,12 @@ def read_mcap(
         }
         for c in cameras
     }
-    for name, (sig_topic, sig_field, _) in SIGNALS.items():
-        chosen = (topic, field) if name == "traction" else (sig_topic, sig_field)
-        fields.setdefault(chosen[0], {"log_time": pl.Datetime("ns")})[chosen[1]] = (
-            pl.Float32()
-        )
+    for name in SIGNALS:
+        signal = resolve_signal(name, traction_source)
+        topic = fields.setdefault(signal.topic, {"log_time": pl.Datetime("ns")})
+        topic[signal.field] = signal.dtype
+        if signal.valid_field is not None:
+            topic[signal.valid_field] = pl.Boolean()
 
     return McapReader(decoder_factories=[ProtobufDecoderFactory], fields=fields)(path)
 
@@ -174,20 +221,55 @@ def build(
         if camera != reference:
             table = table.join_asof(frames, on="log_time", strategy="nearest")
 
-    for name, (sig_topic, sig_field, scale) in SIGNALS.items():
-        topic, field = (
-            TRACTION_SOURCES[traction_source]
-            if name == "traction"
-            else (sig_topic, sig_field)
-        )
-        series = (
-            topics[topic]
-            .sort("log_time")
-            .select("log_time", pl.col(field).alias(name) * scale)
-        )
+    validity: list[str] = []
+    for name in SIGNALS:
+        signal = resolve_signal(name, traction_source)
+        columns = [(pl.col(signal.field).cast(pl.Float32) * signal.scale).alias(name)]
+        if signal.valid_field is not None:
+            validity.append(valid := f"{name}/valid")
+            columns.append(pl.col(signal.valid_field).alias(valid))
+
+        series = topics[signal.topic].sort("log_time").select("log_time", *columns)
         table = table.join_asof(series, on="log_time", strategy="nearest")
 
-    return table.rename({"frame_idx": f"{reference}/frame_idx"})
+    return _drop_invalid(table, validity).rename({
+        "frame_idx": f"{reference}/frame_idx"
+    })
+
+
+def _drop_invalid(table: pl.DataFrame, validity: list[str]) -> pl.DataFrame:
+    """Drop rows any `_valid` companion marks as not-yet-known, and the columns.
+
+    These are a prefix in practice - the ECU has not answered for the first
+    second or so of a job - and dropping a prefix leaves the timeline contiguous.
+    A gap in the middle would instead make a sliding episode window silently span
+    a time discontinuity, so that case is warned about rather than hidden.
+    """
+    if not validity:
+        return table
+
+    keep = pl.all_horizontal(validity)
+    kept = table.filter(keep).drop(validity)
+    dropped = len(table) - len(kept)
+    if dropped:
+        invalid = table.with_row_index("_row").filter(~keep)["_row"].to_list()
+        contiguous_prefix = invalid == list(range(dropped))
+        logger.info(
+            "dropped rows with invalid readings",
+            rows=dropped,
+            of=len(table),
+            columns=validity,
+            contiguous_prefix=contiguous_prefix,
+        )
+        if not contiguous_prefix:
+            logger.warning(
+                "invalid rows are not a leading run: episode windows may span the "
+                "resulting gap",
+                first=invalid[0],
+                last=invalid[-1],
+            )
+
+    return kept
 
 
 def episodes(  # noqa: PLR0913
@@ -270,6 +352,7 @@ def main(  # noqa: PLR0913
                 "reference": reference,
                 "traction_source": traction_source,
                 "episode_length": episode_length,
+                "signals": list(SIGNALS),
             },
             indent=2,
         )

@@ -32,7 +32,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
     patch features `(P, D)` - concatenated along the patch axis across `cameras`,
     each contributing its own `P` - projected to the policy width, an embedded
     speed token prepended so each frame block ends on a patch token, the
-    flattened `T x (cam * P + 1)` sequence run through a block-causal trunk
+    flattened `T x (cam * P + 1 + O)` sequence run through a block-causal trunk
     (bidirectional intra-frame, causal inter-frame), and each frame's LAST patch
     token taken as that frame's readout. Multiple cameras therefore cost sequence
     length, not parameters, and the trunk needs no change - it sees only a larger
@@ -41,6 +41,15 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
     `patch_policy.BlockCausalTransformer` or
     `components.transformer.causal_frame.CausalFrameTransformer` - the same
     `forward(src, *, num_frames)` contract.
+
+    `observations` adds `O` further scalar state tokens beside speed - on the D12,
+    `fork_above_300`, the mast height switch - each named, looked up by path in
+    the transformed batch and embedded by its entry in `observation_embeddings`.
+    They are inputs, never targets: the model is told the fork's height band so it
+    can condition on it, and separately predicts `fork1`, the command that changes
+    it. Every one costs a token per frame, so the trunk's `tokens_per_frame` has to
+    account for them, and adding or removing one invalidates a checkpoint's token
+    positions.
 
     What differs is the head, and why:
 
@@ -76,6 +85,10 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
         cameras: tuple[str, ...] = ("cam_left_backward",),
         speed: Path = ("continuous", "speed"),
+        observations: Mapping[str, Path] | None = None,
+        observation_embeddings: HydraConfig[ModuleDict]
+        | InstanceOf[ModuleDict]
+        | None = None,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -109,9 +122,29 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         # the ViT is a feature extractor here, exactly as in PatchPolicy
         self.image_encoder.requires_grad_(False).eval()  # noqa: FBT003
 
+        self.observation_embeddings: ModuleDict | None = (
+            init_hydra_param(hparams, "observation_embeddings", observation_embeddings)
+            if observation_embeddings is not None
+            else None
+        )
+
         self.targets: Mapping[str, Mapping[str, Path]] = targets
         self.cameras: tuple[str, ...] = cameras
         self.speed: Path = speed
+        self.observations: Mapping[str, Path] = observations or {}
+
+        # an observation with no embedding would be read and silently discarded,
+        # and an embedding with no observation never called; both are config bugs
+        embedded = (
+            set(self.observation_embeddings) if self.observation_embeddings else set()
+        )
+        if embedded != set(self.observations):
+            msg = (
+                "`observations` and `observation_embeddings` must name the same "
+                f"observations; got {sorted(self.observations)} against "
+                f"{sorted(embedded)}"
+            )
+            raise ValueError(msg)
 
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
@@ -125,6 +158,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         hparams["targets"] = targets
         hparams["cameras"] = cameras
         hparams["speed"] = speed
+        hparams["observations"] = self.observations
         self.save_hyperparameters(hparams)
 
     @classmethod
@@ -201,14 +235,20 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
 
         return value
 
-    def _frame_tokens(self, images: Tensor, speed: Tensor) -> Tensor:
-        """Per-frame token blocks `(b, t, cam * p + 1, d)`, nothing temporal.
+    def _frame_tokens(
+        self, images: Tensor, speed: Tensor, observations: Mapping[str, Tensor]
+    ) -> Tensor:
+        """Per-frame token blocks `(b, t, cam * p + 1 + o, d)`, nothing temporal.
 
         `images` is `(b, t, cam, c, h, w)`; a single-camera model still stacks a
         `cam=1` axis so there is one code path for both. Each camera contributes
         its own `p` patches through the same frozen encoder and projection - no
         new parameters, just a longer per-frame token block, which the trunk sees
         only as a larger `tokens_per_frame`.
+
+        `o` is one token per extra observation, embedded exactly as speed is. They
+        likewise count towards `tokens_per_frame`, so a config adding one must
+        widen the trunk's to match.
         """
         with torch.no_grad():
             patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
@@ -216,9 +256,15 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         patches = rearrange(patches, "b t cam p d -> b t (cam p) d")
         patches = self.patch_projection(patches)  # (b, t, cam * p, d)
         speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
+        # `self.observations` order, not the batch's, so the token positions are
+        # the same on every step and match what a checkpoint was trained with
+        state_tokens = [
+            self.observation_embeddings[name](observations[name])  # ty:ignore[not-subscriptable]
+            for name in self.observations
+        ]
 
-        # speed first so the frame block ends on a patch token (the readout position)
-        return torch.cat([speed_token, patches], dim=-2)
+        # scalars first so the frame block ends on a patch token (the readout)
+        return torch.cat([speed_token, *state_tokens, patches], dim=-2)
 
     def _features(self, batch: Any) -> Tensor:
         """Per-frame readout features `(b, t, d)`."""
@@ -228,7 +274,11 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         images = torch.stack(
             [self._get(inputs, ("image", camera)) for camera in self.cameras], dim=2
         )  # (b, t, cam, c, h, w)
-        tokens = self._frame_tokens(images, self._get(inputs, self.speed))
+        tokens = self._frame_tokens(
+            images,
+            self._get(inputs, self.speed),
+            {name: self._get(inputs, path) for name, path in self.observations.items()},
+        )
         _, num_frames, _, _ = tokens.shape
 
         embedding = self.encoder(

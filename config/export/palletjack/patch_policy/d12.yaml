@@ -7,6 +7,7 @@
 #
 #   in   cam_fork                     float32 [1, 6, 3, 144, 256]
 #   in   speed                        float32 [1, 6, 1]
+#   in   fork_above_300               float32 [1, 6, 1]  (0.0 / 1.0)
 #   out  policy.continuous.traction   float32 [1, 1]
 #   out  policy.continuous.steering   float32 [1, 1]
 #   out  policy.continuous.fork1      float32 [1, 1]
@@ -42,6 +43,18 @@ input:
       low: 0
       high: 0
 
+    # mast height switch: 0.0 or 1.0, binned to a 2-entry embedding in the graph
+    fork_above_300:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 1]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 1
+
 input_names:
   - cam_fork
   - speed
+  - fork_above_300

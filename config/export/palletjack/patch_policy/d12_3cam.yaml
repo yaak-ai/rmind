@@ -4,6 +4,7 @@
 #
 #   in   cam_fork / cam_left_forward / cam_right_forward  float32 [1, 6, 3, 144, 256]
 #   in   speed                                            float32 [1, 6, 1]
+#   in   fork_above_300                                   float32 [1, 6, 1]
 #   out  policy.continuous.{traction,steering,fork1}       float32 [1, 1]
 #
 # The three bindings must be FRAME-ALIGNED by the caller. On the vehicle the
@@ -56,8 +57,20 @@ input:
       low: 0
       high: 0
 
+    # mast height switch: 0.0 or 1.0, binned to a 2-entry embedding in the graph
+    fork_above_300:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 1]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 1
+
 input_names:
   - cam_fork
   - cam_left_forward
   - cam_right_forward
   - speed
+  - fork_above_300

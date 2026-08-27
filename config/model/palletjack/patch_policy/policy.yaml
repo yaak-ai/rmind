@@ -27,6 +27,7 @@ input_transform:
 
         continuous:
           speed: [data, speed]
+          fork_above_300: [data, fork_above_300]
           traction: [data, traction]
           steering: [data, steering]
           fork1: [data, fork1]
@@ -54,9 +55,14 @@ patch_projection:
   in_features: ${image_embedding_dim}
   out_features: ${policy_embedding_dim}
 
+# SIGNED range: the palletjack drives backwards as much as forwards, and
+# `lindelot/vehicle_state.speed` reports that with a sign (down to -3.4 m/s on the
+# recordings so far). A [0, 15] range clamped every reverse reading into bin 0,
+# making "reversing" indistinguishable from "stationary". 64 bins over 30 m/s is
+# 0.47 m/s per bin, which is finer than the actuation resolution anyway.
 speed_tokenizer:
   _target_: rmind.components.norm.UniformBinner
-  range: [0.0, 15.0]
+  range: [-15.0, 15.0]
   bins: ${speed_bins}
 
 speed_embedding:
@@ -64,14 +70,25 @@ speed_embedding:
   num_embeddings: ${speed_bins}
   embedding_dim: ${policy_embedding_dim}
 
+# Extra scalar observations, one token per frame each, embedded the way speed is.
+# Inputs only - `fork_above_300` says whether the mast is raised past 300mm, which
+# the policy conditions on while separately predicting `fork1`, the command that
+# moves it. Supplied by the experiment because the card rig has no such reading:
+# there `observations` is empty and the frame block is speed + patches alone.
+observations: ${observations}
+observation_embeddings:
+  _target_: rmind.components.containers.ModuleDict
+  modules: ${observation_embeddings}
+
 # decoder-only trunk: causal over frame blocks, bidirectional within a frame
 encoder:
   _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
   dim_model: ${policy_embedding_dim}
   num_layers: ${num_layers}
   num_heads: ${num_heads}
-  # every camera adds its own patch block to the frame
-  tokens_per_frame: "${eval:'${num_cameras} * ${num_patches} + 1'}"
+  # every camera adds its own patch block to the frame, and every scalar
+  # observation (speed, plus `observations`) adds one token
+  tokens_per_frame: "${eval:'${num_cameras} * ${num_patches} + 1 + ${num_observations}'}"
   window: ${window}
   attention_impl: ${attention_impl}
   attn_dropout: 0.0
