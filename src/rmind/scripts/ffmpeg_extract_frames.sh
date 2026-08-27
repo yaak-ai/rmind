@@ -35,7 +35,7 @@
 # with --enable-libnpp (non-free); it does the same job on the same hardware.
 #
 # `-start_number 0` makes the filename the 0-based encoded frame index, which is
-# what `rmind.scripts.prepare_d12` records as `frame_idx`.
+# what `rmind.data.d12` records as `frame_idx`.
 set -euo pipefail
 
 SIZE="256x144"

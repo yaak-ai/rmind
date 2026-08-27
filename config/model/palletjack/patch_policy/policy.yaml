@@ -22,7 +22,7 @@ input_transform:
     - _target_: rmind.components.nn.Remapper
       paths:
         # one entry per camera; supplied by the experiment so the same model
-        # config serves the 1-camera card rig and the 3-camera recordings
+        # config serves the 1-camera and 3-camera recording arms
         image: ${image_remap}
 
         continuous:
@@ -73,8 +73,8 @@ speed_embedding:
 # Extra scalar observations, one token per frame each, embedded the way speed is.
 # Inputs only - `fork_above_300` says whether the mast is raised past 300mm, which
 # the policy conditions on while separately predicting `fork1`, the command that
-# moves it. Supplied by the experiment because the card rig has no such reading:
-# there `observations` is empty and the frame block is speed + patches alone.
+# moves it. Supplied by the experiment: an arm with no such reading leaves
+# `observations` empty and the frame block is speed + patches alone.
 observations: ${observations}
 observation_embeddings:
   _target_: rmind.components.containers.ModuleDict

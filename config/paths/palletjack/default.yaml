@@ -1,9 +1,12 @@
 ---
-data: ${hydra:runtime.cwd}/data/palletjack
-cards: ${paths.data}/cards
-background: ${paths.data}/background
-# real recordings: read-only job dirs, and our prepared sample tables
-d12: /nasa/team-space/nikita/data/d12
-d12_samples: ${paths.data}/d12
+# Every palletjack path is on the team share. Nothing is read from or written into
+# the repository working tree, and there is no prepared-sample-table step: the
+# dataset templates build their samples from these sources at load time, so a
+# signal can never go stale relative to a checked-in parquet.
+#
+# `d12/{job}/` holds `data.mcap` plus one directory per camera; the mcap is
+# recorded on the truck and the frames come from `scripts/extract_d12_frames.sh`.
+root: /nasa/team-space/nikita/data
+d12: ${paths.root}/d12
 rbyte:
   cache: .rbyte_cache

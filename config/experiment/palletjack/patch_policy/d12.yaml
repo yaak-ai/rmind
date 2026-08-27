@@ -3,8 +3,11 @@
 # Real D12 recordings on the patch-policy trunk.
 #
 #   bash src/rmind/scripts/extract_d12_frames.sh /nasa/team-space/nikita/data/d12/<job-id>
-#   uv run python -m rmind.scripts.prepare_d12 --job-dir /nasa/team-space/nikita/data/d12/<job-id>
 #   just train experiment=palletjack/patch_policy/d12
+#
+# Frame extraction is the only offline step; the sample table (mcap decode + clock
+# alignment) is built at load time by `rmind.data.d12.D12SampleBuilder` from the
+# dataset config, so there is nothing else to prepare and nothing to go stale.
 #
 # LIMITED TO ONE CAMERA for now. The model and the dataset are both 3-camera
 # capable - the dataset declares all three streams and the trunk concatenates
@@ -49,7 +52,7 @@ speed_bins: 64
 # `fork_above_300` is the mast height switch from `lindelot/vehicle_state`, an
 # input the policy conditions on (it is NOT a target - `fork1` is the command that
 # moves the mast, and that is predicted). Two bins over [0, 1] make the binner an
-# is-it-set test on the 0.0/1.0 that `prepare_d12` writes; rows where the ECU had
+# is-it-set test on the 0.0/1.0 the builder emits; rows where the ECU had
 # not yet answered are dropped there rather than passed off as a confident 0.
 #
 # It costs one token per frame, which `num_observations` feeds into the trunk's

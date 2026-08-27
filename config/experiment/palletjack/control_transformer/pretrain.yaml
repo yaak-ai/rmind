@@ -2,15 +2,12 @@
 
 # Palletjack pretrain, the counterpart of `yaak/control_transformer/pretrain`.
 #
-# There is no palletjack recording pipeline yet, so `datamodule` is left unset:
-# supply one, or point this at the command-card dataset to exercise the wiring:
+# `datamodule` is left unset: this arm has no dataset of its own, so supply one.
+# `datamodule=palletjack/d12` works and is the obvious choice.
 #
-#   just train experiment=palletjack/control_transformer/pretrain \
-#     datamodule=palletjack/cards ++model.encoder.disable=true
-#
-# NOTE: a real dataset must carry `meta/sample_id` - the patch-similarity and
-# foresight loggers index into it. The command cards do not, so they only work
-# with W&B logging off (where those loggers never fire).
+# NOTE: a dataset used here must carry `meta/sample_id` - the patch-similarity and
+# foresight loggers index into it. `palletjack/d12` does not, so it only works with
+# W&B logging off (where those loggers never fire).
 defaults:
   - /model: palletjack/control_transformer/raw
   - /datamodule: null

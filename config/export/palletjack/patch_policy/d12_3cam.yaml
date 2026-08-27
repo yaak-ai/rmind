@@ -8,7 +8,7 @@
 #   out  policy.continuous.{traction,steering,fork1}       float32 [1, 1]
 #
 # The three bindings must be FRAME-ALIGNED by the caller. On the vehicle the
-# cameras run on independent clocks and drop frames independently; `prepare_d12`
+# cameras run on independent clocks and drop frames independently; `rmind.data.d12`
 # aligns them by timestamp for training, and nothing inside the graph can check
 # that the same holds at serving time.
 model:

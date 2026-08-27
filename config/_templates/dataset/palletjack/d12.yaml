@@ -5,23 +5,25 @@
 #@    '2026-08-25--16-48-36',
 #@ ]
 #@ cameras = ['cam_fork', 'cam_left_forward', 'cam_right_forward']
+#@ reference = 'cam_fork'
 #@ frame_size = '256x144'
 
 ---
 # Real D12 recordings: actuations from `data.mcap`, frames from the JPEGs that
-# `scripts/extract_d12_frames.sh` writes beside each camera's video. The sample
-# table comes from `rmind.scripts.prepare_d12`, which owns the clock alignment
-# (see its docstring - the video timeline is nominal, so the mcap's own per-frame
-# topic is the only real timebase).
+# `scripts/extract_d12_frames.sh` writes beside each camera's video.
+#
+# Samples are built HERE, at load time, by `rmind.data.d12.D12SampleBuilder` - one
+# pipeline call per job, concatenated. There is no prepared parquet on disk: the
+# builder owns the clock alignment (its docstring explains why the video timeline
+# is nominal and the mcap's own per-frame topic is the only real timebase), the
+# per-signal validity gate, and the pairing-skew guard that refuses a job whose
+# frames cannot be trusted to line up. Adding a signal is a change to that module,
+# never a stale artifact.
 #
 # Job directories are named by datetime and that name is the `input_id`.
 #
 # NOT 2026-08-25--13-44-11: that recording predates `fork_above_300` in the
-# `lindelot/vehicle_state` schema, so `prepare_d12` cannot build the observation
-# column for it.
-#
-# Signal columns are whatever `prepare_d12` wrote into the parquet - the pipeline
-# below reads it whole - so adding an observation there needs no change here.
+# `lindelot/vehicle_state` schema, so the observation column cannot be built.
 #
 # JPEGs rather than decoding the mp4 here: shuffled access into h264 measured
 # 1958ms per 6 frames against 1.1ms for pre-resized JPEGs, so decoding video in
@@ -31,8 +33,8 @@
 # experiment's `image_resize`.
 #
 # Every camera is its own stream with its own index column: they run on
-# independent clocks and drop frames independently, so `prepare_d12` matches them
-# to the reference timeline by timestamp, never by index. Streams are declared for
+# independent clocks and drop frames independently, so the builder matches them to
+# the reference timeline by timestamp, never by index. Streams are declared for
 # all cameras; which ones the MODEL consumes is `cameras` in the experiment, so
 # limiting to one camera needs no change here.
 _target_: rbyte.Dataset.from_config
@@ -55,17 +57,47 @@ streams:
           fastupsample: true
 
 samples:
+  # A handful of jobs, each decoded once at startup. The default pipefunc executor
+  # is a process pool sized to every core, which for this tiny map just eagerly
+  # forks dozens of idle workers; a small thread pool is the right size, and the
+  # mcap decode is Rust that releases the GIL so threads actually run in parallel.
+  executor:
+    _target_: concurrent.futures.ThreadPoolExecutor
+    max_workers: 4
+
   inputs:
-    source:
+    # one job directory per pipeline invocation; the builder turns each into that
+    # job's episode rows
+    job_dir:
       #@ for/end job_id in jobs:
-      - ${paths.d12_samples}/(@=job_id@)/samples.parquet
+      - ${paths.d12}/(@=job_id@)
 
   pipeline:
     _target_: pipefunc.Pipeline
     validate_type_annotations: false
     functions:
       - _target_: pipefunc.PipeFunc
-        output_name: samples
+        output_name: samples_per_job
+        mapspec: "job_dir[i] -> samples_per_job[i]"
         func:
-          _target_: hydra.utils.get_object
-          path: polars.read_parquet
+          _target_: rmind.data.d12.D12SampleBuilder
+          cameras:
+            #@ for/end camera in cameras:
+            - (@=camera@)
+          reference: (@=reference@)
+          # signed traction command, the field the vehicle actually applies
+          traction_source: command
+          # episode shape follows the experiment
+          episode_length: ${episode_length}
+          stride: 1
+          # reference-frame decimation, 30 -> 10Hz
+          every_nth: 3
+          max_skew_s: 1.0
+
+      # plain vertical concat: every row already carries its job's `input_id`
+      - _target_: pipefunc.PipeFunc
+        output_name: samples
+        renames:
+          values: samples_per_job
+        func:
+          _target_: rbyte.samples.dataframe.DataFrameConcatenator
