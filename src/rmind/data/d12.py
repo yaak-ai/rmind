@@ -28,8 +28,13 @@ Actuations come from the mcap and are already in convenient units:
 
 Observations (model inputs, not targets):
 
-    speed             lindelot/vehicle_state.speed             m/s
-    fork_above_300    lindelot/vehicle_state.fork_above_300    bool -> 0.0 / 1.0
+    speed                 lindelot/vehicle_state.speed             m/s
+    fork_above_300        lindelot/vehicle_state.fork_above_300    bool -> 0.0 / 1.0
+    relative_ego_pos      pozyx pose + pallet tag       ego-frame [fwd, lat] metres
+    relative_dropoff_pos  pozyx pose + last pallet tag  ego-frame [fwd, lat] metres
+
+The two `relative_*` columns are the intention (see the constants block for the
+frame and why they are metres, not normalized).
 
 `fork_above_300` is a height switch on the mast: whether the fork is raised past
 300 mm. It is recorded together with a `_valid` companion, which is False for the
@@ -114,6 +119,27 @@ TRACTION_SOURCES: Final = {
     "command": ("lindelot/vehicle_state", "traction_command_pct"),
 }
 
+# --- intention: two ego-frame position tokens -----------------------------------
+#
+# The pozyx indoor system carries both the vehicle pose and the pallet position in
+# ONE world frame (gnss is all-zero indoors and unused). `relative_ego_pos` points
+# the model at the pallet to pick up; `relative_dropoff_pos` at where to leave it -
+# the dropoff, defined as the LAST pallet position in the job. Both are expressed
+# in the vehicle's own frame (translate by -ego, rotate by -heading), so they read
+# as "target is X metres ahead, Y metres left" independent of world orientation,
+# and both are held in METRES here: the /scale + clamp that maps them to ~[-1, 1]
+# lives in the model embedding, exactly as speed's binner does, so the transform is
+# one graph and cannot drift between training and the kit.
+#
+# These are inputs, never targets - the analogue of the car model's waypoints.
+POSE_TOPIC: Final = "pozyx/pose"
+TAG_TOPIC: Final = "pozyx/tag"
+PALLET_LABEL: Final = "pallet"
+POSITION_DIM: Final = 2  # (forward, lateral); z/height is `fork_above_300`'s job
+
+# column name -> the point it is measured to, relative to the vehicle
+POSITIONS: Final = ("relative_ego_pos", "relative_dropoff_pos")
+
 
 def resolve_signal(name: str, traction_source: str) -> Signal:
     """`SIGNALS[name]`, with traction redirected to the selected source."""
@@ -152,6 +178,21 @@ def read_mcap(
         topic[signal.field] = signal.dtype
         if signal.valid_field is not None:
             topic[signal.valid_field] = pl.Boolean()
+
+    # ego pose and every tag fix (filtered to the pallet later), for the
+    # intention tokens
+    fields[POSE_TOPIC] = {
+        "log_time": pl.Datetime("ns"),
+        "center_x_m": pl.Float32(),
+        "center_y_m": pl.Float32(),
+        "heading_deg": pl.Float32(),
+    }
+    fields[TAG_TOPIC] = {
+        "log_time": pl.Datetime("ns"),
+        "label": pl.String(),
+        "x_mm": pl.Int64(),
+        "y_mm": pl.Int64(),
+    }
 
     return McapReader(decoder_factories=[ProtobufDecoderFactory], fields=fields)(path)
 
@@ -238,9 +279,81 @@ def build(
         series = topics[signal.topic].sort("log_time").select("log_time", *columns)
         table = table.join_asof(series, on="log_time", strategy="nearest")
 
+    table = _relative_positions(table, topics)
+
     return _drop_invalid(table, validity).rename({
         "frame_idx": f"{reference}/frame_idx"
     })
+
+
+def _ego_frame(target_x: pl.Expr, target_y: pl.Expr, ego: str) -> pl.Expr:
+    """`target - ego`, rotated into the ego frame, as a fixed-size `[fwd, lat]`.
+
+    `fwd` is the component along the vehicle's heading, `lat` the one 90 degrees to
+    its left; the exact sign convention does not matter to the model as long as it
+    is the same at training and inference, which it is because this is the only
+    place it is computed. Held in metres - the model embedding scales and clamps.
+    """
+    theta = pl.col(f"{ego}_heading").radians()
+    dx = target_x - pl.col(f"{ego}_x")
+    dy = target_y - pl.col(f"{ego}_y")
+    fwd = theta.cos() * dx + theta.sin() * dy
+    lat = -theta.sin() * dx + theta.cos() * dy
+
+    return pl.concat_list(fwd, lat).cast(pl.Array(pl.Float32, POSITION_DIM))
+
+
+def _relative_positions(
+    table: pl.DataFrame, topics: dict[str, pl.DataFrame]
+) -> pl.DataFrame:
+    """Add the two ego-frame intention columns to the reference-timeline table.
+
+    Raises:
+        ValueError: if the job carries no pallet tag fix (so no dropoff exists).
+    """
+    ego = (
+        topics[POSE_TOPIC]
+        .sort("log_time")
+        .select(
+            "log_time",
+            pl.col("center_x_m").alias("ego_x"),
+            pl.col("center_y_m").alias("ego_y"),
+            pl.col("heading_deg").alias("ego_heading"),
+        )
+    )
+    pallet = (
+        topics[TAG_TOPIC]
+        .filter(pl.col("label") == PALLET_LABEL)
+        .sort("log_time")
+        .select(
+            "log_time",
+            (pl.col("x_mm") / 1000).alias("pallet_x"),
+            (pl.col("y_mm") / 1000).alias("pallet_y"),
+        )
+    )
+    if pallet.is_empty():
+        msg = f"no {PALLET_LABEL!r} tag fixes in the job: cannot define a dropoff"
+        raise ValueError(msg)
+
+    # the dropoff is where the pallet ends up, over the WHOLE job - taken before any
+    # decimation or windowing so it is the true last fix, not the last kept row
+    dropoff_x, dropoff_y = pallet.select("pallet_x", "pallet_y").row(-1)
+
+    table = (
+        table
+        .join_asof(ego, on="log_time", strategy="nearest")
+        .join_asof(pallet, on="log_time", strategy="nearest")
+        .with_columns(
+            _ego_frame(pl.col("pallet_x"), pl.col("pallet_y"), "ego").alias(
+                "relative_ego_pos"
+            ),
+            _ego_frame(pl.lit(dropoff_x), pl.lit(dropoff_y), "ego").alias(
+                "relative_dropoff_pos"
+            ),
+        )
+    )
+
+    return table.drop("ego_x", "ego_y", "ego_heading", "pallet_x", "pallet_y")
 
 
 def _drop_invalid(table: pl.DataFrame, validity: list[str]) -> pl.DataFrame:
@@ -297,25 +410,26 @@ def episodes(  # noqa: PLR0913
         msg = f"{len(rows)} usable frames < episode_length {episode_length}"
         raise ValueError(msg)
 
-    columns = [f"{c}/frame_idx" for c in cameras] + list(SIGNALS)
+    # scalar columns window to Array(dtype, L); the position columns are already
+    # Array(_, 2) per row, so they window to Array(_, (L, 2))
+    scalar_columns = [f"{c}/frame_idx" for c in cameras] + list(SIGNALS)
     starts = range(0, len(rows) - episode_length + 1, stride)
+
     windows = {
         column: [
             rows[column][start : start + episode_length].to_list() for start in starts
         ]
-        for column in columns
+        for column in [*scalar_columns, *POSITIONS]
     }
 
-    return pl.DataFrame(
-        {"input_id": [job_id] * len(starts)} | windows,
-        schema={"input_id": pl.String}
-        | {
-            column: pl.Array(
-                pl.Int32 if column.endswith("frame_idx") else pl.Float32, episode_length
-            )
-            for column in columns
-        },
-    )
+    schema: dict[str, pl.DataType] = {"input_id": pl.String()}
+    for column in scalar_columns:
+        dtype = pl.Int32() if column.endswith("frame_idx") else pl.Float32()
+        schema[column] = pl.Array(dtype, episode_length)
+    for column in POSITIONS:
+        schema[column] = pl.Array(pl.Float32(), (episode_length, POSITION_DIM))
+
+    return pl.DataFrame({"input_id": [job_id] * len(starts)} | windows, schema=schema)
 
 
 @final
@@ -379,6 +493,15 @@ class D12SampleBuilder:
             frames=len(table),
             episodes=len(samples),
             signal_ranges=table.select(list(SIGNALS)).describe().to_dicts(),
+            # metres, so their magnitude sanity-checks the scale in the model
+            position_ranges=table
+            .select(
+                pl.col(p).arr.get(i).alias(f"{p}[{i}]")
+                for p in POSITIONS
+                for i in range(POSITION_DIM)
+            )
+            .describe()
+            .to_dicts(),
         )
 
         return samples
