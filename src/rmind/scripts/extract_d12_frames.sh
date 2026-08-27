@@ -122,7 +122,7 @@ for job_dir in "$@"; do
 
     if [[ -n "$expected" && "$written" -ne "$expected" ]]; then
       echo "  WARN $job_id/$camera: wrote $written but frame_info says $expected;" \
-           "frame indices will not line up with prepare_d12" >&2
+           "frame indices will not line up with rmind.data.d12" >&2
     else
       echo "  done $job_id/$camera: $written frames at ${WIDTH}x${HEIGHT} (q:v $QUALITY)"
     fi

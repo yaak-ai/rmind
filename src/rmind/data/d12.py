@@ -1,5 +1,12 @@
 """Build an rbyte sample table from a D12 job: `data.mcap` + per-camera directories.
 
+`D12SampleBuilder` is called from `config/_templates/dataset/palletjack/d12.yaml`
+as a pipefunc stage: one call per job directory returns that job's episodes, and
+the pipeline concatenates them. There is no parquet on disk - the samples are
+built at load time, so adding a signal is a config change and nothing can go
+stale. The clock reasoning below is the whole reason this is Python and not a
+DuckDB query in the template.
+
 Job layout (`/nasa/team-space/nikita/data/d12/{job-id}/`):
 
     data.mcap                            protobuf + zstd, palleter.* schemas
@@ -55,12 +62,11 @@ recorder stamp encoded frames from the capture clock, and this whole problem goe
 away.
 """
 
-import argparse
-import json
 from pathlib import Path
-from typing import Final, NamedTuple
+from typing import Final, NamedTuple, final
 
 import polars as pl
+from pydantic import validate_call
 from structlog import get_logger
 
 logger = get_logger(__name__)
@@ -312,111 +318,67 @@ def episodes(  # noqa: PLR0913
     )
 
 
-def main(  # noqa: PLR0913
-    job_dir: Path,
-    output_dir: Path,
-    *,
-    cameras: tuple[str, ...],
-    reference: str,
-    traction_source: str,
-    episode_length: int,
-    stride: int,
-    every_nth: int,
-    max_skew_s: float,
-) -> None:
-    table = build(
-        job_dir,
-        cameras=cameras,
-        reference=reference,
-        traction_source=traction_source,
-        max_skew_s=max_skew_s,
-    )
-    samples = episodes(
-        table,
-        job_id=job_dir.name,
-        cameras=cameras,
-        episode_length=episode_length,
-        stride=stride,
-        every_nth=every_nth,
-    )
+@final
+class D12SampleBuilder:
+    """A pipefunc stage: one D12 job directory -> its episode rows.
 
-    # one directory per job, which is how the dataset config addresses them
-    job_out = output_dir / job_dir.name
-    job_out.mkdir(parents=True, exist_ok=True)
-    samples.write_parquet(job_out / "samples.parquet")
-    (job_out / "job.json").write_text(
-        json.dumps(
-            {
-                "job_dir": job_dir.as_posix(),
-                "cameras": list(cameras),
-                "reference": reference,
-                "traction_source": traction_source,
-                "episode_length": episode_length,
-                "signals": list(SIGNALS),
-            },
-            indent=2,
+    Data-layout parameters (which cameras, which timeline, how strict the pairing
+    guard) are fixed per dataset and set here; the training parameters that shape
+    the episodes (`episode_length`, `stride`, `every_nth`) are also constructor
+    arguments so the dataset config can wire them to the experiment's values. The
+    job directory is the one per-call input, so the pipeline maps this over jobs.
+    """
+
+    @validate_call
+    def __init__(  # noqa: PLR0913
+        self,
+        *,
+        cameras: tuple[str, ...],
+        reference: str = "cam_fork",
+        traction_source: str = "command",
+        episode_length: int = 6,
+        stride: int = 1,
+        every_nth: int = 3,
+        max_skew_s: float = 1.0,
+    ) -> None:
+        if reference not in cameras:
+            msg = f"reference {reference!r} not in cameras {cameras}"
+            raise ValueError(msg)
+        if traction_source not in TRACTION_SOURCES:
+            msg = f"unknown traction source {traction_source!r}"
+            raise ValueError(msg)
+
+        self._cameras = cameras
+        self._reference = reference
+        self._traction_source = traction_source
+        self._episode_length = episode_length
+        self._stride = stride
+        self._every_nth = every_nth
+        self._max_skew_s = max_skew_s
+
+    @validate_call
+    def __call__(self, *, job_dir: Path) -> pl.DataFrame:
+        table = build(
+            job_dir,
+            cameras=self._cameras,
+            reference=self._reference,
+            traction_source=self._traction_source,
+            max_skew_s=self._max_skew_s,
         )
-    )
+        samples = episodes(
+            table,
+            job_id=job_dir.name,
+            cameras=self._cameras,
+            episode_length=self._episode_length,
+            stride=self._stride,
+            every_nth=self._every_nth,
+        )
+        logger.info(
+            "built d12 samples",
+            job=job_dir.name,
+            frames=len(table),
+            episodes=len(samples),
+            signal_ranges=table.select(list(SIGNALS)).describe().to_dicts(),
+        )
 
-    described = table.select(list(SIGNALS)).describe()
-    logger.info(
-        "prepared d12 job",
-        output_dir=job_out.resolve().as_posix(),
-        frames=len(table),
-        episodes=len(samples),
-    )
-    logger.info("signal ranges", stats=described.to_dicts())
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--job-dir", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, default=Path("data/palletjack/d12"))
-    parser.add_argument(
-        "--cameras",
-        nargs="+",
-        default=None,
-        help="default: every subdirectory of the job holding a video.mp4",
-    )
-    parser.add_argument(
-        "--reference",
-        default="cam_fork",
-        help="camera whose frames define the episode timeline",
-    )
-    parser.add_argument(
-        "--traction-source", choices=sorted(TRACTION_SOURCES), default="command"
-    )
-    parser.add_argument("--episode-length", type=int, default=6)
-    parser.add_argument("--stride", type=int, default=1)
-    parser.add_argument(
-        "--every-nth",
-        type=int,
-        default=3,
-        help="reference-frame decimation (30 -> 10Hz)",
-    )
-    parser.add_argument(
-        "--max-skew-s",
-        type=float,
-        default=1.0,
-        help="refuse the job if frame pairing could be off by more than this",
-    )
-    args = parser.parse_args()
-
-    cameras = (
-        tuple(args.cameras)
-        if args.cameras
-        # jobs do not all carry the same camera set
-        else tuple(sorted(p.parent.name for p in args.job_dir.glob("*/video.mp4")))
-    )
-
-    main(
-        args.job_dir,
-        args.output_dir,
-        cameras=cameras,
-        reference=args.reference,
-        traction_source=args.traction_source,
-        episode_length=args.episode_length,
-        stride=args.stride,
-        every_nth=args.every_nth,
-        max_skew_s=args.max_skew_s,
-    )
+        return samples

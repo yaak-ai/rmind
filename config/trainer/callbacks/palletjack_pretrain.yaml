@@ -2,9 +2,11 @@
 # `pretrain` minus the callbacks coupled to the car: no waypoints logger (the
 # palletjack has no route) and no `discrete` embedding logging (no discrete
 # actions). The foresight/patch-similarity loggers need `meta/sample_id` in the
-# batch, which a real dataset provides but the command-card one does not.
-# optional warm start from a car checkpoint - see `palletjack_overfit` for what
-# transfers. Set neither key to pretrain from scratch.
+# batch.
+#
+# Optional warm start from a car checkpoint: set `pretrained_checkpoint` or
+# `pretrained_artifact` to load name+shape-compatible weights, or neither to
+# pretrain from scratch.
 - _target_: rmind.callbacks.CheckpointWeightLoader
   checkpoint_path: ${pretrained_checkpoint}
   artifact: ${pretrained_artifact}

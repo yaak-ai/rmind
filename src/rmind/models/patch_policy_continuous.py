@@ -37,7 +37,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
     token taken as that frame's readout. Multiple cameras therefore cost sequence
     length, not parameters, and the trunk needs no change - it sees only a larger
     `tokens_per_frame`. Frames must already be aligned across cameras; for real
-    recordings `scripts.prepare_d12` does that by timestamp. `encoder` accepts either
+    recordings `rmind.data.d12` does that by timestamp. `encoder` accepts either
     `patch_policy.BlockCausalTransformer` or
     `components.transformer.causal_frame.CausalFrameTransformer` - the same
     `forward(src, *, num_frames)` contract.
@@ -175,7 +175,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         `PatchPolicy.load_for_export`'s: the in-model image pipeline is replaced
         by Identity, so deployment supplies frames that are already cropped,
         resized AND ImageNet-normalized. That is what the kit's existing binding
-        produces, and `scripts.check_cards_onnx._preprocess` is its reference.
+        produces.
 
         The action fields stay in the `Remapper` but resolve to `None` at
         inference, which the per-modality `ModuleDict` passes through - they are

@@ -3,7 +3,7 @@
 # All three cameras, concatenated along the patch axis: 3 x 144 + 1 speed +
 # 1 fork_above_300 = 434 tokens per frame, against 146 for the single-camera arm. Cameras cost sequence
 # length, not parameters, and attention is quadratic in it - hence the smaller
-# batch. Frames are aligned across cameras by timestamp in `prepare_d12`.
+# batch. Frames are aligned across cameras by timestamp in `rmind.data.d12`.
 defaults:
   - /experiment/palletjack/patch_policy/d12
   - _self_
