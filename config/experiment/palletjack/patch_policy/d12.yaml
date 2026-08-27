@@ -2,7 +2,7 @@
 
 # Real D12 recordings on the patch-policy trunk.
 #
-#   bash src/rmind/scripts/extract_d12_frames.sh /nasa/team-space/nikita/data/d12/<job-id>
+#   bash src/rmind/scripts/extract_d12_frames.sh /nasa/data/d12/yaak/<job-id>
 #   just train experiment=palletjack/patch_policy/d12
 #
 # Offline steps are frame extraction and `scripts.prepare_dropoff` (writes each

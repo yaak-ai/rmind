@@ -20,7 +20,7 @@
 # JPEGs, so the GPU would sit idle. Resizing on the way out also makes the JPEGs
 # smaller than the source video.
 #
-#   src/rmind/scripts/extract_d12_frames.sh /nasa/team-space/nikita/data/d12/<job-id>
+#   src/rmind/scripts/extract_d12_frames.sh /nasa/data/d12/yaak/<job-id>
 #   src/rmind/scripts/extract_d12_frames.sh --size 256x144 --gpu 1 /nasa/.../d12/*/
 #
 # Cameras are discovered per job as the subdirectories holding a video.mp4, since

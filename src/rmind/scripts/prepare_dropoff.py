@@ -21,7 +21,7 @@ LAST recorded position - stamped at the job's first pallet fix so it covers ever
 frame. To use a different or time-varying target, overwrite this file with your own
 (same schema); nothing else needs to change.
 
-    uv run python -m rmind.scripts.prepare_dropoff --job-dir /nasa/team-space/nikita/data/d12/<job-id>
+    uv run python -m rmind.scripts.prepare_dropoff --job-dir /nasa/data/d12/yaak/<job-id>
 """
 
 import argparse

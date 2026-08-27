@@ -9,7 +9,7 @@ samples are built at load time, so adding a signal is a config change and nothin
 can go stale. The clock reasoning below is the whole reason the row builder is
 Python and not a DuckDB query.
 
-Job layout (`/nasa/team-space/nikita/data/d12/{job-id}/`):
+Job layout (`/nasa/data/d12/yaak/{job-id}/`):
 
     data.mcap                            protobuf + zstd, palleter.* schemas
     job-id.txt                           the recording's UUID
