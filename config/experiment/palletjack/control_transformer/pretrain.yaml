@@ -14,7 +14,7 @@ defaults:
   - /trainer: default
   - /trainer/callbacks: palletjack_pretrain
   - /paths: palletjack/default
-  - /wandb: yaak/rmind
+  - /wandb: palletjack/default
   - _self_
 
 num_heads: 4
