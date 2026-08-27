@@ -46,6 +46,29 @@ num_heads: 8
 
 speed_bins: 64
 
+# `fork_above_300` is the mast height switch from `lindelot/vehicle_state`, an
+# input the policy conditions on (it is NOT a target - `fork1` is the command that
+# moves the mast, and that is predicted). Two bins over [0, 1] make the binner an
+# is-it-set test on the 0.0/1.0 that `prepare_d12` writes; rows where the ECU had
+# not yet answered are dropped there rather than passed off as a confident 0.
+#
+# It costs one token per frame, which `num_observations` feeds into the trunk's
+# `tokens_per_frame`. Changing this list changes token positions, so a checkpoint
+# trained with a different set cannot be finetuned from directly.
+observations:
+  fork_above_300: [continuous, fork_above_300]
+observation_embeddings:
+  fork_above_300:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: rmind.components.norm.UniformBinner
+        range: [0.0, 1.0]
+        bins: 2
+      - _target_: rmind.components.nn.Embedding
+        num_embeddings: 2
+        embedding_dim: ${policy_embedding_dim}
+num_observations: 1
+
 lr: 1e-4
 lr_warmup_steps: 100
 lr_total_steps: 1000

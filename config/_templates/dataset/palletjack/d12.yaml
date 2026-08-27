@@ -1,7 +1,8 @@
 #@yaml/text-templated-strings
 
 #@ jobs = [
-#@    '2026-08-25--13-44-11',
+#@    '2026-08-25--16-35-31',
+#@    '2026-08-25--16-48-36',
 #@ ]
 #@ cameras = ['cam_fork', 'cam_left_forward', 'cam_right_forward']
 #@ frame_size = '256x144'
@@ -14,6 +15,13 @@
 # topic is the only real timebase).
 #
 # Job directories are named by datetime and that name is the `input_id`.
+#
+# NOT 2026-08-25--13-44-11: that recording predates `fork_above_300` in the
+# `lindelot/vehicle_state` schema, so `prepare_d12` cannot build the observation
+# column for it.
+#
+# Signal columns are whatever `prepare_d12` wrote into the parquet - the pipeline
+# below reads it whole - so adding an observation there needs no change here.
 #
 # JPEGs rather than decoding the mp4 here: shuffled access into h264 measured
 # 1958ms per 6 frames against 1.1ms for pre-resized JPEGs, so decoding video in

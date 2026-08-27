@@ -49,6 +49,12 @@ num_heads: 8
 
 speed_bins: 64
 
+# no vehicle state behind a printed card: speed is a constant 0 token and there
+# are no extra observations, so a frame block is 1 + num_patches tokens
+observations: {}
+observation_embeddings: {}
+num_observations: 0
+
 # 448 card + 362 background episodes / batch 8 = 101 steps per epoch.
 # Batch is small because the trunk holds 6 x 257 = 1542 tokens per sample.
 # 26.4M trainable params from scratch over 810 episodes: 50 epochs left RIGHT
