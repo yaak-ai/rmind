@@ -1,0 +1,4 @@
+entity: yaak
+project: rmind-palleter
+settings:
+  start_method: thread

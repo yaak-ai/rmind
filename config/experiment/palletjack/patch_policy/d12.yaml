@@ -5,9 +5,10 @@
 #   bash src/rmind/scripts/extract_d12_frames.sh /nasa/team-space/nikita/data/d12/<job-id>
 #   just train experiment=palletjack/patch_policy/d12
 #
-# Frame extraction is the only offline step; the sample table (mcap decode + clock
-# alignment) is built at load time by `rmind.data.d12.D12SampleBuilder` from the
-# dataset config, so there is nothing else to prepare and nothing to go stale.
+# Offline steps are frame extraction and `scripts.prepare_dropoff` (writes each
+# job's dropoff.parquet); the sample table (mcap decode + clock alignment + the
+# intention transform) is built at load time by `rmind.data.d12` from the dataset
+# config, so there is nothing else to prepare and nothing to go stale.
 #
 # LIMITED TO ONE CAMERA for now. The model and the dataset are both 3-camera
 # capable - the dataset declares all three streams and the trunk concatenates
@@ -20,7 +21,7 @@ defaults:
   - /trainer: default
   - /trainer/callbacks: palletjack_patch_policy
   - /paths: palletjack/default
-  - /wandb: yaak/rmind
+  - /wandb: palletjack/default
   - _self_
 
 episode_length: 6
