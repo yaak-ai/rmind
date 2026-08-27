@@ -1,12 +1,12 @@
 ---
-# Every palletjack path is on the team share. Nothing is read from or written into
-# the repository working tree, and there is no prepared-sample-table step: the
-# dataset templates build their samples from these sources at load time, so a
-# signal can never go stale relative to a checked-in parquet.
+# The palletjack data lives entirely on the team share; nothing is read from or
+# written into the repository working tree, and there is no prepared-sample-table
+# step - the dataset templates build their samples from these sources at load
+# time, so a signal can never go stale relative to a checked-in parquet.
 #
-# `d12/{job}/` holds `data.mcap` plus one directory per camera; the mcap is
-# recorded on the truck and the frames come from `scripts/extract_d12_frames.sh`.
-root: /nasa/team-space/nikita/data
-d12: ${paths.root}/d12
+# `d12/{job}/` holds `data.mcap`, `dropoff.parquet` (from `scripts.prepare_dropoff`)
+# and one directory per camera; the mcap is recorded on the truck and the frames
+# come from `scripts/extract_d12_frames.sh`.
+d12: /nasa/data/d12/yaak
 rbyte:
   cache: .rbyte_cache
