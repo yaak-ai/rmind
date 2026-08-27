@@ -5,7 +5,7 @@
 #   in   cam_fork / cam_left_forward / cam_right_forward  float32 [1, 6, 3, 144, 256]
 #   in   speed                                            float32 [1, 6, 1]
 #   in   fork_above_300                                   float32 [1, 6, 1]
-#   in   relative_ego_pos / relative_dropoff_pos          float32 [1, 6, 2]
+#   in   relative_ego_pos / relative_dropoff_pos          float32 [1, 6, 2] [-1,1]
 #   out  policy.continuous.{traction,steering,fork1}       float32 [1, 1]
 #
 # The three bindings must be FRAME-ALIGNED by the caller. On the vehicle the
@@ -69,8 +69,8 @@ input:
       low: 0
       high: 1
 
-    # intention, ego-frame metres [fwd, lat]: pallet, and dropoff. Graph does the
-    # /10 + clamp; caller feeds raw metres.
+    # intention tokens: ego-frame [fwd, lat], already scaled to [-1, 1] by the
+    # caller (the dataset config does the same at training time).
     relative_ego_pos:
       _target_: torch.testing.make_tensor
       _args_: [1, 6, 2]
@@ -78,8 +78,8 @@ input:
         _target_: hydra.utils.get_object
         path: torch.float32
       device: cpu
-      low: -5
-      high: 5
+      low: -1
+      high: 1
 
     relative_dropoff_pos:
       _target_: torch.testing.make_tensor
@@ -88,8 +88,8 @@ input:
         _target_: hydra.utils.get_object
         path: torch.float32
       device: cpu
-      low: -5
-      high: 5
+      low: -1
+      high: 1
 
 input_names:
   - cam_fork

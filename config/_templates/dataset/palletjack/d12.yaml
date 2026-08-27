@@ -66,8 +66,7 @@ samples:
     max_workers: 4
 
   inputs:
-    # one job directory per pipeline invocation; the builder turns each into that
-    # job's episode rows
+    # one job directory per pipeline invocation
     job_dir:
       #@ for/end job_id in jobs:
       - ${paths.d12}/(@=job_id@)
@@ -76,25 +75,77 @@ samples:
     _target_: pipefunc.Pipeline
     validate_type_annotations: false
     functions:
+      # 1. mcap -> per-frame row table with WORLD-frame ego/pallet/target columns
       - _target_: pipefunc.PipeFunc
-        output_name: samples_per_job
-        mapspec: "job_dir[i] -> samples_per_job[i]"
+        output_name: row_table
+        mapspec: "job_dir[i] -> row_table[i]"
         func:
-          _target_: rmind.data.d12.D12SampleBuilder
+          _target_: rmind.data.d12.D12RowTableBuilder
           cameras:
             #@ for/end camera in cameras:
             - (@=camera@)
           reference: (@=reference@)
           # signed traction command, the field the vehicle actually applies
           traction_source: command
+          max_skew_s: 1.0
+
+      # 2. the intention transform, in the config just like the car waypoints:
+      # translate each target by -ego, rotate by -heading into the vehicle frame,
+      # divide by 10 and clamp to [-1, 1]. `fwd` is the component along the
+      # heading, `lat` the one to its left; the sign convention is arbitrary but
+      # fixed. The /10 is a VERY arbitrary number - a rough guess at the largest
+      # useful approach distance, only there to put the tokens on the same [-1, 1]
+      # scale as the other continuous inputs (recorded distances top out near
+      # 4.5m, so nothing saturates). Widen it for a larger site. The kit does this
+      # same rotate+scale before feeding the tokens, so training and inference
+      # share one definition.
+      - _target_: pipefunc.PipeFunc
+        output_name: positioned
+        mapspec: "row_table[i] -> positioned[i]"
+        func:
+          _target_: rmind.data.d12.DuckDBStage
+          query: |
+              WITH ego AS (
+                SELECT
+                  *,
+                  radians(ego_heading) AS _t,
+                  pallet_x - ego_x AS _pdx, pallet_y - ego_y AS _pdy,
+                  target_x - ego_x AS _tdx, target_y - ego_y AS _tdy
+                FROM row_table
+              )
+              SELECT
+                * EXCLUDE (
+                  ego_x, ego_y, ego_heading, pallet_x, pallet_y, target_x, target_y,
+                  _t, _pdx, _pdy, _tdx, _tdy
+                ),
+                [
+                  greatest(-1.0, least(1.0, ( cos(_t)*_pdx + sin(_t)*_pdy) / 10.0)),
+                  greatest(-1.0, least(1.0, (-sin(_t)*_pdx + cos(_t)*_pdy) / 10.0))
+                ] AS relative_ego_pos,
+                [
+                  greatest(-1.0, least(1.0, ( cos(_t)*_tdx + sin(_t)*_tdy) / 10.0)),
+                  greatest(-1.0, least(1.0, (-sin(_t)*_tdx + cos(_t)*_tdy) / 10.0))
+                ] AS relative_dropoff_pos
+              FROM ego
+
+      # 3. sliding-window episodes over the positioned row table
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_per_job
+        mapspec: "positioned[i] -> samples_per_job[i]"
+        renames:
+          frames: positioned
+        func:
+          _target_: rmind.data.d12.D12EpisodeWindower
+          cameras:
+            #@ for/end camera in cameras:
+            - (@=camera@)
           # episode shape follows the experiment
           episode_length: ${episode_length}
           stride: 1
           # reference-frame decimation, 30 -> 10Hz
           every_nth: 3
-          max_skew_s: 1.0
 
-      # plain vertical concat: every row already carries its job's `input_id`
+      # 4. plain vertical concat: every row already carries its job's `input_id`
       - _target_: pipefunc.PipeFunc
         output_name: samples
         renames:

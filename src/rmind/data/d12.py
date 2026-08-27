@@ -1,11 +1,13 @@
 """Build an rbyte sample table from a D12 job: `data.mcap` + per-camera directories.
 
-`D12SampleBuilder` is called from `config/_templates/dataset/palletjack/d12.yaml`
-as a pipefunc stage: one call per job directory returns that job's episodes, and
-the pipeline concatenates them. There is no parquet on disk - the samples are
-built at load time, so adding a signal is a config change and nothing can go
-stale. The clock reasoning below is the whole reason this is Python and not a
-DuckDB query in the template.
+`D12RowTableBuilder` and `D12EpisodeWindower` are pipefunc stages driven from
+`config/_templates/dataset/palletjack/d12.yaml`: per job, the builder decodes the
+mcap into a per-frame row table, a DuckDB stage in the config turns the world-frame
+positions into the ego-frame intention tokens, the windower slices sliding
+episodes, and the pipeline concatenates jobs. There is no sample parquet on disk -
+samples are built at load time, so adding a signal is a config change and nothing
+can go stale. The clock reasoning below is the whole reason the row builder is
+Python and not a DuckDB query.
 
 Job layout (`/nasa/team-space/nikita/data/d12/{job-id}/`):
 
@@ -30,11 +32,15 @@ Observations (model inputs, not targets):
 
     speed                 lindelot/vehicle_state.speed             m/s
     fork_above_300        lindelot/vehicle_state.fork_above_300    bool -> 0.0 / 1.0
-    relative_ego_pos      pozyx pose + pallet tag       ego-frame [fwd, lat] metres
-    relative_dropoff_pos  pozyx pose + last pallet tag  ego-frame [fwd, lat] metres
+    relative_ego_pos      pozyx pose + pallet tag         WORLD ego, pallet, target
+    relative_dropoff_pos  pozyx pose + dropoff.parquet    -> ego frame IN THE CONFIG
 
-The two `relative_*` columns are the intention (see the constants block for the
-frame and why they are metres, not normalized).
+The two `relative_*` tokens are the intention (see the constants block). This
+module does NOT compute them: it emits the WORLD-frame ego pose, live pallet
+position, and the precomputed dropoff target, and the dataset config's DuckDB
+stage rotates them into the vehicle frame and scales them - the same split the car
+model uses for waypoints. The row builder and the episode windower are two
+pipefunc stages with that transform in between.
 
 `fork_above_300` is a height switch on the mast: whether the fork is raised past
 300 mm. It is recorded together with a `_valid` companion, which is False for the
@@ -71,7 +77,7 @@ from pathlib import Path
 from typing import Final, NamedTuple, final
 
 import polars as pl
-from pydantic import validate_call
+from pydantic import InstanceOf, validate_call
 from structlog import get_logger
 
 logger = get_logger(__name__)
@@ -124,20 +130,32 @@ TRACTION_SOURCES: Final = {
 # The pozyx indoor system carries both the vehicle pose and the pallet position in
 # ONE world frame (gnss is all-zero indoors and unused). `relative_ego_pos` points
 # the model at the pallet to pick up; `relative_dropoff_pos` at where to leave it -
-# the dropoff, defined as the LAST pallet position in the job. Both are expressed
-# in the vehicle's own frame (translate by -ego, rotate by -heading), so they read
-# as "target is X metres ahead, Y metres left" independent of world orientation,
-# and both are held in METRES here: the /scale + clamp that maps them to ~[-1, 1]
-# lives in the model embedding, exactly as speed's binner does, so the transform is
-# one graph and cannot drift between training and the kit.
+# the dropoff, which is NOT a sensor reading and comes from `dropoff.parquet`
+# (written by `scripts.prepare_dropoff`, joined by time so it can vary within a
+# job). This module emits both targets and the ego pose in WORLD metres; the
+# dataset config translates by -ego, rotates by -heading and scales to ~[-1, 1],
+# so the frame transform lives in one place, exactly as the car model's waypoints.
 #
-# These are inputs, never targets - the analogue of the car model's waypoints.
+# These are inputs, never targets.
 POSE_TOPIC: Final = "pozyx/pose"
 TAG_TOPIC: Final = "pozyx/tag"
 PALLET_LABEL: Final = "pallet"
+DROPOFF_FILE: Final = "dropoff.parquet"
+
+# the world-frame columns the row builder emits for the config to transform
+WORLD_POSITION_COLUMNS: Final = (
+    "ego_x",
+    "ego_y",
+    "ego_heading",
+    "pallet_x",
+    "pallet_y",
+    "target_x",
+    "target_y",
+)
+
 POSITION_DIM: Final = 2  # (forward, lateral); z/height is `fork_above_300`'s job
 
-# column name -> the point it is measured to, relative to the vehicle
+# the ego-frame token columns the config's DuckDB stage produces from the above
 POSITIONS: Final = ("relative_ego_pos", "relative_dropoff_pos")
 
 
@@ -213,7 +231,7 @@ def _pairing_skew(frames: pl.DataFrame, encoded: int) -> float:
     return (pts[published - 1] - pts[encoded - 1]) / 1e9
 
 
-def build(
+def row_table(
     job_dir: Path,
     *,
     cameras: tuple[str, ...],
@@ -221,7 +239,12 @@ def build(
     traction_source: str,
     max_skew_s: float,
 ) -> pl.DataFrame:
-    """One row per reference-camera frame: a frame index per camera plus signals.
+    """One row per reference-camera frame: frame indices, signals, WORLD positions.
+
+    The ego-frame rotation and metre scaling are NOT done here - they live in the
+    dataset config's DuckDB stage (see `WORLD_POSITION_COLUMNS`). This decodes,
+    aligns the camera clocks and signals, joins the world-frame ego pose, live
+    pallet position and precomputed dropoff target, and drops not-yet-valid rows.
 
     Raises:
         ValueError: if a camera is missing, or its pairing skew exceeds `max_skew_s`.
@@ -279,37 +302,51 @@ def build(
         series = topics[signal.topic].sort("log_time").select("log_time", *columns)
         table = table.join_asof(series, on="log_time", strategy="nearest")
 
-    table = _relative_positions(table, topics)
+    table = _world_positions(table, topics, job_dir)
 
     return _drop_invalid(table, validity).rename({
         "frame_idx": f"{reference}/frame_idx"
     })
 
 
-def _ego_frame(target_x: pl.Expr, target_y: pl.Expr, ego: str) -> pl.Expr:
-    """`target - ego`, rotated into the ego frame, as a fixed-size `[fwd, lat]`.
-
-    `fwd` is the component along the vehicle's heading, `lat` the one 90 degrees to
-    its left; the exact sign convention does not matter to the model as long as it
-    is the same at training and inference, which it is because this is the only
-    place it is computed. Held in metres - the model embedding scales and clamps.
-    """
-    theta = pl.col(f"{ego}_heading").radians()
-    dx = target_x - pl.col(f"{ego}_x")
-    dy = target_y - pl.col(f"{ego}_y")
-    fwd = theta.cos() * dx + theta.sin() * dy
-    lat = -theta.sin() * dx + theta.cos() * dy
-
-    return pl.concat_list(fwd, lat).cast(pl.Array(pl.Float32, POSITION_DIM))
-
-
-def _relative_positions(
-    table: pl.DataFrame, topics: dict[str, pl.DataFrame]
-) -> pl.DataFrame:
-    """Add the two ego-frame intention columns to the reference-timeline table.
+def _read_dropoff(job_dir: Path) -> pl.DataFrame:
+    """The precomputed world-frame dropoff target(s), sorted by time.
 
     Raises:
-        ValueError: if the job carries no pallet tag fix (so no dropoff exists).
+        ValueError: if the file is missing - it is a separate preprocessing step.
+    """
+    path = job_dir / DROPOFF_FILE
+    if not path.is_file():
+        msg = (
+            f"{path} missing: run `python -m rmind.scripts.prepare_dropoff "
+            f"--job-dir {job_dir}` first"
+        )
+        raise ValueError(msg)
+
+    return (
+        pl
+        .read_parquet(path)
+        .sort("log_time")
+        .select(
+            "log_time",
+            pl.col("x_m").cast(pl.Float32).alias("target_x"),
+            pl.col("y_m").cast(pl.Float32).alias("target_y"),
+        )
+    )
+
+
+def _world_positions(
+    table: pl.DataFrame, topics: dict[str, pl.DataFrame], job_dir: Path
+) -> pl.DataFrame:
+    """Join world-frame ego pose, live pallet, and dropoff target onto the table.
+
+    No rotation or scaling: those are the config's job. The dropoff uses a BACKWARD
+    asof (the target in effect at or before each frame); any frames earlier than
+    the first target row inherit it by back-filling, so a single-row file is simply
+    a constant goal.
+
+    Raises:
+        ValueError: if the job carries no pallet tag fix.
     """
     ego = (
         topics[POSE_TOPIC]
@@ -327,33 +364,24 @@ def _relative_positions(
         .sort("log_time")
         .select(
             "log_time",
-            (pl.col("x_mm") / 1000).alias("pallet_x"),
-            (pl.col("y_mm") / 1000).alias("pallet_y"),
+            (pl.col("x_mm") / 1000).cast(pl.Float32).alias("pallet_x"),
+            (pl.col("y_mm") / 1000).cast(pl.Float32).alias("pallet_y"),
         )
     )
     if pallet.is_empty():
-        msg = f"no {PALLET_LABEL!r} tag fixes in the job: cannot define a dropoff"
+        msg = f"no {PALLET_LABEL!r} tag fixes in the job"
         raise ValueError(msg)
 
-    # the dropoff is where the pallet ends up, over the WHOLE job - taken before any
-    # decimation or windowing so it is the true last fix, not the last kept row
-    dropoff_x, dropoff_y = pallet.select("pallet_x", "pallet_y").row(-1)
+    target = _read_dropoff(job_dir)
 
-    table = (
+    return (
         table
         .join_asof(ego, on="log_time", strategy="nearest")
         .join_asof(pallet, on="log_time", strategy="nearest")
-        .with_columns(
-            _ego_frame(pl.col("pallet_x"), pl.col("pallet_y"), "ego").alias(
-                "relative_ego_pos"
-            ),
-            _ego_frame(pl.lit(dropoff_x), pl.lit(dropoff_y), "ego").alias(
-                "relative_dropoff_pos"
-            ),
-        )
+        .join_asof(target, on="log_time", strategy="backward")
+        # frames before the first target row inherit it
+        .with_columns(pl.col("target_x", "target_y").fill_null(strategy="backward"))
     )
-
-    return table.drop("ego_x", "ego_y", "ego_heading", "pallet_x", "pallet_y")
 
 
 def _drop_invalid(table: pl.DataFrame, validity: list[str]) -> pl.DataFrame:
@@ -391,16 +419,18 @@ def _drop_invalid(table: pl.DataFrame, validity: list[str]) -> pl.DataFrame:
     return kept
 
 
-def episodes(  # noqa: PLR0913
+def episodes(
     table: pl.DataFrame,
     *,
-    job_id: str,
     cameras: tuple[str, ...],
     episode_length: int,
     stride: int,
     every_nth: int,
 ) -> pl.DataFrame:
-    """Sliding windows over the (decimated) reference timeline.
+    """Sliding windows over the (decimated) timeline of a positioned row table.
+
+    Expects the two `POSITIONS` columns already present (the config's DuckDB stage
+    adds them as 2-lists); `input_id` is carried through from the row builder.
 
     Raises:
         ValueError: if the job is too short for one episode.
@@ -410,8 +440,10 @@ def episodes(  # noqa: PLR0913
         msg = f"{len(rows)} usable frames < episode_length {episode_length}"
         raise ValueError(msg)
 
-    # scalar columns window to Array(dtype, L); the position columns are already
-    # Array(_, 2) per row, so they window to Array(_, (L, 2))
+    input_id = rows["input_id"][0]  # constant within a job
+
+    # scalar columns window to Array(dtype, L); the position columns are 2-lists
+    # per row, so they window to Array(_, (L, 2))
     scalar_columns = [f"{c}/frame_idx" for c in cameras] + list(SIGNALS)
     starts = range(0, len(rows) - episode_length + 1, stride)
 
@@ -429,30 +461,26 @@ def episodes(  # noqa: PLR0913
     for column in POSITIONS:
         schema[column] = pl.Array(pl.Float32(), (episode_length, POSITION_DIM))
 
-    return pl.DataFrame({"input_id": [job_id] * len(starts)} | windows, schema=schema)
+    return pl.DataFrame({"input_id": [input_id] * len(starts)} | windows, schema=schema)
 
 
 @final
-class D12SampleBuilder:
-    """A pipefunc stage: one D12 job directory -> its episode rows.
+class D12RowTableBuilder:
+    """Pipefunc stage: one D12 job directory -> its per-frame row table.
 
-    Data-layout parameters (which cameras, which timeline, how strict the pairing
-    guard) are fixed per dataset and set here; the training parameters that shape
-    the episodes (`episode_length`, `stride`, `every_nth`) are also constructor
-    arguments so the dataset config can wire them to the experiment's values. The
-    job directory is the one per-call input, so the pipeline maps this over jobs.
+    Emits the WORLD-frame ego/pallet/target columns; the dataset config's DuckDB
+    stage turns them into the ego-frame tokens before `D12EpisodeWindower` windows
+    the result. Data-layout parameters (cameras, reference timeline, pairing guard)
+    are fixed per dataset and set here.
     """
 
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         *,
         cameras: tuple[str, ...],
         reference: str = "cam_fork",
         traction_source: str = "command",
-        episode_length: int = 6,
-        stride: int = 1,
-        every_nth: int = 3,
         max_skew_s: float = 1.0,
     ) -> None:
         if reference not in cameras:
@@ -465,43 +493,81 @@ class D12SampleBuilder:
         self._cameras = cameras
         self._reference = reference
         self._traction_source = traction_source
-        self._episode_length = episode_length
-        self._stride = stride
-        self._every_nth = every_nth
         self._max_skew_s = max_skew_s
 
     @validate_call
     def __call__(self, *, job_dir: Path) -> pl.DataFrame:
-        table = build(
+        table = row_table(
             job_dir,
             cameras=self._cameras,
             reference=self._reference,
             traction_source=self._traction_source,
             max_skew_s=self._max_skew_s,
+        ).with_columns(pl.lit(job_dir.name).alias("input_id"))
+
+        logger.info(
+            "built d12 row table",
+            job=job_dir.name,
+            frames=len(table),
+            signal_ranges=table.select(list(SIGNALS)).describe().to_dicts(),
+            # world metres, to sanity-check the scale applied downstream
+            world_ranges=table.select(WORLD_POSITION_COLUMNS).describe().to_dicts(),
         )
+
+        return table
+
+
+@final
+class DuckDBStage:
+    """A pipefunc stage that runs one DuckDB query over a `row_table` input.
+
+    The query itself lives in the dataset config (that is the point - the
+    intention transform is config, like the car waypoints); this only gives it a
+    named signature pipefunc can bind, so it needs no `makefun`. The query must
+    read `FROM row_table`.
+    """
+
+    @validate_call
+    def __init__(self, *, query: str) -> None:
+        self._query = query
+
+    def __call__(self, *, row_table: InstanceOf[pl.DataFrame]) -> pl.DataFrame:
+        from rbyte.samples.duckdb import DuckDBQuery  # noqa: PLC0415
+
+        return DuckDBQuery(query=self._query)(row_table=row_table)
+
+
+@final
+class D12EpisodeWindower:
+    """Pipefunc stage: a positioned row table -> its sliding-window episodes.
+
+    The training parameters that shape the episodes are constructor arguments so
+    the dataset config can wire them to the experiment's values.
+    """
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        cameras: tuple[str, ...],
+        episode_length: int = 6,
+        stride: int = 1,
+        every_nth: int = 3,
+    ) -> None:
+        self._cameras = cameras
+        self._episode_length = episode_length
+        self._stride = stride
+        self._every_nth = every_nth
+
+    @validate_call
+    def __call__(self, *, frames: InstanceOf[pl.DataFrame]) -> pl.DataFrame:
         samples = episodes(
-            table,
-            job_id=job_dir.name,
+            frames,
             cameras=self._cameras,
             episode_length=self._episode_length,
             stride=self._stride,
             every_nth=self._every_nth,
         )
-        logger.info(
-            "built d12 samples",
-            job=job_dir.name,
-            frames=len(table),
-            episodes=len(samples),
-            signal_ranges=table.select(list(SIGNALS)).describe().to_dicts(),
-            # metres, so their magnitude sanity-checks the scale in the model
-            position_ranges=table
-            .select(
-                pl.col(p).arr.get(i).alias(f"{p}[{i}]")
-                for p in POSITIONS
-                for i in range(POSITION_DIM)
-            )
-            .describe()
-            .to_dicts(),
-        )
+        logger.info("windowed d12 episodes", episodes=len(samples))
 
         return samples
