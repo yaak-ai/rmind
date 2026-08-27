@@ -56,14 +56,12 @@ speed_bins: 64
 # not yet answered are dropped there rather than passed off as a confident 0.
 #
 # INTENTION. `relative_ego_pos` / `relative_dropoff_pos` are the two goal tokens:
-# ego-frame [forward, lateral] METRES to the pallet, and to the dropoff (the
-# pallet's final resting position). `rmind.data.d12` computes them; here they are
-# scaled and embedded. The Scaler maps metres to [-1, 1] by dividing by 10 and
-# clamping - and 10 is a very arbitrary number: it is a rough guess at the largest
-# useful approach distance, chosen only so the tokens land on the same scale as
-# the other continuous inputs. Recorded distances top out near 4.5m, so nothing
-# saturates; widen it for a larger site. Because the scale lives in the graph, the
-# kit feeds raw ego-frame metres and training and inference cannot disagree.
+# ego-frame [forward, lateral] to the pallet, and to the dropoff (the pallet's
+# final resting position, from `dropoff.parquet`). The dataset config already did
+# the whole transform - translate onto the ego, rotate by heading, /10, clamp to
+# [-1, 1] - so by the time they reach the model they are just a 2-vector in
+# [-1, 1], the same as the car model consumes `waypoints/xy_normalized`. The
+# embedding is therefore only a Linear into the policy width plus a token axis.
 #
 # Each observation is one token per frame; `num_observations` feeds the total into
 # the trunk's `tokens_per_frame`. Changing this list changes token positions, so a
@@ -88,15 +86,11 @@ observation_embeddings:
   relative_dropoff_pos: ${relative_position_embedding}
 num_observations: 3
 
-# shared shape for both intention tokens: metres -> [-1, 1] -> policy width, then
-# a token axis so it slots in beside the speed and fork tokens
+# both intention tokens: an already-normalized 2-vector -> policy width, then a
+# token axis so it slots in beside the speed and fork tokens
 relative_position_embedding:
   _target_: torch.nn.Sequential
   _args_:
-    # /10 and clamp; see the note above on why 10 is arbitrary
-    - _target_: rmind.components.norm.Scaler
-      in_range: [-10.0, 10.0]
-      out_range: [-1.0, 1.0]
     - _target_: rmind.components.nn.Linear
       in_features: 2
       out_features: ${policy_embedding_dim}
