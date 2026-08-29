@@ -620,6 +620,27 @@ class CausalFrameTransformer(nn.Module):
         nn.init.trunc_normal_(
             self.intra_position_embedding.weight, mean=0.0, std=0.02, a=-0.04, b=0.04
         )
+        # scale-balanced position fusion (mirrors PatchPolicy._init_fusion_norm's
+        # LayerNorm + learnable gain): the trunc_normal_ table above starts at
+        # per-token norm ~sqrt(dim_model)*0.02, ~50x smaller than the content
+        # tokens entering the trunk (patch_projection is xavier_uniform_ over a
+        # LayerNorm'd input, so its output sits at ~sqrt(dim_model)). Left alone,
+        # the position/camera signal is drowned out by content in the residual
+        # sum -- the first block's pre-attention LayerNorm normalizes that SUM,
+        # not each addend, so it can't rebalance a signal that is already 50x
+        # too small. Normalizing each position row to ~sqrt(dim_model) up front
+        # and scaling by a learnable gain (init 1.0, same as fusion_patch_gain/
+        # fusion_goal_gain) closes that gap immediately instead of waiting on
+        # gradient descent to grow a tiny table, while still letting training
+        # dial it back down if a full-strength signal hurts. `elementwise_affine=
+        # False`: a default LayerNorm's own per-channel weight (init to ones)
+        # would be a redundant degree of freedom alongside the scalar gain --
+        # any rescaling the gain can do, that weight could do too -- so this
+        # keeps `intra_position_gain` the single, cleanly-interpretable knob for
+        # how much the trunk trusts the position/camera signal, with nothing
+        # else fighting it for the same scale.
+        self.intra_position_norm = nn.LayerNorm(dim_model, elementwise_affine=False)
+        self.intra_position_gain = nn.Parameter(torch.tensor(1.0))
         # stochastic depth: timm-style linear ramp, 0 at the first layer up to
         # drop_path_rate at the last (deeper layers are the more redundant ones)
         self.drop_path_rate = drop_path_rate
@@ -640,7 +661,8 @@ class CausalFrameTransformer(nn.Module):
 
     def _intra(self, num_frames: int, device: torch.device) -> Tensor:
         idx = torch.arange(self.tokens_per_frame, device=device)
-        return self.intra_position_embedding(idx).repeat(num_frames, 1)
+        pos = self.intra_position_norm(self.intra_position_embedding(idx))
+        return (pos * self.intra_position_gain).repeat(num_frames, 1)
 
     def _should_checkpoint(self, index: int) -> bool:
         return (
@@ -759,8 +781,8 @@ class CausalFrameTransformer(nn.Module):
         `(num_layers, b, num_heads, tokens_per_frame, head_dim)`: the host writes
         them into its ring buffer.
         """
-        x = src + self.intra_position_embedding(
-            torch.arange(src.shape[1], device=src.device)
+        x = src + self.intra_position_gain * self.intra_position_norm(
+            self.intra_position_embedding(torch.arange(src.shape[1], device=src.device))
         )
         cos = cos.reshape(1, 1, 1, self.head_dim).to(x.dtype)
         sin = sin.reshape(1, 1, 1, self.head_dim).to(x.dtype)

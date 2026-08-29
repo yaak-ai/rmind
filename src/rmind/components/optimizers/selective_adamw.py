@@ -66,8 +66,11 @@ class SelectiveAdamW(AdamW):
             match param_type:
                 # fusion_norm scale gains: scalar calibration parameters,
                 # no weight decay (decay would pull the goal gain toward 0
-                # and re-open the patch/goal scale gap it exists to close)
-                case "fusion_patch_gain" | "fusion_goal_gain":
+                # and re-open the patch/goal scale gap it exists to close).
+                # intra_position_gain is the same pattern for the intra-frame
+                # position embedding (causal_frame.py) -- decay would pull it
+                # back toward the content/position scale gap it closes.
+                case "fusion_patch_gain" | "fusion_goal_gain" | "intra_position_gain":
                     weight_decay_param_blacklist.add(param_name)
                 case "weight":
                     if isinstance(
