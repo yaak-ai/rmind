@@ -44,6 +44,14 @@ class SelectiveAdamW(AdamW):
                 ):
                     pass
 
+                # GRU/LSTM weight matrices (weight_ih_l0, weight_hh_l0, …) — apply weight decay
+                case _ if param_type.startswith("weight_") and "_l" in param_type:
+                    pass
+
+                # GRU/LSTM bias vectors (bias_ih_l0, bias_hh_l0, …) — no weight decay
+                case _ if param_type.startswith("bias_") and "_l" in param_type:
+                    weight_decay_param_blacklist.add(param_name)
+
                 case _:
                     msg = f"Handling of param_type '{param_type}' is not implemented"
                     raise NotImplementedError(msg)

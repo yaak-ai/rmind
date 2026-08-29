@@ -112,7 +112,10 @@ class EpisodeBuilder(Module):
     @override
     def forward(self, batch: TensorTree) -> Episode:
         input = self.input_transform(batch)
-        input_tokens = self.tokenizers(input)
+        # Pass only keys known to the tokenizers — extra passthrough keys (e.g. trajectory)
+        # are kept in episode.input for downstream use but skipped during tokenization.
+        tokenizer_input = {k: v for k, v in input.items() if k in self.tokenizers}
+        input_tokens = self.tokenizers(tokenizer_input)
 
         first_leaf = next(
             leaf for leaf in tree_leaves(input_tokens) if leaf is not None
@@ -170,11 +173,16 @@ class EpisodeBuilder(Module):
         torch.export.export() — see export_onnx.py.
         """
         if self.attention_mask_cache_is_warm:
-            return FactorizedAttentionMask.from_tensors(
-                spatial_mask_tensor=self._attention_mask_spatial,
-                temporal_mask_tensor=self._attention_mask_temporal,
-                legend=TorchAttentionMaskLegend,
-            )
+            leaves = tree_leaves(index, is_leaf=lambda x: isinstance(x, Tensor))
+            t = leaves[0].shape[0] if leaves else 0
+            if self._attention_mask_temporal.shape[0] == t:
+                return FactorizedAttentionMask.from_tensors(
+                    spatial_mask_tensor=self._attention_mask_spatial,
+                    temporal_mask_tensor=self._attention_mask_temporal,
+                    legend=TorchAttentionMaskLegend,
+                )
+            self._attention_mask_spatial = None
+            self._attention_mask_temporal = None
 
         if torch.compiler.is_exporting() and not torch.compiler.is_compiling():
             # Guard with is_compiling(): structlog's logger is not dynamo-traceable
