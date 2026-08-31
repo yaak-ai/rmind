@@ -139,9 +139,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     embedded speed token is prepended, the `T x (P + 1)` sequence is flattened,
     given a learned 1D positional embedding, and run through a block-causal
     transformer (bidirectional intra-frame, causal inter-frame). Each frame's LAST
-    patch token predicts that frame's action chunk with the VQ-BeT joint head from
+    token predicts that frame's action chunk with the VQ-BeT joint head from
     `JointPolicyObjective` (frozen residual-VQ chunk tokenizer; focal code loss +
     teacher-forced L1 offset).
+
+    Readout position (opt-in, `use_readout_token`): by default the last token of a
+    frame is the last image patch -- fragile, and with multiple cameras arbitrary
+    (it depends on which camera happens to be last). With `use_readout_token` the
+    frame layout becomes
+
+        [ speed, camera patches..., register_0..register_{R-1}, READOUT ]
+
+    so `[:, :, -1]` picks a LEARNED readout token instead of a picture of the
+    road. The `num_register_tokens` register tokens exist to absorb the
+    attention-sink role (https://arxiv.org/abs/2309.16588) and are never read
+    from -- they sit BEFORE the readout token precisely so the readout stays
+    last. This changes `tokens_per_frame` (257 -> 257 + R + 1), which the
+    encoder/serving configs must mirror (`CausalFrameTransformer.tokens_per_frame`,
+    `BlockCausalTransformer.max_sequence_length`, KV-cache/export geometry).
     """
 
     @validate_call
@@ -154,8 +169,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         patch_projection: HydraConfig[Module] | InstanceOf[Module],
         speed_tokenizer: HydraConfig[Module] | InstanceOf[Module],
         speed_embedding: HydraConfig[Module] | InstanceOf[Module],
-        encoder: HydraConfig[BlockCausalTransformer]
-        | InstanceOf[BlockCausalTransformer],
+        # BlockCausalTransformer, or the decoder-only
+        # components.transformer.causal_frame.CausalFrameTransformer (same
+        # `forward(src, *, num_frames)` contract, plus a KV-cached `step`)
+        encoder: HydraConfig[Module] | InstanceOf[Module],
         tokenizer: HydraConfig[Module] | InstanceOf[Module],
         code_head: HydraConfig[Module] | InstanceOf[Module],
         offset_head: HydraConfig[Module] | InstanceOf[Module],
@@ -168,7 +185,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
+        neighbor_smoothing_tau: float | None = None,
+        neighbor_smoothing_channels: tuple[int, ...] | None = None,
         fusion_norm: bool = False,
+        fusion_goal_rms: float | None = None,
+        use_readout_token: bool = False,
+        num_register_tokens: int = 0,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -208,9 +230,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.speed_embedding = init_hydra_param(
             hparams, "speed_embedding", speed_embedding
         )
-        self.encoder: BlockCausalTransformer = init_hydra_param(
-            hparams, "encoder", encoder
-        )
+        self.encoder: Module = init_hydra_param(hparams, "encoder", encoder)
         self.code_head = init_hydra_param(hparams, "code_head", code_head)
         self.offset_head = init_hydra_param(hparams, "offset_head", offset_head)
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
@@ -223,6 +243,41 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
+        # neighbour-aware label smoothing (OPT-IN, default None = off): spread the
+        # code loss's smoothing mass by decoded-action distance instead of
+        # uniformly. See _neighbor_smoothing_targets for the construction and
+        # FocalLoss.forward for how the target replaces the uniform term.
+        self.neighbor_smoothing_tau = neighbor_smoothing_tau
+        # Which ACTION CHANNELS define "neighbouring" (None = all of them).
+        # MEASURED 2026-08-25: with all four channels, `turn_signal` contributes
+        # 38.9% of d_q(c) -- more than gas (21.2%) or steer (25.7%). That is the
+        # largest single share, and it is the wrong kind of quantity twice over:
+        # turn_signal is CATEGORICAL (left/none/right has no metric, so "half a
+        # signal away" is meaningless) and it carries by far the widest dynamic
+        # range (p95 0.499, p99 0.9997, max 1.27 against 0.02-0.09 for the
+        # continuous channels). Left in, a code differing only in indicator state
+        # is penalised as if it were a trajectory error, and a code with the right
+        # indicator but a worse trajectory is rewarded. Default the causal arm to
+        # the continuous channels only; keep this configurable because whether
+        # turn_signal wants smoothing at all is still an open question.
+        self.neighbor_smoothing_channels = neighbor_smoothing_channels
+        if neighbor_smoothing_tau is not None:
+            # deferred to dodge a circular import (loss.py has no such cycle
+            # today, but this mirrors load_for_export's local-import pattern)
+            from rmind.components.loss import FocalLoss  # noqa: PLC0415
+
+            if neighbor_smoothing_tau <= 0.0:
+                msg = (
+                    f"neighbor_smoothing_tau must be > 0, got {neighbor_smoothing_tau}"
+                )
+                raise ValueError(msg)
+            if not isinstance(self.losses["code"], FocalLoss):
+                msg = (
+                    "neighbor_smoothing_tau requires losses['code'] to be a "
+                    "rmind.components.loss.FocalLoss (it is the only code loss "
+                    f"accepting a smoothing target), got {type(self.losses['code'])}"
+                )
+                raise TypeError(msg)
         hparams |= {
             "image": image,
             "speed": speed,
@@ -230,9 +285,21 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "chunk": chunk,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
+            "neighbor_smoothing_channels": neighbor_smoothing_channels,
             "offset_scale": offset_scale,
+            "neighbor_smoothing_tau": neighbor_smoothing_tau,
             "fusion_norm": fusion_norm,
+            "use_readout_token": use_readout_token,
+            "num_register_tokens": num_register_tokens,
         }
+
+        # opt-in dedicated readout + register tokens (default off: existing arms
+        # and checkpoints keep the last-image-patch readout unchanged)
+        self.use_readout_token = use_readout_token
+        self.num_register_tokens = num_register_tokens
+        self._init_readout_tokens(
+            use_readout_token=use_readout_token, num_register_tokens=num_register_tokens
+        )
 
         # scale-balanced feature fusion: LayerNorm + learnable gain on the patch
         # side (encoder-agnostic scale; DINO token-norm spread is negligible so
@@ -249,44 +316,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # (0.143 vs 0.077 on real data), which lands the goal stream ~2x quieter
         # than intended. Prefer passing a measured value where it is known.
         if fusion_norm:
-            goal_dim = self.goal_encoder.quantizer.dim
-            patch_dim = self.patch_projection.in_features - goal_dim
-            self.fusion_patch_norm: Module | None = nn.LayerNorm(patch_dim)
-            self.fusion_patch_gain: nn.Parameter | None = nn.Parameter(
-                torch.tensor(1.0)
-            )
-            with torch.no_grad():
-                quantizer = self.goal_encoder.quantizer
-                generator = torch.Generator().manual_seed(0)
-                codes = torch.stack(
-                    [
-                        torch.randint(
-                            0, quantizer.codebook_size, (1024,), generator=generator
-                        )
-                        for _ in range(quantizer.num_quantizers)
-                    ],
-                    dim=-1,
-                )
-                # the CPU generator fixes the seed sequence; lookup must run on
-                # whatever device the loaded codebooks landed on
-                quantizer_device = next(
-                    chain(quantizer.parameters(), quantizer.buffers())
-                ).device
-                rms = (
-                    quantizer
-                    .lookup(codes.to(quantizer_device))
-                    .pow(2)
-                    .mean()
-                    .sqrt()
-                    .cpu()
-                )
-            if not bool(rms.isfinite()) or not float(rms) > 0.0:
-                msg = (
-                    f"fusion_norm goal-gain calibration produced RMS={float(rms)}; "
-                    "the goal codebooks are probably uninitialized (1/RMS is not finite)"
-                )
-                raise ValueError(msg)
-            self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
+            self._init_fusion_norm(fusion_goal_rms)
         else:
             self.fusion_patch_norm = None
             self.fusion_patch_gain = None
@@ -322,22 +352,96 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise KeyError(msg)
         return value
 
-    def _features(
-        self, batch: Any, *, require_chunk: bool = True
-    ) -> tuple[Tensor, Tensor | None]:
-        """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
+    def _init_readout_tokens(
+        self, *, use_readout_token: bool, num_register_tokens: int
+    ) -> None:
+        """Learned per-frame READOUT and REGISTER token embeddings (see class doc).
 
-        The chunk is only a TARGET (and never feeds the features), so callers on
-        the inference path (`forward`, ONNX export) pass `require_chunk=False`
-        and may omit the action series from the batch entirely.
+        Deliberately EXCLUDED from the `fusion_norm` scale calibration:
+        `fusion_patch_norm`/`fusion_goal_gain` balance the two FROZEN encoder
+        streams that are concatenated ahead of `patch_projection`, where no
+        gradient can ever fix a scale mismatch. The readout/register tokens are
+        free parameters born directly in model space (post-projection) -- the same
+        status as `speed_embedding` and the trunk's positional embeddings, neither
+        of which participates in the calibration -- so gradient descent sets their
+        scale, and folding them through the 1/RMS goal gain would merely rescale
+        their init. They are initialized with the trunc_normal(std=0.02) the
+        trunks already use for learned positional tokens, and their norms are
+        logged in `quality/token_norm/*` next to patch/speed/goal so any drift in
+        the balance is visible rather than silent.
+
+        Raises:
+            ValueError: on a negative register count, on registers without the
+                readout token (a register would then occupy the `[:, :, -1]`
+                readout slot and be read from, which registers must never be),
+                or when the policy width cannot be inferred.
         """
-        inputs = self.input_transform(batch)
+        if num_register_tokens < 0:
+            msg = f"num_register_tokens must be >= 0, got {num_register_tokens}"
+            raise ValueError(msg)
+        if num_register_tokens and not use_readout_token:
+            msg = (
+                "num_register_tokens > 0 requires use_readout_token=True: the "
+                "readout is the LAST token of a frame, so without a dedicated "
+                "readout token the last register would be read from -- and "
+                "registers exist precisely to absorb attention without being read"
+            )
+            raise ValueError(msg)
 
-        images = self._get(inputs, self.image)  # (b, t, c, h, w)
-        speed = self._get(inputs, self.speed)  # (b, t, 1)
-        waypoints = self._get(inputs, self.waypoints)  # (b, t, n, 2)
-        chunk = self._get(inputs, self.chunk, required=require_chunk)
+        if not use_readout_token:
+            self.readout_token: nn.Parameter | None = None
+            self.register_tokens: nn.Parameter | None = None
+            return
 
+        dim = getattr(self.patch_projection, "out_features", None) or getattr(
+            self.speed_embedding, "embedding_dim", None
+        )
+        if dim is None:
+            msg = (
+                "use_readout_token: cannot infer the policy width -- "
+                "patch_projection has no out_features and speed_embedding has "
+                "no embedding_dim"
+            )
+            raise ValueError(msg)
+
+        self.readout_token = nn.Parameter(torch.empty(dim))
+        nn.init.trunc_normal_(self.readout_token, mean=0.0, std=0.02, a=-0.04, b=0.04)
+        if num_register_tokens:
+            self.register_tokens = nn.Parameter(torch.empty(num_register_tokens, dim))
+            nn.init.trunc_normal_(
+                self.register_tokens, mean=0.0, std=0.02, a=-0.04, b=0.04
+            )
+        else:
+            self.register_tokens = None
+
+    def _frame_tokens(
+        self,
+        images: Tensor,
+        speed: Tensor,
+        waypoints: Tensor,
+        *,
+        token_norms: dict[str, Tensor] | None = None,
+    ) -> Tensor:
+        """Per-frame token blocks `(b, t, k, d)` -- everything below the trunk.
+
+        `k = p + 1` by default; `k = p + 1 + num_register_tokens + 1` with
+        `use_readout_token` (see the class docstring for the layout).
+
+        Factored out of `_features` so the KV-cached decode step
+        (`rmind.models.patch_policy_decoder.PatchPolicyDecoderStep`) runs the
+        identical per-frame pipeline on ONE frame. Nothing here is temporal, which
+        is exactly why one new frame per tick is sufficient.
+
+        `token_norms`, if given, is filled with gradient-free mean L2 norms per
+        token type (`speed`/`patch`/`goal` activations entering the trunk, plus
+        the `register`/`readout` embedding parameters when enabled, plus
+        `readout_position` for whatever token the heads actually read) -- the
+        training-quality signal that guards against one token type's scale
+        running away. It is an out-parameter (rather than module state) so the
+        `torch.export`ed serving graphs never see a module mutation. The
+        trunk-OUTPUT counterparts (`out/*`) are added by `_features`, which the
+        serving graphs do not call.
+        """
         with torch.no_grad():
             patches = self.image_encoder(images)  # (b, t, p, d_img)
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
@@ -356,16 +460,190 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
 
-        # speed first so the frame block ends on a patch token (the readout position)
-        tokens = torch.cat([speed_token, patches], dim=-2)  # (b, t, p + 1, d)
-        _, num_frames, _, _ = tokens.shape
+        # speed first so the frame block ENDS on the readout position: the learned
+        # readout token when `use_readout_token`, else the last patch token
+        parts = [speed_token, patches]
+        b, t = patches.shape[:2]
+        if self.register_tokens is not None:
+            parts.append(
+                self.register_tokens.reshape(1, 1, -1, patches.shape[-1]).expand(
+                    b, t, -1, -1
+                )
+            )
+        if self.readout_token is not None:
+            parts.append(self.readout_token.reshape(1, 1, 1, -1).expand(b, t, 1, -1))
+
+        if token_norms is not None:
+            with torch.no_grad():
+                token_norms["speed"] = speed_token.detach().norm(dim=-1).mean()
+                token_norms["patch"] = patches.detach().norm(dim=-1).mean()
+                token_norms["goal"] = goal.detach().norm(dim=-1).mean()
+                if self.register_tokens is not None:
+                    token_norms["register"] = (
+                        self.register_tokens.detach().norm(dim=-1).mean()
+                    )
+                if self.readout_token is not None:
+                    token_norms["readout"] = self.readout_token.detach().norm()
+                # the position the heads actually read -- the learned readout
+                # token with `use_readout_token`, else the last image patch.
+                # Logged unconditionally so the read position is comparable
+                # across arms that do and do not have a readout token; its
+                # trunk-side counterpart is `out/readout_position`.
+                token_norms["readout_position"] = (
+                    parts[-1][..., -1, :].detach().norm(dim=-1).mean()
+                )
+
+        return torch.cat(parts, dim=-2)  # (b, t, k, d)
+
+    def _trunk_token_norms(
+        self, frames: Tensor, token_norms: dict[str, Tensor]
+    ) -> None:
+        """Fill the `out/*` entries of `token_norms` from the TRUNK OUTPUT.
+
+        `frames` is the trunk output reshaped back to `(b, t, k, d)`, so the
+        `[speed, patches..., register_0.., READOUT]` layout built by
+        `_frame_tokens` still indexes it. The boundaries are derived from the
+        frame width, `num_register_tokens` and `use_readout_token`, never
+        hardcoded.
+
+        Why this exists at all: on the INPUT side the register/readout entries
+        can only report their learned PARAMETERS, which sit at their
+        trunc_normal init and say nothing about where those tokens sit in the
+        residual stream at the point the heads read it. Measured on
+        `yaak/alex-tmp/model-03tuy3q9:v29` (772 tokens = 1 speed + 3x256
+        patches + 2 registers + 1 readout) the registers enter the trunk at
+        0.50 and leave it at 23.00; the readout enters at 0.75 and leaves at
+        23.01.
+
+        READ THESE AS DEPARTURES, NOT AS LEVELS. The trunk ends in
+        `LayerNorm(dim_model)`, so every position leaves it near
+        `sqrt(dim_model)` (~22.6 at dim_model=512) whatever it entered at --
+        the speed token enters ~20x below the patches (1.07 vs 23.04 on that
+        checkpoint) and exits alongside them. The signal is a token type
+        drifting AWAY from that value, which is exactly what a parameter norm
+        frozen at its init cannot show.
+
+        Metrics only: everything runs under `torch.no_grad()` on a detached
+        copy, so gradients are bit-identical. Called from `_features`, which no
+        serving graph runs -- `PatchPolicyDecoderStep` calls `_frame_tokens`
+        and `trunk.step` directly -- so nothing here can reach `torch.export`.
+        """
+        with torch.no_grad():
+            norms = frames.detach().norm(dim=-1)  # (b, t, k)
+            tail = self.num_register_tokens + (1 if self.use_readout_token else 0)
+            patch_end = norms.shape[-1] - tail
+            token_norms["out/speed"] = norms[..., 0].mean()
+            token_norms["out/patch"] = norms[..., 1:patch_end].mean()
+            if self.num_register_tokens:
+                token_norms["out/register"] = norms[
+                    ..., patch_end : patch_end + self.num_register_tokens
+                ].mean()
+            # the position the heads actually read (see `_frame_tokens`)
+            token_norms["out/readout_position"] = norms[..., -1].mean()
+
+    def _init_fusion_norm(self, fusion_goal_rms: float | None) -> None:
+        """Build the scale-balanced fusion parameters (see __init__).
+
+        Raises:
+            ValueError: if the goal-gain calibration RMS is not finite/positive
+                (1/RMS would be inf, NaN-ing the first step).
+        """
+        goal_dim = self.goal_encoder.quantizer.dim
+        patch_dim = self.patch_projection.in_features - goal_dim
+        self.fusion_patch_norm: Module | None = nn.LayerNorm(patch_dim)
+        self.fusion_patch_gain: nn.Parameter | None = nn.Parameter(torch.tensor(1.0))
+        if fusion_goal_rms is not None:
+            # data-measured element-RMS of z_q. The uniform-random-code MC
+            # below overestimates it (real codebook usage is non-uniform:
+            # measured 1.86x on gzxgumtf — 0.143 MC vs 0.077 real), landing
+            # the goal stream ~2x quieter than intended. Prefer the
+            # measured value when known (H3 eval, 2026-08-06).
+            rms = torch.tensor(fusion_goal_rms)
+        else:
+            with torch.no_grad():
+                quantizer = self.goal_encoder.quantizer
+                generator = torch.Generator().manual_seed(0)
+                codes = torch.stack(
+                    [
+                        torch.randint(
+                            0, quantizer.codebook_size, (1024,), generator=generator
+                        )
+                        for _ in range(quantizer.num_quantizers)
+                    ],
+                    dim=-1,
+                )
+                # the CPU generator fixes the seed sequence; lookup must run
+                # on whatever device the loaded codebooks landed on
+                quantizer_device = next(
+                    chain(quantizer.parameters(), quantizer.buffers())
+                ).device
+                rms = (
+                    quantizer
+                    .lookup(codes.to(quantizer_device))
+                    .pow(2)
+                    .mean()
+                    .sqrt()
+                    .cpu()
+                )
+        if not bool(rms.isfinite()) or not float(rms) > 0.0:
+            msg = (
+                f"fusion_norm goal-gain calibration produced RMS={float(rms)}; "
+                "the goal codebooks are probably uninitialized (1/RMS is not finite)"
+            )
+            raise ValueError(msg)
+        self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
+
+    def _features(
+        self,
+        batch: Any,
+        *,
+        require_chunk: bool = True,
+        token_norms: dict[str, Tensor] | None = None,
+    ) -> tuple[Tensor, Tensor | None]:
+        """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
+
+        The chunk is only a TARGET (and never feeds the features), so callers on
+        the inference path (`forward`, ONNX export) pass `require_chunk=False`
+        and may omit the action series from the batch entirely.
+
+        Raises:
+            ValueError: if the encoder was built for a different
+                `tokens_per_frame` than the frame layout produces (e.g.
+                `use_readout_token`/`num_register_tokens` changed without
+                updating the encoder/serving geometry).
+        """
+        inputs = self.input_transform(batch)
+
+        images = self._get(inputs, self.image)  # (b, t, c, h, w)
+        speed = self._get(inputs, self.speed)  # (b, t, 1)
+        waypoints = self._get(inputs, self.waypoints)  # (b, t, n, 2)
+        chunk = self._get(inputs, self.chunk, required=require_chunk)
+
+        tokens = self._frame_tokens(images, speed, waypoints, token_norms=token_norms)
+        _, num_frames, tokens_per_frame, _ = tokens.shape
+
+        # the causal trunk's mask/RoPE/KV-cache geometry is built from ITS
+        # `tokens_per_frame`; a layout mismatch must fail here, loudly, not
+        # diverge at serving time
+        encoder_k = getattr(self.encoder, "tokens_per_frame", None)
+        if encoder_k is not None and encoder_k != tokens_per_frame:
+            msg = (
+                f"frame layout produces {tokens_per_frame} tokens per frame "
+                f"(use_readout_token={self.use_readout_token}, "
+                f"num_register_tokens={self.num_register_tokens}) but the "
+                f"encoder was built with tokens_per_frame={encoder_k}; update "
+                "the encoder config (and the KV-cache/export geometry with it)"
+            )
+            raise ValueError(msg)
 
         embedding = self.encoder(
             rearrange(tokens, "b t k d -> b (t k) d"), num_frames=num_frames
         )
-        features = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)[
-            :, :, -1
-        ]  # last patch token per frame
+        frames = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)
+        if token_norms is not None:
+            self._trunk_token_norms(frames, token_norms)
+        features = frames[:, :, -1]  # last token per frame: the learned readout
+        # token when `use_readout_token`, else the last patch token
 
         if self.norm is not None:
             features = self.norm(features)
@@ -411,6 +689,58 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             ).reshape(*batch, g)
         return code_logits.argmax(dim=-1)
 
+    def _neighbor_smoothing_targets(self, target_codes: Tensor) -> Tensor:
+        """Distance-aware smoothing targets `W = softmax(-d_q / tau)`, `(*b, g, c)`.
+
+        Uniform smoothing puts half its mass on the farther half of the codebook.
+        Instead, weight each candidate code by how close its DECODED action chunk
+        is to the ground truth, using EXACT PREFIX-CONDITIONED distances
+
+            d_q(c) = mean_a | invert(gt_codes with q<-c) - invert(gt_codes) |
+
+        i.e. substitute candidate `c` at quantizer `q` while holding the OTHER
+        quantizers at ground truth, and decode through the frozen RVQ. A static
+        per-quantizer 16x16 codebook-distance table is NOT valid here: RVQ
+        levels q>=1 encode residuals, so a code's decoded contribution depends
+        on the prefix (measured additivity error 2.5e-2, about half the L1 at
+        stake). Distances are the MEAN of |.| over the action dim -- the same
+        reduction as the L1 offset loss -- so `tau` is in normalized-action
+        units per dim.
+
+        Cost: g*c (= 64) vectorised `invert` calls over the full batch,
+        measured ~70-76 ms/batch, ~4% of a 1.7 s step.
+        """
+        tokenizer = self.tokenizer
+        quantizer = tokenizer.quantizer
+        g, c = quantizer.num_quantizers, quantizer.codebook_size
+
+        # The chunk is flattened (horizon, action_features) -> action_dim, so
+        # channel `j` lives at every index with `i % action_features == j`.
+        with torch.no_grad():
+            base = tokenizer.invert(target_codes)  # (*b, action_dim)
+
+            # action_dim is taken from the decoded tensor rather than a tokenizer
+            # attribute, so this does not depend on an API that may not exist.
+            channel_index: Tensor | None = None
+            if self.neighbor_smoothing_channels is not None:
+                nf = tokenizer._action_features  # noqa: SLF001
+                keep = set(self.neighbor_smoothing_channels)
+                channel_index = torch.tensor(
+                    [i for i in range(base.shape[-1]) if i % nf in keep],
+                    device=base.device,
+                )
+
+            distances = base.new_empty(*target_codes.shape[:-1], g, c)
+            for q in range(g):
+                for code in range(c):
+                    candidate = target_codes.clone()
+                    candidate[..., q] = code
+                    delta = (tokenizer.invert(candidate) - base).abs()
+                    if channel_index is not None:
+                        delta = delta[..., channel_index]
+                    distances[..., q, code] = delta.mean(dim=-1)
+            return torch.softmax(-distances / self.neighbor_smoothing_tau, dim=-1)
+
     def _predict_chunk(self, features: Tensor) -> Tensor:
         """Decode `invert(codes) + offset` -> `(*b, horizon, action_features)`."""
         code_logits, offsets = self._heads(features)
@@ -422,8 +752,43 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             (-1, self.tokenizer._action_features),  # noqa: SLF001
         )
 
-    def _compute_metrics(self, batch: Any) -> TensorDict:
-        features, chunk = self._features(batch)  # (b, t, d), (b, t, h, a)
+    def _code_losses(
+        self, code_logits: Tensor, target_codes: Tensor
+    ) -> dict[str, Tensor]:
+        """Per-quantizer classification against the ground-truth codes, supervised
+        at every frame's readout token (https://arxiv.org/pdf/2607.18236 section
+        2.2). With `neighbor_smoothing_tau` set, FocalLoss's uniform smoothing
+        term is replaced by the distance-aware target from
+        `_neighbor_smoothing_targets`.
+        """
+        smoothing_targets = (
+            self._neighbor_smoothing_targets(target_codes)
+            if self.neighbor_smoothing_tau is not None
+            else None
+        )
+
+        losses: dict[str, Tensor] = {}
+        for q in range(self.tokenizer.quantizer.num_quantizers):
+            code_loss_args = (
+                rearrange(code_logits[..., q, :], "b t c -> (b t) c"),
+                rearrange(target_codes[..., q], "b t -> (b t)"),
+            )
+            losses[f"code_{q}"] = (
+                self.losses["code"](*code_loss_args)
+                if smoothing_targets is None
+                else self.losses["code"](
+                    *code_loss_args,
+                    rearrange(smoothing_targets[..., q, :], "b t c -> (b t) c"),
+                )
+            )
+        return losses
+
+    def _compute_metrics(
+        self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
+    ) -> TensorDict:
+        features, chunk = self._features(
+            batch, token_norms=token_norms
+        )  # (b, t, d), (b, t, h, a)
         tokenizer = self.tokenizer
 
         with torch.no_grad():
@@ -434,20 +799,21 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         code_logits, offsets = self._heads(features)  # (b, t, g, c), (b, t, g, c, a)
 
-        losses: dict[str, Tensor] = {}
+        losses: dict[str, Tensor] = self._code_losses(code_logits, target_codes)
 
-        # per-quantizer classification against the ground-truth codes, supervised at
-        # every frame's readout token (https://arxiv.org/pdf/2607.18236 section 2.2)
-        for q in range(tokenizer.quantizer.num_quantizers):
-            losses[f"code_{q}"] = self.losses["code"](
-                rearrange(code_logits[..., q, :], "b t c -> (b t) c"),
-                rearrange(target_codes[..., q], "b t -> (b t)"),
-            )
-
-        # reconstruction as inference does it, logged for train-curve comparability
-        codes = self._sample_codes(code_logits)
-        sampled_chunk = tokenizer.invert(codes) + self._offset(offsets, codes)
-        sampled_recon = self.losses["offset"](sampled_chunk.detach(), target)
+        # reconstruction as inference does it, logged for train-curve comparability.
+        # Only meaningful when codes are actually SAMPLED: with sample_codes=false
+        # `_sample_codes` degenerates to argmax and this would duplicate the
+        # offset_argmax_recon* metrics while misrepresenting the argmax nature of
+        # serving -- so skip the whole computation (multinomial + invert + gather +
+        # two L1s), not just the logging.
+        sampled_chunk: Tensor | None = None
+        sampled_recon: Tensor | None = None
+        if self.sample_codes or not self.teacher_force_offset:
+            codes = self._sample_codes(code_logits)
+            sampled_chunk = tokenizer.invert(codes) + self._offset(offsets, codes)
+            if self.sample_codes:
+                sampled_recon = self.losses["offset"](sampled_chunk.detach(), target)
 
         if self.teacher_force_offset:
             # offset supervised at the GROUND-TRUTH codes (teacher forcing), so each
@@ -455,8 +821,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             predicted_chunk = tokenizer.invert(target_codes) + self._offset(
                 offsets, target_codes
             )
-        else:
+        elif sampled_chunk is not None:
             predicted_chunk = sampled_chunk
+        else:  # unreachable: the decode above always runs when not teacher forcing
+            msg = "sampled_chunk must exist when teacher_force_offset is False"
+            raise RuntimeError(msg)
 
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
@@ -480,18 +849,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         target_codes: Tensor,
         target: Tensor,
         predicted_chunk: Tensor,
-        sampled_chunk: Tensor,
-        sampled_recon: Tensor,
+        sampled_chunk: Tensor | None = None,
+        sampled_recon: Tensor | None = None,
     ) -> dict[str, Tensor]:
         """Gradient-free diagnostics at the deployed readout.
 
         The training losses average over all T readouts (contexts of 1..T
         frames), whereas `JointPolicyObjective` only ever scores the newest
         frame -- these make the two comparable.
+
+        `sampled_chunk`/`sampled_recon` are None when `sample_codes` is false:
+        sampling is an eval-only decode mode, and with argmax serving the
+        sampled metrics would just duplicate `offset_argmax_recon*`.
         """
         tokenizer = self.tokenizer
         with torch.no_grad():
-            metrics: dict[str, Tensor] = {"offset_sampled_recon": sampled_recon}
+            metrics: dict[str, Tensor] = {}
+            if sampled_recon is not None:
+                metrics["offset_sampled_recon"] = sampled_recon
             for q in range(tokenizer.quantizer.num_quantizers):
                 metrics[f"code_{q}_last"] = self.losses["code"](
                     code_logits[:, -1, q, :], target_codes[:, -1, q]
@@ -499,9 +874,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             metrics["offset_last"] = self.losses["offset"](
                 predicted_chunk[:, -1], target[:, -1]
             )
-            metrics["offset_sampled_recon_last"] = self.losses["offset"](
-                sampled_chunk[:, -1].detach(), target[:, -1]
-            )
+            if sampled_recon is not None and sampled_chunk is not None:
+                metrics["offset_sampled_recon_last"] = self.losses["offset"](
+                    sampled_chunk[:, -1].detach(), target[:, -1]
+                )
 
             # ARGMAX decode -- exactly what inference emits when `sample_codes=false`,
             # i.e. what the exported engine actually serves. This is a DEPLOYMENT-aligned
@@ -530,10 +906,99 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 metrics[f"code_acc_{q}_last"] = correct[:, q].float().mean()
             metrics["code_acc_joint_last"] = correct.all(dim=-1).float().mean()
 
+            # ERROR CONCENTRATION behind a flat joint accuracy. Under
+            # independence across quantizers the joint accuracy would be the
+            # product of the marginals; the ratio says how far from that the
+            # errors are piling onto the same readouts. Measured 2.88 on
+            # do8m9ot8:v2 (all-4-correct 6.4%, zero-correct 20.0% against
+            # 12.9% expected under independence), and it ROSE 1.57 -> 2.56 over
+            # run 03tuy3q9 while `code_acc_joint_last` stayed flat at ~0.11 --
+            # this single number is what makes that visible. >1 = concentrated.
+            marginal_product = correct.float().mean(dim=0).prod()
+            metrics["code_acc_dependence_last"] = metrics[
+                "code_acc_joint_last"
+            ] / marginal_product.clamp_min(1e-8)
+
+            metrics |= self._confidence_metrics(code_logits, argmax_codes)
+
+            # context-depth localizer for windowed causal trunks: readouts at
+            # positions < window-1 train under a PARTIAL window, positions
+            # >= window-1 under the FULL window served at inference. A gap
+            # between the two buckets says WHERE a causal arm is failing:
+            # full-window >> partial-window means long-context conditioning
+            # itself is the problem, not the heads or the features.
+            window = getattr(self.encoder, "window", None)
+            num_frames = code_logits.shape[1]
+            if window is not None and num_frames > window - 1:
+                buckets = {
+                    "partial_window": slice(None, window - 1),
+                    "full_window": slice(window - 1, None),
+                }
+                for bucket, sl in buckets.items():
+                    if code_logits[:, sl].shape[1] == 0:
+                        continue
+                    metrics[f"code_{bucket}"] = torch.stack([
+                        self.losses["code"](
+                            rearrange(code_logits[:, sl, q, :], "b t c -> (b t) c"),
+                            rearrange(target_codes[:, sl, q], "b t -> (b t)"),
+                        )
+                        for q in range(tokenizer.quantizer.num_quantizers)
+                    ]).mean()
+                    metrics[f"offset_{bucket}"] = self.losses["offset"](
+                        predicted_chunk[:, sl], target[:, sl]
+                    )
+
+        return metrics
+
+    @staticmethod
+    def _confidence_metrics(
+        code_logits: Tensor, argmax_codes: Tensor
+    ) -> dict[str, Tensor]:
+        """Per-quantizer sharpening diagnostics, averaged over ALL readouts.
+
+        Cross-entropy punishes CONFIDENT errors; accuracy does not. Over run
+        03tuy3q9 `val/loss/total` rose 47% (4.2090 @ step 19,364 -> 6.1839 @
+        step 116,189, monotonic) while `code_acc_joint_last` stayed flat at
+        ~0.11: the model was becoming more confident about being wrong, and not
+        one of that run's 141 logged keys -- no entropy, margin, logit,
+        confidence, perplexity or code-usage anywhere -- could show it. These
+        are the keys that can.
+
+        Everything is read off `code_logits`, which `_compute_metrics` already
+        has: no extra forward pass. Gradient-free (the caller holds
+        `torch.no_grad()`; `argmax_codes` is an index tensor).
+        """
+        log_probs = code_logits.log_softmax(dim=-1)  # (b, t, g, c)
+        probs = log_probs.exp()
+        entropy = -(probs * log_probs).sum(dim=-1)  # (b, t, g)
+        confidence = probs.amax(dim=-1)  # (b, t, g)
+        top2 = code_logits.topk(2, dim=-1).values  # (b, t, g, 2)
+        margin = top2[..., 0] - top2[..., 1]  # (b, t, g)
+
+        # distinct codes the argmax actually emits, per quantizer, over this
+        # batch's readouts -- the collapse tripwire. Scattered into a (g, c)
+        # table rather than `torch.unique`, which returns a dynamically shaped
+        # tensor and would force a device sync every train step (the same trap
+        # `_sample_codes` documents for `torch.multinomial`). NOTE the ceiling
+        # is min(codebook_size, b*t), so read this as a floor on diversity, not
+        # as "codes the model can use".
+        flat = rearrange(argmax_codes, "b t g -> g (b t)")
+        hit = torch.zeros(
+            flat.shape[0], code_logits.shape[-1], dtype=torch.bool, device=flat.device
+        ).scatter_(-1, flat, torch.ones_like(flat, dtype=torch.bool))
+        used = hit.sum(dim=-1).float()
+
+        metrics: dict[str, Tensor] = {}
+        for q in range(code_logits.shape[-2]):
+            metrics[f"code_entropy_{q}"] = entropy[..., q].mean()
+            metrics[f"code_confidence_{q}"] = confidence[..., q].mean()
+            metrics[f"code_margin_{q}"] = margin[..., q].mean()
+            metrics[f"code_usage_{q}"] = used[q]
         return metrics
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
-        metrics = self._compute_metrics(batch)
+        token_norms: dict[str, Tensor] = {}
+        metrics = self._compute_metrics(batch, token_norms=token_norms)
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
         metrics["loss", "total"] = losses.sum(reduce=True)
@@ -547,6 +1012,23 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             },
             sync_dist=True,
         )
+
+        # per-token-type norm tracking under the TrainingQualityLogger's
+        # `quality/` prefix -- the guard against a token type's scale (readout/
+        # register embeddings especially) drifting away from the fusion balance.
+        # `out/*` are the TRUNK-OUTPUT norms (`_trunk_token_norms`); the rest are
+        # the trunk INPUT activations plus the readout/register parameters. All
+        # three views are kept: the parameters say where the embeddings sit, the
+        # input norms whether the fusion balance holds, and only the output ones
+        # say what the residual stream did with them.
+        if token_norms:
+            self.log_dict(
+                {
+                    f"quality/token_norm/{prefix}/{name}": value
+                    for name, value in token_norms.items()
+                },
+                sync_dist=True,
+            )
 
         return {"loss": metrics["loss", "total"]}
 

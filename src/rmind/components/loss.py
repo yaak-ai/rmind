@@ -14,19 +14,50 @@ class HasLogitBias(Protocol):
 
 
 class FocalLoss(Module):
-    """https://arxiv.org/pdf/1708.02002.pdf."""
+    """https://arxiv.org/pdf/1708.02002.pdf.
 
-    def __init__(self, *, gamma: float = 2.0) -> None:
+    `label_smoothing` uses the smoothed-CE decomposition
+    `(1-eps) * ce_true + eps * ce_uniform`, but focal-modulates ONLY the
+    true-class term. Modulating both would let `(1-pt)^gamma -> 0` cancel
+    the smoothing penalty exactly on confident predictions -- the case
+    smoothing exists for. The unmodulated `eps * ce_uniform` term grows
+    with the logit margin, capping overconfidence (and the entropy
+    collapse behind the calibration blowup). At `label_smoothing=0.0`
+    this is exactly the unsmoothed focal loss.
+
+    `smoothing_target` (optional, `(*batch, num_classes)`, rows summing to 1)
+    replaces the UNIFORM distribution in the smoothing term with a
+    caller-provided one: `ce_uniform` becomes
+    `-(log_softmax(input) * smoothing_target).sum(-1)`. The term stays
+    UNMODULATED by the focal factor for the same anti-overconfidence reason.
+    With `smoothing_target=None` (or `label_smoothing=0.0`, when the term
+    vanishes) behaviour is bit-for-bit the previous one.
+    """
+
+    def __init__(self, *, gamma: float = 2.0, label_smoothing: float = 0.0) -> None:
         super().__init__()
 
         self.gamma: float = gamma
+        self.label_smoothing: float = label_smoothing
 
     @override
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        ce_loss = F.cross_entropy(input, target, reduction="none")
-        pt = torch.exp(-ce_loss)
+    def forward(
+        self, input: Tensor, target: Tensor, smoothing_target: Tensor | None = None
+    ) -> Tensor:
+        ce_raw = F.cross_entropy(input, target, reduction="none")
+        pt = torch.exp(-ce_raw)
+        focal = (1 - pt).pow(self.gamma) * ce_raw
+        eps = self.label_smoothing
+        if not eps:
+            return focal.mean()
 
-        return ((1 - pt).pow(self.gamma) * ce_loss).mean()
+        log_probs = F.log_softmax(input, dim=-1)
+        ce_smooth = (
+            -log_probs.mean(dim=-1)
+            if smoothing_target is None
+            else -(log_probs * smoothing_target).sum(dim=-1)
+        )
+        return ((1 - eps) * focal + eps * ce_smooth).mean()
 
 
 class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
@@ -36,8 +67,10 @@ class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
         self.logit_bias: Tensor | None = logit_bias
 
     @override
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return super().forward(input + self.logit_bias, target)  # ty:ignore[unsupported-operator]
+    def forward(
+        self, input: Tensor, target: Tensor, smoothing_target: Tensor | None = None
+    ) -> Tensor:
+        return super().forward(input + self.logit_bias, target, smoothing_target)  # ty:ignore[unsupported-operator]
 
 
 class LogitBiasCrossEntropyLoss(CrossEntropyLoss, HasLogitBias):

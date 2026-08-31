@@ -56,7 +56,8 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: ${paths.rbyte.cache}/yaak/val/clip${clip_length}/samples
+  # keyed on the sampler grid -- see dataset/yaak/train.yaml
+  run_folder: "${paths.rbyte.cache}/yaak/val/clip${clip_length}/stride${oc.select:val_episode_stride,${episode_stride}}/samples"
   scheduling_strategy: eager
   return_results: false
   persist_memory: false
@@ -355,7 +356,11 @@ samples:
         func:
           _target_: rbyte.io.DataFrameGroupByDynamic
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
-          every: "${episode_stride}i"
+          # val stays on its own DETERMINISTIC grid: overriding
+          # `val_episode_stride` (default: follow ${episode_stride}) lets an
+          # experiment retile TRAIN (e.g. episode_stride: 31) without moving
+          # the val clip set out from under run-to-run comparisons.
+          every: "${oc.select:val_episode_stride,${episode_stride}}i"
           period: ${clip_period}
           closed: left
           gather_every: ${episode_step}

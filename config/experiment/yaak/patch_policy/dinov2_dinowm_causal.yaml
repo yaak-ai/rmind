@@ -1,0 +1,270 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm
+  - _self_
+
+# Decoder-only trunk: causal over frame blocks, bidirectional within a frame, with
+# a sliding window equal to the serving cache capacity. Trains the way it infers
+# (hand-off §6): a full forward under `frame_block_causal_mask(window=W)` is
+# EXACTLY streaming one frame per tick against a ring buffer of `W - 1` past
+# frames -- that equivalence is the gate in tests/test_causal_frame.py.
+#
+# Positional encoding is frame-RoPE + a tiled 257-slot intra-frame embedding, so
+# nothing is window-absolute and cached keys never go stale. See
+# src/rmind/components/transformer/causal_frame.py.
+#
+# ---------------------------------------------------------------------------
+# 1. WHY `episode_length` AND `window` ARE DIFFERENT NUMBERS HERE
+# ---------------------------------------------------------------------------
+# `window` is the CONTEXT DEPTH per readout, and it is also the serving ring
+# capacity. `episode_length` is the SUPERVISION DENSITY: every frame in the clip
+# is a readout with its own action-chunk target, so a 32-frame clip yields 32
+# training targets from one frozen-ViT pass over 32 images.
+#
+# Setting them equal (the previous version of this file) throws away the main
+# reason to have a window at all. With `episode_length == window` the mask is
+# plain block-causal, cost still grows as F^2, and the first `window - 1` readouts
+# of every clip are trained with LESS context than they will be served with. With
+# `episode_length > window` cost grows LINEARLY in F, and 17 of the 32 readouts
+# see a full 16-frame window (frames 0..14 see a short one, and that is the same
+# cold-start ramp drivr has after every engage).
+#
+# ---------------------------------------------------------------------------
+# 2. WHY THIS IS AFFORDABLE: `attention_impl: flex`
+# ---------------------------------------------------------------------------
+# A dense bool `attn_mask` disqualifies SDPA's flash backend, so plain SDPA
+# computes every masked position and the window buys nothing. `attention_impl:
+# flex` hands the same mask to FlexAttention as a `BlockMask`, whose Triton kernel
+# skips whole 128x128 blocks. Numerically identical (fp32 fwd+bwd parity to
+# <=1.5e-6 scale-relative, tests/test_causal_frame.py).
+#
+# Measured on an RTX 5090, bf16, FULL trunk fwd+bwd with gradient checkpointing
+# (tests/bench_causal_frame.py, 2026-08-05), normalized to a constant 768
+# frame-slots per step -- today's `batch 128 x 6 frames`, which is what fixes the
+# frozen-ViT cost, the readouts per step and the activation memory:
+#
+#   frames  window  sdpa ms   flex ms   flex vs today's dense 6-frame step
+#      6       6      652       497                0.76x
+#     16       6     1085       550                0.84x
+#     16      16     1085       626                0.96x
+#     32       8     1787       593                0.91x
+#     32      16     1787       705                1.08x   <-- this recipe
+#     32      32     1791       800                1.23x
+#     64      16     3215       749                1.15x
+#     64      64     3233      1151                1.77x
+#
+# So 32 frames of clip with a 16-frame window costs ~1.08x today's 6-frame trunk
+# step -- the same ballpark -- where dense SDPA would cost 2.74x.
+#
+# Measured directly at the two batches involved, one fresh process per cell
+# (`bench_causal_frame.py trunk --only 32x16 --batches 24`), which is the number
+# this recipe actually rests on:
+#
+#   512-d/8L   6 frames, w6,  batch 128, sdpa (today)  670.7 ms   9.60 GiB
+#   512-d/8L  32 frames, w16, batch  24, flex          701.7 ms   9.60 GiB
+#   768-d/12L  6 frames, w6,  batch 128, sdpa (today) 1713.5 ms  16.80 GiB
+#   768-d/12L 32 frames, w16, batch  24, flex         1779.6 ms  16.79 GiB
+#
+# 1.05x the step time and the same memory to the last 10 MiB, for 5.3x the context.
+# Memory is flat because activation memory scales with `batch x frames`, which is
+# what is being held constant; block-sparsity is worth only another 2-5 % there.
+#
+# Serving cost of `window: 16` is already measured: 59.6 ms/tick for this arm on
+# an AGX Orin at 918 MHz (§9 of docs/decoder_only_kv_cache.md), vs 200.9 ms for
+# today's 6-frame non-cached baseline. A 16-frame window is 3.4x cheaper to serve
+# than what runs today, so this recipe does not trade serving cost for context.
+#
+# ---------------------------------------------------------------------------
+# 3. EPISODE TILING: `episode_stride: 31` + rotatable grid phase
+# ---------------------------------------------------------------------------
+# With the old stride 10 (= episode_step), consecutive clips shared 31 of 32
+# encoded frames: 36.9x ViT reuse per epoch, and -- because stride and step are
+# BOTH 10 -- the grid only ever touched ONE of the 10 raw-frame phases, so 90%
+# of extracted frames were never read by anything, ever (10.0% frame coverage,
+# simulated at episode_length 32 / step 10 / clip_length 37; the sampler grid
+# is deterministic, so every epoch saw the identical clip set).
+#
+# stride 31 (coprime to step 10, so successive clip starts rotate through all
+# raw-frame phases):
+#
+#   stride  10:   1 reachable phase, 10.0% frame coverage, 36.9x reuse
+#   stride  21:  99.9% coverage, 1.76x reuse
+#   stride  31:  99.9% coverage, 1.19x reuse   <- this recipe
+#   stride 101:  36.6% coverage;  stride 321: 11.5% coverage  (do NOT use:
+#                wider than the clip span 361, frames between grids unreachable)
+#
+# `episode_offset` (default 0) drops the first N raw frames of each train drive
+# before the grid is laid down, shifting every clip start by N (verified against
+# polars group_by_dynamic semantics: start_by=datapoint anchors at the first
+# row). Rotating it in [0, 31) breaks exact-clip-boundary memorisation.
+# LIMITATION, stated plainly: the offset is baked at LAUNCH, not per epoch --
+# rbyte builds the sample table once at datamodule instantiation (~30 min),
+# locks it into shared memory, and pipefunc wipes + rebuilds the samples store
+# every launch; a within-launch per-epoch rotation would need a per-epoch
+# rebuild (DDP-concurrent writes corrupt the single-writer store). So: rotate
+# `episode_offset = start_epoch % 31` on every restart/continuation segment.
+# A fixed offset 0 already gets the full 99.9% coverage above.
+#
+# val is pinned to the old grid (`val_episode_stride: 10`) so val metrics stay
+# comparable with every earlier causal run; the train retile does not move the
+# val clip set.
+#
+# ---------------------------------------------------------------------------
+# 4. BATCH AND SCHEDULE ARITHMETIC (keyed to steps -- re-derived for stride 31)
+# ---------------------------------------------------------------------------
+# batch 24 x 32 frames = 768 frame-slots and 768 readouts per step: identical to
+# today's batch 128 x 6. The loss means over `(b t)` readouts, so the gradient's
+# scale is unchanged and `lr` is left at 1e-4 (see §5 for the caveat).
+#
+# The clip11 train set is ~1.97M samples at stride 10 (FT baseline zcglgth4:
+# 308,038 steps @ batch 64 for 10 epochs); clip length does not materially
+# change that count (only ~26 tail samples of ~3.1k per drive are lost).
+# Retiling to stride 31 divides the clip count by 3.10 (simulated exactly, same
+# geometry as the coverage table above):
+#
+#   clips/epoch = 1.97M / 3.10          = ~635k    (was 1.97M)
+#   steps/epoch = 635k / 24             = ~26.5k   (was ~82.1k)
+#
+# The spend is held at the previous plan's ~246k-step / ~189M-readout budget
+# (the same budget as the old arm's 15 x 15.4k plan), NOT at an epoch count:
+#
+#   max_epochs      = 246k / 26.5k      = 9.3  -> 9 epochs = ~238k steps
+#   lr_total_steps  = 9 x 27,000        = 243,000
+#   lr_warmup_steps = 0.08 x 243k       = 19,400  (today's 8% ratio)
+#
+# `lr_total_steps` deliberately uses 27k/epoch, an UPPER bound on the 26.5k
+# estimate: `get_cosine_schedule_with_warmup` has no clamp and the LR comes
+# back UP past `num_training_steps` (a silent bug), while undershooting the
+# planned steps merely leaves the cosine slightly above zero at the end --
+# so always round the steps/epoch estimate UP when sizing it.
+#
+# val_check_interval 0.5 -> a val point every ~13.2k steps (~4.5h at the
+# measured ~1.2 s/step), 18 points per 9-epoch run. The 0.25-of-82.1k cadence
+# this replaces was ~20.5k steps; 0.25 here would be ~6.6k steps = 36 points,
+# doubling val overhead for no added signal. Checkpoint cadence needs no
+# change: ModelCheckpoint(every_n_epochs=1) now fires every ~26.5k steps (~9h),
+# 9 checkpoints/run instead of 3 at 82.1k -- 3x finer closed-loop selection.
+#
+# ---------------------------------------------------------------------------
+# 5. WHAT TO WATCH
+# ---------------------------------------------------------------------------
+# * `attn_dropout: 0.0` is REQUIRED: FlexAttention has no `dropout_p` and the
+#   trunk raises rather than silently dropping it. `raw.yaml` does not set it, so
+#   the Python default of 0.1 would otherwise apply. This is a regularization
+#   change riding along with the kernel change -- an A/B against today's arm must
+#   set `attn_dropout: 0.0` on the sdpa side too, or the two effects confound.
+# * 768 readouts from 24 clips are more correlated than 768 from 128 clips, so the
+#   effective batch is somewhat smaller than the count suggests. If early training
+#   is unstable, halve `lr` before touching anything else.
+# * `clip_length` becomes 37 (`episode_length + clip_horizon - 1`), so the dataset
+#   must be rebuilt (`just generate-config`, then a SINGLE-writer rbyte cache
+#   build -- two concurrent builds corrupt the samples store).
+# * 80 GB nodes: see dinov2_dinowm_causal_80gb.yaml, which only raises the batch.
+episode_length: 32
+window: 16
+
+# episode tiling (§3): non-overlapping-ish grid, all raw-frame phases reachable
+episode_stride: 31
+# rotate to `start_epoch % 31` on each restart/continuation segment (§3)
+episode_offset: 0
+# keep val on the pre-retile grid for run-to-run comparability (§3)
+val_episode_stride: 10
+
+model:
+  # ARGMAX EVERYWHERE. Set at the BASE causal arm so 80gb / big / readout / 3cam
+  # / traj all inherit it from one place.
+  #
+  # Sampling is never used at TRAINING time and is not what we serve: serving
+  # takes the argmax, the TRT engines are exported argmax, and the whole parity
+  # story (0/200 decision changes) is an argmax story. Sampled eval metrics only
+  # disagreed with the thing we deploy.
+  #
+  # Safe to flip: `teacher_force_offset: true` (dinov3.yaml, inherited) means
+  # `predicted_chunk` comes from GROUND-TRUTH codes, so `sampled_chunk` never
+  # feeds a gradient and `sampled_recon` is `.detach()`ed. Metrics-only change;
+  # gradients are bit-identical.
+  #
+  # CAUTION -- the flags interact: with sample_codes false you MUST keep
+  # teacher_force_offset true, or `predicted_chunk` has no source and the model
+  # raises. That guard is deliberate. Note this belongs on the `model:` node and
+  # NOT top-level: unlike teacher_force_offset (which raw.yaml interpolates from
+  # a top-level var) there is no top-level `sample_codes`, so a top-level key
+  # would be a silent no-op.
+  sample_codes: false
+
+  # Which action channels define "neighbouring" for the OPT-IN distance-aware
+  # label smoothing (inert while neighbor_smoothing_tau is null).
+  # MEASURED 2026-08-25: with all four channels, turn_signal contributes 38.9%
+  # of d_q(c) -- more than gas (21.2%) or steer (25.7%) -- despite being
+  # CATEGORICAL (left/none/right has no metric, so "half a signal away" is
+  # meaningless) and having by far the widest dynamic range (p95 0.499, p99
+  # 0.9997, max 1.27 vs 0.02-0.09). Left in, a code differing only in indicator
+  # state is punished like a trajectory error. [0, 1, 2] = gas, brake, steer.
+  #
+  # tau CAVEAT: dropping turn_signal shrinks the mean distance 0.069 -> ~0.042
+  # (x0.61), so a tau calibrated on all four channels becomes effectively
+  # SHARPER; the 0.02 measured earlier scales to ~0.012. Re-measure the
+  # mass-on-far-half curve before trusting either value.
+  neighbor_smoothing_channels: [0, 1, 2]
+
+  encoder:
+    _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
+    tokens_per_frame: "${eval:'${num_patches} + 1'}"
+    # context depth per readout == the serving ring capacity, in frames
+    window: ${window}
+    # block-sparse kernel; the whole point of the window
+    attention_impl: flex
+    # required by attention_impl: flex (no dropout_p in FlexAttention)
+    attn_dropout: 0.0
+    # 64 positions of range; base 10000 leaves most frequency pairs inert
+    rope_base: 1000.0
+    # stochastic depth, timm-style linear ramp 0 -> 0.1 over the 8 layers.
+    # Anti-overfitting package (with label_smoothing + code_head decay below):
+    # the mid/big arms overfit hard (train p_gt ~0.6 vs val ~0.13).
+    drop_path_rate: 0.1
+
+  losses:
+    modules:
+      code:
+        # smooths only the CE term; the focal (1-pt)^gamma keeps the true-class
+        # pt. Also counteracts the entropy collapse behind the H6 calibration
+        # blowup (val focal exploding while p_gt rises).
+        label_smoothing: 0.1
+
+  optimizer:
+    # the code head is where overconfidence lives; decay it harder than the
+    # global 0.1 (biases stay decay-free via the blacklist)
+    weight_decay_overrides:
+      code_head: 0.2
+
+  # data-measured element-RMS of gzxgumtf's z_q (H3 eval 2026-08-06): the
+  # seeded MC calibration overestimates 1.86x because real code usage is
+  # non-uniform, landing the goal stream at 0.54 instead of 1.0
+  fusion_goal_rms: 0.077
+
+# scale-balanced patch/goal fusion (learnable calibrated gains). The dinowm
+# features are post-norm but still ~34x the goal z_q's element RMS; the causal
+# line adopts the fix from the start (per Max, 2026-08-06).
+fusion_norm: true
+
+datamodule:
+  train:
+    batch_size: 24
+
+trainer:
+  # stride-31 epochs are ~26.5k steps; 9 epochs = the previous ~246k-step
+  # budget (arithmetic in §4)
+  max_epochs: 9
+  # val every ~13.2k steps (~4.5h), 18 points per run (§4)
+  val_check_interval: 0.5
+
+# 8% of lr_total_steps (§4)
+lr_warmup_steps: 19400
+# 9 epochs x 27k steps -- 27k is a deliberate UPPER bound on the ~26.5k
+# steps/epoch estimate; overshooting num_training_steps makes the unclamped
+# cosine come back up, undershooting is benign (§4)
+lr_total_steps: 243000
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal]

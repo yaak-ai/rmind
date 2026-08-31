@@ -59,3 +59,5 @@
     highway:
       - policy/score_l1/value/continuous/gas_pedal
       - policy/score_signed_error/value/continuous/gas_pedal
+- _target_: rmind.callbacks.TrainingQualityLogger
+  every_n_steps: 50

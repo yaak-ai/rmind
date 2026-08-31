@@ -5,6 +5,38 @@ from torch.nn import Module
 from torch.optim.adamw import AdamW
 
 
+def _partition_overrides(
+    overrides: dict[str, float], decayed: set[str]
+) -> dict[str, set[str]]:
+    """Assign decayed param names to weight-decay override prefixes.
+
+    Params under an override prefix (and not blacklisted -- biases/norms stay
+    decay-free) get their own group with that decay instead of the global one.
+
+    Raises:
+        ValueError: on overlapping prefixes or a prefix matching nothing.
+    """
+    groups: dict[str, set[str]] = {prefix: set() for prefix in overrides}
+    for param_name in sorted(decayed):
+        matches = [
+            prefix
+            for prefix in overrides
+            if param_name == prefix or param_name.startswith(prefix + ".")
+        ]
+        if len(matches) > 1:
+            msg = (
+                f"weight_decay_overrides prefixes overlap on '{param_name}': {matches}"
+            )
+            raise ValueError(msg)
+        if matches:
+            groups[matches[0]].add(param_name)
+    for prefix, names in groups.items():
+        if not names:
+            msg = f"weight_decay_overrides prefix '{prefix}' matched no decayed params"
+            raise ValueError(msg)
+    return groups
+
+
 class SelectiveAdamW(AdamW):
     """AdamW with selective weight decay.
 
@@ -18,6 +50,7 @@ class SelectiveAdamW(AdamW):
         *,
         weight_decay: float = 1e-2,
         weight_decay_module_blacklist: tuple[type[Module], ...],
+        weight_decay_overrides: dict[str, float] | None = None,
         **kwargs: Any,
     ) -> None:
         if "params" in kwargs or weight_decay == 0.0:  # noqa: RUF069
@@ -62,6 +95,13 @@ class SelectiveAdamW(AdamW):
 
         weight_decay_param_whitelist = params.keys() - weight_decay_param_blacklist
 
+        override_groups = _partition_overrides(
+            weight_decay_overrides or {}, weight_decay_param_whitelist
+        )
+        for names in override_groups.values():
+            weight_decay_param_whitelist -= names
+        overrides = weight_decay_overrides or {}
+
         # sorted: set iteration order is salted per process, and torch's
         # Optimizer.load_state_dict maps saved state onto params POSITIONALLY --
         # unsorted groups corrupt Adam moments on any cross-process resume
@@ -74,6 +114,13 @@ class SelectiveAdamW(AdamW):
                 "weight_decay": weight_decay,
                 "params": [params[k] for k in sorted(weight_decay_param_whitelist)],
             },
+            *(
+                {
+                    "weight_decay": overrides[prefix],
+                    "params": [params[k] for k in sorted(override_groups[prefix])],
+                }
+                for prefix in sorted(overrides)
+            ),
         ]
 
         super().__init__(params=param_groups, **kwargs)
