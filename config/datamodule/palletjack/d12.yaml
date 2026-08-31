@@ -1,7 +1,11 @@
 ---
 defaults:
   - /dataset/palletjack/d12@train.dataset
-  - /dataset/palletjack/d12@val.dataset
+  # val is a SEPARATE template (two held-out drives) -- rbyte's
+  # `Dataset.from_config` takes only `samples`/`streams`, so a split cannot be
+  # expressed as a filter on `input_id`; two templates is the repo's own car
+  # convention (`/dataset/yaak/train@train.dataset`, `/dataset/yaak/val@val.dataset`).
+  - /dataset/palletjack/d12_val@val.dataset
   - _self_
 
 _target_: rmind.datamodules.GenericDataModule

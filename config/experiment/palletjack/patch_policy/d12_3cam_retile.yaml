@@ -1,0 +1,105 @@
+# @package _global_
+
+# BASELINE ARM: three cameras, 16-frame history, single-step Gaussian NLL.
+#
+#   just train experiment=palletjack/patch_policy/d12_3cam_retile
+#
+# Against `d12_3cam` this changes only the TIME axis and the clip grid; the model,
+# the inputs and the heads are untouched, so this is still the deployed model's
+# task (predict the action at NOW) with a great deal more context.
+#
+# 1. HISTORY AND SUPERVISION DENSITY ARE DIFFERENT NUMBERS
+#
+# `window: 16` is the history each readout attends over -- 16 frames at 10 Hz =
+# 1.6 s, against the 0.5 s the deployed `5d3a592p` had. `episode_length: 32` is
+# how many readouts a clip yields: every frame is supervised, so a 32-frame clip
+# gives 32 targets from ONE frozen-ViT pass over the clip. Readouts 0-15 see a
+# truncated history and 16-31 a full one; that is the same arrangement the car's
+# `dinov2_dinowm_causal` uses and the reason the two numbers differ.
+#
+# 2. `attention_impl: flex` IS NOT OPTIONAL HERE
+#
+# With `episode_length > window` the mask is a sliding window, and dense SDPA
+# would materialize attention over all 32 x 436 = 13,952 positions -- it computes
+# every masked position, so the window buys nothing and the memory is absurd.
+# FlexAttention skips the masked blocks. (`attn_dropout: 0.0` is required: there
+# is no dropout_p in FlexAttention.)
+#
+# 3. BATCH SIZE IS THE MEMORY LEVER, AND VAL HAS ITS OWN
+#
+# docs/decoder_only_kv_cache.md §13 measured this arm on this card (RTX 5090,
+# bf16, gradient checkpointing) at `tokens_per_frame: 769`:
+#
+#   batch 24 -> OOM ;  20 -> 27792 MiB ;  16 -> 22311 MiB ;  12 -> 16830 ;  8 -> 11348
+#
+# ~1370 MiB per unit of batch, and §13.2 measured `window: 16 -> 10` as worth
+# 0 MiB -- under checkpointing the dominant term is the per-token activation at
+# checkpoint boundaries, which scales with `batch x frames x tokens_per_frame`
+# and has no `window` in it. So window is a context/latency lever, never an OOM
+# fix. Here `tokens_per_frame` is 3*144 + 1 + 3 = 436, i.e. 0.57x the measured
+# arm, so expect ~780 MiB per batch unit -- but §0 of that doc warns its numbers
+# cannot be scaled by camera count, so 8 is a deliberately conservative start.
+#
+# The §13.1 OOM was NOT a training-step OOM: training survived at batch 16 and
+# validation died at the untouched default of 32. `datamodule.val.batch_size` is
+# therefore set explicitly here, and must stay that way.
+defaults:
+  - /experiment/palletjack/patch_policy/d12_3cam
+  - _self_
+
+# --- time axis -------------------------------------------------------------
+episode_length: 32
+window: 16
+
+# reference-camera decimation: 30 Hz -> 10 Hz. Kept at the palletjack's own rate
+# rather than the car's 3 Hz -- these are dexterous manoeuvres at walking pace.
+episode_step: 3
+
+# RAW-grid clip stride, coprime to `episode_step`. See `rmind.data.d12.episodes`:
+# the old decimate-then-stride grid reached raw-frame phase 0 only, so 2 of every
+# 3 extracted frames were unreachable by any clip in any epoch. Measured on a
+# 3000-frame job at these settings: stride 3 -> 1/3 phases and 33.3% coverage;
+# stride 31 -> 3/3 and 97.2%.
+episode_stride: 31
+# val is pinned to its own grid so val metrics stay comparable if train's changes
+val_episode_stride: 31
+
+# BASELINE: one action, at the current frame. The tokenizer arm overrides this.
+action_horizon: 1
+# clip the windower emits; ChunkFields (tokenizer arm only) truncates back to
+# `episode_length`. At action_horizon 1 this is just `episode_length`.
+clip_length: "${eval:'${episode_length} + ${action_horizon} - 1'}"
+
+# --- trunk -----------------------------------------------------------------
+attention_impl: flex
+trunk_checkpointing: true
+
+model:
+  encoder:
+    attention_impl: ${attention_impl}
+    attn_dropout: 0.0
+    checkpoint: ${trunk_checkpointing}
+
+# --- schedule --------------------------------------------------------------
+# Retiling divides the clip count per job by ~31/3, so an epoch is ~10x shorter
+# in steps than a stride-3 grid would give; the schedule is keyed to steps.
+lr: 1e-4
+lr_warmup_steps: 200
+lr_total_steps: 8000
+
+trainer:
+  max_epochs: 40
+  precision: "bf16-mixed"
+  gradient_clip_val: 1.0
+  log_every_n_steps: 10
+  val_check_interval: 0.25
+
+datamodule:
+  train:
+    batch_size: 8
+  val:
+    # NEVER let this inherit -- see §13.1 above; that is exactly how the car arm OOMed.
+    batch_size: 8
+
+wandb:
+  tags: [palletjack, patch_policy, d12, 3cam, retile, baseline_nll, history16]

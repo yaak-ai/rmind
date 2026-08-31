@@ -117,7 +117,21 @@ samples:
           reference: (@=reference@)
           # signed traction command, the field the vehicle actually applies
           traction_source: command
-          max_skew_s: 1.0
+          # Raised from 1.0 for the 2026-08-31 batch. `_pairing_skew` reports the
+          # DURATION OF THE SURPLUS published frames as a worst-case bound: it
+          # cannot tell whether the un-encoded frames sit at the head or the tail,
+          # so it assumes the worst. Measured on 2026-08-31--15-44-29/cam_fork
+          # (4548 published vs 4500 encoded, the job that tripped the old limit):
+          # after removing a CONSTANT clock offset -- the mcap's `log_time` is a
+          # deferred write, +614 s here -- the encoded and published timelines
+          # agree to a MAXIMUM of 2.3 ms over all 4500 frames (p99 1.2 ms), i.e.
+          # well inside one 33 ms frame. So head-anchored pairing is exact and all
+          # 48 surplus frames are a tail: the encoder stops ~1.6 s before the
+          # logger does. Every camera in every job sampled shows a surplus and
+          # never a deficit, and the already-accepted 2026-08-25 batch has the
+          # same signature at 0.77 s (residual 1.4 ms). 3.0 keeps the guard useful
+          # against a genuinely mispaired job while admitting this tail.
+          max_skew_s: 3.0
 
       # 2. the intention transform, in the config just like the car waypoints:
       # translate each target by -ego, rotate by -heading into the vehicle frame,
@@ -183,7 +197,7 @@ samples:
           # 33% of frames; stride 31 reaches all 3 and ~98%.
           episode_stride: ${episode_stride}
           # baked at instantiation, not per epoch -- rotate across restarts
-          episode_offset: ${oc.select:episode_offset,0}
+          episode_offset: "${oc.select:episode_offset,0}"
 
       # 4. plain vertical concat: every row already carries its job's `input_id`
       - _target_: pipefunc.PipeFunc

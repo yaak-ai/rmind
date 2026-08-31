@@ -4,8 +4,17 @@
 - _target_: pytorch_lightning.callbacks.TQDMProgressBar
 - _target_: pytorch_lightning.callbacks.ModelSummary
   max_depth: 2
+# Selects on val, which only became meaningful once train/val stopped being the
+# same two jobs. Without a `monitor` this kept the LAST epoch regardless of val
+# loss, so a split alone would have been cosmetic.
 - _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  monitor: val/loss/total
+  mode: min
+  save_top_k: 3
+  save_last: True
   every_n_epochs: 1
-  save_on_train_epoch_end: True
+  save_on_train_epoch_end: False
+  filename: "epoch{epoch:03d}-val{val/loss/total:.4f}"
+  auto_insert_metric_name: False
 - _target_: pytorch_lightning.callbacks.LearningRateMonitor
   logging_interval: step
