@@ -732,23 +732,197 @@ def test_readout_token_metrics_and_losses_finite() -> None:
 
 
 def test_token_norm_tracking() -> None:
-    """B2: per-token-type norms for the quality metrics -- patch/speed/goal always,
-    register/readout only when the opt-in layout is on."""
+    """B2: per-token-type norms for the quality metrics -- patch/speed/goal and the
+    read position always, register/readout only when the opt-in layout is on, and a
+    trunk-OUTPUT (`out/*`) counterpart for every token actually in the sequence."""
     batch = _make_batch()
 
     norms: dict[str, Tensor] = {}
     model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
     model._compute_metrics(batch, token_norms=norms)  # noqa: SLF001
-    assert set(norms) == {"speed", "patch", "goal", "register", "readout"}
+    assert set(norms) == {
+        "speed",
+        "patch",
+        "goal",
+        "register",
+        "readout",
+        "readout_position",
+        "out/speed",
+        "out/patch",
+        "out/register",
+        "out/readout_position",
+    }
     for name, value in norms.items():
         assert value.isfinite(), name
         assert float(value) > 0, name
         assert not value.requires_grad, name
+        assert value.grad_fn is None, name
 
     off_norms: dict[str, Tensor] = {}
     off = _make_model()
     off._compute_metrics(batch, token_norms=off_norms)  # noqa: SLF001
-    assert set(off_norms) == {"speed", "patch", "goal"}
+    assert set(off_norms) == {
+        "speed",
+        "patch",
+        "goal",
+        "readout_position",
+        "out/speed",
+        "out/patch",
+        "out/readout_position",
+    }
+
+
+class _IdentityTrunk(Module):
+    """Trunk that returns its input unchanged, so every trunk-OUTPUT norm must
+    equal its input-side counterpart token for token -- which is what turns the
+    `out/*` slicing into a checkable claim. Deliberately exposes neither
+    `tokens_per_frame` nor `window`, so the layout guard and the context-depth
+    buckets stay out of the way.
+    """
+
+    @override
+    def forward(self, src: Tensor, *, num_frames: int) -> Tensor:
+        return src
+
+
+def test_trunk_output_norms_slice_the_frame_layout() -> None:
+    """Family A: the `out/*` norms must index the SAME
+    `[speed, patches..., register_0.., READOUT]` block `_frame_tokens` builds.
+
+    The register and readout tokens are given distinctive norms (5.0 and 3.0)
+    that no other token type can produce, so an off-by-one boundary fails loudly
+    here. These two are the whole point of the family: their INPUT-side entries
+    can only ever report the learned parameter (0.50 and 0.75 on
+    `yaak/alex-tmp/model-03tuy3q9:v29`), which says nothing about the 22.66/22.50
+    they actually leave the trunk at.
+    """
+    model = _make_model(
+        use_readout_token=True,
+        num_register_tokens=NUM_REGISTERS,
+        encoder=_IdentityTrunk(),
+    )
+    assert model.readout_token is not None
+    assert model.register_tokens is not None
+    with torch.no_grad():
+        model.readout_token.fill_(3.0 / POLICY_DIM**0.5)
+        model.register_tokens.fill_(5.0 / POLICY_DIM**0.5)
+
+    norms: dict[str, Tensor] = {}
+    model._compute_metrics(_make_batch(), token_norms=norms)  # noqa: SLF001
+
+    torch.testing.assert_close(norms["out/register"], torch.tensor(5.0))
+    torch.testing.assert_close(norms["out/readout_position"], torch.tensor(3.0))
+    # identity trunk => the output side reproduces the input side exactly
+    torch.testing.assert_close(norms["out/speed"], norms["speed"])
+    torch.testing.assert_close(norms["out/patch"], norms["patch"])
+    torch.testing.assert_close(norms["out/register"], norms["register"])
+    torch.testing.assert_close(norms["out/readout_position"], norms["readout"])
+    # ... and the patch block is nowhere near either of the two learned tokens,
+    # so the assertions above could not have passed on a wrong slice
+    assert abs(float(norms["out/patch"]) - 5.0) > 1.0
+    assert abs(float(norms["out/patch"]) - 3.0) > 1.0
+
+
+def test_trunk_output_norms_without_readout_or_register_tokens() -> None:
+    """Default-off path: no `out/register`, and the read position is the LAST image
+    patch -- which is exactly what the 1-camera arm serves."""
+    model = _make_model(encoder=_IdentityTrunk())
+    batch = _make_batch()
+    tokens = model._frame_tokens(*_frame_inputs(batch))  # noqa: SLF001
+
+    norms: dict[str, Tensor] = {}
+    model._compute_metrics(batch, token_norms=norms)  # noqa: SLF001
+
+    assert "out/register" not in norms
+    assert "register" not in norms
+    assert "readout" not in norms
+    torch.testing.assert_close(
+        norms["out/readout_position"], tokens[:, :, -1].norm(dim=-1).mean()
+    )
+    torch.testing.assert_close(norms["out/speed"], norms["speed"])
+    torch.testing.assert_close(norms["out/patch"], norms["patch"])
+
+
+def test_confidence_metrics_closed_form() -> None:
+    """Family B: entropy / margin / max-probability / code usage read off known
+    logits. Quantizer 0 is uniform (maximally unsure), quantizer 1 is peaked --
+    the two ends of the sharpening axis the 03tuy3q9 regression moved along.
+    """
+    logits = torch.zeros(1, 1, NUM_QUANTIZERS, CODEBOOK_SIZE)
+    logits[0, 0, 1, 0] = 10.0
+    metrics = PatchPolicy._confidence_metrics(logits, logits.argmax(dim=-1))  # noqa: SLF001
+
+    uniform_entropy = torch.log(torch.tensor(float(CODEBOOK_SIZE)))
+    torch.testing.assert_close(metrics["code_entropy_0"], uniform_entropy)
+    torch.testing.assert_close(metrics["code_margin_0"], torch.tensor(0.0))
+    torch.testing.assert_close(
+        metrics["code_confidence_0"], torch.tensor(1.0 / CODEBOOK_SIZE)
+    )
+    torch.testing.assert_close(metrics["code_margin_1"], torch.tensor(10.0))
+
+    peaked = logits[0, 0, 1].softmax(dim=-1)
+    torch.testing.assert_close(metrics["code_confidence_1"], peaked.max())
+    torch.testing.assert_close(
+        metrics["code_entropy_1"], -(peaked * peaked.log()).sum()
+    )
+    # the direction that matters: a peaked quantizer is more confident and lower
+    # entropy than a uniform one, which is the axis run 03tuy3q9 slid along
+    assert float(metrics["code_confidence_1"]) > float(metrics["code_confidence_0"])
+    assert float(metrics["code_entropy_1"]) < float(metrics["code_entropy_0"])
+    # one readout, so exactly one code can have been emitted per quantizer
+    torch.testing.assert_close(metrics["code_usage_0"], torch.tensor(1.0))
+    torch.testing.assert_close(metrics["code_usage_1"], torch.tensor(1.0))
+
+
+def test_code_usage_counts_distinct_argmax_codes() -> None:
+    """The collapse tripwire: `code_usage_q` is the number of DISTINCT codes the
+    argmax emitted, not the number of readouts."""
+    codes = torch.tensor([[[0, 1], [1, 1], [2, 1], [0, 1]]])  # (1, 4, g=2)
+    logits = torch.nn.functional.one_hot(codes, CODEBOOK_SIZE).float()
+    metrics = PatchPolicy._confidence_metrics(logits, codes)  # noqa: SLF001
+
+    torch.testing.assert_close(metrics["code_usage_0"], torch.tensor(3.0))  # {0,1,2}
+    torch.testing.assert_close(metrics["code_usage_1"], torch.tensor(1.0))  # collapsed
+
+
+def test_confidence_and_dependence_metrics_in_the_metric_tree() -> None:
+    """Family B lands under `policy/metric` (so it splits train/val like every
+    other metric), is gradient-free, and `code_acc_dependence_last` is exactly
+    joint accuracy over the product of the marginals -- the >1 = errors
+    concentrated number that a flat `code_acc_joint_last` hides.
+    """
+    model = _make_model()
+    metrics = cast(
+        "dict[str, Tensor]",
+        model._compute_metrics(_make_batch())["policy", "metric"],  # noqa: SLF001
+    )
+
+    expected = {"code_acc_dependence_last"} | {
+        f"code_{stat}_{q}"
+        for stat in ("entropy", "confidence", "margin", "usage")
+        for q in range(NUM_QUANTIZERS)
+    }
+    assert expected <= set(metrics.keys())
+
+    max_entropy = float(torch.log(torch.tensor(float(CODEBOOK_SIZE))))
+    for q in range(NUM_QUANTIZERS):
+        assert 0.0 <= float(metrics[f"code_entropy_{q}"]) <= max_entropy
+        assert 1.0 / CODEBOOK_SIZE <= float(metrics[f"code_confidence_{q}"]) <= 1.0
+        assert float(metrics[f"code_margin_{q}"]) >= 0.0
+        usage = float(metrics[f"code_usage_{q}"])
+        assert 1.0 <= usage <= min(CODEBOOK_SIZE, BATCH_SIZE * EPISODE_LENGTH)
+
+    marginals = torch.stack([
+        metrics[f"code_acc_{q}_last"] for q in range(NUM_QUANTIZERS)
+    ]).prod()
+    torch.testing.assert_close(
+        metrics["code_acc_dependence_last"],
+        metrics["code_acc_joint_last"] / marginals.clamp_min(1e-8),
+    )
+
+    for name in expected:
+        assert not metrics[name].requires_grad, name
+        assert metrics[name].grad_fn is None, name
 
 
 def test_encoder_tokens_per_frame_mismatch_raises() -> None:

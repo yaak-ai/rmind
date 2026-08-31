@@ -434,10 +434,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         `token_norms`, if given, is filled with gradient-free mean L2 norms per
         token type (`speed`/`patch`/`goal` activations entering the trunk, plus
-        the `register`/`readout` embedding parameters when enabled) -- the
+        the `register`/`readout` embedding parameters when enabled, plus
+        `readout_position` for whatever token the heads actually read) -- the
         training-quality signal that guards against one token type's scale
         running away. It is an out-parameter (rather than module state) so the
-        `torch.export`ed serving graphs never see a module mutation.
+        `torch.export`ed serving graphs never see a module mutation. The
+        trunk-OUTPUT counterparts (`out/*`) are added by `_features`, which the
+        serving graphs do not call.
         """
         with torch.no_grad():
             patches = self.image_encoder(images)  # (b, t, p, d_img)
@@ -481,8 +484,62 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     )
                 if self.readout_token is not None:
                     token_norms["readout"] = self.readout_token.detach().norm()
+                # the position the heads actually read -- the learned readout
+                # token with `use_readout_token`, else the last image patch.
+                # Logged unconditionally so the read position is comparable
+                # across arms that do and do not have a readout token; its
+                # trunk-side counterpart is `out/readout_position`.
+                token_norms["readout_position"] = (
+                    parts[-1][..., -1, :].detach().norm(dim=-1).mean()
+                )
 
         return torch.cat(parts, dim=-2)  # (b, t, k, d)
+
+    def _trunk_token_norms(
+        self, frames: Tensor, token_norms: dict[str, Tensor]
+    ) -> None:
+        """Fill the `out/*` entries of `token_norms` from the TRUNK OUTPUT.
+
+        `frames` is the trunk output reshaped back to `(b, t, k, d)`, so the
+        `[speed, patches..., register_0.., READOUT]` layout built by
+        `_frame_tokens` still indexes it. The boundaries are derived from the
+        frame width, `num_register_tokens` and `use_readout_token`, never
+        hardcoded.
+
+        Why this exists at all: on the INPUT side the register/readout entries
+        can only report their learned PARAMETERS, which sit at their
+        trunc_normal init and say nothing about where those tokens sit in the
+        residual stream at the point the heads read it. Measured on
+        `yaak/alex-tmp/model-03tuy3q9:v29` (772 tokens = 1 speed + 3x256
+        patches + 2 registers + 1 readout) the registers enter the trunk at
+        0.50 and leave it at 23.00; the readout enters at 0.75 and leaves at
+        23.01.
+
+        READ THESE AS DEPARTURES, NOT AS LEVELS. The trunk ends in
+        `LayerNorm(dim_model)`, so every position leaves it near
+        `sqrt(dim_model)` (~22.6 at dim_model=512) whatever it entered at --
+        the speed token enters ~20x below the patches (1.07 vs 23.04 on that
+        checkpoint) and exits alongside them. The signal is a token type
+        drifting AWAY from that value, which is exactly what a parameter norm
+        frozen at its init cannot show.
+
+        Metrics only: everything runs under `torch.no_grad()` on a detached
+        copy, so gradients are bit-identical. Called from `_features`, which no
+        serving graph runs -- `PatchPolicyDecoderStep` calls `_frame_tokens`
+        and `trunk.step` directly -- so nothing here can reach `torch.export`.
+        """
+        with torch.no_grad():
+            norms = frames.detach().norm(dim=-1)  # (b, t, k)
+            tail = self.num_register_tokens + (1 if self.use_readout_token else 0)
+            patch_end = norms.shape[-1] - tail
+            token_norms["out/speed"] = norms[..., 0].mean()
+            token_norms["out/patch"] = norms[..., 1:patch_end].mean()
+            if self.num_register_tokens:
+                token_norms["out/register"] = norms[
+                    ..., patch_end : patch_end + self.num_register_tokens
+                ].mean()
+            # the position the heads actually read (see `_frame_tokens`)
+            token_norms["out/readout_position"] = norms[..., -1].mean()
 
     def _init_fusion_norm(self, fusion_goal_rms: float | None) -> None:
         """Build the scale-balanced fusion parameters (see __init__).
@@ -582,10 +639,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         embedding = self.encoder(
             rearrange(tokens, "b t k d -> b (t k) d"), num_frames=num_frames
         )
-        features = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)[
-            :, :, -1
-        ]  # last token per frame: the learned readout token when
-        # `use_readout_token`, else the last patch token
+        frames = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)
+        if token_norms is not None:
+            self._trunk_token_norms(frames, token_norms)
+        features = frames[:, :, -1]  # last token per frame: the learned readout
+        # token when `use_readout_token`, else the last patch token
 
         if self.norm is not None:
             features = self.norm(features)
@@ -848,6 +906,21 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 metrics[f"code_acc_{q}_last"] = correct[:, q].float().mean()
             metrics["code_acc_joint_last"] = correct.all(dim=-1).float().mean()
 
+            # ERROR CONCENTRATION behind a flat joint accuracy. Under
+            # independence across quantizers the joint accuracy would be the
+            # product of the marginals; the ratio says how far from that the
+            # errors are piling onto the same readouts. Measured 2.88 on
+            # do8m9ot8:v2 (all-4-correct 6.4%, zero-correct 20.0% against
+            # 12.9% expected under independence), and it ROSE 1.57 -> 2.56 over
+            # run 03tuy3q9 while `code_acc_joint_last` stayed flat at ~0.11 --
+            # this single number is what makes that visible. >1 = concentrated.
+            marginal_product = correct.float().mean(dim=0).prod()
+            metrics["code_acc_dependence_last"] = metrics[
+                "code_acc_joint_last"
+            ] / marginal_product.clamp_min(1e-8)
+
+            metrics |= self._confidence_metrics(code_logits, argmax_codes)
+
             # context-depth localizer for windowed causal trunks: readouts at
             # positions < window-1 train under a PARTIAL window, positions
             # >= window-1 under the FULL window served at inference. A gap
@@ -877,6 +950,52 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         return metrics
 
+    @staticmethod
+    def _confidence_metrics(
+        code_logits: Tensor, argmax_codes: Tensor
+    ) -> dict[str, Tensor]:
+        """Per-quantizer sharpening diagnostics, averaged over ALL readouts.
+
+        Cross-entropy punishes CONFIDENT errors; accuracy does not. Over run
+        03tuy3q9 `val/loss/total` rose 47% (4.2090 @ step 19,364 -> 6.1839 @
+        step 116,189, monotonic) while `code_acc_joint_last` stayed flat at
+        ~0.11: the model was becoming more confident about being wrong, and not
+        one of that run's 141 logged keys -- no entropy, margin, logit,
+        confidence, perplexity or code-usage anywhere -- could show it. These
+        are the keys that can.
+
+        Everything is read off `code_logits`, which `_compute_metrics` already
+        has: no extra forward pass. Gradient-free (the caller holds
+        `torch.no_grad()`; `argmax_codes` is an index tensor).
+        """
+        log_probs = code_logits.log_softmax(dim=-1)  # (b, t, g, c)
+        probs = log_probs.exp()
+        entropy = -(probs * log_probs).sum(dim=-1)  # (b, t, g)
+        confidence = probs.amax(dim=-1)  # (b, t, g)
+        top2 = code_logits.topk(2, dim=-1).values  # (b, t, g, 2)
+        margin = top2[..., 0] - top2[..., 1]  # (b, t, g)
+
+        # distinct codes the argmax actually emits, per quantizer, over this
+        # batch's readouts -- the collapse tripwire. Scattered into a (g, c)
+        # table rather than `torch.unique`, which returns a dynamically shaped
+        # tensor and would force a device sync every train step (the same trap
+        # `_sample_codes` documents for `torch.multinomial`). NOTE the ceiling
+        # is min(codebook_size, b*t), so read this as a floor on diversity, not
+        # as "codes the model can use".
+        flat = rearrange(argmax_codes, "b t g -> g (b t)")
+        hit = torch.zeros(
+            flat.shape[0], code_logits.shape[-1], dtype=torch.bool, device=flat.device
+        ).scatter_(-1, flat, torch.ones_like(flat, dtype=torch.bool))
+        used = hit.sum(dim=-1).float()
+
+        metrics: dict[str, Tensor] = {}
+        for q in range(code_logits.shape[-2]):
+            metrics[f"code_entropy_{q}"] = entropy[..., q].mean()
+            metrics[f"code_confidence_{q}"] = confidence[..., q].mean()
+            metrics[f"code_margin_{q}"] = margin[..., q].mean()
+            metrics[f"code_usage_{q}"] = used[q]
+        return metrics
+
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
         token_norms: dict[str, Tensor] = {}
         metrics = self._compute_metrics(batch, token_norms=token_norms)
@@ -896,7 +1015,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         # per-token-type norm tracking under the TrainingQualityLogger's
         # `quality/` prefix -- the guard against a token type's scale (readout/
-        # register embeddings especially) drifting away from the fusion balance
+        # register embeddings especially) drifting away from the fusion balance.
+        # `out/*` are the TRUNK-OUTPUT norms (`_trunk_token_norms`); the rest are
+        # the trunk INPUT activations plus the readout/register parameters. All
+        # three views are kept: the parameters say where the embeddings sit, the
+        # input norms whether the fusion balance holds, and only the output ones
+        # say what the residual stream did with them.
         if token_norms:
             self.log_dict(
                 {
