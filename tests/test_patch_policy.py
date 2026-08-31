@@ -5,7 +5,7 @@ teacher-forced offset semantics inherited from `JointPolicyObjective` (#258),
 and equivalence of the batched `_gather_offset` with the joint-policy original.
 """
 
-from typing import Any, override
+from typing import Any, cast, override
 
 import pytest
 import torch
@@ -21,7 +21,10 @@ from rmind.components.nn import Embedding
 from rmind.components.norm import ImageNormalize, Scaler, UniformBinner
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.components.objectives.joint_policy import JointPolicyObjective
-from rmind.components.transformer.causal_frame import CausalFrameTransformer
+from rmind.components.transformer.causal_frame import (
+    CausalFrameTransformer,
+    frame_rope_cos_sin,
+)
 from rmind.components.vq import ResidualVQ
 from rmind.models.action_tokenizer import ActionTokenizer
 from rmind.models.control_transformer import PredictionConfig
@@ -103,15 +106,26 @@ class _GoalEncoderStub(Module):
         return self.encode(waypoints)
 
 
-def _make_model(
+def _make_model(  # noqa: PLR0913
     *,
     teacher_force_offset: bool = True,
     fusion_norm: bool = False,
     cameras: tuple[str, ...] = ("cam_front_left",),
     encoder: Module | None = None,
+    sample_codes: bool = False,
+    neighbor_smoothing_tau: float | None = None,
+    losses: ModuleDict | None = None,
+    use_readout_token: bool = False,
+    num_register_tokens: int = 0,
 ) -> PatchPolicy:
+    tokens_per_frame = len(cameras) * NUM_PATCHES + 1
+    if use_readout_token:
+        tokens_per_frame += num_register_tokens + 1
     return PatchPolicy(
         fusion_norm=fusion_norm,
+        neighbor_smoothing_tau=neighbor_smoothing_tau,
+        use_readout_token=use_readout_token,
+        num_register_tokens=num_register_tokens,
         input_transform=Identity(),
         # tests feed pre-extracted patch features (b, t, p, d) directly
         image_encoder=Identity(),
@@ -126,14 +140,16 @@ def _make_model(
             dim_model=POLICY_DIM,
             num_layers=2,
             num_heads=2,
-            max_sequence_length=EPISODE_LENGTH * (len(cameras) * NUM_PATCHES + 1),
+            max_sequence_length=EPISODE_LENGTH * tokens_per_frame,
         ),
         tokenizer=_make_tokenizer(),
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
         offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * ACTION_DIM]),
-        losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
+        losses=losses
+        if losses is not None
+        else ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
         norm=torch.nn.LayerNorm(POLICY_DIM),
-        sample_codes=False,
+        sample_codes=sample_codes,
         teacher_force_offset=teacher_force_offset,
         prediction_config=PredictionConfig(
             objectives={
@@ -201,14 +217,41 @@ def test_features_and_metrics_shapes() -> None:
     assert chunk.shape == (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS)
 
     metrics = model._compute_metrics(batch)  # noqa: SLF001
-    losses = metrics["policy", "loss"]
+    losses = cast("dict[str, Tensor]", metrics["policy", "loss"])
     assert set(losses.keys()) == {
         *(f"code_{q}" for q in range(NUM_QUANTIZERS)),
         "offset",
     }
     for value in losses.values():
         assert value.isfinite()
+    # sample_codes=False: sampling is an eval-only decode mode, so the sampled
+    # metrics are neither computed nor logged (they would just duplicate
+    # offset_argmax_recon* while misrepresenting argmax serving)
+    metric_keys = set(cast("dict[str, Tensor]", metrics["policy", "metric"]).keys())
+    assert "offset_sampled_recon" not in metric_keys
+    assert "offset_sampled_recon_last" not in metric_keys
+    assert metrics["policy", "metric", "offset_argmax_recon"].isfinite()
+
+
+def test_sampled_metrics_present_when_sampling() -> None:
+    model = _make_model(sample_codes=True)
+    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+
     assert metrics["policy", "metric", "offset_sampled_recon"].isfinite()
+    assert metrics["policy", "metric", "offset_sampled_recon_last"].isfinite()
+
+
+def test_non_teacher_forced_offset_loss_without_sampling() -> None:
+    # sample_codes=False + teacher_force_offset=False: the offset loss is
+    # supervised at the argmax decode; it must still exist and be finite even
+    # though the sampled METRICS are dropped
+    model = _make_model(sample_codes=False, teacher_force_offset=False)
+    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+
+    assert metrics["policy", "loss", "offset"].isfinite()
+    assert "offset_sampled_recon" not in set(
+        cast("dict[str, Tensor]", metrics["policy", "metric"]).keys()
+    )
 
 
 def test_multi_camera_stacks_patches_in_camera_order() -> None:
@@ -268,6 +311,54 @@ def test_multi_camera_with_causal_frame_transformer() -> None:
     assert not torch.allclose(features, swapped_features)
 
 
+def test_neighbor_smoothing_targets_and_loss() -> None:
+    model = _make_model(
+        neighbor_smoothing_tau=0.02,
+        losses=ModuleDict(
+            modules={"code": FocalLoss(label_smoothing=0.1), "offset": L1Loss()}
+        ),
+    )
+    batch = _make_batch()
+
+    target_codes = model.tokenizer(batch["joint_actions"])
+    weights = model._neighbor_smoothing_targets(target_codes)  # noqa: SLF001
+    assert weights.shape == (BATCH_SIZE, EPISODE_LENGTH, NUM_QUANTIZERS, CODEBOOK_SIZE)
+    assert torch.allclose(weights.sum(-1), torch.ones_like(weights.sum(-1)))
+    # the ground-truth code is at decoded distance 0 -> largest weight
+    assert torch.equal(weights.argmax(-1), target_codes)
+
+    # the smoothing term must actually change the code losses vs uniform
+    uniform_model = _make_model(
+        losses=ModuleDict(
+            modules={"code": FocalLoss(label_smoothing=0.1), "offset": L1Loss()}
+        )
+    )
+    uniform_model.load_state_dict(model.state_dict())
+    smoothed = cast(
+        "dict[str, Tensor]",
+        model._compute_metrics(batch)["policy", "loss"],  # noqa: SLF001
+    )
+    uniform = cast(
+        "dict[str, Tensor]",
+        uniform_model._compute_metrics(batch)["policy", "loss"],  # noqa: SLF001
+    )
+    assert not torch.allclose(smoothed["code_0"], uniform["code_0"])
+    # the offset loss is untouched by the code-smoothing change
+    assert torch.allclose(smoothed["offset"], uniform["offset"])
+
+
+def test_neighbor_smoothing_requires_focal_loss() -> None:
+    with pytest.raises(TypeError, match="neighbor_smoothing_tau"):
+        _make_model(
+            neighbor_smoothing_tau=0.02,
+            losses=ModuleDict(
+                modules={"code": torch.nn.CrossEntropyLoss(), "offset": L1Loss()}
+            ),
+        )
+    with pytest.raises(ValueError, match="neighbor_smoothing_tau"):
+        _make_model(neighbor_smoothing_tau=0.0)
+
+
 def test_frozen_modules_receive_no_grad() -> None:
     model = _make_model()
 
@@ -279,9 +370,10 @@ def test_frozen_modules_receive_no_grad() -> None:
     assert not model.goal_encoder.training
     assert not model.image_encoder.training
 
-    loss = model._compute_metrics(_make_batch())["policy", "loss"].sum(  # noqa: SLF001
-        reduce=True
-    )
+    loss = cast(
+        "TensorDict",
+        model._compute_metrics(_make_batch())["policy", "loss"],  # noqa: SLF001
+    ).sum(reduce=True)
     loss.backward()
 
     assert all(p.grad is None for p in model.tokenizer.parameters())
@@ -437,7 +529,10 @@ def test_fusion_norm_balances_sources() -> None:
 
     assert model.fusion_patch_gain.requires_grad
     assert model.fusion_goal_gain.requires_grad
-    loss = model._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss = cast(
+        "TensorDict",
+        model._compute_metrics(batch)["policy", "loss"],  # noqa: SLF001
+    ).sum(reduce=True)
     loss.backward()
     assert model.fusion_goal_gain.grad is not None
 
@@ -476,8 +571,8 @@ def test_argmax_decode_metrics_are_the_deployment_path() -> None:
         "code_acc_joint_last",
         *(f"code_acc_{q}_last" for q in range(NUM_QUANTIZERS)),
     }
-    assert expected_keys <= set(metrics.keys()), (
-        f"missing: {expected_keys - set(metrics.keys())}"
+    assert expected_keys <= set(cast("dict[str, Tensor]", metrics).keys()), (
+        f"missing: {expected_keys - set(cast('dict[str, Tensor]', metrics).keys())}"
     )
     for key in expected_keys:
         assert metrics[key].isfinite()
@@ -722,3 +817,407 @@ def test_backfill_preprocessing_buffers_does_not_mask_other_missing_keys() -> No
     filled = _backfill_preprocessing_buffers(model, source_state)
 
     assert "speed_embedding.weight" not in filled
+
+
+# --------------------------------------------------------------------------- #
+# dedicated readout + register tokens (opt-in)
+# --------------------------------------------------------------------------- #
+
+NUM_REGISTERS = 2
+READOUT_TOKENS_PER_FRAME = NUM_PATCHES + 1 + NUM_REGISTERS + 1
+
+
+def _frame_inputs(
+    batch: dict, cameras: tuple[str, ...] = ("cam_front_left",)
+) -> tuple[Tensor, Tensor, Tensor]:
+    """`_frame_tokens` takes images already stacked on a camera axis
+    `(b, t, cam, ...)` -- even at cam=1 -- so mirror what `_features` does."""
+    return (
+        torch.stack([batch["image"][camera] for camera in cameras], dim=2),
+        batch["continuous"]["speed"],
+        batch["context"]["waypoints"],
+    )
+
+
+def test_readout_and_register_token_layout() -> None:
+    """[speed, patches..., register_0, register_1, READOUT]: the readout is LAST
+    (so `[:, :, -1]` picks the learned token) and the registers sit just before
+    it, never at the readout position.
+    """
+    model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
+    tokens = model._frame_tokens(*_frame_inputs(_make_batch()))  # noqa: SLF001
+
+    assert tokens.shape == (
+        BATCH_SIZE,
+        EPISODE_LENGTH,
+        READOUT_TOKENS_PER_FRAME,
+        POLICY_DIM,
+    )
+    assert model.readout_token is not None
+    assert model.register_tokens is not None
+    torch.testing.assert_close(
+        tokens[:, :, -1],
+        model.readout_token.reshape(1, 1, -1).expand(BATCH_SIZE, EPISODE_LENGTH, -1),
+    )
+    torch.testing.assert_close(
+        tokens[:, :, -(NUM_REGISTERS + 1) : -1],
+        model.register_tokens.reshape(1, 1, NUM_REGISTERS, -1).expand(
+            BATCH_SIZE, EPISODE_LENGTH, -1, -1
+        ),
+    )
+
+    # hparams round-trip (load_for_export / continuation reload from these)
+    assert model.hparams["use_readout_token"] is True
+    assert model.hparams["num_register_tokens"] == NUM_REGISTERS
+
+
+def test_readout_token_default_off_preserves_current_layout() -> None:
+    """Default-off: existing arms keep the last-image-patch readout, no new
+    parameters, identical token block."""
+    model = _make_model()
+    assert model.readout_token is None
+    assert model.register_tokens is None
+    assert model.hparams["use_readout_token"] is False
+
+    tokens = model._frame_tokens(*_frame_inputs(_make_batch()))  # noqa: SLF001
+    assert tokens.shape == (BATCH_SIZE, EPISODE_LENGTH, NUM_PATCHES + 1, POLICY_DIM)
+    assert not any(
+        name in {"readout_token", "register_tokens"}
+        for name, _ in model.named_parameters()
+    )
+
+
+def test_register_tokens_without_readout_are_rejected() -> None:
+    """A register at `[:, :, -1]` would be read from, which registers must never
+    be -- constructor-time error, not a silent mis-readout."""
+    with pytest.raises(ValueError, match="use_readout_token"):
+        _make_model(num_register_tokens=1)
+
+
+def test_readout_and_register_tokens_receive_gradient() -> None:
+    """The readout token feeds the heads directly; the registers feed them via
+    attention (K/V) -- both must train."""
+    model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
+    model.train()
+    loss = cast(
+        "TensorDict",
+        model._compute_metrics(_make_batch())["policy", "loss"],  # noqa: SLF001
+    ).sum(reduce=True)
+    loss.backward()
+    assert model.readout_token is not None
+    assert model.register_tokens is not None
+    assert model.readout_token.grad is not None
+    assert model.readout_token.grad.abs().sum() > 0
+    assert model.register_tokens.grad is not None
+    assert model.register_tokens.grad.abs().sum() > 0
+
+
+def test_readout_token_metrics_and_losses_finite() -> None:
+    # both decode modes: the sampled metrics only exist under sample_codes=True,
+    # so assert finiteness over whatever the mode actually emits.
+    for sample_codes in (False, True):
+        model = _make_model(
+            use_readout_token=True,
+            num_register_tokens=NUM_REGISTERS,
+            sample_codes=sample_codes,
+        )
+        metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+        for value in metrics["policy", "loss"].values():
+            assert value.isfinite()
+        for value in metrics["policy", "metric"].values():
+            assert value.isfinite()
+        assert ("offset_sampled_recon" in metrics["policy", "metric"]) is sample_codes
+
+
+def test_token_norm_tracking() -> None:
+    """B2: per-token-type norms for the quality metrics -- patch/speed/goal and the
+    read position always, register/readout only when the opt-in layout is on, and a
+    trunk-OUTPUT (`out/*`) counterpart for every token actually in the sequence."""
+    batch = _make_batch()
+
+    norms: dict[str, Tensor] = {}
+    model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
+    model._compute_metrics(batch, token_norms=norms)  # noqa: SLF001
+    assert set(norms) == {
+        "speed",
+        "patch",
+        "goal",
+        "register",
+        "readout",
+        "readout_position",
+        "out/speed",
+        "out/patch",
+        "out/register",
+        "out/readout_position",
+    }
+    for name, value in norms.items():
+        assert value.isfinite(), name
+        assert float(value) > 0, name
+        assert not value.requires_grad, name
+        assert value.grad_fn is None, name
+
+    off_norms: dict[str, Tensor] = {}
+    off = _make_model()
+    off._compute_metrics(batch, token_norms=off_norms)  # noqa: SLF001
+    assert set(off_norms) == {
+        "speed",
+        "patch",
+        "goal",
+        "readout_position",
+        "out/speed",
+        "out/patch",
+        "out/readout_position",
+    }
+
+
+class _IdentityTrunk(Module):
+    """Trunk that returns its input unchanged, so every trunk-OUTPUT norm must
+    equal its input-side counterpart token for token -- which is what turns the
+    `out/*` slicing into a checkable claim. Deliberately exposes neither
+    `tokens_per_frame` nor `window`, so the layout guard and the context-depth
+    buckets stay out of the way.
+    """
+
+    @override
+    def forward(self, src: Tensor, *, num_frames: int) -> Tensor:
+        return src
+
+
+def test_trunk_output_norms_slice_the_frame_layout() -> None:
+    """Family A: the `out/*` norms must index the SAME
+    `[speed, patches..., register_0.., READOUT]` block `_frame_tokens` builds.
+
+    The register and readout tokens are given distinctive norms (5.0 and 3.0)
+    that no other token type can produce, so an off-by-one boundary fails loudly
+    here. These two are the whole point of the family: their INPUT-side entries
+    can only ever report the learned parameter (0.50 and 0.75 on
+    `yaak/alex-tmp/model-03tuy3q9:v29`), which says nothing about the 22.66/22.50
+    they actually leave the trunk at.
+    """
+    model = _make_model(
+        use_readout_token=True,
+        num_register_tokens=NUM_REGISTERS,
+        encoder=_IdentityTrunk(),
+    )
+    assert model.readout_token is not None
+    assert model.register_tokens is not None
+    with torch.no_grad():
+        model.readout_token.fill_(3.0 / POLICY_DIM**0.5)
+        model.register_tokens.fill_(5.0 / POLICY_DIM**0.5)
+
+    norms: dict[str, Tensor] = {}
+    model._compute_metrics(_make_batch(), token_norms=norms)  # noqa: SLF001
+
+    torch.testing.assert_close(norms["out/register"], torch.tensor(5.0))
+    torch.testing.assert_close(norms["out/readout_position"], torch.tensor(3.0))
+    # identity trunk => the output side reproduces the input side exactly
+    torch.testing.assert_close(norms["out/speed"], norms["speed"])
+    torch.testing.assert_close(norms["out/patch"], norms["patch"])
+    torch.testing.assert_close(norms["out/register"], norms["register"])
+    torch.testing.assert_close(norms["out/readout_position"], norms["readout"])
+    # ... and the patch block is nowhere near either of the two learned tokens,
+    # so the assertions above could not have passed on a wrong slice
+    assert abs(float(norms["out/patch"]) - 5.0) > 1.0
+    assert abs(float(norms["out/patch"]) - 3.0) > 1.0
+
+
+def test_trunk_output_norms_without_readout_or_register_tokens() -> None:
+    """Default-off path: no `out/register`, and the read position is the LAST image
+    patch -- which is exactly what the 1-camera arm serves."""
+    model = _make_model(encoder=_IdentityTrunk())
+    batch = _make_batch()
+    tokens = model._frame_tokens(*_frame_inputs(batch))  # noqa: SLF001
+
+    norms: dict[str, Tensor] = {}
+    model._compute_metrics(batch, token_norms=norms)  # noqa: SLF001
+
+    assert "out/register" not in norms
+    assert "register" not in norms
+    assert "readout" not in norms
+    torch.testing.assert_close(
+        norms["out/readout_position"], tokens[:, :, -1].norm(dim=-1).mean()
+    )
+    torch.testing.assert_close(norms["out/speed"], norms["speed"])
+    torch.testing.assert_close(norms["out/patch"], norms["patch"])
+
+
+def test_trunk_output_norms_split_the_cameras_in_camera_order() -> None:
+    """Per-camera `out/patch/<camera>`: camera `c` owns `[1 + c*p, 1 + (c+1)*p)`.
+    Feeding cameras 0 and 2 the SAME images makes their two entries identical and
+    both differ from camera 1 -- an off-by-one or a wrong camera order breaks that,
+    and the pooled `out/patch` stays the mean of the three.
+    """
+    cameras = ("cam_front_left", "cam_left_forward", "cam_right_forward")
+    batch = _make_batch(cameras=cameras)
+    batch["image"][cameras[2]] = batch["image"][cameras[0]]
+
+    model = _make_model(cameras=cameras, encoder=_IdentityTrunk())
+    norms: dict[str, Tensor] = {}
+    model._compute_metrics(batch, token_norms=norms)  # noqa: SLF001
+
+    per_camera = [norms[f"out/patch/{camera}"] for camera in cameras]
+    torch.testing.assert_close(per_camera[0], per_camera[2])
+    assert not torch.allclose(per_camera[0], per_camera[1])
+    torch.testing.assert_close(
+        norms["out/patch"], torch.stack(per_camera).mean(), rtol=1e-5, atol=1e-6
+    )
+
+
+def test_single_camera_gets_no_per_camera_norms() -> None:
+    """One camera: `out/patch` already IS that camera, so no redundant key."""
+    norms: dict[str, Tensor] = {}
+    _make_model(encoder=_IdentityTrunk())._compute_metrics(  # noqa: SLF001
+        _make_batch(), token_norms=norms
+    )
+    assert not any(name.startswith("out/patch/") for name in norms)
+
+
+def test_confidence_metrics_closed_form() -> None:
+    """Family B: entropy / margin / max-probability / code usage read off known
+    logits. Quantizer 0 is uniform (maximally unsure), quantizer 1 is peaked --
+    the two ends of the sharpening axis the 03tuy3q9 regression moved along.
+    """
+    logits = torch.zeros(1, 1, NUM_QUANTIZERS, CODEBOOK_SIZE)
+    logits[0, 0, 1, 0] = 10.0
+    metrics = PatchPolicy._confidence_metrics(logits, logits.argmax(dim=-1))  # noqa: SLF001
+
+    uniform_entropy = torch.log(torch.tensor(float(CODEBOOK_SIZE)))
+    torch.testing.assert_close(metrics["code_entropy_0"], uniform_entropy)
+    torch.testing.assert_close(metrics["code_margin_0"], torch.tensor(0.0))
+    torch.testing.assert_close(
+        metrics["code_confidence_0"], torch.tensor(1.0 / CODEBOOK_SIZE)
+    )
+    torch.testing.assert_close(metrics["code_margin_1"], torch.tensor(10.0))
+
+    peaked = logits[0, 0, 1].softmax(dim=-1)
+    torch.testing.assert_close(metrics["code_confidence_1"], peaked.max())
+    torch.testing.assert_close(
+        metrics["code_entropy_1"], -(peaked * peaked.log()).sum()
+    )
+    # the direction that matters: a peaked quantizer is more confident and lower
+    # entropy than a uniform one, which is the axis run 03tuy3q9 slid along
+    assert float(metrics["code_confidence_1"]) > float(metrics["code_confidence_0"])
+    assert float(metrics["code_entropy_1"]) < float(metrics["code_entropy_0"])
+    # one readout, so exactly one code can have been emitted per quantizer
+    torch.testing.assert_close(metrics["code_usage_0"], torch.tensor(1.0))
+    torch.testing.assert_close(metrics["code_usage_1"], torch.tensor(1.0))
+
+
+def test_code_usage_counts_distinct_argmax_codes() -> None:
+    """The collapse tripwire: `code_usage_q` is the number of DISTINCT codes the
+    argmax emitted, not the number of readouts."""
+    codes = torch.tensor([[[0, 1], [1, 1], [2, 1], [0, 1]]])  # (1, 4, g=2)
+    logits = torch.nn.functional.one_hot(codes, CODEBOOK_SIZE).float()
+    metrics = PatchPolicy._confidence_metrics(logits, codes)  # noqa: SLF001
+
+    torch.testing.assert_close(metrics["code_usage_0"], torch.tensor(3.0))  # {0,1,2}
+    torch.testing.assert_close(metrics["code_usage_1"], torch.tensor(1.0))  # collapsed
+
+
+def test_confidence_and_dependence_metrics_in_the_metric_tree() -> None:
+    """Family B lands under `policy/metric` (so it splits train/val like every
+    other metric), is gradient-free, and `code_acc_dependence_last` is exactly
+    joint accuracy over the product of the marginals -- the >1 = errors
+    concentrated number that a flat `code_acc_joint_last` hides.
+    """
+    model = _make_model()
+    metrics = cast(
+        "dict[str, Tensor]",
+        model._compute_metrics(_make_batch())["policy", "metric"],  # noqa: SLF001
+    )
+
+    expected = {"code_acc_dependence_last"} | {
+        f"code_{stat}_{q}"
+        for stat in ("entropy", "confidence", "margin", "usage")
+        for q in range(NUM_QUANTIZERS)
+    }
+    assert expected <= set(metrics.keys())
+
+    max_entropy = float(torch.log(torch.tensor(float(CODEBOOK_SIZE))))
+    for q in range(NUM_QUANTIZERS):
+        assert 0.0 <= float(metrics[f"code_entropy_{q}"]) <= max_entropy
+        assert 1.0 / CODEBOOK_SIZE <= float(metrics[f"code_confidence_{q}"]) <= 1.0
+        assert float(metrics[f"code_margin_{q}"]) >= 0.0
+        usage = float(metrics[f"code_usage_{q}"])
+        assert 1.0 <= usage <= min(CODEBOOK_SIZE, BATCH_SIZE * EPISODE_LENGTH)
+
+    marginals = torch.stack([
+        metrics[f"code_acc_{q}_last"] for q in range(NUM_QUANTIZERS)
+    ]).prod()
+    torch.testing.assert_close(
+        metrics["code_acc_dependence_last"],
+        metrics["code_acc_joint_last"] / marginals.clamp_min(1e-8),
+    )
+
+    for name in expected:
+        assert not metrics[name].requires_grad, name
+        assert metrics[name].grad_fn is None, name
+
+
+def test_encoder_tokens_per_frame_mismatch_raises() -> None:
+    """Enabling the readout layout without re-gearing the trunk must fail loudly
+    at the first forward, not diverge at serving time."""
+    trunk = CausalFrameTransformer(
+        dim_model=POLICY_DIM,
+        num_layers=1,
+        num_heads=2,
+        tokens_per_frame=NUM_PATCHES + 1,  # stale: misses registers + readout
+        window=2,
+    )
+    model = _make_model(
+        use_readout_token=True, num_register_tokens=NUM_REGISTERS, encoder=trunk
+    )
+    with pytest.raises(ValueError, match="tokens_per_frame"):
+        model._features(_make_batch())  # noqa: SLF001
+
+
+def test_readout_token_streaming_matches_full_forward() -> None:  # noqa: PLR0914
+    """KV-cache gate for the widened frame: streaming one widened frame block
+    per tick against a ring of `window - 1` frames equals the full windowed
+    forward at every frame's readout -- the same equivalence
+    tests/test_causal_frame.py gates at k=17/257, here through the actual
+    `PatchPolicy` token pipeline with registers + readout appended.
+    """
+    window = 2
+    trunk = CausalFrameTransformer(
+        dim_model=POLICY_DIM,
+        num_layers=2,
+        num_heads=2,
+        tokens_per_frame=READOUT_TOKENS_PER_FRAME,
+        window=window,
+    )
+    model = _make_model(
+        use_readout_token=True, num_register_tokens=NUM_REGISTERS, encoder=trunk
+    )
+    batch = _make_batch()
+
+    with torch.no_grad():
+        features, _ = model._features(batch)  # noqa: SLF001  # full windowed forward
+
+        tokens = model._frame_tokens(*_frame_inputs(batch))  # noqa: SLF001
+        k = READOUT_TOKENS_PER_FRAME
+        past_k, past_v, bias = trunk.empty_cache(
+            batch_size=BATCH_SIZE, cache_frames=window - 1
+        )
+        readouts = []
+        for t in range(EPISODE_LENGTH):
+            cos, sin = frame_rope_cos_sin(
+                torch.tensor(t), head_dim=trunk.head_dim, base=trunk.rope_base
+            )
+            out, new_k, new_v = trunk.step(
+                tokens[:, t],
+                past_k=past_k,
+                past_v=past_v,
+                cos=cos,
+                sin=sin,
+                cache_bias=bias,
+            )
+            readouts.append(out[:, -1])
+            past_k = torch.cat((past_k[..., k:, :], new_k), dim=-2)
+            past_v = torch.cat((past_v[..., k:, :], new_v), dim=-2)
+            bias = torch.cat((bias[..., k:], torch.zeros_like(bias[..., :k])), dim=-1)
+        streamed = torch.stack(readouts, dim=1)
+        if model.norm is not None:
+            streamed = model.norm(streamed)
+
+    torch.testing.assert_close(streamed, features, rtol=0, atol=1e-5)

@@ -321,7 +321,6 @@
 #@    'Niro132-HQ/2023-05-13--16-03-56',
 #@    'Niro111-HQ/2023-05-18--07-35-50',
 #@    'Niro115-HQ/2023-05-19--05-50-22',
-#@    'Niro115-HQ/2023-05-19--07-08-01',
 #@    'Niro130-HQ/2023-05-19--09-25-01',
 #@    'Niro130-HQ/2023-05-19--09-31-53',
 #@    'Niro131-HQ/2023-05-19--11-02-26',
@@ -737,7 +736,13 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: ${paths.rbyte.cache}/yaak/train_3cam/clip${clip_length}/samples
+  # keyed on every sampler degree of freedom (clip geometry, grid stride, grid
+  # phase): pipefunc wipes and rebuilds the run_folder on every launch
+  # (resume=False default), but keying it protects any future `resume: true`
+  # use from silently reusing a store built under a different grid, and keeps
+  # concurrent runs with different grids off each other's store (the store is
+  # single-writer -- concurrent builds corrupt it).
+  run_folder: "${paths.rbyte.cache}/yaak/train_3cam/clip${clip_length}/stride${episode_stride}-off${oc.select:episode_offset,0}/samples"
   scheduling_strategy: eager
   return_results: false
   persist_memory: false
@@ -1025,7 +1030,8 @@ samples:
                     ) AS normalized_waypoints_geom
                   FROM
                     base_data
-                )
+                ),
+                clip_grid AS (
               SELECT
                 * EXCLUDE (
                   "meta/VehicleMotion/gear",
@@ -1091,6 +1097,27 @@ samples:
                 ST_Contains(
                   ST_MakeEnvelope(-150, -150, 150, 150),
                   normalized_waypoints_geom
+                )
+                )
+              -- Clip-grid phase shift (opt-in; default 0 = bit-for-bit identity).
+              -- The sampler (DataFrameGroupByDynamic, start_by=datapoint) anchors
+              -- its `every: ${episode_stride}i` grid at each drive's FIRST row, and
+              -- rbyte 0.38.1 exposes no group_by_dynamic `offset` argument -- so the
+              -- grid is shifted by dropping the first `episode_offset` frames per
+              -- drive: the anchor moves forward by the offset and every clip start
+              -- moves with it (verified against polars 1.43 group_by_dynamic).
+              -- Experiments that do not define `episode_offset` resolve to 0.
+              SELECT
+                *
+              FROM
+                clip_grid
+              WHERE
+                "meta/ImageMetadata.cam_front_left/frame_idx" >= (
+                  SELECT
+                    MIN("meta/ImageMetadata.cam_front_left/frame_idx")
+                      + ${oc.select:episode_offset,0}
+                  FROM
+                    clip_grid
                 )
               ORDER BY
                 "meta/ImageMetadata.cam_front_left/time_stamp";

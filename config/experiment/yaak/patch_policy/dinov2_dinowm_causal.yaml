@@ -76,30 +76,78 @@ defaults:
 # than what runs today, so this recipe does not trade serving cost for context.
 #
 # ---------------------------------------------------------------------------
-# 3. BATCH AND SCHEDULE ARITHMETIC
+# 3. EPISODE TILING: `episode_stride: 31` + rotatable grid phase
+# ---------------------------------------------------------------------------
+# With the old stride 10 (= episode_step), consecutive clips shared 31 of 32
+# encoded frames: 36.9x ViT reuse per epoch, and -- because stride and step are
+# BOTH 10 -- the grid only ever touched ONE of the 10 raw-frame phases, so 90%
+# of extracted frames were never read by anything, ever (10.0% frame coverage,
+# simulated at episode_length 32 / step 10 / clip_length 37; the sampler grid
+# is deterministic, so every epoch saw the identical clip set).
+#
+# stride 31 (coprime to step 10, so successive clip starts rotate through all
+# raw-frame phases):
+#
+#   stride  10:   1 reachable phase, 10.0% frame coverage, 36.9x reuse
+#   stride  21:  99.9% coverage, 1.76x reuse
+#   stride  31:  99.9% coverage, 1.19x reuse   <- this recipe
+#   stride 101:  36.6% coverage;  stride 321: 11.5% coverage  (do NOT use:
+#                wider than the clip span 361, frames between grids unreachable)
+#
+# `episode_offset` (default 0) drops the first N raw frames of each train drive
+# before the grid is laid down, shifting every clip start by N (verified against
+# polars group_by_dynamic semantics: start_by=datapoint anchors at the first
+# row). Rotating it in [0, 31) breaks exact-clip-boundary memorisation.
+# LIMITATION, stated plainly: the offset is baked at LAUNCH, not per epoch --
+# rbyte builds the sample table once at datamodule instantiation (~30 min),
+# locks it into shared memory, and pipefunc wipes + rebuilds the samples store
+# every launch; a within-launch per-epoch rotation would need a per-epoch
+# rebuild (DDP-concurrent writes corrupt the single-writer store). So: rotate
+# `episode_offset = start_epoch % 31` on every restart/continuation segment.
+# A fixed offset 0 already gets the full 99.9% coverage above.
+#
+# val is pinned to the old grid (`val_episode_stride: 10`) so val metrics stay
+# comparable with every earlier causal run; the train retile does not move the
+# val clip set.
+#
+# ---------------------------------------------------------------------------
+# 4. BATCH AND SCHEDULE ARITHMETIC (keyed to steps -- re-derived for stride 31)
 # ---------------------------------------------------------------------------
 # batch 24 x 32 frames = 768 frame-slots and 768 readouts per step: identical to
 # today's batch 128 x 6. The loss means over `(b t)` readouts, so the gradient's
-# scale is unchanged and `lr` is left at 1e-4 (see §4 for the caveat).
+# scale is unchanged and `lr` is left at 1e-4 (see §5 for the caveat).
 #
-# The clip11 train set is ~1.97M samples (FT baseline zcglgth4: 308,038 steps @
-# batch 64 for 10 epochs). Raising `episode_length` does NOT materially change
-# that count: the rbyte sampler is `DataFrameGroupByDynamic(every=${episode_stride}
-# = 10i, period=${clip_period}, gather_every=${episode_step})`, so clip STARTS are
-# strided by 10 raw frames independently of clip length -- only the tail of each
-# drive is lost, ~26 samples of ~3.1k per drive (<1%).
+# The clip11 train set is ~1.97M samples at stride 10 (FT baseline zcglgth4:
+# 308,038 steps @ batch 64 for 10 epochs); clip length does not materially
+# change that count (only ~26 tail samples of ~3.1k per drive are lost).
+# Retiling to stride 31 divides the clip count by 3.10 (simulated exactly, same
+# geometry as the coverage table above):
 #
-#   steps/epoch = 1.97M / 24 = ~82.1k   (today: 1.97M / 128 = ~15.4k)
+#   clips/epoch = 1.97M / 3.10          = ~635k    (was 1.97M)
+#   steps/epoch = 635k / 24             = ~26.5k   (was ~82.1k)
 #
-# Today's arm plans 15 epochs = 231k steps = 177M supervised readouts. At 768
-# readouts/step that is the same 231k steps here, i.e. ~2.8 epochs -- so
-# `max_epochs: 3` and `lr_total_steps: 246000` (3 x 82.1k) spends about today's
-# wall clock. Do NOT leave `lr_total_steps` at 231000 with `max_epochs: 3`: the
-# cosine in `get_cosine_schedule_with_warmup` has no clamp and comes back UP past
-# `num_training_steps`. Warmup keeps today's 8% ratio.
+# The spend is held at the previous plan's ~246k-step / ~189M-readout budget
+# (the same budget as the old arm's 15 x 15.4k plan), NOT at an epoch count:
+#
+#   max_epochs      = 246k / 26.5k      = 9.3  -> 9 epochs = ~238k steps
+#   lr_total_steps  = 9 x 27,000        = 243,000
+#   lr_warmup_steps = 0.08 x 243k       = 19,400  (today's 8% ratio)
+#
+# `lr_total_steps` deliberately uses 27k/epoch, an UPPER bound on the 26.5k
+# estimate: `get_cosine_schedule_with_warmup` has no clamp and the LR comes
+# back UP past `num_training_steps` (a silent bug), while undershooting the
+# planned steps merely leaves the cosine slightly above zero at the end --
+# so always round the steps/epoch estimate UP when sizing it.
+#
+# val_check_interval 0.5 -> a val point every ~13.2k steps (~4.5h at the
+# measured ~1.2 s/step), 18 points per 9-epoch run. The 0.25-of-82.1k cadence
+# this replaces was ~20.5k steps; 0.25 here would be ~6.6k steps = 36 points,
+# doubling val overhead for no added signal. Checkpoint cadence needs no
+# change: ModelCheckpoint(every_n_epochs=1) now fires every ~26.5k steps (~9h),
+# 9 checkpoints/run instead of 3 at 82.1k -- 3x finer closed-loop selection.
 #
 # ---------------------------------------------------------------------------
-# 4. WHAT TO WATCH
+# 5. WHAT TO WATCH
 # ---------------------------------------------------------------------------
 # * `attn_dropout: 0.0` is REQUIRED: FlexAttention has no `dropout_p` and the
 #   trunk raises rather than silently dropping it. `raw.yaml` does not set it, so
@@ -129,7 +177,50 @@ window: 16
 # is extended with a checkpoint=False row to check.
 trunk_checkpointing: true
 
+# episode tiling (§3): non-overlapping-ish grid, all raw-frame phases reachable
+episode_stride: 31
+# rotate to `start_epoch % 31` on each restart/continuation segment (§3)
+episode_offset: 0
+# keep val on the pre-retile grid for run-to-run comparability (§3)
+val_episode_stride: 10
+
 model:
+  # ARGMAX EVERYWHERE. Set at the BASE causal arm so 80gb / big / readout / 3cam
+  # / traj all inherit it from one place.
+  #
+  # Sampling is never used at TRAINING time and is not what we serve: serving
+  # takes the argmax, the TRT engines are exported argmax, and the whole parity
+  # story (0/200 decision changes) is an argmax story. Sampled eval metrics only
+  # disagreed with the thing we deploy.
+  #
+  # Safe to flip: `teacher_force_offset: true` (dinov3.yaml, inherited) means
+  # `predicted_chunk` comes from GROUND-TRUTH codes, so `sampled_chunk` never
+  # feeds a gradient and `sampled_recon` is `.detach()`ed. Metrics-only change;
+  # gradients are bit-identical.
+  #
+  # CAUTION -- the flags interact: with sample_codes false you MUST keep
+  # teacher_force_offset true, or `predicted_chunk` has no source and the model
+  # raises. That guard is deliberate. Note this belongs on the `model:` node and
+  # NOT top-level: unlike teacher_force_offset (which raw.yaml interpolates from
+  # a top-level var) there is no top-level `sample_codes`, so a top-level key
+  # would be a silent no-op.
+  sample_codes: false
+
+  # Which action channels define "neighbouring" for the OPT-IN distance-aware
+  # label smoothing (inert while neighbor_smoothing_tau is null).
+  # MEASURED 2026-08-25: with all four channels, turn_signal contributes 38.9%
+  # of d_q(c) -- more than gas (21.2%) or steer (25.7%) -- despite being
+  # CATEGORICAL (left/none/right has no metric, so "half a signal away" is
+  # meaningless) and having by far the widest dynamic range (p95 0.499, p99
+  # 0.9997, max 1.27 vs 0.02-0.09). Left in, a code differing only in indicator
+  # state is punished like a trajectory error. [0, 1, 2] = gas, brake, steer.
+  #
+  # tau CAVEAT: dropping turn_signal shrinks the mean distance 0.069 -> ~0.042
+  # (x0.61), so a tau calibrated on all four channels becomes effectively
+  # SHARPER; the 0.02 measured earlier scales to ~0.012. Re-measure the
+  # mass-on-far-half curve before trusting either value.
+  neighbor_smoothing_channels: [0, 1, 2]
+
   encoder:
     _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
     tokens_per_frame: "${eval:'${num_patches} + 1'}"
@@ -175,14 +266,18 @@ datamodule:
     batch_size: 24
 
 trainer:
-  max_epochs: 3
-  # causal epochs are 82.1k steps (~28h): at the default once-per-epoch cadence
-  # a run yields 3 val points and the quality gap/repr signals are unusable.
-  # 0.25 -> val every ~20.5k steps (~7h), 12 points per run.
-  val_check_interval: 0.25
+  # stride-31 epochs are ~26.5k steps; 9 epochs = the previous ~246k-step
+  # budget (arithmetic in §4)
+  max_epochs: 9
+  # val every ~13.2k steps (~4.5h), 18 points per run (§4)
+  val_check_interval: 0.5
 
-lr_warmup_steps: 19700
-lr_total_steps: 246000
+# 8% of lr_total_steps (§4)
+lr_warmup_steps: 19400
+# 9 epochs x 27k steps -- 27k is a deliberate UPPER bound on the ~26.5k
+# steps/epoch estimate; overshooting num_training_steps makes the unclamped
+# cosine come back up, undershooting is benign (§4)
+lr_total_steps: 243000
 
 wandb:
   tags: [patch_policy, dinov2_dinowm_causal]

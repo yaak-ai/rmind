@@ -54,7 +54,8 @@ samples:
       method: forkserver
 
   storage: file_array
-  run_folder: ${paths.rbyte.cache}/yaak/train_debug/samples
+  # keyed on the sampler grid -- see dataset/yaak/train.yaml
+  run_folder: "${paths.rbyte.cache}/yaak/train_debug/stride${episode_stride}-off${oc.select:episode_offset,0}/samples"
   scheduling_strategy: eager
   return_results: false
   persist_memory: false
@@ -287,7 +288,8 @@ samples:
                     ) AS normalized_waypoints_geom
                   FROM
                     base_data
-                )
+                ),
+                clip_grid AS (
               SELECT
                 * EXCLUDE (
                   "meta/VehicleMotion/gear",
@@ -341,6 +343,21 @@ samples:
                 ST_Contains(
                   ST_MakeEnvelope(-150, -150, 150, 150),
                   normalized_waypoints_geom
+                )
+                )
+              -- Clip-grid phase shift (opt-in; default 0 = bit-for-bit identity).
+              -- See dataset/yaak/train.yaml for the full rationale.
+              SELECT
+                *
+              FROM
+                clip_grid
+              WHERE
+                "meta/ImageMetadata.cam_front_left/frame_idx" >= (
+                  SELECT
+                    MIN("meta/ImageMetadata.cam_front_left/frame_idx")
+                      + ${oc.select:episode_offset,0}
+                  FROM
+                    clip_grid
                 )
               ORDER BY
                 "meta/ImageMetadata.cam_front_left/time_stamp";
