@@ -7,6 +7,6 @@
 # `d12/{job}/` holds `data.mcap`, `dropoff.parquet` (from `scripts.prepare_dropoff`)
 # and one directory per camera; the mcap is recorded on the truck and the frames
 # come from `scripts/extract_d12_frames.sh`.
-d12: /nasa/data/d12/yaak
+d12: /nasa/max/d12/yaak
 rbyte:
   cache: .rbyte_cache

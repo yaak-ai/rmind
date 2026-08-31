@@ -1,38 +1,12 @@
 #@yaml/text-templated-strings
 
-#@ # TRAIN: the 2026-08-31 batch minus the two held-out drives (see d12_val.yaml).
+#@ # VAL: two held-out drives. Chosen so their DROPOFF CLUSTER (~x 4.5, y 13.2) is
+#@ # absent from train entirely -- the 33 jobs cluster into ~7 dropoff spots and
+#@ # this is the only one removable with exactly two drives, so val measures
+#@ # generalization to an unseen goal location rather than to unseen frames.
 #@ jobs = [
-#@    '2026-08-31--15-44-29',
-#@    '2026-08-31--15-47-28',
-#@    '2026-08-31--15-49-31',
-#@    '2026-08-31--15-51-35',
-#@    '2026-08-31--15-54-17',
-#@    '2026-08-31--15-56-25',
-#@    '2026-08-31--15-58-33',
-#@    '2026-08-31--16-02-17',
-#@    '2026-08-31--16-13-23',
-#@    '2026-08-31--16-16-08',
-#@    '2026-08-31--16-19-26',
-#@    '2026-08-31--16-21-36',
-#@    '2026-08-31--16-24-00',
-#@    '2026-08-31--16-26-28',
-#@    '2026-08-31--16-29-46',
-#@    '2026-08-31--16-31-54',
-#@    '2026-08-31--16-34-30',
-#@    '2026-08-31--16-36-55',
-#@    '2026-08-31--16-45-07',
-#@    '2026-08-31--16-49-07',
-#@    '2026-08-31--16-53-09',
-#@    '2026-08-31--16-55-18',
-#@    '2026-08-31--16-57-07',
-#@    '2026-08-31--16-58-44',
-#@    '2026-08-31--17-00-37',
-#@    '2026-08-31--17-02-32',
-#@    '2026-08-31--17-04-36',
-#@    '2026-08-31--17-07-09',
-#@    '2026-08-31--17-07-59',
-#@    '2026-08-31--17-14-01',
-#@    '2026-08-31--17-15-38',
+#@    '2026-08-31--16-47-19',
+#@    '2026-08-31--16-50-53',
 #@ ]
 #@ cameras = ['cam_fork', 'cam_left_forward', 'cam_right_forward']
 #@ reference = 'cam_fork'
@@ -181,9 +155,9 @@ samples:
           # starts rotate through every raw-frame phase (see `episodes()`): at
           # step 3 the old decimate-then-stride grid reached 1 of 3 phases and
           # 33% of frames; stride 31 reaches all 3 and ~98%.
-          episode_stride: ${episode_stride}
+          episode_stride: ${val_episode_stride}
           # baked at instantiation, not per epoch -- rotate across restarts
-          episode_offset: ${oc.select:episode_offset,0}
+          episode_offset: 0
 
       # 4. plain vertical concat: every row already carries its job's `input_id`
       - _target_: pipefunc.PipeFunc

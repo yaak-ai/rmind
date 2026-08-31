@@ -73,6 +73,7 @@ recorder stamp encoded frames from the capture clock, and this whole problem goe
 away.
 """
 
+import math
 from pathlib import Path
 from typing import Final, NamedTuple, final
 
@@ -424,34 +425,86 @@ def episodes(
     *,
     cameras: tuple[str, ...],
     episode_length: int,
-    stride: int,
-    every_nth: int,
+    episode_step: int,
+    episode_stride: int,
+    episode_offset: int = 0,
 ) -> pl.DataFrame:
-    """Sliding windows over the (decimated) timeline of a positioned row table.
+    """Sliding-window episodes over a positioned row table, on the RAW grid.
+
+    The clip grid is laid on the RAW (undecimated) timeline with a step of
+    `episode_stride` raw frames, and each clip then gathers `episode_length`
+    frames `episode_step` raw frames apart. This is the D12 form of the retile in
+    `config/_templates/dataset/yaak/train.yaml` (`episode_stride: 31`), and it
+    exists for the same reason.
+
+    The previous implementation decimated FIRST (`table.gather_every(every_nth)`)
+    and strode over the decimated rows, which means every clip in every epoch
+    started on raw-frame phase 0 of `episode_step`. At `episode_step: 3` that made
+    2 of every 3 extracted frames unreachable by any clip, forever — the grid is
+    deterministic, so this was not sampling variance but a fixed 33% of the data
+    never being read. Striding on the raw grid with a stride COPRIME to the step
+    rotates successive clip starts through every phase: 31 is coprime to 3, so the
+    starts cycle 0, 1, 2, 0, ... and coverage goes to ~100%.
+
+    `episode_offset` drops the first N raw rows before the grid is laid, shifting
+    every clip start by N. It is baked at instantiation (rbyte builds the sample
+    table once and locks it into shared memory), so rotate it across restart
+    segments rather than expecting per-epoch variation.
 
     Expects the two `POSITIONS` columns already present (the config's DuckDB stage
     adds them as 2-lists); `input_id` is carried through from the row builder.
 
     Raises:
-        ValueError: if the job is too short for one episode.
+        ValueError: if `episode_step`/`episode_stride` are not positive, or the job
+            is too short for one clip.
     """
-    rows = table.gather_every(every_nth)
-    if len(rows) < episode_length:
-        msg = f"{len(rows)} usable frames < episode_length {episode_length}"
+    if episode_step < 1:
+        msg = f"episode_step must be >= 1, got {episode_step}"
         raise ValueError(msg)
+    if episode_stride < 1:
+        msg = f"episode_stride must be >= 1, got {episode_stride}"
+        raise ValueError(msg)
+    if episode_offset < 0:
+        msg = f"episode_offset must be >= 0, got {episode_offset}"
+        raise ValueError(msg)
+
+    rows = table.slice(episode_offset) if episode_offset else table
+
+    # raw frames a clip spans: L readouts, (L-1) gaps of `episode_step`
+    span = (episode_length - 1) * episode_step + 1
+    if len(rows) < span:
+        msg = (
+            f"{len(rows)} usable frames < clip span {span} "
+            f"(episode_length {episode_length} x episode_step {episode_step})"
+        )
+        raise ValueError(msg)
+
+    if math.gcd(episode_stride, episode_step) != 1:
+        # not fatal - a non-coprime stride still trains, it just cannot reach
+        # every phase - but it is almost always a mistake, so say so loudly
+        logger.warning(
+            "episode_stride is not coprime to episode_step: the clip grid can "
+            "only reach some raw-frame phases",
+            episode_stride=episode_stride,
+            episode_step=episode_step,
+            reachable_phases=episode_step // math.gcd(episode_stride, episode_step),
+        )
 
     input_id = rows["input_id"][0]  # constant within a job
 
     # scalar columns window to Array(dtype, L); the position columns are 2-lists
     # per row, so they window to Array(_, (L, 2))
     scalar_columns = [f"{c}/frame_idx" for c in cameras] + list(SIGNALS)
-    starts = range(0, len(rows) - episode_length + 1, stride)
+    starts = range(0, len(rows) - span + 1, episode_stride)
+    # absolute row indices of one clip, relative to its start
+    picks = [i * episode_step for i in range(episode_length)]
 
+    columns = {
+        column: rows[column].to_list() for column in [*scalar_columns, *POSITIONS]
+    }
     windows = {
-        column: [
-            rows[column][start : start + episode_length].to_list() for start in starts
-        ]
-        for column in [*scalar_columns, *POSITIONS]
+        column: [[values[start + p] for p in picks] for start in starts]
+        for column, values in columns.items()
     }
 
     schema: dict[str, pl.DataType] = {"input_id": pl.String()}
@@ -460,6 +513,13 @@ def episodes(
         schema[column] = pl.Array(dtype, episode_length)
     for column in POSITIONS:
         schema[column] = pl.Array(pl.Float32(), (episode_length, POSITION_DIM))
+
+    logger.info(
+        "windowed d12 episodes",
+        clips=len(starts),
+        span=span,
+        phases_reached=min(episode_step, len(starts)),
+    )
 
     return pl.DataFrame({"input_id": [input_id] * len(starts)} | windows, schema=schema)
 
@@ -551,13 +611,15 @@ class D12EpisodeWindower:
         *,
         cameras: tuple[str, ...],
         episode_length: int = 6,
-        stride: int = 1,
-        every_nth: int = 3,
+        episode_step: int = 3,
+        episode_stride: int = 31,
+        episode_offset: int = 0,
     ) -> None:
         self._cameras = cameras
         self._episode_length = episode_length
-        self._stride = stride
-        self._every_nth = every_nth
+        self._episode_step = episode_step
+        self._episode_stride = episode_stride
+        self._episode_offset = episode_offset
 
     @validate_call
     def __call__(self, *, frames: InstanceOf[pl.DataFrame]) -> pl.DataFrame:
@@ -565,9 +627,9 @@ class D12EpisodeWindower:
             frames,
             cameras=self._cameras,
             episode_length=self._episode_length,
-            stride=self._stride,
-            every_nth=self._every_nth,
+            episode_step=self._episode_step,
+            episode_stride=self._episode_stride,
+            episode_offset=self._episode_offset,
         )
-        logger.info("windowed d12 episodes", episodes=len(samples))
 
         return samples
