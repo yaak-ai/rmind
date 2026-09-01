@@ -11,7 +11,6 @@ episode_builder:
     - [observation, continuous, speed]
     - [observation, context, waypoints]
     - [special, summary, observation_summary]
-    - [special, summary, observation_history]
     - [action, continuous, gas_pedal]
     - [action, continuous, brake_pedal]
     - [action, continuous, steering_angle]
@@ -24,11 +23,6 @@ episode_builder:
         _target_: builtins.range
         _args_:
           - 64
-      observation_history:
-        _target_: builtins.range
-        _args_:
-          - 64
-          - 96
       action_summary: [96]
 
     utility:
@@ -575,62 +569,6 @@ objectives:
       targets:
         joint:
           actions: [input_tokens, joint_actions]
-    memory_extraction:
-      _target_: rmind.components.objectives.memory_extraction.MemoryObjective
-      value_norm:
-        _target_: torch.nn.LayerNorm
-        normalized_shape: ${encoder_embedding_dim}
-      decoder:
-        _target_: rmind.components.transformer.CrossAttentionDecoderHead
-        decoder:
-          _target_: rmind.components.transformer.CrossAttentionDecoder
-          dim_model: ${encoder_embedding_dim}
-          num_layers: 2
-          num_heads: 4
-          attn_dropout: 0.1
-          resid_dropout: 0.1
-          mlp_dropout: 0.1
-          hidden_layer_multiplier: 1
-          self_attn: true
-        final_norm:
-          _target_: torch.nn.LayerNorm
-          normalized_shape: ${encoder_embedding_dim}
-        output_projection:
-          _target_: torch.nn.Identity
-      heads:
-        _target_: rmind.components.containers.ModuleDict
-        modules:
-          continuous:
-            gas_pedal_diff:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${gas_pedal_bins}
-              bias: False
-            brake_pedal_diff:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${brake_pedal_bins}
-              bias: False
-            steering_angle_diff:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${steering_angle_bins}
-              bias: False
-      losses:
-        _target_: rmind.components.containers.ModuleDict
-        modules:
-          continuous:
-            gas_pedal_diff:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-            brake_pedal_diff:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-            steering_angle_diff:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-      targets:
-        continuous:
-          gas_pedal_diff: [input_tokens, continuous, gas_pedal_diff]
-          brake_pedal_diff: [input_tokens, continuous, brake_pedal_diff]
-          steering_angle_diff: [input_tokens, continuous, steering_angle_diff]
     policy:
       _target_: rmind.components.objectives.joint_policy.PolicyObjective
       value_norm:

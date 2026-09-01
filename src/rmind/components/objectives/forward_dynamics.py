@@ -178,7 +178,12 @@ class ForwardDynamicsObjective(Objective):
             tree_map(lambda lg: rearrange(lg[:, :-1], "b t s d -> (b t s) d"), logits),
             tree_map(lambda t: rearrange(t, "b t s ... -> (b t s) ..."), target),
         )
-        return {"loss": losses, "_artifacts": {"last_embeddings": pred}}
+        # nest under the heads structure ({summary: {observation_summary: ...}}) so the
+        # patch-similarity logger can index both predict and target by [summary, observation_summary]
+        return {
+            "loss": losses,
+            "_artifacts": {"last_embeddings": logits, "last_targets": target},
+        }
 
     @override
     def predict(
