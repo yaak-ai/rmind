@@ -60,6 +60,33 @@ class FocalLoss(Module):
         return ((1 - eps) * focal + eps * ce_smooth).mean()
 
 
+class FlatFocalLoss(FocalLoss):
+    """`FocalLoss` over trailing-axis classes, for `(*batch, num_classes)` logits.
+
+    `F.cross_entropy` wants the class axis at dim 1 for rank > 2 input, but every
+    head in this repo emits classes LAST -- `(b, t, num_classes)` for a per-frame
+    readout. Passing that straight in silently reinterprets `t` as the class axis.
+    Flattening to `(N, num_classes)` is unambiguous and costs nothing.
+
+    Targets arrive as bin indices from a `UniformBinner`, which returns the binner's
+    input dtype, so they are cast to long here rather than in the config.
+    """
+
+    @override
+    def forward(
+        self, input: Tensor, target: Tensor, smoothing_target: Tensor | None = None
+    ) -> Tensor:
+        num_classes = input.shape[-1]
+        if smoothing_target is not None:
+            smoothing_target = smoothing_target.reshape(-1, num_classes)
+
+        return super().forward(
+            input.reshape(-1, num_classes),
+            target.reshape(-1).long(),
+            smoothing_target,
+        )
+
+
 class LogitBiasFocalLoss(FocalLoss, HasLogitBias):
     def __init__(self, *, logit_bias: Tensor | None = None, gamma: float = 2.0) -> None:
         super().__init__(gamma=gamma)

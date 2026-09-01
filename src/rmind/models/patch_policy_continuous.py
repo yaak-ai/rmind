@@ -1,6 +1,5 @@
-import operator
 from collections.abc import Mapping
-from typing import Annotated, Any, final, override
+from typing import Annotated, Any, Final, final, override
 
 import pytorch_lightning as pl
 import torch
@@ -22,6 +21,9 @@ from rmind.utils._wandb import LoadableFromArtifact
 from rmind.utils.pytree import key_get_default
 
 type Path = tuple[str, ...]
+
+# modality key whose heads are classifiers rather than Gaussians
+DISCRETE: Final = "discrete"
 
 
 @final
@@ -289,10 +291,32 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         return self.norm(features) if self.norm is not None else features
 
     def _predict(self, features: Tensor) -> TensorDict:
-        """Gaussian mean per actuation, shaped like `features`' leading axes."""
-        logits = self.heads(features)
+        """One scalar command per actuation, shaped like `features`' leading axes.
 
-        return TensorDict(logits).apply(operator.itemgetter((..., 0)))  # ty:ignore[invalid-return-type]
+        `continuous` heads are Gaussian `(mean, log_var)` and contribute their MEAN.
+        `discrete` heads are classifiers over `num_classes` and contribute the argmax
+        decoded to a command: for a 3-class fork the classes are
+        `{lower, hold, raise}` and decode to `{-1, 0, +1}` -- the bin CENTRES would
+        give +/-0.67, but the fork command is a rate and the operator data is
+        saturated at +/-1, so the extremes are the honest decode.
+
+        The predicted variance is deliberately not returned: it is a training signal,
+        not something the vehicle acts on.
+        """
+        logits = self.heads(features)
+        out: dict[str, dict[str, Tensor]] = {}
+        for modality, heads in logits.items():
+            if modality == DISCRETE:
+                out[modality] = {
+                    name: (head.argmax(dim=-1) - (head.shape[-1] // 2)).to(head.dtype)
+                    for name, head in heads.items()
+                }
+            else:
+                out[modality] = {
+                    name: head[..., 0] for name, head in heads.items()
+                }
+
+        return TensorDict(out)  # ty:ignore[invalid-return-type]
 
     @override
     def forward(self, batch: Any) -> TensorDict:
@@ -319,6 +343,31 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         metrics = TensorDict({"loss": losses})
         total = metrics.sum(reduce=True)
         metrics["loss", "total"] = total
+
+        # Interpretable companions to the losses, in the ACTUATION's own units.
+        # A Gaussian NLL can move for two reasons -- the mean moved, or the predicted
+        # variance moved -- and only the first one steers the truck. `fork1` made that
+        # concrete: its val NLL went -1.09 -> +41.08 (over 100% of the total, with the
+        # other two heads negative) purely through variance collapse on a target that
+        # is ~87% zero and ~11% saturated at +/-1. L1 on the mean is immune to that,
+        # so it is the metric to read when deciding whether an arm is improving.
+        with torch.no_grad():
+            scores: dict[str, dict[str, Tensor]] = {}
+            for modality, heads in logits.items():
+                for name, head in heads.items():
+                    target = targets[modality][name]
+                    if modality == DISCRETE:
+                        pred = head.argmax(dim=-1)
+                        scores.setdefault("acc", {})[f"{modality}/{name}"] = (
+                            (pred == target.long()).float().mean()
+                        )
+                    else:
+                        scores.setdefault("l1", {})[f"{modality}/{name}"] = (
+                            (head[..., 0] - target).abs().mean()
+                        )
+            for kind, values in scores.items():
+                for name, value in values.items():
+                    metrics[kind, *name.split("/")] = value
 
         self.log_dict(
             {

@@ -50,6 +50,10 @@ num_heads: 8
 
 speed_bins: 64
 
+# fork1 classes: {lower, hold, raise}. See the model config for why fork1 is a
+# classifier and not a Gaussian.
+fork_classes: 3
+
 # `fork_above_300` is the mast height switch from `lindelot/vehicle_state`, an
 # input the policy conditions on (it is NOT a target - `fork1` is the command that
 # moves the mast, and that is predicted). Two bins over [0, 1] make the binner an

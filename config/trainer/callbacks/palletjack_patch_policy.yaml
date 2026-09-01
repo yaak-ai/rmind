@@ -18,3 +18,8 @@
   auto_insert_metric_name: False
 - _target_: pytorch_lightning.callbacks.LearningRateMonitor
   logging_interval: step
+# PR #263 port, already used by the car's `callbacks/patch_policy.yaml`. Logs
+# gradient/update-norm ratios, per-parameter-group stats and dead-unit fractions --
+# the things that say WHY a loss moved rather than that it moved.
+- _target_: rmind.callbacks.TrainingQualityLogger
+  every_n_steps: 100

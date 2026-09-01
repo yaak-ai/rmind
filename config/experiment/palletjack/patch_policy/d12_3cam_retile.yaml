@@ -55,12 +55,27 @@ window: 16
 # rather than the car's 3 Hz -- these are dexterous manoeuvres at walking pace.
 episode_step: 3
 
-# RAW-grid clip stride, coprime to `episode_step`. See `rmind.data.d12.episodes`:
-# the old decimate-then-stride grid reached raw-frame phase 0 only, so 2 of every
-# 3 extracted frames were unreachable by any clip in any epoch. Measured on a
-# 3000-frame job at these settings: stride 3 -> 1/3 phases and 33.3% coverage;
-# stride 31 -> 3/3 and 97.2%.
-episode_stride: 31
+# RAW-grid clip stride. See `rmind.data.d12.episodes`: the old decimate-then-stride
+# grid reached raw-frame phase 0 only, so 2 of every 3 extracted frames were
+# unreachable by any clip in any epoch (33.3% coverage, 1 of 3 phases).
+#
+# WHY 32 AND NOT THE CAR'S 31. Total frame touches are `clips * episode_length` and
+# `clips ~ N / stride`, so the ViT-reuse floor of 1.00 -- every frame read exactly
+# once per epoch -- is reached at `stride = episode_length`, and coverage is maximal
+# there IFF `gcd(episode_length, episode_step) = 1`. The car derived 31 at
+# `episode_step: 10` (3 Hz), where `gcd(32, 10) = 2` and 32 collapses to 48%
+# coverage; 31 was the largest coprime below `L`. At the palletjack's 10 Hz
+# (`episode_step: 3`) that constraint is gone -- `gcd(32, 3) = 1` -- so `L` itself is
+# available and dominates 31 on BOTH axes. Measured on a 3500-frame job:
+#
+#   stride 11: 310 clips, 99.2% coverage, 2.86x reuse
+#   stride 31: 110 clips, 97.5% coverage, 1.03x reuse   (the car's value)
+#   stride 32: 107 clips, 97.8% coverage, 1.00x reuse   <- this recipe
+#   stride 34: 101 clips, 92.3% coverage, 1.00x reuse   (past L: coverage decays)
+#
+# Denser strides buy clips only by paying redundant ViT compute for frames already
+# seen this epoch, which is not more information.
+episode_stride: 32
 # val is pinned to its own grid so val metrics stay comparable if train's changes
 val_episode_stride: 31
 
