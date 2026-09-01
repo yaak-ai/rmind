@@ -1,0 +1,22 @@
+# @package _global_
+
+# B3: VQ-BeT's latent width. 384 -> 512.
+#
+# Never tested in 19 runs. `a2_wide` and `a3_vq1` carry `action_hidden_dim: 512`, but
+# that is the MLP's hidden layer; `action_latent_dim` -- the vector the RESIDUAL VQ
+# actually quantizes -- has been 384 in every run so far. VQ-BeT Table 13 uses 512.
+#
+# Note this does NOT change the rate: still 8 levels x log2(16) = 32 bits. What it
+# changes is the geometry the quantizer works in -- the same 16 centroids per level
+# spread over a wider space, and a wider bottleneck on the unquantized path. So it is a
+# test of whether 384 dimensions were crowding the codebook, not of whether more
+# information can get through.
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_b0_stack
+  - _self_
+
+action_latent_dim: 512
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x8, latent512, rate_ablation, b3_latent512]
