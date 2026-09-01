@@ -1,0 +1,17 @@
+# @package _global_
+
+# B1b: the same 64 bits, bought with WIDTH instead of depth. 8 levels x log2(256).
+#
+# Paired with `underfit_b1_rate_16x16` so the rate increase and the way it is spent are
+# separable. The capacity sweep said depth beats width at 32 bits; this asks whether
+# that still holds at 64, where a 256-entry codebook has far more cells per level but
+# only 8 refinement stages.
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_b0_stack
+  - _self_
+
+codebook_size: 256
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb256x8, rate64, rate_ablation, b1_rate_width]

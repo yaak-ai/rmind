@@ -1,0 +1,21 @@
+# @package _global_
+
+# B0: the two things that PAID, together for the first time.
+#
+# From the a-arms: the optimizer change carried +0.034 unquantized EV, `vq_weight`
+# 5.0 -> 1.0 carried +0.009, and the DCT truncation carried +0.005 (and +0.009 on fork).
+# Encoder capacity carried nothing, and the lossless DCT rotation carried nothing --
+# so the basis was never the constraint, the truncation was.
+#
+# a3 and a4 are independent and were never combined. This is the combination, and it is
+# the base every b-arm varies one thing from.
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_a4_dct32
+  - _self_
+
+model:
+  vq_weight: 1.0
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x8, rate_ablation, b0_stack]

@@ -1,0 +1,27 @@
+# @package _global_
+
+# B1a: DOUBLE THE RATE with depth. 16 levels x 4 bits = 64 bits, against b0's 32.
+#
+# The gate this whole investigation used was never rate-matched: rank-32 PCA
+# reconstructs from 32 REAL coefficients (1024 bits at float32) while the tokenizer gets
+# 32 bits, so "+0.968" was a target with 32x the budget. Rate-matched, the tokenizer
+# already WINS: the best scalar-quantized DCT baseline at ~30 bits reaches +0.743
+# against the tokenizer's +0.874.
+#
+# Which makes rate the obvious lever, and the capacity sweep says it has not saturated:
+#
+#   16x4  16 bits  traction EV +0.798
+#   32x4  20 bits              +0.829
+#   16x8  32 bits              +0.845   <- still climbing
+#
+# Depth rather than width because the sweep found depth wins at equal-ish capacity
+# (16x8 beat 32x4 on every axis). `underfit_b1_rate_256x8` is the width control.
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_b0_stack
+  - _self_
+
+num_quantizers: 16
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, rate_ablation, b1_rate_depth]

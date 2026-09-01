@@ -1,0 +1,24 @@
+# @package _global_
+
+# B4: VQ-BeT's own training length.
+#
+# Table 13 runs 300-2000 epochs at the `lr 5.5e-5` we copied; we ran 100. a1 compensated
+# by raising the lr, but the schedule is the other half: `lr_total_steps: 10000` at ~100
+# steps/epoch means the cosine fully anneals by epoch 100, so the model is converged TO
+# ITS SCHEDULE rather than stopped early. Lengthening `max_epochs` alone would just run
+# at lr~0, so the schedule is lengthened with it.
+#
+# Cheap to justify: the train/holdout gap across every a-arm is between -0.009 and
+# +0.007, so there is no overfitting to pay for more training.
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_b0_stack
+  - _self_
+
+lr_total_steps: 50000
+
+trainer:
+  max_epochs: 500
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x8, long_schedule, rate_ablation, b4_long]

@@ -1,0 +1,21 @@
+# @package _global_
+
+# B2: dilated temporal conv encoder, at b0's rate.
+#
+# The DCT control disproved the GLOBAL-basis hypothesis; this tests the LOCAL one. See
+# `model/palletjack/action_tokenizer/raw_conv.yaml` for the argument and the receptive
+# field. Fork is the axis to watch -- it is where the error is high-frequency and where
+# both DCT arms moved slightly.
+#
+# Keeps b0's `vq_weight: 1.0` and optimizer, and drops the DCT: a conv over the raw step
+# axis is the alternative to a fixed basis, not a complement to it.
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_b0_stack
+  - override /model: palletjack/action_tokenizer/raw_conv
+  - _self_
+
+conv_channels: 32
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x8, conv_encoder, rate_ablation, b2_conv]

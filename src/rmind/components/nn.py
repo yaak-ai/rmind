@@ -448,3 +448,116 @@ class ChunkIDCT(Module):
         return torch.einsum("kt,...ka->...ta", self.basis, coeffs).reshape(
             *c.shape[:-1], self.num_steps * self.num_axes
         )
+
+
+@final
+class _DilatedResidualUnit(Module):
+    """SoundStream's residual unit: dilated conv, pointwise conv, skip.
+
+    `Conv1d(k=3, dilation=d) . ELU . Conv1d(k=1)` added back to the input, exactly the
+    unit in arXiv:2107.03312 Fig. 3 (there at dilations 1, 3, 9). Padding keeps the
+    length so a stack of these leaves the time axis intact.
+    """
+
+    def __init__(self, channels: int, dilation: int) -> None:
+        super().__init__()
+
+        self.block = nn.Sequential(
+            nn.Conv1d(channels, channels, 3, dilation=dilation, padding=dilation),
+            nn.ELU(),
+            nn.Conv1d(channels, channels, 1),
+        )
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.block(x)
+
+
+@final
+class ChunkConvEncoder(Module):
+    """Flat action chunk -> latent, through a dilated temporal conv over the STEP axis.
+
+    WHY, given the DCT arms. `ChunkDCT` handed the MLP a better global basis and the
+    lossless control (k=50, a pure rotation) moved nothing: the basis was not the
+    constraint. That result says nothing about LOCAL temporal structure, which is a
+    different claim -- a convolution shares one set of weights across every position, so
+    it can represent an edge wherever it occurs, while an MLP over a flattened window
+    has to learn each position separately and a fixed cosine basis has to spend many
+    coefficients on any edge at all.
+
+    That is why a codec built for sharp transients uses this and not an MLP
+    (arXiv:2107.03312 §III-A: `Conv1d(k=7)` then residual units at dilations 1, 3, 9,
+    ELU, no normalization). The receptive field here is +/-16 steps of the 50 -- 3 from
+    the input conv, then 1 + 3 + 9 from the dilated units -- so a unit at any position
+    sees ~3.3 s of the 5 s chunk.
+
+    Emits the same flat latent the MLP encoder did, so the quantizer, the decoder and
+    the loss are untouched.
+    """
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        num_steps: int,
+        num_axes: int,
+        out_features: int,
+        channels: int = 32,
+        dilations: tuple[int, ...] = (1, 3, 9),
+    ) -> None:
+        super().__init__()
+
+        self.num_steps = num_steps
+        self.num_axes = num_axes
+        self.conv = nn.Sequential(
+            nn.Conv1d(num_axes, channels, 7, padding=3),
+            nn.ELU(),
+            *[_DilatedResidualUnit(channels, d) for d in dilations],
+            nn.ELU(),
+        )
+        self.project = nn.Linear(channels * num_steps, out_features)
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        *batch, _ = x.shape
+        # flat layout is (timestep, axis); conv wants (batch, axis, timestep)
+        chunk = x.reshape(-1, self.num_steps, self.num_axes).transpose(1, 2)
+
+        return self.project(self.conv(chunk).flatten(1)).reshape(*batch, -1)
+
+
+@final
+class ChunkConvDecoder(Module):
+    """Latent -> flat action chunk. Mirror of `ChunkConvEncoder`."""
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        num_steps: int,
+        num_axes: int,
+        in_features: int,
+        channels: int = 32,
+        dilations: tuple[int, ...] = (9, 3, 1),
+    ) -> None:
+        super().__init__()
+
+        self.num_steps = num_steps
+        self.num_axes = num_axes
+        self.channels = channels
+        self.project = nn.Linear(in_features, channels * num_steps)
+        self.conv = nn.Sequential(
+            nn.ELU(),
+            *[_DilatedResidualUnit(channels, d) for d in dilations],
+            nn.ELU(),
+            nn.Conv1d(channels, num_axes, 7, padding=3),
+        )
+
+    @override
+    def forward(self, z: Tensor) -> Tensor:
+        *batch, _ = z.shape
+        h = self.project(z).reshape(-1, self.channels, self.num_steps)
+
+        return (
+            self.conv(h).transpose(1, 2).reshape(*batch, self.num_steps * self.num_axes)
+        )
