@@ -116,7 +116,20 @@ samples:
             - (@=camera@)
           reference: (@=reference@)
           # signed traction command, the field the vehicle actually applies
-          traction_source: command
+          # Which traction signal is the target. MEASURED on 2026-08-31--16-47-19:
+          #
+          #   source                            rate    distinct/drive  changes/s
+          #   vehicle_state.tractionCommandPct  11 Hz        44           0.50
+          #   linde/traction.tractionPct        83 Hz       799          33.16
+          #   lindelot/applied.tractionPct      10 Hz       155            -
+          #
+          # `command` is a coarse operator setpoint that updates about twice a second: in a
+          # 5 s chunk it takes 4 distinct values where `reported` takes 123. They are NOT the
+          # same signal decimated -- mean |command - reported| is 16.06 pp with corr 0.748 and
+          # only 32% agreement -- so this is a real modelling choice, not a resolution knob.
+          # Cloning `command` clones the operator's demand; cloning `reported` clones the
+          # achieved traction, which folds in the truck's own ramping and limits.
+          traction_source: "${oc.select:traction_source,command}"
           # Raised from 1.0 for the 2026-08-31 batch. `_pairing_skew` reports the
           # DURATION OF THE SURPLUS published frames as a worst-case bound: it
           # cannot tell whether the un-encoded frames sit at the head or the tail,

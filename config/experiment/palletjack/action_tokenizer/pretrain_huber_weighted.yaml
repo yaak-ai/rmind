@@ -1,0 +1,49 @@
+# @package _global_
+
+# Action tokenizer: smooth-L1 reconstruction AND a modest fork1 event weight.
+#
+#   just train experiment=palletjack/action_tokenizer/pretrain_huber_weighted
+#
+# The two fixes measured separately on the same holdout harness (event samples are the
+# 5.6% with |fork1| > 0.5; the target mean magnitude there is 0.899):
+#
+#   arm                 event L1   recon |a_hat| on events   traction L1   steering L1
+#   L1 (baseline)         0.8988             0.0007            0.0919        0.0779
+#   L1 + 14.4x weight     0.1969             0.8834            0.1226        0.0926
+#   smooth_l1 alone       0.3992             0.5113            0.1061        0.0895
+#
+# Both cure the dead channel; neither is free. Reweighting recovers 98% of the event
+# magnitude but costs the most on traction (0.092 -> 0.123). smooth_l1 recovers 57% and
+# costs less. They fix different halves of the problem:
+#
+#   * smooth_l1 removes the pathological FIXED POINT. Under L1 the gradient is
+#     `sign(e)` -- magnitude 1 whether the error is 0.001 or 0.9 -- so with fork1 exactly
+#     zero for 91.7% of messages, a decoder output sitting at zero is pushed there by
+#     0.92 of the mass and away by 0.08. Zero is stable and the channel dies. Huber's
+#     gradient is proportional to the error, so a sample already correct contributes ~0.
+#   * the weight fixes the POPULATION RATIO, which Huber does not touch.
+#
+# Hence 5.0 rather than the inverse-frequency 14.4: with the fixed point already gone,
+# the weight only has to overcome the residual early-training imbalance, and a smaller
+# one should give back some of the traction/steering regression.
+defaults:
+  - /experiment/palletjack/action_tokenizer/pretrain
+  - _self_
+
+model:
+  recon_loss: smooth_l1
+  smooth_l1_beta: 1.0
+  event_threshold: 0.05
+  event_weight:
+    fork1: 5.0
+
+wandb:
+  tags:
+    - palletjack
+    - action_tokenizer
+    - d12
+    - chunk50
+    - 5s
+    - recon_smooth_l1
+    - fork_reweight5
+    - combo
