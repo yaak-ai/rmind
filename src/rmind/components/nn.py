@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable, Mapping
 from functools import partial
 from typing import Any, final, override
@@ -7,6 +8,7 @@ from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor, nn
 from torch.nn import Module
+from torch.nn import functional as F
 from torch.utils._pytree import (  # noqa: PLC2701
     MappingKey,
     PyTree,
@@ -561,3 +563,78 @@ class ChunkConvDecoder(Module):
         return (
             self.conv(h).transpose(1, 2).reshape(*batch, self.num_steps * self.num_axes)
         )
+
+
+@final
+class AxisShrinkage(Module):
+    """Soft-threshold selected axes of a flat chunk, so quiet regions decode to EXACTLY zero.
+
+    WHY. Measured on the d12 holdout, fork1's reconstruction is not too smooth -- it is
+    too JAGGED. Total variation of the reconstruction over total variation of ground
+    truth runs 1.09-1.39 on fork1 across every arm (against 0.40-0.57 on traction, which
+    genuinely is over-smoothed). Ground truth fork1 is exactly 0.000 for 91.7% of
+    messages; a continuous decoder head cannot emit exact zeros, so it sprays
+    low-amplitude noise across the quiet stretches while separately attenuating the real
+    events. Two errors in opposite directions on one axis.
+
+    Rate does not fix it -- fork1's TV ratio RISES with rate (1.02 at 16 bits to 1.39 at
+    32), i.e. extra capacity buys more wiggle, not sharper events. It is a parameterization
+    problem: the output family cannot represent the spike at zero.
+
+    Soft-thresholding is the minimal fix and the principled one -- `sign(x) * relu(|x| -
+    tau)` is the proximal operator of the L1 norm, the standard map for a
+    sparsity-inducing prior. Everything within +/-tau becomes exactly zero; everything
+    outside is shifted by tau, which the decoder trivially compensates for on events an
+    order of magnitude larger. `tau` is learned per axis through a softplus so it stays
+    positive, and only the named axes are touched: traction and steering have no zero
+    atom and shrinking them would only bias them.
+
+    Belongs LAST in the decoder, after any `ChunkIDCT`, so it acts on time-domain samples.
+    """
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        num_steps: int,
+        num_axes: int,
+        axes: tuple[int, ...],
+        init_threshold: float = 0.05,
+    ) -> None:
+        super().__init__()
+
+        if not axes:
+            msg = "`axes` must name at least one axis to shrink"
+            raise ValueError(msg)
+        if any(not 0 <= a < num_axes for a in axes):
+            msg = f"axes {axes} out of range for num_axes {num_axes}"
+            raise ValueError(msg)
+
+        self.num_steps = num_steps
+        self.num_axes = num_axes
+        self.axes = axes
+        # softplus^-1 so the stored parameter is unconstrained and tau starts at
+        # `init_threshold`
+        inv = math.log(math.expm1(init_threshold))
+        self.raw_threshold = nn.Parameter(torch.full((len(axes),), inv))
+
+        mask = torch.zeros(num_axes)
+        mask[list(axes)] = 1.0
+        self.register_buffer("axis_mask", mask)
+
+    @property
+    def thresholds(self) -> Tensor:
+        return F.softplus(self.raw_threshold)
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        *batch, _ = x.shape
+        chunk = x.reshape(*batch, self.num_steps, self.num_axes)
+
+        tau = chunk.new_zeros(self.num_axes)
+        tau = tau.index_copy(
+            0, chunk.new_tensor(self.axes, dtype=torch.long), self.thresholds
+        )
+        shrunk = torch.sign(chunk) * F.relu(chunk.abs() - tau)
+
+        return shrunk.reshape(*batch, self.num_steps * self.num_axes)

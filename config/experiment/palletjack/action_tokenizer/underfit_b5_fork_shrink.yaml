@@ -1,0 +1,23 @@
+# @package _global_
+
+# B5: fork1 output parameterization -- the one lever no rate or width arm can pull.
+#
+#   just train experiment=palletjack/action_tokenizer/underfit_b5_fork_shrink
+#
+# Every other b-arm varies rate, geometry or schedule. The total-variation measurement
+# says fork1's error is none of those: the reconstruction is 1.09-1.39x as jagged as
+# ground truth (traction is 0.40-0.57x, i.e. the opposite failure), and the ratio gets
+# WORSE with rate. A continuous head cannot emit the exact zeros that are 91.7% of the
+# fork1 target, so it fills the quiet stretches with noise.
+#
+# This adds a learned soft-threshold on fork1 only. Watch fork EV and, more directly,
+# the fork TV ratio -- the arm succeeds if that drops toward 1.0 without costing event
+# magnitude (0.830 at b0's ancestor a4).
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_b0_stack
+  - override /model: palletjack/action_tokenizer/raw_dct_shrink
+  - _self_
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x8, fork_shrinkage, rate_ablation, b5_fork_shrink]
