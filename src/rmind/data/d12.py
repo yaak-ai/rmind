@@ -119,10 +119,37 @@ SIGNALS: Final = {
     ),
 }
 
-# alternative traction sources, selectable with --traction-source
+# Where the traction TARGET comes from. The names matter: the previous ones inverted the
+# semantics and cost us a model.
+#
+#   operator  0x193 on the Linde bus -- the "traction/drive command frame ... raw joystick
+#             mirror" (coppernic `linde-d12-decode`), i.e. the operator's own demand, which
+#             is what an imitation target should be. +/-500 counts = +/-100%, so the quantum
+#             is 0.2 pp. MEASURED on 2026-08-31--16-47-19: 83 Hz, 799 distinct values in the
+#             drive, changing 33 times a second.
+#   applied   what the Lindelot controller applied (`applied_traction`). 10 Hz, 155 distinct,
+#             quantum 1.0 pp. The plant's output, not the operator's intent.
+#   uds_diag  UDS DID 0x3039, folded into the running `pb::VehicleState` snapshot. NOT a bus
+#             signal: `lindelot/vehicle_state` is republished on every UDS reading, so its
+#             11 Hz publish rate is not the refresh rate of any individual field. MEASURED:
+#             `traction_command_pct` changes 0.50 times a second, median gap between changes
+#             1.63 s and never below 1.51 s, giving 44 distinct values across a whole drive.
+#             Nearest-asof onto the 10 Hz grid replicates each value ~16x, so a 5 s chunk
+#             holds about 3 independent values.
+#
+# `uds_diag` was the default until 2026-09-01 because it was named `command` and the joystick
+# frame was named `reported` -- and "command is the imitation target" is the correct
+# principle, applied to the wrong topic. Both signals are legitimately called a traction
+# command (one is the CAN command frame, the other a DID literally named
+# DID_TRACTION_COMMAND), so the old names are kept as aliases rather than deleted: runs
+# 5d3a592p / jabwefrp / 3cov0k09 / 9lf54of4 / o2ei7gh0 were all trained through them and
+# must stay reproducible.
 TRACTION_SOURCES: Final = {
-    "reported": ("linde/traction", "traction_pct"),
+    "operator": ("linde/traction", "traction_pct"),
     "applied": ("lindelot/applied", "traction_pct"),
+    "uds_diag": ("lindelot/vehicle_state", "traction_command_pct"),
+    # deprecated aliases -- misleading names, retained for reproducibility
+    "reported": ("linde/traction", "traction_pct"),
     "command": ("lindelot/vehicle_state", "traction_command_pct"),
 }
 

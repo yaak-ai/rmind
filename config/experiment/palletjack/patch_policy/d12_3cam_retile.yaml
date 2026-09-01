@@ -57,7 +57,7 @@ episode_step: 3
 
 # traction target source; see the dataset template for the measured comparison.
 # `command` is a ~0.5 Hz, 44-level operator setpoint; `reported` is 83 Hz / 799 levels.
-traction_source: command
+traction_source: operator
 
 # RAW-grid clip stride. See `rmind.data.d12.episodes`: the old decimate-then-stride
 # grid reached raw-frame phase 0 only, so 2 of every 3 extracted frames were

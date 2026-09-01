@@ -129,7 +129,7 @@ samples:
           # only 32% agreement -- so this is a real modelling choice, not a resolution knob.
           # Cloning `command` clones the operator's demand; cloning `reported` clones the
           # achieved traction, which folds in the truck's own ramping and limits.
-          traction_source: "${oc.select:traction_source,command}"
+          traction_source: "${oc.select:traction_source,operator}"
           # Raised from 1.0 for the 2026-08-31 batch. `_pairing_skew` reports the
           # DURATION OF THE SURPLUS published frames as a worst-case bound: it
           # cannot tell whether the un-encoded frames sit at the head or the tail,
