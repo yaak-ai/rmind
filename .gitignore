@@ -165,3 +165,8 @@ inference_results/
 
 # env
 .direnv
+
+# training artifacts -- Lightning writes these into the run directory
+checkpoints/
+lightning_logs/
+.rbyte_cache*/
