@@ -50,6 +50,26 @@ action_latent_dim: 384
 codebook_size: 16
 num_quantizers: 4
 
+# fork1 is ZERO-INFLATED, not categorical: 91.7% of `linde/fork` messages are exactly
+# 0.000, 4.5% are saturated at +/-100%, and 3.4% spread over 804 distinct intermediate
+# values (measured over 8 jobs / 91,331 messages). So it IS a proportional signal, but
+# an unweighted L1 over a channel that is 92% zero is minimized by emitting zero -- run
+# 1eeaumf9 did exactly that: holdout L1 0.0563 overall, 0.8988 on event samples,
+# reconstructing them at mean |a_hat| = 0.0007 against a target of 0.8991.
+#
+# Sampling fork1 at its native ~90 Hz does not help: decimation to 10 Hz preserves 72
+# of 74 event runs and leaves the event fraction at 6.5% (ramps last seconds, not
+# milliseconds), so the imbalance is unchanged. Steering also caps the joint rate --
+# `lindelot/adc` is the only steering source and logs at 10.00 Hz. Hence weighting.
+#
+# 14.4 = 0.935 / 0.065, the inverse event frequency, which equalizes the total loss
+# contribution of the quiet and event populations. The loss is renormalized by the
+# weight sum so it stays on the same scale as plain L1 and `vq_weight` is unaffected.
+model:
+  event_threshold: 0.05
+  event_weight:
+    fork1: 14.4
+
 lr_warmup_steps: 500
 lr_total_steps: 10000
 

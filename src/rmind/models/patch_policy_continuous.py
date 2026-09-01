@@ -307,8 +307,19 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         out: dict[str, dict[str, Tensor]] = {}
         for modality, heads in logits.items():
             if modality == DISCRETE:
+                # Decode the class index to a command spanning the binner's range:
+                # `i -> -1 + 2i/(n-1)`, so index 0 is -1, the middle index is exactly
+                # 0 (odd `n`) and the last is +1. NOT `argmax - n//2`, which only
+                # happens to be right at n=3 and returns +/-4 at n=9. NOT the bin
+                # CENTRES either: those top out at +/-(1 - 1/n), and fork1 is
+                # saturated at +/-1 for 4.5% of frames, so the extremes are the
+                # honest decode.
                 out[modality] = {
-                    name: (head.argmax(dim=-1) - (head.shape[-1] // 2)).to(head.dtype)
+                    name: (
+                        head.argmax(dim=-1).to(head.dtype)
+                        * (2.0 / max(head.shape[-1] - 1, 1))
+                        - 1.0
+                    )
                     for name, head in heads.items()
                 }
             else:

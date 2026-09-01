@@ -1,0 +1,43 @@
+# @package _global_
+
+# ARM A.2: arm A with a 9-bin fork1 classifier instead of 3.
+#
+#   just train experiment=palletjack/patch_policy/d12_3cam_retile_fork9
+#
+# WHY. `fork1` is NOT categorical -- measured over 8 jobs / 91,331 `linde/fork`
+# messages it takes 897 distinct values: 91.73% exactly 0.000, 2.42% at -100%,
+# 2.04% at +100%, and 3.43% spread over 804 distinct INTERMEDIATE values. It is a
+# proportional mast-rate command with a large atom at zero.
+#
+# Arm A's `fork_classes: 3` cures the atom problem -- a Gaussian cannot represent a
+# point mass, which is why its val NLL exploded to +41 while traction stayed flat and
+# steering improved -- but its boundaries at +/-1/3 flatten every ramp from |v| = 0.33
+# to 1.0 onto the extremes, discarding the rate information. Those intermediate values
+# are only 3.4% of frames but they are exactly the fine control that matters: easing
+# forks into a pallet, setting a load down gently.
+#
+# 9 bins over [-1, 1] gives width 0.2222, so the middle bin is [-0.111, +0.111] and
+# isolates the zero atom cleanly, with 4 levels per direction instead of 1. The head
+# stays a classifier (so no NLL blow-up) and `FlatFocalLoss` still handles the ~92%
+# majority class. Decoding is `i -> -1 + 2i/(n-1)`, which puts 0 exactly on the middle
+# class and +/-1 on the extremes -- fork1 IS saturated at +/-1 for 4.5% of frames.
+#
+# Everything else is identical to arm A, so this isolates the fork discretization.
+defaults:
+  - /experiment/palletjack/patch_policy/d12_3cam_retile
+  - _self_
+
+fork_classes: 9
+
+wandb:
+  tags:
+    - palletjack
+    - patch_policy
+    - d12
+    - 3cam
+    - retile
+    - history16
+    - stride32
+    - nll_single
+    - fork_cls9
+    - arm_a2

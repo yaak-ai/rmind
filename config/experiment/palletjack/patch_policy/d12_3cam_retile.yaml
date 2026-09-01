@@ -119,5 +119,22 @@ datamodule:
     # NEVER let this inherit -- see §13.1 above; that is exactly how the car arm OOMed.
     batch_size: 8
 
+# TAG SCHEME (keep consistent across arms so wandb filters cleanly):
+#   arm_*          which arm: arm_a / arm_a2 / arm_b / arm_c
+#   3cam, retile   camera count and clip-grid recipe
+#   history16      window 16 / episode_length 32
+#   stride32       episode_stride (reuse floor 1.00)
+#   nll_single     action head: single-step Gaussian NLL (vs vqbet_chunk50)
+#   fork_cls3/9    fork1 classifier bin count
 wandb:
-  tags: [palletjack, patch_policy, d12, 3cam, retile, baseline_nll, history16]
+  tags:
+    - palletjack
+    - patch_policy
+    - d12
+    - 3cam
+    - retile
+    - history16
+    - stride32
+    - nll_single
+    - fork_cls3
+    - arm_a
