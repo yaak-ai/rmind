@@ -1,0 +1,49 @@
+# @package _global_
+
+# ARM 1 of the underfitting ablation: change the OPTIMIZER only.
+#
+#   just train experiment=palletjack/action_tokenizer/underfit_a1_opt
+#
+# Diagnosis these three arms are testing (measured, see `raw_wide.yaml` for the chain):
+# the tokenizer is UNDERFIT. Train EV equals holdout EV, and a rank-16 PCA fit on the
+# training drives beats the autoencoder on the holdout. Removing the quantizer entirely
+# is worth only 0.034 EV, so the codebook is not the constraint.
+#
+# Cheapest hypothesis first, and this arm changes nothing else:
+#   * lr 5.5e-5 -> 3e-4. 5.5e-5 is very low for a 4-layer MLP over 10k steps; it was
+#     inherited from the car's control transformer, which is a far larger model.
+#   * weight_decay 0.1 -> 0.01. Decay of 0.1 penalizes a model that is already failing
+#     to fit its training data.
+#
+# 16x8 because it won the capacity sweep: on `operator` the ladder is monotonic
+# (16x4 +0.798 -> 32x4 +0.829 -> 16x8 +0.845 traction EV) and depth beat width.
+#
+# GATE. Unquantized holdout EV must clear +0.909 (rank-16 PCA) to count as fixed;
+# +0.968 (rank-32) is the target. Watch TRAIN EV too -- if it stays pinned to holdout
+# we are still underfitting and arm 2 is warranted whatever holdout does.
+defaults:
+  - /experiment/palletjack/action_tokenizer/pretrain_huber_weighted
+  - _self_
+
+codebook_size: 16
+num_quantizers: 8
+
+model:
+  optimizer:
+    lr: 3e-4
+    weight_decay: 0.01
+
+wandb:
+  tags:
+    - palletjack
+    - action_tokenizer
+    - d12
+    - chunk50
+    - 5s
+    - recon_smooth_l1
+    - fork_reweight5
+    - traction_operator
+    - box_mean
+    - cb16x8
+    - underfit_ablation
+    - a1_opt

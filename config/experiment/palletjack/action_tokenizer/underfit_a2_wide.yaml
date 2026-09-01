@@ -1,0 +1,36 @@
+# @package _global_
+
+# ARM 2: arm 1 plus CAPACITY.
+#
+#   just train experiment=palletjack/action_tokenizer/underfit_a2_wide
+#
+# `raw.yaml`'s encoder is Linear(150 -> 128) . GELU . Linear(128 -> 384) -- one hidden
+# layer, narrower than the 150-dim input, and nothing in it that can cheaply represent
+# an edge. `raw_wide.yaml` adds a second hidden layer; `action_hidden_dim` 128 -> 512
+# widens both.
+#
+# This is the arm the error spectrum points at: for fork1, 15.7% of signal power sits
+# above 1 Hz but 49.3% of the ERROR does, and only 7.7% of that band survives the round
+# trip. The tokenizer is acting as a low-pass filter -- it keeps the envelope and drops
+# the steps, which is the part a controller acts on.
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_a1_opt
+  - override /model: palletjack/action_tokenizer/raw_wide
+  - _self_
+
+action_hidden_dim: 512
+
+wandb:
+  tags:
+    - palletjack
+    - action_tokenizer
+    - d12
+    - chunk50
+    - 5s
+    - recon_smooth_l1
+    - fork_reweight5
+    - traction_operator
+    - box_mean
+    - cb16x8
+    - underfit_ablation
+    - a2_wide

@@ -1,0 +1,36 @@
+# @package _global_
+
+# ARM 3: arm 2 plus LOSS BALANCE.
+#
+#   just train experiment=palletjack/action_tokenizer/underfit_a3_vq1
+#
+# `vq_weight: 5.0` means the reconstruction term competes against a commitment/codebook
+# term five times its weight. That pressure shapes the ENCODER, so it caps the
+# unquantized path too -- which is exactly where the measured ceiling sits (+0.885 with
+# the quantizer removed entirely). If arms 1 and 2 leave EV short, this is the remaining
+# suspect; 1.0 puts reconstruction and commitment on equal footing.
+#
+# Kept last because it is the arm most likely to trade codebook health for
+# reconstruction: watch train/perplexity/q* against the ~75-80% utilization the sweep
+# runs held. A jump in EV bought by a collapsing codebook is not a win.
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_a2_wide
+  - _self_
+
+model:
+  vq_weight: 1.0
+
+wandb:
+  tags:
+    - palletjack
+    - action_tokenizer
+    - d12
+    - chunk50
+    - 5s
+    - recon_smooth_l1
+    - fork_reweight5
+    - traction_operator
+    - box_mean
+    - cb16x8
+    - underfit_ablation
+    - a3_vq1
