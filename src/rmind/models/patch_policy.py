@@ -220,6 +220,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         neighbor_smoothing_channels: tuple[int, ...] | None = None,
         fusion_norm: bool = False,
         fusion_goal_rms: float | None = None,
+        # A pretrained WaypointsTokenizer is a frozen feature extractor. A LEARNED
+        # goal head (see `models.mlp_goal_encoder.MlpGoalEncoder`) is not: freezing it
+        # would leave it at init, i.e. a random projection of the intention. Default
+        # True so the car's arms are bit-identical.
+        freeze_goal_encoder: bool = True,
         use_readout_token: bool = False,
         num_register_tokens: int = 0,
         optimizer: HydraConfig[Optimizer] | None = None,
@@ -241,11 +246,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             .requires_grad_(False)  # noqa: FBT003
             .eval()
         )
-        self.goal_encoder = (
-            init_hydra_param(hparams, "goal_encoder", goal_encoder)
-            .requires_grad_(False)  # noqa: FBT003
-            .eval()
-        )
+        self._freeze_goal_encoder: bool = freeze_goal_encoder
+        self.goal_encoder = init_hydra_param(hparams, "goal_encoder", goal_encoder)
+        if freeze_goal_encoder:
+            self.goal_encoder.requires_grad_(False).eval()  # noqa: FBT003
         self.tokenizer = (
             init_hydra_param(hparams, "tokenizer", tokenizer)
             .requires_grad_(False)  # noqa: FBT003
@@ -320,6 +324,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "offset_scale": offset_scale,
             "neighbor_smoothing_tau": neighbor_smoothing_tau,
             "fusion_norm": fusion_norm,
+            "freeze_goal_encoder": freeze_goal_encoder,
             "use_readout_token": use_readout_token,
             "num_register_tokens": num_register_tokens,
         }
@@ -369,7 +374,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def train(self, mode: bool = True) -> "PatchPolicy":
         super().train(mode)
         self.image_encoder.eval()
-        self.goal_encoder.eval()
+        if self._freeze_goal_encoder:
+            self.goal_encoder.eval()
         self.tokenizer.eval()
         return self
 
@@ -477,6 +483,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """
         with torch.no_grad():
             patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
+
+        # A frozen tokenizer stays under no_grad; a LEARNED goal head must not, or it
+        # receives no gradient and silently remains its initialization.
+        if self._freeze_goal_encoder:
+            with torch.no_grad():
+                goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
+        else:
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
 
         # each camera contributes its own `p` patches through the same frozen
