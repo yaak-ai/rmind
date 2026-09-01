@@ -33,6 +33,34 @@ from one forward pass, so nothing new has to be computed or collected:
                               disagreeing with its own past self, which per-frame
                               L1 cannot express.
 
+A second, independent block measures the PEDALS, because everything above
+(and every other offline metric this project has) scores steering, while the
+closed-loop failure of the 3-camera arms is longitudinal -- they die by
+collision having barely braked (`1cam_vs_3cam_offline_gap.md` §12.6):
+
+    (5) pedal marginals    -- mean/sd/p10/p50/p90 of the executed gas and brake,
+                              model and human, plus the model/human ratio. A low
+                              mean is only a defect relative to the human floor
+                              on the SAME frames.
+    (6) brake events       -- P(brake > tau) and mean event duration over a
+                              threshold sweep. A policy that brakes with the
+                              right average in short chattery bursts is a
+                              different defect from one that never brakes, and
+                              the mean hides both.
+    (7) conditional resp.  -- the decisive one. Recall P(model brake | human
+                              brake), the false-positive rate, and P(model gas |
+                              human brake) -- gas commanded where the human
+                              braked. Closed loop, "brakes less" is inseparable
+                              from "met fewer situations demanding a brake",
+                              because each checkpoint drives itself into its own
+                              state distribution; scoring every checkpoint on the
+                              same human frames is what separates them.
+    (8) pedal decomposition-- (7) recomputed on the `codes only` and `offset
+                              only` arms, so a brake miss is attributable to code
+                              selection or to the offset head the way (3) does it
+                              for steering chatter. §5 found steering chatter was
+                              entirely code selection; that is NOT assumed here.
+
 All argmax, matching what `load_for_export` serves; a checkpoint's own
 `sample_codes` is ignored (a sampled draw would swamp these deltas, exactly as
 in `patch_policy_camera_probe.py`).
@@ -69,6 +97,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 from pathlib import Path
 from typing import IO, Any
 
@@ -86,6 +115,17 @@ from rmind.models.patch_policy import PatchPolicy
 # fourth is a categorical indicator, so it gets a switch rate instead.
 CONTINUOUS_CHANNELS = ("gas", "brake", "steer")
 TURN_SIGNAL_CHANNEL = 3
+# Pedal-probe indices into that same executed vector. `gas`/`brake` are
+# CONTINUOUS_CHANNELS 0/1, and the action tokenizer normalizes all three
+# continuous channels with `Identity` (only `turn_signal` is scaled -- see
+# config/model/yaak/action_tokenizer/raw.yaml), so these thresholds are in the
+# raw `*_pedal_normalized` [0, 1] units that rsim's `pred_brake_mean` reports
+# and are directly comparable with it. `_pedal_units_are_raw` re-checks that on
+# the loaded checkpoint rather than trusting the config.
+GAS_CHANNEL = 0
+BRAKE_CHANNEL = 1
+PEDAL_THRESHOLDS = (0.05, 0.1, 0.2, 0.5)
+MODEL_ARMS = ("served", "code_only", "offset_only")
 # the ground-truth plan-incoherence floor (4) must be exact zero up to bf16
 # accumulation; anything above this means the horizon index convention is wrong
 ALIGNMENT_TOLERANCE = 1e-3
@@ -200,6 +240,102 @@ def _turn_signal_class(values: Tensor) -> Tensor:
     return torch.bucketize(values * 2, bounds)
 
 
+def _pedal_units_are_raw(tokenizer: Any) -> bool:
+    """Is the tokenizer's normalizer the identity on gas/brake/steer?
+
+    `PEDAL_THRESHOLDS` are quoted in raw `*_pedal_normalized` units so they mean
+    the same thing as rsim's `pred_brake_mean`. Everything decoded here lives in
+    the tokenizer's NORMALIZED space, and the two coincide only because the
+    action tokenizer normalizes the continuous channels with `Identity`. That is
+    a config fact about a checkpoint trained months ago, so it is verified on the
+    loaded checkpoint instead of assumed -- if it ever stops holding, every
+    threshold in (6)/(7) silently changes meaning.
+    """
+    device = next(tokenizer.parameters()).device
+    probe = torch.tensor([[0.13, 0.37, -0.61, 0.5]], device=device)
+    normalized = tokenizer._normalize(probe)  # noqa: SLF001
+    keep = len(CONTINUOUS_CHANNELS)
+    return bool(torch.allclose(normalized[0, :keep], probe[0, :keep], atol=1e-6))
+
+
+def _event_stats(mask: Tensor) -> tuple[float, float]:
+    """Event rate and mean event duration in FRAMES for a `(seq, frames)` mask.
+
+    Duration counts maximal runs of consecutive True along dim 1. A run still
+    open at a sequence edge is counted at its truncated length, so the figure is
+    a slight under-estimate; and, like everything temporal in this script, it is
+    a proxy at the episode's readout rate (`episode_step` raw frames per step),
+    not a duration in seconds.
+    """
+    total = int(mask.sum())
+    if not total:
+        return 0.0, 0.0
+    previous = torch.cat([torch.zeros_like(mask[:, :1]), mask[:, :-1]], dim=1)
+    starts = int((mask & ~previous).sum())
+    return float(mask.float().mean()), total / starts
+
+
+def _pedal_metrics(executed: dict[str, Tensor]) -> dict[str, float]:
+    """(5)-(8): pedal marginals, brake events, and the conditional response.
+
+    `executed[arm]` is `(sequences, frames, action_features)` -- element 0 of
+    every chunk, the only element deployment ever actuates -- with one sequence's
+    frames contiguous along dim 1, which is what makes the event-duration count
+    in `_event_stats` meaningful.
+    """
+    out: dict[str, float] = {}
+    human = executed["ground_truth"]
+
+    # (5) marginals, every arm including the human floor
+    for arm, view in executed.items():
+        for c, channel in enumerate(CONTINUOUS_CHANNELS):
+            values = view[..., c]
+            out[f"pedal/marginal/{arm}/{channel}/mean"] = float(values.mean())
+            out[f"pedal/marginal/{arm}/{channel}/sd"] = float(values.std())
+            for q in (0.1, 0.5, 0.9):
+                key = f"pedal/marginal/{arm}/{channel}/p{int(q * 100)}"
+                out[key] = float(values.quantile(q))
+
+    # (6) gas and brake treated as events over a threshold sweep
+    for tau in PEDAL_THRESHOLDS:
+        for arm, view in executed.items():
+            for c, channel in ((GAS_CHANNEL, "gas"), (BRAKE_CHANNEL, "brake")):
+                rate, frames = _event_stats(view[..., c] > tau)
+                out[f"pedal/event/{arm}/{channel}/t{tau:g}/rate"] = rate
+                out[f"pedal/event/{arm}/{channel}/t{tau:g}/frames"] = frames
+
+    # (7)+(8) the conditional response: every model arm against the SAME human
+    # frames, which is the whole point -- it is what a closed-loop log cannot do.
+    for tau in PEDAL_THRESHOLDS:
+        human_brakes = human[..., BRAKE_CHANNEL] > tau
+        support = float(human_brakes.sum())
+        quiet = ~human_brakes
+        out[f"pedal/cond/support/t{tau:g}"] = support
+        # the human's own gas-while-braking rate: the floor the model's
+        # `gas_given_brake` has to be read against, not zero
+        out[f"pedal/cond/ground_truth/t{tau:g}/gas_given_brake"] = (
+            float((human[..., GAS_CHANNEL] > tau)[human_brakes].float().mean())
+            if support
+            else float("nan")
+        )
+        for arm in MODEL_ARMS:
+            view = executed[arm]
+            brakes = view[..., BRAKE_CHANNEL] > tau
+            gasses = view[..., GAS_CHANNEL] > tau
+            out[f"pedal/cond/{arm}/t{tau:g}/recall"] = (
+                float(brakes[human_brakes].float().mean()) if support else float("nan")
+            )
+            out[f"pedal/cond/{arm}/t{tau:g}/fpr"] = (
+                float(brakes[quiet].float().mean())
+                if float(quiet.sum())
+                else float("nan")
+            )
+            out[f"pedal/cond/{arm}/t{tau:g}/gas_given_brake"] = (
+                float(gasses[human_brakes].float().mean()) if support else float("nan")
+            )
+    return out
+
+
 def _total_variation(executed: Tensor) -> Tensor:
     """Mean |a_t - a_{t-1}| per channel over `(b, t, action_features)`."""
     return (executed[:, 1:] - executed[:, :-1]).abs().mean(dim=(0, 1))
@@ -223,6 +359,10 @@ def evaluate(  # noqa: C901, PLR0912, PLR0914, PLR0915
     acc = _Accumulator()
     alignment_error = 0.0
     batches = 0
+    # the executed command itself, kept per arm for the pedal block: the
+    # marginals need percentiles and the events need contiguity, neither of
+    # which a running mean can carry. ~(40 x 32) x 17 x 4 floats -- nothing.
+    executed_by_arm: dict[str, list[Tensor]] = {}
 
     for i, cpu_batch in enumerate(loader):
         if i >= max_batches:
@@ -297,6 +437,9 @@ def evaluate(  # noqa: C901, PLR0912, PLR0914, PLR0915
                 for c, channel in enumerate(CONTINUOUS_CHANNELS):
                     acc.add(f"exec_l1/{name}/{channel}", l1[c], b)
 
+        for name, view in views.items():
+            executed_by_arm.setdefault(name, []).append(view[:, :, 0, :].float().cpu())
+
         # (4) plan incoherence: chunk[t, k] and chunk[t+k, 0] are the same
         # instant. The ground-truth arm is a SELF-CHECK on that claim -- it is
         # built by unfolding one action series, so its value must be ~0; a
@@ -321,6 +464,10 @@ def evaluate(  # noqa: C901, PLR0912, PLR0914, PLR0915
         raise RuntimeError(msg)
 
     results = acc.mean()
+    results.update(
+        _pedal_metrics({k: torch.cat(v) for k, v in executed_by_arm.items()})
+    )
+    results["_pedal_units_selfcheck"] = float(_pedal_units_are_raw(tokenizer))
     results["_alignment_selfcheck"] = alignment_error
     results["_batches"] = float(batches)
     results["_first_full_window_frame"] = float(0 if window is None else window - 1)
@@ -402,6 +549,101 @@ def _report(results: dict[str, float], *, checkpoint: str, experiment: str) -> N
             break
         print(f"  k={k}  {results[key]:.5f}")  # noqa: T201
 
+    _report_pedal(results)
+
+
+def _report_pedal(results: dict[str, float]) -> None:
+    """(5)-(8). Kept in its own function, and reading only its own `pedal/*`
+    keys, so it cannot perturb the §5 steering numbers above it -- those are the
+    regression test this script is held to.
+    """
+    if "pedal/marginal/served/brake/mean" not in results:
+        return
+
+    units_ok = bool(results.get("_pedal_units_selfcheck"))
+    print(  # noqa: T201
+        "\npedal-units self-check: tokenizer normalizer is "
+        + (
+            "the identity on gas/brake/steer  OK"
+            if units_ok
+            else "NOT the identity -- the thresholds below are NOT raw pedal units"
+        )
+    )
+
+    print("\n(5) pedal marginals of the executed command")  # noqa: T201
+    print(  # noqa: T201
+        "    (the ratio column is only interpretable for gas/brake -- steer is "
+        "signed\n     and its mean is ~0, so its ratio divides two near-zero "
+        "numbers)"
+    )
+    print(  # noqa: T201
+        f"{'':20s} {'mean':>8s} {'sd':>8s} {'p10':>8s} {'p50':>8s} {'p90':>8s} "
+        f"{'ratio':>8s}"
+    )
+    for channel in CONTINUOUS_CHANNELS:
+        human_mean = results[f"pedal/marginal/ground_truth/{channel}/mean"]
+        for arm in ("served", "ground_truth"):
+            prefix = f"pedal/marginal/{arm}/{channel}"
+            label = "model" if arm == "served" else "human"
+            ratio = (
+                f"{results[f'{prefix}/mean'] / human_mean:6.2f}x"
+                if arm == "served" and human_mean
+                else ""
+            )
+            print(  # noqa: T201
+                f"{channel + ' ' + label:20s} {results[f'{prefix}/mean']:8.4f} "
+                f"{results[f'{prefix}/sd']:8.4f} {results[f'{prefix}/p10']:8.4f} "
+                f"{results[f'{prefix}/p50']:8.4f} {results[f'{prefix}/p90']:8.4f} "
+                f"{ratio:>8s}"
+            )
+
+    print("\n(6) gas/brake as events: rate, and mean run length in readouts")  # noqa: T201
+    print(  # noqa: T201
+        f"{'':14s} {'model rate':>10s} {'human rate':>10s} {'ratio':>8s} "
+        f"{'model len':>10s} {'human len':>10s}"
+    )
+    for channel in ("brake", "gas"):
+        for tau in PEDAL_THRESHOLDS:
+            served = f"pedal/event/served/{channel}/t{tau:g}"
+            truth = f"pedal/event/ground_truth/{channel}/t{tau:g}"
+            ratio = _ratio(results, f"{served}/rate", f"{truth}/rate")
+            print(  # noqa: T201
+                f"{channel + ' >' + f'{tau:g}':14s} {results[f'{served}/rate']:10.4f} "
+                f"{results[f'{truth}/rate']:10.4f} {ratio:>8s} "
+                f"{results[f'{served}/frames']:10.2f} "
+                f"{results[f'{truth}/frames']:10.2f}"
+            )
+
+    print("\n(7) conditional response on the SAME frames (served)")  # noqa: T201
+    print(  # noqa: T201
+        f"{'':14s} {'support':>9s} {'recall':>8s} {'fpr':>8s} "
+        f"{'gas|brake':>10s} {'human gas|brake':>16s}"
+    )
+    for tau in PEDAL_THRESHOLDS:
+        arm = f"pedal/cond/served/t{tau:g}"
+        print(  # noqa: T201
+            f"{'tau ' + f'{tau:g}':14s} {results[f'pedal/cond/support/t{tau:g}']:9.0f} "
+            f"{results[f'{arm}/recall']:8.4f} {results[f'{arm}/fpr']:8.4f} "
+            f"{results[f'{arm}/gas_given_brake']:10.4f} "
+            f"{results[f'pedal/cond/ground_truth/t{tau:g}/gas_given_brake']:16.4f}"
+        )
+
+    print("\n(8) is a brake miss code selection or the offset head?")  # noqa: T201
+    print(  # noqa: T201
+        f"{'':14s} {'recall':>26s} {'gas | human brake':>26s}\n"
+        f"{'':14s} {'codes':>8s} {'offset':>8s} {'served':>8s} "
+        f"{'codes':>8s} {'offset':>8s} {'served':>8s}"
+    )
+    for tau in PEDAL_THRESHOLDS:
+        cells = [
+            results[f"pedal/cond/{arm}/t{tau:g}/{metric}"]
+            for metric in ("recall", "gas_given_brake")
+            for arm in ("code_only", "offset_only", "served")
+        ]
+        print(  # noqa: T201
+            f"{'tau ' + f'{tau:g}':14s} " + " ".join(f"{v:8.4f}" for v in cells)
+        )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -467,7 +709,14 @@ def main() -> None:
     _report(results, checkpoint=args.artifact or args.ckpt, experiment=args.experiment)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:  # noqa: PTH123
-            json.dump(results, f, indent=1)
+            # a threshold with no support in the val subset yields NaN, which
+            # `json.dump` happily writes and every strict reader (jq included)
+            # then rejects -- write the absence as null instead
+            json.dump(
+                {k: (v if math.isfinite(v) else None) for k, v in results.items()},
+                f,
+                indent=1,
+            )
         print(f"\nwrote {args.out}")  # noqa: T201
 
 
