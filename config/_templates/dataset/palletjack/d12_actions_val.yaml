@@ -1,0 +1,176 @@
+#@yaml/text-templated-strings
+
+#@ # ACTION TOKENIZER TRAIN: the 2026-08-31 batch minus the two held-out drives.
+#@ # Same jobs as the policy arms, so the tokenizer is never fitted on val actions.
+#@ # ACTION TOKENIZER VAL: the same two held-out drives as `d12_val.yaml`, so the
+#@ # reconstruction check is on actions the codebook never saw.
+#@ jobs = [
+#@    '2026-08-31--16-47-19',
+#@    '2026-08-31--16-50-53',
+#@ ]
+#@ cameras = ['cam_fork']
+#@ reference = 'cam_fork'
+#@ frame_size = '256x144'
+
+---
+# Real D12 recordings: actuations from `data.mcap`, frames from the JPEGs that
+# `scripts/extract_d12_frames.sh` writes beside each camera's video.
+#
+# Samples are built HERE, at load time, by `rmind.data.d12.D12SampleBuilder` - one
+# pipeline call per job, concatenated. There is no prepared parquet on disk: the
+# builder owns the clock alignment (its docstring explains why the video timeline
+# is nominal and the mcap's own per-frame topic is the only real timebase), the
+# per-signal validity gate, and the pairing-skew guard that refuses a job whose
+# frames cannot be trusted to line up. Adding a signal is a change to that module,
+# never a stale artifact.
+#
+# Job directories are named by datetime and that name is the `input_id`.
+#
+# NOT 2026-08-25--13-44-11: that recording predates `fork_above_300` in the
+# `lindelot/vehicle_state` schema, so the observation column cannot be built.
+#
+# JPEGs rather than decoding the mp4 here: shuffled access into h264 measured
+# 1958ms per 6 frames against 1.1ms for pre-resized JPEGs, so decoding video in
+# the dataloader would leave the GPU idle. The filename is the 0-based encoded
+# frame index, which is what `frame_idx` refers to, and the resolution is part of
+# the path so several can coexist - keep `frame_size` in step with the
+# experiment's `image_resize`.
+#
+# Every camera is its own stream with its own index column: they run on
+# independent clocks and drop frames independently, so the builder matches them to
+# the reference timeline by timestamp, never by index. Streams are declared for
+# all cameras; which ones the MODEL consumes is `cameras` in the experiment, so
+# limiting to one camera needs no change here.
+_target_: rbyte.Dataset.from_config
+_recursive_: false
+_convert_: all
+# No image streams: the action tokenizer is an autoencoder over action CHUNKS and
+# never sees a frame. The car's own action dataset does the same (`streams: {}` in
+# `_templates/dataset/yaak/action_train.yaml`). The mcap decode and the frame pairing
+# still run -- they are what puts the actions on a timeline -- so `cameras` below stays
+# at the reference camera alone, and the `<cam>/frame_idx` column it emits is simply
+# unused.
+streams: {}
+
+samples:
+  # A handful of jobs, each decoded once at startup. The default pipefunc executor
+  # is a process pool sized to every core, which for this tiny map just eagerly
+  # forks dozens of idle workers; a small thread pool is the right size, and the
+  # mcap decode is Rust that releases the GIL so threads actually run in parallel.
+  executor:
+    _target_: concurrent.futures.ThreadPoolExecutor
+    max_workers: 4
+
+  inputs:
+    # one job directory per pipeline invocation
+    job_dir:
+      #@ for/end job_id in jobs:
+      - ${paths.d12}/(@=job_id@)
+
+  pipeline:
+    _target_: pipefunc.Pipeline
+    validate_type_annotations: false
+    functions:
+      # 1. mcap -> per-frame row table with WORLD-frame ego/pallet/target columns
+      - _target_: pipefunc.PipeFunc
+        output_name: row_table
+        mapspec: "job_dir[i] -> row_table[i]"
+        func:
+          _target_: rmind.data.d12.D12RowTableBuilder
+          cameras:
+            #@ for/end camera in cameras:
+            - (@=camera@)
+          reference: (@=reference@)
+          # signed traction command, the field the vehicle actually applies
+          traction_source: command
+          # Raised from 1.0 for the 2026-08-31 batch. `_pairing_skew` reports the
+          # DURATION OF THE SURPLUS published frames as a worst-case bound: it
+          # cannot tell whether the un-encoded frames sit at the head or the tail,
+          # so it assumes the worst. Measured on 2026-08-31--15-44-29/cam_fork
+          # (4548 published vs 4500 encoded, the job that tripped the old limit):
+          # after removing a CONSTANT clock offset -- the mcap's `log_time` is a
+          # deferred write, +614 s here -- the encoded and published timelines
+          # agree to a MAXIMUM of 2.3 ms over all 4500 frames (p99 1.2 ms), i.e.
+          # well inside one 33 ms frame. So head-anchored pairing is exact and all
+          # 48 surplus frames are a tail: the encoder stops ~1.6 s before the
+          # logger does. Every camera in every job sampled shows a surplus and
+          # never a deficit, and the already-accepted 2026-08-25 batch has the
+          # same signature at 0.77 s (residual 1.4 ms). 3.0 keeps the guard useful
+          # against a genuinely mispaired job while admitting this tail.
+          max_skew_s: 3.0
+
+      # 2. the intention transform, in the config just like the car waypoints:
+      # translate each target by -ego, rotate by -heading into the vehicle frame,
+      # divide by 10 and clamp to [-1, 1]. `fwd` is the component along the
+      # heading, `lat` the one to its left; the sign convention is arbitrary but
+      # fixed. The /10 is a VERY arbitrary number - a rough guess at the largest
+      # useful approach distance, only there to put the tokens on the same [-1, 1]
+      # scale as the other continuous inputs (recorded distances top out near
+      # 4.5m, so nothing saturates). Widen it for a larger site. The kit does this
+      # same rotate+scale before feeding the tokens, so training and inference
+      # share one definition.
+      - _target_: pipefunc.PipeFunc
+        output_name: positioned
+        mapspec: "row_table[i] -> positioned[i]"
+        func:
+          _target_: rmind.data.d12.DuckDBStage
+          query: |
+              WITH ego AS (
+                SELECT
+                  *,
+                  radians(ego_heading) AS _t,
+                  pallet_x - ego_x AS _pdx, pallet_y - ego_y AS _pdy,
+                  target_x - ego_x AS _tdx, target_y - ego_y AS _tdy
+                FROM row_table
+              )
+              SELECT
+                * EXCLUDE (
+                  ego_x, ego_y, ego_heading, pallet_x, pallet_y, target_x, target_y,
+                  _t, _pdx, _pdy, _tdx, _tdy
+                ),
+                [
+                  greatest(-1.0, least(1.0, ( cos(_t)*_pdx + sin(_t)*_pdy) / 10.0)),
+                  greatest(-1.0, least(1.0, (-sin(_t)*_pdx + cos(_t)*_pdy) / 10.0))
+                ] AS relative_ego_pos,
+                [
+                  greatest(-1.0, least(1.0, ( cos(_t)*_tdx + sin(_t)*_tdy) / 10.0)),
+                  greatest(-1.0, least(1.0, (-sin(_t)*_tdx + cos(_t)*_tdy) / 10.0))
+                ] AS relative_dropoff_pos
+              FROM ego
+
+      # 3. sliding-window episodes over the positioned row table
+      - _target_: pipefunc.PipeFunc
+        output_name: samples_per_job
+        mapspec: "positioned[i] -> samples_per_job[i]"
+        renames:
+          frames: positioned
+        func:
+          _target_: rmind.data.d12.D12EpisodeWindower
+          cameras:
+            #@ for/end camera in cameras:
+            - (@=camera@)
+          # episode shape follows the experiment
+          # clip shape follows the experiment. `episode_length` here is the CLIP
+          # length in decimated steps, which for a chunked arm is
+          # `episode_length + action_horizon - 1` -- ChunkFields truncates back to
+          # the readout count. `${clip_length}` carries that arithmetic.
+          episode_length: ${action_clip}
+          # reference-frame decimation, 30 -> 10 Hz
+          episode_step: ${episode_step}
+          # RAW-grid clip stride. Coprime to `episode_step` so successive clip
+          # starts rotate through every raw-frame phase (see `episodes()`): at
+          # step 3 the old decimate-then-stride grid reached 1 of 3 phases and
+          # 33% of frames; stride 31 reaches all 3 and ~98%.
+          # dense: every raw frame starts a chunk (all phases, ~3x the clips of
+          # stride 31). Affordable only because no images are read.
+          episode_stride: 1
+          # baked at instantiation, not per epoch -- rotate across restarts
+          episode_offset: "${oc.select:episode_offset,0}"
+
+      # 4. plain vertical concat: every row already carries its job's `input_id`
+      - _target_: pipefunc.PipeFunc
+        output_name: samples
+        renames:
+          values: samples_per_job
+        func:
+          _target_: rbyte.samples.dataframe.DataFrameConcatenator

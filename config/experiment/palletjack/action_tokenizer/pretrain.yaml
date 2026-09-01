@@ -1,0 +1,64 @@
+# @package _global_
+
+# STAGE 1 of the action-tokenizer arm: fit the residual-VQ chunk tokenizer.
+#
+#   just train experiment=palletjack/action_tokenizer/pretrain
+#
+# The deployed `PatchPolicyContinuous` exists precisely because this stage was
+# impossible: its docstring says "an embodiment with no recorded actions has nothing
+# to fit one to", so VQ-BeT's code/offset heads were replaced by Gaussian heads.
+# With the 2026-08-31 batch (31 drives, ~33 min) there is now something to fit.
+#
+# CHUNK GEOMETRY. `action_clip: 50` at `action_step: 3` is 50 actions spaced 3 raw
+# frames apart = 5.0 s of manoeuvre, quantized as ONE vector (action_dim = 3 x 50 =
+# 150). `ChunkFields` unfolds on the already-decimated axis with step 1, so the chunk
+# spacing is welded to `action_step`; 5 s at chunk 50 is what keeps the frame rate at
+# the palletjack's own 10 Hz instead of dropping to the 2 Hz that chunk 10 would force.
+#
+# WHY A CHUNK AT ALL. The deployed model predicts one action for NOW and re-plans every
+# tick with no committed trajectory. Engaged at 4.35 m from the pallet it issued ~+0.07
+# traction, too little to break away, so the state never changed and neither did the
+# command -- a self-reinforcing stall. A 5 s chunk commits to a manoeuvre.
+defaults:
+  - /model: palletjack/action_tokenizer/raw
+  - /datamodule: palletjack/d12_actions
+  - /trainer: default
+  - /trainer/callbacks: action_tokenizer
+  - /paths: palletjack/default
+  - /wandb: palletjack/default
+  - _self_
+
+action_clip: 50
+action_step: 3
+# the windower needs these names; the action dataset ignores the grid knobs the image
+# arms use, laying a chunk on every raw frame instead (see `d12_actions.yaml`)
+episode_step: ${action_step}
+clip_length: ${action_clip}
+
+# traction, steering, fork1 -- no fork2, no horn, no categorical actuation
+action_space: 3
+action_dim: "${eval:'${action_space} * ${action_clip}'}"
+action_hidden_dim: 128
+action_latent_dim: 384
+
+# Same codebook as the car's 4x6=24-dim chunk. Deliberately unchanged as a starting
+# point rather than scaled up for the 150-dim chunk: 16^4 = 65k reachable codes is a
+# lot of manoeuvre vocabulary for ~33 min of driving, and the honest test is the
+# holdout reconstruction, not a guess at capacity. `fork1` is the axis to watch --
+# it is bimodal (~87% near zero, ~11% at +/-1), so a tokenizer can look converged on
+# average while never reproducing a fork event.
+codebook_size: 16
+num_quantizers: 4
+
+lr_warmup_steps: 500
+lr_total_steps: 10000
+
+trainer:
+  max_epochs: 100
+  precision: "bf16-mixed"
+  gradient_clip_val: 1.0
+  log_every_n_steps: 10
+  val_check_interval: 0.5
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s]

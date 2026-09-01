@@ -1,0 +1,33 @@
+---
+defaults:
+  - /dataset/palletjack/d12_actions@train.dataset
+  # the same two held-out drives as the policy arms, so the reconstruction check
+  # in `verify_action_tokenizer` is on actions the codebook never saw
+  - /dataset/palletjack/d12_actions_val@val.dataset
+  - _self_
+
+_target_: rmind.datamodules.GenericDataModule
+train:
+  _target_: rbyte.dataloader.NodeDataLoader
+  # chunks are 3 x 50 float32 = 600 bytes, and no frames are decoded, so the batch
+  # can be far larger than any image arm's
+  batch_size: 1024
+  shuffle: true
+  drop_last: true
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+
+val:
+  _target_: rbyte.dataloader.NodeDataLoader
+  batch_size: 1024
+  shuffle: false
+  collate_fn:
+    _target_: rbyte.types.Batch.to_dict
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
