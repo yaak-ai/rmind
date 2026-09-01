@@ -631,9 +631,13 @@ class AxisShrinkage(Module):
         *batch, _ = x.shape
         chunk = x.reshape(*batch, self.num_steps, self.num_axes)
 
+        # `.to(chunk.dtype)`: the parameter is fp32 but under `bf16-mixed` the chunk
+        # arrives as bfloat16, and `index_copy` requires matching dtypes
         tau = chunk.new_zeros(self.num_axes)
         tau = tau.index_copy(
-            0, chunk.new_tensor(self.axes, dtype=torch.long), self.thresholds
+            0,
+            torch.as_tensor(self.axes, device=chunk.device, dtype=torch.long),
+            self.thresholds.to(chunk.dtype),
         )
         shrunk = torch.sign(chunk) * F.relu(chunk.abs() - tau)
 

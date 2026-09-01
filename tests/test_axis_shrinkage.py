@@ -82,3 +82,19 @@ def test_rejects_an_out_of_range_axis() -> None:
         return
     msg = "expected ValueError for an out-of-range axis"
     raise AssertionError(msg)
+
+
+def test_runs_under_bf16_autocast(device: torch.device) -> None:
+    # training uses `precision: bf16-mixed`; the threshold parameter stays fp32 while
+    # the chunk arrives as bfloat16, which `index_copy` rejects unless we cast
+    if device.type != "cuda":
+        return
+    m = _mod().to(device)
+    x = make_tensor(4, STEPS * AXES, dtype=torch.float, device=device, low=-1, high=1)
+
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        out = m(x.to(torch.bfloat16))
+
+    assert out.dtype == torch.bfloat16
+    # again, exact zero is the feature under test
+    assert out.reshape(4, STEPS, AXES)[:, :, FORK].abs().min().item() == 0.0  # noqa: RUF069
