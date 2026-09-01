@@ -1,3 +1,5 @@
+from typing import cast
+
 import numpy as np
 import torch
 from numpy.testing import assert_allclose
@@ -12,7 +14,7 @@ STEPS, AXES = 50, 3
 # tokenizer is aiming at, so it is irrelevant to training -- but it means the exactness
 # of the basis has to be checked in float64 on CPU, and the device tests carry a
 # TF32-sized tolerance.
-TF32 = {"atol": 5e-3, "rtol": 1e-2}
+TF32_ATOL, TF32_RTOL = 5e-3, 1e-2
 
 
 def _pair(k: int) -> tuple[ChunkDCT, ChunkIDCT]:
@@ -24,13 +26,17 @@ def test_full_basis_round_trips(device: torch.device) -> None:
     fwd, inv = _pair(STEPS)
     x = make_tensor(8, STEPS * AXES, dtype=torch.float, device=device, low=-1, high=1)
 
-    assert_close(inv.to(device)(fwd.to(device)(x)), x, **TF32)
+    assert_close(inv.to(device)(fwd.to(device)(x)), x, atol=TF32_ATOL, rtol=TF32_RTOL)
 
 
 def test_basis_is_orthonormal() -> None:
     # float64 on CPU: this is the claim the whole module rests on, so check it exactly.
-    basis = ChunkDCT(num_steps=STEPS, num_axes=AXES, num_coefficients=STEPS).basis
-    gram = basis.double() @ basis.double().T
+    # `basis` is a registered buffer, which ty widens to `Tensor | Module`
+    basis = cast(
+        "torch.Tensor",
+        ChunkDCT(num_steps=STEPS, num_axes=AXES, num_coefficients=STEPS).basis,
+    ).double()
+    gram = basis @ basis.T
 
     assert_close(gram, torch.eye(STEPS, dtype=torch.float64), atol=1e-6, rtol=1e-6)
 
@@ -42,7 +48,7 @@ def test_truncation_is_a_least_squares_projection(device: torch.device) -> None:
     full = ChunkDCT(num_steps=STEPS, num_axes=AXES, num_coefficients=STEPS).to(device)
     band = inv(fwd(make_tensor(4, STEPS * AXES, dtype=torch.float, device=device)))
 
-    assert_close(inv(fwd(band)), band, **TF32)
+    assert_close(inv(fwd(band)), band, atol=TF32_ATOL, rtol=TF32_RTOL)
     # and the discarded coefficients really are ~zero
     assert full(band).reshape(4, STEPS, AXES)[:, 8:].abs().max() < 5e-3  # noqa: PLR2004
 
@@ -69,5 +75,7 @@ def test_axis_layout_is_preserved(device: torch.device) -> None:
 
     c = fwd(x).reshape(1, STEPS, AXES)
 
-    assert_close(c[0, 0], per_axis * float(np.sqrt(STEPS)), **TF32)
+    assert_close(
+        c[0, 0], per_axis * float(np.sqrt(STEPS)), atol=TF32_ATOL, rtol=TF32_RTOL
+    )
     assert c[0, 1:].abs().max() < 5e-3  # noqa: PLR2004
