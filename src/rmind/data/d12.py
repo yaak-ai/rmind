@@ -75,8 +75,9 @@ away.
 
 import math
 from pathlib import Path
-from typing import Final, NamedTuple, final
+from typing import Final, Literal, NamedTuple, final
 
+import numpy as np
 import polars as pl
 from pydantic import InstanceOf, validate_call
 from structlog import get_logger
@@ -103,11 +104,25 @@ class Signal(NamedTuple):
     # companion boolean field that says the reading is meaningful; rows where it
     # is False are dropped rather than trusted
     valid_field: str | None = None
+    # How a signal logged FASTER than the model's grid is brought onto it. `None` is
+    # nearest-asof, correct for anything already at or below the grid rate. `"mean"` is
+    # a box average over the decimated window, which is what an 83 Hz signal needs:
+    # nearest-asof picks whichever sample happens to be closest and aliases hard at step
+    # edges. MEASURED against the 83 Hz traction as truth (2026-08-31--16-47-19, RMS in
+    # percentage points): nearest 5.81 (worst case a full-scale 100 pp miss), box over
+    # the 33 ms camera interval 5.10, box over the full 100 ms decimated window 3.42.
+    # Only the last is worth having, so the window is `episode_step` reference rows.
+    #
+    # NOT applied to fork1, though it is logged at 88 Hz: it is near-binary and 92% zero,
+    # so averaging invents levels the lever never produces. Measured against a native
+    # event rate of 5.30% of samples at |cmd| > 50: nearest 5.50%, box-mean 4.96%
+    # (drops events), max-abs 6.29% (invents them). Nearest is the most faithful.
+    reducer: Literal["mean"] | None = None
 
 
 # column name -> source. Scale brings percent to [-1, 1].
 SIGNALS: Final = {
-    "traction": Signal("linde/traction", "traction_pct", 0.01),
+    "traction": Signal("linde/traction", "traction_pct", 0.01, reducer="mean"),
     "steering": Signal("lindelot/adc", "steering_angle_normalised"),
     "fork1": Signal("linde/fork", "fork1_pct", 0.01),
     "speed": Signal("lindelot/vehicle_state", "speed"),
@@ -194,8 +209,11 @@ def resolve_signal(name: str, traction_source: str) -> Signal:
         return signal
 
     topic, field = TRACTION_SOURCES[traction_source]
+    # only the 83 Hz bus frame needs decimating; the 10-11 Hz alternatives are already
+    # at or below the grid rate, where a box mean would be a no-op at best
+    reducer = "mean" if topic == "linde/traction" else None
 
-    return signal._replace(topic=topic, field=field)
+    return signal._replace(topic=topic, field=field, reducer=reducer)
 
 
 def encoded_frame_count(camera_dir: Path, camera: str) -> int:
@@ -259,13 +277,34 @@ def _pairing_skew(frames: pl.DataFrame, encoded: int) -> float:
     return (pts[published - 1] - pts[encoded - 1]) / 1e9
 
 
-def row_table(
+def box_mean(
+    src_t: np.ndarray, src_v: np.ndarray, ref_t: np.ndarray, window_s: float
+) -> np.ndarray:
+    """Mean of `src` over `[t, t + window_s)` for each `t` in `ref_t`.
+
+    The anti-aliased alternative to nearest-asof for a signal logged far faster than the
+    grid. Empty windows fall back to the nearest sample so a gap never produces a NaN.
+    """
+    lo = np.searchsorted(src_t, ref_t, side="left")
+    hi = np.searchsorted(src_t, ref_t + window_s, side="left")
+    csum = np.concatenate(([0.0], np.cumsum(src_v, dtype=np.float64)))
+    count = hi - lo
+    total = csum[hi] - csum[lo]
+    nearest_idx = np.clip(lo, 0, len(src_v) - 1)
+
+    return np.where(count > 0, total / np.maximum(count, 1), src_v[nearest_idx]).astype(
+        np.float32
+    )
+
+
+def row_table(  # noqa: PLR0913
     job_dir: Path,
     *,
     cameras: tuple[str, ...],
     reference: str,
     traction_source: str,
     max_skew_s: float,
+    episode_step: int = 1,
 ) -> pl.DataFrame:
     """One row per reference-camera frame: frame indices, signals, WORLD positions.
 
@@ -319,6 +358,15 @@ def row_table(
         if camera != reference:
             table = table.join_asof(frames, on="log_time", strategy="nearest")
 
+    # the model's grid is every `episode_step`-th reference row, so that is the window a
+    # box mean has to cover -- see `Signal.reducer`
+    ref_ns = table["log_time"].dt.epoch("ns").to_numpy().astype(np.float64)
+    window_s = (
+        float(np.median(np.diff(ref_ns))) * episode_step / 1e9
+        if len(ref_ns) > 1
+        else 0.0
+    )
+
     validity: list[str] = []
     for name in SIGNALS:
         signal = resolve_signal(name, traction_source)
@@ -328,6 +376,20 @@ def row_table(
             columns.append(pl.col(signal.valid_field).alias(valid))
 
         series = topics[signal.topic].sort("log_time").select("log_time", *columns)
+        if signal.reducer == "mean" and window_s > 0:
+            src_t = series["log_time"].dt.epoch("ns").to_numpy().astype(np.float64)
+            table = table.with_columns(
+                pl.Series(
+                    name,
+                    box_mean(
+                        src_t,
+                        series[name].to_numpy().astype(np.float64),
+                        ref_ns,
+                        window_s * 1e9,
+                    ),
+                )
+            )
+            continue
         table = table.join_asof(series, on="log_time", strategy="nearest")
 
     table = _world_positions(table, topics, job_dir)
@@ -447,7 +509,7 @@ def _drop_invalid(table: pl.DataFrame, validity: list[str]) -> pl.DataFrame:
     return kept
 
 
-def episodes(
+def episodes(  # noqa: PLR0913
     table: pl.DataFrame,
     *,
     cameras: tuple[str, ...],
@@ -568,6 +630,7 @@ class D12RowTableBuilder:
         cameras: tuple[str, ...],
         reference: str = "cam_fork",
         traction_source: str = "command",
+        episode_step: int = 1,
         max_skew_s: float = 1.0,
     ) -> None:
         if reference not in cameras:
@@ -580,6 +643,7 @@ class D12RowTableBuilder:
         self._cameras = cameras
         self._reference = reference
         self._traction_source = traction_source
+        self._episode_step = episode_step
         self._max_skew_s = max_skew_s
 
     @validate_call
@@ -589,6 +653,7 @@ class D12RowTableBuilder:
             cameras=self._cameras,
             reference=self._reference,
             traction_source=self._traction_source,
+            episode_step=self._episode_step,
             max_skew_s=self._max_skew_s,
         ).with_columns(pl.lit(job_dir.name).alias("input_id"))
 
@@ -650,7 +715,7 @@ class D12EpisodeWindower:
 
     @validate_call
     def __call__(self, *, frames: InstanceOf[pl.DataFrame]) -> pl.DataFrame:
-        samples = episodes(
+        return episodes(
             frames,
             cameras=self._cameras,
             episode_length=self._episode_length,
@@ -658,5 +723,3 @@ class D12EpisodeWindower:
             episode_stride=self._episode_stride,
             episode_offset=self._episode_offset,
         )
-
-        return samples

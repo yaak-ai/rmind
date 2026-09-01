@@ -111,6 +111,9 @@ samples:
           # same signature at 0.77 s (residual 1.4 ms). 3.0 keeps the guard useful
           # against a genuinely mispaired job while admitting this tail.
           max_skew_s: 3.0
+          # sizes the box-mean window for high-rate signals: the model's grid is every
+          # `episode_step`-th reference row, so that is the window to average over
+          episode_step: ${episode_step}
 
       # 2. the intention transform, in the config just like the car waypoints:
       # translate each target by -ego, rotate by -heading into the vehicle frame,
