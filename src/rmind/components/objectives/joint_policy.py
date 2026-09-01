@@ -7,69 +7,127 @@ from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
-from torch.utils._pytree import tree_leaves, tree_map  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
     PATCHES,
-    CodeTargets,
     Metrics,
     Objective,
     ObjectivePredictionKey,
     Prediction,
 )
-from rmind.components.objectives.joint_inverse_dynamics import joint_vq_loss
 
 type Path = tuple[str, ...]
 
 
 @final
 class PolicyObjective(Objective):
+    """VQ-BeT action-chunk policy over the latent, reading K=L, V=I.
+
+    At the last timestep a `policy` utility query attends over the latent L (keys)
+    and the raw patches I (values, LN'd) to a single feature, which predicts the
+    frozen chunk tokenizer's residual-VQ codes plus a code-conditioned continuous
+    offset; the action chunk is `decode(codes) + offset`.
+    """
+
     @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         decoder: InstanceOf[Module],
-        heads: InstanceOf[ModuleDict],
+        tokenizer: InstanceOf[Module],
+        code_head: InstanceOf[Module],
+        offset_head: InstanceOf[Module],
         losses: InstanceOf[ModuleDict],
-        targets: CodeTargets,
+        chunk: Path,
         value_norm: InstanceOf[Module] | None = None,
         readout: int = 0,
+        sample_codes: bool = True,
     ) -> None:
         super().__init__()
         self.decoder = decoder
-        self.heads = heads
+        self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        self.code_head = code_head
+        self.offset_head = offset_head
         self.losses = losses
-        self.targets: CodeTargets = targets
+        self.chunk: Path = chunk
         self.value_norm: Module | None = value_norm
         self.readout: int = readout
+        self.sample_codes = sample_codes
+
+    @override
+    def train(self, mode: bool = True) -> "PolicyObjective":  # noqa: FBT001, FBT002
+        super().train(mode)
+        self.tokenizer.eval()
+        return self
+
+    def _features(self, *, episode: Episode, latent: Tensor) -> Tensor:
+        # last timestep only: policy query attends K=L, V=I (LN'd)
+        patches = episode.get(PATCHES)[:, -1:]
+        value = self.value_norm(patches) if self.value_norm is not None else patches
+        queries = episode.embeddings.get((Modality.UTILITY, "policy"))[:, -1:]
+        features = self.decoder({"query": queries, "key": latent[:, -1:], "value": value})
+        return features[:, :, self.readout].squeeze(1)  # (b, d)
+
+    def _gather_offset(self, features: Tensor, codes: Tensor) -> Tensor:
+        """Select each quantizer's offset at `codes` and sum over quantizers."""
+        quantizer = self.tokenizer.quantizer
+        g, c = quantizer.num_quantizers, quantizer.codebook_size
+        offsets = rearrange(
+            self.offset_head(features), "b (g c a) -> b g c a", g=g, c=c
+        )
+        index = codes[..., None, None].expand(-1, -1, 1, offsets.shape[-1])
+        return offsets.gather(2, index).squeeze(2).sum(dim=1)  # (b, action_dim)
+
+    def _predict(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """VQ-BeT joint code prediction with a code-conditioned offset."""
+        quantizer = self.tokenizer.quantizer
+        g, c = quantizer.num_quantizers, quantizer.codebook_size
+
+        code_logits = rearrange(self.code_head(features), "b (g c) -> b g c", g=g, c=c)
+        codes = code_logits.argmax(dim=-1)
+
+        if self.sample_codes:
+            codes = rearrange(
+                torch.multinomial(code_logits.softmax(dim=-1).reshape(-1, c), 1),
+                "(b g) 1 -> b g",
+                g=g,
+            )
+
+        offset = self._gather_offset(features, codes)
+        return code_logits, codes, offset
 
     @override
     def compute_metrics(
         self, *, episode: Episode, embedding: Tensor, latent: Tensor | None = None
     ) -> Metrics:
         assert latent is not None
-        # last timestep only: predict a_τ for τ = t-1
-        patches = episode.get(PATCHES)[:, -1:]
-        value = self.value_norm(patches) if self.value_norm is not None else patches
-        queries = episode.embeddings.get((Modality.UTILITY, "policy"))[:, -1:]
-        features = self.decoder({"query": queries, "key": latent[:, -1:], "value": value})
-        features = features[:, :, self.readout]
+        features = self._features(episode=episode, latent=latent)
+        tokenizer = self.tokenizer
 
         with torch.no_grad():
-            codes = tree_map(
-                lambda k: episode.get(k)[:, -1:],
-                self.targets,
-                is_leaf=lambda x: isinstance(x, tuple),
+            # window is [current .. current+clip_horizon-1]; drop the current step so
+            # the target is the strictly-future chunk (a_{t+1} .. a_{t+action_clip})
+            chunk = episode.get(self.chunk)[:, -1, 1:]  # (b, action_clip, action_space)
+            target_codes = tokenizer(chunk)  # (b, num_quantizers)
+            target = tokenizer._normalize(chunk.flatten(-2, -1))  # (b, action_dim)  # noqa: SLF001
+
+        code_logits, _, _ = self._predict(features)
+
+        losses: dict[str, Tensor] = {}
+        for q in range(tokenizer.quantizer.num_quantizers):
+            losses[f"code_{q}"] = self.losses["code"](
+                code_logits[:, q, :], target_codes[:, q]
             )
-        g = tree_leaves(codes)[0].shape[-1]
-        return {
-            "loss": joint_vq_loss(
-                features=features, heads=self.heads, losses=self.losses, codes=codes, g=g
-            )
-        }
+
+        predicted = tokenizer.invert(target_codes) + self._gather_offset(
+            features, target_codes
+        )
+        losses["offset"] = self.losses["offset"](predicted, target)
+
+        return {"loss": losses}
 
     @override
     def predict(

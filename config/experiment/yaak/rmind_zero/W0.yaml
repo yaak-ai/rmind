@@ -20,9 +20,9 @@ episode_length: 6
 action_horizon: 1
 episode_step: 10
 episode_stride: 10
-# clip_horizon is the dataset build horizon (max over PT/FT) so the built dataset
-# is shared: PT slices it to immediate actions (action_horizon=1), FT to chunks.
-clip_horizon: 6
+# clip_horizon spans the POLICY look-ahead: episode_length=6 encoded steps + a 6-step
+# strictly-future action chunk (a_6..a_11) needs actions up to index 11 -> clip_length 12.
+clip_horizon: 7
 clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
 clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 

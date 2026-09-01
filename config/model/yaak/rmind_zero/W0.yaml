@@ -68,6 +68,26 @@ episode_builder:
           discrete:
             turn_signal: [data, meta/VehicleState/turn_signal]
 
+      # POLICY look-ahead: stack the raw per-step actions at full clip length, then
+      # unfold that single field into `episode_length` windows of `clip_horizon` steps;
+      # POLICY drops the current step, keeping the strictly-future action_clip=6 chunk.
+      # Doing it as ONE field (not per-channel copies) avoids cascading extra fields
+      # through every downstream ModuleDict stage.
+      - _target_: rmind.components.nn.StackFields
+        out_key: joint_actions_chunk
+        paths:
+          gas_pedal: [continuous, gas_pedal]
+          brake_pedal: [continuous, brake_pedal]
+          steering_angle: [continuous, steering_angle]
+          turn_signal: [discrete, turn_signal]
+
+      # chunk unfold FIRST (needs the full future tail before the h=1 unfold narrows it)
+      - _target_: rmind.components.nn.ChunkFields
+        episode_length: ${episode_length}
+        action_horizon: ${clip_horizon}
+        unfold_paths:
+          - [joint_actions_chunk]
+
       - _target_: rmind.components.nn.ChunkFields
         episode_length: ${episode_length}
         action_horizon: ${action_horizon}
@@ -147,6 +167,12 @@ episode_builder:
           context:
             _target_: torch.nn.Identity
 
+          # unfold appends the window as the last axis: (b, t, action_space, horizon)
+          # -> reorder to (b, t, horizon, action_space) for the chunk tokenizer
+          joint_actions_chunk:
+            _target_: einops.layers.torch.Rearrange
+            pattern: "b t a w -> b t w a"
+
       - _target_: rmind.components.nn.StackFields
         out_key: joint_actions
         paths:
@@ -213,6 +239,9 @@ episode_builder:
         artifact: yaak/rmind/model-m35hyvbp:v9
         weights_only: false
 
+      joint_actions_chunk:  # raw look-ahead chunk; POLICY tokenizes it with opdsul88
+        _target_: rmind.components.nn.Identity
+
   embeddings:
     _target_: rmind.components.containers.ModuleDict
     modules:
@@ -270,6 +299,7 @@ episode_builder:
         embedding_dim: ${encoder_embedding_dim}
 
       joint_actions: null
+      joint_actions_chunk: null
 
   projections:
     _target_: rmind.components.containers.ModuleDict
@@ -359,6 +389,7 @@ episode_builder:
             out_features: ${encoder_embedding_dim}
 
       joint_actions: null
+      joint_actions_chunk: null
 
   role_encoding: # (modality, type)
     _target_: torch.nn.Sequential
@@ -600,20 +631,28 @@ objectives:
           normalized_shape: ${encoder_embedding_dim}
         output_projection:
           _target_: torch.nn.Identity
-      heads:
-        _target_: rmind.components.containers.ModuleDict
-        modules:
-          joint:
-            actions:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: 64
+      # VQ-BeT over the frozen 6-step chunk tokenizer: predict codes + code-conditioned offset
+      tokenizer:
+        _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
+        artifact: yaak/rmind/model-opdsul88:v9
+        weights_only: false
+      code_head:  # (b, d) -> (b, g*c)
+        _target_: torchvision.ops.MLP
+        in_channels: ${encoder_embedding_dim}
+        hidden_channels:
+          - ${encoder_embedding_dim}
+          - 64
+      offset_head:  # (b, d) -> (b, g*c*action_dim), action_dim = action_space * action_clip
+        _target_: torchvision.ops.MLP
+        in_channels: ${encoder_embedding_dim}
+        hidden_channels:
+          - ${encoder_embedding_dim}
+          - 1536
       losses:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          joint:
-            actions:
-              _target_: rmind.components.loss.FocalLoss
-      targets:
-        joint:
-          actions: [input_tokens, joint_actions]
+          code:
+            _target_: rmind.components.loss.FocalLoss
+          offset:
+            _target_: torch.nn.L1Loss
+      chunk: [input, joint_actions_chunk]
