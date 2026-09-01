@@ -2,7 +2,7 @@ from collections.abc import Set as AbstractSet
 from typing import Any, final, override
 
 import torch
-from einops import repeat
+from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
@@ -129,3 +129,65 @@ class ForwardDynamicsPredictionObjective(Objective):
             predictions[key] = episode.index.select(Modality.SUMMARY)[[-1]].parse(embedding)
 
         return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
+
+
+@final
+class ForwardDynamicsObjective(Objective):
+    """Predict the next frame from the latent and gram-anchor it (W0: direct, W1: via decoder)."""
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        heads: InstanceOf[ModuleDict],
+        losses: InstanceOf[ModuleDict],
+        targets: Targets,
+        decoder: InstanceOf[Module] | None = None,
+        patch_pos_embed: InstanceOf[Module] | None = None,
+    ) -> None:
+        super().__init__()
+        self.heads = heads
+        self.losses = losses
+        self.targets: Targets = targets
+        self.decoder = decoder
+        self.patch_pos_embed = patch_pos_embed
+
+    @override
+    def compute_metrics(
+        self, *, episode: Episode, embedding: Tensor, latent: Tensor | None = None
+    ) -> Metrics:
+        assert latent is not None
+        if self.decoder is not None:
+            query = repeat(
+                episode.embeddings.get((Modality.UTILITY, "latent")),
+                "b t 1 d -> b t p d",
+                p=latent.shape[-2],
+            )
+            query = self.patch_pos_embed(query)
+            pred = self.decoder({"query": query, "key": latent, "value": latent})
+        else:
+            pred = latent
+
+        logits = self.heads(pred)
+        target = tree_map(
+            lambda k: episode.get(k)[:, 1:],
+            self.targets,
+            is_leaf=lambda x: isinstance(x, tuple),
+        )
+        losses = self.losses(
+            tree_map(lambda lg: rearrange(lg[:, :-1], "b t s d -> (b t s) d"), logits),
+            tree_map(lambda t: rearrange(t, "b t s ... -> (b t s) ..."), target),
+        )
+        return {"loss": losses, "_artifacts": {"last_embeddings": pred}}
+
+    @override
+    def predict(
+        self,
+        *,
+        episode: Episode,
+        embedding: Tensor,
+        keys: AbstractSet[ObjectivePredictionKey],
+        tokenizers: ModuleDict | None = None,
+        latent: Tensor | None = None,
+    ) -> TensorDict:
+        return TensorDict({}, batch_size=[])

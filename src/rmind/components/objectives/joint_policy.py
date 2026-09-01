@@ -7,18 +7,81 @@ from pydantic import InstanceOf, validate_call
 from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
+from torch.utils._pytree import tree_leaves, tree_map  # noqa: PLC2701
 
 from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
+    PATCHES,
+    CodeTargets,
     Metrics,
     Objective,
     ObjectivePredictionKey,
     Prediction,
 )
+from rmind.components.objectives.joint_inverse_dynamics import joint_vq_loss
 
 type Path = tuple[str, ...]
+
+
+@final
+class PolicyObjective(Objective):
+    @validate_call
+    def __init__(
+        self,
+        *,
+        decoder: InstanceOf[Module],
+        heads: InstanceOf[ModuleDict],
+        losses: InstanceOf[ModuleDict],
+        targets: CodeTargets,
+        value_norm: InstanceOf[Module] | None = None,
+        readout: int = 0,
+    ) -> None:
+        super().__init__()
+        self.decoder = decoder
+        self.heads = heads
+        self.losses = losses
+        self.targets: CodeTargets = targets
+        self.value_norm: Module | None = value_norm
+        self.readout: int = readout
+
+    @override
+    def compute_metrics(
+        self, *, episode: Episode, embedding: Tensor, latent: Tensor | None = None
+    ) -> Metrics:
+        assert latent is not None
+        # last timestep only: predict a_τ for τ = t-1
+        patches = episode.get(PATCHES)[:, -1:]
+        value = self.value_norm(patches) if self.value_norm is not None else patches
+        queries = episode.embeddings.get((Modality.UTILITY, "policy"))[:, -1:]
+        features = self.decoder({"query": queries, "key": latent[:, -1:], "value": value})
+        features = features[:, :, self.readout]
+
+        with torch.no_grad():
+            codes = tree_map(
+                lambda k: episode.get(k)[:, -1:],
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+        g = tree_leaves(codes)[0].shape[-1]
+        return {
+            "loss": joint_vq_loss(
+                features=features, heads=self.heads, losses=self.losses, codes=codes, g=g
+            )
+        }
+
+    @override
+    def predict(
+        self,
+        *,
+        episode: Episode,
+        embedding: Tensor,
+        keys: AbstractSet[ObjectivePredictionKey],
+        tokenizers: ModuleDict | None = None,
+        latent: Tensor | None = None,
+    ) -> TensorDict:
+        return TensorDict({}, batch_size=[])
 
 
 @final

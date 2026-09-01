@@ -1,0 +1,32 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/rmind_zero/W0
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: pretrain
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+num_heads: 4
+num_layers: 8
+num_heads_condition: 4
+num_layers_condition: 2
+encoder_embedding_dim: 384
+image_embedding_dim: 384
+
+episode_length: 6
+action_horizon: 1
+episode_step: 10
+episode_stride: 10
+# clip_horizon is the dataset build horizon (max over PT/FT) so the built dataset
+# is shared: PT slices it to immediate actions (action_horizon=1), FT to chunks.
+clip_horizon: 6
+clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
+clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
+
+speed_bins: 512
+gas_pedal_bins: 255
+brake_pedal_bins: 165
+steering_angle_bins: 961

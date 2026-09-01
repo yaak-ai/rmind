@@ -13,12 +13,73 @@ from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
+    PATCHES,
+    CodeTargets,
     Metrics,
     Objective,
     ObjectivePredictionKey,
     Prediction,
     Targets,
 )
+
+
+@final
+class MemoryObjective(Objective):
+    """Read L[τ], predict the forward residual a_{τ+1}-a_τ (per-channel diff codes)."""
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        decoder: InstanceOf[Module],
+        heads: InstanceOf[ModuleDict],
+        losses: InstanceOf[ModuleDict],
+        targets: CodeTargets,
+        value_norm: InstanceOf[Module] | None = None,
+        readout: int = 0,
+    ) -> None:
+        super().__init__()
+        self.decoder = decoder
+        self.heads = heads
+        self.losses = losses
+        self.targets: CodeTargets = targets
+        self.value_norm: Module | None = value_norm
+        self.readout: int = readout
+
+    @override
+    def compute_metrics(
+        self, *, episode: Episode, embedding: Tensor, latent: Tensor | None = None
+    ) -> Metrics:
+        assert latent is not None
+        patches = episode.get(PATCHES)
+        value = self.value_norm(patches) if self.value_norm is not None else patches
+        queries = episode.embeddings.get((Modality.UTILITY, "mem"))
+        features = self.decoder({"query": queries, "key": latent, "value": value})
+        features = features[:, :, [self.readout]][:, :-1]
+
+        _, t = episode.input.batch_size
+        target = tree_map(
+            lambda k: episode.get(k)[:, : t - 1],
+            self.targets,
+            is_leaf=lambda x: isinstance(x, tuple),
+        )
+        losses = self.losses(
+            tree_map(Rearrange("b t 1 d -> (b t) d"), self.heads(features)),
+            tree_map(Rearrange("b t -> (b t)"), target),
+        )
+        return {"loss": losses}
+
+    @override
+    def predict(
+        self,
+        *,
+        episode: Episode,
+        embedding: Tensor,
+        keys: AbstractSet[ObjectivePredictionKey],
+        tokenizers: ModuleDict | None = None,
+        latent: Tensor | None = None,
+    ) -> TensorDict:
+        return TensorDict({}, batch_size=[])
 
 
 @final

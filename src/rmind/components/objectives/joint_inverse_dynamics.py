@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from typing import final, override
 
@@ -14,13 +13,96 @@ from rmind.components.base import Modality, SummaryToken
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
+    PATCHES,
+    CodeTargets,
     Metrics,
     Objective,
     ObjectivePredictionKey,
     Prediction,
 )
 
-type CodeTargets = Mapping[str, Mapping[str, tuple[str, ...]]]
+
+def joint_vq_loss(
+    *, features: Tensor, heads: ModuleDict, losses: ModuleDict, codes: object, g: int
+) -> dict[str, Tensor]:
+    """Per-quantizer categorical loss for joint residual-VQ action codes."""
+    logits = tree_map(lambda lg: rearrange(lg, "b t (g c) -> b t g c", g=g), heads(features))
+    out: dict[str, Tensor] = {}
+    for q in range(g):
+        (out[f"quantizer_{q}"],) = tree_leaves(
+            losses(
+                tree_map(lambda lg, q=q: lg[..., q, :].flatten(0, 1), logits),
+                tree_map(lambda c, q=q: c[..., q].flatten(), codes),
+            )
+        )
+    return out
+
+
+@final
+class InverseDynamicsObjective(Objective):
+    @validate_call
+    def __init__(
+        self,
+        *,
+        tokenizer: InstanceOf[ModuleDict],
+        decoder: InstanceOf[Module],
+        heads: InstanceOf[ModuleDict],
+        losses: InstanceOf[ModuleDict],
+        targets: CodeTargets,
+        value_norm: InstanceOf[Module] | None = None,
+        readout: int = 0,
+    ) -> None:
+        super().__init__()
+        self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        self.decoder = decoder
+        self.heads = heads
+        self.losses = losses
+        self.targets: CodeTargets = targets
+        self.value_norm: Module | None = value_norm
+        self.readout: int = readout
+
+    @override
+    def train(self, mode: bool = True) -> "InverseDynamicsObjective":
+        super().train(mode)
+        self.tokenizer.eval()  # keep the frozen tokenizer's VQ EMA from updating
+        return self
+
+    @override
+    def compute_metrics(
+        self, *, episode: Episode, embedding: Tensor, latent: Tensor | None = None
+    ) -> Metrics:
+        assert latent is not None
+        patches = episode.get(PATCHES)
+        value = self.value_norm(patches) if self.value_norm is not None else patches
+        queries = episode.embeddings.get((Modality.UTILITY, "inv"))
+        features = self.decoder({"query": queries, "key": latent, "value": value})
+        features = features[:, :, self.readout][:, :-1]
+
+        (tokenizer,) = tree_leaves(self.tokenizer)
+        g = tokenizer.quantizer.num_quantizers
+        with torch.no_grad():
+            codes = tree_map(
+                lambda path: episode.get(path)[:, 1:],
+                self.targets,
+                is_leaf=lambda x: isinstance(x, tuple),
+            )
+        return {
+            "loss": joint_vq_loss(
+                features=features, heads=self.heads, losses=self.losses, codes=codes, g=g
+            )
+        }
+
+    @override
+    def predict(
+        self,
+        *,
+        episode: Episode,
+        embedding: Tensor,
+        keys: AbstractSet[ObjectivePredictionKey],
+        tokenizers: ModuleDict | None = None,
+        latent: Tensor | None = None,
+    ) -> TensorDict:
+        return TensorDict({}, batch_size=[])
 
 
 @final
