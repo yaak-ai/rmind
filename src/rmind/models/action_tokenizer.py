@@ -60,6 +60,22 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
         # total contribution of the quiet and event populations.
         event_threshold: float = 0.05,
         event_weight: Mapping[str, float] | None = None,
+        # Reconstruction objective. `l1` is the historical default and is what killed
+        # the fork channel: `d|e|/de = sign(e)`, i.e. gradient magnitude 1 REGARDLESS
+        # of error size. Once the fork output dims sit at 0, the 92% of samples whose
+        # target is 0 each push toward 0 with magnitude 1 while the 8% of events push
+        # away with magnitude 1 -- 0.92 > 0.08, so zero is a STABLE stationary point
+        # and the channel never escapes (measured: recon std 0.002 against target
+        # std 0.22, and the output is invariant to the input's fork content).
+        #
+        # `smooth_l1` removes the pathology at its root instead of compensating for
+        # it: inside `|e| < beta` the gradient is proportional to the error, so a
+        # sample already at 0 contributes ~0 and an event at |e| ~ 0.9 contributes
+        # ~0.9. The balance inverts without any reweighting. Actions live in [-1, 1]
+        # so beta = 1.0 keeps essentially the whole error range in the quadratic
+        # regime while retaining L1's outlier behaviour beyond it.
+        recon_loss: Literal["l1", "smooth_l1", "l2"] = "l1",
+        smooth_l1_beta: float = 1.0,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
     ) -> None:
@@ -92,11 +108,15 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
         self.vq_weight = vq_weight
         self.event_threshold = event_threshold
         self.event_weight: dict[str, float] = dict(event_weight or {})
+        self.recon_loss = recon_loss
+        self.smooth_l1_beta = smooth_l1_beta
         hparams["targets"] = targets
         hparams["commitment_weight"] = commitment_weight
         hparams["vq_weight"] = vq_weight
         hparams["event_threshold"] = event_threshold
         hparams["event_weight"] = self.event_weight
+        hparams["recon_loss"] = recon_loss
+        hparams["smooth_l1_beta"] = smooth_l1_beta
 
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
@@ -153,15 +173,28 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
         """Axis names in the order `_gather_actions` stacks them (fastest-varying)."""
         return [name for modality in self.targets.values() for name in modality]
 
+    def _elementwise(self, a_hat: Tensor, a: Tensor) -> Tensor:
+        """Per-element reconstruction error, unreduced (see `recon_loss`)."""
+        match self.recon_loss:
+            case "l1":
+                return (a_hat - a).abs()
+            case "smooth_l1":
+                return F.smooth_l1_loss(
+                    a_hat, a, reduction="none", beta=self.smooth_l1_beta
+                )
+            case "l2":
+                return (a_hat - a).pow(2)
+
     def _weighted_l1(self, a_hat: Tensor, a: Tensor) -> Tensor:
-        """L1, with rare-event elements upweighted per axis (see `event_weight`).
+        """Reconstruction loss, with rare-event elements optionally upweighted.
 
         `_gather_actions` stacks axes on the LAST dim before flattening, so element
         `i` of the flat action is `(timestep, axis) = divmod(i, num_axes)` and the
         axis index is the fast one. Weights are built in that layout.
         """
+        err = self._elementwise(a_hat, a)
         if not self.event_weight:
-            return F.l1_loss(a_hat, a)
+            return err.mean()
 
         axes = self._axis_order()
         boost = a.new_tensor([self.event_weight.get(name, 1.0) for name in axes])
@@ -172,7 +205,7 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
 
         # normalized so the loss stays on the same scale as plain L1 -- otherwise
         # `vq_weight`/`commitment_weight` would need retuning alongside it
-        return ((a_hat - a).abs() * w).sum() / w.sum()
+        return (err * w).sum() / w.sum()
 
     def _step(self, batch: Any) -> tuple[Tensor, dict[str, Tensor]]:
         inputs = self.input_transform(batch)

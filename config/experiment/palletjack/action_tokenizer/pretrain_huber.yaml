@@ -1,0 +1,44 @@
+# @package _global_
+
+# Action tokenizer with a SMOOTH-L1 (Huber) reconstruction and NO reweighting.
+#
+#   just train experiment=palletjack/action_tokenizer/pretrain_huber
+#
+# The principled fix for the dead fork channel, as opposed to compensating for it.
+#
+# Run 1eeaumf9 (plain L1) left 50 of the decoder's 150 output dims pinned at zero and
+# INVARIANT to their input: feeding a 2 s fork raise instead of a flat zero changed the
+# reconstruction from mean +0.0005 to +0.0004, and recon fork1 std was 0.0018 against a
+# target std of 0.2215 -- identically so on train and holdout, so not generalization.
+#
+# The cause is L1's constant-magnitude gradient: `d|e|/de = sign(e)` is 1.0 whether the
+# error is 0.001 or 0.9. With fork1 exactly 0.000 for 91.7% of messages, once the output
+# dims sit at zero the majority pushes toward zero with magnitude 1 and the 8% of events
+# push away with magnitude 1, so 0.92 > 0.08 makes ZERO A STABLE STATIONARY POINT.
+#
+# smooth_l1 makes the gradient proportional to the error inside |e| < beta (measured:
+# 0.001 / 0.1 / 0.9 at those errors, against 1.0 / 1.0 / 1.0 for L1), so a sample already
+# correct at zero contributes almost nothing and an event contributes ~0.9. The balance
+# inverts with no class weighting at all. Actions are in [-1, 1], so beta = 1.0 keeps the
+# whole realistic error range quadratic while keeping L1's robustness beyond it.
+#
+# `event_weight: null` is deliberate -- this arm must test Huber ALONE, otherwise the two
+# fixes are confounded and we cannot tell which one earned the result.
+defaults:
+  - /experiment/palletjack/action_tokenizer/pretrain
+  - _self_
+
+model:
+  recon_loss: smooth_l1
+  smooth_l1_beta: 1.0
+  event_weight: null
+
+wandb:
+  tags:
+    - palletjack
+    - action_tokenizer
+    - d12
+    - chunk50
+    - 5s
+    - recon_smooth_l1
+    - no_reweight

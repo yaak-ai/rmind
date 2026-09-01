@@ -81,4 +81,11 @@ trainer:
   val_check_interval: 0.5
 
 wandb:
-  tags: [palletjack, action_tokenizer, d12, chunk50, 5s]
+  tags:
+    - palletjack
+    - action_tokenizer
+    - d12
+    - chunk50
+    - 5s
+    - recon_l1
+    - fork_reweight14
