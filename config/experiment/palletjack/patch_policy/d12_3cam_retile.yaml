@@ -83,12 +83,15 @@ model:
 # --- schedule --------------------------------------------------------------
 # Retiling divides the clip count per job by ~31/3, so an epoch is ~10x shorter
 # in steps than a stride-3 grid would give; the schedule is keyed to steps.
+# MEASURED on an RTX 5090 at batch 8: 2.33 s/step (0.41 it/s). ~3,400 train clips
+# => 425 steps/epoch => ~16.5 min/epoch, so 20 epochs is ~5.5 h and 8,500 steps.
+# The schedule is keyed to steps, so it is set to that rather than to a round number.
 lr: 1e-4
-lr_warmup_steps: 200
-lr_total_steps: 8000
+lr_warmup_steps: 250
+lr_total_steps: 8500
 
 trainer:
-  max_epochs: 40
+  max_epochs: 20
   precision: "bf16-mixed"
   gradient_clip_val: 1.0
   log_every_n_steps: 10
