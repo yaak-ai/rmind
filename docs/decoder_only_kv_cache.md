@@ -504,7 +504,14 @@ fp32, tf32 disabled, production geometry (257 tokens/frame, `window` 6 and 16,
 | d/d input                      | 1.2e-6       | 5.0           | 2.4e-7         |
 | d/d `in_proj_weight`           | 1.8e-5       | 12.8          | 1.4e-6         |
 | d/d `out_proj.weight`          | 3.6e-5       | 43.3          | 8.4e-7         |
-| d/d `intra_position_embedding` | 3.3e-6       | 20.3          | 1.6e-7         |
+| d/d intra-frame position table | 3.3e-6       | 20.3          | 1.6e-7         |
+
+Measured on the flat intra-frame position table, whose single parameter is
+`intra_position_embedding.weight`. The gate now enumerates the table's parameters
+from the trunk (`CausalFrameTransformer.intra_position_parameters()`) and compares
+each, so it covers the factorized arms' `view_position_embedding` /
+`patch_position_embedding` / `special_position_embedding` too; on a flat trunk
+that set is exactly the one row above.
 
 The gate is applied **scale-relative** (`max|diff| / max|ref|`), not as an absolute
 1e-5, and that is a deliberate choice worth stating plainly: a parameter gradient
@@ -1124,8 +1131,7 @@ Two traps this check walked into, both worth remembering:
 ## 13. cam=3 training OOMs: `window` is not the lever, `batch_size` is
 
 `ead564b` ("add cam_left_forward/cam_right_forward to the causal PatchPolicy
-arm") generalized `PatchPolicy` from a single `image` path to a `cameras:
-tuple[str, ...]` hparam, and added `dinov2_dinowm_causal_3cam.yaml` on top of
+arm") generalized `PatchPolicy` from a single `image` path to a `cameras: tuple[str, ...]` hparam, and added `dinov2_dinowm_causal_3cam.yaml` on top of
 `dinov2_dinowm_causal.yaml`. Per its own comment, the change is contained to
 `tokens_per_frame`: `256 * num_cameras + 1` (257 -> 769 at `cam=3`) and
 `max_sequence_length` — "the trunk itself needed no changes, since it only ever
@@ -1178,20 +1184,20 @@ eager `flex_attention` and the allocator-fragmentation trap §11.5 already
 warns about — both hit and discarded before these numbers):
 
 | window | batch | train step peak (fwd+bwd+ckpt+AdamW) |
-| ------ | ----- | ------------------------------------- |
-| 16     | 24    | **OOM**                                |
-| 16     | 20    | 27792 MiB                              |
-| 16     | 16    | 22311 MiB                              |
-| 16     | 12    | 16830 MiB                              |
-| 16     | 8     | 11348 MiB                              |
-| 10     | 24    | **OOM**                                |
-| 10     | 20    | 27793 MiB                              |
-| 10     | 16    | **22311 MiB**                          |
+| ------ | ----- | ------------------------------------ |
+| 16     | 24    | **OOM**                              |
+| 16     | 20    | 27792 MiB                            |
+| 16     | 16    | 22311 MiB                            |
+| 16     | 12    | 16830 MiB                            |
+| 16     | 8     | 11348 MiB                            |
+| 10     | 24    | **OOM**                              |
+| 10     | 20    | 27793 MiB                            |
+| 10     | 16    | **22311 MiB**                        |
 
 `window: 16 -> 10` changes peak memory by **0 MiB** at every batch tested
 (22311 vs 22311 at batch 16; 27792 vs 27793 at batch 20 — noise). This is §11.5
-restated, not contradicted: *"holding frame-slots constant is [the memory
-lever]... block-sparsity is worth only another 2-5%."* `window` gates how many
+restated, not contradicted: *"holding frame-slots constant is \[the memory
+lever\]... block-sparsity is worth only another 2-5%."* `window` gates how many
 past frames the block-sparse mask lets each frame attend to — it moves
 *attention compute* (§9's linear-in-context slope) — but under gradient
 checkpointing the dominant term is the per-token residual/MLP activation at
@@ -1206,9 +1212,9 @@ Isolated no-`grad` forward, trunk only (excludes the frozen ViT and every other
 `PatchPolicy` head, so these are a *floor*, not the full validation cost):
 
 | val batch | peak (no_grad forward, trunk only) |
-| --------- | ------------------------------------ |
-| 32        | 17874 MiB                            |
-| 8         | 7037 MiB                             |
+| --------- | ---------------------------------- |
+| 32        | 17874 MiB                          |
+| 8         | 7037 MiB                           |
 
 `val.batch_size=32` alone needs almost 18 GiB just in the trunk, on top of
 whatever training already left resident — which is exactly the shape of the

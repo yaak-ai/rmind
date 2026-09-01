@@ -196,7 +196,30 @@ def convert(*, artifact: str, experiment: str, out: Path) -> None:
             "tokens_per_frame-keyed positional embedding"
         )
         raise TypeError(msg)
+    factorization = getattr(trunk, "intra_position_factorization", "flat")
+    if factorization != "flat":
+        msg = (
+            f"target experiment {experiment!r} uses "
+            f"intra_position_factorization={factorization!r}: there is no "
+            f"{INTRA_POSITION_KEY} to tile, and the factorized arms train from "
+            "scratch by decision -- see task-intra-position-factorization.md §0 "
+            "('Clean re-init'). Warm-starting one would need an ANOVA-style "
+            "decomposition of the trained flat table, which is deliberately not "
+            "built. Use a `flat` target, or train the factorized arm from scratch"
+        )
+        raise ValueError(msg)
+
     tokens_per_frame = trunk.tokens_per_frame
+    # `optimizer_states: []` below already forces a fresh optimizer, which is
+    # what makes this safe: SelectiveAdamW builds its param groups from SORTED
+    # name sets and torch maps saved state onto them POSITIONALLY, so resuming
+    # optimizer state across any change to the position parameters' names or
+    # count silently mis-assigns Adam moments.
+    logger.warning(
+        "the output checkpoint carries NO optimizer state, by design -- never "
+        "`ckpt_path`-full-resume across a change to the intra-frame position "
+        "parameterization (SelectiveAdamW maps optimizer state positionally)"
+    )
     remapped = _remap_state_dict(source_state_dict, tokens_per_frame=tokens_per_frame)
     remapped = _backfill_preprocessing_buffers(model, remapped)
 

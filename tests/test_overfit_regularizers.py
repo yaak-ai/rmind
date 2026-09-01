@@ -234,7 +234,11 @@ def _train_step(model: PatchPolicy, device: str) -> None:
     }
     assert grads
     assert all(grads.values()), [n for n, ok in grads.items() if not ok]
-    assert any("encoder.intra_position_embedding" in n for n in grads)
+    # "position_embedding", not the flat table's exact name: the factorized arms
+    # name their tables view_position_embedding/patch_position_embedding/..., and
+    # the point of this assertion is that the position table receives gradient at
+    # all, in whichever arm the model was built with
+    assert any("encoder." in n and "position_embedding" in n for n in grads)
     assert any(n.startswith("code_head") for n in grads)
     opt.step()
     opt.zero_grad()

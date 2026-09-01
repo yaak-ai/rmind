@@ -1,10 +1,11 @@
+from collections.abc import Callable
 from typing import override
 
 import torch
 from einops import rearrange
 from torch import Tensor, nn
 
-from rmind.components.nn import Embedding
+from rmind.components.nn import Embedding, default_weight_init_fn
 
 
 class RotaryPositionalEmbeddings(nn.Module):
@@ -56,16 +57,37 @@ class RotaryPositionalEmbeddings(nn.Module):
 
 
 class PatchPositionEmbedding2D(nn.Module):
-    def __init__(self, grid_size: tuple[int, int], embedding_dim: int) -> None:
+    def __init__(
+        self,
+        grid_size: tuple[int, int],
+        embedding_dim: int,
+        *,
+        weight_init_fn: Callable[[Tensor], None] = default_weight_init_fn,  # ty:ignore[invalid-parameter-default]
+    ) -> None:
         super().__init__()
-        self.row_embed = Embedding(grid_size[0], embedding_dim)
-        self.col_embed = Embedding(grid_size[1], embedding_dim)
+        self.row_embed = Embedding(
+            grid_size[0], embedding_dim, weight_init_fn=weight_init_fn
+        )
+        self.col_embed = Embedding(
+            grid_size[1], embedding_dim, weight_init_fn=weight_init_fn
+        )
 
-    @override
-    def forward(self, x: Tensor) -> Tensor:
+    def table(self) -> Tensor:
+        """The additive row+col table, `(h*w, d)`, flattened row-major.
+
+        Exposed separately from `forward` so a caller that needs the table
+        *itself* -- rather than `x + table` -- shares this one composition
+        instead of re-deriving it (`CausalFrameTransformer.intra_position_table`
+        composes it into a larger per-frame table). `forward` is expressed
+        through it, so the two can never drift.
+        """
         row_pos = self.row_embed.weight
         col_pos = self.col_embed.weight
         pos_embed = rearrange(row_pos, "h d -> h 1 d") + rearrange(
             col_pos, "w d -> 1 w d"
         )
-        return x + rearrange(pos_embed, "h w d -> (h w) d")
+        return rearrange(pos_embed, "h w d -> (h w) d")
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.table()

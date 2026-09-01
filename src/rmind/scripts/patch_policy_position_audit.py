@@ -53,29 +53,12 @@ from torch.nn.functional import cosine_similarity
 
 from rmind.components.transformer.causal_frame import (
     CausalFrameTransformer,
+    frame_band_slices,
     frame_block_causal_block_mask,
     frame_block_causal_mask,
     frame_rope_cos_sin,
 )
 from rmind.models.patch_policy import PatchPolicy
-
-
-def _band_slices(
-    *, cameras: tuple[str, ...], num_patches: int, num_register: int, has_readout: bool
-) -> dict[str, slice]:
-    """Slot layout `[speed, cam0 patches, cam1 patches, ..., register..., readout?]`
-    -- must mirror `PatchPolicy._frame_tokens`'s `torch.cat` order exactly."""
-    bands = {"speed": slice(0, 1)}
-    i = 1
-    for camera in cameras:
-        bands[f"patch:{camera}"] = slice(i, i + num_patches)
-        i += num_patches
-    if num_register:
-        bands["register"] = slice(i, i + num_register)
-        i += num_register
-    if has_readout:
-        bands["readout"] = slice(i, i + 1)
-    return bands
 
 
 def _require_causal_frame_trunk(model: PatchPolicy) -> CausalFrameTransformer:
@@ -92,7 +75,7 @@ def _require_causal_frame_trunk(model: PatchPolicy) -> CausalFrameTransformer:
 
 
 def _applied_position_table(encoder: CausalFrameTransformer) -> Tensor:
-    """`intra_position_embedding` AS THE TRUNK ACTUALLY SEES IT.
+    """The intra-frame position table AS THE TRUNK ACTUALLY SEES IT.
 
     Since `b846a4f` (`fix(causal_frame): scale-balance the intra-frame position
     embedding`) `_intra()` does not add the raw table -- it adds
@@ -102,9 +85,16 @@ def _applied_position_table(encoder: CausalFrameTransformer) -> Tensor:
     (~11x on `kughoqfi`) and reports the position signal as having got *weaker*
     when it got stronger. Both audits must go through here.
 
-    `getattr`-guarded so pre-`b846a4f` checkpoints (no norm, no gain) still
-    audit -- there the raw table IS the applied table.
+    **Delegates to the trunk** when it exposes `intra_position_applied_table`,
+    so there is exactly ONE definition of "what the model adds" and this cannot
+    drift from it again -- that drift is precisely the bug above. The local
+    reconstruction is kept as the fallback for trunks predating that method
+    (and, within it, `getattr` guards the norm/gain so pre-`b846a4f` checkpoints
+    still audit -- there the raw table IS the applied table).
     """
+    applied = getattr(encoder, "intra_position_applied_table", None)
+    if applied is not None:
+        return applied().detach()
     table = encoder.intra_position_embedding.weight.detach()
     norm = getattr(encoder, "intra_position_norm", None)
     gain = getattr(encoder, "intra_position_gain", None)
@@ -113,6 +103,20 @@ def _applied_position_table(encoder: CausalFrameTransformer) -> Tensor:
     if gain is not None:
         table *= gain.detach()
     return table
+
+
+def _raw_position_table(encoder: CausalFrameTransformer) -> Tensor:
+    """The raw composed table, reported alongside the applied one for provenance.
+
+    Composed, not `.weight`: on a factorized arm there is no single flat weight,
+    and `camera_band_cosine_centered`/`patch_row_variance` must be computed on
+    the same composed quantity in every arm for flat and factorized runs to be
+    comparable on identical metrics.
+    """
+    table = getattr(encoder, "intra_position_table", None)
+    if table is not None:
+        return table().detach()
+    return encoder.intra_position_embedding.weight.detach()
 
 
 def _num_patches_per_camera(model: PatchPolicy, encoder: CausalFrameTransformer) -> int:
@@ -146,7 +150,7 @@ def _slot_layout(model: PatchPolicy) -> tuple[dict[str, slice], int, int]:
     )
     has_readout = model.readout_token is not None
     num_patches = _num_patches_per_camera(model, encoder)
-    bands = _band_slices(
+    bands = frame_band_slices(
         cameras=model.cameras,
         num_patches=num_patches,
         num_register=num_register,
@@ -168,7 +172,7 @@ def audit_table(  # noqa: PLR0914
     # `.weight` is reported alongside it for provenance only; every ratio and
     # cosine below is on the applied one (see `_applied_position_table`).
     table = _applied_position_table(encoder).cpu()
-    raw_table = encoder.intra_position_embedding.weight.detach().cpu()
+    raw_table = _raw_position_table(encoder).cpu()
     row_norms = table.norm(dim=-1)
     gain = getattr(encoder, "intra_position_gain", None)
 
@@ -226,10 +230,13 @@ def audit_table(  # noqa: PLR0914
     # how much of the position table's variance is BETWEEN cameras vs WITHIN a
     # camera (per-patch spatial code). A large within/between ratio means the
     # uniform amplitude lift raised both, not camera identity preferentially.
-    rows = table[patch_slice]
     between = torch.stack([identity[name] for name in camera_bands]).pow(2).sum(-1)
+    # NOTE: index `table`, not `table[patch_slice]` -- `bands[name]` are absolute
+    # slot slices, so applying them to the already-patch-sliced view shifted every
+    # camera's rows by one slot (the speed token) and mixed the last camera's band
+    # with out-of-band rows
     within = torch.stack([
-        (rows[bands[name]] - band_means[name]).pow(2).sum(-1).mean()
+        (table[bands[name]] - band_means[name]).pow(2).sum(-1).mean()
         for name in camera_bands
     ])
     result["patch_row_variance"] = {
@@ -237,6 +244,38 @@ def audit_table(  # noqa: PLR0914
         "within_camera": within.mean().item(),
         "between_fraction": (between.mean() / (between.mean() + within.mean())).item(),
     }
+
+    # The factorization arm, read off the trunk rather than re-derived, plus --
+    # when the arm HAS a view embedding -- a DIRECT read of it. On a flat table
+    # "is camera identity a rank-1 direction" can only be estimated (that is what
+    # `camera_band_cosine_centered` above does); here it is a parameter, so its
+    # row norms and pairwise cosines are the quantity itself, not a proxy.
+    # Everything above stays computed on the COMPOSED table so flat and
+    # factorized arms remain comparable on identical metrics.
+    result["intra_position"] = {
+        "scaling": getattr(encoder, "intra_position_scaling", "norm_gain"),
+        "factorization": getattr(encoder, "intra_position_factorization", "flat"),
+        "target_norm": getattr(encoder, "intra_position_target_norm", None),
+        "patch_grid": getattr(encoder, "patch_grid", None),
+        "camera_yaw_deg": getattr(encoder, "camera_yaw_deg", None),
+        "panorama_camera_order": getattr(encoder, "panorama_camera_order", None),
+    }
+    view = getattr(encoder, "view_position_embedding", None)
+    if view is not None:
+        view_weight = view.weight.detach().cpu()
+        names = list(model.cameras)
+        result["view_position_embedding"] = {
+            "row_norm": {
+                name: view_weight[i].norm().item() for i, name in enumerate(names)
+            },
+            "cosine": {
+                f"{names[i]}:{names[j]}": cosine_similarity(
+                    view_weight[i], view_weight[j], dim=0
+                ).item()
+                for i in range(len(names))
+                for j in range(i + 1, len(names))
+            },
+        }
 
     if run is not None:
         result["run"] = run

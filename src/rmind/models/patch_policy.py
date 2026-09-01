@@ -622,6 +622,22 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
             raise ValueError(msg)
 
+        # `tokens_per_frame` alone does not pin the camera count -- 768 patch
+        # slots divide as 1x768, 2x384, 3x256, ... -- so a trunk that DECLARES
+        # its camera count (the factorized intra-frame position arms need one)
+        # gets cross-checked against the cameras actually stacked here. Camera
+        # order and count are load-bearing and were previously guarded only by a
+        # docstring.
+        encoder_cameras = getattr(self.encoder, "num_cameras", None)
+        if encoder_cameras is not None and encoder_cameras != len(self.cameras):
+            msg = (
+                f"the encoder declares num_cameras={encoder_cameras} but the "
+                f"model stacks {len(self.cameras)}: {list(self.cameras)}. These "
+                "index the same camera-major patch band, so a mismatch would "
+                "silently attribute one camera's patches to another"
+            )
+            raise ValueError(msg)
+
         embedding = self.encoder(
             rearrange(tokens, "b t k d -> b (t k) d"), num_frames=num_frames
         )

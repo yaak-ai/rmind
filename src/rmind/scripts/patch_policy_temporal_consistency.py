@@ -183,7 +183,12 @@ def _load_model(*, artifact: str | None, ckpt: str | None) -> PatchPolicy:
             "(intra_position_norm -> Identity)"
         )
         model = loader(**kwargs, strict=False)
-        model.encoder.intra_position_norm = nn.Identity()
+        # `hasattr`-guarded: an arm built with intra_position_scaling="none" or
+        # "gain" has no `intra_position_norm` at all, and assigning one would
+        # create a dead attribute the composed-table helper never consults --
+        # a misleading "this checkpoint was un-normalized" signal in the repr
+        if hasattr(model.encoder, "intra_position_norm"):
+            model.encoder.intra_position_norm = nn.Identity()
         return model
 
 

@@ -13,6 +13,9 @@ float32 residual can flip an argmax and blow up `joint_actions` while the
 underlying features were fine. At float64 that's not a practical risk.
 """
 
+from typing import get_args
+
+import pytest
 import torch
 from torch import Tensor
 from torch.nn import Identity, L1Loss, Linear, Module, Sequential
@@ -23,7 +26,11 @@ from rmind.components.containers import ModuleDict
 from rmind.components.loss import FocalLoss
 from rmind.components.nn import Embedding
 from rmind.components.norm import Scaler, UniformBinner
-from rmind.components.transformer.causal_frame import CausalFrameTransformer
+from rmind.components.transformer.causal_frame import (
+    CausalFrameTransformer,
+    IntraPositionFactorization,
+    IntraPositionScaling,
+)
 from rmind.components.vq import ResidualVQ
 from rmind.models.action_tokenizer import ActionTokenizer
 from rmind.models.patch_policy import PatchPolicy
@@ -119,7 +126,10 @@ def _make_tokenizer() -> ActionTokenizer:
     )
 
 
-def _make_model() -> PatchPolicy:
+def _make_model(
+    factorization: IntraPositionFactorization = "flat",
+    scaling: IntraPositionScaling = "norm_gain",
+) -> PatchPolicy:
     tokens_per_frame = len(CAMERAS) * NUM_PATCHES + 1
     return PatchPolicy(
         input_transform=Identity(),
@@ -138,6 +148,18 @@ def _make_model() -> PatchPolicy:
             attn_dropout=0.0,
             resid_dropout=0.0,
             mlp_dropout=0.0,
+            intra_position_factorization=factorization,
+            intra_position_scaling=scaling,
+            # NUM_PATCHES = 1 per camera, so the "grid" is 1x1 and
+            # 1 speed + 3 cameras x 1 = 4 = tokens_per_frame
+            num_cameras=len(CAMERAS),
+            patch_grid=(1, NUM_PATCHES),
+            num_prefix_tokens=1,
+            num_suffix_tokens=0,
+            # the production rig's yaws, in CAMERAS order: physical
+            # left-to-right is cam_left_forward, cam_front_left,
+            # cam_right_forward, i.e. the permutation [1, 0, 2]
+            camera_yaw_deg=(0.0, -70.0, 70.0),
         ),
         tokenizer=_make_tokenizer(),
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
@@ -149,7 +171,10 @@ def _make_model() -> PatchPolicy:
     ).eval()
 
 
-def test_streamed_decode_matches_full_windowed_forward() -> None:  # noqa: PLR0914
+@pytest.mark.parametrize("factorization", get_args(IntraPositionFactorization))
+def test_streamed_decode_matches_full_windowed_forward(  # noqa: PLR0914
+    factorization: IntraPositionFactorization,
+) -> None:
     generator = torch.Generator().manual_seed(0)
     raw_images = {
         camera: torch.rand(
@@ -171,7 +196,7 @@ def test_streamed_decode_matches_full_windowed_forward() -> None:  # noqa: PLR09
         dtype=torch.float64,
     )
 
-    step = PatchPolicyDecoderStep(policy=_make_model()).double().eval()
+    step = PatchPolicyDecoderStep(policy=_make_model(factorization)).double().eval()
 
     # --- reference: one full forward over the whole clip, windowed mask -----
     # `step.image_mean`/`image_std` are the SAME buffers `step.forward` uses --
@@ -221,7 +246,10 @@ def test_streamed_decode_matches_full_windowed_forward() -> None:  # noqa: PLR09
     torch.testing.assert_close(streamed_chunk, reference_chunk, atol=1e-8, rtol=1e-6)
 
 
-def test_streamed_decode_is_sensitive_to_camera_identity() -> None:
+@pytest.mark.parametrize("factorization", get_args(IntraPositionFactorization))
+def test_streamed_decode_is_sensitive_to_camera_identity(
+    factorization: IntraPositionFactorization,
+) -> None:
     """Swapping two cameras' frames must change the streamed decode -- i.e. the
     per-camera inputs are actually distinguished, not just counted (same
     property `test_multi_camera_stacks_patches_in_camera_order` checks for the
@@ -240,7 +268,7 @@ def test_streamed_decode_is_sensitive_to_camera_identity() -> None:
         (1, 1, NUM_WAYPOINTS, 2), generator=generator, dtype=torch.float64
     )
 
-    step = PatchPolicyDecoderStep(policy=_make_model()).double().eval()
+    step = PatchPolicyDecoderStep(policy=_make_model(factorization)).double().eval()
     past_k, past_v, cache_bias = step.empty_cache(
         cache_frames=WINDOW - 1, batch_size=1, dtype=torch.float64
     )

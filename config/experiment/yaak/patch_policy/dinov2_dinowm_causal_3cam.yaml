@@ -102,5 +102,39 @@ model:
     tokens_per_frame: "${eval:'${num_patches} * ${num_cameras} + 1'}"
     max_sequence_length: "${eval:'${episode_length} * (${num_patches} * ${num_cameras} + 1)'}"
 
+    # --- intra-frame position embedding -------------------------------------
+    # Geometry of the patch band, so the trunk can factorize its intra-frame
+    # position table instead of giving all 769 slots independent rows. Supplied
+    # unconditionally (it also cross-checks `model.cameras` in
+    # PatchPolicy._features -- `num_cameras: 3` above had no consumer outside
+    # its own two eval expressions until now); the FACTORIZATION defaults to
+    # `flat`, so this file's behaviour is unchanged. Every axis is an
+    # `oc.select` so it is a plain CLI override
+    # (`++intra_position_factorization=pano_bearing`), the idiom
+    # `neighbor_smoothing_tau` uses in config/model/yaak/patch_policy/raw.yaml.
+    num_cameras: ${num_cameras}
+    # DINOv2 ViT-S/14 @ 224 -> 16x16 patches per camera, row-major
+    patch_grid: [16, 16]
+    # speed is PREPENDED (so the frame block ends on the readout position) and
+    # this arm enables neither registers nor a readout token
+    num_prefix_tokens: 1
+    num_suffix_tokens: 0
+    # Rig yaws, in `model.cameras` order above. The physical left-to-right order
+    # is DERIVED from these (argsort -> [1, 0, 2], i.e. cam_left_forward,
+    # cam_front_left, cam_right_forward) and must never be configured directly:
+    # that permutation is its own inverse, so reversing it would be invisible at
+    # runtime. Adjacent views overlap by ~16.4 deg (~4 of 16 columns) -- the
+    # three tile a continuous ~226 deg strip rather than abutting.
+    camera_yaw_deg: [0.0, -70.0, 70.0]
+    # HORIZONTAL FOV. The rig doc says "FOV 90" without specifying horizontal or
+    # diagonal; if diagonal on 16:9 the true horizontal FOV is ~82.6 deg and the
+    # seam overlap ~12.6 deg. A config value precisely so that is correctable
+    # without a code change.
+    camera_hfov_deg: ${oc.select:camera_hfov_deg,90.0}
+    intra_position_scaling: ${oc.select:intra_position_scaling,norm_gain}
+    intra_position_factorization: ${oc.select:intra_position_factorization,flat}
+    intra_position_target_norm: ${oc.select:intra_position_target_norm,null}
+    num_bearing_bins: ${oc.select:num_bearing_bins,null}
+
 wandb:
   tags: [patch_policy, dinov2_dinowm_causal, 3cam]

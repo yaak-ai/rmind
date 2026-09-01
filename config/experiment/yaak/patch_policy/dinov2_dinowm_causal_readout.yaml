@@ -35,3 +35,13 @@ model:
     # inherited from raw.yaml as episode_length * (num_patches + 1); keep the
     # clip-vs-window cross-check honest for the widened frame
     max_sequence_length: "${eval:'${episode_length} * (${num_patches} + 1 + ${num_register_tokens} + 1)'}"
+
+    # The intra-frame position table's view of the same layout. Stated because
+    # this arm's SUFFIX is not the default: the registers and the readout sit
+    # after every patch, so an `intra_position_scaling` that treats the patch
+    # band specially (`patch_norm_gain`) would otherwise scale them as patches.
+    # The factorization itself stays `flat` here; these only describe geometry.
+    num_cameras: 1
+    patch_grid: [16, 16]
+    num_prefix_tokens: 1 # speed
+    num_suffix_tokens: "${eval:'${num_register_tokens} + 1'}" # registers + readout

@@ -59,6 +59,7 @@ from rmind.components.transformer.causal_frame import (
     MASK_BIAS,
     CausalFrameTransformer,
     apply_rope,
+    frame_band_slices,
     frame_block_causal_mask,
     frame_rope_cos_sin,
 )
@@ -76,10 +77,12 @@ if TYPE_CHECKING:
 SWAP_GATE_RATIO_THRESHOLD: float = 0.1
 
 # =============================================================================
-# Slot layout -- mirrors `patch_policy_position_audit._band_slices`/
-# `_slot_layout` exactly (same `[speed, cam0 patches, ..., register, readout?]`
-# order `PatchPolicy._frame_tokens` builds), reimplemented locally rather than
-# imported so a TypeError here names THIS script, not that one.
+# Slot layout -- `[speed, cam0 patches, ..., register, readout?]`, the order
+# `PatchPolicy._frame_tokens` builds. The band arithmetic itself now lives in
+# `causal_frame.frame_band_slices`, next to the trunk that consumes the layout:
+# this script and `patch_policy_position_audit.py` had two copies of it, which
+# is one drift away from a silently mis-attributed camera band. The
+# trunk-type check stays local so a TypeError names THIS script.
 # =============================================================================
 
 
@@ -114,21 +117,14 @@ def _num_patches_per_camera(model: PatchPolicy, encoder: CausalFrameTransformer)
 def _slot_layout(model: PatchPolicy) -> dict[str, slice]:
     """`{"speed": slice, "patch:<camera>": slice, "register": slice?, "readout": slice?}`."""
     encoder = _require_causal_frame_trunk(model)
-    num_patches = _num_patches_per_camera(model, encoder)
-    num_register = (
-        model.register_tokens.shape[0] if model.register_tokens is not None else 0
+    return frame_band_slices(
+        cameras=model.cameras,
+        num_patches=_num_patches_per_camera(model, encoder),
+        num_register=(
+            model.register_tokens.shape[0] if model.register_tokens is not None else 0
+        ),
+        has_readout=model.readout_token is not None,
     )
-    bands: dict[str, slice] = {"speed": slice(0, 1)}
-    i = 1
-    for camera in model.cameras:
-        bands[f"patch:{camera}"] = slice(i, i + num_patches)
-        i += num_patches
-    if num_register:
-        bands["register"] = slice(i, i + num_register)
-        i += num_register
-    if model.readout_token is not None:
-        bands["readout"] = slice(i, i + 1)
-    return bands
 
 
 def _camera_indices(
@@ -186,7 +182,12 @@ def _load_model(*, artifact: str | None, ckpt: str | None) -> PatchPolicy:
         )
         model = loader(**kwargs, strict=False)
         encoder = _require_causal_frame_trunk(model)
-        encoder.intra_position_norm = nn.Identity()
+        # `hasattr`-guarded: an arm built with intra_position_scaling="none" or
+        # "gain" has no `intra_position_norm` at all, and assigning one would
+        # create a dead attribute the composed-table helper never consults --
+        # a misleading "this checkpoint was un-normalized" signal in the repr
+        if hasattr(encoder, "intra_position_norm"):
+            encoder.intra_position_norm = nn.Identity()
         return model
 
 
@@ -670,7 +671,7 @@ def _trunk_input(  # noqa: PLR0914
     tokens = model._frame_tokens(images, speed, waypoints)  # noqa: SLF001
     b, num_frames, tpf, d = tokens.shape
     flat = tokens.reshape(b, num_frames * tpf, d)
-    x = flat + encoder._intra(num_frames, flat.device)  # noqa: SLF001
+    x = flat + encoder._intra(num_frames)  # noqa: SLF001
     frames = torch.arange(flat.shape[1], device=flat.device) // tpf
     cos, sin = frame_rope_cos_sin(
         frames, head_dim=encoder.head_dim, base=encoder.rope_base

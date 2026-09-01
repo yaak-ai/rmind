@@ -39,7 +39,7 @@ should not have to re-derive the analysis. Read §1-§2 before touching code.
   numbers on any post-`b846a4f` checkpoint. Fix it before re-running — see
   §4.3.**
 
----
+______________________________________________________________________
 
 ## 1. Background — what the code does today
 
@@ -57,8 +57,7 @@ treatment. View identity is carried **entirely by the absolute slot index**.
 
 `ead564b` added `cam_left_forward` / `cam_right_forward` to the causal arm.
 
-- `src/rmind/models/patch_policy.py:425-427` — `torch.stack([image_by_camera[c]
-  for c in self.cameras], dim=2)` → `(b, t, cam, c, h, w)`. `self.cameras` order
+- `src/rmind/models/patch_policy.py:425-427` — `torch.stack([image_by_camera[c] for c in self.cameras], dim=2)` → `(b, t, cam, c, h, w)`. `self.cameras` order
   is the only thing fixing which camera is which.
 - `src/rmind/models/patch_policy.py:330-338` — one frozen ViT for all cameras,
   then `rearrange(patches, "b t cam p d -> b t (cam p) d")`.
@@ -91,7 +90,7 @@ Config: `config/experiment/yaak/patch_policy/dinov2_dinowm_causal_3cam.yaml`
 `tokens_per_frame: ${eval:'${num_patches} * ${num_cameras} + 1'}`). It loads no
 artifact — the 3cam arm trains from scratch.
 
----
+______________________________________________________________________
 
 ## 2. The finding
 
@@ -109,7 +108,7 @@ importance:
    receives gradient from all 256 tokens of a camera at once. Nothing is shared
    between slot `1+j` and slot `1+256+j` either, so spatial structure learned on
    the front camera does not transfer to the sides.
-2. **Magnitude — ADDRESSED by `b846a4f`; kept here for the reasoning, see §4.2
+1. **Magnitude — ADDRESSED by `b846a4f`; kept here for the reasoning, see §4.2
    for the numbers.** Table init std = 0.02. Token content at the same point is
    LayerNorm'd patches (element RMS = 1.0 exactly) through xavier `patch_projection`
    → element RMS ≈ 1.10 (Xavier's own variance-preservation formula, confirmed by
@@ -132,13 +131,13 @@ importance:
    far larger than the magnitude ratio alone would suggest. That is why the
    magnitude fix should NOT be assumed to have improved camera
    discriminability: amplitude was probably not the binding constraint.
-3. **The frozen ViT works against it.** `src/rmind/components/timm_backbone.py:54-77`
+1. **The frozen ViT works against it.** `src/rmind/components/timm_backbone.py:54-77`
    folds `(b, t, cam)` into the batch dim, so patch `j` of *every* camera gets the
    *identical* pretrained ViT positional embedding. The encoder actively pulls
    same-slot patches from different cameras together in feature space.
-4. **Zero per-camera trainable capacity** anywhere — shared ViT, shared
+1. **Zero per-camera trainable capacity** anywhere — shared ViT, shared
    `fusion_patch_norm`, scalar `fusion_patch_gain`, shared `patch_projection`.
-5. **Regime mismatch with the paper.** Wrist vs third-person views are trivially
+1. **Regime mismatch with the paper.** Wrist vs third-person views are trivially
    separable from *content alone*, so the paper never stresses its
    positional-only scheme. Three forward-facing road cameras have near-identical
    appearance statistics — precisely the case where content cannot disambiguate
@@ -156,41 +155,39 @@ importance:
    readout.** Changing it would move `tokens_per_frame` to 770 and break KV-cache
    and ONNX binding shapes.
    **Correction (2026-08-31): this does NOT apply to the audited checkpoints.**
-   Both `03tuy3q9` and `kughoqfi` have `tokens_per_frame = 772 = 256*3 + 1 + 2
-   registers + 1 readout`, so `features[:, :, -1]` (`patch_policy.py:630-633`)
+   Both `03tuy3q9` and `kughoqfi` have `tokens_per_frame = 772 = 256*3 + 1 + 2 registers + 1 readout`, so `features[:, :, -1]` (`patch_policy.py:630-633`)
    is the *dedicated readout token*, not a patch. Finding 6 is real only for the
    configs without `use_readout_token`, i.e. `dinov2_dinowm_causal_3cam.yaml` as
    it stands on this branch (§7) and the `*_cont.yaml` / `finetuned.yaml`
    warm-start paths. Its risk-register severity is downgraded accordingly.
-7. **Camera order is load-bearing and unenforced.** Only a docstring guards it
+1. **Camera order is load-bearing and unenforced.** Only a docstring guards it
    (`patch_policy_decoder.py:20`, `:152-153`). `num_cameras` in the 3cam config is
    never cross-checked against `len(model.cameras)`. `ead564b` renamed the hparam
-   `image` → `cameras` with no migration. `config/export/yaak/patch_policy/
-   finetuned.yaml` still lists only `cam_front_left`, so a cam=3 checkpoint
+   `image` → `cameras` with no migration. `config/export/yaak/patch_policy/ finetuned.yaml` still lists only `cam_front_left`, so a cam=3 checkpoint
    KeyErrors at `patch_policy.py:426`.
 
 ### Risk register
 
-| Risk | Impact | Likelihood | Action |
-|---|---|---|---|
-| Flat 769-slot table: no dedicated view direction, no cross-view sharing | High | Certain by construction | Phase 2 |
-| ~~View code ~55x quieter than content at init, 10.0x measured post-training~~ (per-patch-token magnitude only) | **RESOLVED** by `b846a4f` | n/a — 2.09x measured on `kughoqfi` (§4.2) | Had already been downgraded once by the effect audit (readout token was never starved), so **do not assume this bought discriminability**; Phase 1(a)/(c) still needed |
-| **`b846a4f` side effect: `intra_position_norm` flattens per-slot amplitude, so the speed token is now ~84% constant position code** (content/position 1.74x → **0.19x**). Register/readout are unaffected in substance (constant+constant = reparameterization) | Med | Certain by construction; measured §4.2 | Decide: scope norm+gain to the patch band only, or accept. Not yet decided |
-| **`patch_policy_position_audit.py` reads the raw table and bypasses `intra_position_norm`/`intra_position_gain`** — reports 23x where the truth is 2.09x on any post-`b846a4f` checkpoint | High (silent, wrong-direction) | Certain | Fix `:141` and `:285` before re-running — §4.3 |
-| No run isolates `b846a4f`: `kughoqfi` also changed `window` 16→6 and `drop_path_rate` 0.1→0.3 | Med | Certain | No performance claim can be attributed to the fix — §4.2 |
-| Frozen ViT pos-emb pulls same-slot patches together | Med | Certain | amplifier; no direct fix |
-| No per-camera trainable capacity | Med | Certain | optional, see §5 |
-| Readout anchored on `cam_right_forward` corner | ~~High~~ **Low for the audited checkpoints** (they carry a dedicated readout token, `tokens_per_frame=772`); High only for the no-readout-token configs | Certain where it applies | document only (out of scope) |
-| `cameras` order unenforced train↔serve; export cfg 1-cam | High (silent) | Med | Phase 3 |
-| Tests assert only init-time numerical difference | Med | Certain | Phase 4 |
-| 769² intra-frame area (9x vs cam=1); 769 = 6·128+1 flex tiling | Cost | Certain | note only |
-| **`dinov2_dinowm_causal_3cam.yaml` on this branch does not reproduce `kughoqfi`** — `tokens_per_frame: 769` (no readout/register), inherited `window: 16`, `drop_path_rate: 0.1` | High (invalidates the Phase 2 baseline comparison) | Certain | §7; harmless for Phase 1, which uses the config only for the datamodule |
-| **No 3-camera predict dataset** — `config/dataset/yaak/predict.yaml` has one image stream, so a cam=3 `PatchPolicy` KeyErrors in the predict path | Blocks the general harness, **not** Phase 1 (which runs on `val_3cam`) | Certain | §9 |
-| **Any future `predict_3cam` copying `predict.yaml`'s `run_folder`** would cross-contaminate the existing rbyte predict cache (keyed by name only, not camera set) | High (silent, wrong data) | Certain if copied verbatim | §9 — re-key the `run_folder`, as `val_3cam.yaml` already does |
-| **Dataset templates are duplicated per arm and have already drifted** — `predict.yaml` reads `turn_signal` as `polars.Int8`, `train`/`val`/`val_3cam` as `Int64` | Med (silent dtype skew between train and predict) | Certain, measured | §9 — factor into a ytt library |
-| Original gate criteria: two of three unusable (zero noise floor; layer-0 probe cannot fail), and no branch for "side cameras unused" | High (would have mis-gated Phase 2) | Certain | **RESOLVED** — gate revised, §4.5 |
+| Risk                                                                                                                                                                                                                                                            | Impact                                                                                                                                                  | Likelihood                                | Action                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Flat 769-slot table: no dedicated view direction, no cross-view sharing                                                                                                                                                                                         | High                                                                                                                                                    | Certain by construction                   | Phase 2                                                                                                                                                                |
+| ~~View code ~55x quieter than content at init, 10.0x measured post-training~~ (per-patch-token magnitude only)                                                                                                                                                  | **RESOLVED** by `b846a4f`                                                                                                                               | n/a — 2.09x measured on `kughoqfi` (§4.2) | Had already been downgraded once by the effect audit (readout token was never starved), so **do not assume this bought discriminability**; Phase 1(a)/(c) still needed |
+| **`b846a4f` side effect: `intra_position_norm` flattens per-slot amplitude, so the speed token is now ~84% constant position code** (content/position 1.74x → **0.19x**). Register/readout are unaffected in substance (constant+constant = reparameterization) | Med                                                                                                                                                     | Certain by construction; measured §4.2    | Decide: scope norm+gain to the patch band only, or accept. Not yet decided                                                                                             |
+| **`patch_policy_position_audit.py` reads the raw table and bypasses `intra_position_norm`/`intra_position_gain`** — reports 23x where the truth is 2.09x on any post-`b846a4f` checkpoint                                                                       | High (silent, wrong-direction)                                                                                                                          | Certain                                   | Fix `:141` and `:285` before re-running — §4.3                                                                                                                         |
+| No run isolates `b846a4f`: `kughoqfi` also changed `window` 16→6 and `drop_path_rate` 0.1→0.3                                                                                                                                                                   | Med                                                                                                                                                     | Certain                                   | No performance claim can be attributed to the fix — §4.2                                                                                                               |
+| Frozen ViT pos-emb pulls same-slot patches together                                                                                                                                                                                                             | Med                                                                                                                                                     | Certain                                   | amplifier; no direct fix                                                                                                                                               |
+| No per-camera trainable capacity                                                                                                                                                                                                                                | Med                                                                                                                                                     | Certain                                   | optional, see §5                                                                                                                                                       |
+| Readout anchored on `cam_right_forward` corner                                                                                                                                                                                                                  | ~~High~~ **Low for the audited checkpoints** (they carry a dedicated readout token, `tokens_per_frame=772`); High only for the no-readout-token configs | Certain where it applies                  | document only (out of scope)                                                                                                                                           |
+| `cameras` order unenforced train↔serve; export cfg 1-cam                                                                                                                                                                                                        | High (silent)                                                                                                                                           | Med                                       | Phase 3                                                                                                                                                                |
+| Tests assert only init-time numerical difference                                                                                                                                                                                                                | Med                                                                                                                                                     | Certain                                   | Phase 4                                                                                                                                                                |
+| 769² intra-frame area (9x vs cam=1); 769 = 6·128+1 flex tiling                                                                                                                                                                                                  | Cost                                                                                                                                                    | Certain                                   | note only                                                                                                                                                              |
+| **`dinov2_dinowm_causal_3cam.yaml` on this branch does not reproduce `kughoqfi`** — `tokens_per_frame: 769` (no readout/register), inherited `window: 16`, `drop_path_rate: 0.1`                                                                                | High (invalidates the Phase 2 baseline comparison)                                                                                                      | Certain                                   | §7; harmless for Phase 1, which uses the config only for the datamodule                                                                                                |
+| **No 3-camera predict dataset** — `config/dataset/yaak/predict.yaml` has one image stream, so a cam=3 `PatchPolicy` KeyErrors in the predict path                                                                                                               | Blocks the general harness, **not** Phase 1 (which runs on `val_3cam`)                                                                                  | Certain                                   | §9                                                                                                                                                                     |
+| **Any future `predict_3cam` copying `predict.yaml`'s `run_folder`** would cross-contaminate the existing rbyte predict cache (keyed by name only, not camera set)                                                                                               | High (silent, wrong data)                                                                                                                               | Certain if copied verbatim                | §9 — re-key the `run_folder`, as `val_3cam.yaml` already does                                                                                                          |
+| **Dataset templates are duplicated per arm and have already drifted** — `predict.yaml` reads `turn_signal` as `polars.Int8`, `train`/`val`/`val_3cam` as `Int64`                                                                                                | Med (silent dtype skew between train and predict)                                                                                                       | Certain, measured                         | §9 — factor into a ytt library                                                                                                                                         |
+| Original gate criteria: two of three unusable (zero noise floor; layer-0 probe cannot fail), and no branch for "side cameras unused"                                                                                                                            | High (would have mis-gated Phase 2)                                                                                                                     | Certain                                   | **RESOLVED** — gate revised, §4.5                                                                                                                                      |
 
----
+______________________________________________________________________
 
 ## 3. Decisions already made (do not revisit)
 
@@ -200,7 +197,7 @@ importance:
 - **Readout unchanged.** No new readout token, no `tokens_per_frame` change,
   no change to export/KV-cache shapes.
 
----
+______________________________________________________________________
 
 ## 4. Phase 1 — Diagnostics (no training, no architecture change)
 
@@ -216,8 +213,7 @@ pending.**
 
 Checkpoint-only (no val data, no rbyte cache, no image forward pass), run
 against `yaak/alex-tmp/model-03tuy3q9:latest` (run `yaak/alex-tmp/03tuy3q9`,
-`dinov2_dinowm_causal_3cam`, `dim_model=512`, `cameras=[cam_front_left,
-cam_left_forward, cam_right_forward]`, `num_register_tokens=2`,
+`dinov2_dinowm_causal_3cam`, `dim_model=512`, `cameras=[cam_front_left, cam_left_forward, cam_right_forward]`, `num_register_tokens=2`,
 `use_readout_token=True`, `tokens_per_frame=772`). Two measurements:
 
 **(d) Embedding-table audit** (`audit_table`) — as originally scoped: row
@@ -229,6 +225,7 @@ logged live during training. (The PCA plot from the original scope was not
 built; the row-norm/cosine numbers below answered the question without it.)
 
 Measured results:
+
 - Row norms (mean, per band): speed 0.61, `cam_front_left` 2.23,
   `cam_left_forward` 2.24, `cam_right_forward` 2.44, register 1.11-1.14,
   readout 1.44.
@@ -253,17 +250,13 @@ Measured results:
 
 **New — position-effect audit** (`audit_effect`), not in the original scope:
 measures the *causal* effect of the position table on the trunk's real trained
-output, not just input-side magnitude. Builds `x0` (content only) and `x1 = x0
-+ intra_position_embedding` from every real trained weight (fusion
-norm/gains, `patch_projection`, `speed_embedding`, register/readout tokens,
-all 8 trunk layers) — only the pre-fusion image/goal features are synthetic
-per-patch noise, since `fusion_patch_norm`/`fusion_goal_gain` normalize away
-that upstream distribution by construction regardless. Reports `cos(x0, x1)`
-at the input and `||f(x1)-f(x0)|| / ||f(x0)||` after every layer and after
-`encoder.norm`.
+output, not just input-side magnitude. Builds `x0` (content only) and \`x1 = x0
+
+- intra_position_embedding`from every real trained weight (fusion norm/gains,`patch_projection`, `speed_embedding`, register/readout tokens, all 8 trunk layers) — only the pre-fusion image/goal features are synthetic per-patch noise, since `fusion_patch_norm`/`fusion_goal_gain`normalize away that upstream distribution by construction regardless. Reports`cos(x0, x1)`at the input and`||f(x1)-f(x0)|| / ||f(x0)||`after every layer and after`encoder.norm\`.
 
 Measured results — **the readout token (what `code_head`/`offset_head`
 actually consume) is NOT quiet**, unlike the individual patch tokens:
+
 - Patch tokens: `rel_diff` stays flat ~4.5-4.9% through all 8 layers — matches
   the magnitude argument (pre-LN preserves the ratio, confirmed causally).
 - Readout token: `cos(f(x0), f(x1)) = 0.943`, `rel_diff = 0.33` (33% of its
@@ -289,18 +282,17 @@ are for, and they have NOT been run yet.
 
 ### 4.2 — Post-`b846a4f` comparison: `03tuy3q9` vs `kughoqfi`
 
-Read directly from both checkpoints (`torch.load` + `F.layer_norm(W, (512,)) *
-gain`; no data, no forward pass) and cross-checked against each run's own
+Read directly from both checkpoints (`torch.load` + `F.layer_norm(W, (512,)) * gain`; no data, no forward pass) and cross-checked against each run's own
 `quality/*` history.
 
-| | `03tuy3q9` (before) | `kughoqfi` (after) |
-|---|---|---|
-| `intra_position_gain` | — | **0.494196** |
-| raw table Frobenius norm | 65.86 | 28.09 |
-| raw row norm (mean) | 2.298 | 1.011 |
-| **applied** position-vector norm | 2.298 | **11.154** (= 0.494·√512, σ = 0.0008) |
-| content patch token norm | 23.044 | 23.333 |
-| **content / position ratio** | **10.0x** | **2.09x** |
+|                                  | `03tuy3q9` (before) | `kughoqfi` (after)                    |
+| -------------------------------- | ------------------- | ------------------------------------- |
+| `intra_position_gain`            | —                   | **0.494196**                          |
+| raw table Frobenius norm         | 65.86               | 28.09                                 |
+| raw row norm (mean)              | 2.298               | 1.011                                 |
+| **applied** position-vector norm | 2.298               | **11.154** (= 0.494·√512, σ = 0.0008) |
+| content patch token norm         | 23.044              | 23.333                                |
+| **content / position ratio**     | **10.0x**           | **2.09x**                             |
 
 **The amplitude gap is closed for patch tokens: ~55x at init → 10.0x unbalanced
 → 2.09x now, a 4.8x improvement in effective position amplitude.**
@@ -318,22 +310,22 @@ longer run or a warm restart could land lower.
 
 **Corroborating W&B metrics** (all readable without the checkpoint):
 
-| metric | before | after | reading |
-|---|---|---|---|
-| `quality/weight_norm/encoder.intra_position_gain` | *(absent)* | 1.0 → 0.4942 | scalar param, so `weight_norm` *is* the value |
-| `quality/weight_norm/encoder.intra_position_embedding` | 65.86 | 28.09 | under the LayerNorm radial growth is a no-op, so the table stopped inflating and only refines direction — the drop is the fix working, not the signal shrinking |
-| `quality/grad_to_weight/encoder.intra_position_embedding` | 0.0032 | 0.0312 | **10x more relative gradient** — the commit message's "waiting on gradient descent to grow a tiny table" argument, confirmed |
-| `quality/token_norm/train/speed` | 1.068 | 2.102 | the speed embedding fighting back — see the side effect below |
-| `quality/weight_norm/speed_embedding` | 23.8 | 42.8 | same |
+| metric                                                    | before     | after        | reading                                                                                                                                                         |
+| --------------------------------------------------------- | ---------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `quality/weight_norm/encoder.intra_position_gain`         | *(absent)* | 1.0 → 0.4942 | scalar param, so `weight_norm` *is* the value                                                                                                                   |
+| `quality/weight_norm/encoder.intra_position_embedding`    | 65.86      | 28.09        | under the LayerNorm radial growth is a no-op, so the table stopped inflating and only refines direction — the drop is the fix working, not the signal shrinking |
+| `quality/grad_to_weight/encoder.intra_position_embedding` | 0.0032     | 0.0312       | **10x more relative gradient** — the commit message's "waiting on gradient descent to grow a tiny table" argument, confirmed                                    |
+| `quality/token_norm/train/speed`                          | 1.068      | 2.102        | the speed embedding fighting back — see the side effect below                                                                                                   |
+| `quality/weight_norm/speed_embedding`                     | 23.8       | 42.8         | same                                                                                                                                                            |
 
 **Camera identity, centered** (band mean minus the grand mean over all 768
 patch rows):
 
-| | before | after |
-|---|---|---|
-| camera-identity \|v\| / content, per camera | 0.016 / 0.048 / 0.052 | **0.062 / 0.108 / 0.112** |
-| cos(`left_forward`, `right_forward`) | −0.949 | −0.840 |
-| between-camera vs within-camera variance of patch rows | 0.93 / 4.62 (17%) | 5.08 / 118.0 (4.1%) |
+|                                                        | before                | after                     |
+| ------------------------------------------------------ | --------------------- | ------------------------- |
+| camera-identity \|v\| / content, per camera            | 0.016 / 0.048 / 0.052 | **0.062 / 0.108 / 0.112** |
+| cos(`left_forward`, `right_forward`)                   | −0.949                | −0.840                    |
+| between-camera vs within-camera variance of patch rows | 0.93 / 4.62 (17%)     | 5.08 / 118.0 (4.1%)       |
 
 Camera identity is ~2.2x louder against content than before. Note the two
 directions of that table disagree: in *absolute* terms the camera code grew,
@@ -345,12 +337,12 @@ component just as much. The fix did not preferentially amplify camera identity.
 `nn.LayerNorm(elementwise_affine=False)` forces *every* row to norm 11.15,
 including slots that had learned to be quiet:
 
-| slot | content/position, before | content/position, after |
-|---|---|---|
-| patch | 10.00x | 2.09x ✅ |
-| speed | 1.74x | **0.19x** |
-| register | 0.45x | 0.05x |
-| readout | 0.52x | 0.09x |
+| slot     | content/position, before | content/position, after |
+| -------- | ------------------------ | ----------------------- |
+| patch    | 10.00x                   | 2.09x ✅                |
+| speed    | 1.74x                    | **0.19x**               |
+| register | 0.45x                    | 0.05x                   |
+| readout  | 0.52x                    | 0.09x                   |
 
 For **register and readout** this is harmless — both content and position are
 learned constants there, so their sum is a single effective vector; it is a
@@ -379,8 +371,7 @@ signature, not a position-embedding one:
   and `cruise_turn` steering 0.0728 → **0.0664** (better)
 
 Every `patch_policy` run in `yaak/alex-tmp` was checked: **`kughoqfi` is the
-only `pos_emb_balanced` run**, and there is no `window=6, drop_path=0.3,
-balance-off` control. To attribute the fix, the isolating run is either
+only `pos_emb_balanced` run**, and there is no `window=6, drop_path=0.3, balance-off` control. To attribute the fix, the isolating run is either
 `window=6, drop_path=0.3` with the balance reverted, or `pos_emb_balanced` at
 `window=16, drop_path=0.1`.
 
@@ -388,11 +379,9 @@ balance-off` control. To attribute the fix, the isolating run is either
 
 Both measurements read the raw embedding and bypass the new norm+gain path:
 
-- `patch_policy_position_audit.py:141` — `table =
-  encoder.intra_position_embedding.weight.detach().cpu()` → reports row norm
+- `patch_policy_position_audit.py:141` — `table = encoder.intra_position_embedding.weight.detach().cpu()` → reports row norm
   **1.011** and a ratio of **23x**
-- `patch_policy_position_audit.py:285` — `x1 = x0 +
-  encoder.intra_position_embedding(idx)` → understates the trunk-input
+- `patch_policy_position_audit.py:285` — `x1 = x0 + encoder.intra_position_embedding(idx)` → understates the trunk-input
   perturbation by ~11x, so every `rel_diff` in `audit_effect` is wrong
 
 Run as-is against `kughoqfi` it reports the position signal became **2.3x
@@ -408,11 +397,11 @@ there, also center the band means before the cosine (see the correction under
 The three items do not measure the same thing, and (b) has to be read before
 (a) is interpretable:
 
-| item | measures |
-|---|---|
-| (b) per-camera importance | *is the side camera used at all* |
-| (a) camera-swap sensitivity | *is camera identity resolved* |
-| (c) probe / attention mass | *where identity is present and whether attention uses it* |
+| item                        | measures                                                  |
+| --------------------------- | --------------------------------------------------------- |
+| (b) per-camera importance   | *is the side camera used at all*                          |
+| (a) camera-swap sensitivity | *is camera identity resolved*                             |
+| (c) probe / attention mass  | *where identity is present and whether attention uses it* |
 
 All three go in **one new script**,
 `src/rmind/scripts/patch_policy_camera_probe.py`, on the `val_3cam` loader.
@@ -429,11 +418,11 @@ direct precedent for a modality contributing nothing measurable (the
 forward-dynamics permutation-importance work: `turn_signal` ~0%, `waypoints`
 ~0.2%). So the gate needs a third outcome:
 
-| (b) side-cam importance | (a) swap Δ | reading |
-|---|---|---|
-| large | ≈ 0 | cameras used, identity unresolved → **Phase 2 is the right fix** |
-| large | large | identity resolved → gate does not fire |
-| ≈ 0 | ≈ 0 | **side cameras unused** → factorizing the table is not the fix; the question becomes *why* (frozen ViT features, readout attention mass, or the task simply does not need them) |
+| (b) side-cam importance | (a) swap Δ | reading                                                                                                                                                                         |
+| ----------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| large                   | ≈ 0        | cameras used, identity unresolved → **Phase 2 is the right fix**                                                                                                                |
+| large                   | large      | identity resolved → gate does not fire                                                                                                                                          |
+| ≈ 0                     | ≈ 0        | **side cameras unused** → factorizing the table is not the fix; the question becomes *why* (frozen ViT features, readout attention mass, or the task simply does not need them) |
 
 (b) supplies the denominator that makes (a)'s number dimensionless. Run (b)
 first, or at least report them together.
@@ -449,9 +438,9 @@ items live in `patch_policy_camera_probe.py`. Reasons, in order:
    **patch** tensor (§4.4.4). With the caching shim the whole matrix costs one
    encoder pass per batch; the multirun route is K full passes over the data
    plus an offline parquet join.
-2. **Pairing is in-batch**, not reconstructed from `(input_id, frame_idx)` join
+1. **Pairing is in-batch**, not reconstructed from `(input_id, frame_idx)` join
    keys. Lower variance and far less to get wrong.
-3. **`predict_step` cannot report the gate's own metrics.**
+1. **`predict_step` cannot report the gate's own metrics.**
    `PatchPolicy.predict_step` (`patch_policy.py:1074-1126`) emits only
    `ground_truth` / `prediction_value` / `score_l1` / `score_signed_error`, and
    collapses to `features[:, -1]`. No `code_acc_joint_last`, no teacher-forced
@@ -459,8 +448,7 @@ items live in `patch_policy_camera_probe.py`. Reasons, in order:
 
 **No new dataset or datamodule config is needed for Phase 1.**
 `patch_policy_eval.py:355-370` already builds its loader as
-`instantiate(cfg.datamodule).val_dataloader()`, and `--experiment
-yaak/patch_policy/dinov2_dinowm_causal_3cam` resolves through
+`instantiate(cfg.datamodule).val_dataloader()`, and `--experiment yaak/patch_policy/dinov2_dinowm_causal_3cam` resolves through
 `datamodule/yaak/train_3cam` to `dataset/yaak/val_3cam` — whose rbyte cache is
 already built, being the val set the checkpoint was validated on. That is also
 the right data: §4 scopes the diagnostic to the val set. Consequences: no
@@ -514,7 +502,7 @@ Metrics — two additions to the original scope:
    moves it by 0.01, camera identity is ~3% of the position code's causal
    effect. A loss delta can be small merely because the heads are insensitive;
    this cannot.
-2. **Break out by `_default_cluster_fn`** (`patch_policy_eval.py:38-95`). Side
+1. **Break out by `_default_cluster_fn`** (`patch_policy_eval.py:38-95`). Side
    cameras should matter in `cruise_turn` / `braking_turn` and nowhere else —
    and those are precisely the clusters `kughoqfi` improved (§4.2). An
    aggregate Δ can sit at zero while the turning clusters move.
@@ -528,13 +516,14 @@ The swap idiom to lift is `tests/test_patch_policy.py:270-277`.
 #### 4.4.3 (c) Probe — as originally specified it passes trivially and proves nothing
 
 Two problems with "logistic regression from a patch token → camera id, target
->95% at layer 0":
+
+> 95% at layer 0":
 
 1. **Layer-0 accuracy is already answered analytically.** §4.2 shows the
    centered camera-band means are near-antipodal (cos −0.84 for L↔R) with
    identity at 6-11% of content. A 512-dim linear probe on tens of thousands of
    rows will hit ~100%. A criterion that cannot fail cannot gate anything.
-2. **It is confounded by content.** Three cameras pointing in different
+1. **It is confounded by content.** Three cameras pointing in different
    directions have genuinely different image statistics (hood, sky fraction,
    sun position). A probe at 99% may be reading content, not the position code
    — exactly the thing to isolate.
@@ -619,7 +608,7 @@ Run everything against **`yaak/alex-tmp/model-kughoqfi:latest`**, not
 `03tuy3q9` — it is the current 3cam baseline and the only checkpoint that
 reflects the shipped `_intra` path.
 
----
+______________________________________________________________________
 
 ### 4.6 DONE 2026-08-31 — Results: (a)/(b)/(c) on `kughoqfi`, plus a `03tuy3q9` comparison
 
@@ -630,13 +619,13 @@ batches, `--seed 1337`. Commands in §8.
 
 **Headline — the gate does NOT fire on `kughoqfi`:**
 
-| | `03tuy3q9` (pre-`b846a4f`) | `kughoqfi` (post-`b846a4f`) |
-|---|---|---|
-| (b) left `permute` Δrecon_l1 | **+1.9%** (NOT clearly used) | **+15.5%** (used) |
-| (b) right `permute` Δrecon_l1 | +13.3% (used) | +13.3% (used) |
-| (a) swap ratio `Δ(A,B)/Δ(A,C)` | **0.438** [0.430, 0.445] | **0.842** [0.831, 0.855] |
-| (c) probe, `identical_frame`, depth 0 → last | 0.959 → **0.612** | 0.996 → **0.916** |
-| §4.5 gate (`< 0.1` fires) | does not fire | does not fire |
+|                                              | `03tuy3q9` (pre-`b846a4f`)   | `kughoqfi` (post-`b846a4f`) |
+| -------------------------------------------- | ---------------------------- | --------------------------- |
+| (b) left `permute` Δrecon_l1                 | **+1.9%** (NOT clearly used) | **+15.5%** (used)           |
+| (b) right `permute` Δrecon_l1                | +13.3% (used)                | +13.3% (used)               |
+| (a) swap ratio `Δ(A,B)/Δ(A,C)`               | **0.438** [0.430, 0.445]     | **0.842** [0.831, 0.855]    |
+| (c) probe, `identical_frame`, depth 0 → last | 0.959 → **0.612**            | 0.996 → **0.916**           |
+| §4.5 gate (`< 0.1` fires)                    | does not fire                | does not fire               |
 
 Reading against §4.4.0's table: (b) large + (a) large → **row 2, "identity
 resolved → gate does not fire."** This is the opposite of the hypothesis that
@@ -679,17 +668,16 @@ third, independent line pointing the same way.
   pre-`b846a4f` checkpoint (`Missing key: encoder.intra_position_gain`, since
   `CausalFrameTransformer.__init__` unconditionally creates that parameter in
   the current code). `_load_model` in the script falls back to `strict=False`
-  + monkeypatches `intra_position_norm = nn.Identity()` so the checkpoint runs
-  with its real pre-fix behavior (verified bit-identical to the raw table),
-  not a silently-corrupted hybrid. Same gotcha recorded in the operator's
-  training-gotchas memory.
+  - monkeypatches `intra_position_norm = nn.Identity()` so the checkpoint runs
+    with its real pre-fix behavior (verified bit-identical to the raw table),
+    not a silently-corrupted hybrid. Same gotcha recorded in the operator's
+    training-gotchas memory.
 - **The val datamodule's default `batch_size=32` OOMs a 32GB GPU** running
   this script's fp32 (no-autocast, by design — §4.4.4) forward pass at
   `episode_length=32`. Use `--override datamodule.val.batch_size=8` (or
   smaller); the script also releases the caching allocator between batches
   now. Rebuilding the rbyte sample table from scratch costs ~15-25 min per
-  invocation — pass `--override ++datamodule.train.dataset.samples.resume=true
-  --override ++datamodule.val.dataset.samples.resume=true` on any run after
+  invocation — pass `--override ++datamodule.train.dataset.samples.resume=true --override ++datamodule.val.dataset.samples.resume=true` on any run after
   the first to skip that.
 
 Full numbers: `results.json` (kughoqfi) / `results_03tuy3q9.json`, both dumped
@@ -723,13 +711,54 @@ can be attributed to `b846a4f` alone.
   on the strength of it alone — re-run §4.4's script against the new
   checkpoint first.
 
----
+______________________________________________________________________
 
 ## 5. Phase 2 — Factorize the intra-frame table
 
 **STATUS 2026-08-31: SHELVED — see §4.7.** The §4.5 gate does not fire on
 `kughoqfi`; Phase 1 is closed without starting this phase. The section below
 is kept as a ready-to-execute plan for if that decision is later revisited.
+
+**STATUS 2026-09-01: UN-SHELVED and IMPLEMENTED** — see
+`task-intra-position-factorization.md` for the brief and
+`src/rmind/components/transformer/causal_frame.py` for the code. What shipped is
+a superset of the sketch below, and differs from it in four ways worth reading
+before using this section as the reference:
+
+1. **Everything is a hydra flag; nothing was replaced.** `flat` (this section's
+   status quo) is still the default and is bit-identical to what it was —
+   `tests/test_causal_frame.py::test_default_intra_position_is_bit_identical`
+   gates that. The factorization is one axis
+   (`intra_position_factorization`: `flat` / `view` / `view_2d` / `pano_col` /
+   `pano_bearing`), so §5's sketch is the `view` mode.
+1. **The scaling is a SECOND, orthogonal axis** (`intra_position_scaling`:
+   `norm_gain` / `patch_norm_gain` / `gain` / `none`), which is what settles the
+   §4.2 open question "scope the norm+gain to the patch band only, or accept":
+   `patch_norm_gain` scopes it, and it is selectable rather than decided. The
+   §5 "Scale balancing" advice below — "do not add a second gain", "raising the
+   view init std is moot" — holds only under `norm_gain`; with `none` the
+   amplitude is set at init by `intra_position_target_norm` instead.
+1. **`pano_bearing` is new here and is the arm that shipped as a config**
+   (`config/experiment/yaak/patch_policy/dinov2_dinowm_causal_3cam_pano.yaml`).
+   §5 did not consider that the three views' fields of view OVERLAP — ~16.4 deg,
+   about 4 of every 16 columns — so laying their columns out as if they abut
+   gets the ordering right and the metric wrong. `pano_bearing` maps each patch
+   column to its true bearing (including the rectilinear `atan` nonlinearity)
+   and interpolates into one shared bearing table, so overlapping columns from
+   adjacent cameras index the same bins and literally share a code. The physical
+   left-to-right camera order is DERIVED as `argsort(camera_yaw_deg)` and is
+   never configured: for this rig the permutation is `[1, 0, 2]`, its own
+   inverse, so a direction mistake would be invisible at runtime.
+1. **`speed_position` is an `nn.Embedding`, not a bare `nn.Parameter`** as
+   sketched below. `SelectiveAdamW` derives a parameter's kind from the last
+   dot-separated component of its name and raises `NotImplementedError` on
+   anything unrecognized, at `configure_optimizers` — a bare parameter named
+   `speed_position` would have hit that. The non-patch slots (speed, registers,
+   readout) share one `special_position_embedding` and never participate in the
+   factorization.
+
+The gate result in §4.6 is unchanged and was not the reason for un-shelving; the
+arms train from scratch and `warm_start_ckpt.py` refuses a factorized target.
 
 A re-parameterization, not a new mechanism. `_intra` still returns a
 `(tokens_per_frame, dim_model)` tensor, so shapes, KV-cache layout, ONNX
@@ -807,7 +836,7 @@ both `_intra()` and `step()`, mirroring `PatchPolicy._init_fusion_norm`
 add `num_cameras: ${num_cameras}` under `encoder:`, alongside the existing
 `tokens_per_frame` / `max_sequence_length` interpolations.
 
----
+______________________________________________________________________
 
 ## 6. Phase 3 — Ordering and config guards
 
@@ -833,9 +862,7 @@ Independent of Phases 1-2; land regardless of the gate outcome.
   `use_readout_token` is set** — see the correction under finding 6), so the
   continuation / finetune arms are not warm-started blind.
 - **Reconcile `dinov2_dinowm_causal_3cam.yaml` with the runs that were actually
-  trained.** As it stands on this branch it sets `tokens_per_frame:
-  "${eval:'${num_patches} * ${num_cameras} + 1'}"` = 769 and inherits `window:
-  16` / `drop_path_rate: 0.1` from `dinov2_dinowm_causal.yaml:164-238`, with no
+  trained.** As it stands on this branch it sets `tokens_per_frame: "${eval:'${num_patches} * ${num_cameras} + 1'}"` = 769 and inherits `window: 16` / `drop_path_rate: 0.1` from `dinov2_dinowm_causal.yaml:164-238`, with no
   `use_readout_token` / `num_register_tokens` — there is no 3cam+readout config
   here at all. But both audited checkpoints are `tokens_per_frame=772` with a
   readout token and two registers, and `kughoqfi` ran `window=6`,
@@ -850,7 +877,7 @@ ends at §12.9, but `dinov2_dinowm_causal.yaml` and
 `src/rmind/callbacks/predict_metrics.py:62` both cite a §13 / §13.1 that was never
 written — the cam=3 memory measurements those comments point at are missing.
 
----
+______________________________________________________________________
 
 ## 7. Phase 4 — Tests
 
@@ -873,7 +900,7 @@ written — the cam=3 memory measurements those comments point at are missing.
 - `tests/test_patch_policy_decoder.py:224-268` must stay green; add the Phase 3
   ordering assertion.
 
----
+______________________________________________________________________
 
 ## 8. Verification
 
@@ -950,7 +977,7 @@ baseline — which is now **`kughoqfi`** (`val/loss/total` 5.913,
 the comparison is meaningless (§4.2, §6). "Δ clearly above noise" and "layer-0
 probe accuracy > 95%" were the original wording; both are dead criteria (§4.5).
 
----
+______________________________________________________________________
 
 ## 9. Future — a general patch_policy predict harness (NOT Phase 1)
 
@@ -992,6 +1019,7 @@ hunk, and rbyte cache keys stay stable for every existing arm.
 ### 9.2 `predict_3cam` data
 
 Once 9.1 exists this is a drive list. Two constraints:
+
 - Side-camera frames exist only for the five `val_3cam` drives, under
   `${paths.alex_data}` rather than `${paths.data}`.
 - **Re-key `run_folder`.** `predict.yaml`'s is

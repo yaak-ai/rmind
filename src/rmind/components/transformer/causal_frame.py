@@ -16,12 +16,25 @@ stale. Nothing is reusable even though most frames are unchanged.
 The replacement is factorized, and each factor is chosen to be stable under a
 sliding window:
 
-* **intra-frame position: a learned `tokens_per_frame`-slot embedding**, tiled
-  identically onto every frame. Token *k* of frame *f* always gets
-  `intra_position_embedding[k]`, for every *f*. Frame-relative by construction,
-  so it never goes stale. This preserves exactly the intra-frame capacity the
-  1542-slot embedding had (patch identity, and speed-token vs patch-token
-  identity) -- nothing is dropped.
+* **intra-frame position: a learned `tokens_per_frame`-slot table**, tiled
+  identically onto every frame. Token *k* of frame *f* always gets row *k* of
+  that table, for every *f*. Frame-relative by construction, so it never goes
+  stale. This preserves exactly the intra-frame capacity the 1542-slot embedding
+  had (patch identity, and speed-token vs patch-token identity) -- nothing is
+  dropped.
+
+  How that table is scaled and parameterized is configurable along two
+  orthogonal axes, `IntraPositionScaling` and `IntraPositionFactorization`,
+  whose defaults (`norm_gain`/`flat` -- one free row per slot, LayerNorm'd to a
+  common norm and scaled by a learned gain) reproduce the historical behaviour
+  bit-for-bit. The factorized modes give a camera its own vector, fed by every
+  one of its patch tokens, and share spatial structure across views; the
+  panoramic ones lay the three views out in physical left-to-right order, and
+  `pano_bearing` makes columns whose fields of view genuinely overlap share a
+  learned code. **The composed table is `(tokens_per_frame, dim_model)` in every
+  mode**, so the KV-cache layout, the ONNX bindings and the export path are
+  identical throughout. `intra_position_applied_table()` is the single
+  definition; `forward` and `step` both go through it.
 * **inter-frame position: RoPE at *frame* granularity** applied to q and k in
   every layer. All `tokens_per_frame` tokens of a frame share one rotation
   `R_f`, so:
@@ -101,9 +114,10 @@ with frame 0 in context. That is a property of bounded attention, not a cache
 defect.
 """
 
-from collections.abc import Callable
-from functools import cache
-from typing import Literal, final, get_args, override
+import math
+from collections.abc import Callable, Iterable, Sequence
+from functools import cache, partial
+from typing import Literal, cast, final, get_args, override
 
 import torch
 from torch import Tensor, nn
@@ -115,11 +129,17 @@ from torch.nn.attention.flex_attention import (
 )
 from torch.utils.checkpoint import checkpoint
 
+from rmind.components.nn import Embedding, default_weight_init_fn
+from rmind.components.position_encoding import PatchPositionEmbedding2D
+
 __all__ = [
     "AttentionImpl",
     "CausalFrameTransformer",
     "CausalFrameTransformerBlock",
     "CausalSelfAttention",
+    "IntraPositionFactorization",
+    "IntraPositionScaling",
+    "frame_band_slices",
     "frame_block_causal_block_mask",
     "frame_block_causal_mask",
     "frame_rope_cos_sin",
@@ -138,6 +158,233 @@ AttentionImpl = Literal["sdpa", "flex"]
 # for the measured cost of that misalignment (6-29% extra computed area, and
 # padding the frame to 384 to align it is 2.23x -- strictly worse).
 FLEX_BLOCK_SIZE: int = 128
+
+# How the `(tokens_per_frame, dim_model)` intra-frame position table is SCALED
+# before it is added to the content tokens. `b846a4f` introduced the LayerNorm +
+# learnable-gain balance; it is `norm_gain` here and stays the default.
+#
+# * `norm_gain`       -- `LayerNorm(T) * gain` over EVERY row (today's behaviour)
+# * `patch_norm_gain` -- the same, but over the patch band only; the prefix
+#                        (speed) and suffix (register/readout) rows keep their
+#                        raw, learned amplitude. The LayerNorm forces every row
+#                        to norm `sqrt(dim_model) * gain`, which for a
+#                        data-dependent slot like the speed token means its
+#                        content is swamped by a constant (measured: the speed
+#                        token's content/position ratio fell 1.74x -> 0.19x, i.e.
+#                        ~84% of that token became fixed position code).
+# * `gain`            -- `T * gain`; one scalar knob, no per-row flattening
+# * `none`            -- the raw table; pair it with `intra_position_target_norm`
+#                        so "scaling off" does not also mean "back to a 0.45 row
+#                        norm 50x below content"
+IntraPositionScaling = Literal["norm_gain", "patch_norm_gain", "gain", "none"]
+
+# How that table is PARAMETERIZED. `flat` is one free row per intra-frame slot
+# (today's behaviour); the rest factorize the patch band so that a camera's
+# identity is a single vector fed by all of its patch tokens, and so that spatial
+# structure is shared across views. Every mode composes to the same
+# `(tokens_per_frame, dim_model)` shape, so the KV-cache layout, the ONNX
+# bindings and the export path are identical in all of them.
+#
+# * `flat`         -- `flat[slot]`
+# * `view`         -- `view[c] + patch[r*cols + j]`
+# * `view_2d`      -- `view[c] + row[r] + col[j]`
+# * `pano_col`     -- `view[c] + row[r] + gcol[order[c]*cols + j]`, where `order`
+#                     is the physical left-to-right camera order derived from the
+#                     configured yaws: adjacent columns of adjacent cameras
+#                     become adjacent rows of one global column table
+# * `pano_bearing` -- `view[c] + row[r] + interp(bearing(c, j))` against one
+#                     shared bearing table, so the ~16 deg of FOV two adjacent
+#                     cameras genuinely overlap indexes the SAME bins and shares
+#                     a code rather than merely sitting next to it
+IntraPositionFactorization = Literal[
+    "flat", "view", "view_2d", "pano_col", "pano_bearing"
+]
+
+# A `trunc_normal_(std=s, a=-2s, b=2s)` draw realizes 0.7737 of the nominal
+# variance (the +/-2sigma truncation this repo's `default_weight_init_fn` uses),
+# so a d-dimensional row lands at norm ~= sqrt(d) * s * sqrt(0.7737) =
+# sqrt(d) * s * 0.8796. `_init_std_for_target_norm` inverts that; the constant is
+# pinned empirically by `test_target_norm_is_hit` rather than trusted.
+TRUNC_NORMAL_2SIGMA_NORM_FACTOR: float = 0.8796
+
+
+def frame_band_slices(
+    *, cameras: Sequence[str], num_patches: int, num_register: int, has_readout: bool
+) -> dict[str, slice]:
+    """Intra-frame slot bands, `{"speed", "patch:<camera>"..., "register"?, "readout"?}`.
+
+    Slot layout `[speed, cam0 patches, cam1 patches, ..., register..., readout?]`
+    -- this **must mirror `rmind.models.patch_policy.PatchPolicy._frame_tokens`'s
+    `torch.cat` order exactly**, which is why it lives here, next to the trunk
+    that consumes that layout, rather than being re-derived by each diagnostic
+    that needs it (it was duplicated in two of them).
+
+    Pure index arithmetic, no torch: usable against a bare state dict.
+    """
+    bands = {"speed": slice(0, 1)}
+    i = 1
+    for camera in cameras:
+        bands[f"patch:{camera}"] = slice(i, i + num_patches)
+        i += num_patches
+    if num_register:
+        bands["register"] = slice(i, i + num_register)
+        i += num_register
+    if has_readout:
+        bands["readout"] = slice(i, i + 1)
+    return bands
+
+
+def _init_std_for_target_norm(
+    target_norm: float, *, dim: int, num_factors: float
+) -> float:
+    """The per-factor `trunc_normal_` std whose `num_factors`-term additive sum
+    lands at row norm `target_norm` in `dim` dimensions.
+
+    The factors are independent, so their variances add: `num_factors` terms of
+    per-element variance `v` give `dim * num_factors * v` expected squared norm.
+    """
+    return target_norm / (
+        math.sqrt(dim * num_factors) * TRUNC_NORMAL_2SIGMA_NORM_FACTOR
+    )
+
+
+def _column_bearings_deg(
+    *, yaw_deg: Sequence[float], cols: int, hfov_deg: float
+) -> Tensor:
+    """Bearing of each patch column's centre, `(num_cameras, cols)`, in degrees.
+
+    For a rectilinear camera the mapping from image column to bearing is **not**
+    linear -- the sensor is planar, so equal pixel steps subtend smaller angles
+    towards the edges:
+
+        x_j     = (2j + 1) / cols - 1                    # column centre in (-1, 1)
+        bearing = yaw_c + atan(x_j * tan(hfov / 2))
+
+    Approximations, all deliberate and all correctable from config:
+
+    * `hfov_deg` is assumed HORIZONTAL. The rig documentation gives "FOV 90"
+      without saying horizontal or diagonal; if it is diagonal on 16:9 the true
+      horizontal FOV is ~82.6 deg and the seam overlap between adjacent views is
+      ~12.6 deg rather than ~16.4 deg. Both overlap, which is what matters here,
+      and `camera_hfov_deg` is a config value precisely so this can be corrected
+      without a code change.
+    * Pitch and mount offset are ignored: this is a pure bearing (yaw) model.
+    """
+    x = (2 * torch.arange(cols, dtype=torch.float64) + 1) / cols - 1
+    half = math.tan(math.radians(hfov_deg) / 2)
+    offset = torch.rad2deg(torch.atan(x * half))
+    return torch.tensor(yaw_deg, dtype=torch.float64).unsqueeze(-1) + offset
+
+
+def _bearing_interpolation_matrix(bearings: Tensor, *, num_bins: int) -> Tensor:
+    """Linear-interpolation weights from patch columns onto a shared bearing table.
+
+    `bearings` is `(num_cameras, cols)` in degrees; the result is
+    `(num_cameras * cols, num_bins)`, each row summing to 1 with at most two
+    non-zeros. Bins are uniform in bearing over `[min, max]` of the whole rig, so
+    the columns two adjacent cameras genuinely share (their FOVs overlap) land in
+    the SAME bins with non-zero weight and literally share a learned code.
+
+    Constant -- it depends only on the configured geometry -- so it is registered
+    as a non-persistent buffer and the column term becomes one matmul: static
+    shape, constant-foldable under `torch.export`.
+    """
+    flat = bearings.reshape(-1)
+    low, high = flat.min(), flat.max()
+    span = (high - low).clamp_min(torch.finfo(flat.dtype).eps)
+    u = (flat - low) / span * (num_bins - 1)
+    lower = u.floor().clamp(0, num_bins - 1).long()
+    upper = (lower + 1).clamp(max=num_bins - 1)
+    frac = (u - lower.to(u.dtype)).clamp(0.0, 1.0)
+    weights = torch.zeros(flat.shape[0], num_bins, dtype=flat.dtype)
+    rows = torch.arange(flat.shape[0])
+    # index_put_ with accumulate: lower == upper at the very last bin, where both
+    # halves of the weight belong to the same column and must SUM to 1
+    weights.index_put_((rows, lower), 1.0 - frac, accumulate=True)
+    weights.index_put_((rows, upper), frac, accumulate=True)
+    return weights
+
+
+def _validate_factorized_geometry(  # noqa: PLR0913
+    *,
+    factorization: IntraPositionFactorization,
+    tokens_per_frame: int,
+    num_cameras: int | None,
+    patch_grid: tuple[int, int] | None,
+    num_prefix_tokens: int,
+    num_suffix_tokens: int,
+    camera_yaw_deg: tuple[float, ...] | None,
+) -> tuple[int, int]:
+    """Check a non-`flat` arm's geometry against the frame layout; returns
+    `(rows, cols)`.
+
+    Raises:
+        ValueError: if `num_cameras`/`patch_grid` are absent, if the slot
+            arithmetic does not reproduce `tokens_per_frame`, or -- for the
+            panoramic modes -- if `camera_yaw_deg` is missing, the wrong length,
+            or not distinct.
+    """
+    if num_cameras is None or patch_grid is None:
+        msg = (
+            f"intra_position_factorization={factorization!r} requires BOTH "
+            f"num_cameras (got {num_cameras!r}) and patch_grid (got "
+            f"{patch_grid!r}): the trunk cannot infer them -- tokens_per_frame "
+            "minus the non-patch slots divides many ways, and the patch grid is "
+            "a property of the image encoder, not of a length"
+        )
+        raise ValueError(msg)
+
+    rows, cols = patch_grid
+    expected = num_prefix_tokens + num_cameras * rows * cols + num_suffix_tokens
+    if expected != tokens_per_frame:
+        msg = (
+            "slot arithmetic does not reproduce tokens_per_frame: "
+            "PatchPolicy._frame_tokens lays a frame out as [prefix (speed), "
+            f"cam_0 patches, ..., cam_{num_cameras - 1} patches, registers, "
+            f"readout], i.e. {num_prefix_tokens} + {num_cameras}*{rows}*{cols} "
+            f"+ {num_suffix_tokens} = {expected}, but "
+            f"tokens_per_frame={tokens_per_frame}"
+        )
+        raise ValueError(msg)
+
+    if factorization in {"pano_col", "pano_bearing"}:
+        if camera_yaw_deg is None or len(camera_yaw_deg) != num_cameras:
+            msg = (
+                f"intra_position_factorization={factorization!r} requires "
+                f"camera_yaw_deg with one yaw per camera (num_cameras="
+                f"{num_cameras}), got {camera_yaw_deg!r}"
+            )
+            raise ValueError(msg)
+        if len(set(camera_yaw_deg)) != num_cameras:
+            msg = (
+                "camera_yaw_deg must be distinct to define a physical "
+                f"left-to-right order, got {camera_yaw_deg!r}"
+            )
+            raise ValueError(msg)
+
+    return rows, cols
+
+
+def _as_int_pair(value: Iterable[int] | None) -> tuple[int, int] | None:
+    """Hydra hands `list`/`ListConfig` where a `tuple` is declared.
+
+    `CausalFrameTransformer.__init__` deliberately carries no `@validate_call`
+    (see its docstring), so the normalization pydantic would do happens here.
+
+    Raises:
+        ValueError: if the value is not a pair.
+    """
+    if value is None:
+        return None
+    pair = tuple(int(v) for v in value)
+    if len(pair) != 2:  # noqa: PLR2004
+        msg = f"expected two values (rows, cols), got {pair!r}"
+        raise ValueError(msg)
+    return (pair[0], pair[1])
+
+
+def _as_float_tuple(value: Iterable[float] | None) -> tuple[float, ...] | None:
+    return None if value is None else tuple(float(v) for v in value)
 
 
 def frame_block_causal_mask(
@@ -570,6 +817,16 @@ class CausalFrameTransformer(nn.Module):
         attention_impl: AttentionImpl = "sdpa",
         drop_path_rate: float = 0.0,
         checkpoint: bool | int = True,
+        intra_position_scaling: IntraPositionScaling = "norm_gain",
+        intra_position_factorization: IntraPositionFactorization = "flat",
+        intra_position_target_norm: float | None = None,
+        num_cameras: int | None = None,
+        patch_grid: Iterable[int] | None = None,
+        num_prefix_tokens: int = 1,
+        num_suffix_tokens: int = 0,
+        camera_yaw_deg: Iterable[float] | None = None,
+        camera_hfov_deg: float = 90.0,
+        num_bearing_bins: int | None = None,
     ) -> None:
         super().__init__()
         # normalized to "checkpoint every k-th block", 0 = never
@@ -613,34 +870,18 @@ class CausalFrameTransformer(nn.Module):
         self.rope_base = rope_base
         self.attention_impl = attention_impl
 
-        # frame-RELATIVE intra-frame position: tiled onto every frame, so it is
-        # invariant to where the frame sits in the window (unlike the 1542-slot
-        # window-absolute embedding it replaces)
-        self.intra_position_embedding = nn.Embedding(tokens_per_frame, dim_model)
-        nn.init.trunc_normal_(
-            self.intra_position_embedding.weight, mean=0.0, std=0.02, a=-0.04, b=0.04
+        self._init_intra_position(
+            scaling=intra_position_scaling,
+            factorization=intra_position_factorization,
+            target_norm=intra_position_target_norm,
+            num_cameras=num_cameras,
+            patch_grid=_as_int_pair(patch_grid),
+            num_prefix_tokens=num_prefix_tokens,
+            num_suffix_tokens=num_suffix_tokens,
+            camera_yaw_deg=_as_float_tuple(camera_yaw_deg),
+            camera_hfov_deg=camera_hfov_deg,
+            num_bearing_bins=num_bearing_bins,
         )
-        # scale-balanced position fusion (mirrors PatchPolicy._init_fusion_norm's
-        # LayerNorm + learnable gain): the trunc_normal_ table above starts at
-        # per-token norm ~sqrt(dim_model)*0.02, ~50x smaller than the content
-        # tokens entering the trunk (patch_projection is xavier_uniform_ over a
-        # LayerNorm'd input, so its output sits at ~sqrt(dim_model)). Left alone,
-        # the position/camera signal is drowned out by content in the residual
-        # sum -- the first block's pre-attention LayerNorm normalizes that SUM,
-        # not each addend, so it can't rebalance a signal that is already 50x
-        # too small. Normalizing each position row to ~sqrt(dim_model) up front
-        # and scaling by a learnable gain (init 1.0, same as fusion_patch_gain/
-        # fusion_goal_gain) closes that gap immediately instead of waiting on
-        # gradient descent to grow a tiny table, while still letting training
-        # dial it back down if a full-strength signal hurts. `elementwise_affine=
-        # False`: a default LayerNorm's own per-channel weight (init to ones)
-        # would be a redundant degree of freedom alongside the scalar gain --
-        # any rescaling the gain can do, that weight could do too -- so this
-        # keeps `intra_position_gain` the single, cleanly-interpretable knob for
-        # how much the trunk trusts the position/camera signal, with nothing
-        # else fighting it for the same scale.
-        self.intra_position_norm = nn.LayerNorm(dim_model, elementwise_affine=False)
-        self.intra_position_gain = nn.Parameter(torch.tensor(1.0))
         # stochastic depth: timm-style linear ramp, 0 at the first layer up to
         # drop_path_rate at the last (deeper layers are the more redundant ones)
         self.drop_path_rate = drop_path_rate
@@ -659,10 +900,405 @@ class CausalFrameTransformer(nn.Module):
         ])
         self.norm = nn.LayerNorm(dim_model)
 
-    def _intra(self, num_frames: int, device: torch.device) -> Tensor:
-        idx = torch.arange(self.tokens_per_frame, device=device)
-        pos = self.intra_position_norm(self.intra_position_embedding(idx))
-        return (pos * self.intra_position_gain).repeat(num_frames, 1)
+    def _init_intra_position(  # noqa: PLR0913
+        self,
+        *,
+        scaling: IntraPositionScaling,
+        factorization: IntraPositionFactorization,
+        target_norm: float | None,
+        num_cameras: int | None,
+        patch_grid: tuple[int, int] | None,
+        num_prefix_tokens: int,
+        num_suffix_tokens: int,
+        camera_yaw_deg: tuple[float, ...] | None,
+        camera_hfov_deg: float,
+        num_bearing_bins: int | None,
+    ) -> None:
+        """Build the frame-RELATIVE intra-frame position table's parameters.
+
+        The table is tiled onto every frame, so it is invariant to where the
+        frame sits in the window (unlike the 1542-slot window-absolute embedding
+        it replaces). Two orthogonal, independently-selectable axes govern it:
+        `IntraPositionScaling` (how loud it is) and
+        `IntraPositionFactorization` (how it is parameterized). **The defaults,
+        `norm_gain`/`flat`, reproduce the pre-existing behaviour bit-for-bit** --
+        same parameter names, same state-dict keys, same init draw order -- which
+        `test_default_intra_position_is_bit_identical` gates.
+
+        On the scaling default (`b846a4f`, kept verbatim): the `trunc_normal_`
+        table starts at per-token norm ~`sqrt(dim_model)*0.02`, ~50x smaller than
+        the content tokens entering the trunk (`patch_projection` is
+        `xavier_uniform_` over a LayerNorm'd input, so its output sits at
+        ~`sqrt(dim_model)`). Left alone, the position/camera signal is drowned out
+        by content in the residual sum -- the first block's pre-attention
+        LayerNorm normalizes that SUM, not each addend, so it cannot rebalance a
+        signal that is already 50x too small. Normalizing each position row to
+        ~`sqrt(dim_model)` up front and scaling by a learnable gain (init 1.0,
+        same as `fusion_patch_gain`/`fusion_goal_gain`) closes that gap
+        immediately instead of waiting on gradient descent to grow a tiny table,
+        while still letting training dial it back down. `elementwise_affine=
+        False` on the LayerNorm: its own per-channel weight would be a redundant
+        degree of freedom alongside the scalar gain, so `intra_position_gain`
+        stays the single interpretable knob for how much the trunk trusts the
+        position signal. `intra_position_target_norm` is the equivalent knob for
+        the modes with no LayerNorm -- it sets the init std so that "scaling off"
+        does not silently also mean "back to a 0.45 row norm".
+
+        `intra_position_norm`/`intra_position_gain` are created **only in the
+        modes that use them**, so the arm is legible in the state dict and
+        `SelectiveAdamW`'s literal-name whitelist has nothing to match in the
+        others.
+
+        Naming note: the 2D modes hold their patch factors in a
+        `PatchPositionEmbedding2D`, so their state-dict keys are
+        `patch_position_embedding.{row_embed,col_embed}.weight` in all three of
+        `view_2d`/`pano_col`/`pano_bearing`. In `pano_col` the `col_embed` table
+        is the *global panoramic* column table (`num_cameras * cols` rows) and in
+        `pano_bearing` it is the *shared bearing* table (`num_bearing_bins` rows),
+        addressed by a constant interpolation matmul rather than a gather.
+
+        Raises:
+            ValueError: on an unknown mode, a negative/oversized prefix or suffix
+                count, a factorized mode missing `num_cameras`/`patch_grid`, a
+                slot arithmetic that does not reproduce `tokens_per_frame`, or a
+                panoramic mode without a usable `camera_yaw_deg`.
+        """
+        if scaling not in get_args(IntraPositionScaling):
+            msg = (
+                f"unknown intra_position_scaling {scaling!r}, expected one of "
+                f"{get_args(IntraPositionScaling)}"
+            )
+            raise ValueError(msg)
+        if factorization not in get_args(IntraPositionFactorization):
+            msg = (
+                f"unknown intra_position_factorization {factorization!r}, "
+                f"expected one of {get_args(IntraPositionFactorization)}"
+            )
+            raise ValueError(msg)
+        if num_prefix_tokens < 0 or num_suffix_tokens < 0:
+            msg = (
+                "num_prefix_tokens/num_suffix_tokens must be >= 0, got "
+                f"{num_prefix_tokens}/{num_suffix_tokens}"
+            )
+            raise ValueError(msg)
+        if num_prefix_tokens + num_suffix_tokens >= self.tokens_per_frame:
+            msg = (
+                f"num_prefix_tokens {num_prefix_tokens} + num_suffix_tokens "
+                f"{num_suffix_tokens} leaves no patch band in "
+                f"tokens_per_frame={self.tokens_per_frame}"
+            )
+            raise ValueError(msg)
+
+        # public so the diagnostics can read the arm off the trunk instead of
+        # re-deriving it from the PatchPolicy that owns it
+        self.intra_position_scaling: IntraPositionScaling = scaling
+        self.intra_position_factorization: IntraPositionFactorization = factorization
+        self.intra_position_target_norm = target_norm
+        self.num_cameras = num_cameras
+        self.patch_grid = patch_grid
+        self.num_prefix_tokens = num_prefix_tokens
+        self.num_suffix_tokens = num_suffix_tokens
+        self.camera_yaw_deg = camera_yaw_deg
+        self.camera_hfov_deg = camera_hfov_deg
+
+        dim = self.dim_model
+        if factorization == "flat":
+            # verbatim, so the default arm's init draw is unchanged: plain
+            # nn.Embedding (whose reset_parameters draws once) then the
+            # trunc_normal_ overwrite
+            self.intra_position_embedding = nn.Embedding(self.tokens_per_frame, dim)
+            std = (
+                0.02
+                if target_norm is None
+                else _init_std_for_target_norm(target_norm, dim=dim, num_factors=1)
+            )
+            nn.init.trunc_normal_(
+                self.intra_position_embedding.weight,
+                mean=0.0,
+                std=std,
+                a=-2 * std,
+                b=2 * std,
+            )
+        else:
+            self._init_factorized_intra_position(
+                factorization=factorization,
+                target_norm=target_norm,
+                num_cameras=num_cameras,
+                patch_grid=patch_grid,
+                camera_yaw_deg=camera_yaw_deg,
+                camera_hfov_deg=camera_hfov_deg,
+                num_bearing_bins=num_bearing_bins,
+            )
+
+        if scaling in {"norm_gain", "patch_norm_gain"}:
+            self.intra_position_norm = nn.LayerNorm(dim, elementwise_affine=False)
+        if scaling in {"norm_gain", "patch_norm_gain", "gain"}:
+            self.intra_position_gain = nn.Parameter(torch.tensor(1.0))
+
+    def _init_factorized_intra_position(  # noqa: PLR0913
+        self,
+        *,
+        factorization: IntraPositionFactorization,
+        target_norm: float | None,
+        num_cameras: int | None,
+        patch_grid: tuple[int, int] | None,
+        camera_yaw_deg: tuple[float, ...] | None,
+        camera_hfov_deg: float,
+        num_bearing_bins: int | None,
+    ) -> None:
+        """The non-`flat` half of `_init_intra_position`. See it for the contract.
+
+        Geometry validation lives in `_validate_factorized_geometry`, which this
+        calls first and which raises `ValueError` on every malformed arm.
+        """
+        rows, cols = _validate_factorized_geometry(
+            factorization=factorization,
+            tokens_per_frame=self.tokens_per_frame,
+            num_cameras=num_cameras,
+            patch_grid=patch_grid,
+            num_prefix_tokens=self.num_prefix_tokens,
+            num_suffix_tokens=self.num_suffix_tokens,
+            camera_yaw_deg=camera_yaw_deg,
+        )
+        assert num_cameras is not None  # noqa: S101  # validated just above
+        dim = self.dim_model
+        pre, suf = self.num_prefix_tokens, self.num_suffix_tokens
+        panoramic = factorization in {"pano_col", "pano_bearing"}
+
+        # per-patch-row additive factor count, for the target-norm solve:
+        # view + patch (`view`), or view + row + column (the rest)
+        num_factors = 2.0 if factorization == "view" else 3.0
+        num_columns = cols
+        if panoramic:
+            num_columns, num_factors = self._init_panoramic_columns(
+                factorization=factorization,
+                num_cameras=num_cameras,
+                cols=cols,
+                camera_yaw_deg=camera_yaw_deg or (),
+                camera_hfov_deg=camera_hfov_deg,
+                num_bearing_bins=num_bearing_bins,
+            )
+
+        def init_fn(factors: float) -> Callable[[Tensor], None]:
+            if target_norm is None:
+                return default_weight_init_fn  # ty:ignore[invalid-return-type]
+            std = _init_std_for_target_norm(target_norm, dim=dim, num_factors=factors)
+            return partial(  # ty:ignore[invalid-return-type]
+                nn.init.trunc_normal_, mean=0.0, std=std, a=-2 * std, b=2 * std
+            )
+
+        def embedding(num: int, factors: float) -> Embedding:
+            return Embedding(num, dim, weight_init_fn=init_fn(factors))
+
+        # Non-patch slots always get their own free rows and NEVER participate in
+        # the factorization: a readout token has no camera and no grid position.
+        # `M = 1` for them, so they hit the target norm on their own.
+        if pre + suf:
+            self.special_position_embedding = embedding(pre + suf, 1)
+        self.view_position_embedding = embedding(num_cameras, num_factors)
+        if factorization == "view":
+            self.patch_position_embedding: Embedding | PatchPositionEmbedding2D = (
+                embedding(rows * cols, num_factors)
+            )
+        else:
+            # rows are SHARED across cameras (maximum transfer of vertical
+            # structure). Known approximation: `cam_front_left` sits at +4 deg
+            # pitch and the side cameras ~35 cm lower, so the horizon sits ~1.1
+            # rows apart between centre and sides (vfov ~58 deg over 16 rows =
+            # 3.6 deg/row). Per-camera rows are a one-line change if it matters.
+            self.patch_position_embedding = PatchPositionEmbedding2D(
+                (rows, num_columns), dim, weight_init_fn=init_fn(num_factors)
+            )
+
+    def _init_panoramic_columns(  # noqa: PLR0913
+        self,
+        *,
+        factorization: IntraPositionFactorization,
+        num_cameras: int,
+        cols: int,
+        camera_yaw_deg: tuple[float, ...],
+        camera_hfov_deg: float,
+        num_bearing_bins: int | None,
+    ) -> tuple[int, float]:
+        """Set up the column term of a panoramic factorization.
+
+        Returns `(num_columns, num_factors)`: the width of the shared column
+        table, and the effective additive-factor count a patch row sees (which
+        the target-norm solve needs).
+        """
+        if factorization == "pano_col":
+            # physical left-to-right order, DERIVED from yaw and never
+            # configured directly: for the production rig the permutation is
+            # [1, 0, 2], which is its OWN INVERSE, so getting the direction
+            # backwards would be completely invisible at runtime and would only
+            # show up as a slightly worse arm.
+            order = torch.argsort(  # order[k] = camera at physical slot k
+                torch.tensor(camera_yaw_deg, dtype=torch.float64)
+            )
+            slot_of_camera = torch.empty_like(order)
+            slot_of_camera[order] = torch.arange(num_cameras)
+            index = (slot_of_camera.unsqueeze(-1) * cols + torch.arange(cols)).reshape(
+                -1
+            )
+            self.register_buffer(
+                "panorama_column_index", index.long(), persistent=False
+            )
+            self.panorama_camera_order: tuple[int, ...] = tuple(order.tolist())
+            return num_cameras * cols, 3.0
+
+        bins = num_bearing_bins or num_cameras * cols
+        bearings = _column_bearings_deg(
+            yaw_deg=camera_yaw_deg, cols=cols, hfov_deg=camera_hfov_deg
+        )
+        weights = _bearing_interpolation_matrix(bearings, num_bins=bins)
+        # non-persistent: keeps a derived constant out of the state dict, so
+        # `strict=True` loads and warm_start_ckpt's self-check are unaffected
+        self.register_buffer("bearing_interpolation", weights.float(), persistent=False)
+        self.register_buffer("column_bearing_deg", bearings.float(), persistent=False)
+        # the bearing term is a convex combination of <=2 bins, so its variance
+        # is `sum_j w_ij^2` of one table row's, not 1x -- fold that in rather
+        # than overshooting the target norm
+        return bins, 2 + float(weights.pow(2).sum(dim=-1).mean())
+
+    def intra_position_table(self) -> Tensor:
+        """The RAW composed intra-frame position table, `(tokens_per_frame, d)`.
+
+        One definition, shared by `forward` and `step` -- see
+        `intra_position_applied_table`.
+        """
+        if self.intra_position_factorization == "flat":
+            # an embedding lookup on `arange(n)` is an exact gather of the whole
+            # weight, so returning `.weight` is bit-identical and drops an
+            # arange+gather pair from the exported decode graph
+            return cast("nn.Embedding", self.intra_position_embedding).weight
+
+        num_cameras, (rows, cols) = self._patch_geometry()
+        num_patches = rows * cols
+        view = self.view_position_embedding.weight
+
+        match self.intra_position_factorization:
+            case "view":
+                patch = self.patch_position_embedding.weight
+            case "view_2d":
+                patch = cast(
+                    "PatchPositionEmbedding2D", self.patch_position_embedding
+                ).table()
+            case _:
+                patch = None
+
+        if patch is not None:
+            # camera-major: camera c owns rows [c*P, (c+1)*P)
+            band = view.repeat_interleave(num_patches, dim=0) + patch.repeat(
+                num_cameras, 1
+            )
+        else:
+            row = cast(
+                "PatchPositionEmbedding2D", self.patch_position_embedding
+            ).row_embed.weight
+            column = self._panoramic_columns()  # (num_cameras, cols, d)
+            band = (
+                view.reshape(num_cameras, 1, 1, -1)
+                + row.reshape(1, rows, 1, -1)
+                + column.reshape(num_cameras, 1, cols, -1)
+            ).reshape(num_cameras * num_patches, -1)
+
+        pre, suf = self.num_prefix_tokens, self.num_suffix_tokens
+        if not (pre or suf):
+            return band
+        special = self.special_position_embedding.weight
+        return torch.cat([special[:pre], band, special[pre : pre + suf]])
+
+    def _patch_geometry(self) -> tuple[int, tuple[int, int]]:
+        """`(num_cameras, (rows, cols))`, non-optional.
+
+        Raises:
+            ValueError: if the trunk is not on a factorized arm (where
+                `_init_intra_position` has already validated both are set).
+        """
+        if self.num_cameras is None or self.patch_grid is None:
+            msg = "patch geometry is only defined on a factorized position arm"
+            raise ValueError(msg)
+        return self.num_cameras, self.patch_grid
+
+    def _panoramic_columns(self) -> Tensor:
+        """The per-camera column term of a panoramic factorization,
+        `(num_cameras, cols, dim_model)`."""
+        num_cameras, _ = self._patch_geometry()
+        column = cast(
+            "PatchPositionEmbedding2D", self.patch_position_embedding
+        ).col_embed.weight
+        if self.intra_position_factorization == "pano_col":
+            gathered = column.index_select(
+                0, cast("Tensor", self.panorama_column_index)
+            )
+        else:
+            # one constant matmul against the shared bearing table: overlapping
+            # columns of adjacent cameras hit the same bins and share a code
+            gathered = (
+                cast("Tensor", self.bearing_interpolation).to(column.dtype) @ column
+            )
+        return gathered.reshape(num_cameras, -1, column.shape[-1])
+
+    def intra_position_applied_table(self) -> Tensor:
+        """`intra_position_table()` with `intra_position_scaling` applied -- the
+        table the trunk ACTUALLY adds to its content tokens.
+
+        Both `forward` (via `_intra`) and `step` go through here, so the
+        expression exists exactly once. `b846a4f` duplicated it across the two
+        paths, and a diagnostic that read the raw table while the model applied a
+        scaled one already reported a 4.8x amplitude *increase* as a 2.3x
+        decrease; the diagnostics now delegate here too.
+        """
+        table = self.intra_position_table()
+        # accessed per branch, not up front: `none`/`gain` do not CREATE the
+        # LayerNorm, and `none` does not create the gain either
+        match self.intra_position_scaling:
+            case "norm_gain":
+                return self._position_norm()(table) * self._position_gain()
+            case "patch_norm_gain":
+                pre = self.num_prefix_tokens
+                end = self.tokens_per_frame - self.num_suffix_tokens
+                scaled = self._position_norm()(table[pre:end]) * self._position_gain()
+                return torch.cat([table[:pre], scaled, table[end:]])
+            case "gain":
+                return table * self._position_gain()
+            case _:
+                return table
+
+    def _position_norm(self) -> nn.LayerNorm:
+        return self.intra_position_norm
+
+    def _position_gain(self) -> nn.Parameter:
+        return self.intra_position_gain
+
+    def intra_position_parameters(self) -> dict[str, nn.Parameter]:
+        """The learned position TABLES feeding `intra_position_table()`, by name.
+
+        For a `flat` trunk that is exactly `{"intra_position_embedding.weight":
+        ...}`. `intra_position_gain` is deliberately absent: it is a scalar
+        calibration, not a table, and the parity gates that consume this compare
+        table gradients.
+
+        Enumerated from the known submodule names rather than by matching
+        `"position_embedding"` against every parameter, so a subclass carrying an
+        unrelated positional table (the tests' window-absolute control does) is
+        not silently swept in.
+        """
+        owners = (
+            "intra_position_embedding",
+            "special_position_embedding",
+            "view_position_embedding",
+            "patch_position_embedding",
+        )
+        return {
+            f"{owner}.{name}": param
+            for owner in owners
+            if (module := getattr(self, owner, None)) is not None
+            for name, param in cast("nn.Module", module).named_parameters()
+        }
+
+    def _intra(self, num_frames: int) -> Tensor:
+        return self.intra_position_applied_table().repeat(num_frames, 1)
 
     def _should_checkpoint(self, index: int) -> bool:
         return (
@@ -688,7 +1324,7 @@ class CausalFrameTransformer(nn.Module):
             msg = f"expected {num_frames * k} tokens, got {seq_len}"
             raise ValueError(msg)
 
-        x = src + self._intra(num_frames, src.device)
+        x = src + self._intra(num_frames)
         frames = torch.arange(seq_len, device=src.device) // k + frame_offset
         cos, sin = frame_rope_cos_sin(
             frames, head_dim=self.head_dim, base=self.rope_base
@@ -780,10 +1416,18 @@ class CausalFrameTransformer(nn.Module):
         when `readout_only_final_block`. `new_k`/`new_v` are
         `(num_layers, b, num_heads, tokens_per_frame, head_dim)`: the host writes
         them into its ring buffer.
+
+        Raises:
+            ValueError: if `src` is not exactly `tokens_per_frame` long.
         """
-        x = src + self.intra_position_gain * self.intra_position_norm(
-            self.intra_position_embedding(torch.arange(src.shape[1], device=src.device))
-        )
+        if src.shape[1] != self.tokens_per_frame:
+            # `forward` has always validated this; `step` used to index the
+            # position table with `arange(src.shape[1])`, so a short `src`
+            # silently ran against a PREFIX of the table instead of erroring
+            msg = f"step expects {self.tokens_per_frame} tokens, got {src.shape[1]}"
+            raise ValueError(msg)
+
+        x = src + self.intra_position_applied_table()
         cos = cos.reshape(1, 1, 1, self.head_dim).to(x.dtype)
         sin = sin.reshape(1, 1, 1, self.head_dim).to(x.dtype)
 

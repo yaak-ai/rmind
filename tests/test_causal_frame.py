@@ -24,18 +24,21 @@ falsifiable rather than vacuous.
 """
 
 from collections.abc import Callable
-from typing import override
+from typing import TYPE_CHECKING, cast, get_args, override
 
 import pytest
 import torch
 from torch import Tensor, nn
 from torch.fx.experimental.proxy_tensor import make_fx
 
+from rmind.components.optimizers.selective_adamw import SelectiveAdamW
 from rmind.components.transformer.causal_frame import (
     FLEX_BLOCK_SIZE,
     MASK_BIAS,
     AttentionImpl,
     CausalFrameTransformer,
+    IntraPositionFactorization,
+    IntraPositionScaling,
     apply_rope,
     frame_block_causal_block_mask,
     frame_block_causal_mask,
@@ -43,6 +46,9 @@ from rmind.components.transformer.causal_frame import (
     frame_rope_cos_sin,
 )
 from rmind.models.patch_policy import block_causal_mask
+
+if TYPE_CHECKING:
+    from rmind.components.position_encoding import PatchPositionEmbedding2D
 
 TOKENS_PER_FRAME = 17  # stands in for 257; the property is independent of it
 DIM = 32
@@ -72,16 +78,52 @@ MAX_TILE_WASTE = 1.3
 MAX_DENSE_FRACTION = 0.8
 
 
-def _trunk(
-    *, window: int | None = None, cls: type[CausalFrameTransformer] | None = None
+# The intra-frame position arms, at the 17-slot geometry these tests use:
+# 1 speed token + 2 cameras x a 2x4 patch grid = 1 + 2*8 = 17, exactly
+# `TOKENS_PER_FRAME`. Distinct yaws so the panoramic modes have a physical order
+# to derive; -70 sorts BEFORE 0, so `argsort` is the non-identity permutation
+# [1, 0] and a direction mistake in the ordering would show up here.
+NUM_CAMERAS = 2
+PATCH_GRID = (2, 4)
+CAMERA_YAW_DEG = (0.0, -70.0)
+FACTORIZATIONS: tuple[IntraPositionFactorization, ...] = get_args(
+    IntraPositionFactorization
+)
+SCALINGS: tuple[IntraPositionScaling, ...] = get_args(IntraPositionScaling)
+# one composed row norm to aim at in every arm -- `kughoqfi`'s settled applied
+# norm -- and how close the realized mean row norm has to land
+TARGET_NORM = 11.15
+TARGET_NORM_TOLERANCE = 0.05
+
+
+def _trunk(  # noqa: PLR0913
+    *,
+    window: int | None = None,
+    cls: type[CausalFrameTransformer] | None = None,
+    factorization: IntraPositionFactorization = "flat",
+    scaling: IntraPositionScaling = "norm_gain",
+    target_norm: float | None = None,
+    dim: int = DIM,
+    tokens_per_frame: int = TOKENS_PER_FRAME,
+    num_cameras: int | None = NUM_CAMERAS,
+    patch_grid: tuple[int, int] | None = PATCH_GRID,
+    camera_yaw_deg: tuple[float, ...] | None = CAMERA_YAW_DEG,
 ) -> CausalFrameTransformer:
     torch.manual_seed(0)
     trunk = (cls or CausalFrameTransformer)(
-        dim_model=DIM,
+        dim_model=dim,
         num_layers=LAYERS,
         num_heads=HEADS,
-        tokens_per_frame=TOKENS_PER_FRAME,
+        tokens_per_frame=tokens_per_frame,
         window=window,
+        intra_position_factorization=factorization,
+        intra_position_scaling=scaling,
+        intra_position_target_norm=target_norm,
+        num_cameras=num_cameras,
+        patch_grid=patch_grid,
+        num_prefix_tokens=1,
+        num_suffix_tokens=0,
+        camera_yaw_deg=camera_yaw_deg,
     )
     return trunk.double().eval()
 
@@ -116,7 +158,7 @@ class WindowAbsoluteTrunk(CausalFrameTransformer):
     MAX_FRAMES = 16
 
     def __init__(self, **kwargs: object) -> None:
-        super().__init__(**kwargs)  # ty:ignore[missing-argument]
+        super().__init__(**kwargs)  # ty:ignore[invalid-argument-type]
         self.absolute_position_embedding = nn.Embedding(
             self.MAX_FRAMES * self.tokens_per_frame, self.dim_model
         )
@@ -284,11 +326,19 @@ def test_intra_frame_attention_is_exactly_unrotated() -> None:
     )
 
 
-def test_shift_invariance() -> None:
+@pytest.mark.parametrize("factorization", FACTORIZATIONS)
+@pytest.mark.parametrize("scaling", SCALINGS)
+def test_shift_invariance(
+    factorization: IntraPositionFactorization, scaling: IntraPositionScaling
+) -> None:
     """The §3.2 discriminator: the SAME frames at a different episode offset must
     produce the SAME output. A window-absolute embedding cannot do this.
+
+    Run on every intra-frame position arm: each factorization is frame-relative
+    by construction, and `test_shift_invariance_negative_control` keeps the
+    assertion falsifiable.
     """
-    trunk = _trunk()
+    trunk = _trunk(factorization=factorization, scaling=scaling)
     x = _flat(_tokens(6))
     torch.testing.assert_close(
         trunk(x, num_frames=6, frame_offset=0),
@@ -321,25 +371,292 @@ def test_shift_invariance_negative_control() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# intra-frame position: scaling and factorization
+# --------------------------------------------------------------------------- #
+
+
+def test_default_intra_position_is_bit_identical() -> None:
+    """THE "defaults preserve today's behaviour" gate.
+
+    The default arm must be the pre-existing one down to the bit: the same
+    parameter names, the same state-dict keys, and an applied table that is
+    exactly `LayerNorm(weight) * gain`. `torch.equal`, not `assert_close` --
+    "close" would let a re-association of the expression through.
+    """
+    trunk = _trunk()
+    assert trunk.intra_position_factorization == "flat"
+    assert trunk.intra_position_scaling == "norm_gain"
+    assert set(trunk.intra_position_parameters()) == {"intra_position_embedding.weight"}
+
+    weight = trunk.intra_position_embedding.weight
+    expected = (
+        nn.functional.layer_norm(weight, (trunk.dim_model,)) * trunk.intra_position_gain
+    )
+    assert torch.equal(trunk.intra_position_applied_table(), expected)
+    # and `_intra` is that table tiled, nothing else
+    assert torch.equal(trunk._intra(3), expected.repeat(3, 1))  # noqa: SLF001
+
+
+@pytest.mark.parametrize("scaling", SCALINGS)
+def test_scaling_creates_only_the_parameters_it_uses(
+    scaling: IntraPositionScaling,
+) -> None:
+    """`SelectiveAdamW` whitelists `intra_position_gain` by literal name, and a
+    dead LayerNorm/gain on an arm that does not apply one is a lie in the state
+    dict -- so each mode creates exactly what it uses."""
+    trunk = _trunk(scaling=scaling)
+    assert hasattr(trunk, "intra_position_norm") == (
+        scaling in {"norm_gain", "patch_norm_gain"}
+    )
+    assert hasattr(trunk, "intra_position_gain") == (scaling != "none")
+
+
+def test_patch_norm_gain_leaves_the_prefix_row_raw() -> None:
+    """The point of `patch_norm_gain`: the speed token keeps its own learned
+    amplitude instead of being forced to the common `sqrt(dim_model) * gain`.
+
+    The patch band is scaled exactly as `norm_gain` scales it; only the prefix
+    (and any suffix) row differs.
+    """
+    trunk = _trunk(scaling="patch_norm_gain")
+    raw = trunk.intra_position_table()
+    applied = trunk.intra_position_applied_table()
+
+    assert torch.equal(applied[0], raw[0])
+    assert not torch.equal(applied[1], raw[1])
+    full = _trunk(scaling="norm_gain").intra_position_applied_table()
+    assert torch.equal(applied[1:], full[1:])
+
+
+@pytest.mark.parametrize("factorization", FACTORIZATIONS)
+def test_composed_table_shape(factorization: IntraPositionFactorization) -> None:
+    """Every mode composes to the SAME `(tokens_per_frame, dim_model)` shape --
+    which is what keeps the KV-cache layout, the ONNX bindings and the export
+    path untouched by the choice of arm."""
+    trunk = _trunk(factorization=factorization)
+    assert trunk.intra_position_table().shape == (TOKENS_PER_FRAME, DIM)
+    assert trunk.intra_position_applied_table().shape == (TOKENS_PER_FRAME, DIM)
+
+
+def test_view_camera_identity_is_a_rank_one_direction() -> None:
+    """The literal statement of what the `view` factorization buys.
+
+    `T[pre + c*P + k] - T[pre + c'*P + k]` is the SAME vector for every patch
+    slot `k`: camera identity is one direction, fed by gradient from all of that
+    camera's tokens. The existing camera tests
+    (`tests/test_patch_policy.py:208-262`) cannot detect this -- they assert only
+    that a swap changes the output numerically, which ANY positional table
+    produces, including the flat one.
+    """
+    patches = 2 * 4
+    for factorization in ("view", "view_2d"):
+        table = _trunk(factorization=factorization).intra_position_table()
+        deltas = table[1 : 1 + patches] - table[1 + patches : 1 + 2 * patches]
+        torch.testing.assert_close(deltas, deltas[:1].expand_as(deltas), rtol=0, atol=0)
+
+
+def test_view_2d_camera_delta_is_independent_of_row() -> None:
+    """`view_2d` shares rows and columns across cameras, so the per-camera term
+    is the only thing that varies between the two bands -- in particular it does
+    not vary with the patch row."""
+    rows, cols = 2, 4
+    patches = rows * cols
+    table = _trunk(factorization="view_2d").intra_position_table()
+    delta = (table[1 : 1 + patches] - table[1 + patches : 1 + 2 * patches]).reshape(
+        rows, cols, DIM
+    )
+    torch.testing.assert_close(delta[0], delta[1], rtol=0, atol=0)
+
+
+def test_pano_col_lays_columns_out_in_physical_order() -> None:
+    """`pano_col`'s global column table is indexed by `argsort(camera_yaw_deg)`,
+    never by a configured permutation.
+
+    With yaws `(0, -70)` the physical left-to-right order is camera 1 then
+    camera 0, so camera 1's columns are the FIRST `cols` rows of the global
+    table and camera 0's are the next `cols`. Getting the inverse permutation
+    backwards is invisible on the production rig (whose permutation is its own
+    inverse), which is exactly why it is asserted here on a rig where it is not.
+    """
+    rows, cols = 2, 4
+    trunk = _trunk(factorization="pano_col")
+    assert trunk.panorama_camera_order == (1, 0)
+
+    patch = cast("PatchPositionEmbedding2D", trunk.patch_position_embedding)
+    columns = patch.col_embed.weight
+    row_embed = patch.row_embed.weight
+    view = trunk.view_position_embedding.weight
+    table = trunk.intra_position_table()
+    # camera 0 sits in the SECOND physical slot -> global columns [cols:2*cols]
+    expected = view[0] + row_embed[0] + columns[cols]
+    torch.testing.assert_close(table[1], expected, rtol=0, atol=0)
+    # camera 1 sits first -> global column 0
+    expected = view[1] + row_embed[0] + columns[0]
+    torch.testing.assert_close(table[1 + rows * cols], expected, rtol=0, atol=0)
+
+
+def test_pano_bearing_shares_bins_across_the_camera_seam() -> None:
+    """The reason `pano_bearing` exists: adjacent cameras' fields of view
+    OVERLAP (~16 deg on the production rig, ~4 of 16 columns), so `pano_col`'s
+    free adjacency gets the ordering right and the metric wrong. Here the
+    overlapping columns index the same bins and literally share a code.
+
+    With yaws `(0, -70)` and a 90 deg HFOV, camera 1 (the left one) spans
+    [-115, -25] and camera 0 spans [-45, +45]: its leftmost column and camera
+    1's rightmost column both sit inside [-45, -25] and must put non-zero
+    interpolation weight on a common bin.
+    """
+    trunk = _trunk(factorization="pano_bearing")
+    weights = cast("Tensor", trunk.bearing_interpolation)  # (cameras*cols, bins)
+    cols = 4
+    left_last = weights[cols + cols - 1]  # camera 1, rightmost column
+    centre_first = weights[0]  # camera 0, leftmost column
+    assert float((left_last * centre_first).sum()) > 0.0
+
+    # and every row is a genuine convex combination
+    torch.testing.assert_close(
+        weights.sum(dim=-1), torch.ones_like(weights.sum(dim=-1))
+    )
+    assert bool((weights >= 0).all())
+
+
+@pytest.mark.parametrize("factorization", FACTORIZATIONS)
+def test_target_norm_is_hit(factorization: IntraPositionFactorization) -> None:
+    """`intra_position_target_norm` must actually land where it says, in every
+    factorization -- otherwise "scaling off" silently means "50x quieter than
+    content" again.
+
+    This pins `TRUNC_NORMAL_2SIGMA_NORM_FACTOR` empirically rather than trusting
+    the arithmetic behind it. Run at the production width, where the
+    concentration of a `d`-dimensional norm makes the 5% band meaningful.
+    """
+    trunk = _trunk(
+        factorization=factorization,
+        scaling="none",
+        target_norm=TARGET_NORM,
+        dim=512,
+        tokens_per_frame=17,
+    )
+    patch_rows = trunk.intra_position_table()[1:]
+    got = float(patch_rows.detach().norm(dim=-1).mean())
+    assert abs(got - TARGET_NORM) / TARGET_NORM < TARGET_NORM_TOLERANCE, got
+
+
+def test_step_rejects_a_wrong_width_src() -> None:
+    """`forward` has always validated the token count; `step` indexed the
+    position table with `arange(src.shape[1])`, so a short `src` ran against a
+    PREFIX of the table and returned a plausible wrong answer."""
+    trunk = _trunk(window=2)
+    past_k, past_v, bias = trunk.empty_cache(cache_frames=1, dtype=torch.float64)
+    src = torch.randn(1, TOKENS_PER_FRAME - 1, DIM, dtype=torch.float64)
+    cos, sin = frame_rope_cos_sin(
+        torch.tensor(0), head_dim=trunk.head_dim, dtype=torch.float64
+    )
+    with pytest.raises(ValueError, match=f"expects {TOKENS_PER_FRAME} tokens"):
+        trunk.step(src, past_k=past_k, past_v=past_v, cos=cos, sin=sin, cache_bias=bias)
+
+
+def test_geometry_mismatch_raises() -> None:
+    """A patch grid that does not reproduce `tokens_per_frame` is a silent
+    camera-band misattribution; the error quotes the `_frame_tokens` layout and
+    the arithmetic."""
+    with pytest.raises(ValueError, match="slot arithmetic"):
+        _trunk(factorization="view", patch_grid=(3, 4))
+
+
+@pytest.mark.parametrize("factorization", ["view", "view_2d"])
+def test_factorized_modes_require_geometry(
+    factorization: IntraPositionFactorization,
+) -> None:
+    """`num_cameras` and `patch_grid` cannot be inferred: `tokens_per_frame - 1`
+    divides many ways and the grid is a property of the image encoder."""
+    with pytest.raises(ValueError, match=r"num_cameras.*patch_grid"):
+        _trunk(factorization=factorization, num_cameras=None, patch_grid=None)
+
+
+@pytest.mark.parametrize("factorization", ["pano_col", "pano_bearing"])
+def test_camera_yaw_required_for_panoramic_modes(
+    factorization: IntraPositionFactorization,
+) -> None:
+    """The panoramic order is DERIVED from yaw, so yaw is mandatory -- and must
+    be distinct, or there is no order to derive."""
+    with pytest.raises(ValueError, match="camera_yaw_deg"):
+        _trunk(factorization=factorization, camera_yaw_deg=None)
+    with pytest.raises(ValueError, match="distinct"):
+        _trunk(factorization=factorization, camera_yaw_deg=(10.0, 10.0))
+
+
+@pytest.mark.parametrize("factorization", FACTORIZATIONS)
+@pytest.mark.parametrize("scaling", SCALINGS)
+def test_selective_adamw_accepts_every_position_arm(
+    factorization: IntraPositionFactorization, scaling: IntraPositionScaling
+) -> None:
+    """`SelectiveAdamW` derives a parameter's kind from the LAST dot-separated
+    component of its name and raises `NotImplementedError` on anything it does
+    not recognize -- at `configure_optimizers`, before step 1. A bare
+    `nn.Parameter` named e.g. `speed_position` would do exactly that, which is
+    why every position factor is an `nn.Embedding.weight`.
+
+    Also asserts they all land in the **no-decay** group, the group
+    `intra_position_embedding.weight` is in today: weight decay on a positional
+    table pulls it back toward the content/position scale gap it exists to
+    close, and a param silently changing groups corrupts Adam moments on a
+    positional-mapped resume.
+    """
+    trunk = _trunk(factorization=factorization, scaling=scaling)
+    opt = SelectiveAdamW(
+        trunk,
+        lr=1e-4,
+        weight_decay=0.1,
+        weight_decay_module_blacklist=(nn.Embedding, nn.LayerNorm),
+    )
+    no_decay = {
+        id(p)
+        for group in opt.param_groups
+        if not group["weight_decay"]
+        for p in group["params"]
+    }
+    position = dict(trunk.intra_position_parameters())
+    if hasattr(trunk, "intra_position_gain"):
+        position["intra_position_gain"] = trunk.intra_position_gain
+    assert position
+    assert all(id(p) in no_decay for p in position.values()), sorted(
+        name for name, p in position.items() if id(p) not in no_decay
+    )
+
+
+# --------------------------------------------------------------------------- #
 # THE GATE: cache vs recompute
 # --------------------------------------------------------------------------- #
 
 
-def test_stream_equals_full_recompute_unbounded() -> None:
+@pytest.mark.parametrize("factorization", FACTORIZATIONS)
+@pytest.mark.parametrize("scaling", SCALINGS)
+def test_stream_equals_full_recompute_unbounded(
+    factorization: IntraPositionFactorization, scaling: IntraPositionScaling
+) -> None:
     """Full-history cache: streaming T frames == one causal forward over [0..T-1].
 
     Checked at EVERY frame's readout, not just the last.
+
+    Parametrized over every intra-frame position arm, which makes this (with the
+    sliding-window variant below) the gate on the single composed-table helper:
+    `forward` and `step` are the two callers of
+    `intra_position_applied_table()`, and this compares them frame by frame.
     """
     num_frames = 7
-    trunk = _trunk()
+    trunk = _trunk(factorization=factorization, scaling=scaling)
     tokens = _tokens(num_frames)
     recompute = _readouts(trunk(_flat(tokens), num_frames=num_frames), num_frames)
     streamed = stream(trunk, tokens, cache_frames=num_frames - 1)
     torch.testing.assert_close(streamed, recompute, rtol=0, atol=TOL)
 
 
+@pytest.mark.parametrize("factorization", FACTORIZATIONS)
 @pytest.mark.parametrize("window", [2, 3, 6])
-def test_stream_equals_sliding_window_recompute(window: int) -> None:
+def test_stream_equals_sliding_window_recompute(
+    window: int, factorization: IntraPositionFactorization
+) -> None:
     """§5.1, in the form that is exact.
 
     Ring of capacity `window - 1` past frames + the current one == a full forward
@@ -348,7 +665,7 @@ def test_stream_equals_sliding_window_recompute(window: int) -> None:
     ~1e-6 while sharing no recomputation with the earlier frames.
     """
     num_frames = 7
-    trunk = _trunk(window=window)
+    trunk = _trunk(window=window, factorization=factorization)
     tokens = _tokens(num_frames)
     recompute = _readouts(trunk(_flat(tokens), num_frames=num_frames), num_frames)
     streamed = stream(trunk, tokens, cache_frames=window - 1)
@@ -502,6 +819,7 @@ def _prod_trunk(  # noqa: PLR0913
     impl: AttentionImpl,
     layers: int = 2,
     tokens_per_frame: int = PROD_TOKENS_PER_FRAME,
+    factorization: IntraPositionFactorization = "flat",
 ) -> CausalFrameTransformer:
     """Production-width trunk in fp32 (FlexAttention has no float64 CUDA kernel).
 
@@ -520,15 +838,38 @@ def _prod_trunk(  # noqa: PLR0913
         resid_dropout=0.0,
         mlp_dropout=0.0,
         attention_impl=impl,
+        intra_position_factorization=factorization,
+        # 1 speed + 1 camera x 16x16 = 257, exactly PROD_TOKENS_PER_FRAME
+        num_cameras=1,
+        patch_grid=(16, 16),
+        num_prefix_tokens=1,
+        num_suffix_tokens=0,
+        camera_yaw_deg=(0.0,),
     )
 
 
-def _pair(
-    *, window: int, dim: int, heads: int, device: str, layers: int = 2
+def _pair(  # noqa: PLR0913
+    *,
+    window: int,
+    dim: int,
+    heads: int,
+    device: str,
+    layers: int = 2,
+    factorization: IntraPositionFactorization = "flat",
 ) -> tuple[CausalFrameTransformer, CausalFrameTransformer]:
     """Same weights, two attention implementations."""
-    sdpa = _prod_trunk(window=window, dim=dim, heads=heads, impl="sdpa", layers=layers)
-    flex = _prod_trunk(window=window, dim=dim, heads=heads, impl="flex", layers=layers)
+
+    def build(impl: AttentionImpl) -> CausalFrameTransformer:
+        return _prod_trunk(
+            window=window,
+            dim=dim,
+            heads=heads,
+            impl=impl,
+            layers=layers,
+            factorization=factorization,
+        )
+
+    sdpa, flex = build("sdpa"), build("flex")
     flex.load_state_dict(sdpa.state_dict())
     return sdpa.to(device), flex.to(device)
 
@@ -545,7 +886,10 @@ def _fwd_bwd(
 
     An input-gradient-only comparison would miss a parameter whose gradient path
     runs through the mask, so an attention projection at each end of the stack and
-    the intra-frame position embedding are included too.
+    EVERY intra-frame position table are included too. The position tables are
+    enumerated from the trunk rather than hardcoded: a factorized table routes
+    gradient through `repeat`/broadcast-add/matmul, a genuinely different autograd
+    path, and for a flat trunk the set is exactly the one key this used to name.
     """
     trunk.zero_grad()
     inp = x.detach().clone().requires_grad_()
@@ -557,8 +901,7 @@ def _fwd_bwd(
     wanted = {
         "d_in_proj_weight": "layers.0.attn.in_proj_weight",
         "d_out_proj_weight": f"layers.{last}.attn.out_proj.weight",
-        "d_intra_position": "intra_position_embedding.weight",
-    }
+    } | {f"d_position/{name}": name for name in trunk.intra_position_parameters()}
     grads: dict[str, Tensor] = {"out": out.detach(), "d_input": inp.grad}
     for key, name in wanted.items():
         grad = params[name].grad
@@ -685,6 +1028,37 @@ def test_flex_matches_sdpa_forward_and_backward(
     sdpa, flex = _pair(window=window, dim=dim, heads=heads, device="cuda")
     g = torch.Generator(device="cuda").manual_seed(9)
     x = torch.randn(1, window * PROD_TOKENS_PER_FRAME, dim, generator=g, device="cuda")
+    grad_out = torch.randn(x.shape, generator=g, device="cuda")
+
+    ref = _fwd_bwd(sdpa, x, grad_out, num_frames=window)
+    got = _fwd_bwd(flex, x, grad_out, num_frames=window)
+    errors = {key: _scale_rel(got[key], ref[key]) for key in ref}
+    assert all(e < FLEX_TOL for e in errors.values()), errors
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+@pytest.mark.parametrize("factorization", ["flat", "pano_bearing"])
+def test_flex_matches_sdpa_across_position_arms(
+    factorization: IntraPositionFactorization,
+) -> None:
+    """The same gate on a factorized position table, at ONE `(dim, heads)`.
+
+    Worth its own case rather than another axis on the matrix above: a factorized
+    table reaches the residual stream through `repeat_interleave` + a broadcast
+    add + (for `pano_bearing`) a constant matmul, so its backward is a genuinely
+    different autograd path from a flat table's single gather -- while the
+    attention kernels under comparison are unchanged. `pano_bearing` is the
+    deepest of those paths, so it bounds the rest; one `(dim, heads)` and one
+    window keep the cost of that coverage flat.
+    """
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    window = 6
+    sdpa, flex = _pair(
+        window=window, dim=512, heads=8, device="cuda", factorization=factorization
+    )
+    g = torch.Generator(device="cuda").manual_seed(9)
+    x = torch.randn(1, window * PROD_TOKENS_PER_FRAME, 512, generator=g, device="cuda")
     grad_out = torch.randn(x.shape, generator=g, device="cuda")
 
     ref = _fwd_bwd(sdpa, x, grad_out, num_frames=window)

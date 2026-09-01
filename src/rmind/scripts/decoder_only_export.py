@@ -88,6 +88,11 @@ ARMS = {
     "small": ("yaak/patch_policy/dinov2_dinowm", 512, 8, 8),
     "big": ("yaak/patch_policy/dinov2_dinowm_big", 768, 12, 12),
     "small_3cam": ("yaak/patch_policy/dinov2_dinowm_causal_3cam", 512, 8, 8),
+    # same geometry as `small_3cam` -- the composed intra-frame position table
+    # is (769, 512) in every arm -- but the table is FACTORIZED, so the decode
+    # graph gains a constant index_select/matmul that has to fold away. Exists
+    # so that is verifiable before committing to a training run.
+    "small_3cam_pano": ("yaak/patch_policy/dinov2_dinowm_causal_3cam_pano", 512, 8, 8),
 }
 IMAGE_HW = 224  # dinov2 arms; 256 for dinov3
 NUM_PATCHES = 256
@@ -131,6 +136,30 @@ def build_policy(arm: str, *, episode_length: int) -> tuple[Any, int, int, int]:
     # the frozen artifacts were checkpointed on cuda and raw.yaml passes no
     # map_location; export is CPU-side
     return model.cpu().eval(), dim, layers, heads
+
+
+def _intra_position_kwargs(encoder: Any) -> dict[str, Any]:
+    """The intra-frame position arm of a config-built trunk, as ctor kwargs.
+
+    Empty for anything that is not a `CausalFrameTransformer` (or predates the
+    configurable arms), which keeps the default `flat`/`norm_gain` behaviour.
+    """
+    trunk = getattr(encoder, "_orig_mod", encoder)  # unwrap `compiled`
+    if not isinstance(trunk, CausalFrameTransformer) or not hasattr(
+        trunk, "intra_position_factorization"
+    ):
+        return {}
+    return {
+        "intra_position_scaling": trunk.intra_position_scaling,
+        "intra_position_factorization": trunk.intra_position_factorization,
+        "intra_position_target_norm": trunk.intra_position_target_norm,
+        "num_cameras": trunk.num_cameras,
+        "patch_grid": trunk.patch_grid,
+        "num_prefix_tokens": trunk.num_prefix_tokens,
+        "num_suffix_tokens": trunk.num_suffix_tokens,
+        "camera_yaw_deg": trunk.camera_yaw_deg,
+        "camera_hfov_deg": trunk.camera_hfov_deg,
+    }
 
 
 def baseline_args(
@@ -234,7 +263,12 @@ def decoder_model_and_args(  # noqa: PLR0914
         if context is None:
             msg = "--context is required for a randomly initialized export"
             raise ValueError(msg)
-        policy, dim, layers, heads = build_policy(arm, episode_length=1)
+        # `episode_length=context`, not 1: the config's `max_sequence_length` is
+        # `episode_length * tokens_per_frame` and the trunk cross-checks it
+        # against `window * tokens_per_frame` at construction, so a 1-frame clip
+        # makes any multi-camera arm raise before it can be replaced below.
+        policy, dim, layers, heads = build_policy(arm, episode_length=context)
+        configured = policy.encoder
         policy.encoder = CausalFrameTransformer(
             dim_model=dim,
             num_layers=layers,
@@ -247,6 +281,12 @@ def decoder_model_and_args(  # noqa: PLR0914
                 num_register_tokens=getattr(policy, "num_register_tokens", 0),
             ),
             window=context,
+            # carry the arm's intra-frame position parameterization over. The
+            # composed table is the same shape in every arm, but the factorized
+            # ones put an index_select/matmul in the decode graph, and a random
+            # export exists precisely to check that those fold away -- silently
+            # exporting a flat table here would make this gate vacuous.
+            **_intra_position_kwargs(configured),
         ).eval()
 
     step = PatchPolicyDecoderStep(policy=policy).eval()
