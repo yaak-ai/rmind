@@ -70,7 +70,18 @@ class SelectiveAdamW(AdamW):
                 # intra_position_gain is the same pattern for the intra-frame
                 # position embedding (causal_frame.py) -- decay would pull it
                 # back toward the content/position scale gap it closes.
-                case "fusion_patch_gain" | "fusion_goal_gain" | "intra_position_gain":
+                # `raw_threshold` (nn.AxisShrinkage) is the same pattern with a sharper
+                # edge: tau = softplus(raw_threshold), so decay pulls raw_threshold
+                # toward 0 and therefore tau toward softplus(0) = 0.693 -- UP, not down.
+                # A 0.693 dead zone would erase fork1 events whose target magnitude is
+                # 0.905, so decay here does not merely shrink the parameter, it removes
+                # the signal the axis exists to carry.
+                case (
+                    "fusion_patch_gain"
+                    | "fusion_goal_gain"
+                    | "intra_position_gain"
+                    | "raw_threshold"
+                ):
                     weight_decay_param_blacklist.add(param_name)
                 case "weight":
                     if isinstance(
