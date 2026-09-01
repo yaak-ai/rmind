@@ -1,0 +1,112 @@
+---
+# `raw.yaml` with the encoder reading DCT-II coefficients instead of raw time samples.
+#
+# WHY. The tokenizer's remaining error is a BASIS problem, not a capacity one. Measured
+# on the d12 holdout: widening the encoder 4x and adding a layer each side moved holdout
+# EV +0.003 (arm a2_wide), while a fixed rank-32 linear map of the same chunks reaches
+# +0.968 and the trained autoencoder reaches +0.92. The MLP sees a chunk flattened to
+# 150 numbers with nothing telling it which elements are adjacent in time.
+#
+# The DCT is the basis these signals want -- 96% of traction AC power and 99.6% of
+# steering sits below 1 Hz. Truncated-DCT reconstruction of the holdout, per axis:
+#
+#   coeffs/axis   action_dim   overall EV   fork1 EV
+#         8            24        +0.9486     +0.8583
+#        16            48        +0.9817     +0.9395
+#        32            96        +0.9965     +0.9874
+#        50 (lossless) 150       +1.0000     +1.0000
+#
+# It matches a PCA fit on the training drives to within 0.003 at every budget, as
+# expected -- the DCT is asymptotically the KLT for smooth signals -- while fitting
+# nothing and shipping no artifact.
+#
+# `dct_coefficients` is set by the experiment. 32 keeps the truncation ceiling
+# (+0.9965) an order of magnitude clear of the +0.968 target so it is never the binding
+# constraint; 50 is the lossless control that isolates the change of basis from the
+# dimensionality reduction.
+_target_: rmind.models.action_tokenizer.ActionTokenizer
+_recursive_: false
+_convert_: all
+
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: rmind.components.nn.Remapper
+      paths:
+        continuous:
+          traction: [data, traction]
+          steering: [data, steering]
+          fork1: [data, fork1]
+    - _target_: rmind.components.containers.ModuleDict
+      modules:
+        continuous:
+          _target_: rmind.components.nn.Identity
+
+encoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    # fixed orthonormal DCT-II, then the SAME MLP shape as `raw.yaml`
+    - _target_: rmind.components.nn.ChunkDCT
+      num_steps: ${action_clip}
+      num_axes: ${action_space}
+      num_coefficients: ${dct_coefficients}
+    - _target_: rmind.components.nn.Linear
+      in_features: ${action_coeff_dim}
+      out_features: ${action_hidden_dim}
+    - _target_: torch.nn.GELU
+    - _target_: rmind.components.nn.Linear
+      in_features: ${action_hidden_dim}
+      out_features: ${action_latent_dim}
+
+quantizer:
+  _target_: rmind.components.vq.ResidualVQ
+  dim: ${action_latent_dim}
+  codebook_size: ${codebook_size}
+  num_quantizers: ${num_quantizers}
+
+decoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.nn.Linear
+      in_features: ${action_latent_dim}
+      out_features: ${action_hidden_dim}
+    - _target_: torch.nn.GELU
+    - _target_: rmind.components.nn.Linear
+      in_features: ${action_hidden_dim}
+      out_features: ${action_coeff_dim}
+    # LAST, so the reconstruction loss is still taken in the TIME domain -- scoring in
+    # coefficient space would weight error per-coefficient rather than per-sample and
+    # the fork1 event weighting would stop meaning anything
+    - _target_: rmind.components.nn.ChunkIDCT
+      num_steps: ${action_clip}
+      num_axes: ${action_space}
+      num_coefficients: ${dct_coefficients}
+
+targets:
+  continuous:
+    traction: [continuous, traction]
+    steering: [continuous, steering]
+    fork1: [continuous, fork1]
+
+commitment_weight: 1.0
+vq_weight: 5.0
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: 5.5e-5
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}

@@ -1,0 +1,41 @@
+# @package _global_
+
+# ARM 4 (k=32): arm 1's optimizer, arm 1's MLP shape, DCT basis instead of raw samples.
+#
+#   just train experiment=palletjack/action_tokenizer/underfit_a4_dct32
+#
+# Arms 1-3 established the shape of the problem: the optimizer change (a1) bought
+# +0.034 unquantized EV, and 4x the encoder width (a2) bought +0.003 on top while
+# LOSING 0.002 unquantized. Capacity is not the constraint. But a fixed rank-32 linear
+# map of the same chunks reaches +0.968 where the trained autoencoder reaches +0.92, so
+# the missing EV is reachable by a linear map the MLP is not finding. That is a basis
+# problem, and this arm hands it the basis.
+#
+# Deliberately built on a1 and NOT a2: a2's extra width is not what is missing, and
+# keeping the a1 MLP makes this a clean one-variable change against the a1 row.
+#
+# k=32 -- truncated to 32. Running both isolates the change of basis (k=50 is a pure
+# orthonormal rotation, nothing discarded) from the dimensionality reduction (k=32
+# drops 150 -> 96 with a +0.9965 ceiling).
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_a1_opt
+  - override /model: palletjack/action_tokenizer/raw_dct
+  - _self_
+
+dct_coefficients: 32
+action_coeff_dim: "${eval:'${action_space} * ${dct_coefficients}'}"
+
+wandb:
+  tags:
+    - palletjack
+    - action_tokenizer
+    - d12
+    - chunk50
+    - 5s
+    - recon_smooth_l1
+    - fork_reweight5
+    - traction_operator
+    - box_mean
+    - cb16x8
+    - underfit_ablation
+    - a4_dct32

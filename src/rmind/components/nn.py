@@ -358,3 +358,93 @@ class OnnxOutputUnpacker(Module):
                 }
             }
         }
+
+
+def _dct_ii_basis(num_steps: int, num_coefficients: int) -> Tensor:
+    """First `num_coefficients` rows of the orthonormal DCT-II matrix, `(k, T)`.
+
+    `D[k, t] = a_k cos(pi (2t + 1) k / 2T)`, with `a_0 = sqrt(1/T)` and
+    `a_k = sqrt(2/T)`. The full matrix is orthogonal, so the inverse transform is
+    the transpose and a truncated basis is a least-squares projection.
+    """
+    t = torch.arange(num_steps, dtype=torch.float64)
+    k = torch.arange(num_coefficients, dtype=torch.float64).unsqueeze(1)
+    basis = torch.cos(torch.pi * (2 * t + 1) * k / (2 * num_steps))
+    basis *= torch.sqrt(torch.tensor(2.0 / num_steps, dtype=torch.float64))
+    if num_coefficients > 0:
+        basis[0] /= torch.sqrt(torch.tensor(2.0, dtype=torch.float64))
+
+    return basis.float()
+
+
+@final
+class ChunkDCT(Module):
+    """Flat time-domain action chunk -> low-frequency DCT-II coefficients.
+
+    WHY. The tokenizer's encoder is an MLP over a chunk flattened to `T * A` numbers,
+    with nothing telling it that element `i` and `i + A` are adjacent in TIME. Measured
+    on the d12 holdout, that costs it: a fixed rank-32 linear map of the same chunks
+    reaches EV +0.968 while the trained autoencoder reaches +0.92, and widening the MLP
+    4x moved it +0.003. The gap is the basis, not the capacity.
+
+    A DCT is the basis these signals want. 96% of the traction AC power and 99.6% of the
+    steering sits below 1 Hz, so nearly all of a 5 s chunk lands in the first few
+    coefficients: measured per axis, 32 coefficients reconstruct traction to +0.997,
+    steering to +1.000 and fork1 to +0.987. It matches a PCA fit on the training drives
+    to within 0.003 at every budget -- as expected, the DCT is asymptotically the KLT for
+    smooth signals -- while fitting nothing and needing no artifact.
+
+    Pairs with `ChunkIDCT`, which must be the LAST module of the decoder so the
+    reconstruction loss is still taken in the time domain. Scoring in coefficient space
+    would weight error per-coefficient rather than per-sample, and the fork1 event
+    weighting in `ActionTokenizer._weighted_l1` would stop meaning anything.
+    """
+
+    @validate_call
+    def __init__(self, *, num_steps: int, num_axes: int, num_coefficients: int) -> None:
+        super().__init__()
+
+        if not 0 < num_coefficients <= num_steps:
+            msg = f"num_coefficients {num_coefficients} not in (0, {num_steps}]"
+            raise ValueError(msg)
+
+        self.num_steps = num_steps
+        self.num_axes = num_axes
+        self.num_coefficients = num_coefficients
+        self.register_buffer("basis", _dct_ii_basis(num_steps, num_coefficients))
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        # `_gather_actions` stacks axes on the last dim before flattening, so the flat
+        # layout is (timestep, axis) with axis fastest-varying.
+        chunk = x.reshape(*x.shape[:-1], self.num_steps, self.num_axes)
+
+        return torch.einsum("kt,...ta->...ka", self.basis, chunk).reshape(
+            *x.shape[:-1], self.num_coefficients * self.num_axes
+        )
+
+
+@final
+class ChunkIDCT(Module):
+    """DCT-II coefficients -> flat time-domain action chunk. Inverse of `ChunkDCT`.
+
+    The DCT matrix is orthogonal, so this is its transpose; with `num_coefficients <
+    num_steps` it is the least-squares reconstruction from the retained band.
+    """
+
+    @validate_call
+    def __init__(self, *, num_steps: int, num_axes: int, num_coefficients: int) -> None:
+        super().__init__()
+
+        self.num_steps = num_steps
+        self.num_axes = num_axes
+        self.num_coefficients = num_coefficients
+        self.register_buffer("basis", _dct_ii_basis(num_steps, num_coefficients))
+
+    @override
+    def forward(self, c: Tensor) -> Tensor:
+        coeffs = c.reshape(*c.shape[:-1], self.num_coefficients, self.num_axes)
+
+        return torch.einsum("kt,...ka->...ta", self.basis, coeffs).reshape(
+            *c.shape[:-1], self.num_steps * self.num_axes
+        )
