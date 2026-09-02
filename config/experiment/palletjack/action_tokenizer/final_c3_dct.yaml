@@ -1,0 +1,16 @@
+# @package _global_
+
+# C3: C1 but with the DCT basis instead of the conv encoder -- the architecture control
+# at 64 bits.
+#
+# b2 (conv) beat a4 (DCT) at 32 bits, +0.882 against +0.874 quantized and fork +0.847
+# against +0.822. Both were measured under the 32-bit codebook ceiling, so this repeats
+# the comparison where the codebook is no longer the constraint.
+defaults:
+  - /experiment/palletjack/action_tokenizer/final_c1_conv_shrink
+  - override /model: palletjack/action_tokenizer/raw_dct_shrink
+  - _self_
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, dct32, fork_shrinkage, final_mix, c3_dct]

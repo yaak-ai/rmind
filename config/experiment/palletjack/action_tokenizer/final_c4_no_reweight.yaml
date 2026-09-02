@@ -1,0 +1,21 @@
+# @package _global_
+
+# C4: drop the fork1 event weighting.
+#
+# `event_weight: {fork1: 5.0}` was introduced to fix a DEAD fork channel -- the decoder
+# emitted 0.0007 against a 0.899 target -- diagnosed when the tokenizer ran at lr 5.5e-5
+# with 32 bits. Both of those root causes are gone and fork EV is now +0.908, so the
+# question is whether the fix is still load-bearing or just still there.
+#
+# It has a measured cost: `pretrain_huber_weighted.yaml` records traction L1 rising
+# 0.092 -> 0.123 when the weighting went in. If fork holds without it, that comes back.
+defaults:
+  - /experiment/palletjack/action_tokenizer/final_c1_conv_shrink
+  - _self_
+
+model:
+  event_weight: null
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, conv_encoder, fork_shrinkage, no_reweight, final_mix, c4_no_reweight]

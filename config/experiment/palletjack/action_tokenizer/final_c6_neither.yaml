@@ -1,0 +1,19 @@
+# @package _global_
+
+# C6: drop BOTH fork fixes -- plain L1 and no event weighting.
+#
+# The honest test of whether any of the 2026-08-31 fork machinery is still needed now
+# that the rate, the optimizer and the output parameterization are all fixed. If fork
+# survives this, two knobs and their documented cost to traction come out of the config.
+# If it dies, C4 and C5 will say which half was carrying it.
+defaults:
+  - /experiment/palletjack/action_tokenizer/final_c1_conv_shrink
+  - _self_
+
+model:
+  recon_loss: l1
+  event_weight: null
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, conv_encoder, fork_shrinkage, recon_l1, no_reweight, final_mix, c6_neither]

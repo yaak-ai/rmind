@@ -1,0 +1,38 @@
+# @package _global_
+
+# C1: the best combination of everything the a- and b-arms established.
+#
+#   just train experiment=palletjack/action_tokenizer/final_c1_conv_shrink
+#
+# WHAT PAID, and what did not:
+#
+#   lr 5.5e-5 -> 3e-4, wd 0.1 -> 0.01   +0.034 unq   (a1)
+#   16x8 -> 16x16, i.e. 32 -> 64 bits   +0.062 q     (b1 depth)
+#   dilated temporal conv encoder       +0.009 q, fork +0.030   (b2)
+#   vq_weight 5.0 -> 1.0                +0.009 unq   (a3)
+#   fork1 soft-threshold                fork TV 1.324 -> 1.233, exact zeros 0% -> 55%  (b5)
+#   encoder width x4                    +0.000       (a2)
+#   DCT basis, lossless rotation        +0.000       (a4 k=50)
+#   latent 384 -> 512                   +0.001 q     (b3)
+#   5x the training schedule            +0.002 q     (b4)
+#
+# RATE VIA DEPTH, NOT WIDTH. 256x8 scores higher (+0.959 against 16x16's +0.935) but is
+# not shippable: the policy has to PREDICT these codes, and at the stage-2 grid (~1275
+# clips at episode_stride 80) a 256-way head gets ~5 training samples per code against
+# ~80 for a 16-way one, with a code_head 2048 wide against 256. Depth and width are
+# interchangeable for the tokenizer at fixed rate and are not interchangeable for the
+# policy, so the 0.024 goes to keeping stage 2 learnable.
+#
+# The DCT is dropped: a conv over the raw step axis is the alternative to a fixed basis,
+# and the lossless-rotation control showed the basis itself was never the constraint.
+defaults:
+  - /experiment/palletjack/action_tokenizer/underfit_b0_stack
+  - override /model: palletjack/action_tokenizer/raw_conv_shrink
+  - _self_
+
+num_quantizers: 16
+conv_channels: 32
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, conv_encoder, fork_shrinkage, final_mix, c1_conv_shrink]

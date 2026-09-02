@@ -1,0 +1,23 @@
+# @package _global_
+
+# C5: back to plain L1 reconstruction.
+#
+# `smooth_l1` replaced L1 because L1's gradient is `sign(e)` -- magnitude 1 whether the
+# error is 0.001 or 0.9 -- so against a target that is 91.7% exactly zero, a decoder
+# output sitting at zero was pushed there by 0.92 of the mass and away by 0.08, making
+# zero a stable fixed point. That was the dead channel.
+#
+# `AxisShrinkage` now makes exact zero REPRESENTABLE rather than something the decoder
+# has to be pushed away from, which may remove the reason the fixed point mattered. Also
+# note `smooth_l1_beta: 1.0` against errors of 0.04-0.4 means the loss never leaves its
+# quadratic branch, so this arm is really MSE-vs-L1, not Huber-vs-L1.
+defaults:
+  - /experiment/palletjack/action_tokenizer/final_c1_conv_shrink
+  - _self_
+
+model:
+  recon_loss: l1
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, conv_encoder, fork_shrinkage, recon_l1, final_mix, c5_plain_l1]

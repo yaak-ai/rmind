@@ -1,0 +1,19 @@
+# @package _global_
+
+# C2: C1 with the 512 latent, re-tested at the rate that can express it.
+#
+# b3 measured latent 512 at 32 BITS, where the codebook was the binding constraint --
+# quantization gap 0.094 -- so a better representation had no route through. It showed
+# +0.005 unquantized and +0.001 quantized, i.e. exactly the improvement the bottleneck
+# could not pass on. At 64 bits the gap falls to ~0.03 and there is room for it to tell.
+#
+# Cheap either way: the codebook grows from 16x384 to 16x512 per level.
+defaults:
+  - /experiment/palletjack/action_tokenizer/final_c1_conv_shrink
+  - _self_
+
+action_latent_dim: 512
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, conv_encoder, fork_shrinkage, latent512, final_mix, c2_latent512]
