@@ -1,0 +1,198 @@
+---
+# Palletjack STAGE 2: the patch-policy trunk with the VQ-BeT code + offset head.
+#
+# `policy.yaml` (PatchPolicyContinuous) exists because stage 1 was impossible -- "an
+# embodiment with no recorded actions has nothing to fit a tokenizer to". The
+# 2026-08-31 batch fixed that, so this arm replaces the per-actuation Gaussian heads
+# with the head the paper actually specifies: a frozen residual-VQ chunk tokenizer, a
+# focal-loss code head, and a code-conditioned offset (arXiv:2403.03181 Figure 2).
+#
+# GOAL CONDITIONING. The car feeds `PatchPolicy.goal_encoder` a frozen
+# `WaypointsTokenizer` over a route. Indoors there is no route, so the goal is the
+# INTENTION: two ego-frame [forward, lateral] points -- the pallet and the dropoff --
+# which is exactly the `(*batch, N=2, 2)` that `WaypointsTokenizer.encode` takes.
+# `MlpGoalEncoder` was built for this (commit 0cfcca4) and duck-types that contract,
+# including the `.quantizer.dim` `PatchPolicy` uses to size the patch projection.
+#
+# It is LEARNED, so `freeze_goal_encoder: false` -- freezing it would leave a random
+# projection of the intention. Its output LayerNorm fixes element-RMS at 1, so declare
+# `fusion_goal_rms: 1.0` rather than letting `_init_fusion_norm` fall back to sampling
+# random codes (meaningless for an MLP; it raises instead).
+#
+# NOT CARRIED OVER: `fork_above_300`. `PatchPolicyContinuous` passes it as one of three
+# `observations` tokens, and `PatchPolicy` has no `observations` support. The other two
+# observation tokens ARE carried, via the goal encoder above -- they are the intention.
+# `fork_above_300` is a genuine observation rather than a goal, so rather than smuggle
+# it into the goal vector this arm simply does not see it. That is a real difference
+# from the continuous arm and it belongs in any comparison between them.
+_target_: rmind.models.patch_policy.PatchPolicy
+_recursive_: false
+_convert_: all
+
+cameras: ${cameras}
+
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: rmind.components.nn.Remapper
+      paths:
+        image: ${image_remap}
+
+        continuous:
+          speed: [data, speed]
+          traction: [data, traction]
+          steering: [data, steering]
+          fork1: [data, fork1]
+
+        context:
+          # the two intention points, stacked below into (..., 2, 2)
+          relative_ego_pos: [data, relative_ego_pos]
+          relative_dropoff_pos: [data, relative_dropoff_pos]
+
+    # (..., episode_length, action_horizon) chunks of each actuation
+    - _target_: rmind.components.nn.ChunkFields
+      episode_length: ${episode_length}
+      action_horizon: ${action_horizon}
+      unfold_paths:
+        - [continuous, traction]
+        - [continuous, steering]
+        - [continuous, fork1]
+
+    - _target_: rmind.components.containers.ModuleDict
+      modules:
+        image: ${image_transform}
+
+        continuous:
+          _target_: rmind.components.nn.AtLeast3D
+
+        context:
+          _target_: torch.nn.Identity
+
+    # the chunk the tokenizer quantizes: (..., action_horizon, 3)
+    - _target_: rmind.components.nn.StackFields
+      out_key: joint_actions
+      paths:
+        traction: [continuous, traction]
+        steering: [continuous, steering]
+        fork1: [continuous, fork1]
+
+    # the goal: (..., 2 points, 2 coords). `MlpGoalEncoder` flattens both axes, so the
+    # point/coord ordering is a fixed permutation of four inputs and does not matter.
+    - _target_: rmind.components.nn.StackFields
+      out_key: intention
+      paths:
+        relative_ego_pos: [context, relative_ego_pos]
+        relative_dropoff_pos: [context, relative_dropoff_pos]
+
+image_encoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.timm_backbone.TimmBackbone
+      model_name: ${image_encoder_name}
+      out_indices: [10]
+      img_size: ${image_resize}
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... c h w -> ... (h w) c"
+
+goal_encoder:
+  _target_: rmind.models.mlp_goal_encoder.MlpGoalEncoder
+  dim: ${goal_latent_dim}
+  num_waypoints: 2
+  waypoint_dim: 2
+  hidden_dim: 128
+
+# T x P x (D + G) -> policy width (https://arxiv.org/pdf/2607.18236 section 2.1)
+patch_projection:
+  _target_: rmind.components.nn.Linear
+  in_features: "${eval:'${image_embedding_dim} + ${goal_latent_dim}'}"
+  out_features: ${policy_embedding_dim}
+
+# SIGNED: the palletjack reverses as much as it drives forward (see `policy.yaml`)
+speed_tokenizer:
+  _target_: rmind.components.norm.UniformBinner
+  range: [-15.0, 15.0]
+  bins: ${speed_bins}
+
+speed_embedding:
+  _target_: rmind.components.nn.Embedding
+  num_embeddings: ${speed_bins}
+  embedding_dim: ${policy_embedding_dim}
+
+encoder:
+  _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
+  dim_model: ${policy_embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  # no `observations` here: cameras' patches + the speed token, plus the register and
+  # readout tokens when `use_readout_token` is on
+  tokens_per_frame: "${eval:'${num_cameras} * ${num_patches} + 1 + ${num_register_tokens} + (1 if ${use_readout_token} else 0)'}"
+  window: ${window}
+  attention_impl: ${attention_impl}
+  attn_dropout: 0.0
+  rope_base: 1000.0
+
+norm:
+  _target_: torch.nn.LayerNorm
+  normalized_shape: ${policy_embedding_dim}
+
+# frozen; `JointPolicyObjective` calls `.requires_grad_(False).eval()` itself
+tokenizer:
+  _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
+  artifact: ${action_tokenizer_artifact}
+  weights_only: false
+
+code_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels: [1024, 1024, "${eval:'${num_quantizers} * ${codebook_size}'}"]
+
+offset_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  # num_quantizers x codebook_size x action_dim. With 8 x 16 x 150 this is 19200
+  # outputs -- 12.5x the car's 1536 -- because our chunk is 50 steps of 3 actuations
+  # against the car's 6 of 4. See `underfit_a4_dct*`: a DCT basis at k=32 would take
+  # action_dim to 96, but only if the offset moves into coefficient space, which is a
+  # change to `JointPolicyObjective`, not a config knob.
+  hidden_channels: [1024, 1024, "${eval:'${num_quantizers} * ${codebook_size} * ${action_dim}'}"]
+
+losses:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    code:
+      _target_: rmind.components.loss.FocalLoss
+    offset:
+      _target_: torch.nn.L1Loss
+
+chunk: [joint_actions]
+waypoints: [context, intention]
+
+teacher_force_offset: ${teacher_force_offset}
+fusion_norm: true
+# MlpGoalEncoder's output LayerNorm makes this exact rather than estimated
+fusion_goal_rms: 1.0
+# LEARNED goal head: freezing it would leave a random projection of the intention
+freeze_goal_encoder: false
+
+use_readout_token: ${use_readout_token}
+num_register_tokens: ${num_register_tokens}
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: ${lr}
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}
