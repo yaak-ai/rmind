@@ -1,0 +1,150 @@
+_target_: rmind.models.nero_patch_policy.NeroPatchPolicy
+_recursive_: false
+_convert_: all
+
+# ⚠️ rbyte delivers each camera ISOTROPICALLY downscaled to its OWN grid
+# (base 270x480, side_* 300x480), so the three image tensors do NOT share H/W.
+# Unifying them is rmind's job. LetterboxResize (uniform scale + symmetric pad),
+# NEVER a plain anisotropic Resize -- that would scale fx and fy independently
+# and invalidate the resolution-normalised intrinsics in camera_cond (§7.1).
+# 300x480 -> 140x224 is EXACTLY isotropic (x0.4667), so only base is padded.
+#
+# ToDtype comes FIRST: letterboxing interpolates, and doing that in uint8 would
+# round every resampled pixel back to an integer before the network ever sees it.
+image_transform:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: torchvision.transforms.v2.ToDtype
+      scale: true
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+    - _target_: rmind.components.image.LetterboxResize
+      size: ["${image_height}", "${image_width}"]
+    - _target_: torchvision.transforms.v2.Normalize
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+# DINO-WM-faithful features: final block + final LayerNorm (x_norm_patchtokens),
+# same as config/experiment/yaak/patch_policy/dinov2_dinowm.yaml. The SAME frozen
+# encoder serves observation frames and goal frames (contract §9: "because it is
+# a plain image, it goes through the same encoder; no extra machinery").
+image_encoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.timm_backbone.TimmBackbone
+      model_name: ${image_encoder_name}
+      img_size: ["${image_height}", "${image_width}"]
+      norm_patch_tokens: true
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... c h w -> ... (h w) c"
+
+# per patch: [obs feature | goal feature (same patch index) | camera_cond 13]
+patch_projection:
+  _target_: rmind.components.nn.Linear
+  in_features: "${eval:'${image_embedding_dim} + ${goal_embedding_dim} + ${camera_cond_dim}'}"
+  out_features: ${policy_embedding_dim}
+
+# one state token per frame: bimanual state, invalid side zeroed, mask appended
+state_embedding:
+  _target_: torchvision.ops.MLP
+  in_channels: "${eval:'${num_sides} * ${state_features} + ${num_sides}'}"
+  hidden_channels: ["${policy_embedding_dim}", "${policy_embedding_dim}"]
+
+# decoder-only trunk, reused unchanged from feat/patch-policy-decoder-only.
+# tokens_per_frame = num_cameras * num_patches + 1 state token = 3*160 + 1 = 481
+encoder:
+  _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
+  dim_model: ${policy_embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  tokens_per_frame: "${eval:'${num_cameras} * ${num_patches} + 1'}"
+  window: ${episode_length}
+  rope_base: 1000.0
+
+# ⚠️ A REAL run must override this with a trained checkpoint, e.g.
+#   model:
+#     tokenizer:
+#       _target_: rmind.models.nero_pose_tokenizer.NeroPoseTokenizer.load_from_wandb_artifact
+#       artifact: ${pose_tokenizer_artifact}
+#       weights_only: false
+# An inline (untrained) tokenizer has an uninitialised RVQ codebook and will
+# collapse every chunk onto code 0. Kept inline here only so the architecture is
+# instantiable before the first tokenizer checkpoint exists.
+tokenizer:
+  _target_: rmind.models.nero_pose_tokenizer.NeroPoseTokenizer
+  _recursive_: false
+  _convert_: all
+  action_features: ${action_features}
+  action_horizon: ${action_horizon}
+  encoder:
+    _target_: torchvision.ops.MLP
+    in_channels: "${eval:'${action_horizon} * ${action_features}'}"
+    hidden_channels: [512, "${tokenizer_latent_dim}"]
+  quantizer:
+    _target_: rmind.components.vq.ResidualVQ
+    dim: ${tokenizer_latent_dim}
+    codebook_size: ${codebook_size}
+    num_quantizers: ${num_quantizers}
+  decoder:
+    _target_: torchvision.ops.MLP
+    in_channels: ${tokenizer_latent_dim}
+    hidden_channels: [512, "${eval:'${action_horizon} * ${action_features}'}"]
+
+norm:
+  _target_: torch.nn.LayerNorm
+  normalized_shape: ${policy_embedding_dim}
+
+# CONFIG SEAM (contract §11): every head width is DERIVED. Swapping to the Revo2
+# joint-angle action space of §11(B) is `action_features: 12` -- not a rewrite.
+code_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels: [1024, 1024, "${eval:'${num_quantizers} * ${codebook_size}'}"]
+
+# NOTE: the last hidden width is 512, not the driving config's 1024. At
+# g*c*a = 4*16*360 = 23040 outputs, a 1024-wide penultimate layer would be 23.6M
+# parameters -- comparable to the whole trunk. 512 halves it to 11.8M.
+offset_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels:
+    - 1024
+    - 512
+    - "${eval:'${num_quantizers} * ${codebook_size} * ${action_horizon} * ${action_features}'}"
+
+losses:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    code:
+      _target_: rmind.components.loss.FocalLoss
+    offset:
+      _target_: torch.nn.L1Loss
+
+image_embedding_dim: ${image_embedding_dim}
+policy_embedding_dim: ${policy_embedding_dim}
+cameras: ${cameras}
+use_goal_image: ${use_goal_image}
+goal_dropout: ${goal_dropout}
+teacher_force_offset: ${teacher_force_offset}
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: ${lr}
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+# NOTE: get_cosine_schedule_with_warmup RISES AGAIN past num_training_steps --
+# size lr_total_steps to the actual planned optimizer steps.
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}

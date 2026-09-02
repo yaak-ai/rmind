@@ -1,0 +1,105 @@
+# @package _global_
+#
+# Causal patch policy for the nero-arms bimanual manipulation contract (v0.1 + §11, §7.2).
+#
+# ⚠️ DATAMODULE. Defaults to the SYNTHETIC datamodule, because rbyte ingestion is
+# being implemented in parallel against the same contract. Point `/datamodule` at
+# the rbyte one when it lands; nothing else here should need to change, because
+# every key below is a contract §8 key.
+#
+# SEQUENCE LENGTH (compute this before launching anything -- PR #265's lesson):
+#
+#   tokens_per_frame = num_cameras * num_patches + 1 = 3 * 160 + 1 = 481
+#   flattened        = episode_length * tokens_per_frame = 6 * 481 = 2886
+#
+# For comparison on this same trunk: the 6-frame driving arm is 1542 and the
+# 16-frame causal driving arm is 4112. Attention cost scales quadratically, so
+# 2886 is ~3.5x the 6-frame driving arm and ~0.5x the 16-frame causal arm.
+#
+# num_patches = 160 (a 10x16 grid), NOT 256: the ViT input is 140x224, which is
+# the nero-arms 5:8 aspect at DINOv2's patch 14. Forcing a square 224x224 would
+# make 6 of 16 patch rows pure letterbox padding -- 37% of the sequence spent on
+# black bars -- for identical image content.
+#
+# ⚠️ head_dim = policy_embedding_dim / num_heads = 512 / 8 = 64, which is
+# divisible by 8. Below that, fused SDPA silently falls back to a math kernel
+# that materialises the full (B, H, 2886, 2886) score matrix and OOMs -- exactly
+# what PR #265 hit at head_dim 20. Do not change num_heads without rechecking.
+# (head_dim must also be EVEN for the trunk's frame-RoPE.)
+
+defaults:
+  - /model: yaak/nero_patch_policy/raw
+  - /datamodule: yaak/nero_random
+  - /trainer: default
+  - /trainer/callbacks: nero_patch_policy
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+# --- contract §6.2: action(t) = future state chunk [t+1 .. t+H] at 30 Hz
+episode_length: 6
+action_horizon: 6
+# ⚠️ clip_length == episode_length here, NOT `episode_length + horizon - 1` as in
+# every driving config. rbyte materialises each row's future chunk AT BUILD TIME
+# (`future = stack(state[i+1 : i+1+H])`) and drops the rows without a full chunk,
+# so one sample row already carries both `state.pose[t]` and
+# `action.future_state[t]`; the window needs no extra frames. Verified against
+# rbyte@feat/nero-arms, which builds at clip_length 6 with the same [t+1 .. t+H]
+# shift this side assumes.
+clip_length: ${episode_length}
+
+# --- contract §8 / §7.2
+cameras: [base, side_left, side_right]
+num_cameras: 3
+camera_cond_dim: 13
+# LETTERBOX target, not a plain resize (§7.2 + the rbyte per-camera grids).
+# 140x224 keeps the cameras' 5:8 aspect and is a whole number of patch 14s.
+image_height: 140
+image_width: 224
+image_encoder_name: vit_small_patch14_dinov2.lvd142m
+image_embedding_dim: 384
+num_patches: 160 # (140/14) x (224/14) = 10 x 16
+
+# --- contract §6.1 state / action space
+num_sides: 2
+# ⚠️ the LOADER emits 46 per side (contract §5.2 storage form: 6 poses x 7 + a
+# 4-dim hub quaternion); the model expands to the 60-dim 9D form at its input
+# boundary (rmind.data.nero.state_quat_to_9d). 60 is the MODEL-FACING width.
+state_features: 60 # 9D form, per side
+# CONFIG SEAM (§11): the per-side ACTION dimensionality. 60 today; ~12 for the
+# Revo2 joint-angle variant of §11(B). Head widths derive from this.
+action_features: 60
+
+# --- contract §9 goal conditioning
+use_goal_image: true
+goal_embedding_dim: ${image_embedding_dim} # same-index concat of goal patches
+# goal dropout so the policy does not become goal-DEPENDENT for basic motion
+goal_dropout: 0.15
+
+# --- policy trunk (https://arxiv.org/pdf/2607.18236 Table 9)
+policy_embedding_dim: 512
+num_layers: 8
+num_heads: 8
+
+# --- VQ-BeT action tokenizer
+tokenizer_latent_dim: 256
+codebook_size: 16
+num_quantizers: 4
+teacher_force_offset: true
+
+# --- optimization. Placeholders: re-derive from the REAL sample count (contract
+# §8: "do not trust .rbyte_cache sample counts") before launching. The cosine
+# schedule rises again past num_training_steps.
+lr: 1e-4
+lr_warmup_steps: 500
+lr_total_steps: 10000
+
+batch_size: 8
+both_sides: true
+num_train_batches: 1000
+
+trainer:
+  max_epochs: 10
+
+wandb:
+  tags: [nero_arms, causal_patch_policy]

@@ -68,8 +68,14 @@ class TimmBackbone(nn.Module):
             # (B, prefix + P, D), final norm applied by timm's forward_features
             tokens = self.model.forward_features(x)
             tokens = tokens[:, self.model.num_prefix_tokens :]
-            grid = isqrt(tokens.shape[1])
-            x = tokens.transpose(1, 2).reshape(-1, tokens.shape[-1], grid, grid)
+            # NON-SQUARE inputs are legal (nero-arms feeds a 10x16 grid), so take
+            # the grid from the patch embedding rather than assuming isqrt(P).
+            # Identical result for square inputs.
+            grid = getattr(getattr(self.model, "patch_embed", None), "grid_size", None)
+            if grid is None or grid[0] * grid[1] != tokens.shape[1]:
+                side = isqrt(tokens.shape[1])
+                grid = (side, side)
+            x = tokens.transpose(1, 2).reshape(-1, tokens.shape[-1], *grid)
         else:
             x = self.model(x)[-1]
 
