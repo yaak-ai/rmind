@@ -1,0 +1,34 @@
+# @package _global_
+
+# E: beta with the weight KEPT AT 5, the one combination never run.
+#
+#   just train experiment=palletjack/action_tokenizer/final_e_beta02_w5
+#
+# The d-sweep answered "can beta replace the reweighting": no. Dropping the weight and
+# lowering beta degrades fork events monotonically (event L1 0.1146 -> 0.1601 -> 0.1879)
+# and dies outright at beta 0.1 (event magnitude 0.003). The control at beta 0.2 with
+# and without the 2x weight (event L1 0.1243 against 0.1879) shows the weight is doing
+# work beta cannot do.
+#
+# But the d-sweep DID confirm half the mechanism: lowering beta flattens the quiet
+# regions as predicted, fork TV 1.084 -> 0.972 -> 0.802, straight through 1.0.
+#
+# So the useful question is the opposite of the one asked: keep the weight HIGH and use
+# beta to fix the jaggedness. c1 (beta 1.0, weight 5) already has the best event metrics
+# of any arm -- event L1 0.0798, magnitude 0.875, fork EV +0.937 -- and is spoiled only
+# by fork TV 1.278. Beta should pull that toward 1.0 without touching the events.
+#
+# Success: c1's event metrics at a fork TV near 1.0. Watch event magnitude, not EV --
+# the whole d-sweep degraded events while aggregate EV barely moved (+0.948 -> +0.945).
+defaults:
+  - /experiment/palletjack/action_tokenizer/final_c7_recommended
+  - _self_
+
+model:
+  smooth_l1_beta: 0.2
+  event_weight:
+    fork1: 5.0
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, conv_encoder, fork_shrinkage, beta_sweep, e_beta02_w5]
