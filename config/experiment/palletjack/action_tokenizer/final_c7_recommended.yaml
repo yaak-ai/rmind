@@ -1,0 +1,47 @@
+# @package _global_
+
+# C7: the recommended configuration. Every lever set to what the ablations measured.
+#
+#   just train experiment=palletjack/action_tokenizer/final_c7_recommended
+#
+# Carried, with what each was worth (quantized holdout EV unless noted):
+#   lr 3e-4, wd 0.01                 +0.034 unq        a1
+#   16 x 16 codes = 64 bits          +0.062            b1, depth not width
+#   dilated temporal conv encoder    +0.009, fork +0.030   b2, and again at 64 bits (c1 vs c3)
+#   vq_weight 1.0                    +0.009 unq        a3
+#   fork1 soft-threshold             exact zeros 0% -> 84%   b5
+#   box-mean traction                3.42 vs 5.81 pp RMS against the 83 Hz signal
+#
+# Dropped, measured worthless: encoder width (a2, +0.000), the DCT basis as a basis
+# (a4 k=50, +0.000; and c3 loses to c1 at 64 bits), latent 512 (b3 and c2, +0.001),
+# 5x the training schedule (b4, +0.002).
+#
+# WHY event_weight 2.0 AND smooth_l1, when the ablation showed either alone keeps the
+# channel alive. Because "alive" was not the only axis:
+#
+#            fork EV   event mag   fork TV
+#   c1 (5.0)  +0.937     0.875      1.278   <- over-driven, sprays quiet-region wiggle
+#   c4 (0)    +0.914     0.823      0.990   <- weakest events of any live arm
+#   c5 (L1)   +0.927     0.869      0.964
+#
+# 5.0 was set as a reduction from the inverse-frequency 14.4 back when the channel was
+# DEAD and the only question was reviving it. With the channel healthy, rate fixed and
+# the zero atom now exactly representable, the weight only has to hold the population
+# ratio, not force it -- so 2.0, aiming for c1's event magnitude at c4/c5's sharpness.
+#
+# Both mechanisms are kept deliberately. c6 (plain L1, no weighting) killed the channel
+# outright -- fork EV -0.002, event magnitude 0.000, 100% exact zeros -- and the
+# shrinkage HELPED it die, since a learned threshold is a cheap exact route to the
+# all-zero optimum under L1. One mechanism is enough today; two is enough after the next
+# data collection shifts the fork statistics.
+defaults:
+  - /experiment/palletjack/action_tokenizer/final_c1_conv_shrink
+  - _self_
+
+model:
+  event_weight:
+    fork1: 2.0
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, conv_encoder, fork_shrinkage, recommended, final_mix, c7_recommended]
