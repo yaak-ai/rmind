@@ -1,0 +1,20 @@
+# @package _global_
+
+---
+defaults:
+  - export: null
+  - _self_
+
+data_dir: ${oc.env:HOME}/data/Niro122-HQ/2023-05-25--09-34-14
+start_frame: 2910
+num_episodes: 50
+frame_step: 10
+output: /tmp/rmind.csv
+warmup: 1
+image_size: null
+
+# override per run, e.g.:
+#   onnx=/path/to/model.onnx wandb_model=yaak/rmind/model-XXXXXXXX:vN
+#   export=yaak/control_transformer/finetuned  # apples-to-apples vs the ONNX export
+onnx: null
+wandb_model: null
