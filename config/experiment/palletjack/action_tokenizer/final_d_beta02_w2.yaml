@@ -1,0 +1,16 @@
+# @package _global_
+
+# D control: beta 0.2 WITH the 2x weight retained.
+#
+# If the no-weight arms fall off the cliff, this separates "beta 0.2 is the wrong shape"
+# from "beta 0.2 needs the weight" -- without it a collapse at 0.2 is ambiguous.
+defaults:
+  - /experiment/palletjack/action_tokenizer/final_c7_recommended
+  - _self_
+
+model:
+  smooth_l1_beta: 0.2
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, conv_encoder, fork_shrinkage, beta_sweep, d_beta02_w2]

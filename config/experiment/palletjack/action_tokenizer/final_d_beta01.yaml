@@ -1,0 +1,43 @@
+# @package _global_
+
+# D: sweep smooth_l1_beta DOWN with NO event reweighting.
+#
+#   just train experiment=palletjack/action_tokenizer/final_d_beta01
+#
+# Question: can beta alone buy c5's fork sharpness without c5's dependence on the
+# reweighting? c5 (plain L1 + 5x) has fork TV 0.964 and event L1 0.0864; c7
+# (smooth_l1 beta=1.0 + 2x) has 1.084 and 0.1146. The difference is the loss shape.
+#
+# MECHANISM. smooth_l1's gradient magnitude is min(|e|/beta, 1), so beta interpolates
+# between MSE and L1. At beta=1.0 every real error (0.04-0.4) is inside the quadratic
+# branch, i.e. it IS MSE: small quiet-region errors get weak gradients and survive, which
+# is where c7's excess jaggedness comes from. Lowering beta below the typical error moves
+# those same errors into the linear branch, where the gradient is constant and pushes
+# them to zero hard -- exactly the mechanism behind c5's flatness.
+#
+# WHY THIS MIGHT WORK WITHOUT THE WEIGHT, where it did not before. The weight exists to
+# fix the population ratio: 92% of fork1 targets are exactly zero and used to dominate
+# the gradient. With `AxisShrinkage` ~86% of fork OUTPUTS are now exactly zero against
+# targets that are exactly zero, so those samples contribute NO gradient at all. The
+# ratio problem is largely already solved mechanically, which is why c4 (no weight)
+# survived at fork EV +0.914.
+#
+# WHERE IT BREAKS. beta -> 0 is plain L1, and plain L1 with no weighting is c6, which
+# died -- and with shrinkage present it died by tau RUNNING AWAY (100% exact zeros, EV
+# -0.002), not by the classic fixed point. So expect a cliff. This sweep is to find which
+# side of it the c5-like behaviour sits on.
+#
+# Read tau and the exact-zero share, not just EV: an arm that "improves" EV by zeroing
+# more of the channel is c6 again in a milder form.
+defaults:
+  - /experiment/palletjack/action_tokenizer/final_c7_recommended
+  - _self_
+
+model:
+  smooth_l1_beta: 0.1
+  event_weight: null
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12, chunk50, 5s, traction_operator, box_mean,
+         cb16x16, rate64, conv_encoder, fork_shrinkage, no_reweight, beta_sweep,
+         d_beta01]
