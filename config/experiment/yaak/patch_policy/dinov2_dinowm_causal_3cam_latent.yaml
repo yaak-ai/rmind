@@ -1,0 +1,78 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_3cam
+  - _self_
+
+# Side-camera latent bottleneck (side-camera-latent-bottleneck.md).
+#
+# The sibling 3cam arm feeds the trunk 768 raw side-camera patches a frame on
+# top of the front camera's 256 -- ~3x the tokens for cameras the offline audit
+# (attention-mass probe, `patch_policy_camera_probe.py`) shows the trunk using
+# disproportionately little relative to their token share. This arm compresses
+# EACH side camera to `num_camera_latents` Perceiver-style learned latents
+# BEFORE the trunk (`PatchPolicy._frame_tokens`), instead of masking them
+# inside it -- the equivalent bottleneck at zero cost on the KV-cached serving
+# path (`CausalSelfAttention.step`'s `cache_bias` contract has no
+# representation for a per-band own-frame mask). Per-frame layout becomes
+#
+#     [ speed(1) | cam_front_left x256 | left latents xk | right latents xk
+#       | register xR | readout(1) ]
+#
+# At k=8, R=2: 276 tokens/frame -- vs the sibling arm's 772 and the 1-cam
+# readout arm's 260 -- ~7.8x cheaper attention per frame block, which affords
+# `window: 16` at the current batch size (the sibling arm's committed override
+# is `window=6`/`episode_length=16` to fit the same budget).
+#
+# GEOMETRY: the compressed latents carry no camera/grid position -- they are
+# not grid patches -- so `model.encoder.num_cameras: 1` below means GRID
+# cameras only (cam_front_left). They land in the trunk's free-row
+# `special_position_embedding` band alongside the registers/readout
+# (causal_frame.py), so `_validate_factorized_geometry` balances unmodified:
+# 1 + 1*16*16 + (2*8 + 2 + 1) = 276. Consequence: the pano_col/pano_bearing
+# factorizations degenerate to the 1-camera case here, so this arm and
+# dinov2_dinowm_causal_3cam_pano.yaml are NOT a controlled pair -- camera
+# identity for the side views lives in their latent queries (genuinely
+# per-camera trainable capacity, which the model has ZERO of on the sibling
+# arm) rather than a `view_position_embedding` row.
+#
+# TRAINS FROM SCRATCH -- warm_start_ckpt.py refuses a changed layout, and
+# SelectiveAdamW maps optimizer state positionally, so a `ckpt_path` resume
+# from a 769/772-token run would silently mis-assign Adam moments.
+#
+# GATE before spending closed-loop time: offline, on val_3cam, this arm must be
+# no worse than the sibling 769-token arm on offset_argmax_recon_last (plus the
+# pedal metrics) -- the side cameras ARE used offline (+13-15% recon L1 under
+# permutation), so too tight a bottleneck shows up there first; raise
+# num_camera_latents rather than proceeding to closed loop.
+num_register_tokens: 2
+num_camera_latents: 8
+
+model:
+  compress_cameras: [cam_left_forward, cam_right_forward]
+  num_camera_latents: ${num_camera_latents}
+  camera_pool: ${oc.select:camera_pool,attn}
+  camera_latent_dropout: ${oc.select:camera_latent_dropout,0.0}
+  use_readout_token: true
+  num_register_tokens: ${num_register_tokens}
+
+  encoder:
+    # speed + 1 grid camera's patches + 2 side cameras' latents + registers + readout
+    tokens_per_frame: "${eval:'${num_patches} + 2 * ${num_camera_latents} + ${num_register_tokens} + 2'}"
+    max_sequence_length: "${eval:'${episode_length} * (${num_patches} + 2 * ${num_camera_latents} + ${num_register_tokens} + 2)'}"
+
+    # grid geometry is the FRONT camera only -- see the header
+    num_cameras: 1
+    patch_grid: [16, 16]
+    num_prefix_tokens: 1 # speed
+    # left latents + right latents + registers + readout
+    num_suffix_tokens: "${eval:'2 * ${num_camera_latents} + ${num_register_tokens} + 1'}"
+
+# the point of the token budget: afford the window the 772-token sibling arm
+# cannot at the current batch size (inherited default from
+# dinov2_dinowm_causal.yaml; restated so a future edit there can't silently
+# shrink it out from under this arm)
+window: 16
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal, 3cam, latent_bottleneck]

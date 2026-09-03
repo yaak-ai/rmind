@@ -208,24 +208,43 @@ IntraPositionFactorization = Literal[
 TRUNC_NORMAL_2SIGMA_NORM_FACTOR: float = 0.8796
 
 
-def frame_band_slices(
-    *, cameras: Sequence[str], num_patches: int, num_register: int, has_readout: bool
+def frame_band_slices(  # noqa: PLR0913
+    *,
+    cameras: Sequence[str],
+    num_patches: int,
+    num_register: int,
+    has_readout: bool,
+    compress_cameras: Sequence[str] = (),
+    num_camera_latents: int = 0,
 ) -> dict[str, slice]:
-    """Intra-frame slot bands, `{"speed", "patch:<camera>"..., "register"?, "readout"?}`.
+    """Intra-frame slot bands, `{"speed", "patch:<camera>"..., "latent:<camera>"...,
+    "register"?, "readout"?}`.
 
-    Slot layout `[speed, cam0 patches, cam1 patches, ..., register..., readout?]`
-    -- this **must mirror `rmind.models.patch_policy.PatchPolicy._frame_tokens`'s
-    `torch.cat` order exactly**, which is why it lives here, next to the trunk
-    that consumes that layout, rather than being re-derived by each diagnostic
-    that needs it (it was duplicated in two of them).
+    Slot layout `[speed, grid-camera patches (in `cameras` order, skipping
+    `compress_cameras`), compressed-camera latents (in `cameras` order),
+    register..., readout?]` -- this **must mirror
+    `rmind.models.patch_policy.PatchPolicy._frame_tokens`'s `torch.cat` order
+    exactly**, which is why it lives here, next to the trunk that consumes
+    that layout, rather than being re-derived by each diagnostic that needs it
+    (it was duplicated in two of them).
+
+    `compress_cameras`/`num_camera_latents` default to off, reproducing the
+    pre-bottleneck layout bit-for-bit.
 
     Pure index arithmetic, no torch: usable against a bare state dict.
     """
     bands = {"speed": slice(0, 1)}
     i = 1
     for camera in cameras:
+        if camera in compress_cameras:
+            continue
         bands[f"patch:{camera}"] = slice(i, i + num_patches)
         i += num_patches
+    for camera in cameras:
+        if camera not in compress_cameras:
+            continue
+        bands[f"latent:{camera}"] = slice(i, i + num_camera_latents)
+        i += num_camera_latents
     if num_register:
         bands["register"] = slice(i, i + num_register)
         i += num_register

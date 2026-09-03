@@ -98,24 +98,38 @@ def _require_causal_frame_trunk(model: PatchPolicy) -> CausalFrameTransformer:
 
 
 def _num_patches_per_camera(model: PatchPolicy, encoder: CausalFrameTransformer) -> int:
+    """Patches per GRID camera -- `compress_cameras` cameras contribute
+    `model.num_camera_latents` latents instead and are excluded from this
+    division (see `PatchPolicy._init_camera_compression`).
+
+    Raises:
+        ValueError: if that doesn't divide evenly.
+    """
     num_register = (
         model.register_tokens.shape[0] if model.register_tokens is not None else 0
     )
-    non_patch = 1 + num_register + (1 if model.readout_token is not None else 0)
+    num_grid_cameras = len(model.cameras) - len(model.compress_cameras)
+    non_patch = (
+        1
+        + num_register
+        + (1 if model.readout_token is not None else 0)
+        + len(model.compress_cameras) * model.num_camera_latents
+    )
     num_patches, remainder = divmod(
-        encoder.tokens_per_frame - non_patch, len(model.cameras)
+        encoder.tokens_per_frame - non_patch, num_grid_cameras
     )
     if remainder:
         msg = (
             f"tokens_per_frame {encoder.tokens_per_frame} - {non_patch} non-patch "
-            f"slots doesn't divide evenly across {len(model.cameras)} cameras"
+            f"slots doesn't divide evenly across {num_grid_cameras} grid cameras"
         )
         raise ValueError(msg)
     return num_patches
 
 
 def _slot_layout(model: PatchPolicy) -> dict[str, slice]:
-    """`{"speed": slice, "patch:<camera>": slice, "register": slice?, "readout": slice?}`."""
+    """`{"speed": slice, "patch:<camera>": slice, "latent:<camera>": slice,
+    "register": slice?, "readout": slice?}`."""
     encoder = _require_causal_frame_trunk(model)
     return frame_band_slices(
         cameras=model.cameras,
@@ -124,6 +138,8 @@ def _slot_layout(model: PatchPolicy) -> dict[str, slice]:
             model.register_tokens.shape[0] if model.register_tokens is not None else 0
         ),
         has_readout=model.readout_token is not None,
+        compress_cameras=model.compress_cameras,
+        num_camera_latents=model.num_camera_latents,
     )
 
 

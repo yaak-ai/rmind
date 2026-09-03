@@ -93,6 +93,17 @@ ARMS = {
     # graph gains a constant index_select/matmul that has to fold away. Exists
     # so that is verifiable before committing to a training run.
     "small_3cam_pano": ("yaak/patch_policy/dinov2_dinowm_causal_3cam_pano", 512, 8, 8),
+    # `cam_left_forward`/`cam_right_forward` each compressed to
+    # `num_camera_latents` learned latents ahead of the trunk instead of their
+    # 256 raw patches (config/experiment/yaak/patch_policy/
+    # dinov2_dinowm_causal_3cam_latent.yaml) -- 276 tokens/frame at the
+    # config's k=8/R=2, vs `small_3cam`'s 772. Same width/layers/heads.
+    "small_3cam_latent": (
+        "yaak/patch_policy/dinov2_dinowm_causal_3cam_latent",
+        512,
+        8,
+        8,
+    ),
 }
 IMAGE_HW = 224  # dinov2 arms; 256 for dinov3
 NUM_PATCHES = 256
@@ -101,17 +112,27 @@ CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 
 
 def tokens_per_frame(
-    num_cameras: int, *, use_readout_token: bool = False, num_register_tokens: int = 0
+    num_cameras: int,
+    *,
+    use_readout_token: bool = False,
+    num_register_tokens: int = 0,
+    num_compressed_cameras: int = 0,
+    num_camera_latents: int = 0,
 ) -> int:
-    """`num_cameras * NUM_PATCHES + 1` -- the speed token plus every camera's
-    patches (257 at `num_cameras=1`, 769 at `num_cameras=3`). With
+    """`(num_cameras - num_compressed_cameras) * NUM_PATCHES +
+    num_compressed_cameras * num_camera_latents + 1` -- the speed token, every
+    GRID camera's full patch band, and every `compress_cameras` camera's latent
+    band instead (257 at `num_cameras=1`, 769 at `num_cameras=3`, 276 at
+    `num_cameras=3, num_compressed_cameras=2, num_camera_latents=8`; see
+    `PatchPolicy._frame_tokens`'s side-camera bottleneck). With
     `use_readout_token` the frame additionally carries `num_register_tokens`
     register tokens plus one readout token (260 at `num_cameras=1`, 2 registers).
 
     Only the RANDOM-INIT export path needs this: on a checkpoint the geometry
     comes from the trained trunk's own `tokens_per_frame`.
     """
-    k = NUM_PATCHES * num_cameras + 1
+    grid_cameras = num_cameras - num_compressed_cameras
+    k = NUM_PATCHES * grid_cameras + num_camera_latents * num_compressed_cameras + 1
     if use_readout_token:
         k += num_register_tokens + 1
     return k
@@ -279,6 +300,8 @@ def decoder_model_and_args(  # noqa: PLR0914
                 len(policy.cameras),
                 use_readout_token=getattr(policy, "use_readout_token", False),
                 num_register_tokens=getattr(policy, "num_register_tokens", 0),
+                num_compressed_cameras=len(getattr(policy, "compress_cameras", ())),
+                num_camera_latents=getattr(policy, "num_camera_latents", 0),
             ),
             window=context,
             # carry the arm's intra-frame position parameterization over. The

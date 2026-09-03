@@ -120,7 +120,11 @@ def _raw_position_table(encoder: CausalFrameTransformer) -> Tensor:
 
 
 def _num_patches_per_camera(model: PatchPolicy, encoder: CausalFrameTransformer) -> int:
-    """`(tokens_per_frame - non_patch_slots) / num_cameras`, validated.
+    """`(tokens_per_frame - non_patch_slots) / num_grid_cameras`, validated.
+
+    `compress_cameras` cameras contribute `model.num_camera_latents` latents
+    instead of raw patches and are excluded from both the non-patch count and
+    the division (see `PatchPolicy._init_camera_compression`).
 
     Raises:
         ValueError: if that doesn't divide evenly.
@@ -128,14 +132,20 @@ def _num_patches_per_camera(model: PatchPolicy, encoder: CausalFrameTransformer)
     num_register = (
         model.register_tokens.shape[0] if model.register_tokens is not None else 0
     )
-    non_patch = 1 + num_register + (1 if model.readout_token is not None else 0)
+    num_grid_cameras = len(model.cameras) - len(model.compress_cameras)
+    non_patch = (
+        1
+        + num_register
+        + (1 if model.readout_token is not None else 0)
+        + len(model.compress_cameras) * model.num_camera_latents
+    )
     num_patches, remainder = divmod(
-        encoder.tokens_per_frame - non_patch, len(model.cameras)
+        encoder.tokens_per_frame - non_patch, num_grid_cameras
     )
     if remainder:
         msg = (
             f"tokens_per_frame {encoder.tokens_per_frame} - {non_patch} non-patch "
-            f"slots doesn't divide evenly across {len(model.cameras)} cameras"
+            f"slots doesn't divide evenly across {num_grid_cameras} grid cameras"
         )
         raise ValueError(msg)
     return num_patches
@@ -155,6 +165,8 @@ def _slot_layout(model: PatchPolicy) -> tuple[dict[str, slice], int, int]:
         num_patches=num_patches,
         num_register=num_register,
         has_readout=has_readout,
+        compress_cameras=model.compress_cameras,
+        num_camera_latents=model.num_camera_latents,
     )
     return bands, num_patches, num_register
 

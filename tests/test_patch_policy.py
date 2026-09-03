@@ -5,12 +5,13 @@ teacher-forced offset semantics inherited from `JointPolicyObjective` (#258),
 and equivalence of the batched `_gather_offset` with the joint-policy original.
 """
 
-from typing import Any, cast, override
+import itertools
+from typing import Any, Literal, cast, override
 
 import pytest
 import torch
 from tensordict import TensorDict
-from torch import Tensor
+from torch import Tensor, nn
 from torch.nn import Identity, L1Loss, Linear, Module, Sequential
 from torchvision.ops import MLP
 
@@ -21,8 +22,10 @@ from rmind.components.nn import Embedding
 from rmind.components.norm import ImageNormalize, Scaler, UniformBinner
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.components.objectives.joint_policy import JointPolicyObjective
+from rmind.components.optimizers.selective_adamw import SelectiveAdamW
 from rmind.components.transformer.causal_frame import (
     CausalFrameTransformer,
+    frame_band_slices,
     frame_rope_cos_sin,
 )
 from rmind.components.vq import ResidualVQ
@@ -117,8 +120,15 @@ def _make_model(  # noqa: PLR0913
     losses: ModuleDict | None = None,
     use_readout_token: bool = False,
     num_register_tokens: int = 0,
+    compress_cameras: tuple[str, ...] = (),
+    num_camera_latents: int = 0,
+    camera_pool: Literal["mean", "attn"] = "attn",
+    camera_latent_dropout: float = 0.0,
 ) -> PatchPolicy:
-    tokens_per_frame = len(cameras) * NUM_PATCHES + 1
+    num_grid_cameras = len(cameras) - len(compress_cameras)
+    tokens_per_frame = (
+        num_grid_cameras * NUM_PATCHES + len(compress_cameras) * num_camera_latents + 1
+    )
     if use_readout_token:
         tokens_per_frame += num_register_tokens + 1
     return PatchPolicy(
@@ -126,6 +136,10 @@ def _make_model(  # noqa: PLR0913
         neighbor_smoothing_tau=neighbor_smoothing_tau,
         use_readout_token=use_readout_token,
         num_register_tokens=num_register_tokens,
+        compress_cameras=compress_cameras,
+        num_camera_latents=num_camera_latents,
+        camera_pool=camera_pool,
+        camera_latent_dropout=camera_latent_dropout,
         input_transform=Identity(),
         # tests feed pre-extracted patch features (b, t, p, d) directly
         image_encoder=Identity(),
@@ -1016,3 +1030,216 @@ def test_readout_token_streaming_matches_full_forward() -> None:  # noqa: PLR091
             streamed = model.norm(streamed)
 
     torch.testing.assert_close(streamed, features, rtol=0, atol=1e-5)
+
+
+# --------------------------------------------------------------------------- #
+# side-camera latent bottleneck (opt-in `compress_cameras`)
+# --------------------------------------------------------------------------- #
+
+THREE_CAMERAS = ("cam_front_left", "cam_left_forward", "cam_right_forward")
+COMPRESS_CAMERAS = ("cam_left_forward", "cam_right_forward")
+NUM_CAMERA_LATENTS = 2  # divides NUM_PATCHES (4) evenly, for camera_pool="mean"
+LATENT_TOKENS_PER_FRAME = (
+    1 + NUM_PATCHES + 2 * NUM_CAMERA_LATENTS + NUM_REGISTERS + 1
+)  # speed + front patches + left/right latents + registers + readout
+
+
+@pytest.mark.parametrize("camera_pool", ["attn", "mean"])
+def test_camera_latent_layout(camera_pool: Literal["mean", "attn"]) -> None:
+    """`[speed, front patches, left latents, right latents, register..., READOUT]`:
+    the readout stays last and the latent bands are `k` wide, not `P` wide."""
+    model = _make_model(
+        cameras=THREE_CAMERAS,
+        compress_cameras=COMPRESS_CAMERAS,
+        num_camera_latents=NUM_CAMERA_LATENTS,
+        camera_pool=camera_pool,
+        use_readout_token=True,
+        num_register_tokens=NUM_REGISTERS,
+    )
+    tokens = model._frame_tokens(  # noqa: SLF001
+        *_frame_inputs(_make_batch(cameras=THREE_CAMERAS), cameras=THREE_CAMERAS)
+    )
+    assert tokens.shape == (
+        BATCH_SIZE,
+        EPISODE_LENGTH,
+        LATENT_TOKENS_PER_FRAME,
+        POLICY_DIM,
+    )
+    assert model.readout_token is not None
+    torch.testing.assert_close(
+        tokens[:, :, -1],
+        model.readout_token.reshape(1, 1, -1).expand(BATCH_SIZE, EPISODE_LENGTH, -1),
+    )
+
+
+def test_encoder_num_cameras_mismatch_still_raises_with_compression() -> None:
+    """The relaxed `num_cameras` cross-check compares against GRID cameras
+    (3 total - 2 compressed = 1), not the raw camera count -- it must still
+    fire when that grid count is wrong."""
+    trunk = CausalFrameTransformer(
+        dim_model=POLICY_DIM,
+        num_layers=1,
+        num_heads=2,
+        tokens_per_frame=LATENT_TOKENS_PER_FRAME,
+        window=2,
+        num_cameras=2,  # wrong: should be 1 grid camera (cam_front_left only)
+        patch_grid=[2, 2],
+        num_prefix_tokens=1,
+        num_suffix_tokens=LATENT_TOKENS_PER_FRAME - 1 - NUM_PATCHES,
+    )
+    model = _make_model(
+        cameras=THREE_CAMERAS,
+        compress_cameras=COMPRESS_CAMERAS,
+        num_camera_latents=NUM_CAMERA_LATENTS,
+        use_readout_token=True,
+        num_register_tokens=NUM_REGISTERS,
+        encoder=trunk,
+    )
+    with pytest.raises(ValueError, match="num_cameras"):
+        model._features(_make_batch(cameras=THREE_CAMERAS))  # noqa: SLF001
+
+
+def test_camera_latent_pool_receives_gradient() -> None:
+    """`camera_pool="attn"`'s per-camera `AttentionPool`s train; `"mean"` adds
+    no parameters at all."""
+    attn_model = _make_model(
+        cameras=THREE_CAMERAS,
+        compress_cameras=COMPRESS_CAMERAS,
+        num_camera_latents=NUM_CAMERA_LATENTS,
+        camera_pool="attn",
+        use_readout_token=True,
+        num_register_tokens=NUM_REGISTERS,
+    )
+    attn_model.train()
+    assert attn_model.camera_latent_pools is not None
+    loss = cast(
+        "TensorDict",
+        attn_model._compute_metrics(_make_batch(cameras=THREE_CAMERAS))[  # noqa: SLF001
+            "policy", "loss"
+        ],
+    ).sum(reduce=True)
+    loss.backward()
+    for name, param in attn_model.camera_latent_pools.named_parameters():
+        assert param.grad is not None, name
+        assert param.grad.abs().sum() > 0, name
+
+    mean_model = _make_model(
+        cameras=THREE_CAMERAS,
+        compress_cameras=COMPRESS_CAMERAS,
+        num_camera_latents=NUM_CAMERA_LATENTS,
+        camera_pool="mean",
+        use_readout_token=True,
+        num_register_tokens=NUM_REGISTERS,
+    )
+    assert mean_model.camera_latent_pools is None
+    baseline_param_names = {
+        name
+        for name, _ in _make_model(
+            cameras=THREE_CAMERAS,
+            use_readout_token=True,
+            num_register_tokens=NUM_REGISTERS,
+        ).named_parameters()
+    }
+    assert {name for name, _ in mean_model.named_parameters()} == baseline_param_names
+
+
+def test_camera_latent_dropout_is_a_noop_in_eval() -> None:
+    """`camera_latent_dropout` is training-only -- `eval()` must never zero a
+    compressed camera's latents, however high `p` is."""
+    model = _make_model(
+        cameras=THREE_CAMERAS,
+        compress_cameras=COMPRESS_CAMERAS,
+        num_camera_latents=NUM_CAMERA_LATENTS,
+        camera_pool="mean",
+        camera_latent_dropout=1.0,
+    ).eval()
+    batch = _make_batch(cameras=THREE_CAMERAS)
+
+    tokens = model._frame_tokens(  # noqa: SLF001
+        *_frame_inputs(batch, cameras=THREE_CAMERAS)
+    )
+    latent_band = tokens[
+        :, :, 1 + NUM_PATCHES : 1 + NUM_PATCHES + 2 * NUM_CAMERA_LATENTS
+    ]
+    assert latent_band.abs().sum() > 0
+
+    model.train()
+    dropped = model._frame_tokens(  # noqa: SLF001
+        *_frame_inputs(batch, cameras=THREE_CAMERAS)
+    )
+    dropped_band = dropped[
+        :, :, 1 + NUM_PATCHES : 1 + NUM_PATCHES + 2 * NUM_CAMERA_LATENTS
+    ]
+    assert dropped_band.abs().sum() == 0
+
+
+def test_selective_adamw_accepts_camera_latent_queries() -> None:
+    """`SelectiveAdamW` derives a parameter's kind from the last dotted
+    component of its name and raises `NotImplementedError` on anything it does
+    not recognize, at `configure_optimizers` -- before step 1 -- mirroring
+    `tests/test_causal_frame.py::test_selective_adamw_accepts_every_position_arm`.
+    `AttentionPool.camera_latent_queries` must be a recognized (decayed) name.
+    """
+    model = _make_model(
+        cameras=THREE_CAMERAS,
+        compress_cameras=COMPRESS_CAMERAS,
+        num_camera_latents=NUM_CAMERA_LATENTS,
+        camera_pool="attn",
+        use_readout_token=True,
+        num_register_tokens=NUM_REGISTERS,
+    )
+    opt = SelectiveAdamW(
+        model,
+        lr=1e-4,
+        weight_decay=0.1,
+        weight_decay_module_blacklist=(nn.Embedding, nn.LayerNorm),
+    )
+    decayed = {
+        id(p)
+        for group in opt.param_groups
+        if group["weight_decay"]
+        for p in group["params"]
+    }
+    assert model.camera_latent_pools is not None
+    for pool in model.camera_latent_pools.values():
+        assert id(pool.camera_latent_queries) in decayed
+
+
+@pytest.mark.parametrize("num_camera_latents", [1, 2])
+@pytest.mark.parametrize("num_register", [0, 2])
+@pytest.mark.parametrize("has_readout", [False, True])
+@pytest.mark.parametrize(
+    "compress_cameras", [(), ("cam_left_forward",), COMPRESS_CAMERAS]
+)
+def test_frame_band_slices_tiles_with_no_gaps_or_overlaps(
+    compress_cameras: tuple[str, ...],
+    has_readout: bool,  # noqa: FBT001
+    num_register: int,
+    num_camera_latents: int,
+) -> None:
+    if num_register and not has_readout:
+        pytest.skip("registers without a readout is an invalid layout")
+    num_patches = 4
+    bands = frame_band_slices(
+        cameras=THREE_CAMERAS,
+        num_patches=num_patches,
+        num_register=num_register,
+        has_readout=has_readout,
+        compress_cameras=compress_cameras,
+        num_camera_latents=num_camera_latents,
+    )
+    num_grid = len(THREE_CAMERAS) - len(compress_cameras)
+    total = (
+        1
+        + num_grid * num_patches
+        + len(compress_cameras) * num_camera_latents
+        + num_register
+        + (1 if has_readout else 0)
+    )
+    covered = sorted(
+        (band.start, band.stop) for band in bands.values() if band.stop > band.start
+    )
+    assert covered[0][0] == 0
+    assert covered[-1][1] == total
+    for (_, prev_end), (next_start, _) in itertools.pairwise(covered):
+        assert prev_end == next_start, (prev_end, next_start)

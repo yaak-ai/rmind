@@ -93,6 +93,7 @@ class SelectiveAdamW(AdamW):
                     | "reg_token"
                     | "readout_token"
                     | "register_tokens"
+                    | "camera_latent_queries"
                     | "gamma_1"
                     | "gamma_2"
                 ):

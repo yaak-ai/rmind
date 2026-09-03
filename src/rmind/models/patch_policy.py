@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from itertools import chain
-from typing import Annotated, Any, final, override
+from typing import Annotated, Any, Literal, final, override
 
 import pytorch_lightning as pl
 import torch
@@ -18,6 +18,7 @@ from torch.utils.checkpoint import checkpoint
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
 from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
+from rmind.components.pooling import AttentionPool
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
 from rmind.models.control_transformer import PredictionConfig
@@ -188,6 +189,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     last. This changes `tokens_per_frame` (257 -> 257 + R + 1), which the
     encoder/serving configs must mirror (`CausalFrameTransformer.tokens_per_frame`,
     `BlockCausalTransformer.max_sequence_length`, KV-cache/export geometry).
+
+    Side-camera latent bottleneck (opt-in, `compress_cameras`): a camera named
+    in `compress_cameras` (never `cameras[0]`, the grid/readout anchor) skips
+    the raw-patch band entirely -- its `P` patches are pooled to
+    `num_camera_latents` learned latents (`camera_pool`: `"attn"`, a
+    per-camera Perceiver-style `AttentionPool`; or `"mean"`, parameter-free
+    grouped mean-pooling) BEFORE the trunk ever sees them. Layout becomes
+
+        [ speed, grid-cam patches..., latent_cam_0..k, ..., register..., READOUT ]
+
+    i.e. the same positions a raw camera's patches would occupy, just `k`
+    tokens wide instead of `P`. This is functionally equivalent to masking a
+    camera's patches so only its own registers can read them, at a fraction of
+    the token cost and with no change to the KV-cached decode step's
+    `cache_bias` contract (there is nothing camera-specific left for it to
+    mask). `camera_latent_dropout` zeroes a compressed camera's latents for a
+    whole frame with training-time probability p, as a robustness lever and a
+    free single-camera inference-time ablation.
     """
 
     @validate_call
@@ -222,6 +241,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         fusion_goal_rms: float | None = None,
         use_readout_token: bool = False,
         num_register_tokens: int = 0,
+        compress_cameras: tuple[str, ...] = (),
+        num_camera_latents: int = 0,
+        camera_pool: Literal["mean", "attn"] = "attn",
+        camera_latent_dropout: float = 0.0,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -322,6 +345,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "fusion_norm": fusion_norm,
             "use_readout_token": use_readout_token,
             "num_register_tokens": num_register_tokens,
+            "compress_cameras": compress_cameras,
+            "num_camera_latents": num_camera_latents,
+            "camera_pool": camera_pool,
+            "camera_latent_dropout": camera_latent_dropout,
         }
 
         # opt-in dedicated readout + register tokens (default off: existing arms
@@ -330,6 +357,16 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.num_register_tokens = num_register_tokens
         self._init_readout_tokens(
             use_readout_token=use_readout_token, num_register_tokens=num_register_tokens
+        )
+
+        # opt-in per-camera latent bottleneck (default off: compress_cameras=()
+        # reproduces today's raw-patch layout bit-for-bit) -- see the class
+        # docstring's side-camera bottleneck section
+        self._init_camera_compression(
+            compress_cameras=compress_cameras,
+            num_camera_latents=num_camera_latents,
+            camera_pool=camera_pool,
+            camera_latent_dropout=camera_latent_dropout,
         )
 
         # scale-balanced feature fusion: LayerNorm + learnable gain on the patch
@@ -383,6 +420,26 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise KeyError(msg)
         return value
 
+    def _policy_width(self) -> int:
+        """Trunk width, inferred from `patch_projection`/`speed_embedding` --
+        shared by `_init_readout_tokens` and `_init_camera_compression`, both of
+        which need it only lazily (opt-in features, so the base model never pays
+        for the inference).
+
+        Raises:
+            ValueError: if neither module exposes it.
+        """
+        dim = getattr(self.patch_projection, "out_features", None) or getattr(
+            self.speed_embedding, "embedding_dim", None
+        )
+        if dim is None:
+            msg = (
+                "cannot infer the policy width -- patch_projection has no "
+                "out_features and speed_embedding has no embedding_dim"
+            )
+            raise ValueError(msg)
+        return dim
+
     def _init_readout_tokens(
         self, *, use_readout_token: bool, num_register_tokens: int
     ) -> None:
@@ -424,16 +481,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             self.register_tokens: nn.Parameter | None = None
             return
 
-        dim = getattr(self.patch_projection, "out_features", None) or getattr(
-            self.speed_embedding, "embedding_dim", None
-        )
-        if dim is None:
-            msg = (
-                "use_readout_token: cannot infer the policy width -- "
-                "patch_projection has no out_features and speed_embedding has "
-                "no embedding_dim"
-            )
-            raise ValueError(msg)
+        dim = self._policy_width()
 
         self.readout_token = nn.Parameter(torch.empty(dim))
         nn.init.trunc_normal_(self.readout_token, mean=0.0, std=0.02, a=-0.04, b=0.04)
@@ -444,6 +492,131 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
         else:
             self.register_tokens = None
+
+    def _init_camera_compression(
+        self,
+        *,
+        compress_cameras: tuple[str, ...],
+        num_camera_latents: int,
+        camera_pool: Literal["mean", "attn"],
+        camera_latent_dropout: float,
+    ) -> None:
+        """Per-camera Perceiver-style latent bottleneck for `compress_cameras`
+        (see the class docstring's side-camera bottleneck section).
+
+        `cameras[0]` is never compressed -- it is the grid/readout anchor: with
+        `use_readout_token=False` the readout IS its last patch, and even with a
+        dedicated readout token `_features`'s `encoder.num_cameras` cross-check
+        needs at least one camera contributing raw, positionable patches.
+
+        `camera_pool="attn"` gets one `AttentionPool` PER compressed camera (own
+        query, own attention, own MLP): the whole point is genuinely per-camera
+        trainable capacity, so cameras must not share a query -- a shared one
+        could not tell "I am the left latent" from "I am the right latent".
+        `camera_pool="mean"` adds no parameters at all (the bandwidth-only
+        control -- see the class docstring).
+
+        Raises:
+            ValueError: on a `compress_cameras` entry not in `cameras`, on
+                `cameras[0]` being compressed, on `num_camera_latents <= 0`
+                with `compress_cameras` non-empty, or on
+                `camera_latent_dropout` outside `[0, 1]`.
+        """
+        unknown = set(compress_cameras) - set(self.cameras)
+        if unknown:
+            msg = f"compress_cameras {sorted(unknown)} not in cameras={self.cameras!r}"
+            raise ValueError(msg)
+        if self.cameras and self.cameras[0] in compress_cameras:
+            msg = (
+                f"compress_cameras must not include cameras[0]="
+                f"{self.cameras[0]!r} -- it is the grid/readout anchor and "
+                "always keeps its raw, positionable patches"
+            )
+            raise ValueError(msg)
+        if not 0.0 <= camera_latent_dropout <= 1.0:
+            msg = (
+                f"camera_latent_dropout must be in [0, 1], got {camera_latent_dropout}"
+            )
+            raise ValueError(msg)
+
+        self.compress_cameras = compress_cameras
+        self.num_camera_latents = num_camera_latents
+        self.camera_pool = camera_pool
+        self.camera_latent_dropout = camera_latent_dropout
+
+        # index partition of `self.cameras`, computed once: grid cameras keep
+        # their `cam`-axis position for the `(cam p)` flatten, compressed
+        # cameras are pooled individually, both in `self.cameras` order (the
+        # layout `frame_band_slices` and `_validate_factorized_geometry`
+        # (indirectly, via the trunk's `num_suffix_tokens`) both assume)
+        self._grid_camera_indices: list[int] = [
+            i for i, camera in enumerate(self.cameras) if camera not in compress_cameras
+        ]
+        self._compress_camera_indices: list[tuple[int, str]] = [
+            (i, camera)
+            for i, camera in enumerate(self.cameras)
+            if camera in compress_cameras
+        ]
+
+        if not compress_cameras:
+            self.camera_latent_pools: ModuleDict | None = None
+            return
+        if num_camera_latents <= 0:
+            msg = (
+                "num_camera_latents must be > 0 with compress_cameras set, "
+                f"got {num_camera_latents}"
+            )
+            raise ValueError(msg)
+
+        if camera_pool == "attn":
+            dim = self._policy_width()
+            self.camera_latent_pools = ModuleDict(
+                modules={
+                    camera: AttentionPool(dim=dim, num_latents=num_camera_latents)
+                    for camera in compress_cameras
+                }
+            )
+        else:
+            self.camera_latent_pools = None
+
+    def _camera_latent(self, camera: str, cam_patches: Tensor) -> Tensor:
+        """One `compress_cameras` camera's `(b, t, p, d)` patches -> `(b, t, k,
+        d)` latents, via `camera_pool`.
+
+        `camera_latent_dropout` (training-only): zero this camera's latents for
+        a whole frame with probability p, independently per `(b, t)`. This is
+        the M1b robustness lever (graceful degradation when side content is
+        out-of-distribution) and, for free, an inference-time single-camera
+        ablation.
+
+        Raises:
+            ValueError: with `camera_pool="mean"`, if `num_camera_latents`
+                does not divide the camera's patch count.
+        """
+        if self.camera_pool == "mean":
+            b, t, p, d = cam_patches.shape
+            k = self.num_camera_latents
+            if p % k:
+                msg = (
+                    f"camera_pool='mean' requires num_camera_latents ({k}) to "
+                    f"divide {camera}'s patch count ({p}); got remainder {p % k}"
+                )
+                raise ValueError(msg)
+            # contiguous (raster-order) groups of p // k patches, mean-pooled --
+            # a whole image row per latent when k == the patch grid's row count
+            latents = cam_patches.reshape(b, t, k, p // k, d).mean(dim=-2)
+        else:
+            assert self.camera_latent_pools is not None  # noqa: S101  # camera_pool="attn" implies non-None, see _init_camera_compression
+            latents = self.camera_latent_pools[camera](cam_patches)
+
+        if self.training and self.camera_latent_dropout > 0.0:
+            b, t = latents.shape[:2]
+            keep = (
+                torch.rand(b, t, 1, 1, device=latents.device)
+                >= self.camera_latent_dropout
+            ).to(latents.dtype)
+            latents *= keep
+        return latents
 
     def _frame_tokens(
         self,
@@ -456,7 +629,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """Per-frame token blocks `(b, t, k, d)` -- everything below the trunk.
 
         `k = cam*p + 1` by default; `k = cam*p + 1 + num_register_tokens + 1`
-        with `use_readout_token` (see the class docstring for the layout).
+        with `use_readout_token`. With `compress_cameras` non-empty, each of
+        those cameras' `p` patches contributes `num_camera_latents` latents
+        instead of `p` raw tokens (see the class docstring for the full
+        layout).
 
         `images` is `(b, t, cam, c, h, w)`, `cam = len(self.cameras)` -- even a
         single-camera model stacks to a `cam=1` axis, so this is the one code path
@@ -467,7 +643,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         `token_norms`, if given, is filled with gradient-free mean L2 norms per
         token type (`speed`/`patch`/`goal` activations entering the trunk, plus
-        the `register`/`readout` embedding parameters when enabled) -- the
+        `camera_latent` when `compress_cameras` is set, plus the
+        `register`/`readout` embedding parameters when enabled) -- the
         training-quality signal that guards against one token type's scale
         running away. It is an out-parameter (rather than module state) so the
         `torch.export`ed serving graphs never see a module mutation.
@@ -476,30 +653,45 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
 
-        # each camera contributes its own `p` patches through the same frozen
-        # encoder/patch_projection -- no new parameters, just a longer per-frame
-        # token block (https://arxiv.org/pdf/2607.18236 section 2.1 generalizes
-        # trivially: concatenate cameras along the patch axis, not the channel one)
-        patches = rearrange(patches, "b t cam p d -> b t (cam p) d")
-
         if self.fusion_patch_norm is not None:
             # NOTE: no in-place ops -- these tensors come from a no_grad block
             # and the gains must receive gradients
             patches = self.fusion_patch_norm(patches) * self.fusion_patch_gain
             goal = torch.mul(goal, self.fusion_goal_gain)
 
-        _, _, num_patches, _ = patches.shape
+        _, _, num_cameras, num_patches, _ = patches.shape
         patches = torch.cat(
-            [patches, goal.unsqueeze(-2).expand(-1, -1, num_patches, -1)], dim=-1
-        )  # T x P x (D + G), https://arxiv.org/pdf/2607.18236 section 2.1
-        patches = self.patch_projection(patches)  # (b, t, p, d)
+            [
+                patches,
+                goal[:, :, None, None, :].expand(-1, -1, num_cameras, num_patches, -1),
+            ],
+            dim=-1,
+        )  # (b, t, cam, p, D + G), https://arxiv.org/pdf/2607.18236 section 2.1
+        # patch_projection acts on the last dim only, so it runs identically
+        # whether or not the `cam` axis is still separate -- do it HERE, before
+        # the camera-major flatten, so any `compress_cameras` camera below is
+        # already in trunk width when it hits the pool (carrying the goal
+        # fusion with it)
+        patches = self.patch_projection(patches)  # (b, t, cam, p, d)
+
+        # grid cameras (default: all of them) keep their raw, positionable
+        # patches and flatten camera-major as before; `compress_cameras`
+        # cameras -- the cam axis still distinguishing them -- get pooled to
+        # `num_camera_latents` each instead (see `_init_camera_compression`)
+        grid = rearrange(
+            patches[:, :, self._grid_camera_indices], "b t cam p d -> b t (cam p) d"
+        )
+        latent_blocks = [
+            self._camera_latent(camera, patches[:, :, i])
+            for i, camera in self._compress_camera_indices
+        ]
 
         speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
+        b, t = patches.shape[:2]
 
         # speed first so the frame block ENDS on the readout position: the learned
         # readout token when `use_readout_token`, else the last patch token
-        parts = [speed_token, patches]
-        b, t = patches.shape[:2]
+        parts = [speed_token, grid, *latent_blocks]
         if self.register_tokens is not None:
             parts.append(
                 self.register_tokens.reshape(1, 1, -1, patches.shape[-1]).expand(
@@ -512,8 +704,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         if token_norms is not None:
             with torch.no_grad():
                 token_norms["speed"] = speed_token.detach().norm(dim=-1).mean()
-                token_norms["patch"] = patches.detach().norm(dim=-1).mean()
+                token_norms["patch"] = grid.detach().norm(dim=-1).mean()
                 token_norms["goal"] = goal.detach().norm(dim=-1).mean()
+                if latent_blocks:
+                    token_norms["camera_latent"] = (
+                        torch.cat(latent_blocks, dim=-2).detach().norm(dim=-1).mean()
+                    )
                 if self.register_tokens is not None:
                     token_norms["register"] = (
                         self.register_tokens.detach().norm(dim=-1).mean()
@@ -575,7 +771,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise ValueError(msg)
         self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
 
-    def _features(
+    def _features(  # noqa: PLR0914
         self,
         batch: Any,
         *,
@@ -628,13 +824,22 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # gets cross-checked against the cameras actually stacked here. Camera
         # order and count are load-bearing and were previously guarded only by a
         # docstring.
+        #
+        # The trunk's `num_cameras` means GRID cameras only: a `compress_cameras`
+        # camera contributes latents through the trunk's free-row suffix band,
+        # not the factorized patch geometry (see `_init_camera_compression`
+        # and the class docstring), so it is excluded here too.
         encoder_cameras = getattr(self.encoder, "num_cameras", None)
-        if encoder_cameras is not None and encoder_cameras != len(self.cameras):
+        num_grid_cameras = len(self.cameras) - len(self.compress_cameras)
+        if encoder_cameras is not None and encoder_cameras != num_grid_cameras:
             msg = (
                 f"the encoder declares num_cameras={encoder_cameras} but the "
-                f"model stacks {len(self.cameras)}: {list(self.cameras)}. These "
-                "index the same camera-major patch band, so a mismatch would "
-                "silently attribute one camera's patches to another"
+                f"model stacks {len(self.cameras)} cameras minus "
+                f"{len(self.compress_cameras)} compressed ones "
+                f"({list(self.compress_cameras)}) = {num_grid_cameras} grid "
+                f"cameras: {[c for c in self.cameras if c not in self.compress_cameras]}"
+                ". These index the same camera-major patch band, so a mismatch "
+                "would silently attribute one camera's patches to another"
             )
             raise ValueError(msg)
 
