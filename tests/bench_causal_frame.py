@@ -13,9 +13,16 @@ Sections:
 * `trunk` -- the whole `CausalFrameTransformer` in `.train()`, i.e. WITH gradient
   checkpointing, which is how it actually trains. This is the number the recipe is
   sized from, because the MLP (linear in tokens) dilutes the attention saving.
+  `--tokens-per-frame` (comma-separated) overrides the module-default 257 with
+  one or more values run side by side -- e.g. `--tokens-per-frame 769,50` compares
+  the 3-cam patch-concat frame block against the proposed register-compressed one
+  (plans/effervescent-chasing-seahorse.md). Omit it and output is unchanged.
 * `vit` -- the frozen image encoder's forward, for context: it is linear in
   `batch * num_frames` and is unaffected by any of this, so it sets the floor on
-  what a longer context can cost.
+  what a longer context can cost. `--mode register` instead benchmarks a
+  train-mode, fwd+bwd LoRA + per-camera-register-token forward (the ViT-side
+  half of the same register-compression measurement gate) -- see
+  `_BenchRegisterViT` below.
 
 Everything runs in bf16 (`trainer.precision: bf16-mixed`); the correctness work in
 `tests/test_causal_frame.py` is fp32 on purpose.
@@ -31,14 +38,18 @@ auto-removes `print` calls (`select = ["ALL"]`, `fix = true`).
 
 import argparse
 import gc
+import itertools
+import math
 import sys
 import time
 from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, cast
 
 import torch
 import torch._dynamo
-from torch import Tensor
+from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from rmind.components.transformer.causal_frame import (
     AttentionImpl,
@@ -49,6 +60,9 @@ from rmind.components.transformer.causal_frame import (
     frame_block_causal_mask,
     frame_rope_cos_sin,
 )
+
+if TYPE_CHECKING:
+    from timm.models.vision_transformer import VisionTransformer
 
 # One `torch.compile`d `flex_attention` serves every shape in the sweep, and
 # `dynamic=False` specializes per shape. The dynamo default of 8 cache entries is
@@ -197,14 +211,27 @@ def bench_attention(batches: Iterable[int], dtype: torch.dtype) -> None:
                     )
 
 
-def bench_trunk(batches: Iterable[int], dtype: torch.dtype) -> None:
+def bench_trunk(
+    batches: Iterable[int],
+    dtype: torch.dtype,
+    *,
+    tokens_per_frame: list[int] | None = None,
+) -> None:
+    # `tokens_per_frame=None` (the default, i.e. `--tokens-per-frame` omitted)
+    # reproduces the original single-value sweep exactly -- same header, same
+    # rows, no `tpf` column. A list adds the column and an outer loop over it,
+    # for side-by-side comparisons like the real 769-token 3-cam frame block
+    # vs a proposed 50-token register-compressed one (same geometry).
+    show_tpf = tokens_per_frame is not None
+    tpf_list = tokens_per_frame if tokens_per_frame is not None else [TOKENS_PER_FRAME]
     emit(
-        f"{'F':>4} {'win':>4} {'d':>5} {'L':>3} {'b':>3} {'seq':>6} {'impl':>5} "
+        (f"{'tpf':>5} " if show_tpf else "")
+        + f"{'F':>4} {'win':>4} {'d':>5} {'L':>3} {'b':>3} {'seq':>6} {'impl':>5} "
         f"{'ms':>9} {'peakMiB':>9}"
     )
-    for dim, heads, layers in WIDTHS:
+    for (dim, heads, layers), tpf in itertools.product(WIDTHS, tpf_list):
         for num_frames, window in GEOMETRIES:
-            seq = num_frames * TOKENS_PER_FRAME
+            seq = num_frames * tpf
             for batch in batches:
                 for impl in ("sdpa", "flex"):
 
@@ -218,13 +245,14 @@ def bench_trunk(batches: Iterable[int], dtype: torch.dtype) -> None:
                         dim: int = dim,
                         heads: int = heads,
                         layers: int = layers,
+                        tpf: int = tpf,
                     ):
                         torch.manual_seed(0)
                         trunk = CausalFrameTransformer(
                             dim_model=dim,
                             num_layers=layers,
                             num_heads=heads,
-                            tokens_per_frame=TOKENS_PER_FRAME,
+                            tokens_per_frame=tpf,
                             window=window,
                             attn_dropout=0.0,
                             attention_impl=impl,
@@ -243,13 +271,141 @@ def bench_trunk(batches: Iterable[int], dtype: torch.dtype) -> None:
                         return timed(step, iters=5, warmup=2)
 
                     emit(
-                        f"{num_frames:>4} {window:>4} {dim:>5} {layers:>3} {batch:>3} "
-                        f"{seq:>6} {impl:>5} {_guard(run)}"
+                        (f"{tpf:>5} " if show_tpf else "")
+                        + f"{num_frames:>4} {window:>4} {dim:>5} {layers:>3} "
+                        f"{batch:>3} {seq:>6} {impl:>5} {_guard(run)}"
                     )
 
 
-def bench_vit(batches: Iterable[int], dtype: torch.dtype) -> None:
-    """Frozen encoder forward, for the per-step context the trunk numbers live in."""
+class _BenchLoRALinear(nn.Module):
+    """Minimal LoRA wrapper for benchmarking.
+
+    Test-only: mirrors the not-yet-ported `rmind.components.lora.LoRALinear`
+    (see plans/effervescent-chasing-seahorse.md, step 1) closely enough that
+    the measured fwd+bwd cost transfers -- same low-rank decomposition, same
+    zero-init on `lora_B` so the adapter starts as a no-op, same target
+    modules (`attn.qkv`/`attn.proj`).
+    """
+
+    def __init__(self, base: nn.Linear, *, rank: int = 32, alpha: float = 32.0) -> None:
+        super().__init__()
+        base.requires_grad_(False)  # noqa: FBT003
+        self.base = base
+        self.lora_A = nn.Parameter(torch.empty(rank, base.in_features))
+        self.lora_B = nn.Parameter(torch.zeros(base.out_features, rank))
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        self.scale = alpha / rank
+
+    def forward(self, input: Tensor) -> Tensor:
+        return self.base(input) + self.scale * F.linear(
+            F.linear(input, self.lora_A), self.lora_B
+        )
+
+
+def _apply_bench_lora(module: nn.Module, *, rank: int, alpha: float) -> None:
+    target_suffixes = ("attn.qkv", "attn.proj")
+    for name, child in list(module.named_modules()):
+        if isinstance(child, nn.Linear) and name.endswith(target_suffixes):
+            parent_name, _, attr = name.rpartition(".")
+            parent = module.get_submodule(parent_name) if parent_name else module
+            setattr(parent, attr, _BenchLoRALinear(child, rank=rank, alpha=alpha))
+
+
+class _BenchRegisterViT(nn.Module):
+    """Test-only stand-in for the DINOv2 branch of the eventual
+    `RegisterViTBackbone` (plans/effervescent-chasing-seahorse.md, step 2).
+
+    DINOv2 ViT-S is a plain `timm.VisionTransformer`: absolute `pos_embed`,
+    `num_prefix_tokens == 1` (cls only), no RoPE, no per-block prefix-token
+    bookkeeping -- simpler than the DINOv3/`Eva`-backed branch already ported
+    on `feat/drivor`, which needs neither here. Gradient checkpointing is
+    applied manually per block (`use_reentrant=False`, matching
+    `BlockCausalTransformer`) because timm's `set_grad_checkpointing` does not
+    reach a custom forward like this one.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        *,
+        model_name: str = "vit_small_patch14_dinov2.lvd142m",
+        img_size: int = 224,
+        num_registers: int = 16,
+        lora_rank: int = 32,
+        lora_alpha: float = 32.0,
+        grad_checkpoint: bool = True,
+    ) -> None:
+        super().__init__()
+        import timm  # noqa: PLC0415
+
+        # cast: `create_model`'s return type is generically `nn.Module` since
+        # it supports any registered timm model; DINOv2 ViT-S is specifically
+        # a `VisionTransformer` (see class docstring), same pattern as
+        # `feat/drivor`'s `RegisterViTBackbone` casting to `Eva`.
+        self.model: VisionTransformer = cast(
+            "VisionTransformer",
+            timm.create_model(
+                model_name, pretrained=False, img_size=img_size, num_classes=0
+            ),
+        )
+        self.model.requires_grad_(False)  # noqa: FBT003
+        self.num_registers = num_registers
+        self.reg_token = nn.Parameter(
+            torch.empty(1, num_registers, self.model.embed_dim)
+        )
+        nn.init.normal_(self.reg_token, std=1e-6)
+        _apply_bench_lora(self.model.blocks, rank=lora_rank, alpha=lora_alpha)
+        self.grad_checkpoint = grad_checkpoint
+
+    def forward(self, input: Tensor) -> Tensor:
+        x = self.model.patch_embed(input)
+        x = self.model._pos_embed(x)  # noqa: SLF001
+        x = self.model.norm_pre(x)
+        npt = self.model.num_prefix_tokens
+        n = x.shape[0]
+        reg = self.reg_token.expand(n, -1, -1)
+        x = torch.cat([x[:, :npt], reg, x[:, npt:]], dim=1)
+        for block in cast("nn.ModuleList", self.model.blocks):
+            x = (
+                checkpoint(block, x, use_reentrant=False)
+                if self.grad_checkpoint
+                else block(x)
+            )
+        x = self.model.norm(x)
+        return x[:, npt : npt + self.num_registers]
+
+
+def bench_vit(
+    batches: Iterable[int], dtype: torch.dtype, *, mode: str = "frozen"
+) -> None:
+    """`mode='frozen'`: the frozen encoder's forward, for the per-step context
+    the trunk numbers live in. `mode='register'`: train-mode, fwd+bwd through
+    a LoRA + per-camera-register-token forward -- the ViT-side half of the
+    register-compression measurement gate (see module docstring)."""
+    if mode == "register":
+        emit(f"{'images':>7} {'ckpt':>5} {'ms':>9} {'peakMiB':>9}")
+        for n in batches:
+            for grad_checkpoint in (True, False):
+
+                def run(
+                    *, n: int = n, grad_checkpoint: bool = grad_checkpoint
+                ) -> tuple[float, float]:
+                    model = (
+                        _BenchRegisterViT(grad_checkpoint=grad_checkpoint)
+                        .cuda()
+                        .to(dtype)
+                    )
+                    img = torch.randn(n, 3, 224, 224, device="cuda", dtype=dtype)
+
+                    def step() -> None:
+                        model.zero_grad(set_to_none=True)
+                        out = model(img)
+                        out.float().pow(2).sum().backward()
+
+                    return timed(step, iters=5, warmup=2)
+
+                emit(f"{n:>7} {grad_checkpoint!s:>5} {_guard(run)}")
+        return
+
     import timm  # noqa: PLC0415
 
     model = (
@@ -285,6 +441,19 @@ def main() -> None:
         "which shows up as a spurious OOM.",
     )
     parser.add_argument("--dtype", default="bf16", choices=["bf16", "fp32"])
+    parser.add_argument(
+        "--tokens-per-frame",
+        default=None,
+        help="trunk section only: comma-separated tokens_per_frame overrides run "
+        'side by side, e.g. "769,50". Omit to keep today\'s single-value output.',
+    )
+    parser.add_argument(
+        "--mode",
+        default="frozen",
+        choices=["frozen", "register"],
+        help="vit section only: 'register' benchmarks the train-mode LoRA + "
+        "register-token forward (fwd+bwd) instead of the frozen forward",
+    )
     args = parser.parse_args()
     if not torch.cuda.is_available():
         msg = "no CUDA device"
@@ -300,14 +469,22 @@ def main() -> None:
         if not GEOMETRIES:
             msg = f"--only {args.only} matches none of the known geometries"
             raise SystemExit(msg)
+    tokens_per_frame = (
+        [int(x) for x in args.tokens_per_frame.split(",")]
+        if args.tokens_per_frame
+        else None
+    )
     emit(
         f"{torch.__version__} {torch.cuda.get_device_name(0)} dtype={args.dtype} "
         f"free/total GiB {[round(x / 2**30, 1) for x in torch.cuda.mem_get_info()]}"
     )
     started = time.perf_counter()
-    {"attention": bench_attention, "trunk": bench_trunk, "vit": bench_vit}[
-        args.section
-    ](batches, dtype)
+    if args.section == "trunk":
+        bench_trunk(batches, dtype, tokens_per_frame=tokens_per_frame)
+    elif args.section == "vit":
+        bench_vit(batches, dtype, mode=args.mode)
+    else:
+        bench_attention(batches, dtype)
     emit(f"# {args.section} done in {time.perf_counter() - started:.0f}s")
 
 

@@ -1251,3 +1251,91 @@ recovers the effective batch size without adding peak activation memory
 the schedule arithmetic (`lr_total_steps`, `lr_warmup_steps`) still needs
 rederiving against whatever batch is finally used, same as `_80gb.yaml` does
 for its batch bump.
+
+## 14. Register-compression measurement gate (Step 0)
+
+Per-camera register compression (plans/effervescent-chasing-seahorse.md)
+proposes shrinking the 3-cam causal frame block from 769 tokens
+(`speed + 3×256` patches, §13's arm) to 50 (`speed + 3×16` DrivoR-style
+registers + 1 readout), at the cost of making the ViT backward-capable
+(LoRA rank 32 on `attn.qkv`/`attn.proj`, 16 trainable registers per camera).
+Before writing any model code, this measures whether that trade is worth it:
+does the ViT's new backward cost less than the trunk saves, on the actual
+training GPU?
+
+Machine: **RTX 5090, 32607 MiB** (`nvidia-smi`), the "32 GB card" §13.4
+sizes `batch_size: 8` against. Commands and full harness in
+`tests/bench_causal_frame.py` (`vit --mode register`, `trunk --tokens-per-frame`). Everything below is bf16, `iters=5, warmup=2`,
+geometry `32 frames / window 16` (`attention_impl: flex`, per
+`dinov2_dinowm_causal.yaml:230`), the arm's actual settings.
+
+### 14.1 ViT: frozen forward vs LoRA + register fwd+bwd
+
+| images | mode                   | ckpt | ms      | peak MiB |
+| ------ | ---------------------- | ---- | ------- | -------- |
+| 768    | frozen (no_grad)       | --   | 78.83   | 2031     |
+| 768    | LoRA+register, fwd+bwd | on   | 378.29  | 5279     |
+| 768    | LoRA+register, fwd+bwd | off  | 272.34  | 22542    |
+| 2304   | frozen (no_grad)       | --   | 331.58  | 5944     |
+| 2304   | LoRA+register, fwd+bwd | on   | 1595.86 | 15615    |
+| 2304   | LoRA+register, fwd+bwd | off  | OOM     | --       |
+
+768/79.9ms/2031MiB reproduces §11.4's frozen-ViT reference number almost
+exactly -- the harness change is measuring what it says it's measuring.
+Grad checkpointing is load-bearing exactly as predicted: without it, even
+768 images costs 22.5 GiB (all 12 blocks' activations resident at once) and
+2304 images (`batch 24 × 32 frames × 3 cams`, the configured training shape)
+OOMs outright. With it, both fit comfortably.
+
+### 14.2 Trunk: `tokens_per_frame` 769 vs 50, `flex` attention
+
+At `batch=8` (§13.4's actual working `train.batch_size`):
+
+| tpf | width     | ms      | peak MiB |
+| --- | --------- | ------- | -------- |
+| 769 | 512/8/8   | 1208.26 | 9804     |
+| 50  | 512/8/8   | 72.43   | 795      |
+| 769 | 768/12/12 | 2927.97 | 17158    |
+| 50  | 768/12/12 | 93.51   | 1503     |
+
+769/17158 MiB (sdpa: 11535 MiB, see raw log) is consistent with §13.2's
+11.35 GiB at batch 8. `tokens_per_frame=50` cuts trunk step time
+17-31x and peak memory 11-12x at this geometry.
+
+At `batch=24` (the base config's stated `batch_size`, never actually
+reachable per the config comment §13 already flags): `tpf=769` **OOMs
+outright**, both `sdpa` and `flex`, at both widths. `tpf=50` runs easily
+(2054-3677 MiB peak, 91-323 ms).
+
+### 14.3 Gate verdict
+
+Full step (ViT + trunk) at `batch=8`, `768/12/12` (the wider, more
+conservative width):
+
+- **Today**: `78.83 + 2927.97 = 3006.8 ms`, ViT+trunk peak ~2.0 + 17.2 = 19.2
+  GiB.
+- **Proposed**: `378.29 + 93.51 = 471.8 ms`, ~5.3 + 1.5 = 6.8 GiB.
+- **Ratio: 0.16x -- a 6.4x net speedup**, not the hoped-for "flat", and
+  comfortably inside the plan's ≤1.5x threshold. `512/8/8` gives the same
+  direction (1287.1 ms -> 450.7 ms, 2.9x).
+
+At `batch=24` the comparison is even more one-sided: today's arm cannot run
+at all on this card (OOM), while the proposed arm fits with several GiB of
+headroom (`1595.86 + 248.32 = 1844.2 ms`, ~15.6 + 3.7 = 19.3 GiB peak, well
+under 32607 MiB) -- i.e. register compression, even paying for a trainable
+ViT, is what would let the 3-cam causal arm's *configured* batch size
+actually run on a 32 GB card, which it does not do today (§13.4).
+
+**PASS.** Proceed to the full implementation
+(plans/effervescent-chasing-seahorse.md, steps 1-6): LoRA port into
+`src/rmind/components/lora.py`, generalized backbone, `PatchPolicy` opt-in
+trainable encoder, `SelectiveAdamW` cases, new experiment config.
+
+Freeze-contract spot check (`_BenchRegisterViT`, 223 params): 49 trainable,
+all and only `lora_A`/`lora_B`/`reg_token` -- matches the intended freeze
+contract with no mismatches.
+
+Not measured here (deferred to the real port): the accuracy side of the
+trade (DrivoR's own 86.9-vs-90.0 frozen-vs-LoRA gap), export/serving parity,
+and camera-identity regression (`patch_policy_camera_probe.py`) -- all
+require an actual trained checkpoint, which this step doesn't produce.
