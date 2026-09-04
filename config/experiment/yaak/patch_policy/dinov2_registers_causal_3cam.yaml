@@ -1,0 +1,78 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_3cam
+  - _self_
+
+# Per-camera register-token compression (DrivoR, arXiv:2601.05083), replacing
+# raw multi-camera patch concatenation. Frame block, 3 cameras:
+#
+#   dinov2_dinowm_causal_3cam.yaml: [ speed, cam0x256, cam1x256, cam2x256 ]        = 769
+#   this arm:                       [ speed, cam0x16,  cam1x16,  cam2x16, READOUT ] =  50
+#
+# `tokens_per_frame` 769 -> 50 is the point: KV-cache traffic and trunk
+# attention both scale with it (docs/decoder_only_kv_cache.md §14). The
+# tradeoff (DrivoR's own ablation): registers only work with a FINETUNED
+# backbone (frozen 86.9 vs LoRA 90.0 PDMS) -- hence `trainable_image_encoder`
+# + LoRA below, not merely swapping the encoder module.
+#
+# `use_readout_token: true` is REQUIRED, not optional: with registers,
+# `[:, :, -1]` would otherwise be cam2's last register -- the exact
+# arbitrariness dinov2_dinowm_causal_readout.yaml was built to remove, and
+# registers must never be read from (see PatchPolicy's class docstring).
+#
+# See plans/effervescent-chasing-seahorse.md for the full design, Step 0's
+# measurement gate (PASS: 2.9-6.4x faster AND lower peak memory than today's
+# 769-token arm, the only one of the two that fits batch_size 24 on a 32GB
+# card), and the risks section (checkpoint incompatibility -- no warm start
+# from kughoqfi; fusion_goal_rms was calibrated against patch features, not
+# register outputs -- watch quality/token_norm/* on the first run).
+num_camera_registers: 16
+lora_rank: 32
+lora_alpha: 32
+
+model:
+  trainable_image_encoder: true
+  use_readout_token: true
+
+  # replaces dinov2_dinowm.yaml's Sequential(TimmBackbone, Rearrange):
+  # RegisterViTBackbone already returns (..., R, d) -- the same rank as that
+  # Sequential's output -- so patch_projection/fusion_norm need no changes.
+  # This is a dict-valued node (not an _args_ list), so it merges key-by-key
+  # like any other `model.*` override; restated fully because the _target_
+  # itself changes.
+  image_encoder:
+    _target_: rmind.components.backbone_registers.RegisterViTBackbone
+    # CLEAR dinov2_dinowm.yaml's `_args_: [TimmBackbone, Rearrange]` -- dict
+    # keys merge by key (unlike `_args_` LISTS, which merge by replacement),
+    # so without this the old Sequential's two positional args would still be
+    # passed to RegisterViTBackbone's keyword-only ctor and instantiate would
+    # raise TypeError.
+    _args_: []
+    model_name: ${image_encoder_name}
+    img_size: ${image_resize}
+    num_registers: ${num_camera_registers}
+    lora_rank: ${lora_rank}
+    lora_alpha: ${lora_alpha}
+
+  encoder:
+    # speed + 3 x registers + readout (was num_patches * num_cameras + 1)
+    tokens_per_frame: "${eval:'${num_camera_registers} * ${num_cameras} + 1 + 1'}"
+    max_sequence_length: "${eval:'${episode_length} * (${num_camera_registers} * ${num_cameras} + 1 + 1)'}"
+
+    # intra-frame table geometry (flat factorization, inherited -- Phase 2's
+    # factorization is shelved, see the plan's "Not doing" section). Restated
+    # because the register band replaces the 16x16 patch grid: `patch_grid`
+    # here is a bookkeeping shape (rows x cols = num_camera_registers), not a
+    # spatial grid -- registers carry no 2D position. `num_suffix_tokens: 1`
+    # is the readout only: `num_register_tokens` (PatchPolicy's OWN post-
+    # projection sink registers, a different and unrelated concept -- see
+    # RegisterViTBackbone's docstring on the naming collision) stays at its
+    # default 0 here; the ViT-side compression registers already are the
+    # per-camera signal.
+    patch_grid: [16, 1]
+    num_prefix_tokens: 1 # speed
+    num_suffix_tokens: 1 # readout
+
+wandb:
+  tags: [patch_policy, dinov2_registers_causal, 3cam]

@@ -44,7 +44,7 @@ class SelectiveAdamW(AdamW):
     """
 
     @validate_call
-    def __init__(
+    def __init__(  # noqa: C901
         self,
         module: InstanceOf[Module],
         *,
@@ -97,6 +97,20 @@ class SelectiveAdamW(AdamW):
                     | "gamma_2"
                 ):
                     pass
+
+                # rmind.components.lora.LoRALinear: weight-like factors adapting
+                # a frozen nn.Linear, decayed same as the base weight would be
+                case "lora_A" | "lora_B":
+                    pass
+
+                # rmind.components.backbone_registers.RegisterViTBackbone's
+                # per-camera compression registers -- NOT the `reg_token` case
+                # above (unrelated param, deliberately renamed to avoid this
+                # exact collision, see that class's docstring). Decay-free:
+                # initialized at N(0, 1e-6), and weight decay would fight the
+                # gradient that has to grow them away from ~0.
+                case "camera_reg_token":
+                    weight_decay_param_blacklist.add(param_name)
 
                 case _:
                     msg = f"Handling of param_type '{param_type}' is not implemented"

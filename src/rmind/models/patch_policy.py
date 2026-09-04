@@ -188,10 +188,21 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     last. This changes `tokens_per_frame` (257 -> 257 + R + 1), which the
     encoder/serving configs must mirror (`CausalFrameTransformer.tokens_per_frame`,
     `BlockCausalTransformer.max_sequence_length`, KV-cache/export geometry).
+
+    Trainable encoder (opt-in, `trainable_image_encoder`): by default
+    `image_encoder` is frozen (`.requires_grad_(False).eval()`, re-asserted every
+    `train()` call). Setting `trainable_image_encoder=True` skips that -- for an
+    `image_encoder` that manages its own freeze contract internally, e.g.
+    `rmind.components.backbone_registers.RegisterViTBackbone` (LoRA-adapted,
+    per-camera compression registers): its own `train()` override keeps the
+    pretrained base in eval while LoRA/register params train. `_frame_tokens`
+    mirrors the same gate: `image_encoder`'s forward runs grad-enabled instead of
+    under `torch.no_grad()`; `goal_encoder` is always frozen and stays under
+    `no_grad()` either way. See plans/effervescent-chasing-seahorse.md.
     """
 
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         *,
         input_transform: HydraConfig[Module] | InstanceOf[Module],
@@ -222,6 +233,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         fusion_goal_rms: float | None = None,
         use_readout_token: bool = False,
         num_register_tokens: int = 0,
+        trainable_image_encoder: bool = False,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -235,12 +247,16 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.input_transform = init_hydra_param(
             hparams, "input_transform", input_transform
         )
-        # frozen feature extractors: never train, never leave eval mode (see train())
-        self.image_encoder = (
-            init_hydra_param(hparams, "image_encoder", image_encoder)
-            .requires_grad_(False)  # noqa: FBT003
-            .eval()
-        )
+        # feature extractors: never train, never leave eval mode (see train()) --
+        # UNLESS trainable_image_encoder opts image_encoder out (register
+        # compression + LoRA, plans/effervescent-chasing-seahorse.md): its own
+        # `.requires_grad_(False)`/`.train()` override (e.g.
+        # `RegisterViTBackbone`) is then responsible for keeping its frozen base
+        # frozen while letting LoRA/register params train.
+        self.trainable_image_encoder = trainable_image_encoder
+        self.image_encoder = init_hydra_param(hparams, "image_encoder", image_encoder)
+        if not trainable_image_encoder:
+            self.image_encoder.requires_grad_(False).eval()  # noqa: FBT003
         self.goal_encoder = (
             init_hydra_param(hparams, "goal_encoder", goal_encoder)
             .requires_grad_(False)  # noqa: FBT003
@@ -322,6 +338,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "fusion_norm": fusion_norm,
             "use_readout_token": use_readout_token,
             "num_register_tokens": num_register_tokens,
+            "trainable_image_encoder": trainable_image_encoder,
         }
 
         # opt-in dedicated readout + register tokens (default off: existing arms
@@ -368,7 +385,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     @override
     def train(self, mode: bool = True) -> "PatchPolicy":
         super().train(mode)
-        self.image_encoder.eval()
+        if not self.trainable_image_encoder:
+            self.image_encoder.eval()
         self.goal_encoder.eval()
         self.tokenizer.eval()
         return self
@@ -472,8 +490,15 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         running away. It is an out-parameter (rather than module state) so the
         `torch.export`ed serving graphs never see a module mutation.
         """
-        with torch.no_grad():
+        # image_encoder runs grad-enabled when trainable_image_encoder (LoRA +
+        # register compression, plans/effervescent-chasing-seahorse.md) --
+        # goal_encoder is always frozen, so it stays under no_grad regardless
+        if self.trainable_image_encoder:
             patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
+        else:
+            with torch.no_grad():
+                patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
+        with torch.no_grad():
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
 
         # each camera contributes its own `p` patches through the same frozen
