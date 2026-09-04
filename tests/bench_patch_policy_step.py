@@ -60,11 +60,11 @@ def emit(line: str) -> None:
     os.write(1, f"{line}\n".encode())
 
 
-def build(experiment: str) -> tuple[Any, Any, int]:
+def build(experiment: str, overrides: list[str]) -> tuple[Any, Any, int]:
     with initialize_config_dir(config_dir=CONFIG_DIR, version_base=None):
         cfg = compose(
             config_name="train",
-            overrides=[f"experiment=yaak/patch_policy/{experiment}"],
+            overrides=[f"experiment=yaak/patch_policy/{experiment}", *overrides],
         )
     model = hydra.utils.instantiate(OmegaConf.to_container(cfg.model, resolve=True))
     # `ChunkFields` unfolds the action fields by `action_horizon` and then
@@ -149,6 +149,14 @@ def main() -> None:  # noqa: PLR0914
     parser.add_argument("experiment", nargs="?", default="dinov2_registers_causal_3cam")
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help="extra hydra override, repeatable -- e.g. --override window=6 "
+        "--override episode_length=16. Use this to dry-run the exact geometry of "
+        "a run you are about to launch, before paying for the sample index build.",
+    )
+    parser.add_argument(
         "--lr",
         type=float,
         default=1e-3,
@@ -160,11 +168,12 @@ def main() -> None:  # noqa: PLR0914
         msg = "no CUDA device"
         raise SystemExit(msg)
 
-    model, cfg, frames = build(args.experiment)
+    model, cfg, frames = build(args.experiment, args.override)
     emit(
         f"{torch.cuda.get_device_name(0)} arm={args.experiment} "
         f"tokens_per_frame={model.encoder.tokens_per_frame} "
-        f"episode_length={cfg.episode_length} batch={args.batch}"
+        f"episode_length={cfg.episode_length} window={cfg.window} "
+        f"batch={args.batch}"
     )
     batch = make_synthetic_batch(tuple(model.cameras), args.batch, frames)
 
