@@ -469,8 +469,9 @@ latent:
       hidden_layer_multiplier: 1
       self_attn: true
     final_norm:
-      _target_: torch.nn.LayerNorm
-      normalized_shape: ${image_embedding_dim}
+      # Identity: keep L's residual-stream magnitude so the gram `sim` (absolute L2)
+      # can match raw DINOv3 targets. Keys are LN'd locally in INV/POLICY instead.
+      _target_: torch.nn.Identity
     output_projection:
       _target_: rmind.components.nn.Linear
       in_features: ${image_embedding_dim}
@@ -527,6 +528,9 @@ objectives:
       value_norm:
         _target_: torch.nn.LayerNorm
         normalized_shape: ${encoder_embedding_dim}
+      key_norm:  # LN the keys (=L) locally, since L is no longer LN'd at the latent head
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
       tokenizer:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -572,6 +576,9 @@ objectives:
     policy:
       _target_: rmind.components.objectives.joint_policy.PolicyObjective
       value_norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
+      key_norm:  # LN the keys (=L) locally, since L is no longer LN'd at the latent head
         _target_: torch.nn.LayerNorm
         normalized_shape: ${encoder_embedding_dim}
       decoder:

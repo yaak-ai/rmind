@@ -26,7 +26,9 @@ def joint_vq_loss(
     *, features: Tensor, heads: ModuleDict, losses: ModuleDict, codes: object, g: int
 ) -> dict[str, Tensor]:
     """Per-quantizer categorical loss for joint residual-VQ action codes."""
-    logits = tree_map(lambda lg: rearrange(lg, "b t (g c) -> b t g c", g=g), heads(features))
+    logits = tree_map(
+        lambda lg: rearrange(lg, "b t (g c) -> b t g c", g=g), heads(features)
+    )
     out: dict[str, Tensor] = {}
     for q in range(g):
         (out[f"quantizer_{q}"],) = tree_leaves(
@@ -50,6 +52,7 @@ class InverseDynamicsObjective(Objective):
         losses: InstanceOf[ModuleDict],
         targets: CodeTargets,
         value_norm: InstanceOf[Module] | None = None,
+        key_norm: InstanceOf[Module] | None = None,
         readout: int = 0,
     ) -> None:
         super().__init__()
@@ -59,6 +62,7 @@ class InverseDynamicsObjective(Objective):
         self.losses = losses
         self.targets: CodeTargets = targets
         self.value_norm: Module | None = value_norm
+        self.key_norm: Module | None = key_norm
         self.readout: int = readout
 
     @override
@@ -74,8 +78,9 @@ class InverseDynamicsObjective(Objective):
         assert latent is not None
         patches = episode.get(PATCHES)
         value = self.value_norm(patches) if self.value_norm is not None else patches
+        key = self.key_norm(latent) if self.key_norm is not None else latent
         queries = episode.embeddings.get((Modality.UTILITY, "inv"))
-        features = self.decoder({"query": queries, "key": latent, "value": value})
+        features = self.decoder({"query": queries, "key": key, "value": value})
         features = features[:, :, self.readout][:, :-1]
 
         (tokenizer,) = tree_leaves(self.tokenizer)
@@ -88,7 +93,11 @@ class InverseDynamicsObjective(Objective):
             )
         return {
             "loss": joint_vq_loss(
-                features=features, heads=self.heads, losses=self.losses, codes=codes, g=g
+                features=features,
+                heads=self.heads,
+                losses=self.losses,
+                codes=codes,
+                g=g,
             )
         }
 
@@ -140,15 +149,15 @@ class JointInverseDynamicsObjective(Objective):
         query = episode.get(self.query)  # (b, t, p, d)
         if self.query_norm is not None:
             query = self.query_norm(query)
-        key_inv = self.condition({"query": query, "key": obs_summary, "value": obs_summary})
+        key_inv = self.condition({
+            "query": query,
+            "key": obs_summary,
+            "value": obs_summary,
+        })
         mask = episode.embeddings.get((Modality.UTILITY, "mask"))[
             :, :, [1]
         ]  # (b, t, 1, d)
-        features = self.decoder({
-            "query": mask,
-            "key": key_inv,
-            "value": query,
-        })
+        features = self.decoder({"query": mask, "key": key_inv, "value": query})
         return features.squeeze(-2)[:, :-1]
 
     @override

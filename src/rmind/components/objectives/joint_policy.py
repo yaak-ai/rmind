@@ -43,6 +43,7 @@ class PolicyObjective(Objective):
         losses: InstanceOf[ModuleDict],
         chunk: Path,
         value_norm: InstanceOf[Module] | None = None,
+        key_norm: InstanceOf[Module] | None = None,
         readout: int = 0,
         sample_codes: bool = True,
     ) -> None:
@@ -54,11 +55,12 @@ class PolicyObjective(Objective):
         self.losses = losses
         self.chunk: Path = chunk
         self.value_norm: Module | None = value_norm
+        self.key_norm: Module | None = key_norm
         self.readout: int = readout
         self.sample_codes = sample_codes
 
     @override
-    def train(self, mode: bool = True) -> "PolicyObjective":  # noqa: FBT001, FBT002
+    def train(self, mode: bool = True) -> "PolicyObjective":
         super().train(mode)
         self.tokenizer.eval()
         return self
@@ -67,8 +69,10 @@ class PolicyObjective(Objective):
         # last timestep only: policy query attends K=L, V=I (LN'd)
         patches = episode.get(PATCHES)[:, -1:]
         value = self.value_norm(patches) if self.value_norm is not None else patches
+        key = latent[:, -1:]
+        key = self.key_norm(key) if self.key_norm is not None else key
         queries = episode.embeddings.get((Modality.UTILITY, "policy"))[:, -1:]
-        features = self.decoder({"query": queries, "key": latent[:, -1:], "value": value})
+        features = self.decoder({"query": queries, "key": key, "value": value})
         return features[:, :, self.readout].squeeze(1)  # (b, d)
 
     def _gather_offset(self, features: Tensor, codes: Tensor) -> Tensor:

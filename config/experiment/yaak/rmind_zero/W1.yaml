@@ -11,8 +11,6 @@ defaults:
 
 num_heads: 4
 num_layers: 8
-num_heads_condition: 4
-num_layers_condition: 2
 encoder_embedding_dim: 384
 image_embedding_dim: 384
 
