@@ -130,6 +130,95 @@ def test_backbone_timm_internals_contract_eva(
         )
 
 
+# --- per-camera registers (DrivoR's own formulation) ------------------------
+
+
+@pytest.fixture(scope="module")
+def register_backbone_vit_per_camera(device: torch.device) -> RegisterViTBackbone:
+    return RegisterViTBackbone(
+        model_name="vit_small_patch14_dinov2.lvd142m",
+        img_size=[224, 224],
+        num_registers=4,
+        num_cameras=3,
+        lora_rank=4,
+        lora_alpha=4.0,
+    ).to(device)
+
+
+def test_backbone_shared_registers_are_one_set(
+    register_backbone_vit: RegisterViTBackbone,
+) -> None:
+    """`num_cameras=None` (the default) keeps ONE set for every view."""
+    assert register_backbone_vit.num_cameras is None
+    assert register_backbone_vit.camera_reg_token.shape == (
+        1,
+        4,
+        register_backbone_vit.model.embed_dim,
+    )
+
+
+def test_backbone_per_camera_register_shape(
+    register_backbone_vit_per_camera: RegisterViTBackbone,
+) -> None:
+    backbone = register_backbone_vit_per_camera
+    assert backbone.camera_reg_token.shape == (3, 4, backbone.model.embed_dim)
+    # independently drawn, not one set copied -- what lets the cameras diverge
+    assert not torch.allclose(
+        backbone.camera_reg_token[0], backbone.camera_reg_token[1]
+    )
+
+
+@torch.inference_mode()
+def test_backbone_per_camera_register_routing(
+    device: torch.device, register_backbone_vit_per_camera: RegisterViTBackbone
+) -> None:
+    """Flattened image `i` must get camera `i % num_cameras`'s registers.
+
+    `forward` reshapes `(b, cam, c, h, w)` row-major, so the camera axis varies
+    fastest. Feeding the SAME image at every `(b, cam)` slot makes the registers
+    the only thing that can differ, which pins the routing in both directions:
+    a `i // num_cameras` mapping (what `expand` would give) breaks the
+    same-camera-across-batch equality AND the across-camera inequality.
+    """
+    backbone = register_backbone_vit_per_camera.eval()
+    # the N(0, 1e-6) init makes every camera's output identical to fp tolerance;
+    # separate them by hand so the routing is observable at all
+    original = backbone.camera_reg_token.clone()
+    backbone.camera_reg_token.copy_(
+        torch.stack([torch.full_like(original[0], 0.1 * (cam + 1)) for cam in range(3)])
+    )
+
+    try:
+        image = torch.randn(3, 224, 224, device=device)
+        out = backbone(image.expand(2, 3, 3, 224, 224).contiguous())
+        assert out.shape == (2, 3, 4, backbone.model.embed_dim)
+
+        # same camera, different batch row: nothing differs, so must be equal
+        assert_close(out[0], out[1])
+        # different camera: only the registers differ, so must NOT be equal
+        for i, j in ((0, 1), (0, 2), (1, 2)):
+            assert not torch.allclose(out[0, i], out[0, j])
+    finally:
+        backbone.camera_reg_token.copy_(original)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [(2, 2, 3, 224, 224), (3, 224, 224)],
+    ids=["wrong_camera_count", "no_camera_axis"],
+)
+@torch.inference_mode()
+def test_backbone_per_camera_rejects_bad_camera_axis(
+    device: torch.device,
+    register_backbone_vit_per_camera: RegisterViTBackbone,
+    shape: tuple[int, ...],
+) -> None:
+    """Without the guard this hands images the WRONG camera's registers (or
+    silently broadcasts), which is invisible at the shape level."""
+    with pytest.raises(ValueError, match="camera axis LAST"):
+        register_backbone_vit_per_camera(torch.randn(*shape, device=device))
+
+
 # --- merge_lora -------------------------------------------------------------
 
 
@@ -151,6 +240,50 @@ def test_merge_lora_numerical_parity(device: torch.device) -> None:
     assert not isinstance(container.linear, LoRALinear)
     after = container.linear(x)
     assert_close(after, before)
+
+
+@torch.inference_mode()
+def test_merge_lora_backbone_export_parity(device: torch.device) -> None:
+    """The export contract (plans/effervescent-chasing-seahorse.md, "Export"):
+    `rmind.scripts.export_onnx` and `rmind.scripts.decoder_only_export` call
+    `merge_lora` before tracing, so the served graph holds plain `nn.Linear`s
+    and pays nothing for the adapters. Both run under `torch.inference_mode()`,
+    which is why this test does too -- the in-place weight update has to be
+    legal there.
+
+    Built with non-trivial `lora_B`/registers: zero-init `lora_B` makes the
+    whole merge a no-op, so a parity check on a fresh backbone would pass even
+    if `merge_lora` did nothing at all.
+    """
+    backbone = (
+        RegisterViTBackbone(
+            model_name="vit_small_patch14_dinov2.lvd142m",
+            img_size=[224, 224],
+            num_registers=4,
+            num_cameras=3,
+            lora_rank=4,
+            lora_alpha=4.0,
+        )
+        .to(device)
+        .eval()
+    )
+    for name, param in backbone.named_parameters():
+        if name.endswith("lora_B"):
+            param.normal_(std=0.02)
+    backbone.camera_reg_token.normal_(std=0.02)
+
+    x = torch.randn(1, 3, 3, 224, 224, device=device)
+    before = backbone(x).clone()
+
+    merged = merge_lora(backbone)
+
+    # qkv + proj in every block -- `apply_lora`'s default target suffixes
+    assert merged == 2 * len(backbone.model.blocks)
+    assert not any(isinstance(m, LoRALinear) for m in backbone.modules())
+    # rtol/atol above float32 default: the merged weight reassociates
+    # `x @ W + scale * (x @ A.T) @ B.T` into `x @ (W + scale * B @ A).T`, and
+    # the drift compounds over 12 blocks (and over tf32, which conftest enables)
+    assert_close(backbone(x), before, rtol=1e-3, atol=1e-4)
 
 
 def test_apply_lora_target_suffixes() -> None:

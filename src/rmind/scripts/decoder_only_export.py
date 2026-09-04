@@ -67,6 +67,7 @@ from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
 
+from rmind.components.lora import merge_lora
 from rmind.components.transformer.causal_frame import CausalFrameTransformer
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 from rmind.utils.patch import monkeypatched
@@ -324,6 +325,18 @@ def decoder_model_and_args(  # noqa: PLR0914
 
 
 def export(model: Module, args: tuple[Any, ...], out: Path, *, verify: bool) -> None:
+    # Fold any LoRA adapters into their frozen base `nn.Linear` BEFORE the eager
+    # forwards and the trace, so the exported graph is a plain matmul per
+    # projection rather than the base plus two extra matmuls and an add -- the
+    # register-compression arm's serving win is the point of that arm, and
+    # shipping the unmerged adapters gives part of it back. Numerically
+    # equivalent (`W += scale * B @ A`); no-op on every arm without LoRA, which
+    # is why this sits on the shared path for BOTH modes rather than behind a
+    # flag. Merging here also keeps `eager_out` (the output-name source of
+    # truth) consistent with what is actually traced.
+    if merged := merge_lora(model):
+        logger.info("merged lora adapters", count=merged)
+
     eager_out: Any = None
     for patch in (False, True):
         with monkeypatched(obj=torch.compiler, name="_is_exporting_flag", patch=patch):

@@ -16,6 +16,22 @@ class RegisterViTBackbone(nn.Module):
     """Pretrained ViT backbone with an extra set of learnable per-camera
     "compression" register tokens, per DrivoR (arXiv:2601.05083).
 
+    `num_cameras` selects the register parameterization:
+
+    - `None` (default): ONE shared set of `num_registers` tokens, used for every
+      image regardless of which camera it came from. Camera identity then has to
+      come from downstream -- in the `PatchPolicy` arms, the trunk's intra-frame
+      position table, whose camera bands already carry it.
+    - `int`: a SEPARATE set per camera, `(num_cameras, num_registers, D)`, each
+      independently initialized. This is DrivoR's own formulation ("registers
+      are per-camera, not shared -- this is what gives the output tokens their
+      camera identity"), and it makes the per-camera register cosine-similarity
+      diagnostic (DrivoR Fig. 4) meaningful, which the shared variant cannot be.
+      Requires the camera axis to be the LAST leading dim of `forward`'s input,
+      i.e. `(..., cam, c, h, w)` -- which is how `PatchPolicy._frame_tokens`
+      calls it, `(b, t, cam, c, h, w)`. See `_registers` for the flattening
+      order this relies on.
+
     The pretrained base (`self.model`) is frozen and LoRA-adapted (rank
     `lora_rank`, on `attn.qkv`/`attn.proj` only); only `camera_reg_token` and
     the LoRA adapters are trainable.
@@ -44,6 +60,7 @@ class RegisterViTBackbone(nn.Module):
         model_name: str = "vit_small_patch16_dinov3.lvd1689m",
         img_size: list[int] | None = None,
         num_registers: int = 16,
+        num_cameras: int | None = None,
         lora_rank: int = 32,
         lora_alpha: float = 32.0,
         lora_target_suffixes: tuple[str, ...] = ("attn.qkv", "attn.proj"),
@@ -60,8 +77,12 @@ class RegisterViTBackbone(nn.Module):
         self.model.requires_grad_(False)  # noqa: FBT003
 
         self.num_registers = num_registers
+        self.num_cameras = num_cameras
+        # (num_cameras, R, D) per-camera, or (1, R, D) shared -- see class
+        # docstring. One `normal_` over the whole tensor gives each camera its
+        # own independent draw, which is what lets them diverge in training.
         self.camera_reg_token = nn.Parameter(
-            torch.empty(1, num_registers, self.model.embed_dim)
+            torch.empty(num_cameras or 1, num_registers, self.model.embed_dim)
         )
         # matches timm's own register-token init convention (see
         # timm.models.vision_transformer.VisionTransformer.init_weights)
@@ -91,6 +112,16 @@ class RegisterViTBackbone(nn.Module):
     @override
     def forward(self, input: Tensor) -> Tensor:
         *b, c, h, w = input.shape
+        if self.num_cameras is not None and (not b or b[-1] != self.num_cameras):
+            # `_registers` derives each flattened image's camera from its
+            # position, so a mismatched (or missing) camera axis would silently
+            # hand images the wrong camera's registers rather than fail.
+            msg = (
+                "per-camera registers require the camera axis LAST among the "
+                f"leading dims -- (..., cam, c, h, w) with cam == num_cameras "
+                f"== {self.num_cameras}; got leading dims {tuple(b)}"
+            )
+            raise ValueError(msg)
         x = input.reshape(-1, c, h, w)
         reg_out = (
             self._forward_eva(x)
@@ -98,6 +129,24 @@ class RegisterViTBackbone(nn.Module):
             else self._forward_vit(x)
         )
         return reg_out.reshape(*b, *reg_out.shape[-2:])
+
+    def _registers(self, n: int) -> Tensor:
+        """The `(n, R, D)` register tokens for a batch of `n` flattened images.
+
+        Shared (`num_cameras is None`): the single set, broadcast to every image.
+
+        Per-camera: `forward` reshapes `(..., cam, c, h, w)` row-major, so the
+        camera axis varies FASTEST -- flattened image `i` comes from camera
+        `i % num_cameras`. `repeat` tiles the whole `(cam, R, D)` block in
+        exactly that order; `expand` would NOT (it repeats along a new leading
+        axis, i.e. `i // num_cameras`), which is a silent camera-permutation
+        bug rather than a shape error. Guarded by
+        `test_backbone_per_camera_register_routing`.
+        """
+        if self.num_cameras is None:
+            return self.camera_reg_token.expand(n, -1, -1)
+
+        return self.camera_reg_token.repeat(n // self.num_cameras, 1, 1)
 
     def _forward_eva(self, x: Tensor) -> Tensor:
         """`vit_small_patch16_dinov3.lvd1689m`-style: RoPE, `num_prefix_tokens`
@@ -129,7 +178,7 @@ class RegisterViTBackbone(nn.Module):
 
         n = x.shape[0]
         npt = model.num_prefix_tokens  # original prefix count, unmodified
-        reg = self.camera_reg_token.expand(n, -1, -1)
+        reg = self._registers(n)
         x = torch.cat([x[:, :npt], reg, x[:, npt:]], dim=1)
 
         # `rope`/`attn_mask`/`is_causal` are `EvaBlock.forward`'s next three
@@ -157,7 +206,7 @@ class RegisterViTBackbone(nn.Module):
 
         n = x.shape[0]
         npt = model.num_prefix_tokens
-        reg = self.camera_reg_token.expand(n, -1, -1)
+        reg = self._registers(n)
         x = torch.cat([x[:, :npt], reg, x[:, npt:]], dim=1)
 
         # cast: timm's `VisionTransformer.blocks` is an `nn.Sequential` (unlike

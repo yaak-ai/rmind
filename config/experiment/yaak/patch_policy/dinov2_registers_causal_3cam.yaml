@@ -52,6 +52,17 @@ model:
     model_name: ${image_encoder_name}
     img_size: ${image_resize}
     num_registers: ${num_camera_registers}
+    # PER-CAMERA registers (DrivoR's own formulation: "registers are per-camera,
+    # not shared -- this is what gives the output tokens their camera identity"),
+    # i.e. a (3, 16, 384) parameter rather than one (1, 16, 384) set reused for
+    # every view. Costs 2 extra sets of 16x384 = 12k params. The trunk's
+    # intra-frame camera bands already carry identity here (6c9e61d), so this is
+    # not load-bearing for identity -- but it is what makes the per-camera
+    # register cosine-similarity diagnostic (DrivoR Fig. 4, drivor-concept.md's
+    # validation plan) meaningful, and it lets each view learn its own
+    # compression queries. `RegisterViTBackbone` requires the camera axis LAST
+    # among the leading dims, which is how PatchPolicy._frame_tokens calls it.
+    num_cameras: ${num_cameras}
     lora_rank: ${lora_rank}
     lora_alpha: ${lora_alpha}
 

@@ -44,15 +44,23 @@ def apply_lora(
             setattr(parent, attr, LoRALinear(child, rank=rank, alpha=alpha))
 
 
-def merge_lora(module: Module) -> None:
+def merge_lora(module: Module) -> int:
     """In-place fold every `LoRALinear` under `module` back into a plain
     `nn.Linear`, so the exported/served graph pays nothing for the adapters.
+    Returns how many were merged.
 
     Computes `W += scale * B @ A` (and leaves `bias` untouched -- LoRA never
     touches it) directly on `base`, then replaces the `LoRALinear` wrapper with
-    `base` itself at the parent. No-op if `module` has no `LoRALinear`
-    submodules.
+    `base` itself at the parent. No-op (returns 0) if `module` has no
+    `LoRALinear` submodules, which is what makes it safe to call
+    unconditionally on every export path -- see `rmind.scripts.export_onnx` and
+    `rmind.scripts.decoder_only_export`.
+
+    Safe under `torch.inference_mode()` (both export entry points run inside
+    it): the in-place update is on the frozen `base.weight`, and the `B @ A`
+    product it adds is computed under `no_grad`.
     """
+    merged = 0
     for name, child in list(module.named_modules()):
         if isinstance(child, LoRALinear):
             with torch.no_grad():
@@ -60,3 +68,6 @@ def merge_lora(module: Module) -> None:
             parent_name, _, attr = name.rpartition(".")
             parent = module.get_submodule(parent_name) if parent_name else module
             setattr(parent, attr, child.base)
+            merged += 1
+
+    return merged

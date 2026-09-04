@@ -13,6 +13,7 @@ from pytorch_lightning.utilities.model_summary.model_summary import ModelSummary
 from structlog import get_logger
 from torch.utils._pytree import tree_flatten_with_path  # noqa: PLC2701
 
+from rmind.components.lora import merge_lora
 from rmind.config import HydraConfig
 from rmind.utils.patch import monkeypatched
 
@@ -49,6 +50,15 @@ def main(cfg: DictConfig) -> None:
     logger.debug("instantiating", target=config.model.target)
     args = instantiate(config.args, _recursive_=True, _convert_="all")
     model = config.model.instantiate().eval()
+
+    # Fold any LoRA adapters into their frozen base `nn.Linear` BEFORE tracing,
+    # so the exported graph is a plain matmul per projection instead of the
+    # base plus two extra matmuls and an add. Numerically equivalent (the
+    # adapter is exactly `W += scale * B @ A`); no-op on an arm without LoRA.
+    # See rmind.components.lora.merge_lora.
+    if merged := merge_lora(model):
+        logger.debug("merged lora adapters", count=merged)
+
     logger.debug(f"model summary:\n{ModelSummary(model)}")  # noqa: G004
 
     # Eager forward populates cached buffers (e.g. attention mask) that are not
