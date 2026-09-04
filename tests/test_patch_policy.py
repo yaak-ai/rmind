@@ -117,7 +117,15 @@ def _make_model(  # noqa: PLR0913
     losses: ModuleDict | None = None,
     use_readout_token: bool = False,
     num_register_tokens: int = 0,
+    image_encoder: Module | None = None,
+    trainable_image_encoder: bool = False,
+    image_dim: int = IMAGE_DIM,
 ) -> PatchPolicy:
+    """`image_encoder`/`image_dim` exist for the trainable-encoder arm
+    (`RegisterViTBackbone`, see tests/test_backbone_registers.py): pass a real
+    encoder and the batch's raw `(b, t, 3, H, W)` frames, plus its `embed_dim`
+    so `patch_projection` lines up. Default stays `Identity()` over
+    pre-extracted features, which is what every other test here feeds."""
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
         tokens_per_frame += num_register_tokens + 1
@@ -128,9 +136,10 @@ def _make_model(  # noqa: PLR0913
         num_register_tokens=num_register_tokens,
         input_transform=Identity(),
         # tests feed pre-extracted patch features (b, t, p, d) directly
-        image_encoder=Identity(),
+        image_encoder=image_encoder if image_encoder is not None else Identity(),
+        trainable_image_encoder=trainable_image_encoder,
         goal_encoder=_GoalEncoderStub(),
-        patch_projection=Linear(IMAGE_DIM + GOAL_DIM, POLICY_DIM),
+        patch_projection=Linear(image_dim + GOAL_DIM, POLICY_DIM),
         speed_tokenizer=UniformBinner(range=(0.0, 130.0), bins=SPEED_BINS),
         speed_embedding=Embedding(SPEED_BINS, POLICY_DIM),
         cameras=cameras,

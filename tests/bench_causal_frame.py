@@ -39,18 +39,16 @@ auto-removes `print` calls (`select = ["ALL"]`, `fix = true`).
 import argparse
 import gc
 import itertools
-import math
 import sys
 import time
 from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING, cast
 
 import torch
 import torch._dynamo
-from torch import Tensor, nn
+from torch import Tensor
 from torch.nn import functional as F
-from torch.utils.checkpoint import checkpoint
 
+from rmind.components.backbone_registers import RegisterViTBackbone
 from rmind.components.transformer.causal_frame import (
     AttentionImpl,
     CausalFrameTransformer,
@@ -61,9 +59,6 @@ from rmind.components.transformer.causal_frame import (
     frame_rope_cos_sin,
 )
 
-if TYPE_CHECKING:
-    from timm.models.vision_transformer import VisionTransformer
-
 # One `torch.compile`d `flex_attention` serves every shape in the sweep, and
 # `dynamic=False` specializes per shape. The dynamo default of 8 cache entries is
 # silently exceeded around row 8 of this grid, after which flex falls back to EAGER
@@ -73,6 +68,11 @@ torch._dynamo.config.cache_size_limit = 256  # noqa: SLF001
 torch._dynamo.config.accumulated_cache_size_limit = 512  # noqa: SLF001
 
 TOKENS_PER_FRAME = 257
+
+# `vit --mode register`: the 3-cam arm's own layout
+# (config/experiment/yaak/patch_policy/dinov2_registers_causal_3cam.yaml).
+REGISTER_TOKENS_PER_CAMERA = 16
+REGISTER_NUM_CAMERAS = 3
 
 # (num_frames, window). The first row is today's 6-frame arm: the denominator for
 # every ratio in the report.
@@ -277,110 +277,28 @@ def bench_trunk(
                     )
 
 
-class _BenchLoRALinear(nn.Module):
-    """Minimal LoRA wrapper for benchmarking.
-
-    Test-only: mirrors the not-yet-ported `rmind.components.lora.LoRALinear`
-    (see plans/effervescent-chasing-seahorse.md, step 1) closely enough that
-    the measured fwd+bwd cost transfers -- same low-rank decomposition, same
-    zero-init on `lora_B` so the adapter starts as a no-op, same target
-    modules (`attn.qkv`/`attn.proj`).
-    """
-
-    def __init__(self, base: nn.Linear, *, rank: int = 32, alpha: float = 32.0) -> None:
-        super().__init__()
-        base.requires_grad_(False)  # noqa: FBT003
-        self.base = base
-        self.lora_A = nn.Parameter(torch.empty(rank, base.in_features))
-        self.lora_B = nn.Parameter(torch.zeros(base.out_features, rank))
-        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-        self.scale = alpha / rank
-
-    def forward(self, input: Tensor) -> Tensor:
-        return self.base(input) + self.scale * F.linear(
-            F.linear(input, self.lora_A), self.lora_B
-        )
-
-
-def _apply_bench_lora(module: nn.Module, *, rank: int, alpha: float) -> None:
-    target_suffixes = ("attn.qkv", "attn.proj")
-    for name, child in list(module.named_modules()):
-        if isinstance(child, nn.Linear) and name.endswith(target_suffixes):
-            parent_name, _, attr = name.rpartition(".")
-            parent = module.get_submodule(parent_name) if parent_name else module
-            setattr(parent, attr, _BenchLoRALinear(child, rank=rank, alpha=alpha))
-
-
-class _BenchRegisterViT(nn.Module):
-    """Test-only stand-in for the DINOv2 branch of the eventual
-    `RegisterViTBackbone` (plans/effervescent-chasing-seahorse.md, step 2).
-
-    DINOv2 ViT-S is a plain `timm.VisionTransformer`: absolute `pos_embed`,
-    `num_prefix_tokens == 1` (cls only), no RoPE, no per-block prefix-token
-    bookkeeping -- simpler than the DINOv3/`Eva`-backed branch already ported
-    on `feat/drivor`, which needs neither here. Gradient checkpointing is
-    applied manually per block (`use_reentrant=False`, matching
-    `BlockCausalTransformer`) because timm's `set_grad_checkpointing` does not
-    reach a custom forward like this one.
-    """
-
-    def __init__(  # noqa: PLR0913
-        self,
-        *,
-        model_name: str = "vit_small_patch14_dinov2.lvd142m",
-        img_size: int = 224,
-        num_registers: int = 16,
-        lora_rank: int = 32,
-        lora_alpha: float = 32.0,
-        grad_checkpoint: bool = True,
-    ) -> None:
-        super().__init__()
-        import timm  # noqa: PLC0415
-
-        # cast: `create_model`'s return type is generically `nn.Module` since
-        # it supports any registered timm model; DINOv2 ViT-S is specifically
-        # a `VisionTransformer` (see class docstring), same pattern as
-        # `feat/drivor`'s `RegisterViTBackbone` casting to `Eva`.
-        self.model: VisionTransformer = cast(
-            "VisionTransformer",
-            timm.create_model(
-                model_name, pretrained=False, img_size=img_size, num_classes=0
-            ),
-        )
-        self.model.requires_grad_(False)  # noqa: FBT003
-        self.num_registers = num_registers
-        self.reg_token = nn.Parameter(
-            torch.empty(1, num_registers, self.model.embed_dim)
-        )
-        nn.init.normal_(self.reg_token, std=1e-6)
-        _apply_bench_lora(self.model.blocks, rank=lora_rank, alpha=lora_alpha)
-        self.grad_checkpoint = grad_checkpoint
-
-    def forward(self, input: Tensor) -> Tensor:
-        x = self.model.patch_embed(input)
-        x = self.model._pos_embed(x)  # noqa: SLF001
-        x = self.model.norm_pre(x)
-        npt = self.model.num_prefix_tokens
-        n = x.shape[0]
-        reg = self.reg_token.expand(n, -1, -1)
-        x = torch.cat([x[:, :npt], reg, x[:, npt:]], dim=1)
-        for block in cast("nn.ModuleList", self.model.blocks):
-            x = (
-                checkpoint(block, x, use_reentrant=False)
-                if self.grad_checkpoint
-                else block(x)
-            )
-        x = self.model.norm(x)
-        return x[:, npt : npt + self.num_registers]
-
-
 def bench_vit(
     batches: Iterable[int], dtype: torch.dtype, *, mode: str = "frozen"
 ) -> None:
     """`mode='frozen'`: the frozen encoder's forward, for the per-step context
     the trunk numbers live in. `mode='register'`: train-mode, fwd+bwd through
-    a LoRA + per-camera-register-token forward -- the ViT-side half of the
-    register-compression measurement gate (see module docstring)."""
+    the REAL `RegisterViTBackbone` -- LoRA adapters plus per-camera register
+    tokens, the ViT-side half of the register-compression measurement gate
+    (see module docstring).
+
+    Step 0 measured this against a `_BenchRegisterViT` stand-in, since the real
+    backbone did not exist yet; it now does (a77e624), so the bench runs the
+    shipped class. Gradient checkpointing is not a constructor flag there --
+    `RegisterViTBackbone` checkpoints iff `self.training`, and its `train()`
+    override keeps the pretrained base in eval either way, so `.train()` /
+    `.eval()` IS the on/off switch and nothing else about the module changes
+    with it.
+
+    `--batches` counts IMAGES, as in the frozen path; per-camera registers need
+    the camera axis, so each row is reshaped to `(n // 3, 3, 3, 224, 224)` --
+    the shape `PatchPolicy._frame_tokens` actually passes. `n` must be
+    divisible by `REGISTER_NUM_CAMERAS`.
+    """
     if mode == "register":
         emit(f"{'images':>7} {'ckpt':>5} {'ms':>9} {'peakMiB':>9}")
         for n in batches:
@@ -390,11 +308,27 @@ def bench_vit(
                     *, n: int = n, grad_checkpoint: bool = grad_checkpoint
                 ) -> tuple[float, float]:
                     model = (
-                        _BenchRegisterViT(grad_checkpoint=grad_checkpoint)
+                        RegisterViTBackbone(
+                            model_name="vit_small_patch14_dinov2.lvd142m",
+                            img_size=[224, 224],
+                            num_registers=REGISTER_TOKENS_PER_CAMERA,
+                            num_cameras=REGISTER_NUM_CAMERAS,
+                            lora_rank=32,
+                            lora_alpha=32.0,
+                        )
                         .cuda()
                         .to(dtype)
                     )
-                    img = torch.randn(n, 3, 224, 224, device="cuda", dtype=dtype)
+                    model.train(grad_checkpoint)
+                    img = torch.randn(
+                        n // REGISTER_NUM_CAMERAS,
+                        REGISTER_NUM_CAMERAS,
+                        3,
+                        224,
+                        224,
+                        device="cuda",
+                        dtype=dtype,
+                    )
 
                     def step() -> None:
                         model.zero_grad(set_to_none=True)

@@ -1339,3 +1339,141 @@ Not measured here (deferred to the real port): the accuracy side of the
 trade (DrivoR's own 86.9-vs-90.0 frozen-vs-LoRA gap), export/serving parity,
 and camera-identity regression (`patch_policy_camera_probe.py`) -- all
 require an actual trained checkpoint, which this step doesn't produce.
+
+### 14.4 Re-measured against the REAL model (Verification 3)
+
+§14.1--14.3 measured a `_BenchRegisterViT` stand-in, because the backbone did
+not exist yet. It does now (`RegisterViTBackbone`, a77e624 + per-camera
+registers), so `bench_causal_frame.py`'s `vit --mode register` was pointed at
+the shipped class -- same LoRA rank 32 on `attn.qkv`/`attn.proj`, 16 registers
+per camera, but `num_cameras=3` (a real `(3, 16, 384)` parameter) and the real
+`(n/3, 3, 3, 224, 224)` input shape rather than a flat image batch. The
+stand-in and its `_BenchLoRALinear` are deleted; the bench now measures
+production code.
+
+Same machine, **but not the same conditions**: an unrelated CarlaUE4 process
+held 8595 MiB for the whole re-run, leaving 22.5 of 31.4 GiB free. That
+matters for two rows below and for nothing else.
+
+| images / tpf | row                                | Step 0 (stand-in) | real model      | peak MiB       |
+| ------------ | ---------------------------------- | ----------------- | --------------- | -------------- |
+| 768          | frozen ViT                         | 78.83 ms          | 85.69 ms        | 2031 / 2031    |
+| 2304         | frozen ViT                         | 331.58 ms         | 257.04 ms       | 5944 / 5944    |
+| 768          | LoRA+register fwd+bwd, ckpt on     | 378.29 ms         | 417.49 ms       | 5279 / 5279    |
+| 2304         | LoRA+register fwd+bwd, ckpt on     | 1595.86 ms        | 1271.09 ms      | 15615 / 15613  |
+| 769 tpf      | trunk, 512/8/8, b=8, flex          | 1208.26 ms        | 1324.01 ms      | 9804 / 9804    |
+| 769 tpf      | trunk, 768/12/12, b=8, flex        | 2927.97 ms        | 3206.89 ms      | 17158 / 17158  |
+| 50 tpf       | trunk, 512/8/8, b=8, flex          | 72.43 ms          | 87.94 ms        | 795 / 796      |
+| 50 tpf       | trunk, 768/12/12, b=8, flex        | 93.51 ms          | 129.55 ms       | 1503 / 1504    |
+| 50 tpf       | trunk, 768/12/12, b=24, flex       | (2054--3677 MiB)  | 273.33 ms       | -- / 3681      |
+| 769 tpf      | trunk, b=24, every width/impl      | OOM               | OOM             | --             |
+
+**Peak memory reproduces to within 2 MiB on every row** -- the 2 MiB being the
+per-camera register parameter the stand-in did not have. That is the number the
+gate actually rests on, and it transferred exactly. Timings scatter ±20% in both
+directions (the real model is *faster* at 2304 images, slower at 768), which is
+the Carla process contending for SMs, not a systematic difference: nothing in
+the real backbone's forward differs from the stand-in's beyond `run_layer_stack`
+replacing an inline checkpoint loop.
+
+Two rows read as regressions and are not. `768 images, ckpt off` OOMs here where
+Step 0 measured 22542 MiB -- 22.5 GiB does not fit in 22.5 GiB free. `2304
+images, ckpt off` OOMs in both runs, on an idle card too. Grad checkpointing
+remains load-bearing exactly as §14.1 found.
+
+Recomputing the gate verdict on real-model numbers, 768/12/12, `flex`:
+
+- **b=8, today**: `85.69 + 3206.89 = 3292.6 ms`, ~19.2 GiB.
+- **b=8, proposed**: `417.49 + 129.55 = 547.0 ms`, ~6.8 GiB. **6.0x faster**
+  (Step 0 projected 6.4x). At 512/8/8: `1409.7 -> 505.4 ms`, 2.8x (projected 2.9x).
+- **b=24, today**: OOM at every width and attention impl.
+- **b=24, proposed**: `1271.09 + 273.33 = 1544.4 ms`, ~19.3 GiB peak.
+
+The gate holds against the shipped model. Note the b=24 proposed row now has
+~3 GiB of headroom on a card that is *already* 8.6 GiB occupied, which is a
+stronger result than Step 0's, not a weaker one.
+
+Environment note for whoever re-runs this: inside `nix develop` the flake's `uv`
+wrapper overwrites `LD_LIBRARY_PATH`, and its `TRITON_LIBCUDA_PATH` points at
+NixOS's `/run/opengl-driver/lib`. On a non-NixOS host both must be pointed at a
+directory holding *only* the host driver libs (`libcuda`, `libnvidia-*`) --
+`NIX_LD_LIBRARY_PATH=$DIR TRITON_LIBCUDA_PATH=$DIR uv run python ...`. Without
+the first, `torch.cuda.is_available()` is False; without the second, every
+`flex` (Triton-compiled) row dies with `InductorError: SubprocException`. Do
+not put `/usr/lib/x86_64-linux-gnu` itself on the path -- its glibc shadows
+nix's and every nix binary stops running.
+
+### 14.5 The combined step, both arms, real config (Verification 4)
+
+§14.1--14.4 measure the ViT and the trunk separately and add their peaks. That
+sum is a lower bound on the real step: it leaves out the action tokenizer, the
+heads and losses, the input transform, and the fp32 master weights and Adam
+state the trainer actually carries. `tests/bench_patch_policy_step.py` runs the
+whole `PatchPolicy` from its own experiment config -- forward, backward,
+optimizer step -- on a synthetic batch at the yaak batch's real paths, dtypes
+and shapes.
+
+RTX 5090, bf16 autocast, `episode_length=32`, 3 cameras, lr forced to 1e-3
+(see below), steady-state step time excluding step 0's compile/warmup:
+
+| arm                            | tpf | batch | ms/step | peak MiB |
+| ------------------------------ | --- | ----- | ------- | -------- |
+| `dinov2_dinowm_causal_3cam`    | 769 | 8     | ~1900   | 11267    |
+| `dinov2_registers_causal_3cam` | 50  | 8     | ~730    | 8135     |
+| `dinov2_dinowm_causal_3cam`    | 769 | 24    | **OOM** | --       |
+| `dinov2_registers_causal_3cam` | 50  | 24    | ~2030   | 23146    |
+
+**2.6x faster and 28% less memory at matched batch.** §14.4 projected 2.8x for
+this arm's width (512/8/8) from the separated benches -- the combined step lands
+at 2.6x, so the model-level overhead the separated benches omit costs about 7%
+of the projected win and nothing more. The ratio held stable across re-runs
+while absolute times moved ±40% with GPU contention, which is the number to
+trust.
+
+At the configured `batch_size: 24` the register arm runs a full step in roughly
+the time the baseline needs for a batch of 8 -- ~2.8x the samples/second -- and
+the baseline does not run at all. (Its OOM here had ~6.5 GiB held by unrelated
+processes; it reached 23.11 GiB allocated before failing, so this is not proof
+it would OOM on a completely idle card. It is consistent with §14.2's OOM at
+769/b=24 across both attention impls and both widths, and with the base config's
+own comment.)
+
+Both arms overfit the fixed batch at a comparable rate (baseline 10.32 -> 6.32,
+register 10.25 -> 6.65 over 8 steps), with finite losses throughout. **Read
+nothing into which is lower**: the batch is random noise and the register arm's
+LoRA has barely left zero-init after 8 steps. What these numbers establish is
+that the arm trains at all and does not diverge -- the accuracy question is
+Verification 5's, and needs real data.
+
+**Gradient routing (the actual point of Verification 4).** Per-step encoder
+gradient norms:
+
+- `camera_reg_token`: non-zero on **all three cameras** from step 0
+  (~1.0 each), so `trainable_image_encoder` really does lift
+  `PatchPolicy`'s `no_grad`, and the per-camera registers are each independently
+  trained rather than one being carried by the others.
+- `lora_B`: non-zero from step 0 (~0.4).
+- `lora_A`: **exactly 0.0 on step 0**, non-zero from step 1 onward. This is
+  correct, not a disconnected graph: `lora_B` is zero-initialized, so `dL/dA`
+  carries a factor of `B` and vanishes until the first optimizer step moves `B`
+  off zero. It is worth stating explicitly because it makes the obvious
+  assertion ("every trainable parameter has non-zero gradient") fail on a
+  healthy model, and its opposite ("`lora_A` stays zero") pass on a broken one.
+  `tests/test_backbone_registers.py::test_trainable_encoder_receives_gradient`
+  pins both halves.
+
+**Why `--lr` exists.** The cosine-with-warmup `LambdaLR` steps itself once at
+construction, so every param group's lr is `0.0` until the Lightning trainer
+advances the scheduler. A bare `configure_optimizers()` outside a trainer
+therefore never moves a weight: the loss sits flat, `lora_B` never leaves zero,
+and `lora_A`'s gradient stays 0 forever -- which reads exactly like a broken
+adapter. This is normal Lightning behaviour, not a defect, but it silently
+voids the check, so the harness forces a usable lr by default.
+
+Still open: Verification 5 (a real A/B against `kughoqfi` on real data) and 6
+(the camera-identity probe on the winner). Both need a real training run; the
+rbyte sample-index caches on this host are empty, so that starts with a full
+index build. `fusion_goal_rms` recalibration rides along with 5 -- register
+outputs come off the same final LayerNorm as patch features but need not share
+their statistics, so `quality/token_norm/*` is the thing to watch on the first
+real run.

@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING, cast
+
 import pytest
 import torch
 from torch import nn
@@ -6,6 +8,16 @@ from torch.testing import assert_close
 from rmind.components.backbone_registers import RegisterViTBackbone
 from rmind.components.lora import LoRALinear, apply_lora, merge_lora
 from rmind.components.optimizers import SelectiveAdamW
+from tests.test_patch_policy import (
+    BATCH_SIZE,
+    EPISODE_LENGTH,
+    NUM_PATCHES,
+    _make_batch,
+    _make_model,
+)
+
+if TYPE_CHECKING:
+    from tensordict import TensorDict
 
 # --- RegisterViTBackbone -- DINOv2 branch (plain VisionTransformer): the arm
 # this repo actually uses (plans/effervescent-chasing-seahorse.md). Needs
@@ -334,3 +346,142 @@ def test_selective_adamw_lora_and_camera_registers(
         if "lora_B" in param_name[id(p)]
     }
     assert lora_b_names
+
+
+# --- end-to-end: gradients actually reach the trainable encoder -------------
+#
+# plans/effervescent-chasing-seahorse.md, Verification 4. The risk this guards
+# is `PatchPolicy.trainable_image_encoder`: the default arm wraps
+# `image_encoder` in `torch.no_grad()` and forces it to `.eval()`, so a missed
+# gate leaves the LoRA adapters and registers receiving nothing, silently,
+# while the run still trains (the trunk and heads do). Nothing about the loss
+# curve would show it.
+
+_GRAD_CAMERAS = ("cam_front_left", "cam_left_forward")
+
+
+def _image_batch(device: torch.device) -> dict:
+    """`_make_batch` with the pre-extracted patch features replaced by RAW
+    frames -- what a trainable encoder is actually fed."""
+    batch = _make_batch(cameras=_GRAD_CAMERAS)
+    generator = torch.Generator().manual_seed(0)
+    batch["image"] = {
+        camera: torch.randn(
+            (BATCH_SIZE, EPISODE_LENGTH, 3, 224, 224), generator=generator
+        ).to(device)
+        for camera in _GRAD_CAMERAS
+    }
+    return {
+        key: (
+            {k: v.to(device) for k, v in value.items()}
+            if isinstance(value, dict)
+            else value.to(device)
+        )
+        if key != "image"
+        else value
+        for key, value in batch.items()
+    }
+
+
+def _policy_loss(model: object, batch: dict) -> torch.Tensor:
+    return cast(
+        "TensorDict",
+        model._compute_metrics(batch)["policy", "loss"],  # noqa: SLF001
+    ).sum(reduce=True)
+
+
+def test_trainable_encoder_receives_gradient(device: torch.device) -> None:
+    """LoRA + registers must get gradient from the POLICY loss, and the frozen
+    base must not.
+
+    `lora_A` is deliberately checked only after an optimizer step: `lora_B` is
+    zero-initialized, so `dL/dA = scale * B^T @ ...` is exactly zero at step 0.
+    That is correct LoRA behaviour, not a broken graph -- but it means a naive
+    "every trainable param has non-zero grad at step 0" assertion would fail
+    here, and the reverse (asserting it stays zero) would hide a real
+    disconnection. Both steps are checked.
+    """
+    backbone = RegisterViTBackbone(
+        model_name="vit_small_patch14_dinov2.lvd142m",
+        img_size=[224, 224],
+        num_registers=NUM_PATCHES,
+        num_cameras=len(_GRAD_CAMERAS),
+        lora_rank=4,
+        lora_alpha=4.0,
+    )
+    model = _make_model(
+        cameras=_GRAD_CAMERAS,
+        image_encoder=backbone,
+        trainable_image_encoder=True,
+        image_dim=backbone.model.embed_dim,
+    ).to(device)
+    model.train()
+
+    # the frozen base stays in eval even though the outer module is training
+    assert not backbone.model.training
+
+    batch = _image_batch(device)
+    _policy_loss(model, batch).backward()
+
+    assert backbone.camera_reg_token.grad is not None
+    assert backbone.camera_reg_token.grad.abs().sum() > 0
+
+    grads = {name: p.grad for name, p in backbone.named_parameters()}
+    lora_b = {n: g for n, g in grads.items() if n.endswith("lora_B")}
+    assert lora_b
+    assert all(g is not None and g.abs().sum() > 0 for g in lora_b.values())
+
+    # frozen base: no grad at all, not merely small
+    assert all(
+        g is None
+        for name, g in grads.items()
+        if "lora_" not in name and name != "camera_reg_token"
+    )
+
+    # zero-init lora_B => zero lora_A grad on the FIRST step, non-zero after
+    lora_a = {n: g for n, g in grads.items() if n.endswith("lora_A")}
+    assert lora_a
+    assert all(g is not None and g.abs().sum() == 0 for g in lora_a.values())
+
+    optimizer = SelectiveAdamW(
+        model, weight_decay=0.1, weight_decay_module_blacklist=(nn.LayerNorm,)
+    )
+    optimizer.step()
+    model.zero_grad(set_to_none=True)
+    _policy_loss(model, batch).backward()
+
+    lora_a_after = {
+        name: p.grad
+        for name, p in backbone.named_parameters()
+        if name.endswith("lora_A")
+    }
+    assert all(g is not None and g.abs().sum() > 0 for g in lora_a_after.values()), (
+        "lora_A never picked up gradient: the adapter is a permanent no-op"
+    )
+
+
+def test_frozen_encoder_default_receives_no_gradient(device: torch.device) -> None:
+    """The control: `trainable_image_encoder=False` (every existing arm) must
+    leave the encoder's params untouched, so this opt-in changes nothing for
+    them."""
+    backbone = RegisterViTBackbone(
+        model_name="vit_small_patch14_dinov2.lvd142m",
+        img_size=[224, 224],
+        num_registers=NUM_PATCHES,
+        num_cameras=len(_GRAD_CAMERAS),
+        lora_rank=4,
+        lora_alpha=4.0,
+    )
+    model = _make_model(
+        cameras=_GRAD_CAMERAS,
+        image_encoder=backbone,
+        trainable_image_encoder=False,
+        image_dim=backbone.model.embed_dim,
+    ).to(device)
+    model.train()
+
+    assert not backbone.training  # forced to eval by PatchPolicy.train()
+
+    _policy_loss(model, _image_batch(device)).backward()
+
+    assert all(g is None for g in (p.grad for p in backbone.parameters()))
