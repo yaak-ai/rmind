@@ -1,0 +1,31 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal
+  - override /model: yaak/patch_policy/mode_head
+  - _self_
+
+# Train a trajectory-mode classifier on top of a FROZEN checkpoint from the
+# dinov2_dinowm_causal arm (e.g. v9y58oei -- causal trunk, 8L/512d/8H, window
+# 16, trained with a trajectory_head). Everything but `mode_head` is frozen
+# (see `PatchPolicy.load_for_mode_head_training`), so this is cheap: no
+# frozen-ViT/trunk backward pass buys anything here beyond what the base
+# checkpoint already learned, only the new head's gradient matters.
+#
+#   just train experiment=yaak/patch_policy/dinov2_dinowm_causal_mode_head \
+#       mode_head_artifact=yaak/alex-tmp/model-v9y58oei:v19
+mode_head_artifact: ???
+
+# Small trainable head on a frozen trunk: a much higher LR than the base
+# arm's 1e-4 converges faster and a short run is enough -- tune against val
+# mode_accuracy. mode_head.yaml's lr_scheduler is null (constant LR, no
+# warmup), so lr_warmup_steps/lr_total_steps (base arm's cosine knobs) are
+# inert here.
+lr: 1e-3
+
+trainer:
+  max_epochs: 1
+  val_check_interval: 0.1
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal, mode_head]

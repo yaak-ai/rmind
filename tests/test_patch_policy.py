@@ -7,6 +7,7 @@ and equivalence of the batched `_gather_offset` with the joint-policy original.
 
 from typing import override
 
+import pytest
 import torch
 from torch import Tensor
 from torch.nn import Identity, L1Loss, Linear, Module, Sequential
@@ -102,10 +103,14 @@ def _make_model(
     teacher_force_offset: bool = True,
     fusion_norm: bool = False,
     with_trajectory_head: bool = False,
+    with_mode_head: bool = False,
+    freeze_base: bool = False,
 ) -> PatchPolicy:
     losses = {"code": FocalLoss(), "offset": L1Loss()}
     if with_trajectory_head:
         losses["trajectory"] = WinnerTakesAllPoseLoss()
+    if with_mode_head:
+        losses["mode"] = torch.nn.CrossEntropyLoss()
 
     return PatchPolicy(
         fusion_norm=fusion_norm,
@@ -130,11 +135,15 @@ def _make_model(
             if with_trajectory_head
             else None
         ),
+        mode_head=(
+            MLP(POLICY_DIM, [16, NUM_TRAJECTORY_HYPOTHESES]) if with_mode_head else None
+        ),
         num_trajectory_hypotheses=NUM_TRAJECTORY_HYPOTHESES,
         losses=ModuleDict(modules=losses),
         norm=torch.nn.LayerNorm(POLICY_DIM),
         sample_codes=False,
         teacher_force_offset=teacher_force_offset,
+        freeze_base=freeze_base,
         prediction_config=PredictionConfig(
             objectives={
                 ObjectivePredictionKey.GROUND_TRUTH,
@@ -200,11 +209,11 @@ def test_features_and_metrics_shapes() -> None:
     model = _make_model()
     batch = _make_batch()
 
-    features, chunk, _ = model._features(batch)  # noqa: SLF001
+    features, chunk, _ = model._features(batch)  # ruff: ignore[private-member-access]
     assert features.shape == (BATCH_SIZE, EPISODE_LENGTH, POLICY_DIM)
     assert chunk.shape == (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS)
 
-    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    metrics = model._compute_metrics(batch)  # ruff: ignore[private-member-access]
     losses = metrics["policy", "loss"]
     assert set(losses.keys()) == {
         *(f"code_{q}" for q in range(NUM_QUANTIZERS)),
@@ -226,7 +235,7 @@ def test_frozen_modules_receive_no_grad() -> None:
     assert not model.goal_encoder.training
     assert not model.image_encoder.training
 
-    loss = model._compute_metrics(_make_batch())["policy", "loss"].sum(  # noqa: SLF001
+    loss = model._compute_metrics(_make_batch())["policy", "loss"].sum(  # ruff: ignore[private-member-access]
         reduce=True
     )
     loss.backward()
@@ -253,8 +262,8 @@ def test_gather_offset_matches_joint_policy() -> None:
     )
 
     torch.testing.assert_close(
-        PatchPolicy._gather_offset(offsets, codes),  # noqa: SLF001
-        JointPolicyObjective._gather_offset(offsets, codes),  # noqa: SLF001
+        PatchPolicy._gather_offset(offsets, codes),  # ruff: ignore[private-member-access]
+        JointPolicyObjective._gather_offset(offsets, codes),  # ruff: ignore[private-member-access]
     )
 
     # the batched form must equal per-frame application
@@ -268,11 +277,11 @@ def test_gather_offset_matches_joint_policy() -> None:
         (BATCH_SIZE, EPISODE_LENGTH, NUM_QUANTIZERS),
         generator=generator,
     )
-    gathered = PatchPolicy._gather_offset(offsets_bt, codes_bt)  # noqa: SLF001
+    gathered = PatchPolicy._gather_offset(offsets_bt, codes_bt)  # ruff: ignore[private-member-access]
     for t in range(EPISODE_LENGTH):
         torch.testing.assert_close(
             gathered[:, t],
-            JointPolicyObjective._gather_offset(offsets_bt[:, t], codes_bt[:, t]),  # noqa: SLF001
+            JointPolicyObjective._gather_offset(offsets_bt[:, t], codes_bt[:, t]),  # ruff: ignore[private-member-access]
         )
 
 
@@ -282,15 +291,15 @@ def test_teacher_forcing_gradient_routing() -> None:
     model = _make_model(teacher_force_offset=True)
     batch = _make_batch()
 
-    features, chunk, _ = model._features(batch)  # noqa: SLF001
+    features, chunk, _ = model._features(batch)  # ruff: ignore[private-member-access]
     with torch.no_grad():
         target_codes = model.tokenizer(chunk)
-        target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
+        target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # ruff: ignore[private-member-access]
 
-    _, offsets = model._heads(features)  # noqa: SLF001
+    _, offsets = model._heads(features)  # ruff: ignore[private-member-access]
     offsets = offsets.detach().requires_grad_()
 
-    predicted = model.tokenizer.invert(target_codes) + model._offset(  # noqa: SLF001
+    predicted = model.tokenizer.invert(target_codes) + model._offset(  # ruff: ignore[private-member-access]
         offsets, target_codes
     )
     model.losses["offset"](predicted, target).backward()
@@ -342,7 +351,7 @@ def test_readout_is_causally_valid() -> None:
     model = _make_model()
     batch = _make_batch()
 
-    features, _, _ = model._features(batch)  # noqa: SLF001
+    features, _, _ = model._features(batch)  # ruff: ignore[private-member-access]
 
     perturbed = _make_batch()
     perturbed["image"]["cam_front_left"] = batch["image"]["cam_front_left"].clone()
@@ -354,7 +363,7 @@ def test_readout_is_causally_valid() -> None:
     perturbed["continuous"]["speed"][:, -1] = 100.0
     perturbed["context"]["waypoints"][:, -1] += 1.0
 
-    features_perturbed, _, _ = model._features(perturbed)  # noqa: SLF001
+    features_perturbed, _, _ = model._features(perturbed)  # ruff: ignore[private-member-access]
 
     torch.testing.assert_close(features[:, :-1], features_perturbed[:, :-1])
     assert not torch.allclose(features[:, -1], features_perturbed[:, -1])
@@ -384,7 +393,7 @@ def test_fusion_norm_balances_sources() -> None:
 
     assert model.fusion_patch_gain.requires_grad
     assert model.fusion_goal_gain.requires_grad
-    loss = model._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss = model._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # ruff: ignore[private-member-access]
     loss.backward()
     assert model.fusion_goal_gain.grad is not None
 
@@ -409,20 +418,20 @@ def test_trajectory_head_absent_by_default() -> None:
     model = _make_model()
     assert model.trajectory_head is None
 
-    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
-    assert "trajectory" not in metrics["policy", "loss"].keys()  # noqa: SIM118
+    metrics = model._compute_metrics(_make_batch())  # ruff: ignore[private-member-access]
+    assert "trajectory" not in metrics["policy", "loss"].keys()  # ruff: ignore[in-dict-keys]
 
     predictions = model.predict_step(_make_batch())
-    assert "trajectory" not in predictions.keys()  # noqa: SIM118
+    assert "trajectory" not in predictions.keys()  # ruff: ignore[in-dict-keys]
 
 
 def test_trajectory_head_metrics_and_gradients() -> None:
     model = _make_model(with_trajectory_head=True)
     batch = _make_batch(with_trajectory_target=True)
 
-    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    metrics = model._compute_metrics(batch)  # ruff: ignore[private-member-access]
     losses = metrics["policy", "loss"]
-    assert "trajectory" in losses.keys()  # noqa: SIM118
+    assert "trajectory" in losses.keys()  # ruff: ignore[in-dict-keys]
     assert losses["trajectory"].isfinite()
     assert metrics["policy", "metric", "trajectory_loss_xy"].isfinite()
     assert metrics["policy", "metric", "trajectory_loss_heading"].isfinite()
@@ -457,4 +466,100 @@ def test_trajectory_head_predict_step() -> None:
         BATCH_SIZE,
         TRAJECTORY_HORIZON,
         3,
+    )
+
+
+def test_mode_head_absent_by_default() -> None:
+    """The trajectory-mode classifier is opt-in: a model built without it must
+    behave exactly as before it existed."""
+    model = _make_model(with_trajectory_head=True)
+    assert model.mode_head is None
+
+    metrics = model._compute_metrics(  # ruff: ignore[private-member-access]
+        _make_batch(with_trajectory_target=True)
+    )
+    assert "mode" not in metrics["policy", "loss"].keys()  # ruff: ignore[in-dict-keys]
+    assert "mode_accuracy" not in metrics["policy", "metric"].keys()  # ruff: ignore[in-dict-keys]
+
+    predictions = model.predict_step(_make_batch(with_trajectory_target=True))
+    assert "mode_logits" not in predictions["trajectory"].keys()  # ruff: ignore[in-dict-keys]
+
+
+def test_mode_head_requires_trajectory_head() -> None:
+    """There is no oracle winner to distill without a trajectory_head."""
+    model = _make_model(with_trajectory_head=False, with_mode_head=True)
+
+    with pytest.raises(RuntimeError, match="trajectory_head"):
+        model._compute_metrics(_make_batch())  # ruff: ignore[private-member-access]
+
+
+def test_mode_head_metrics_and_gradients() -> None:
+    model = _make_model(with_trajectory_head=True, with_mode_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    metrics = model._compute_metrics(batch)  # ruff: ignore[private-member-access]
+    losses = metrics["policy", "loss"]
+    assert "mode" in losses.keys()  # ruff: ignore[in-dict-keys]
+    assert losses["mode"].isfinite()
+    accuracy = metrics["policy", "metric", "mode_accuracy"]
+    assert accuracy.isfinite()
+    assert 0.0 <= accuracy <= 1.0
+
+    losses.sum(reduce=True).backward()
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.mode_head.parameters()
+    )
+
+
+def test_mode_head_predict_step() -> None:
+    model = _make_model(with_trajectory_head=True, with_mode_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    predictions = model.predict_step(batch)
+
+    assert predictions["trajectory", "mode_logits"].shape == (
+        BATCH_SIZE,
+        NUM_TRAJECTORY_HYPOTHESES,
+    )
+    assert predictions["trajectory", "predicted_index"].shape == (BATCH_SIZE,)
+    assert (predictions["trajectory", "predicted_index"] < NUM_TRAJECTORY_HYPOTHESES).all()
+
+
+def test_freeze_base_locks_everything_but_mode_head() -> None:
+    model = _make_model(with_trajectory_head=True, with_mode_head=True, freeze_base=True)
+
+    frozen_modules = (
+        model.patch_projection,
+        model.speed_tokenizer,
+        model.speed_embedding,
+        model.encoder,
+        model.code_head,
+        model.offset_head,
+        model.norm,
+        model.trajectory_head,
+    )
+    for module in frozen_modules:
+        assert all(not p.requires_grad for p in module.parameters())
+
+    assert any(p.requires_grad for p in model.mode_head.parameters())
+
+    model.train()
+    for module in frozen_modules:
+        assert not module.training
+    assert model.mode_head.training
+
+    loss = model._compute_metrics(  # ruff: ignore[private-member-access]
+        _make_batch(with_trajectory_target=True)
+    )["policy", "loss"].sum(reduce=True)
+    loss.backward()
+
+    assert all(
+        p.grad is None or p.grad.abs().sum() == 0
+        for module in frozen_modules
+        for p in module.parameters()
+    )
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.mode_head.parameters()
     )

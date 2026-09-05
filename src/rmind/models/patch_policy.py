@@ -12,7 +12,7 @@ from torch import Tensor, nn
 from torch.nn import Module
 from torch.nn import functional as F
 from torch.optim import Optimizer
-from torch.utils._pytree import MappingKey  # noqa: PLC2701
+from torch.utils._pytree import MappingKey  # ruff: ignore[import-private-name]
 from torch.utils.checkpoint import checkpoint
 
 from rmind.components import optimizers
@@ -66,7 +66,7 @@ def modality_transform(input_transform: Module) -> ModuleDict:
 class TransformerBlock(nn.Module):
     """Pre-LN GPT block (minGPT-style, as used by the VQ-BeT policy trunk)."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         dim_model: int,
@@ -117,7 +117,7 @@ class BlockCausalTransformer(nn.Module):
     """
 
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         dim_model: int,
@@ -195,7 +195,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     """
 
     @validate_call
-    def __init__(  # noqa: PLR0913, PLR0915
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-statements]
         self,
         *,
         input_transform: HydraConfig[Module] | InstanceOf[Module],
@@ -217,6 +217,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # `None` (default) leaves this model identical to before it existed --
         # backward compatible with checkpoints/configs saved without it.
         trajectory_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        # trajectory-MODE classifier: `None` (default) leaves this model
+        # unchanged. Reads the SAME readout features as `trajectory_head` and
+        # is trained (see `_compute_metrics`) to predict which hypothesis the
+        # winner-takes-all oracle would pick -- i.e. it distills a ground-truth
+        # -dependent oracle into something that can select a mode with no
+        # ground truth at deployment. Requires `trajectory_head is not None`.
+        mode_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
         image: Path = ("image", "cam_front_left"),
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
@@ -228,6 +235,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         offset_scale: float | None = None,
         fusion_norm: bool = False,
         fusion_goal_rms: float | None = None,
+        # freeze everything except `mode_head` (and the always-frozen
+        # image/goal/tokenizer): the lever `load_for_mode_head_training` uses
+        # to train a mode classifier on top of an otherwise-frozen checkpoint.
+        freeze_base: bool = False,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -244,17 +255,17 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # frozen feature extractors: never train, never leave eval mode (see train())
         self.image_encoder = (
             init_hydra_param(hparams, "image_encoder", image_encoder)
-            .requires_grad_(False)  # noqa: FBT003
+            .requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
             .eval()
         )
         self.goal_encoder = (
             init_hydra_param(hparams, "goal_encoder", goal_encoder)
-            .requires_grad_(False)  # noqa: FBT003
+            .requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
             .eval()
         )
         self.tokenizer = (
             init_hydra_param(hparams, "tokenizer", tokenizer)
-            .requires_grad_(False)  # noqa: FBT003
+            .requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
             .eval()
         )
 
@@ -275,6 +286,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.trajectory_head: Module | None = init_hydra_param(
             hparams, "trajectory_head", trajectory_head
         )
+        self.mode_head: Module | None = init_hydra_param(
+            hparams, "mode_head", mode_head
+        )
 
         self.image: Path = image
         self.speed: Path = speed
@@ -285,6 +299,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
+        self.freeze_base = freeze_base
         hparams |= {
             "image": image,
             "speed": speed,
@@ -296,6 +311,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "teacher_force_offset": teacher_force_offset,
             "offset_scale": offset_scale,
             "fusion_norm": fusion_norm,
+            "freeze_base": freeze_base,
         }
 
         # scale-balanced feature fusion: LayerNorm + learnable gain on the patch
@@ -350,6 +366,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             self.fusion_patch_gain = None
             self.fusion_goal_gain = None
 
+        if freeze_base:
+            for module in self._base_modules():
+                if module is not None:
+                    module.requires_grad_(False).eval()  # ruff: ignore[boolean-positional-value-in-call]
+            for param in (self.fusion_patch_gain, self.fusion_goal_gain):
+                if param is not None:
+                    param.requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
+
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
         self.optimizer: HydraConfig[Optimizer] | None = optimizer
@@ -362,12 +386,33 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         self.save_hyperparameters(hparams)
 
+    def _base_modules(self) -> tuple[Module | None, ...]:
+        """Every module `freeze_base` freezes -- everything except `mode_head`
+        (the new trainable head) and the always-frozen image/goal/tokenizer
+        (handled separately, see `train`).
+        """
+        return (
+            self.patch_projection,
+            self.speed_tokenizer,
+            self.speed_embedding,
+            self.encoder,
+            self.code_head,
+            self.offset_head,
+            self.norm,
+            self.trajectory_head,
+            self.fusion_patch_norm,
+        )
+
     @override
     def train(self, mode: bool = True) -> "PatchPolicy":
         super().train(mode)
         self.image_encoder.eval()
         self.goal_encoder.eval()
         self.tokenizer.eval()
+        if self.freeze_base:
+            for module in self._base_modules():
+                if module is not None:
+                    module.eval()
         return self
 
     @staticmethod
@@ -496,7 +541,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         return (self.tokenizer.invert(codes) + offset).unflatten(
             -1,
-            (-1, self.tokenizer._action_features),  # noqa: SLF001
+            (-1, self.tokenizer._action_features),  # ruff: ignore[private-member-access]
         )
 
     def _predict_trajectory(self, features: Tensor) -> Tensor:
@@ -512,13 +557,27 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             pred, "... (q p c) -> ... q p c", q=self.num_trajectory_hypotheses, c=3
         )
 
-    def _compute_metrics(self, batch: Any) -> TensorDict:  # noqa: PLR0914
+    def _predict_mode(self, features: Tensor) -> Tensor:
+        """Classifier logits over trajectory hypotheses, `(*b,
+        num_trajectory_hypotheses)`. Reads the SAME readout `features` as
+        `_predict_trajectory`; trained (see `_compute_metrics`) to predict the
+        winner-takes-all oracle's `best_index` -- the hypothesis a
+        ground-truth-supervised loss would have picked -- so a mode can be
+        chosen at deployment with no access to ground truth.
+
+        Only call this when `self.mode_head is not None`.
+        """
+        return self.mode_head(features)  # ty:ignore[reportOptionalCall]
+
+    def _compute_metrics(  # ruff: ignore[too-many-locals, complex-structure]
+        self, batch: Any
+    ) -> TensorDict:
         features, chunk, trajectory_target = self._features(batch)  # (b, t, d), ...
         tokenizer = self.tokenizer
 
         with torch.no_grad():
             target_codes = tokenizer(chunk)  # (b, t, num_quantizers)
-            target = tokenizer._normalize(  # noqa: SLF001
+            target = tokenizer._normalize(  # ruff: ignore[private-member-access]
                 chunk.flatten(-2, -1)
             )  # (b, t, action_dim)
 
@@ -559,6 +618,19 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             losses["trajectory"] = self.losses["trajectory"](
                 trajectory_pred, trajectory_target
             )
+
+        # trajectory-mode classifier: distills the winner-takes-all oracle's
+        # best_index (computed below, from the GT-supervised trajectory_pred)
+        # into a head that needs no ground truth at deployment.
+        mode_logits = None
+        if self.mode_head is not None:
+            if trajectory_pred is None:
+                msg = (
+                    "mode_head requires a trajectory_head to supervise against "
+                    "(its label is the winner-takes-all oracle's best_index)"
+                )
+                raise RuntimeError(msg)
+            mode_logits = self._predict_mode(features)  # (b, t, q)
 
         # gradient-free LAST-FRAME metrics: the training losses above average over
         # all T readouts (contexts of 1..T frames), whereas JointPolicyObjective
@@ -622,6 +694,19 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                         predicted_chunk[:, sl], target[:, sl]
                     )
 
+        # cross-entropy against the oracle `best_index` computed above -- OUTSIDE
+        # the no_grad block above, since this is the one term that must backprop
+        # into mode_logits (and thus mode_head)
+        if mode_logits is not None:
+            losses["mode"] = self.losses["mode"](
+                rearrange(mode_logits, "b t q -> (b t) q"),
+                rearrange(best_index, "b t -> (b t)"),
+            )
+            with torch.no_grad():
+                metrics["mode_accuracy"] = (
+                    (mode_logits.argmax(dim=-1) == best_index).float().mean()
+                )
+
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
@@ -630,7 +715,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         with maybe_profile(f"{prefix}_step"):
             metrics = self._compute_metrics(batch)
 
-        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
+        losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # ruff: ignore[in-dict-keys]
         metrics["loss", "total"] = losses.sum(reduce=True)
 
         self.log_dict(
@@ -677,7 +762,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         The exported graph needs no action series in the batch (`forward`
         passes `require_chunk=False`).
         """
-        from torchvision.transforms.v2 import Normalize  # noqa: PLC0415
+        from torchvision.transforms.v2 import (  # ruff: ignore[import-outside-top-level]
+            Normalize,
+        )
 
         model = cls.load_from_wandb_artifact(
             artifact, filename="model.ckpt", map_location="cpu", weights_only=False
@@ -733,6 +820,92 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return model
 
     @classmethod
+    def load_for_mode_head_training(
+        cls,
+        artifact: str,
+        *,
+        mode_head: Any,
+        mode_loss: Any,
+        optimizer: Any,
+        lr_scheduler: Any | None = None,
+        **_ignored: Any,
+    ) -> "PatchPolicy":
+        """Train a trajectory-mode classifier on top of an otherwise-FROZEN
+        checkpoint (e.g. the `trajectory_head` arm exported as `v9y58oei`).
+
+        Loads weights AND saved hparams from the artifact like
+        `load_for_continuation`, but additionally:
+
+        - sets `freeze_base=True`, which freezes (`requires_grad_(False)` +
+          permanent `.eval()`, see `_base_modules`/`train`) every module except
+          the new `mode_head` -- the image/goal/tokenizer encoders were already
+          frozen by construction, this extends that to the trunk and the
+          code/offset/trajectory heads;
+        - instantiates `mode_head` and attaches it, plus a `"mode"` loss
+          (typically `nn.CrossEntropyLoss`) added into `losses` -- distilling
+          the winner-takes-all oracle's `best_index` (see `_compute_metrics`)
+          into a head that runs with no ground truth at deployment;
+        - replaces the optimizer/lr_scheduler exactly like
+          `load_for_continuation` (fresh Adam moments; with only `mode_head`
+          unfrozen, `SelectiveAdamW`'s param groups over the rest are inert).
+
+        Requires the checkpoint to have been trained with a `trajectory_head`
+        (there is no oracle winner to distill without one).
+
+        Raises:
+            ValueError: if the loaded checkpoint has no `trajectory_head`.
+        """
+        if not isinstance(optimizer, HydraConfig):
+            optimizer = HydraConfig[Optimizer].model_validate(optimizer)
+        if lr_scheduler is not None and not isinstance(
+            lr_scheduler, LRSchedulerHydraConfig
+        ):
+            lr_scheduler = LRSchedulerHydraConfig.model_validate(lr_scheduler)
+        if not isinstance(mode_head, HydraConfig):
+            mode_head = HydraConfig[Module].model_validate(mode_head)
+        if not isinstance(mode_loss, HydraConfig):
+            mode_loss = HydraConfig[Module].model_validate(mode_loss)
+
+        model = cls.load_from_wandb_artifact(
+            artifact, filename="model.ckpt", map_location="cpu", weights_only=False
+        )
+        if model.trajectory_head is None:
+            msg = (
+                "load_for_mode_head_training requires a checkpoint trained "
+                "with a trajectory_head (the mode classifier distills its "
+                "winner-takes-all winner)"
+            )
+            raise ValueError(msg)
+
+        model.freeze_base = True
+        for module in model._base_modules():  # ruff: ignore[private-member-access]
+            if module is not None:
+                module.requires_grad_(False).eval()  # ruff: ignore[boolean-positional-value-in-call]
+        for param in (model.fusion_patch_gain, model.fusion_goal_gain):
+            if param is not None:
+                param.requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
+        model.hparams["freeze_base"] = True
+
+        model.mode_head = mode_head.instantiate()
+        model.hparams["mode_head"] = mode_head.model_dump()
+
+        model.losses["mode"] = mode_loss.instantiate()
+        losses_hparams = dict(model.hparams["losses"])
+        losses_hparams["modules"] = {
+            **losses_hparams.get("modules", {}),
+            "mode": mode_loss.model_dump(),
+        }
+        model.hparams["losses"] = losses_hparams
+
+        model.optimizer = optimizer
+        model.lr_scheduler = lr_scheduler
+        model.hparams["optimizer"] = optimizer.model_dump()
+        model.hparams["lr_scheduler"] = (
+            lr_scheduler.model_dump() if lr_scheduler is not None else None
+        )
+        return model
+
+    @classmethod
     def load_head_for_export(cls, artifact: str) -> "PatchPolicyHead":
         """Head-only export for on-the-fly decoding (see `PatchPolicyHead`)."""
         model = cls.load_from_wandb_artifact(
@@ -762,7 +935,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         })
 
     @override
-    def predict_step(self, batch: dict[str, Any]) -> TensorDict:  # noqa: PLR0914
+    def predict_step(self, batch: dict[str, Any]) -> TensorDict:  # ruff: ignore[too-many-locals]
         keys = frozenset(self.prediction_config.objectives)
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         tokenizer = self.tokenizer
@@ -773,9 +946,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         b, t = chunk.shape[:2]
         time_index = torch.arange(t, device=features.device).expand(b, -1)[:, -1:]
 
-        ground_truth = tokenizer._normalize(  # noqa: SLF001
+        ground_truth = tokenizer._normalize(  # ruff: ignore[private-member-access]
             chunk[:, -1].flatten(-2, -1)
-        ).unflatten(-1, (-1, tokenizer._action_features))  # noqa: SLF001
+        ).unflatten(-1, (-1, tokenizer._action_features))  # ruff: ignore[private-member-access]
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             gt = self._structure(ground_truth)
@@ -843,6 +1016,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 batch_size=[trajectory_pred.shape[0]],
             )
 
+            if self.mode_head is not None:
+                # the classifier's own pick, alongside the oracle `best_index`
+                # above -- their agreement rate is `mode_accuracy` (train/val)
+                mode_logits = self._predict_mode(features)  # (b, q)
+                result["trajectory"]["mode_logits"] = mode_logits
+                result["trajectory"]["predicted_index"] = mode_logits.argmax(dim=-1)
+
         return TensorDict(result).auto_batch_size_(2)
 
     @override
@@ -900,7 +1080,7 @@ class PatchPolicyHead(pl.LightningModule):
         self.norm = norm
         self.code_head = code_head
         self.offset_head = offset_head
-        self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        self.tokenizer = tokenizer.requires_grad_(False).eval()  # ruff: ignore[boolean-positional-value-in-call]
 
     @override
     def forward(self, inputs: Mapping[str, Tensor]) -> TensorDict:
@@ -916,10 +1096,10 @@ class PatchPolicyHead(pl.LightningModule):
             self.offset_head(features), "... (g c a) -> ... g c a", g=g, c=c
         )
 
-        offset = PatchPolicy._gather_offset(offsets, codes)  # noqa: SLF001
+        offset = PatchPolicy._gather_offset(offsets, codes)  # ruff: ignore[private-member-access]
         chunk = (self.tokenizer.invert(codes) + offset).unflatten(
             -1,
-            (-1, self.tokenizer._action_features),  # noqa: SLF001
+            (-1, self.tokenizer._action_features),  # ruff: ignore[private-member-access]
         )
         return TensorDict({
             "code_logits": code_logits,

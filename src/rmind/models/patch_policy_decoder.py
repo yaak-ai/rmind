@@ -25,11 +25,19 @@ Checkpoints trained with the auxiliary trajectory head (`trajectory_head`, Drivo
 arXiv:2601.05083) emit one more output, `policy.trajectory`
 `(1, num_trajectory_hypotheses, trajectory_horizon, 3)` -- `num_trajectory_hypotheses`
 multi-hypothesis ego-frame `(x, y, heading)` forecasts for frames
-`t0+1 .. t0+trajectory_horizon`, unranked (the training loss is winner-takes-all,
-so there is no confidence output to pick a mode by; hypothesis 0 is not "the
-best"). Checkpoints without the head export the three outputs above and nothing
-else, so consumers must bind outputs by NAME and treat `policy.trajectory` as
-optional.
+`t0+1 .. t0+trajectory_horizon`, unranked by default (the training loss is
+winner-takes-all, so there is no confidence output to pick a mode by;
+hypothesis 0 is not "the best" -- UNLESS a `mode_head` is also present, see
+below). Checkpoints without the head export the three outputs above and
+nothing else, so consumers must bind outputs by NAME and treat
+`policy.trajectory` as optional.
+
+Checkpoints additionally trained with a trajectory-MODE classifier
+(`mode_head`, via `PatchPolicy.load_for_mode_head_training`) emit one more
+output still, `policy.trajectory_mode_logits` `(1, num_trajectory_hypotheses)`
+-- unnormalized logits scoring each `policy.trajectory` hypothesis, so the
+mode a downstream consumer would run with is `argmax(policy.trajectory_mode_logits,
+dim=-1)`. Only present when both `trajectory_head` AND `mode_head` are set.
 
 The host owns the ring buffer: it shifts `new_k`/`new_v` into `past_k`/`past_v`
 and appends `257` zeros to the filled region of `cache_bias`. Nothing is written
@@ -154,7 +162,7 @@ class PatchPolicyDecoderStep(nn.Module):
         policy = self.policy
         image = (inputs["image"] - self.image_mean) / self.image_std
 
-        tokens = policy._frame_tokens(  # noqa: SLF001
+        tokens = policy._frame_tokens(  # ruff: ignore[private-member-access]
             image, inputs["speed"], inputs["waypoints"]
         )  # (b, 1, 257, d)
 
@@ -173,12 +181,19 @@ class PatchPolicyDecoderStep(nn.Module):
             features = policy.norm(features)
 
         out_policy: dict[str, Tensor] = {
-            "joint_actions": policy._predict_chunk(features)  # noqa: SLF001
+            "joint_actions": policy._predict_chunk(features)  # ruff: ignore[private-member-access]
         }
         if policy.trajectory_head is not None:
             # auxiliary direct-regression forecast (DrivoR): reads the SAME
             # readout `features` as the VQ-BeT chunk, so it costs one MLP and
             # cannot perturb `joint_actions`.
-            out_policy["trajectory"] = policy._predict_trajectory(features)  # noqa: SLF001
+            out_policy["trajectory"] = policy._predict_trajectory(features)  # ruff: ignore[private-member-access]
+            if policy.mode_head is not None:
+                # trajectory-mode classifier: also reads the SAME readout
+                # `features`, costs one more MLP, and cannot perturb
+                # `joint_actions` or `trajectory` either.
+                out_policy["trajectory_mode_logits"] = policy._predict_mode(  # ruff: ignore[private-member-access]
+                    features
+                )
 
         return TensorDict({"policy": out_policy, "new_k": new_k, "new_v": new_v})
