@@ -21,6 +21,16 @@ Inputs, all bound **by name**:
 Outputs: `policy.joint_actions` `(1, horizon, action_features)`, and `new_k` /
 `new_v` `(L, 1, heads, 257, head_dim)`.
 
+Checkpoints trained with the auxiliary trajectory head (`trajectory_head`, DrivoR
+arXiv:2601.05083) emit one more output, `policy.trajectory`
+`(1, num_trajectory_hypotheses, trajectory_horizon, 3)` -- `num_trajectory_hypotheses`
+multi-hypothesis ego-frame `(x, y, heading)` forecasts for frames
+`t0+1 .. t0+trajectory_horizon`, unranked (the training loss is winner-takes-all,
+so there is no confidence output to pick a mode by; hypothesis 0 is not "the
+best"). Checkpoints without the head export the three outputs above and nothing
+else, so consumers must bind outputs by NAME and treat `policy.trajectory` as
+optional.
+
 The host owns the ring buffer: it shifts `new_k`/`new_v` into `past_k`/`past_v`
 and appends `257` zeros to the filled region of `cache_bias`. Nothing is written
 inside the graph -- no `ScatterElements`, and the cache tensors are ordinary
@@ -162,8 +172,13 @@ class PatchPolicyDecoderStep(nn.Module):
         if policy.norm is not None:
             features = policy.norm(features)
 
-        return TensorDict({
-            "policy": {"joint_actions": policy._predict_chunk(features)},  # noqa: SLF001
-            "new_k": new_k,
-            "new_v": new_v,
-        })
+        out_policy: dict[str, Tensor] = {
+            "joint_actions": policy._predict_chunk(features)  # noqa: SLF001
+        }
+        if policy.trajectory_head is not None:
+            # auxiliary direct-regression forecast (DrivoR): reads the SAME
+            # readout `features` as the VQ-BeT chunk, so it costs one MLP and
+            # cannot perturb `joint_actions`.
+            out_policy["trajectory"] = policy._predict_trajectory(features)  # noqa: SLF001
+
+        return TensorDict({"policy": out_policy, "new_k": new_k, "new_v": new_v})
