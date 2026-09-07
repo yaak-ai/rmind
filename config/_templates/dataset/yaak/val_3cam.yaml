@@ -493,6 +493,22 @@ samples:
               WHERE
                   len("meta/ImageMetadata.cam_front_left/frame_idx") = ${clip_length}
                   AND list_last("meta/ImageMetadata.cam_front_left/frame_idx") - list_first("meta/ImageMetadata.cam_front_left/frame_idx") == (${clip_length} - 1) * ${episode_step}
+                  -- Recording pauses continue incrementing frame_idx by 1 across the gap (see
+                  -- Niro102-HQ/2023-04-29--10-02-20: frame_idx 267->268 spans a real 173.8s
+                  -- wall-clock gap), so the frame_idx-stride check above cannot see them. Drop
+                  -- any clip whose time_stamp list contains a step larger than
+                  -- max_frame_gap_ms between nominally-adjacent (every ${episode_step}-th raw
+                  -- frame) samples -- nominal spacing is ~${episode_step} frames / 30fps,
+                  -- comfortably under the default threshold.
+                  AND list_max(
+                      list_transform(
+                          list_zip(
+                              "meta/ImageMetadata.cam_front_left/time_stamp",
+                              "meta/ImageMetadata.cam_front_left/time_stamp"[2:]
+                          ),
+                          x -> date_diff('millisecond', x[1], x[2])
+                      )
+                  ) <= ${oc.select:max_frame_gap_ms,1000}
                   AND NOT (
                       list_max("meta/VehicleMotion/gas_pedal_normalized") <= (1.0 / 255 + 0.001)
                       AND list_max("meta/VehicleMotion/brake_pedal_normalized") <= (1.0 / 164 + 0.001)
