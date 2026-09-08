@@ -6,7 +6,6 @@ from pydantic import BaseModel, ConfigDict, InstanceOf, validate_call
 from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from torch import Tensor
 from torch.nn import Module
-from torch.nn import functional as F
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils._pytree import MappingKey, tree_leaves, tree_map  # noqa: PLC2701
@@ -31,6 +30,8 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
     https://arxiv.org/pdf/2403.03181.
     """
 
+    channel_weights: Tensor
+
     @validate_call
     def __init__(  # noqa: PLR0913
         self,
@@ -42,6 +43,7 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
         targets: Targets,
         commitment_weight: float = 1.0,
         vq_weight: float = 5.0,
+        channel_weights: list[float] | None = None,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
     ) -> None:
@@ -75,6 +77,21 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
         hparams["targets"] = targets
         hparams["commitment_weight"] = commitment_weight
         hparams["vq_weight"] = vq_weight
+
+        if channel_weights is None:
+            weights = torch.ones(self._action_features)
+        else:
+            weights = torch.as_tensor(channel_weights, dtype=torch.float32)
+            if weights.numel() != self._action_features:
+                msg = (
+                    f"channel_weights has {weights.numel()} entries, expected "
+                    f"{self._action_features} (one per target leaf in `targets`)"
+                )
+                raise ValueError(msg)
+        # not persistent: this is a config-derived constant, not learned state, and
+        # must not block loading a checkpoint saved before/without this field.
+        self.register_buffer("channel_weights", weights, persistent=False)
+        hparams["channel_weights"] = channel_weights
 
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
@@ -127,6 +144,14 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
         action = torch.stack(tree_leaves(gathered), dim=-1)
         return action.reshape(action.shape[0], -1)
 
+    def _weighted_l1_loss(self, a_hat: Tensor, a: Tensor) -> Tensor:
+        """Per-channel-weighted L1, broadcast over the (action_clip, action_space)
+        layout `_gather_actions` flattens into. Reduces exactly to `F.l1_loss`
+        (mean reduction) when `channel_weights` is uniform 1.0 — the default.
+        """
+        diff = (a_hat - a).reshape(*a.shape[:-1], -1, self._action_features).abs()
+        return (diff * self.channel_weights).mean()
+
     def _step(self, batch: Any) -> tuple[Tensor, dict[str, Tensor]]:
         inputs = self.input_transform(batch)
         a = self._gather_actions(inputs)
@@ -135,7 +160,7 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
         codes, z_q, vq = self.quantizer(z)
         a_hat = self.decoder(z + (z_q - z).detach())
 
-        recon = F.l1_loss(a_hat, a)
+        recon = self._weighted_l1_loss(a_hat, a)
         total = recon + self.vq_weight * (
             vq["codebook"] + self.commitment_weight * vq["commit"]
         )

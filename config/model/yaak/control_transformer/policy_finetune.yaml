@@ -46,7 +46,7 @@ hparams_jq: |
         },
         "tokenizer": {
           "_target_": "rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact",
-          "artifact": "${action_tokenizer_artifact}",
+          "artifact": "yaak/rmind/model-y74asdtd:v9",
           "weights_only": false
         },
         "code_head": {
