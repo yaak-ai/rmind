@@ -36,7 +36,11 @@ num_patches: 256
 waypoints_tokenizer_artifact: yaak/waypoints-tokenizer/model-gzxgumtf:v9
 waypoint_latent_dim: 384
 
-action_tokenizer_artifact: yaak/rmind/model-y74asdtd:v9
+# 3-feature artifact (turn_signal removed from the RVQ, uniform channel_weights;
+# gate passed 2026-09-08, see docs/action_tokenizer_repair_plan.md Phase 2a).
+# raw.yaml's `turn_signal_head`/3-channel `joint_actions` REQUIRE this shape --
+# the old 4-feature y74asdtd:v9 silently breaks offset_head's output width.
+action_tokenizer_artifact: yaak/rmind/model-q6ocue9a:v9
 
 # policy trunk (https://arxiv.org/pdf/2607.18236 Table 9, Push-T)
 policy_embedding_dim: 512

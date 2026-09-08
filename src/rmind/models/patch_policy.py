@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from itertools import chain
-from typing import Annotated, Any, final, override
+from typing import Annotated, Any, ClassVar, cast, final, override
 
 import pytorch_lightning as pl
 import torch
@@ -188,10 +188,27 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     last. This changes `tokens_per_frame` (257 -> 257 + R + 1), which the
     encoder/serving configs must mirror (`CausalFrameTransformer.tokens_per_frame`,
     `BlockCausalTransformer.max_sequence_length`, KV-cache/export geometry).
+
+    `turn_signal_head` (opt-in, `None` = off): `turn_signal` is a 3-way
+    categorical (OFF/LEFT/RIGHT) with no metric structure, so regressing it
+    through the RVQ's L1 objective treats "half a signal away" as meaningful,
+    which it is not (docs/action_tokenizer_repair_plan.md). With a tokenizer
+    trained WITHOUT `turn_signal` in its targets (the 3-feature artifact), set
+    `turn_signal_head` to a small classifier on the same readout feature,
+    supervised by cross-entropy/`FocalLoss` against the unfolded discrete
+    chunk (`losses["turn_signal"]`, required when the head is set). The served
+    `joint_actions` stays 4-channel either way: `_predict_chunk` concatenates
+    the head's decoded class back at index 3 in the `{0, 0.5, 1.0}` encoding
+    the export contract (`nn.py:277-300`, TRT bindings, parity harness) already
+    assumes -- so drivr, the ONNX unpacker and the export contract need no
+    change. `None` (default) reproduces the OLD behaviour bit-for-bit: `chunk`
+    is expected 4-channel already (turn_signal folded into the RVQ target).
     """
 
+    _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
+
     @validate_call
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         *,
         input_transform: HydraConfig[Module] | InstanceOf[Module],
@@ -209,10 +226,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         offset_head: HydraConfig[Module] | InstanceOf[Module],
         losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        # opt-in categorical turn-signal head (see class docstring); None keeps
+        # the old behaviour where `chunk` carries turn_signal through the RVQ
+        turn_signal_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
         cameras: tuple[str, ...] = ("cam_front_left",),
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
         chunk: Path = ("joint_actions",),
+        turn_signal: Path = ("discrete", "turn_signal"),
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
@@ -266,11 +287,22 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.offset_head = init_hydra_param(hparams, "offset_head", offset_head)
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
         self.norm: Module | None = init_hydra_param(hparams, "norm", norm)
+        self.turn_signal_head: Module | None = init_hydra_param(
+            hparams, "turn_signal_head", turn_signal_head
+        )
+        if self.turn_signal_head is not None and "turn_signal" not in self.losses:
+            msg = (
+                "turn_signal_head requires losses['turn_signal'] (e.g. "
+                "torch.nn.CrossEntropyLoss or rmind.components.loss.FocalLoss) "
+                "to supervise it"
+            )
+            raise ValueError(msg)
 
         self.cameras: tuple[str, ...] = cameras
         self.speed: Path = speed
         self.waypoints: Path = waypoints
         self.chunk: Path = chunk
+        self.turn_signal: Path = turn_signal
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
@@ -314,6 +346,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "speed": speed,
             "waypoints": waypoints,
             "chunk": chunk,
+            "turn_signal": turn_signal,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "neighbor_smoothing_channels": neighbor_smoothing_channels,
@@ -581,12 +614,20 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         *,
         require_chunk: bool = True,
         token_norms: dict[str, Tensor] | None = None,
+        turn_signal_chunk: dict[str, Tensor] | None = None,
     ) -> tuple[Tensor, Tensor | None]:
         """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
 
         The chunk is only a TARGET (and never feeds the features), so callers on
         the inference path (`forward`, ONNX export) pass `require_chunk=False`
         and may omit the action series from the batch entirely.
+
+        `turn_signal_chunk`, like `token_norms`, is an out-parameter: when given
+        and `turn_signal_head` is configured, filled under key `"turn_signal"`
+        with the raw (unnormalized, `{0, 1, 2}`) discrete turn-signal chunk
+        `(b, t, h)` -- the categorical head's target, fetched independently of
+        `self.chunk` because `joint_actions` no longer carries it once
+        `turn_signal_head` is set (see class docstring).
 
         Raises:
             ValueError: if the encoder was built for a different
@@ -600,6 +641,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         speed = self._get(inputs, self.speed)  # (b, t, 1)
         waypoints = self._get(inputs, self.waypoints)  # (b, t, n, 2)
         chunk = self._get(inputs, self.chunk, required=require_chunk)
+        if turn_signal_chunk is not None and self.turn_signal_head is not None:
+            turn_signal_chunk["turn_signal"] = cast(
+                "Tensor", self._get(inputs, self.turn_signal, required=require_chunk)
+            )
 
         images = torch.stack(
             [image_by_camera[camera] for camera in self.cameras], dim=2
@@ -650,6 +695,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             self.offset_head(features), "... (g c a) -> ... g c a", g=g, c=c
         )
         return code_logits, offsets
+
+    def _turn_signal_logits(self, features: Tensor) -> Tensor:
+        """Turn-signal class logits `(*b, horizon, 3)` -- OFF/LEFT/RIGHT.
+
+        Caller must check `self.turn_signal_head is not None` first.
+        """
+        assert self.turn_signal_head is not None  # noqa: S101
+        return rearrange(
+            self.turn_signal_head(features),
+            "... (h k) -> ... h k",
+            k=self._TURN_SIGNAL_CLASSES,
+        )
 
     @staticmethod
     def _gather_offset(offsets: Tensor, codes: Tensor) -> Tensor:
@@ -729,15 +786,29 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             return torch.softmax(-distances / self.neighbor_smoothing_tau, dim=-1)
 
     def _predict_chunk(self, features: Tensor) -> Tensor:
-        """Decode `invert(codes) + offset` -> `(*b, horizon, action_features)`."""
+        """Decode `invert(codes) + offset` -> `(*b, horizon, action_features)`.
+
+        With `turn_signal_head` set, `tokenizer._action_features` is 3
+        (continuous only) and the categorical head's argmax class is
+        concatenated back at the end, re-encoded `{0, 1, 2} -> {0, 0.5, 1.0}`
+        to match the export contract's 4-channel `joint_actions` (see class
+        docstring). Without it, `tokenizer._action_features` is already 4 and
+        this reproduces the old behaviour exactly.
+        """
         code_logits, offsets = self._heads(features)
         codes = self._sample_codes(code_logits)
         offset = self._offset(offsets, codes)
 
-        return (self.tokenizer.invert(codes) + offset).unflatten(
+        continuous = (self.tokenizer.invert(codes) + offset).unflatten(
             -1,
             (-1, self.tokenizer._action_features),  # noqa: SLF001
         )
+        if self.turn_signal_head is None:
+            return continuous
+
+        turn_signal_class = self._turn_signal_logits(features).argmax(dim=-1)
+        turn_signal_value = (turn_signal_class * 0.5).to(continuous.dtype)
+        return torch.cat([continuous, turn_signal_value.unsqueeze(-1)], dim=-1)
 
     def _code_losses(
         self, code_logits: Tensor, target_codes: Tensor
@@ -770,11 +841,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
         return losses
 
-    def _compute_metrics(
+    def _compute_metrics(  # noqa: PLR0914
         self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
     ) -> TensorDict:
+        turn_signal_chunk: dict[str, Tensor] = {}
         features, chunk = self._features(
-            batch, token_norms=token_norms
+            batch, token_norms=token_norms, turn_signal_chunk=turn_signal_chunk
         )  # (b, t, d), (b, t, h, a)
         tokenizer = self.tokenizer
 
@@ -816,6 +888,16 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
+        turn_signal_logits: Tensor | None = None
+        turn_signal_target: Tensor | None = None
+        if self.turn_signal_head is not None:
+            turn_signal_target = turn_signal_chunk["turn_signal"].long()  # (b, t, h)
+            turn_signal_logits = self._turn_signal_logits(features)  # (b, t, h, 3)
+            losses["turn_signal"] = self.losses["turn_signal"](
+                rearrange(turn_signal_logits, "b t h k -> (b t h) k"),
+                rearrange(turn_signal_target, "b t h -> (b t h)"),
+            )
+
         metrics = self._readout_metrics(
             code_logits=code_logits,
             offsets=offsets,
@@ -824,6 +906,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             predicted_chunk=predicted_chunk,
             sampled_chunk=sampled_chunk,
             sampled_recon=sampled_recon,
+            turn_signal_logits=turn_signal_logits,
+            turn_signal_target=turn_signal_target,
         )
 
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
@@ -838,6 +922,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         predicted_chunk: Tensor,
         sampled_chunk: Tensor | None = None,
         sampled_recon: Tensor | None = None,
+        turn_signal_logits: Tensor | None = None,
+        turn_signal_target: Tensor | None = None,
     ) -> dict[str, Tensor]:
         """Gradient-free diagnostics at the deployed readout.
 
@@ -848,6 +934,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         `sampled_chunk`/`sampled_recon` are None when `sample_codes` is false:
         sampling is an eval-only decode mode, and with argmax serving the
         sampled metrics would just duplicate `offset_argmax_recon*`.
+
+        `turn_signal_logits`/`turn_signal_target` are None when
+        `turn_signal_head` is unset (see class docstring).
         """
         tokenizer = self.tokenizer
         with torch.no_grad():
@@ -892,6 +981,22 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             for q in range(tokenizer.quantizer.num_quantizers):
                 metrics[f"code_acc_{q}_last"] = correct[:, q].float().mean()
             metrics["code_acc_joint_last"] = correct.all(dim=-1).float().mean()
+
+            # turn-signal classification accuracy at the deployed readout -- a
+            # categorical head finally gets a categorical metric, which L1-through-
+            # RVQ could never give (docs/action_tokenizer_repair_plan.md Phase 2b).
+            if turn_signal_logits is not None and turn_signal_target is not None:
+                ts_correct_last = (
+                    turn_signal_logits[:, -1].argmax(dim=-1)
+                    == turn_signal_target[:, -1]
+                )  # (b, h)
+                metrics["turn_signal_acc_last"] = ts_correct_last.float().mean()
+                # index 1 is what inference actually applies (index 0 is skipped --
+                # see "Already handled" in the repair plan)
+                if ts_correct_last.shape[1] > 1:
+                    metrics["turn_signal_acc_index1_last"] = (
+                        ts_correct_last[:, 1].float().mean()
+                    )
 
             # context-depth localizer for windowed causal trunks: readouts at
             # positions < window-1 train under a PARTIAL window, positions
@@ -1076,7 +1181,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         tokenizer = self.tokenizer
 
-        features, chunk = self._features(batch)
+        turn_signal_chunk: dict[str, Tensor] = {}
+        features, chunk = self._features(batch, turn_signal_chunk=turn_signal_chunk)
         features = features[:, -1]  # predict from the newest frame only
 
         b, t = chunk.shape[:2]
@@ -1086,9 +1192,28 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             chunk[:, -1].flatten(-2, -1)
         ).unflatten(-1, (-1, tokenizer._action_features))  # noqa: SLF001
 
+        # raw {0, 1, 2} turn-signal target, source varies with the architecture:
+        # folded into `chunk` at index 3 (old, turn_signal_head unset) or fetched
+        # separately (new, joint_actions dropped it -- see class docstring)
+        turn_signal_raw = (
+            turn_signal_chunk["turn_signal"]
+            if self.turn_signal_head is not None
+            else chunk[..., 3]
+        )
+        if self.turn_signal_head is not None:
+            # re-encode {0, 1, 2} -> {0, 0.5, 1.0} so `_structure`'s bucketize
+            # sees the same convention it does for the old 4-channel `chunk`
+            ground_truth = torch.cat(
+                [
+                    ground_truth,
+                    (turn_signal_raw[:, -1] * 0.5).unsqueeze(-1).to(ground_truth.dtype),
+                ],
+                dim=-1,
+            )
+
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             gt = self._structure(ground_truth)
-            gt["discrete", "turn_signal"] = chunk[:, -1, :, 3].long()
+            gt["discrete", "turn_signal"] = turn_signal_raw[:, -1].long()
             predictions[key] = Prediction(value=gt, time_index=time_index)
 
         needs_prediction = keys & {

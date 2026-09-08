@@ -85,11 +85,11 @@ model:
 
       - _target_: rmind.components.nn.StackFields
         out_key: joint_actions
+        # turn_signal excluded -- see raw.yaml's StackFields for why
         paths:
           gas_pedal: [continuous, gas_pedal]
           brake_pedal: [continuous, brake_pedal]
           steering_angle: [continuous, steering_angle]
-          turn_signal: [discrete, turn_signal]
 
   # 3x patches/frame (256 -> 768): dinov2_dinowm_causal.yaml sets
   # tokens_per_frame/max_sequence_length off the single-camera `num_patches`

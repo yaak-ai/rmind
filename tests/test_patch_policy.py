@@ -87,6 +87,33 @@ def _make_tokenizer() -> ActionTokenizer:
     )
 
 
+def _make_continuous_only_tokenizer() -> ActionTokenizer:
+    """3-feature `ActionTokenizer` (turn_signal removed from `targets`) mirroring
+    the retrained artifact from docs/action_tokenizer_repair_plan.md Phase 2a.
+    """
+    action_dim = ACTION_HORIZON * 3
+    return ActionTokenizer(
+        input_transform=Sequential(
+            Identity(), ModuleDict(modules={Modality.CONTINUOUS: Identity()})
+        ),
+        encoder=Linear(action_dim, LATENT_DIM),
+        quantizer=ResidualVQ(
+            dim=LATENT_DIM,
+            codebook_size=CODEBOOK_SIZE,
+            num_quantizers=NUM_QUANTIZERS,
+            kmeans_init=False,
+        ),
+        decoder=Linear(LATENT_DIM, action_dim),
+        targets={
+            Modality.CONTINUOUS: {
+                "gas_pedal": ("continuous", "gas_pedal"),
+                "brake_pedal": ("continuous", "brake_pedal"),
+                "steering_angle": ("continuous", "steering_angle"),
+            }
+        },
+    )
+
+
 class _GoalEncoderStub(Module):
     """Maps waypoints `(b, t, n, 2)` -> a deterministic latent `(b, t, GOAL_DIM)`."""
 
@@ -117,10 +144,19 @@ def _make_model(  # noqa: PLR0913
     losses: ModuleDict | None = None,
     use_readout_token: bool = False,
     num_register_tokens: int = 0,
+    turn_signal_head: bool = False,
 ) -> PatchPolicy:
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
         tokens_per_frame += num_register_tokens + 1
+    # Phase 2b (docs/action_tokenizer_repair_plan.md): with a dedicated
+    # categorical head, the tokenizer/joint_actions drop to 3 continuous
+    # features -- turn_signal moves to its own head/target/loss.
+    action_features = 3 if turn_signal_head else ACTION_FIELDS
+    action_dim = ACTION_HORIZON * action_features
+    default_loss_modules = {"code": FocalLoss(), "offset": L1Loss()}
+    if turn_signal_head:
+        default_loss_modules["turn_signal"] = torch.nn.CrossEntropyLoss()
     return PatchPolicy(
         fusion_norm=fusion_norm,
         neighbor_smoothing_tau=neighbor_smoothing_tau,
@@ -142,12 +178,17 @@ def _make_model(  # noqa: PLR0913
             num_heads=2,
             max_sequence_length=EPISODE_LENGTH * tokens_per_frame,
         ),
-        tokenizer=_make_tokenizer(),
+        tokenizer=_make_continuous_only_tokenizer()
+        if turn_signal_head
+        else _make_tokenizer(),
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
-        offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * ACTION_DIM]),
+        offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * action_dim]),
+        turn_signal_head=MLP(POLICY_DIM, [16, ACTION_HORIZON * 3])
+        if turn_signal_head
+        else None,
         losses=losses
         if losses is not None
-        else ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
+        else ModuleDict(modules=default_loss_modules),
         norm=torch.nn.LayerNorm(POLICY_DIM),
         sample_codes=sample_codes,
         teacher_force_offset=teacher_force_offset,
@@ -162,15 +203,22 @@ def _make_model(  # noqa: PLR0913
     ).eval()
 
 
-def _make_batch(*, cameras: tuple[str, ...] = ("cam_front_left",)) -> dict:
+def _make_batch(
+    *, cameras: tuple[str, ...] = ("cam_front_left",), turn_signal_head: bool = False
+) -> dict:
     generator = torch.Generator().manual_seed(0)
+    action_features = 3 if turn_signal_head else ACTION_FIELDS
     chunk = torch.rand(
-        (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS), generator=generator
+        (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, action_features),
+        generator=generator,
     )
-    chunk[..., 3] = torch.randint(
-        0, 3, chunk[..., 3].shape, generator=generator
+    turn_signal = torch.randint(
+        0, 3, (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON), generator=generator
     ).float()
-    return {
+    if not turn_signal_head:
+        chunk[..., 3] = turn_signal
+
+    batch = {
         "image": {
             camera: torch.randn(
                 (BATCH_SIZE, EPISODE_LENGTH, NUM_PATCHES, IMAGE_DIM),
@@ -189,6 +237,12 @@ def _make_batch(*, cameras: tuple[str, ...] = ("cam_front_left",)) -> dict:
         },
         "joint_actions": chunk,
     }
+    if turn_signal_head:
+        # what ChunkFields would have unfolded from [discrete, turn_signal] --
+        # `input_transform=Identity()` in these tests, so `_features` reads it
+        # straight off the batch (see PatchPolicy.turn_signal / class docstring)
+        batch["discrete"] = {"turn_signal": turn_signal}
+    return batch
 
 
 def test_block_causal_mask() -> None:
@@ -480,6 +534,100 @@ def test_forward_and_predict_step() -> None:
 
     score = predictions["policy", ObjectivePredictionKey.SCORE_L1]
     assert (score.value["continuous", "gas_pedal"] >= 0).all()
+
+
+# --------------------------------------------------------------------------- #
+# categorical turn_signal_head (docs/action_tokenizer_repair_plan.md Phase 2b)
+# --------------------------------------------------------------------------- #
+
+
+def test_turn_signal_head_requires_a_turn_signal_loss() -> None:
+    """Constructor-time error, not a silent missing-key KeyError at the first
+    training step -- mirrors `neighbor_smoothing_tau`'s FocalLoss requirement.
+    """
+    with pytest.raises(ValueError, match="turn_signal_head"):
+        _make_model(
+            turn_signal_head=True,
+            losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
+        )
+
+
+def test_turn_signal_head_off_by_default() -> None:
+    model = _make_model()
+    assert model.turn_signal_head is None
+    # tokenizer/joint_actions stay 4-channel -- the pre-Phase-2b contract
+    assert model.tokenizer._action_features == ACTION_FIELDS  # noqa: SLF001
+
+
+def test_turn_signal_head_predict_chunk_stays_four_channel() -> None:
+    """The load-bearing compatibility decision (Phase 2b step 11): regardless
+    of `turn_signal_head`, `_predict_chunk` must emit 4 channels with
+    turn_signal at index 3 in the `{0, 0.5, 1.0}` encoding the export contract
+    (`nn.py:277-300`'s unpacker, the TRT bindings, the parity harness) assumes.
+    """
+    model = _make_model(turn_signal_head=True)
+    batch = _make_batch(turn_signal_head=True)
+
+    features, _ = model._features(batch)  # noqa: SLF001
+    predicted = model._predict_chunk(features[:, -1])  # noqa: SLF001
+
+    assert predicted.shape == (BATCH_SIZE, ACTION_HORIZON, ACTION_FIELDS)
+    turn_signal_value = predicted[..., 3]
+    assert set(torch.unique(turn_signal_value).tolist()) <= {0.0, 0.5, 1.0}
+
+
+def test_turn_signal_head_losses_and_metrics() -> None:
+    model = _make_model(turn_signal_head=True)
+    batch = _make_batch(turn_signal_head=True)
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    losses = cast("dict[str, Tensor]", metrics["policy", "loss"])
+    assert "turn_signal" in losses
+    assert losses["turn_signal"].isfinite()
+
+    readout_metrics = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    for key in ("turn_signal_acc_last", "turn_signal_acc_index1_last"):
+        assert readout_metrics[key].isfinite()
+        assert 0.0 <= float(readout_metrics[key]) <= 1.0
+
+    # off by default: no turn_signal loss/metrics leak in when the head is unset
+    off_metrics = _make_model()._compute_metrics(_make_batch())  # noqa: SLF001
+    assert "turn_signal" not in cast("dict[str, Tensor]", off_metrics["policy", "loss"])
+    assert "turn_signal_acc_last" not in cast(
+        "dict[str, Tensor]", off_metrics["policy", "metric"]
+    )
+
+
+def test_turn_signal_head_predict_step() -> None:
+    model = _make_model(turn_signal_head=True)
+    batch = _make_batch(turn_signal_head=True)
+
+    predictions = model.predict_step(batch)
+    for key in (
+        ObjectivePredictionKey.GROUND_TRUTH,
+        ObjectivePredictionKey.PREDICTION_VALUE,
+        ObjectivePredictionKey.SCORE_L1,
+        ObjectivePredictionKey.SCORE_SIGNED_ERROR,
+    ):
+        prediction = predictions["policy", key]
+        assert prediction.value["continuous", "gas_pedal"].shape == (
+            BATCH_SIZE,
+            ACTION_HORIZON,
+        )
+        assert prediction.value["discrete", "turn_signal"].shape == (
+            BATCH_SIZE,
+            ACTION_HORIZON,
+        )
+
+    gt = predictions["policy", ObjectivePredictionKey.GROUND_TRUTH]
+    # ground truth must be the EXACT raw class labels, not a value bucketized
+    # back from a lossy continuous round-trip
+    expected = batch["discrete"]["turn_signal"][:, -1].long()
+    torch.testing.assert_close(gt.value["discrete", "turn_signal"], expected)
+
+    score = predictions["policy", ObjectivePredictionKey.SCORE_L1]
+    assert (score.value["continuous", "gas_pedal"] >= 0).all()
+    assert (score.value["discrete", "turn_signal"] >= 0).all()
 
 
 def test_readout_is_causally_valid() -> None:

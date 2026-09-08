@@ -333,7 +333,83 @@ just for reconstruction-L1 parity.
 
 **Other `_action_features` consumers to check when it changes:**
 `src/rmind/scripts/patch_policy_eval.py:188`,
-`src/rmind/scripts/residual_unimodality_probe.py:352`.
+`src/rmind/scripts/residual_unimodality_probe.py:352` — both already read
+`tokenizer._action_features` dynamically (confirmed field-count-agnostic, no
+edit needed).
+
+### Phase 2b — implementation status (2026-09-08)
+
+Steps 9–11 done in code, verified by unit tests, config resolution, and the
+full suite (`just test`: 241 passed, 1 skipped; the only failures/errors are
+`test_models.py`/`test_export.py` CUDA `control_transformer`/`episode_builder`
+cases, reproduced identically on `HEAD~1` before this work — pre-existing and
+unrelated).
+
+- **Step 9** — `config/model/yaak/patch_policy/raw.yaml`'s `StackFields.paths`
+  drops `turn_signal`; `ChunkFields.unfold_paths` keeps it. `offset_head`
+  shrinks to `[1024, 1024, 1152]`. Same change mirrored in
+  `dinov2_dinowm_causal_3cam.yaml`, the only experiment file that restates its
+  own `StackFields` rather than inheriting `raw.yaml`'s.
+- **Step 10** — `turn_signal_head` (`torchvision.ops.MLP`, `[1024, 1024,
+  ${eval:'${action_horizon} * 3'}]`) added to `raw.yaml`, wired into
+  `PatchPolicy` (`src/rmind/models/patch_policy.py`) as an **opt-in**
+  constructor arg — `None` (default) reproduces the pre-Phase-2b behaviour
+  bit-for-bit (existing checkpoints/configs load and run unchanged). When set:
+  cross-entropy loss (`losses["turn_signal"]`, required — constructor raises
+  otherwise) against the raw `{0, 1, 2}` chunk fetched independently of
+  `joint_actions` (`PatchPolicy.turn_signal`, default path `(discrete,
+  turn_signal)`); `turn_signal_acc_last` / `turn_signal_acc_index1_last`
+  (the deployed-index metric, per "already handled" above) logged at the
+  readout.
+- **Step 11** — `PatchPolicy._predict_chunk` concatenates the head's argmax
+  class back at index 3, re-encoded `{0, 1, 2} -> {0, 0.5, 1.0}`. `forward`,
+  `predict_step`, `_structure`, the ONNX unpacker, TRT bindings and the parity
+  harness are all **untouched** — verified by
+  `test_turn_signal_head_predict_chunk_stays_four_channel` and
+  `test_turn_signal_head_predict_step` in `tests/test_patch_policy.py`.
+- **`dinov3.yaml`** (the common ancestor of every patch_policy experiment)
+  now pins `action_tokenizer_artifact: yaak/rmind/model-q6ocue9a:v9` (was
+  `y74asdtd:v9`) — **required**, not optional: the new `raw.yaml` architecture
+  (3-channel `joint_actions`, 1152-wide `offset_head`) only matches the
+  3-feature tokenizer's shapes. This changes the default for every patch_policy
+  arm that doesn't override it (all current ones do not) — deliberate, per the
+  plan's premise, but stated here because it is a wide-blast-radius default
+  change, not a per-arm opt-in. A checkpoint warm-started from a run trained
+  before this change (`warm_start_ckpt.py`) will now fail loudly on a
+  code_head/offset_head shape mismatch — correct, not a regression.
+- **Step 13, easy part done**: `dinov2_dinowm_causal.yaml`'s
+  `neighbor_smoothing_channels: [0, 1, 2]` removed (now `None`, and with only
+  3 channels total the two are already equivalent) — the comment previously
+  read as "still excluding something," which is no longer true.
+- **Not done — deliberately deferred, flagged rather than silently skipped:**
+  - **Step 12 (weighted offset loss)**: `losses.offset` is still a plain
+    `torch.nn.L1Loss`. Reason: `q6ocue9a:v9` itself was trained with **uniform**
+    `channel_weights` (Phase 2a), so "matching the weights the tokenizer was
+    trained with" is currently a no-op — there is nothing non-uniform to match
+    yet. Building the weighting machinery now, ahead of an actual weight
+    decision, would add an untested code path for zero behavioural change.
+    When a non-uniform `channel_weights` is chosen for the tokenizer (Phase 2a's
+    results note brake is the strongest candidate: smallest post-removal
+    `d_q(c)` share despite mattering most near-stop), give `PatchPolicy.losses`
+    a weighted-L1 module mirroring `ActionTokenizer._weighted_l1_loss`
+    (`action_tokenizer.py:147-153`) — same "default uniform, provably a no-op"
+    discipline.
+  - **Step 13, tau remeasurement**: still needs a trained 3-feature-arm
+    codebook and a repeat of the mass-on-far-half measurement
+    (`patch_policy.py:283-294`'s cited method) — an empirical step, not a code
+    change. `commands.sh`'s scratch `neighbor_smoothing_tau=0.012` is a
+    reasonable placeholder (already anticipating the ~0.61x shrinkage) but is
+    unverified on the new codebook.
+  - **Step 14 (train + compare)**: not launched. Needs an explicit go-ahead —
+    it spends real GPU/wandb budget and the arm to compare against
+    (`do8m9ot8` / `v4mma4th`) should be picked deliberately, not defaulted to
+    whatever `dinov3.yaml`'s inheritance chain currently points at.
+  - `PatchPolicyHead`/`load_head_for_export`
+    (`config/export/yaak/patch_policy/head.yaml`) — a secondary head-only
+    export path, separate from the main `decoder_only_export.py` contract —
+    does **not** decode `turn_signal`. Not touched: out of the plan's stated
+    scope (steps 9–13 all target the main served contract), but a real gap if
+    that export path is ever used for a `turn_signal_head` arm.
 
 ## Phase 3 — auxiliary trajectory head, 6 steps (2 s). Only after Phase 2.
 

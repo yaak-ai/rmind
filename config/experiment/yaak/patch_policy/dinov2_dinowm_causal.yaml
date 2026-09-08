@@ -206,20 +206,28 @@ model:
   # would be a silent no-op.
   sample_codes: false
 
-  # Which action channels define "neighbouring" for the OPT-IN distance-aware
-  # label smoothing (inert while neighbor_smoothing_tau is null).
-  # MEASURED 2026-08-25: with all four channels, turn_signal contributes 38.9%
-  # of d_q(c) -- more than gas (21.2%) or steer (25.7%) -- despite being
-  # CATEGORICAL (left/none/right has no metric, so "half a signal away" is
-  # meaningless) and having by far the widest dynamic range (p95 0.499, p99
-  # 0.9997, max 1.27 vs 0.02-0.09). Left in, a code differing only in indicator
-  # state is punished like a trajectory error. [0, 1, 2] = gas, brake, steer.
+  # `neighbor_smoothing_channels` (which action channels define "neighbouring"
+  # for the OPT-IN distance-aware label smoothing, inert while
+  # neighbor_smoothing_tau is null) is DELIBERATELY UNSET here now.
   #
-  # tau CAVEAT: dropping turn_signal shrinks the mean distance 0.069 -> ~0.042
-  # (x0.61), so a tau calibrated on all four channels becomes effectively
-  # SHARPER; the 0.02 measured earlier scales to ~0.012. Re-measure the
-  # mass-on-far-half curve before trusting either value.
-  neighbor_smoothing_channels: [0, 1, 2]
+  # It used to read [0, 1, 2] = gas, brake, steer, EXCLUDING turn_signal from a
+  # 4-channel action vector: MEASURED 2026-08-25, with all four channels
+  # turn_signal contributed 38.9% of d_q(c) -- more than gas (21.2%) or steer
+  # (25.7%) -- despite being CATEGORICAL (left/none/right has no metric, so
+  # "half a signal away" is meaningless) and having by far the widest dynamic
+  # range (p95 0.499, p99 0.9997, max 1.27 vs 0.02-0.09).
+  #
+  # Phase 2b (docs/action_tokenizer_repair_plan.md) took turn_signal out of the
+  # RVQ entirely -- `joint_actions` is now 3-channel (gas, brake, steer) and
+  # [0, 1, 2] already means "every channel", i.e. `None`'s default. Left at the
+  # old literal value it would still be correct, but it would misleadingly
+  # read as "still excluding something."
+  #
+  # tau CAVEAT (still live): removing turn_signal from the codebook shrinks the
+  # mean decoded distance 0.069 -> ~0.042 (x0.61), so a tau calibrated on the
+  # old 4-channel codebook is now effectively SHARPER on the new one; the 0.02
+  # measured earlier scales to ~0.012. Re-measure the mass-on-far-half curve on
+  # the retrained (3-feature) codebook before trusting either value.
 
   encoder:
     _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer

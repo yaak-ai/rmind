@@ -63,11 +63,15 @@ input_transform:
 
     - _target_: rmind.components.nn.StackFields
       out_key: joint_actions
+      # turn_signal deliberately excluded (docs/action_tokenizer_repair_plan.md
+      # Phase 2b): it is a 3-way categorical, not a continuous quantity the RVQ
+      # should be reconstructing, and it stays available to `turn_signal_head`
+      # below via ChunkFields' `[discrete, turn_signal]` unfold, unaffected by
+      # this narrowing.
       paths:
         gas_pedal: [continuous, gas_pedal]
         brake_pedal: [continuous, brake_pedal]
         steering_angle: [continuous, steering_angle]
-        turn_signal: [discrete, turn_signal]
 
 image_encoder:
   _target_: torch.nn.Sequential
@@ -126,7 +130,18 @@ code_head:
 offset_head:
   _target_: torchvision.ops.MLP
   in_channels: ${policy_embedding_dim}
-  hidden_channels: [1024, 1024, 1536] # 4 quantizers x 16 codes x 24 action dims
+  # 4 quantizers x 16 codes x 18 action dims (action_horizon 6 x 3 continuous
+  # fields -- turn_signal is out of the RVQ, see StackFields above)
+  hidden_channels: [1024, 1024, 1152]
+
+# categorical turn-signal head (docs/action_tokenizer_repair_plan.md Phase 2b):
+# action_horizon x 3 classes (OFF/LEFT/RIGHT), on the same readout feature as
+# code_head/offset_head. See PatchPolicy docstring for the served-contract
+# reasoning (joint_actions stays 4-channel).
+turn_signal_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels: [1024, 1024, "${eval:'${action_horizon} * 3'}"]
 
 losses:
   _target_: rmind.components.containers.ModuleDict
@@ -135,6 +150,8 @@ losses:
       _target_: rmind.components.loss.FocalLoss
     offset:
       _target_: torch.nn.L1Loss
+    turn_signal:
+      _target_: torch.nn.CrossEntropyLoss
 
 teacher_force_offset: ${teacher_force_offset}
 
