@@ -1,0 +1,29 @@
+# @package _global_
+---
+# Head-only ONNX export of DrivoR's trajectory score head (see
+# rmind.models.drivor.DrivoRScoreHead docstring). Input: the trajectory
+# decoder's raw per-query embeddings (b, num_queries, decoder_embedding_dim)
+# -- TrajectoryDecoderHead.forward_features's `decoded`, BEFORE any norm (the
+# head's own LayerNorm normalizes it -- see config/model/yaak/drivor/score_head.yaml).
+# Output: scores (b, num_queries). Trajectory selection (argmax) is the
+# caller's, outside the graph.
+#
+#   just export-onnx export=yaak/drivor/score_head model.artifact=yaak/rmind/model-<run>:vN
+
+model:
+  _target_: rmind.models.drivor.DrivoR.load_score_head_for_export
+  artifact: ???
+
+num_queries: 64
+decoder_embedding_dim: 256
+
+input:
+  features:
+    _target_: torch.testing.make_tensor
+    _args_: [1, "${num_queries}", "${decoder_embedding_dim}"]
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.float32
+    device: cpu
+    low: -1.0
+    high: 1.0

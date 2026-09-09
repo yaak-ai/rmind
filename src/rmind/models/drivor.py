@@ -1,6 +1,6 @@
 import math
-from collections.abc import Iterator
-from typing import Any, Literal, cast, override
+from collections.abc import Iterator, Mapping
+from typing import Any, Literal, cast, final, override
 
 import pytorch_lightning as pl
 import torch
@@ -557,3 +557,42 @@ class DrivoR(pl.LightningModule, LoadableFromArtifact):
             lr_scheduler.model_dump() if lr_scheduler is not None else None
         )
         return model
+
+    @classmethod
+    def load_score_head_for_export(cls, artifact: str) -> "DrivoRScoreHead":
+        """Head-only export for split deployment (see `DrivoRScoreHead`)."""
+        model = cls.load_from_wandb_artifact(
+            artifact, filename="model.ckpt", map_location="cpu", weights_only=False
+        ).eval()
+        if model.score_head is None:
+            msg = f"artifact {artifact!r} has no score_head"
+            raise ValueError(msg)
+        return DrivoRScoreHead(score_head=model.score_head).eval()
+
+
+@final
+class DrivoRScoreHead(pl.LightningModule):
+    """The trajectory score head alone, for split deployment.
+
+    Consumes the trajectory decoder's raw per-query residual stream `(b, Q,
+    dim_model)` -- `TrajectoryDecoderHead.forward_features`'s `decoded`,
+    BEFORE any norm (the head's own `LayerNorm`, see
+    `config/model/yaak/drivor/score_head.yaml`, normalizes it) -- and emits
+    per-candidate scores `(b, Q)`. Trajectory selection (`argmax`) is
+    deliberately OUTSIDE the graph, same as `DrivoR._predict_scores` /
+    `predict_step`: it's the caller's choice how to break ties or blend with
+    other signals.
+    """
+
+    @validate_call
+    def __init__(self, *, score_head: InstanceOf[Module]) -> None:
+        super().__init__()
+        self.score_head = score_head
+
+    @override
+    def forward(self, inputs: Mapping[str, torch.Tensor]) -> TensorDict:
+        scores = self.score_head(inputs["features"]).squeeze(-1)  # (b, Q)
+        # named output, not a bare Tensor: a bare-Tensor return flattens to an
+        # empty pytree path, so `export_onnx.py` infers `output_names=['']`,
+        # which ONNX Runtime then rejects ("Graph output () does not exist").
+        return TensorDict({"scores": scores}, batch_size=scores.shape[0])
