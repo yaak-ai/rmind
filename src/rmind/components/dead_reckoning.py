@@ -68,6 +68,75 @@ def dead_reckon_future_trajectory(
     return position, heading_rel
 
 
+def rolling_dead_reckoned_trajectory(
+    *,
+    speed_kmh: Tensor,
+    heading_deg: Tensor,
+    time_stamp_us: Tensor,
+    episode_length: int,
+    num_poses: int,
+) -> Tensor:
+    """Per-frame future ego-centric `(x, y, theta)` trajectory, dead-reckoned
+    independently at every one of the first `episode_length` anchor frames --
+    the auxiliary trajectory head's ground truth
+    (`docs/phase3_trajectory_head_plan.md`).
+
+    Implemented as a loop over anchors calling the tested single-anchor
+    `dead_reckon_future_trajectory` above, not a reimplementation of the
+    trig -- the axis-convention bug that function's docstring documents (and
+    which has reportedly been rediscovered twice already) is easy to
+    reintroduce in a second, independent implementation.
+
+    Args:
+        speed_kmh: `(*batch, T)` CAN-bus speed, km/h.
+        heading_deg: `(*batch, T)` EKF/RTS-denoised heading, degrees.
+        time_stamp_us: `(*batch, T)` raw timestamps, microseconds (e.g. a
+            polars `Datetime[us]` column cast to its physical int64
+            representation). Converted to float64 seconds here -- casting
+            real Unix-epoch microsecond timestamps to float32 silently zeros
+            every `dt` (float32's ~7 significant digits can't hold
+            sub-second resolution at that magnitude); see
+            `tests/test_dead_reckoning.py::test_dead_reckon_survives_float32_epoch_timestamps`.
+        episode_length: number of independent anchor frames, `t0 = 0 ..
+            episode_length - 1`.
+        num_poses: number of future poses per anchor, `t0 + 1 .. t0 +
+            num_poses`.
+
+    Returns:
+        `(*batch, episode_length, num_poses, 3)`: ego-centric `(x, y, theta)`
+        per anchor frame, `(x, y)` `/100`-normalized, `theta` wrapped to
+        `[-pi, pi]`.
+
+    Raises:
+        ValueError: if `T < episode_length + num_poses`, i.e. there aren't
+            enough future steps to dead-reckon every anchor's full horizon.
+    """
+    *_batch, t = speed_kmh.shape
+    needed = episode_length + num_poses
+    if t < needed:
+        msg = (
+            f"need {needed} steps (episode_length + num_poses), got {t} -- "
+            "increase clip_horizon"
+        )
+        raise ValueError(msg)
+
+    time_stamp_s = time_stamp_us.double() / 1e6
+    poses = []
+    for t0 in range(episode_length):
+        position, heading = dead_reckon_future_trajectory(
+            speed_kmh=speed_kmh,
+            heading_deg=heading_deg,
+            time_stamp_s=time_stamp_s,
+            reference_index=t0,
+        )
+        poses.append(
+            torch.cat(
+                [position[..., :num_poses, :], heading[..., :num_poses, None]], dim=-1
+            ).float()
+        )
+    return torch.stack(poses, dim=-3)  # (*batch, episode_length, num_poses, 3)
+
+
 def gnss_anchor_drift_m(
     *,
     dead_reckoned_position_normalized: Tensor,

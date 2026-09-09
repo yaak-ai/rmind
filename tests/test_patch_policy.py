@@ -16,7 +16,7 @@ from torchvision.ops import MLP
 
 from rmind.components.base import Modality
 from rmind.components.containers import ModuleDict
-from rmind.components.loss import FocalLoss
+from rmind.components.loss import FocalLoss, WinnerTakesAllPoseLoss
 from rmind.components.nn import Embedding
 from rmind.components.norm import ImageNormalize, Scaler, UniformBinner
 from rmind.components.objectives.base import ObjectivePredictionKey
@@ -52,6 +52,8 @@ LATENT_DIM = 8
 NUM_QUANTIZERS = 2
 CODEBOOK_SIZE = 4
 SPEED_BINS = 8
+TRAJECTORY_HORIZON = 4
+NUM_TRAJECTORY_HYPOTHESES = 3
 
 
 def _make_tokenizer() -> ActionTokenizer:
@@ -145,6 +147,11 @@ def _make_model(  # noqa: PLR0913
     use_readout_token: bool = False,
     num_register_tokens: int = 0,
     turn_signal_head: bool = False,
+    with_trajectory_head: bool = False,
+    # test-only default (production default in PatchPolicy is 0.0, see class
+    # docstring); a nonzero weight here so trajectory-gradient tests actually
+    # exercise the path -- the gate test below overrides it back to 0.0.
+    trajectory_weight: float = 1.0,
 ) -> PatchPolicy:
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
@@ -157,6 +164,8 @@ def _make_model(  # noqa: PLR0913
     default_loss_modules = {"code": FocalLoss(), "offset": L1Loss()}
     if turn_signal_head:
         default_loss_modules["turn_signal"] = torch.nn.CrossEntropyLoss()
+    if with_trajectory_head:
+        default_loss_modules["trajectory"] = WinnerTakesAllPoseLoss()
     return PatchPolicy(
         fusion_norm=fusion_norm,
         neighbor_smoothing_tau=neighbor_smoothing_tau,
@@ -186,6 +195,13 @@ def _make_model(  # noqa: PLR0913
         turn_signal_head=MLP(POLICY_DIM, [16, ACTION_HORIZON * 3])
         if turn_signal_head
         else None,
+        trajectory_head=(
+            MLP(POLICY_DIM, [16, NUM_TRAJECTORY_HYPOTHESES * TRAJECTORY_HORIZON * 3])
+            if with_trajectory_head
+            else None
+        ),
+        num_trajectory_hypotheses=NUM_TRAJECTORY_HYPOTHESES,
+        trajectory_weight=trajectory_weight,
         losses=losses
         if losses is not None
         else ModuleDict(modules=default_loss_modules),
@@ -204,7 +220,10 @@ def _make_model(  # noqa: PLR0913
 
 
 def _make_batch(
-    *, cameras: tuple[str, ...] = ("cam_front_left",), turn_signal_head: bool = False
+    *,
+    cameras: tuple[str, ...] = ("cam_front_left",),
+    turn_signal_head: bool = False,
+    with_trajectory_target: bool = False,
 ) -> dict:
     generator = torch.Generator().manual_seed(0)
     action_features = 3 if turn_signal_head else ACTION_FIELDS
@@ -242,6 +261,14 @@ def _make_batch(
         # `input_transform=Identity()` in these tests, so `_features` reads it
         # straight off the batch (see PatchPolicy.turn_signal / class docstring)
         batch["discrete"] = {"turn_signal": turn_signal}
+    if with_trajectory_target:
+        # drawn LAST so it never perturbs the generator state feeding the
+        # tensors above -- batches built with/without this flag stay
+        # bit-for-bit identical everywhere except this one new key (needed by
+        # test_trajectory_weight_zero_reproduces_baseline_bit_for_bit)
+        batch["context"]["trajectory_target"] = torch.randn(
+            (BATCH_SIZE, EPISODE_LENGTH, TRAJECTORY_HORIZON, 3), generator=generator
+        )
     return batch
 
 
@@ -1164,3 +1191,140 @@ def test_readout_token_streaming_matches_full_forward() -> None:  # noqa: PLR091
             streamed = model.norm(streamed)
 
     torch.testing.assert_close(streamed, features, rtol=0, atol=1e-5)
+
+
+# --------------------------------------------------------------------------- #
+# auxiliary trajectory head (docs/phase3_trajectory_head_plan.md)
+# --------------------------------------------------------------------------- #
+
+
+def _fill_deterministic(module: Module) -> None:
+    """Overwrite every parameter with a deterministic, RNG-free pattern -- see
+    `tests/test_training_step_snapshot.py::_fill_deterministic`. Lets two
+    SEPARATELY CONSTRUCTED models be compared bit-for-bit without relying on
+    matched RNG draws across construction (one model has an extra
+    `trajectory_head` submodule, which would otherwise shift any shared
+    `torch.manual_seed` sequence).
+    """
+    for offset, (_name, p) in enumerate(module.named_parameters()):
+        n = p.numel()
+        values = torch.sin(torch.arange(n, dtype=p.dtype) + offset * 1.0e3) * 2.0e-2
+        with torch.no_grad():
+            p.copy_(values.reshape(p.shape))
+
+
+def test_trajectory_head_requires_a_trajectory_loss() -> None:
+    """Constructor-time error, not a silent missing-key KeyError at the first
+    training step -- mirrors `turn_signal_head`'s loss requirement.
+    """
+    with pytest.raises(ValueError, match="trajectory_head"):
+        _make_model(
+            with_trajectory_head=True,
+            losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
+        )
+
+
+def test_trajectory_head_absent_by_default() -> None:
+    """The auxiliary trajectory head is opt-in: a model built without it must
+    behave exactly as before it existed."""
+    model = _make_model()
+    assert model.trajectory_head is None
+
+    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+    assert "trajectory" not in cast("dict[str, Tensor]", metrics["policy", "loss"])
+
+    predictions = model.predict_step(_make_batch())
+    assert "trajectory" not in predictions.keys()  # noqa: SIM118
+
+
+def test_trajectory_head_metrics_and_gradients() -> None:
+    model = _make_model(with_trajectory_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    losses = cast("dict[str, Tensor]", metrics["policy", "loss"])
+    assert "trajectory" in losses
+    assert losses["trajectory"].isfinite()
+
+    readout_metrics = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    assert readout_metrics["trajectory_loss_xy"].isfinite()
+    assert readout_metrics["trajectory_loss_heading"].isfinite()
+    assert readout_metrics["trajectory_best_index_unique_frac"].isfinite()
+
+    cast("TensorDict", losses).sum(reduce=True).backward()
+    assert model.trajectory_head is not None
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.trajectory_head.parameters()
+    )
+
+
+def test_trajectory_head_predict_step() -> None:
+    model = _make_model(with_trajectory_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    predictions = model.predict_step(batch)
+
+    assert predictions["trajectory", "prediction"].shape == (
+        BATCH_SIZE,
+        NUM_TRAJECTORY_HYPOTHESES,
+        TRAJECTORY_HORIZON,
+        3,
+    )
+    assert predictions["trajectory", "best_prediction"].shape == (
+        BATCH_SIZE,
+        TRAJECTORY_HORIZON,
+        3,
+    )
+    assert predictions["trajectory", "best_index"].shape == (BATCH_SIZE,)
+    assert predictions["trajectory", "ground_truth"].shape == (
+        BATCH_SIZE,
+        TRAJECTORY_HORIZON,
+        3,
+    )
+
+
+def test_trajectory_weight_zero_reproduces_baseline_bit_for_bit() -> None:
+    """The actual gate this repo adds beyond the ported implementation (see
+    docs/phase3_trajectory_head_plan.md): `trajectory_weight=0.0` must
+    reproduce the pre-existing baseline bit-for-bit, so a weight sweep never
+    has to trust that the head is inert -- it's asserted here, exactly.
+    """
+    # `_fill_deterministic` only overwrites PARAMETERS -- the frozen
+    # tokenizer/goal-encoder codebooks are BUFFERS, randomly initialized at
+    # construction (kmeans_init=False), so the two models must also be built
+    # from the identical RNG state (mirrors test_fusion_norm_calibration_deterministic).
+    torch.manual_seed(0)
+    baseline = _make_model()
+    torch.manual_seed(0)
+    with_head = _make_model(with_trajectory_head=True, trajectory_weight=0.0)
+    _fill_deterministic(baseline)
+    _fill_deterministic(with_head)
+
+    batch = _make_batch()
+    batch_with_target = _make_batch(with_trajectory_target=True)
+
+    baseline_metrics = baseline._compute_metrics(batch)  # noqa: SLF001
+    with_head_metrics = with_head._compute_metrics(batch_with_target)  # noqa: SLF001
+
+    baseline_losses = cast("dict[str, Tensor]", baseline_metrics["policy", "loss"])
+    with_head_losses = cast("dict[str, Tensor]", with_head_metrics["policy", "loss"])
+    for key, value in baseline_losses.items():
+        torch.testing.assert_close(with_head_losses[key], value, rtol=0, atol=0)
+    torch.testing.assert_close(
+        with_head_losses["trajectory"],
+        torch.zeros_like(with_head_losses["trajectory"]),
+        rtol=0,
+        atol=0,
+    )
+
+    baseline_metric_vals = cast(
+        "dict[str, Tensor]", baseline_metrics["policy", "metric"]
+    )
+    with_head_metric_vals = cast(
+        "dict[str, Tensor]", with_head_metrics["policy", "metric"]
+    )
+    for key in baseline_metric_vals.keys():  # noqa: SIM118
+        torch.testing.assert_close(
+            with_head_metric_vals[key], baseline_metric_vals[key], rtol=0, atol=0
+        )

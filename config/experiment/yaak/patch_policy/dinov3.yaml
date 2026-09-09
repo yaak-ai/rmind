@@ -27,6 +27,20 @@ clip_horizon: 6
 clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
 clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 
+# auxiliary trajectory head (docs/phase3_trajectory_head_plan.md).
+# trajectory_weight=0.0 is the SAFE default: the head is constructed and
+# exercised end-to-end every step, but contributes exactly zero loss/gradient,
+# so this arm is provably identical to the no-trajectory-head baseline (see
+# tests/test_patch_policy.py::test_trajectory_weight_zero_reproduces_baseline_bit_for_bit).
+# Only raise this after that gate passes AND a closed-loop (rsim) check clears
+# -- round 6 (/nasa/alex/docs/round6_1cam_causal_results.md) found an
+# UNWEIGHTED version of this same idea trending NEGATIVE in route completion.
+trajectory_horizon: 5   # episode_length + trajectory_horizon must fit clip_length (11);
+                        # needs one MORE future step than action_horizon's chunk
+num_trajectory_hypotheses: 5
+trajectory_heading_weight: 0.1
+trajectory_weight: 0.0
+
 # frozen encoders
 image_encoder_name: vit_small_patch16_dinov3.lvd1689m
 image_resize: [256, 256] # 256 / patch 16 -> 16x16 = 256 patch tokens
@@ -88,3 +102,11 @@ fusion_norm: false
 
 wandb:
   tags: [patch_policy, dinov3]
+
+model:
+  trajectory_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels:
+      [1024, 1024, "${eval:'${num_trajectory_hypotheses} * ${trajectory_horizon} * 3'}"]
+  trajectory_weight: ${trajectory_weight}

@@ -413,6 +413,43 @@ unrelated).
 
 ## Phase 3 — auxiliary trajectory head, 6 steps (2 s). Only after Phase 2.
 
+**Caution added 2026-09-08, from a sibling result — read before starting:**
+Tournament round 6 (`/nasa/alex/docs/round6_1cam_causal_results.md`), a
+1-camera closed-loop rsim round unrelated to this plan's own work, measured a
+*different* trajectory-head implementation (`v9y58oei`, branch
+`feat/patch-policy-decoder-causal-traj`) and found training with it trends
+**worse**, not better, with more of its own budget: A4→A5 is **−0.081 rc over
+1.67 epochs**, against a budget-only expectation of **+0.164** from the
+baseline's own slope (marginal: t=1.8, short of the 2.0 bar, but it clears the
+round's MDE). The trajectory head does not drive anything at inference in that
+setup — `drivr_parity` nulls the trajectory knobs and `onnx_decoder` exposes no
+trajectory output — so the effect is purely a training-time one: the auxiliary
+changed what the shared trunk / discrete-action policy head learned, for the
+worse, and this only showed up in closed-loop route completion, not in any
+loss curve.
+
+**Why this doesn't kill Phase 3 outright, but does raise the bar:** per
+`[[project_frozen_vs_unfrozen_trajectory]]`, that branch's trajectory head
+lineage targets GPS-chain deltas, which are known flat/degenerate (47% exactly
+`(0,0)`, ~5-6× under-scale) and known to collapse dynamic range when
+unfrozen. Step 15 below already chose `dead_reckon_future_trajectory`
+specifically to avoid a GPS target — so round 6's negative result may be
+"training against a degenerate GPS target corrupts the shared representation,"
+a different claim from "any trajectory auxiliary corrupts the shared
+representation." Only running Phase 3's own dead-reckoning-target design
+settles which one is true. Until then: treat round 6 as a real prior that this
+failure mode exists on a closely related architecture, budget a closed-loop
+check (not just offline loss) before trusting a Phase 3 arm, and do not read
+low training-loss on the trajectory head as evidence the policy head is
+unharmed.
+
+**Superseded by a concrete design, 2026-09-08:** `docs/phase3_trajectory_head_plan.md`
+is the task brief for this phase — it turns out `af4fcf1` (the branch behind
+the round-6 checkpoint above) already implements a nearly-complete version of
+steps 15-18, unweighted; that brief specifies porting it with a weight knob
+(default off) and the gate discipline this caution calls for. Read that brief
+instead of executing steps 15-18 below from scratch.
+
 15. Add a small head on the readout feature predicting the future ego path,
     supervised by `dead_reckon_future_trajectory`
     (`src/rmind/components/dead_reckoning.py`, covered by

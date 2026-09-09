@@ -17,6 +17,10 @@ from torch.utils.checkpoint import checkpoint
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
+from rmind.components.loss import (
+    winner_takes_all_pose_l1,
+    winner_takes_all_pose_l1_components,
+)
 from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
@@ -203,6 +207,25 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     assumes -- so drivr, the ONNX unpacker and the export contract need no
     change. `None` (default) reproduces the OLD behaviour bit-for-bit: `chunk`
     is expected 4-channel already (turn_signal folded into the RVQ target).
+
+    `trajectory_head` (opt-in, `None` = off, `docs/phase3_trajectory_head_plan.md`):
+    a second, independent prediction head alongside the VQ-BeT action head --
+    a small multi-hypothesis MLP regressing future ego-centric `(x, y,
+    heading)` trajectory directly from the SAME per-frame readout feature as
+    `code_head`/`offset_head` (DrivoR, arXiv:2601.05083), trained with
+    `losses["trajectory"]` (e.g. `rmind.components.loss.WinnerTakesAllPoseLoss`,
+    required when the head is set), winner-takes-all over
+    `num_trajectory_hypotheses` candidates against a dead-reckoned (not GPS)
+    per-frame target. `trajectory_weight` (default `0.0`) scales this loss
+    before it is added into the total: at `0.0` the head is still
+    constructed and exercised every step (so a weight sweep needs no
+    architecture change) but contributes exactly zero loss/gradient, which is
+    the gate this repo enforces before spending real training budget -- a
+    sibling branch found an UNWEIGHTED version of this same idea trending
+    NEGATIVE in closed-loop route completion with more of its own training
+    budget (round 6), and that implementation had no weight knob at all. This
+    head is training-time-only: it never feeds `joint_actions` or any
+    served/exported output, so `forward`/ONNX export are unaffected either way.
     """
 
     _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
@@ -229,11 +252,17 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # opt-in categorical turn-signal head (see class docstring); None keeps
         # the old behaviour where `chunk` carries turn_signal through the RVQ
         turn_signal_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        # opt-in auxiliary trajectory head (see class docstring); None (default)
+        # reproduces the old behaviour bit-for-bit -- docs/phase3_trajectory_head_plan.md
+        trajectory_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
         cameras: tuple[str, ...] = ("cam_front_left",),
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
         chunk: Path = ("joint_actions",),
         turn_signal: Path = ("discrete", "turn_signal"),
+        trajectory_target: Path = ("context", "trajectory_target"),
+        num_trajectory_hypotheses: int = 5,
+        trajectory_weight: float = 0.0,
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
@@ -297,12 +326,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 "to supervise it"
             )
             raise ValueError(msg)
+        self.trajectory_head: Module | None = init_hydra_param(
+            hparams, "trajectory_head", trajectory_head
+        )
+        if self.trajectory_head is not None and "trajectory" not in self.losses:
+            msg = (
+                "trajectory_head requires losses['trajectory'] (e.g. "
+                "rmind.components.loss.WinnerTakesAllPoseLoss) to supervise it"
+            )
+            raise ValueError(msg)
 
         self.cameras: tuple[str, ...] = cameras
         self.speed: Path = speed
         self.waypoints: Path = waypoints
         self.chunk: Path = chunk
         self.turn_signal: Path = turn_signal
+        self.trajectory_target: Path = trajectory_target
+        self.num_trajectory_hypotheses = num_trajectory_hypotheses
+        self.trajectory_weight = trajectory_weight
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
@@ -347,6 +388,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "waypoints": waypoints,
             "chunk": chunk,
             "turn_signal": turn_signal,
+            "trajectory_target": trajectory_target,
+            "num_trajectory_hypotheses": num_trajectory_hypotheses,
+            "trajectory_weight": trajectory_weight,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "neighbor_smoothing_channels": neighbor_smoothing_channels,
@@ -615,6 +659,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         require_chunk: bool = True,
         token_norms: dict[str, Tensor] | None = None,
         turn_signal_chunk: dict[str, Tensor] | None = None,
+        trajectory_target_out: dict[str, Tensor] | None = None,
     ) -> tuple[Tensor, Tensor | None]:
         """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
 
@@ -628,6 +673,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         `(b, t, h)` -- the categorical head's target, fetched independently of
         `self.chunk` because `joint_actions` no longer carries it once
         `turn_signal_head` is set (see class docstring).
+
+        `trajectory_target_out` is the same convention for the auxiliary
+        trajectory head (`docs/phase3_trajectory_head_plan.md`): when given
+        and `trajectory_head` is configured, filled under key
+        `"trajectory_target"` with the dead-reckoned per-frame trajectory
+        target `(b, t, num_poses, 3)`. Kept as an out-parameter (rather than
+        widening this method's return tuple) so no existing call site needs
+        updating.
 
         Raises:
             ValueError: if the encoder was built for a different
@@ -644,6 +697,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         if turn_signal_chunk is not None and self.turn_signal_head is not None:
             turn_signal_chunk["turn_signal"] = cast(
                 "Tensor", self._get(inputs, self.turn_signal, required=require_chunk)
+            )
+        if trajectory_target_out is not None and self.trajectory_head is not None:
+            trajectory_target_out["trajectory_target"] = cast(
+                "Tensor",
+                self._get(inputs, self.trajectory_target, required=require_chunk),
             )
 
         images = torch.stack(
@@ -706,6 +764,20 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             self.turn_signal_head(features),
             "... (h k) -> ... h k",
             k=self._TURN_SIGNAL_CLASSES,
+        )
+
+    def _predict_trajectory(self, features: Tensor) -> Tensor:
+        """Direct-regression multi-hypothesis trajectory forecast (DrivoR,
+        arXiv:2601.05083) from the SAME readout `features` as `_predict_chunk`
+        -- no VQ, no cross-attention decoder, just an MLP over the trunk's
+        per-frame feature vector. `(*b, num_trajectory_hypotheses, num_poses, 3)`.
+
+        Caller must check `self.trajectory_head is not None` first.
+        """
+        assert self.trajectory_head is not None  # noqa: S101
+        pred = self.trajectory_head(features)
+        return rearrange(
+            pred, "... (q p c) -> ... q p c", q=self.num_trajectory_hypotheses, c=3
         )
 
     @staticmethod
@@ -845,8 +917,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
     ) -> TensorDict:
         turn_signal_chunk: dict[str, Tensor] = {}
+        trajectory_target_out: dict[str, Tensor] = {}
         features, chunk = self._features(
-            batch, token_norms=token_norms, turn_signal_chunk=turn_signal_chunk
+            batch,
+            token_norms=token_norms,
+            turn_signal_chunk=turn_signal_chunk,
+            trajectory_target_out=trajectory_target_out,
         )  # (b, t, d), (b, t, h, a)
         tokenizer = self.tokenizer
 
@@ -888,6 +964,21 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
 
+        # auxiliary, non-VQ trajectory head (DrivoR, arXiv:2601.05083):
+        # direct multi-hypothesis regression against the dead-reckoned
+        # per-frame trajectory target, winner-takes-all over hypotheses.
+        # `trajectory_weight` defaults to 0.0 (see class docstring) -- the
+        # head is still constructed and exercised every step, but the
+        # weighted loss contributes exactly zero gradient at that default.
+        trajectory_pred: Tensor | None = None
+        trajectory_target: Tensor | None = None
+        if self.trajectory_head is not None:
+            trajectory_target = trajectory_target_out["trajectory_target"]
+            trajectory_pred = self._predict_trajectory(features)  # (b, t, q, p, 3)
+            losses["trajectory"] = self.trajectory_weight * self.losses["trajectory"](
+                trajectory_pred, trajectory_target
+            )
+
         turn_signal_logits: Tensor | None = None
         turn_signal_target: Tensor | None = None
         if self.turn_signal_head is not None:
@@ -908,11 +999,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             sampled_recon=sampled_recon,
             turn_signal_logits=turn_signal_logits,
             turn_signal_target=turn_signal_target,
+            trajectory_pred=trajectory_pred,
+            trajectory_target=trajectory_target,
         )
 
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
 
-    def _readout_metrics(  # noqa: PLR0913
+    def _readout_metrics(  # noqa: C901, PLR0913
         self,
         *,
         code_logits: Tensor,
@@ -924,6 +1017,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         sampled_recon: Tensor | None = None,
         turn_signal_logits: Tensor | None = None,
         turn_signal_target: Tensor | None = None,
+        trajectory_pred: Tensor | None = None,
+        trajectory_target: Tensor | None = None,
     ) -> dict[str, Tensor]:
         """Gradient-free diagnostics at the deployed readout.
 
@@ -937,6 +1032,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         `turn_signal_logits`/`turn_signal_target` are None when
         `turn_signal_head` is unset (see class docstring).
+
+        `trajectory_pred`/`trajectory_target` are None when `trajectory_head`
+        is unset. The metrics computed from them stay UNWEIGHTED (raw units)
+        regardless of `trajectory_weight`, since they are diagnostic and
+        should stay comparable across a weight sweep (see class docstring).
         """
         tokenizer = self.tokenizer
         with torch.no_grad():
@@ -997,6 +1097,29 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     metrics["turn_signal_acc_index1_last"] = (
                         ts_correct_last[:, 1].float().mean()
                     )
+
+            # auxiliary trajectory head diagnostics (see class docstring) --
+            # deliberately UNWEIGHTED (raw xy/heading units), unlike
+            # losses["trajectory"], so they stay comparable across a
+            # trajectory_weight sweep.
+            if trajectory_pred is not None and trajectory_target is not None:
+                trajectory_loss_module = self.losses["trajectory"]
+                _, best_index, _, xy_loss, heading_loss = (
+                    winner_takes_all_pose_l1_components(
+                        trajectory_pred,
+                        trajectory_target,
+                        heading_weight=getattr(
+                            trajectory_loss_module, "heading_weight", 0.1
+                        ),
+                        reduction=getattr(trajectory_loss_module, "reduction", "mean"),
+                    )
+                )
+                metrics["trajectory_loss_xy"] = xy_loss.mean()
+                metrics["trajectory_loss_heading"] = heading_loss.mean()
+                metrics["trajectory_best_index_unique_frac"] = torch.tensor(
+                    best_index.unique().numel() / best_index.numel(),
+                    device=best_index.device,
+                )
 
             # context-depth localizer for windowed causal trunks: readouts at
             # positions < window-1 train under a PARTIAL window, positions
@@ -1176,13 +1299,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         })
 
     @override
-    def predict_step(self, batch: dict[str, Any]) -> TensorDict:
+    def predict_step(self, batch: dict[str, Any]) -> TensorDict:  # noqa: PLR0914
         keys = frozenset(self.prediction_config.objectives)
         predictions: dict[ObjectivePredictionKey, Prediction] = {}
         tokenizer = self.tokenizer
 
         turn_signal_chunk: dict[str, Tensor] = {}
-        features, chunk = self._features(batch, turn_signal_chunk=turn_signal_chunk)
+        trajectory_target_out: dict[str, Tensor] = {}
+        features, chunk = self._features(
+            batch,
+            turn_signal_chunk=turn_signal_chunk,
+            trajectory_target_out=trajectory_target_out,
+        )
         features = features[:, -1]  # predict from the newest frame only
 
         b, t = chunk.shape[:2]
@@ -1247,7 +1375,40 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     time_index=time_index,
                 )
 
-        return TensorDict({"policy": predictions}).auto_batch_size_(2)
+        result: dict[str, Any] = {"policy": predictions}
+
+        if self.trajectory_head is not None:
+            trajectory_target = trajectory_target_out["trajectory_target"]
+            trajectory_pred = self._predict_trajectory(features)  # (b, q, p, 3)
+            trajectory_loss_module = self.losses["trajectory"]
+            _, best_index, per_candidate_loss = winner_takes_all_pose_l1(
+                trajectory_pred,
+                trajectory_target[:, -1],
+                heading_weight=getattr(trajectory_loss_module, "heading_weight", 0.1),
+                reduction=getattr(trajectory_loss_module, "reduction", "mean"),
+            )
+            best_prediction = trajectory_pred.gather(
+                1,
+                best_index[:, None, None, None].expand(
+                    -1, 1, *trajectory_pred.shape[-2:]
+                ),
+            ).squeeze(1)
+            # explicit batch_size=[b]: `best_index`/`per_candidate_loss` are rank
+            # 1-2, not the `(b, horizon)` shape `auto_batch_size_` below would
+            # otherwise infer from the "policy" branch -- fixing it here keeps
+            # that inference (and the "policy" branch's own batch_size) unaffected
+            result["trajectory"] = TensorDict(
+                {
+                    "prediction": trajectory_pred,
+                    "best_prediction": best_prediction,
+                    "best_index": best_index,
+                    "per_candidate_loss": per_candidate_loss,
+                    "ground_truth": trajectory_target[:, -1],
+                },
+                batch_size=[trajectory_pred.shape[0]],
+            )
+
+        return TensorDict(result).auto_batch_size_(2)
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
