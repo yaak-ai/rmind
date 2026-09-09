@@ -110,3 +110,16 @@ model:
     hidden_channels:
       [1024, 1024, "${eval:'${num_trajectory_hypotheses} * ${trajectory_horizon} * 3'}"]
   trajectory_weight: ${trajectory_weight}
+  # trajectory-mode classifier (docs/phase3_trajectory_head_plan.md's
+  # mode_head extension, ported alongside trajectory_head at the
+  # project owner's request rather than deferred behind trajectory_head's
+  # own closed-loop gate): unweighted cross-entropy against the
+  # winner-takes-all oracle's best_index, trained jointly, on the SAME
+  # readout feature as trajectory_head. NOTE: at trajectory_weight=0.0
+  # (the gated default above) trajectory_head is unsupervised, so
+  # mode_head's labels come from an UNTRAINED head -- raise
+  # trajectory_weight for mode_head to learn anything meaningful.
+  mode_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels: [256, "${num_trajectory_hypotheses}"]

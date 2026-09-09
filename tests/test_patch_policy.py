@@ -152,6 +152,7 @@ def _make_model(  # noqa: PLR0913
     # docstring); a nonzero weight here so trajectory-gradient tests actually
     # exercise the path -- the gate test below overrides it back to 0.0.
     trajectory_weight: float = 1.0,
+    with_mode_head: bool = False,
 ) -> PatchPolicy:
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
@@ -166,6 +167,8 @@ def _make_model(  # noqa: PLR0913
         default_loss_modules["turn_signal"] = torch.nn.CrossEntropyLoss()
     if with_trajectory_head:
         default_loss_modules["trajectory"] = WinnerTakesAllPoseLoss()
+    if with_mode_head:
+        default_loss_modules["mode"] = torch.nn.CrossEntropyLoss()
     return PatchPolicy(
         fusion_norm=fusion_norm,
         neighbor_smoothing_tau=neighbor_smoothing_tau,
@@ -202,6 +205,9 @@ def _make_model(  # noqa: PLR0913
         ),
         num_trajectory_hypotheses=NUM_TRAJECTORY_HYPOTHESES,
         trajectory_weight=trajectory_weight,
+        mode_head=MLP(POLICY_DIM, [16, NUM_TRAJECTORY_HYPOTHESES])
+        if with_mode_head
+        else None,
         losses=losses
         if losses is not None
         else ModuleDict(modules=default_loss_modules),
@@ -1328,3 +1334,87 @@ def test_trajectory_weight_zero_reproduces_baseline_bit_for_bit() -> None:
         torch.testing.assert_close(
             with_head_metric_vals[key], baseline_metric_vals[key], rtol=0, atol=0
         )
+
+
+# trajectory-mode classifier (see PatchPolicy docstring, "mode_head")
+# --------------------------------------------------------------------------- #
+
+
+def test_mode_head_requires_a_trajectory_head() -> None:
+    with pytest.raises(ValueError, match="mode_head"):
+        _make_model(
+            with_mode_head=True,
+            losses=ModuleDict(
+                modules={
+                    "code": FocalLoss(),
+                    "offset": L1Loss(),
+                    "mode": torch.nn.CrossEntropyLoss(),
+                }
+            ),
+        )
+
+
+def test_mode_head_requires_a_mode_loss() -> None:
+    with pytest.raises(ValueError, match="mode_head"):
+        _make_model(
+            with_trajectory_head=True,
+            with_mode_head=True,
+            losses=ModuleDict(
+                modules={
+                    "code": FocalLoss(),
+                    "offset": L1Loss(),
+                    "trajectory": WinnerTakesAllPoseLoss(),
+                }
+            ),
+        )
+
+
+def test_mode_head_absent_by_default() -> None:
+    """The trajectory-mode classifier is opt-in: a model built without it
+    (even with `trajectory_head`) must behave exactly as before it existed."""
+    model = _make_model(with_trajectory_head=True)
+    assert model.mode_head is None
+
+    metrics = model._compute_metrics(_make_batch(with_trajectory_target=True))  # noqa: SLF001
+    assert "mode" not in cast("dict[str, Tensor]", metrics["policy", "loss"])
+    assert "mode_accuracy" not in cast("dict[str, Tensor]", metrics["policy", "metric"])
+
+    predictions = model.predict_step(_make_batch(with_trajectory_target=True))
+    assert "mode_logits" not in predictions["trajectory"].keys()  # noqa: SIM118
+
+
+def test_mode_head_metrics_and_gradients() -> None:
+    model = _make_model(with_trajectory_head=True, with_mode_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    losses = cast("dict[str, Tensor]", metrics["policy", "loss"])
+    assert "mode" in losses
+    assert losses["mode"].isfinite()
+
+    readout_metrics = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    assert 0.0 <= readout_metrics["mode_accuracy"] <= 1.0
+
+    cast("TensorDict", losses).sum(reduce=True).backward()
+    assert model.mode_head is not None
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.mode_head.parameters()
+    )
+
+
+def test_mode_head_predict_step() -> None:
+    model = _make_model(with_trajectory_head=True, with_mode_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    predictions = model.predict_step(batch)
+
+    assert predictions["trajectory", "mode_logits"].shape == (
+        BATCH_SIZE,
+        NUM_TRAJECTORY_HYPOTHESES,
+    )
+    assert predictions["trajectory", "predicted_index"].shape == (BATCH_SIZE,)
+    assert (predictions["trajectory", "predicted_index"] >= 0).all()
+    assert (
+        predictions["trajectory", "predicted_index"] < NUM_TRAJECTORY_HYPOTHESES
+    ).all()

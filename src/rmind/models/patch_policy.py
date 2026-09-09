@@ -226,12 +226,26 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     budget (round 6), and that implementation had no weight knob at all. This
     head is training-time-only: it never feeds `joint_actions` or any
     served/exported output, so `forward`/ONNX export are unaffected either way.
+
+    `mode_head` (opt-in, `None` = off; requires `trajectory_head`): a small
+    classifier reading the SAME readout feature as `trajectory_head`, trained
+    (`losses["mode"]`, e.g. `torch.nn.CrossEntropyLoss`, required when the head
+    is set) to predict which of the `num_trajectory_hypotheses` candidates the
+    winner-takes-all oracle (`losses["trajectory"]`'s own `best_index`, per
+    frame) would pick -- distilling that ground-truth-dependent selection into
+    something that can score/select a trajectory mode with no ground truth at
+    deployment. Trained jointly with everything else (no separate frozen-base
+    stage): its label comes from whatever `trajectory_head` currently predicts,
+    so it is only as informative as `trajectory_head` is at that point in
+    training -- with `trajectory_weight=0.0` the label is drawn from an
+    UNTRAINED trajectory head. Like `trajectory_head`, this is training-time
+    only and never feeds `joint_actions` or any served/exported output.
     """
 
     _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
 
     @validate_call
-    def __init__(  # noqa: PLR0913, PLR0915
+    def __init__(  # noqa: C901, PLR0913, PLR0915
         self,
         *,
         input_transform: HydraConfig[Module] | InstanceOf[Module],
@@ -255,6 +269,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # opt-in auxiliary trajectory head (see class docstring); None (default)
         # reproduces the old behaviour bit-for-bit -- docs/phase3_trajectory_head_plan.md
         trajectory_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        # opt-in trajectory-mode classifier (see class docstring); requires
+        # trajectory_head. None (default) leaves this model unchanged.
+        mode_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
         cameras: tuple[str, ...] = ("cam_front_left",),
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
@@ -335,6 +352,22 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 "rmind.components.loss.WinnerTakesAllPoseLoss) to supervise it"
             )
             raise ValueError(msg)
+        self.mode_head: Module | None = init_hydra_param(
+            hparams, "mode_head", mode_head
+        )
+        if self.mode_head is not None:
+            if self.trajectory_head is None:
+                msg = (
+                    "mode_head requires a trajectory_head to supervise against "
+                    "(its label is the winner-takes-all oracle's best_index)"
+                )
+                raise ValueError(msg)
+            if "mode" not in self.losses:
+                msg = (
+                    "mode_head requires losses['mode'] (e.g. "
+                    "torch.nn.CrossEntropyLoss) to supervise it"
+                )
+                raise ValueError(msg)
 
         self.cameras: tuple[str, ...] = cameras
         self.speed: Path = speed
@@ -780,6 +813,19 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             pred, "... (q p c) -> ... q p c", q=self.num_trajectory_hypotheses, c=3
         )
 
+    def _predict_mode(self, features: Tensor) -> Tensor:
+        """Classifier logits over trajectory hypotheses, `(*b,
+        num_trajectory_hypotheses)`. Reads the SAME readout `features` as
+        `_predict_trajectory`; trained (see `_compute_metrics`) to predict the
+        winner-takes-all oracle's `best_index` -- the hypothesis
+        `losses["trajectory"]` would have picked -- so a mode can be
+        scored/selected at deployment with no access to ground truth.
+
+        Caller must check `self.mode_head is not None` first.
+        """
+        assert self.mode_head is not None  # noqa: S101
+        return self.mode_head(features)
+
     @staticmethod
     def _gather_offset(offsets: Tensor, codes: Tensor) -> Tensor:
         """Select each quantizer's offset at `codes` and sum over quantizers."""
@@ -972,12 +1018,15 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # weighted loss contributes exactly zero gradient at that default.
         trajectory_pred: Tensor | None = None
         trajectory_target: Tensor | None = None
+        mode_logits: Tensor | None = None
         if self.trajectory_head is not None:
             trajectory_target = trajectory_target_out["trajectory_target"]
             trajectory_pred = self._predict_trajectory(features)  # (b, t, q, p, 3)
             losses["trajectory"] = self.trajectory_weight * self.losses["trajectory"](
                 trajectory_pred, trajectory_target
             )
+            if self.mode_head is not None:
+                mode_logits = self._predict_mode(features)  # (b, t, q)
 
         turn_signal_logits: Tensor | None = None
         turn_signal_target: Tensor | None = None
@@ -989,6 +1038,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 rearrange(turn_signal_target, "b t h -> (b t h)"),
             )
 
+        best_index_out: dict[str, Tensor] = {}
         metrics = self._readout_metrics(
             code_logits=code_logits,
             offsets=offsets,
@@ -1001,7 +1051,23 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             turn_signal_target=turn_signal_target,
             trajectory_pred=trajectory_pred,
             trajectory_target=trajectory_target,
+            best_index_out=best_index_out,
         )
+
+        # trajectory-mode classifier: cross-entropy against the winner-takes-all
+        # oracle's best_index (computed above, inside _readout_metrics, from the
+        # SAME trajectory_pred/trajectory_target). Added OUTSIDE that no_grad
+        # block since this is the one term that must backprop into mode_logits
+        # (and thus mode_head) -- best_index itself is a label, no grad needed.
+        if mode_logits is not None:
+            best_index = best_index_out["best_index"]
+            losses["mode"] = self.losses["mode"](
+                rearrange(mode_logits, "b t q -> (b t) q"),
+                rearrange(best_index, "b t -> (b t)"),
+            )
+            metrics["mode_accuracy"] = (
+                (mode_logits.argmax(dim=-1) == best_index).float().mean()
+            )
 
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
 
@@ -1019,6 +1085,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         turn_signal_target: Tensor | None = None,
         trajectory_pred: Tensor | None = None,
         trajectory_target: Tensor | None = None,
+        best_index_out: dict[str, Tensor] | None = None,
     ) -> dict[str, Tensor]:
         """Gradient-free diagnostics at the deployed readout.
 
@@ -1037,6 +1104,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         is unset. The metrics computed from them stay UNWEIGHTED (raw units)
         regardless of `trajectory_weight`, since they are diagnostic and
         should stay comparable across a weight sweep (see class docstring).
+
+        `best_index_out`, like `token_norms`/`turn_signal_chunk`, is an
+        out-parameter: when given and `trajectory_pred` is not None, filled
+        under key `"best_index"` with the winner-takes-all oracle's per-frame
+        best hypothesis `(b, t)` -- `mode_head`'s classification label,
+        computed here (not a second time in `_compute_metrics`) since this is
+        already where `winner_takes_all_pose_l1_components` runs.
         """
         tokenizer = self.tokenizer
         with torch.no_grad():
@@ -1120,6 +1194,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     best_index.unique().numel() / best_index.numel(),
                     device=best_index.device,
                 )
+                if best_index_out is not None:
+                    best_index_out["best_index"] = best_index
 
             # context-depth localizer for windowed causal trunks: readouts at
             # positions < window-1 train under a PARTIAL window, positions
@@ -1407,6 +1483,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 },
                 batch_size=[trajectory_pred.shape[0]],
             )
+
+            if self.mode_head is not None:
+                # the classifier's own pick, alongside the oracle `best_index`
+                # above -- their agreement rate is `mode_accuracy` (train/val)
+                mode_logits = self._predict_mode(features)  # (b, q)
+                result["trajectory"]["mode_logits"] = mode_logits
+                result["trajectory"]["predicted_index"] = mode_logits.argmax(dim=-1)
 
         return TensorDict(result).auto_batch_size_(2)
 

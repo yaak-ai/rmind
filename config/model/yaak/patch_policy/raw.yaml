@@ -166,6 +166,13 @@ turn_signal_head:
 trajectory_head: null
 num_trajectory_hypotheses: ${num_trajectory_hypotheses}
 
+# trajectory-mode classifier (see PatchPolicy docstring): reads the same
+# readout feature as trajectory_head, trained to predict the winner-takes-all
+# oracle's best_index. null = off (requires trajectory_head); an experiment
+# that wants it instantiates the real MLP, output width
+# num_trajectory_hypotheses.
+mode_head: null
+
 losses:
   _target_: rmind.components.containers.ModuleDict
   modules:
@@ -180,6 +187,10 @@ losses:
     trajectory:
       _target_: rmind.components.loss.WinnerTakesAllPoseLoss
       heading_weight: ${trajectory_heading_weight}
+    # safe to always define -- the validation gate in PatchPolicy.__init__
+    # only fires when mode_head is not None
+    mode:
+      _target_: torch.nn.CrossEntropyLoss
 
 teacher_force_offset: ${teacher_force_offset}
 
