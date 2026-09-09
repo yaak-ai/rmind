@@ -7,6 +7,21 @@ defaults:
   - /logger: yaak/rerun/prediction_drivor
   - _self_
 
+# hoisted so a derived config (e.g. predict_score.yaml) can extend the list --
+# OmegaConf *replaces* lists on merge, so it can't be appended to in place.
+prediction_select:
+  - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+  - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+  - [batch, data, meta/VehicleMotion/speed]
+  - [batch, data, headings_denoised/heading]
+  - [batch, meta, input_id]
+  - [trajectory, prediction]
+  - [trajectory, best_prediction]
+  - [trajectory, best_index]
+  - [trajectory, per_candidate_loss]
+  - [trajectory, ground_truth_xy]
+  - [trajectory, ground_truth_heading]
+
 trainer:
   _target_: pytorch_lightning.Trainer
   _convert_: all
@@ -22,18 +37,7 @@ trainer:
     - _target_: rmind.callbacks.DataFramePredictionWriter
       write_interval: batch
       path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
-      select:
-        - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
-        - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
-        - [batch, data, meta/VehicleMotion/speed]
-        - [batch, data, headings_denoised/heading]
-        - [batch, meta, input_id]
-        - [trajectory, prediction]
-        - [trajectory, best_prediction]
-        - [trajectory, best_index]
-        - [trajectory, per_candidate_loss]
-        - [trajectory, ground_truth_xy]
-        - [trajectory, ground_truth_heading]
+      select: ${prediction_select}
       writer:
         _target_: polars.DataFrame.write_parquet
         _partial_: true

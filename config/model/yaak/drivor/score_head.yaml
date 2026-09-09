@@ -1,0 +1,24 @@
+_target_: rmind.models.drivor.DrivoR.load_for_score_head_training
+_recursive_: false
+_convert_: all
+
+artifact: ${score_head_artifact}
+
+score_head:
+  _target_: torch.nn.Sequential
+  _args_:
+    # CrossAttentionDecoder has no final LayerNorm -- `decoded` is a raw residual
+    # stream, so normalize before the MLP.
+    - _target_: torch.nn.LayerNorm
+      normalized_shape: ${decoder_embedding_dim}
+    - _target_: torchvision.ops.MLP
+      in_channels: ${decoder_embedding_dim}
+      hidden_channels: ["${decoder_embedding_dim}", 1]
+
+score_tau: 0.02
+
+optimizer:
+  _target_: torch.optim.Adam
+  lr: ${lr}
+
+lr_scheduler: null   # constant LR: a small head on a frozen trunk needs no warmup/cosine

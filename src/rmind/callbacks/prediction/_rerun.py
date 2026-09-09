@@ -76,23 +76,30 @@ class DrivoRRerunPredictionWriter(BasePredictionWriter):
         # trajectory positions are `/100`-normalized (see
         # `rmind.components.drivor.trajectory_target`); the projection works
         # in meters, so undo that here.
-        vehicles = [str(input_id).split("/")[0] for input_id in batch["meta"]["input_id"]]
+        vehicles = [
+            str(input_id).split("/")[0] for input_id in batch["meta"]["input_id"]
+        ]
         traj = prediction["trajectory"]
 
-        uv = TensorDict(
-            {
-                "best_prediction_uv": project_trajectories_to_image(
-                    traj["best_prediction"] * 100.0, vehicles
-                ),
-                "prediction_uv": project_trajectories_to_image(
-                    traj["prediction"] * 100.0, vehicles
-                ),
-                "ground_truth_uv": project_trajectories_to_image(
-                    traj["ground_truth_xy"] * 100.0, vehicles
-                ),
-            },
-            batch_size=traj.batch_size,
-        )
+        entries = {
+            "best_prediction_uv": project_trajectories_to_image(
+                traj["best_prediction"] * 100.0, vehicles
+            ),
+            "prediction_uv": project_trajectories_to_image(
+                traj["prediction"] * 100.0, vehicles
+            ),
+            "ground_truth_uv": project_trajectories_to_image(
+                traj["ground_truth_xy"] * 100.0, vehicles
+            ),
+        }
+        # score-head models only (see DrivoR.predict_step): the trajectory the
+        # learned scorer picked with no access to ground truth.
+        if (selected := traj.get("selected_prediction", None)) is not None:
+            entries["selected_prediction_uv"] = project_trajectories_to_image(
+                selected * 100.0, vehicles
+            )
+
+        uv = TensorDict(entries, batch_size=traj.batch_size)
         prediction = prediction.clone(recurse=False)
         prediction["trajectory"] = traj.clone(recurse=False).update(uv)
 

@@ -9,7 +9,7 @@ from hydra import compose, initialize
 from hydra.utils import instantiate
 from tensordict import TensorDict
 from torch import Tensor, nn
-from torch.nn import ModuleList
+from torch.nn import Module, ModuleList
 from torch.utils.data import DataLoader
 from torchvision.transforms.v2 import CenterCrop, Normalize, Resize, ToDtype
 
@@ -25,8 +25,12 @@ from rmind.components.drivor.trajectory_target import (
     gnss_anchor_drift_m,
 )
 from rmind.components.nn import Identity
-from rmind.components.transformer import CrossAttentionDecoder
+from rmind.components.transformer import (
+    CrossAttentionDecoder,
+    CrossAttentionDecoderHead,
+)
 from rmind.components.vq import ResidualVQ
+from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
 from rmind.models.drivor import DrivoR
 from rmind.models.waypoints_tokenizer import (
@@ -406,6 +410,233 @@ def test_drivor_predict(
             raise AssertionError(msg)
 
 
+# --- CrossAttentionDecoderHead.decode() -----------------------------------------
+
+
+def test_decoder_decode_matches_forward_3d() -> None:
+    """`decode()` (pre-projection) followed by `output_projection` must equal
+    `forward()` -- the split introduced for `DrivoR.score_head` must not change
+    numerics for existing callers."""
+    decoder = CrossAttentionDecoder(
+        dim_model=DIM_MODEL, num_layers=1, num_heads=2, hidden_layer_multiplier=1
+    )
+    head = CrossAttentionDecoderHead(
+        decoder=decoder, output_projection=nn.Linear(DIM_MODEL, DIM_MODEL)
+    ).eval()
+
+    query = torch.randn(2, 4, DIM_MODEL)
+    context = torch.randn(2, 6, DIM_MODEL)
+    input = CrossAttentionDecoderHead.Input(query=query, context=context)
+
+    decoded = head.decode(input)
+    assert decoded.shape == (2, 4, DIM_MODEL)
+    torch.testing.assert_close(head.output_projection(decoded), head(input))
+
+
+def test_decoder_decode_4d_out_features_mismatch() -> None:
+    """The previously-broken case (Step 1 fix): a 4D caller whose
+    `output_projection.out_features != dim_model`. Before the fix, `forward`
+    reshaped the *projected* output assuming `out_features == dim_model`,
+    which raises here; `decode()` reshapes `decoded` (whose last dim IS always
+    `dim_model`), so it must succeed and `forward` must build on it correctly.
+    """
+    out_features = DIM_MODEL * 3  # != dim_model
+    decoder = CrossAttentionDecoder(
+        dim_model=DIM_MODEL, num_layers=1, num_heads=2, hidden_layer_multiplier=1
+    )
+    head = CrossAttentionDecoderHead(
+        decoder=decoder, output_projection=nn.Linear(DIM_MODEL, out_features)
+    ).eval()
+
+    b, t, sq, sc = 2, 3, 4, 6
+    query = torch.randn(b, t, sq, DIM_MODEL)
+    context = torch.randn(b, t, sc, DIM_MODEL)
+    input = CrossAttentionDecoderHead.Input(query=query, context=context)
+
+    decoded = head.decode(input)
+    assert decoded.shape == (b, t, sq, DIM_MODEL)
+
+    output = head(input)
+    assert output.shape == (b, t, sq, out_features)
+    torch.testing.assert_close(head.output_projection(decoded), output)
+
+
+# --- DrivoR score_head -----------------------------------------------------
+
+
+@pytest.fixture
+def drivor_score_model(
+    device: torch.device,
+    register_backbone: RegisterViTBackbone,
+    route_tokenizer: WaypointsLatentTokenizer,
+) -> DrivoR:
+    """Built through `__init__` (NOT a mutation of the shared `drivor_model`
+    fixture -- other tests rely on that one being score-head-free), with
+    `score_head` passed as a plain dict so `hparams` records it exactly as
+    `load_for_score_head_training` would, and a checkpoint round-trips.
+    """
+    image_preprocess = nn.Sequential(
+        Rearrange("... h w c -> ... c h w"),
+        CenterCrop([320, 576]),
+        Resize([256, 256]),
+        ToDtype(dtype=torch.float32, scale=True),
+        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    )
+    register_projection = nn.Sequential(
+        nn.LayerNorm(register_backbone.model.embed_dim),
+        nn.Linear(register_backbone.model.embed_dim, DIM_MODEL),
+    )
+    ego_state_encoder = EgoStateEncoder(
+        continuous_dim=4,
+        num_turn_signal_classes=3,
+        route_embedding_dim=ROUTE_LATENT_DIM,
+        embedding_dim=DIM_MODEL,
+        hidden_dim=DIM_MODEL,
+    )
+    trajectory_head = TrajectoryDecoderHead(
+        decoder=CrossAttentionDecoder(
+            dim_model=DIM_MODEL, num_layers=1, num_heads=2, hidden_layer_multiplier=1
+        ),
+        ego_state_encoder=ego_state_encoder,
+        num_queries=8,
+        dim_model=DIM_MODEL,
+        num_poses=NUM_POSES,
+        pose_dims=3,
+    )
+
+    return DrivoR(
+        image_preprocess=image_preprocess,
+        backbone=register_backbone,
+        register_projection=register_projection,
+        route_tokenizer=route_tokenizer,
+        trajectory_head=trajectory_head,
+        loss=WinnerTakesAllPoseLoss(),
+        score_head={
+            "_target_": "torch.nn.Sequential",
+            "_args_": [
+                {"_target_": "torch.nn.LayerNorm", "normalized_shape": DIM_MODEL},
+                {
+                    "_target_": "torchvision.ops.MLP",
+                    "in_channels": DIM_MODEL,
+                    "hidden_channels": [DIM_MODEL, 1],
+                },
+            ],
+        },
+        freeze_base=True,
+        score_tau=0.02,
+        reference_timestep=0,
+    ).to(device)
+
+
+def test_score_head_absent_by_default(
+    drivor_model: DrivoR, drivor_batch: dict[str, Any]
+) -> None:
+    assert drivor_model.score_head is None
+
+    image, continuous, turn_signal, route, target_xy, target_heading = (
+        drivor_model._inputs(drivor_batch)  # noqa: SLF001
+    )
+    pred, _ = drivor_model._forward(  # noqa: SLF001
+        image=image, continuous=continuous, turn_signal=turn_signal, route=route
+    )
+    _, _, _, metrics = drivor_model._pose_metrics(  # noqa: SLF001
+        pred, target_xy, target_heading, prefix="train"
+    )
+    assert not any(k.startswith("train/score") for k in metrics)
+
+    prediction = drivor_model.predict_step(drivor_batch)
+    assert "scores" not in prediction["trajectory"].keys()  # noqa: SIM118
+
+
+def test_score_head_forward_features_shapes(
+    drivor_score_model: DrivoR, drivor_batch: dict[str, Any]
+) -> None:
+    image, continuous, turn_signal, route, *_ = drivor_score_model._inputs(  # noqa: SLF001
+        drivor_batch
+    )
+    pred, features = drivor_score_model._forward(  # noqa: SLF001
+        image=image, continuous=continuous, turn_signal=turn_signal, route=route
+    )
+    assert pred.shape == (2, 8, NUM_POSES, 3)
+    assert features.shape == (2, 8, DIM_MODEL)
+
+    scores = drivor_score_model._predict_scores(features)  # noqa: SLF001
+    assert scores.shape == (2, 8)
+
+
+def test_score_head_train_step_gradient_isolation(
+    drivor_score_model: DrivoR, drivor_batch: dict[str, Any]
+) -> None:
+    """Regression test for the `requires_grad` trap: with `freeze_base=True`,
+    every base param must receive no gradient while `score_head` trains."""
+    drivor_score_model.train()
+    out = drivor_score_model.training_step(drivor_batch, 0)
+    out["loss"].backward()
+
+    for module in drivor_score_model._base_modules():  # noqa: SLF001
+        for p in module.parameters():
+            assert p.grad is None or torch.all(p.grad == 0)
+
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in drivor_score_model.score_head.parameters()
+    )
+
+
+def test_score_head_train_freezes_base(drivor_score_model: DrivoR) -> None:
+    drivor_score_model.train()
+    for module in drivor_score_model._base_modules():  # noqa: SLF001
+        assert not module.training
+    assert drivor_score_model.score_head.training
+
+
+def test_score_metrics_target_and_regret() -> None:
+    per_candidate = torch.tensor([[3.0, 1.0, 2.0, 5.0, 4.0, 6.0]])
+
+    model = DrivoR.__new__(DrivoR)
+    model.score_tau = 1e-6
+    model.score_tau_relative = False
+    _, tiny_tau_metrics = model._score_metrics(  # noqa: SLF001
+        -per_candidate, per_candidate, prefix="val"
+    )
+    assert tiny_tau_metrics["val/score_target_entropy_norm"] < 0.05  # noqa: PLR2004
+
+    model.score_tau = 1e6
+    _, large_tau_metrics = model._score_metrics(  # noqa: SLF001
+        -per_candidate, per_candidate, prefix="val"
+    )
+    assert large_tau_metrics["val/score_target_entropy_norm"] > 0.95  # noqa: PLR2004
+
+    model.score_tau = 0.02
+    _, oracle_metrics = model._score_metrics(  # noqa: SLF001
+        -per_candidate, per_candidate, prefix="val"
+    )
+    assert oracle_metrics["val/score_regret_ratio"].item() == pytest.approx(0.0)
+
+
+def test_score_head_predict_step(
+    drivor_score_model: DrivoR, drivor_batch: dict[str, Any]
+) -> None:
+    prediction = drivor_score_model.predict_step(drivor_batch)
+    traj = prediction["trajectory"]
+
+    assert traj["scores"].shape == (2, 8)
+    assert traj["predicted_index"].shape == (2,)
+    assert (traj["predicted_index"] < 8).all()  # noqa: PLR2004
+
+    expected = (
+        traj["prediction"]
+        .gather(
+            1,
+            traj["predicted_index"][:, None, None, None].expand(
+                -1, 1, *traj["prediction"].shape[-2:]
+            ),
+        )
+        .squeeze(1)
+    )
+    torch.testing.assert_close(traj["selected_prediction"], expected)
+
+
 # --- checkpoint round-trip, via the real Hydra config -------------------------
 #
 # Unlike `drivor_model` above, this builds `DrivoR` from
@@ -452,4 +683,43 @@ def test_drivor_resume_from_checkpoint(
     ckpt_path = tmp_path / "model.ckpt"
     drivor_trainer.save_checkpoint(ckpt_path)
     model = model_yaak_drivor_raw.__class__.load_from_checkpoint(ckpt_path, strict=True)
+    drivor_trainer.fit(model, datamodule=drivor_datamodule)
+
+
+def test_drivor_resume_from_checkpoint_with_score_head(
+    drivor_trainer: pl.Trainer,
+    model_yaak_drivor_raw: DrivoR,
+    drivor_datamodule: pl.LightningDataModule,
+    tmp_path: Path,
+) -> None:
+    """`strict=True` must still round-trip with `score_head` attached --
+    mirrors the hparams write-back `load_for_score_head_training` does (see
+    its docstring): mutating `model.hparams` after `__init__` is what
+    `dump_checkpoint` actually persists, so every attribute set here must
+    also land in `hparams` or the reloaded checkpoint loses the head.
+    """
+    score_head_config = HydraConfig[Module].model_validate({
+        "_target_": "torch.nn.Sequential",
+        "_args_": [
+            {"_target_": "torch.nn.LayerNorm", "normalized_shape": DIM_MODEL},
+            {
+                "_target_": "torchvision.ops.MLP",
+                "in_channels": DIM_MODEL,
+                "hidden_channels": [DIM_MODEL, 1],
+            },
+        ],
+    })
+    model_yaak_drivor_raw.score_head = score_head_config.instantiate()
+    model_yaak_drivor_raw.freeze_base = True
+    for module in model_yaak_drivor_raw._base_modules():  # noqa: SLF001
+        module.requires_grad_(False).eval()  # noqa: FBT003
+    model_yaak_drivor_raw.hparams["score_head"] = score_head_config.model_dump()
+    model_yaak_drivor_raw.hparams["freeze_base"] = True
+
+    drivor_trainer.fit(model_yaak_drivor_raw, datamodule=drivor_datamodule)
+    ckpt_path = tmp_path / "model_score.ckpt"
+    drivor_trainer.save_checkpoint(ckpt_path)
+    model = model_yaak_drivor_raw.__class__.load_from_checkpoint(ckpt_path, strict=True)
+    assert model.score_head is not None
+    assert model.freeze_base
     drivor_trainer.fit(model, datamodule=drivor_datamodule)

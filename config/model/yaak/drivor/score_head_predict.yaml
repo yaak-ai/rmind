@@ -1,0 +1,5 @@
+# plain load, NOT score_head.yaml -- that _target_ is the *training* classmethod
+# (`load_for_score_head_training`) and would re-freeze/re-initialize the head here.
+_target_: rmind.models.drivor.DrivoR.load_from_wandb_artifact
+artifact: ${score_head_artifact}
+filename: model.ckpt

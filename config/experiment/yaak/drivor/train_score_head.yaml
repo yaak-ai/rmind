@@ -1,0 +1,20 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/drivor/train
+  - override /model: yaak/drivor/score_head
+  - _self_
+
+# just train-unsafe experiment=yaak/drivor/train_score_head \
+#     score_head_artifact=yaak/alex-tmp/model-mdm5kmkg:v9
+score_head_artifact: ???
+
+# raw.yaml hardcodes lr: 2e-4; score_head.yaml uses ${lr}, defined here.
+lr: 1e-3
+
+trainer:
+  max_epochs: 1
+  val_check_interval: 0.1
+
+wandb:
+  tags: [drivor, score_head, frozen_base]

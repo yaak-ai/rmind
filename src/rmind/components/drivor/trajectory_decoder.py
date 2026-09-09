@@ -44,6 +44,38 @@ class TrajectoryDecoderHead(nn.Module):
         self.num_poses = num_poses
         self.pose_dims = pose_dims
 
+    def forward_features(
+        self,
+        *,
+        context: Tensor,
+        ego_continuous: Tensor,
+        ego_turn_signal: Tensor,
+        ego_route_embedding: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """`(poses (b, Q, num_poses, pose_dims), decoded (b, Q, dim_model))` -- the
+        per-query embeddings alongside the poses they were projected from (free:
+        they are computed either way), so a scorer can rank candidates (see
+        `rmind.models.drivor.DrivoR._predict_scores`).
+
+        `decoded` is the decoder's RAW residual stream: `CrossAttentionDecoder`
+        applies no final LayerNorm (`CrossAttentionDecoderBlock.forward` ends on a
+        residual add), so a consumer must normalize it itself.
+        """
+        b = context.shape[0]
+        ego_embed = self.ego_state_encoder(
+            continuous=ego_continuous,
+            turn_signal=ego_turn_signal,
+            route_embedding=ego_route_embedding,
+        )
+        queries = self.query.expand(b, -1, -1) + ego_embed.unsqueeze(1)
+        decoded = self.head.decode(
+            CrossAttentionDecoderHead.Input(query=queries, context=context)
+        )
+        poses = self.head.output_projection(decoded).reshape(
+            b, -1, self.num_poses, self.pose_dims
+        )
+        return poses, decoded
+
     @override
     def forward(
         self,
@@ -53,12 +85,10 @@ class TrajectoryDecoderHead(nn.Module):
         ego_turn_signal: Tensor,
         ego_route_embedding: Tensor,
     ) -> Tensor:
-        b = context.shape[0]
-        ego_embed = self.ego_state_encoder(
-            continuous=ego_continuous,
-            turn_signal=ego_turn_signal,
-            route_embedding=ego_route_embedding,
+        poses, _ = self.forward_features(
+            context=context,
+            ego_continuous=ego_continuous,
+            ego_turn_signal=ego_turn_signal,
+            ego_route_embedding=ego_route_embedding,
         )
-        queries = self.query.expand(b, -1, -1) + ego_embed.unsqueeze(1)
-        out = self.head(CrossAttentionDecoderHead.Input(query=queries, context=context))
-        return out.reshape(b, -1, self.num_poses, self.pose_dims)
+        return poses

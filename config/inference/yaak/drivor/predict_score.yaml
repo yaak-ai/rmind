@@ -1,0 +1,25 @@
+# @package _global_
+---
+defaults:
+  - /inference/yaak/drivor/predict
+  - override /model: yaak/drivor/score_head_predict
+  - override /logger: yaak/rerun/prediction_drivor_score
+  - _self_
+
+score_head_artifact: ???
+
+prediction_select:
+  - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+  - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+  - [batch, data, meta/VehicleMotion/speed]
+  - [batch, data, headings_denoised/heading]
+  - [batch, meta, input_id]
+  - [trajectory, prediction]
+  - [trajectory, best_prediction]
+  - [trajectory, best_index]
+  - [trajectory, per_candidate_loss]
+  - [trajectory, ground_truth_xy]
+  - [trajectory, ground_truth_heading]
+  - [trajectory, scores]
+  - [trajectory, predicted_index]
+  - [trajectory, selected_prediction]

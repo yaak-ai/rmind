@@ -121,22 +121,34 @@ class CrossAttentionDecoderHead(nn.Module):
         self.output_projection = output_projection
 
     @validate_call
-    @override
-    def forward(self, input: Input) -> Tensor:
+    def decode(self, input: Input) -> Tensor:
+        """Decoded per-query embeddings, BEFORE `output_projection`: `(b, sq, d)`
+        for 3D input, `(b, t, sq, d)` for 4D -- `d` is the decoder's `dim_model`.
+        Exposed separately from `forward` so a downstream head can read the
+        decoder's residual stream (e.g. `DrivoR.score_head`) without changing
+        `forward`'s `Tensor` contract, which
+        `rmind.components.objectives.forward_dynamics` relies on (it feeds head
+        outputs straight into `tree_map`/`TensorDict`).
+        """
         query = input.query
         context = input.context
 
         if query.ndim == 4:  # noqa: PLR2004
             b, t, sq, d = query.shape
-            _, _, sc, _ = context.shape
+            sc = context.shape[-2]
+            decoded = self.decoder(
+                query.reshape(b * t, sq, d), context.reshape(b * t, sc, d)
+            )
+            return decoded.reshape(b, t, sq, d)
 
-            query_flat = query.reshape(b * t, sq, d)
-            context_flat = context.reshape(b * t, sc, d)
+        return self.decoder(query, context)
 
-            decoded = self.decoder(query_flat, context_flat)
-            output = self.output_projection(decoded)
-
-            return output.reshape(b, t, sq, d)
-
-        decoded = self.decoder(query, context)
-        return self.output_projection(decoded)
+    @validate_call
+    @override
+    def forward(self, input: Input) -> Tensor:
+        # NOTE: the 4D reshape now happens on `decoded` (whose last dim IS
+        # `dim_model`) rather than on the projected output -- the previous
+        # `output.reshape(b, t, sq, d)` silently assumed
+        # `output_projection.out_features == dim_model`, true only for the single
+        # existing 4D caller (control_transformer's foresight head).
+        return self.output_projection(self.decode(input))
