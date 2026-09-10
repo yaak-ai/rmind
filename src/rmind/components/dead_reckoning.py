@@ -26,7 +26,16 @@ def dead_reckon_future_trajectory(
     pose at `reference_index`, matching the ego-centric rotate/translate
     convention already used for `waypoints/xy_normalized` in
     `config/dataset/yaak/*.yaml` (`ST_Rotate(ST_Translate(geom, -ego_x,
-    -ego_y), radians(heading))`), including its `/100` position scale.
+    -ego_y), radians(heading))`) -- EXCEPT for that convention's `/100`
+    position scale, which this function deliberately does NOT apply.
+    `waypoints/xy_normalized` is a route reference (see module docstring
+    above), a different quantity from this realized-path trajectory; the two
+    sharing a scale was only ever a copy-paste artifact of this code's
+    origin, not a real requirement. Position is plain meters here. (If a
+    consumer needs xy and heading error balanced against each other -- e.g.
+    a combined pose loss -- do that scaling explicitly at the loss/weighting
+    layer, not by baking a scale into the target; see
+    `rmind.components.loss.winner_takes_all_pose_l1`.)
 
     Args:
         speed_kmh: `(*batch, T)` CAN-bus speed, km/h.
@@ -37,8 +46,8 @@ def dead_reckon_future_trajectory(
 
     Returns:
         `(position, heading)`: `position` is `(*batch, P, 2)` ego-centric
-        `(x, y)`, `/100`-normalized; `heading` is `(*batch, P)` ego-centric
-        heading, radians, wrapped to `[-pi, pi]`.
+        `(x, y)`, meters; `heading` is `(*batch, P)` ego-centric heading,
+        radians, wrapped to `[-pi, pi]`.
     """
     t0 = reference_index
 
@@ -60,7 +69,7 @@ def dead_reckon_future_trajectory(
     # QA check and with any other ego-centric convention in this codebase.
     dx = speed_m_s * torch.sin(step_heading_rel) * dt
     dy = speed_m_s * torch.cos(step_heading_rel) * dt
-    position = torch.stack([dx, dy], dim=-1).cumsum(dim=-2) / 100.0
+    position = torch.stack([dx, dy], dim=-1).cumsum(dim=-2)
 
     heading_rel = heading_rad[..., t0 + 1 :] - ref_heading
     heading_rel = torch.atan2(torch.sin(heading_rel), torch.cos(heading_rel))
@@ -104,8 +113,7 @@ def rolling_dead_reckoned_trajectory(
 
     Returns:
         `(*batch, episode_length, num_poses, 3)`: ego-centric `(x, y, theta)`
-        per anchor frame, `(x, y)` `/100`-normalized, `theta` wrapped to
-        `[-pi, pi]`.
+        per anchor frame, `(x, y)` meters, `theta` wrapped to `[-pi, pi]`.
 
     Raises:
         ValueError: if `T < episode_length + num_poses`, i.e. there aren't
@@ -139,7 +147,7 @@ def rolling_dead_reckoned_trajectory(
 
 def gnss_anchor_drift_m(
     *,
-    dead_reckoned_position_normalized: Tensor,
+    dead_reckoned_position_m: Tensor,
     gnss_xy: Tensor,
     heading_deg: Tensor,
     reference_index: int = 0,
@@ -150,13 +158,13 @@ def gnss_anchor_drift_m(
     failure for that window -- see `rmind.models.drivor` verification notes.
 
     Args:
-        dead_reckoned_position_normalized: `(*batch, P, 2)`, the `position`
+        dead_reckoned_position_m: `(*batch, P, 2)` meters, the `position`
             output of `dead_reckon_future_trajectory` for the same batch.
         gnss_xy: `(*batch, T, 2)` raw absolute GNSS position, meters (UTM).
         heading_deg: `(*batch, T)` heading, degrees, same tensor passed to
             `dead_reckon_future_trajectory`.
         reference_index: must match the `reference_index` used to produce
-            `dead_reckoned_position_normalized`.
+            `dead_reckoned_position_m`.
 
     Returns:
         `(*batch,)` drift, meters.
@@ -175,5 +183,5 @@ def gnss_anchor_drift_m(
         dim=-1,
     ).squeeze(-2)
 
-    dead_reckoned_xy_m = dead_reckoned_position_normalized[..., -1, :] * 100.0
+    dead_reckoned_xy_m = dead_reckoned_position_m[..., -1, :]
     return (dead_reckoned_xy_m - gnss_anchor_xy).norm(dim=-1)

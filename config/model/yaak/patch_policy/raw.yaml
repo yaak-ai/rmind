@@ -186,6 +186,7 @@ losses:
     # only fires when trajectory_head is not None
     trajectory:
       _target_: rmind.components.loss.WinnerTakesAllPoseLoss
+      xy_weight: ${trajectory_xy_weight}
       heading_weight: ${trajectory_heading_weight}
     # safe to always define -- the validation gate in PatchPolicy.__init__
     # only fires when mode_head is not None

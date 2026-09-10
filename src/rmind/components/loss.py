@@ -1,5 +1,6 @@
+import math
 from collections.abc import Callable
-from typing import Any, Literal, Protocol, override, runtime_checkable
+from typing import Any, Final, Literal, Protocol, override, runtime_checkable
 
 import torch
 import torch.nn.functional as F
@@ -165,17 +166,42 @@ class GramAnchoringLoss(Module):
         return self.weight_sim * sim_loss + self.weight_gram * gram_loss
 
 
+#: Default `xy_weight` for the winner-takes-all pose loss below. Was
+#: previously baked into the dead-reckoned target itself (a `/100` scale on
+#: `position`, see `rmind.components.dead_reckoning`'s history); moved here
+#: as an explicit loss-level knob instead, per that module's docstring.
+_DEFAULT_XY_WEIGHT: Final[float] = 0.01
+
+#: Default `heading_weight`, ALIGNED to `_DEFAULT_XY_WEIGHT` above so the
+#: combined loss reproduces the pre-meters-conversion balance (xy/100 +
+#: 0.1*heading_rad) rather than an arbitrary new one. Degrees are a smaller
+#: angular unit than radians (1 rad = 180/pi deg), so the same physical
+#: weighting needs a proportionally smaller per-degree coefficient:
+#: 0.1 (old, per-radian) * (pi/180) = 0.1 / (180/pi) =~ 0.0017453.
+_DEFAULT_HEADING_WEIGHT: Final[float] = 0.1 * math.pi / 180
+
+
 def _per_candidate_pose_errors(input: Tensor, target: Tensor) -> tuple[Tensor, Tensor]:
-    """Per-candidate, per-pose xy L1 error and wrapped heading error (radians)
-    -- the shared core of `winner_takes_all_pose_l1` and
+    """Per-candidate, per-pose xy L1 error (meters) and wrapped heading error
+    (DEGREES) -- the shared core of `winner_takes_all_pose_l1` and
     `winner_takes_all_pose_l1_components`.
 
+    `input`/`target` poses carry `theta` in radians (matching
+    `rmind.components.dead_reckoning`'s convention everywhere else), but the
+    returned `heading_err` is converted to degrees here so its magnitude
+    (0-180) sits in the same ballpark as meter-scale `xy_err` instead of
+    radians' 0-pi -- see `winner_takes_all_pose_l1`'s `heading_weight` note.
+    This is the ONLY place that conversion happens; nothing upstream (the
+    dead-reckoned target, the trajectory head's raw output) is in degrees.
+
     Args:
-        input: `(*batch, Q, P, 3)` candidate poses, last dim `(x, y, theta)`.
+        input: `(*batch, Q, P, 3)` candidate poses, last dim `(x, y, theta)`
+            with `theta` in radians.
         target: `(*batch, P, 3)` ground-truth poses, same layout.
 
     Returns:
-        `(xy_err, heading_err)`, each `(*batch, Q, P)`.
+        `(xy_err, heading_err)`, each `(*batch, Q, P)` -- `xy_err` meters,
+        `heading_err` degrees.
     """
     pred_xy, pred_heading = input[..., :2], input[..., 2]
     target_xy, target_heading = target[..., :2], target[..., 2]
@@ -183,7 +209,8 @@ def _per_candidate_pose_errors(input: Tensor, target: Tensor) -> tuple[Tensor, T
         pred_xy, target_xy.unsqueeze(-3).expand_as(pred_xy), reduction="none"
     ).sum(dim=-1)
     heading_diff = pred_heading - target_heading.unsqueeze(-2)
-    heading_err = torch.atan2(torch.sin(heading_diff), torch.cos(heading_diff)).abs()
+    heading_err_rad = torch.atan2(torch.sin(heading_diff), torch.cos(heading_diff)).abs()
+    heading_err = torch.rad2deg(heading_err_rad)
     return xy_err, heading_err
 
 
@@ -191,7 +218,8 @@ def winner_takes_all_pose_l1(
     input: Tensor,
     target: Tensor,
     *,
-    heading_weight: float = 0.1,
+    xy_weight: float = _DEFAULT_XY_WEIGHT,
+    heading_weight: float = _DEFAULT_HEADING_WEIGHT,
     reduction: Literal["mean", "sum"] = "mean",
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Winner-takes-all trajectory pose loss (DrivoR, arXiv:2601.05083): for
@@ -205,9 +233,16 @@ def winner_takes_all_pose_l1(
         target: `(*batch, P, 3)` ground-truth poses, same layout (e.g.
             `rmind.components.dead_reckoning.rolling_dead_reckoned_trajectory`'s
             output).
-        heading_weight: weight balancing wrapped-heading error (radians)
-            against `/100`-normalized position error -- not specified by the
-            paper, tunable.
+        xy_weight: weight on meter-scale xy position error. Explicit here
+            rather than baked into the target's scale (see
+            `rmind.components.dead_reckoning`'s docstring) -- not specified
+            by the paper, tunable.
+        heading_weight: weight on wrapped-heading error (DEGREES --
+            `_per_candidate_pose_errors` converts from the poses' native
+            radians). Default is ALIGNED to `xy_weight`'s default -- see
+            `_DEFAULT_HEADING_WEIGHT`'s comment -- so changing one without
+            the other changes the xy/heading balance, not just overall loss
+            magnitude.
         reduction: `"mean"` or `"sum"` over the batch.
 
     Returns:
@@ -215,7 +250,7 @@ def winner_takes_all_pose_l1(
         `best_index` is `(*batch,)`; `per_candidate_loss` is `(*batch, Q)`.
     """
     xy_err, heading_err = _per_candidate_pose_errors(input, target)
-    per_candidate = (xy_err + heading_weight * heading_err).mean(dim=-1)
+    per_candidate = (xy_err * xy_weight + heading_weight * heading_err).mean(dim=-1)
 
     min_loss, best_index = per_candidate.min(dim=-1)
     loss = min_loss.mean() if reduction == "mean" else min_loss.sum()
@@ -227,27 +262,30 @@ def winner_takes_all_pose_l1_components(
     input: Tensor,
     target: Tensor,
     *,
-    heading_weight: float = 0.1,
+    xy_weight: float = _DEFAULT_XY_WEIGHT,
+    heading_weight: float = _DEFAULT_HEADING_WEIGHT,
     reduction: Literal["mean", "sum"] = "mean",
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Like `winner_takes_all_pose_l1`, but also breaks the winning
     candidate's error back out into its separate xy-L1 and heading terms --
     `winner_takes_all_pose_l1` only ever exposes the two summed together
-    (scaled by `heading_weight`), which makes it impossible to tell from
-    `loss` alone whether position or heading is driving it. Intended for
-    logging (e.g. `trajectory_loss_xy`/`trajectory_loss_heading`), not for
-    computing the actual optimized loss (`loss` here is numerically identical
-    to `winner_takes_all_pose_l1`'s).
+    (scaled by `xy_weight`/`heading_weight`), which makes it impossible to
+    tell from `loss` alone whether position or heading is driving it.
+    Intended for logging (e.g. `trajectory_loss_xy`/`trajectory_loss_heading`),
+    not for computing the actual optimized loss (`loss` here is numerically
+    identical to `winner_takes_all_pose_l1`'s -- same `xy_weight`/
+    `heading_weight` defaults, kept in sync deliberately).
 
     Returns:
         `(loss, best_index, per_candidate_loss, winner_xy_loss,
         winner_heading_loss)`: the first three match
         `winner_takes_all_pose_l1`; `winner_xy_loss`/`winner_heading_loss` are
-        `(*batch,)`, the winning candidate's mean-over-poses xy/heading error,
-        unweighted (i.e. before `heading_weight` is applied).
+        `(*batch,)`, the winning candidate's mean-over-poses xy (meters)
+        /heading (degrees) error, unweighted (i.e. before `xy_weight`/
+        `heading_weight` are applied).
     """
     xy_err, heading_err = _per_candidate_pose_errors(input, target)
-    per_candidate = (xy_err + heading_weight * heading_err).mean(dim=-1)
+    per_candidate = (xy_err * xy_weight + heading_weight * heading_err).mean(dim=-1)
 
     min_loss, best_index = per_candidate.min(dim=-1)
     loss = min_loss.mean() if reduction == "mean" else min_loss.sum()
@@ -268,16 +306,25 @@ class WinnerTakesAllPoseLoss(Module):
     """
 
     def __init__(
-        self, *, heading_weight: float = 0.1, reduction: Literal["mean", "sum"] = "mean"
+        self,
+        *,
+        xy_weight: float = _DEFAULT_XY_WEIGHT,
+        heading_weight: float = _DEFAULT_HEADING_WEIGHT,
+        reduction: Literal["mean", "sum"] = "mean",
     ) -> None:
         super().__init__()
 
+        self.xy_weight = xy_weight
         self.heading_weight = heading_weight
         self.reduction = reduction
 
     @override
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         loss, _, _ = winner_takes_all_pose_l1(
-            input, target, heading_weight=self.heading_weight, reduction=self.reduction
+            input,
+            target,
+            xy_weight=self.xy_weight,
+            heading_weight=self.heading_weight,
+            reduction=self.reduction,
         )
         return loss

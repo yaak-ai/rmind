@@ -38,7 +38,12 @@ clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 trajectory_horizon: 5   # episode_length + trajectory_horizon must fit clip_length (11);
                         # needs one MORE future step than action_horizon's chunk
 num_trajectory_hypotheses: 5
-trajectory_heading_weight: 0.1
+# xy_weight/heading_weight: see rmind.components.loss._DEFAULT_XY_WEIGHT /
+# _DEFAULT_HEADING_WEIGHT -- these ARE that module's aligned defaults,
+# spelled out here rather than omitted so a future edit to one is visibly
+# also an edit to the other's balance, not a silent default-value change.
+trajectory_xy_weight: 0.01
+trajectory_heading_weight: 0.0017453  # = 0.1 * pi / 180
 trajectory_weight: 0.0
 
 # frozen encoders

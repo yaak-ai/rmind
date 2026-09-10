@@ -48,7 +48,7 @@ def test_winner_takes_all_pose_l1_components_matches_plain_function() -> None:
     target = torch.randn(2, 5, 3)
 
     loss, best_index, per_candidate = winner_takes_all_pose_l1(
-        pred, target, heading_weight=0.3
+        pred, target, xy_weight=0.02, heading_weight=0.3
     )
     (
         components_loss,
@@ -56,7 +56,9 @@ def test_winner_takes_all_pose_l1_components_matches_plain_function() -> None:
         components_per_candidate,
         winner_xy_loss,
         winner_heading_loss,
-    ) = winner_takes_all_pose_l1_components(pred, target, heading_weight=0.3)
+    ) = winner_takes_all_pose_l1_components(
+        pred, target, xy_weight=0.02, heading_weight=0.3
+    )
 
     torch.testing.assert_close(components_loss, loss)
     torch.testing.assert_close(components_best_index, best_index)
@@ -64,10 +66,10 @@ def test_winner_takes_all_pose_l1_components_matches_plain_function() -> None:
     assert winner_xy_loss.shape == (2,)
     assert winner_heading_loss.shape == (2,)
 
-    # the winner's unweighted xy + heading_weight * heading must reconstruct
-    # the winning per-candidate loss entry
+    # the winner's unweighted xy_weight*xy + heading_weight*heading must
+    # reconstruct the winning per-candidate loss entry
     index = best_index.unsqueeze(-1)
     winner_per_candidate = per_candidate.gather(-1, index).squeeze(-1)
     torch.testing.assert_close(
-        winner_xy_loss + 0.3 * winner_heading_loss, winner_per_candidate
+        0.02 * winner_xy_loss + 0.3 * winner_heading_loss, winner_per_candidate
     )

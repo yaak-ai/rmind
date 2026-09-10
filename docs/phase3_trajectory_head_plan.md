@@ -63,7 +63,10 @@ the policy the way similar auxiliaries do in related work.
   correct heading-convention mismatch"). Signature:
   `dead_reckon_future_trajectory(*, speed_kmh, heading_deg, time_stamp_s,
   reference_index=0) -> (position, heading)`. Inputs `(*batch, T)`; output
-  `position (*batch, P, 2)` (`/100`-normalized, ego-centric, `P = T-1-t0`),
+  `position (*batch, P, 2)` (meters, ego-centric, `P = T-1-t0`) --
+  **superseded 2026-09-10**: this brief's `/100`-normalized was dropped, see
+  `dead_reckoning.py`'s docstring; the loss balances xy (meters) against
+  heading in degrees instead,
   `heading (*batch, P)` (radians, wrapped to `[-pi,pi]`). **Axis convention,
   do not re-derive**: `heading_deg` is a compass bearing (0°=north), so
   forward in the rotated ego frame is local **+y**, lateral is **+x** — the

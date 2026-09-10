@@ -460,13 +460,13 @@ def _integrate_relative(dxy: np.ndarray, dyaw: np.ndarray) -> np.ndarray:
 def predicted_trajectory_as_dead_reckoned(df: pl.DataFrame) -> tuple[Tensor, Tensor]:
     """Convert `policy/trajectory_value` (per-step relative deltas, raw
     meters) into the same representation `dead_reckon_future_trajectory`
-    produces (absolute position anchored at FEAT_IDX, /100-scaled; heading
+    produces (absolute position anchored at FEAT_IDX, meters; heading
     relative to the FEAT_IDX anchor, radians) so it can be fed to the same
     controller.
     """
     xy = _arr(df, "policy/trajectory_value/value/xy")
     yaw = _arr(df, "policy/trajectory_value/value/yaw")
-    position = _integrate_relative(xy, yaw) / 100.0
+    position = _integrate_relative(xy, yaw)
     heading = np.cumsum(yaw, axis=1)
     return torch.from_numpy(position).float(), torch.from_numpy(heading).float()
 
@@ -702,7 +702,7 @@ def cmd_stitch(args: argparse.Namespace) -> None:
     anchors = stitch_horizon(ticks, horizon=args.horizon)
     position, _ = dead_reckon_stitched(anchors)
     drift = gnss_anchor_drift_m(
-        dead_reckoned_position_normalized=position,
+        dead_reckoned_position_m=position,
         gnss_xy=torch.from_numpy(anchors["gnss_xy"]).float(),
         heading_deg=torch.from_numpy(anchors["heading"]).float(),
         reference_index=0,
@@ -734,7 +734,7 @@ def cmd_reckon(args: argparse.Namespace) -> None:
         _arr(df, "batch/data/headings_denoised/heading")
     ).float()
     drift = gnss_anchor_drift_m(
-        dead_reckoned_position_normalized=position,
+        dead_reckoned_position_m=position,
         gnss_xy=gnss_xy,
         heading_deg=heading_deg,
         reference_index=FEAT_IDX,
@@ -744,10 +744,8 @@ def cmd_reckon(args: argparse.Namespace) -> None:
 
     traj_gt_xy = _arr(df, "policy/trajectory_gt/value/xy")
     traj_gt_yaw = _arr(df, "policy/trajectory_gt/value/yaw")
-    gt_abs = _integrate_relative(traj_gt_xy, traj_gt_yaw) / 100.0
-    disagreement = (
-        np.linalg.norm(gt_abs[:, -1] - position[:, -1].numpy(), axis=-1) * 100.0
-    )
+    gt_abs = _integrate_relative(traj_gt_xy, traj_gt_yaw)
+    disagreement = np.linalg.norm(gt_abs[:, -1] - position[:, -1].numpy(), axis=-1)
     print(  # noqa: T201
         "\n[reckon] dead-reckoned vs existing (documented-flawed, GPS-chain) "
         "policy/trajectory_gt, final-pose disagreement (m):"
@@ -1537,7 +1535,7 @@ def cmd_modes(args: argparse.Namespace) -> None:  # noqa: PLR0914
     # and compare the gas pedal used to produce it -- this is the direction
     # the controller actually learns, not (1)/(2)'s forward direction.
     position, _ = dead_reckon(df)
-    forward_m = position[:, -1, 1].numpy() * 100.0  # comp1=forward, /100-scale undone
+    forward_m = position[:, -1, 1].numpy()  # comp1=forward
     for lo, hi in ((20, 35), (35, 60)):
         speed_mask = (speed_now >= lo) & (speed_now < hi)
         if speed_mask.sum() < 500:  # noqa: PLR2004

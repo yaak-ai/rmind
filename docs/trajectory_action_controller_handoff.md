@@ -497,7 +497,7 @@ ticks = pl.read_parquet(".../model-4vqatiom:v4.ticks.parquet")
 a = stitch_horizon(ticks, horizon=30)
 position, _ = dead_reckon_stitched(a)
 drift = gnss_anchor_drift_m(
-    dead_reckoned_position_normalized=position,
+    dead_reckoned_position_m=position,
     gnss_xy=torch.from_numpy(a["gnss_xy"]).float(),
     heading_deg=torch.from_numpy(a["heading"]).float(),
     reference_index=0,

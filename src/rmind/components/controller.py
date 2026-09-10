@@ -40,8 +40,8 @@ def build_features(*, position: Tensor, heading: Tensor, speed: Tensor) -> Tenso
     controller's input vector.
 
     Args:
-        position: `(*batch, num_poses, 2)` ego-centric `(x, y)`, `/100`-scaled
-            -- the `position` output of
+        position: `(*batch, num_poses, 2)` ego-centric `(x, y)`, meters --
+            the `position` output of
             `rmind.components.dead_reckoning.dead_reckon_future_trajectory`.
         heading: `(*batch, num_poses)` ego-centric heading, radians -- the
             `heading` output of the same function.
