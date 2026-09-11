@@ -32,8 +32,8 @@ Observations (model inputs, not targets):
 
     speed                 lindelot/vehicle_state.speed             m/s
     fork_above_300        lindelot/vehicle_state.fork_above_300    bool -> 0.0 / 1.0
-    relative_ego_pos      pozyx pose + pallet tag         WORLD ego, pallet, target
-    relative_dropoff_pos  pozyx pose + dropoff.parquet    -> ego frame IN THE CONFIG
+    relative_ego_pos      qorvo pose + qorvo pallet pose   WORLD ego, pallet, target
+    relative_dropoff_pos  qorvo pose + dropoff.parquet     -> ego frame IN THE CONFIG
 
 The two `relative_*` tokens are the intention (see the constants block). This
 module does NOT compute them: it emits the WORLD-frame ego pose, live pallet
@@ -127,19 +127,23 @@ TRACTION_SOURCES: Final = {
 
 # --- intention: two ego-frame position tokens -----------------------------------
 #
-# The pozyx indoor system carries both the vehicle pose and the pallet position in
-# ONE world frame (gnss is all-zero indoors and unused). `relative_ego_pos` points
-# the model at the pallet to pick up; `relative_dropoff_pos` at where to leave it -
-# the dropoff, which is NOT a sensor reading and comes from `dropoff.parquet`
-# (written by `scripts.prepare_dropoff`, joined by time so it can vary within a
-# job). This module emits both targets and the ego pose in WORLD metres; the
-# dataset config translates by -ego, rotates by -heading and scales to ~[-1, 1],
-# so the frame transform lives in one place, exactly as the car model's waypoints.
+# The qorvo UWB RTLS carries the vehicle pose (`qorvo/pose`) and the pallet
+# position (`qorvo/pallet_pose`) in ONE world frame, in metres (gnss is all-zero
+# indoors and unused). `relative_ego_pos` points the model at the pallet to pick
+# up; `relative_dropoff_pos` at where to leave it - the dropoff, which is NOT a
+# sensor reading and comes from `dropoff.parquet` (written by
+# `scripts.prepare_dropoff`, joined by time so it can vary within a job). This
+# module emits both targets and the ego pose in WORLD metres; the dataset config
+# translates by -ego, rotates by -heading and scales to ~[-1, 1], so the frame
+# transform lives in one place, exactly as the car model's waypoints.
+#
+# `qorvo/pose` carries heading (CCW from +x, degrees) already valid on the jobs
+# recorded so far, which the config's rotation depends on. Earlier recordings used
+# a `pozyx/pose` + `pozyx/tag` system; that is no longer read.
 #
 # These are inputs, never targets.
-POSE_TOPIC: Final = "pozyx/pose"
-TAG_TOPIC: Final = "pozyx/tag"
-PALLET_LABEL: Final = "pallet"
+POSE_TOPIC: Final = "qorvo/pose"
+PALLET_TOPIC: Final = "qorvo/pallet_pose"
 DROPOFF_FILE: Final = "dropoff.parquet"
 
 # the world-frame columns the row builder emits for the config to transform
@@ -197,19 +201,17 @@ def read_mcap(
         if signal.valid_field is not None:
             topic[signal.valid_field] = pl.Boolean()
 
-    # ego pose and every tag fix (filtered to the pallet later), for the
-    # intention tokens
+    # ego pose and pallet pose, for the intention tokens
     fields[POSE_TOPIC] = {
         "log_time": pl.Datetime("ns"),
-        "center_x_m": pl.Float32(),
-        "center_y_m": pl.Float32(),
+        "x_m": pl.Float32(),
+        "y_m": pl.Float32(),
         "heading_deg": pl.Float32(),
     }
-    fields[TAG_TOPIC] = {
+    fields[PALLET_TOPIC] = {
         "log_time": pl.Datetime("ns"),
-        "label": pl.String(),
-        "x_mm": pl.Int64(),
-        "y_mm": pl.Int64(),
+        "x_m": pl.Float32(),
+        "y_m": pl.Float32(),
     }
 
     return McapReader(decoder_factories=[ProtobufDecoderFactory], fields=fields)(path)
@@ -353,23 +355,22 @@ def _world_positions(
         .sort("log_time")
         .select(
             "log_time",
-            pl.col("center_x_m").alias("ego_x"),
-            pl.col("center_y_m").alias("ego_y"),
+            pl.col("x_m").alias("ego_x"),
+            pl.col("y_m").alias("ego_y"),
             pl.col("heading_deg").alias("ego_heading"),
         )
     )
     pallet = (
-        topics[TAG_TOPIC]
-        .filter(pl.col("label") == PALLET_LABEL)
+        topics[PALLET_TOPIC]
         .sort("log_time")
         .select(
             "log_time",
-            (pl.col("x_mm") / 1000).cast(pl.Float32).alias("pallet_x"),
-            (pl.col("y_mm") / 1000).cast(pl.Float32).alias("pallet_y"),
+            pl.col("x_m").cast(pl.Float32).alias("pallet_x"),
+            pl.col("y_m").cast(pl.Float32).alias("pallet_y"),
         )
     )
     if pallet.is_empty():
-        msg = f"no {PALLET_LABEL!r} tag fixes in the job"
+        msg = f"no {PALLET_TOPIC!r} fixes in the job"
         raise ValueError(msg)
 
     target = _read_dropoff(job_dir)
