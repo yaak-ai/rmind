@@ -1,13 +1,12 @@
 from typing import final, override
 
-from einops import repeat
 from pydantic import InstanceOf, validate_call
 from torch import Tensor
 from torch.nn import Module
 
 from rmind.components.base import Modality
 from rmind.components.episode import Episode
-from rmind.components.objectives.base import PATCHES, world_latent_context
+from rmind.components.objectives.base import world_latent_context
 
 
 @final
@@ -16,10 +15,7 @@ class WorldModelLatent(Module):
 
     @validate_call
     def __init__(
-        self,
-        *,
-        latent: InstanceOf[Module],
-        patch_pos_embed: InstanceOf[Module],
+        self, *, latent: InstanceOf[Module], patch_pos_embed: InstanceOf[Module]
     ) -> None:
         super().__init__()
         self.latent = latent
@@ -28,11 +24,5 @@ class WorldModelLatent(Module):
     @override
     def forward(self, *, episode: Episode, embedding: Tensor) -> Tensor:
         context = world_latent_context(episode, embedding)
-        p = episode.get(PATCHES).shape[-2]
-        query = repeat(
-            episode.embeddings.get((Modality.UTILITY, "latent")),
-            "b t 1 d -> b t p d",
-            p=p,
-        )
-        query = self.patch_pos_embed(query)
+        query = episode.embeddings.get((Modality.UTILITY, "latent"))
         return self.latent({"query": query, "key": context, "value": context})
