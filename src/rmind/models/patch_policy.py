@@ -238,8 +238,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     stage): its label comes from whatever `trajectory_head` currently predicts,
     so it is only as informative as `trajectory_head` is at that point in
     training -- with `trajectory_weight=0.0` the label is drawn from an
-    UNTRAINED trajectory head. Like `trajectory_head`, this is training-time
-    only and never feeds `joint_actions` or any served/exported output.
+    UNTRAINED trajectory head. `mode_weight` (default `1.0`, the unweighted
+    behaviour this head shipped with) scales the loss before it is added into
+    the total, mirroring `trajectory_weight`; unlike that knob its default is
+    NOT zero, so runs launched before it existed reproduce bit-for-bit. Like
+    `trajectory_head`, this is training-time only and never feeds
+    `joint_actions` or any served/exported output.
     """
 
     _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
@@ -280,6 +284,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         trajectory_target: Path = ("context", "trajectory_target"),
         num_trajectory_hypotheses: int = 5,
         trajectory_weight: float = 0.0,
+        mode_weight: float = 1.0,
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
@@ -377,6 +382,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.trajectory_target: Path = trajectory_target
         self.num_trajectory_hypotheses = num_trajectory_hypotheses
         self.trajectory_weight = trajectory_weight
+        self.mode_weight = mode_weight
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
@@ -424,6 +430,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "trajectory_target": trajectory_target,
             "num_trajectory_hypotheses": num_trajectory_hypotheses,
             "trajectory_weight": trajectory_weight,
+            "mode_weight": mode_weight,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "neighbor_smoothing_channels": neighbor_smoothing_channels,
@@ -1061,7 +1068,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # (and thus mode_head) -- best_index itself is a label, no grad needed.
         if mode_logits is not None:
             best_index = best_index_out["best_index"]
-            losses["mode"] = self.losses["mode"](
+            losses["mode"] = self.mode_weight * self.losses["mode"](
                 rearrange(mode_logits, "b t q -> (b t) q"),
                 rearrange(best_index, "b t -> (b t)"),
             )

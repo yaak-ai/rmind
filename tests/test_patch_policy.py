@@ -153,6 +153,7 @@ def _make_model(  # noqa: PLR0913
     # exercise the path -- the gate test below overrides it back to 0.0.
     trajectory_weight: float = 1.0,
     with_mode_head: bool = False,
+    mode_weight: float = 1.0,
 ) -> PatchPolicy:
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
@@ -208,6 +209,7 @@ def _make_model(  # noqa: PLR0913
         mode_head=MLP(POLICY_DIM, [16, NUM_TRAJECTORY_HYPOTHESES])
         if with_mode_head
         else None,
+        mode_weight=mode_weight,
         losses=losses
         if losses is not None
         else ModuleDict(modules=default_loss_modules),
@@ -1400,6 +1402,40 @@ def test_mode_head_metrics_and_gradients() -> None:
     assert any(
         p.grad is not None and p.grad.abs().sum() > 0
         for p in model.mode_head.parameters()
+    )
+
+
+def test_mode_weight_scales_the_mode_loss() -> None:
+    """`mode_weight` scales `losses["mode"]` linearly, and `0.0` zeroes both
+    the term and mode_head's gradient while leaving `mode_accuracy` (a
+    diagnostic, comparable across a weight sweep) untouched.
+    """
+    model = _make_model(with_trajectory_head=True, with_mode_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    def mode_loss() -> Tensor:
+        metrics = model._compute_metrics(batch)  # noqa: SLF001
+        return cast("dict[str, Tensor]", metrics["policy", "loss"])["mode"]
+
+    unweighted = mode_loss()
+
+    model.mode_weight = 0.25
+    torch.testing.assert_close(mode_loss(), 0.25 * unweighted)
+
+    model.mode_weight = 0.0
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    losses = cast("dict[str, Tensor]", metrics["policy", "loss"])
+    torch.testing.assert_close(
+        losses["mode"], torch.zeros_like(losses["mode"]), rtol=0, atol=0
+    )
+    # the diagnostic survives a zero weight
+    readout_metrics = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    assert 0.0 <= readout_metrics["mode_accuracy"] <= 1.0
+
+    cast("TensorDict", losses).sum(reduce=True).backward()
+    assert model.mode_head is not None
+    assert all(
+        p.grad is None or p.grad.abs().sum() == 0 for p in model.mode_head.parameters()
     )
 
 

@@ -35,7 +35,10 @@ clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 # Only raise this after that gate passes AND a closed-loop (rsim) check clears
 # -- round 6 (/nasa/alex/docs/round6_1cam_causal_results.md) found an
 # UNWEIGHTED version of this same idea trending NEGATIVE in route completion.
-trajectory_horizon: 5   # episode_length + trajectory_horizon must fit clip_length (11);
+trajectory_horizon: 5   # constraint: episode_length + trajectory_horizon <= clip_length.
+                        # Holds at this file's own 6 + 5 = 11, AND at the causal arms
+                        # that inherit from here (32 + 5 = 37) -- check it again if any
+                        # arm changes episode_length or clip_horizon.
                         # needs one MORE future step than action_horizon's chunk
 num_trajectory_hypotheses: 5
 # xy_weight/heading_weight: see rmind.components.loss._DEFAULT_XY_WEIGHT /
@@ -45,6 +48,12 @@ num_trajectory_hypotheses: 5
 trajectory_xy_weight: 0.01
 trajectory_heading_weight: 0.0017453  # = 0.1 * pi / 180
 trajectory_weight: 0.0
+# mode_head's loss scale. Default 1.0 = the unweighted behaviour this head
+# shipped with, so arms launched before the knob existed are unchanged (unlike
+# trajectory_weight above, whose safe default is 0.0 because THAT head was
+# gated). Lower it to keep the mode classifier from competing with the
+# code/offset heads for the shared readout feature.
+mode_weight: 1.0
 
 # frozen encoders
 image_encoder_name: vit_small_patch16_dinov3.lvd1689m
@@ -118,8 +127,9 @@ model:
   # trajectory-mode classifier (docs/phase3_trajectory_head_plan.md's
   # mode_head extension, ported alongside trajectory_head at the
   # project owner's request rather than deferred behind trajectory_head's
-  # own closed-loop gate): unweighted cross-entropy against the
-  # winner-takes-all oracle's best_index, trained jointly, on the SAME
+  # own closed-loop gate): cross-entropy against the winner-takes-all
+  # oracle's best_index, scaled by `mode_weight` (1.0 = the original
+  # unweighted behaviour), trained jointly, on the SAME
   # readout feature as trajectory_head. NOTE: at trajectory_weight=0.0
   # (the gated default above) trajectory_head is unsupervised, so
   # mode_head's labels come from an UNTRAINED head -- raise
@@ -128,3 +138,4 @@ model:
     _target_: torchvision.ops.MLP
     in_channels: ${policy_embedding_dim}
     hidden_channels: [256, "${num_trajectory_hypotheses}"]
+  mode_weight: ${mode_weight}
