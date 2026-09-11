@@ -80,10 +80,6 @@ class InverseDynamicsObjective(Objective):
         value = self.value_norm(patches) if self.value_norm is not None else patches
         key = self.key_norm(latent) if self.key_norm is not None else latent
         queries = episode.embeddings.get((Modality.UTILITY, "inv"))
-        # INV predicts a_t, the action that drives the transition I_t -> I_{t+1} (t = 0..T-2).
-        # Condition on both endpoints: the history-aware latent L(t) (key -- encodes I_t plus
-        # context, FD-anchored to t+1) attends into the ACTUAL next frame I(t+1) (value),
-        # rather than the old same-timestep I(t) paired with a hazy predicted next state.
         features = self.decoder({
             "query": queries[:, :-1],  # inv token @ t = 0..T-2
             "key": key[:, :-1],        # L(t)

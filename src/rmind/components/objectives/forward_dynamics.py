@@ -143,14 +143,12 @@ class ForwardDynamicsObjective(Objective):
         losses: InstanceOf[ModuleDict],
         targets: Targets,
         decoder: InstanceOf[Module] | None = None,
-        patch_pos_embed: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
         self.heads = heads
         self.losses = losses
         self.targets: Targets = targets
         self.decoder = decoder
-        self.patch_pos_embed = patch_pos_embed
 
     @override
     def compute_metrics(
@@ -158,12 +156,7 @@ class ForwardDynamicsObjective(Objective):
     ) -> Metrics:
         assert latent is not None
         if self.decoder is not None:
-            query = repeat(
-                episode.embeddings.get((Modality.UTILITY, "latent")),
-                "b t 1 d -> b t p d",
-                p=latent.shape[-2],
-            )
-            query = self.patch_pos_embed(query)
+            query = episode.embeddings.get((Modality.UTILITY, "fwd"))
             pred = self.decoder({"query": query, "key": latent, "value": latent})
         else:
             pred = latent
@@ -178,8 +171,6 @@ class ForwardDynamicsObjective(Objective):
             tree_map(lambda lg: rearrange(lg[:, :-1], "b t s d -> (b t s) d"), logits),
             tree_map(lambda t: rearrange(t, "b t s ... -> (b t s) ..."), target),
         )
-        # nest under the heads structure ({summary: {observation_summary: ...}}) so the
-        # patch-similarity logger can index both predict and target by [summary, observation_summary]
         return {
             "loss": losses,
             "_artifacts": {"last_embeddings": logits, "last_targets": target},

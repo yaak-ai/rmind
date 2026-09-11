@@ -32,12 +32,12 @@ episode_builder:
       inv:
         _target_: builtins.range
         _args_: [256, 264]
-      mem:
-        _target_: builtins.range
-        _args_: [264, 272]
       policy:
         _target_: builtins.range
-        _args_: [272, 280]
+        _args_: [264, 272]
+      fwd:
+        _target_: builtins.range
+        _args_: [272, 528]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -291,7 +291,7 @@ episode_builder:
 
       utility:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 280
+        num_embeddings: 528
         embedding_dim: ${encoder_embedding_dim}
 
       joint_actions: null
@@ -499,10 +499,6 @@ objectives:
       targets:
         summary:
           observation_summary: [input_embeddings, image, cam_front_left]
-      patch_pos_embed:
-        _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
-        grid_size: [16, 16]
-        embedding_dim: ${image_embedding_dim}
       decoder:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:
