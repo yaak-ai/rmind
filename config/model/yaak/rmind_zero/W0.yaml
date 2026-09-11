@@ -454,10 +454,6 @@ lr_scheduler:
 
 latent:
   _target_: rmind.components.world_latent.WorldModelLatent
-  patch_pos_embed:
-    _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
-    grid_size: [16, 16]
-    embedding_dim: ${image_embedding_dim}
   latent:
     _target_: rmind.components.transformer.CrossAttentionDecoderHead
     decoder:

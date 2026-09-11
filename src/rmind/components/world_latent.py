@@ -15,11 +15,10 @@ class WorldModelLatent(Module):
 
     @validate_call
     def __init__(
-        self, *, latent: InstanceOf[Module], patch_pos_embed: InstanceOf[Module]
+        self, *, latent: InstanceOf[Module]
     ) -> None:
         super().__init__()
         self.latent = latent
-        self.patch_pos_embed = patch_pos_embed
 
     @override
     def forward(self, *, episode: Episode, embedding: Tensor) -> Tensor:

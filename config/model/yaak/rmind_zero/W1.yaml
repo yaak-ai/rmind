@@ -23,19 +23,21 @@ episode_builder:
         _target_: builtins.range
         _args_:
           - 64
-      action_summary: [96]
+      action_summary: [64]
 
     utility:
-      latent: [0]
+      latent:
+        _target_: builtins.range
+        _args_: [0, 256]
       inv:
         _target_: builtins.range
-        _args_: [1, 9]
+        _args_: [256, 264]
       mem:
         _target_: builtins.range
-        _args_: [9, 17]
+        _args_: [264, 272]
       policy:
         _target_: builtins.range
-        _args_: [17, 25]
+        _args_: [272, 280]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -284,12 +286,12 @@ episode_builder:
 
       summary:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 97
+        num_embeddings: 65
         embedding_dim: ${encoder_embedding_dim}
 
       utility:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 25
+        num_embeddings: 280
         embedding_dim: ${encoder_embedding_dim}
 
       joint_actions: null
@@ -452,10 +454,6 @@ lr_scheduler:
 
 latent:
   _target_: rmind.components.world_latent.WorldModelLatent
-  patch_pos_embed:
-    _target_: rmind.components.position_encoding.PatchPositionEmbedding2D
-    grid_size: [16, 16]
-    embedding_dim: ${image_embedding_dim}
   latent:
     _target_: rmind.components.transformer.CrossAttentionDecoderHead
     decoder:
@@ -601,7 +599,7 @@ objectives:
       # VQ-BeT over the frozen 6-step chunk tokenizer: predict codes + code-conditioned offset
       tokenizer:
         _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
-        artifact: yaak/rmind/model-opdsul88:v9
+        artifact: yaak/rmind/model-gkzgn6gk:v9
         weights_only: false
       code_head:  # (b, d) -> (b, g*c)
         _target_: torchvision.ops.MLP
