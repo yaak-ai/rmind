@@ -66,10 +66,12 @@ class PolicyObjective(Objective):
         return self
 
     def _features(self, *, episode: Episode, latent: Tensor) -> Tensor:
-        # last timestep only: policy query attends K=L, V=I (LN'd)
+        # policy conditions on the CURRENT frame T-1: value I(T-1), key L(T-2) -- the
+        # FD-supervised latent anchored to T-1, not the unsupervised L(T-1) slot.
         patches = episode.get(PATCHES)[:, -1:]
         value = self.value_norm(patches) if self.value_norm is not None else patches
-        key = latent[:, -1:]
+        # latent is latent[T-2] which is anchored in I[T-1]
+        key = latent[:, -2:-1]
         key = self.key_norm(key) if self.key_norm is not None else key
         queries = episode.embeddings.get((Modality.UTILITY, "policy"))[:, -1:]
         features = self.decoder({"query": queries, "key": key, "value": value})
