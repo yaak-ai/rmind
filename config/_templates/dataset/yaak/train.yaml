@@ -763,6 +763,12 @@ samples:
                 time_unit: us
               speed:
                 _target_: polars.Float32
+              # Phase 4.1 (docs/action_tokenizer_repair_plan.md): acceleration_y,
+              # not _x -- confirmed empirically (Phase 4.1 step 23: r=0.867 with
+              # realized dv, vs r=0.016 for _x). acceleration_z is dead (always
+              # exactly 0.0) and is not plumbed here.
+              acceleration_y:
+                _target_: polars.Float32
               gas_pedal_normalized:
                 _target_: polars.Float32
               brake_pedal_normalized:
@@ -848,6 +854,8 @@ samples:
                   key: time_stamp
                   columns:
                     speed:
+                      method: interp
+                    acceleration_y:
                       method: interp
                     gas_pedal_normalized:
                       method: interp
@@ -1050,6 +1058,7 @@ samples:
                   "meta/ImageMetadata.cam_front_left/time_stamp"[1:${clip_length}]::TIMESTAMP[${clip_length}] AS "meta/ImageMetadata.cam_front_left/time_stamp",
                   "meta/ImageMetadata.cam_front_left/frame_idx"[1:${clip_length}]::INT32[${clip_length}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
                   "meta/VehicleMotion/speed"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/acceleration_y"[1:${clip_length}]::FLOAT[${clip_length}] AS "meta/VehicleMotion/acceleration_y",
                   "meta/Gnss/xy"[1:${clip_length}]::FLOAT[2][${clip_length}] AS "meta/Gnss/xy",
                   "waypoints/xy_normalized"[1:${clip_length}]::FLOAT[2][10][${clip_length}] AS "waypoints/xy_normalized",
                   "waypoints/xy"[1:${clip_length}]::FLOAT[2][10][${clip_length}] AS "waypoints/xy",

@@ -1,0 +1,37 @@
+- _target_: rmind.components.dataloader.DistributedSamplerEpochSetter
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 3
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+# Mid-epoch safety net: one epoch on the full train set is ~106k steps (~4 days),
+# so an epoch-only checkpoint leaves a run with nothing on disk for days at a time.
+# This must be a SEPARATE callback -- ModelCheckpoint rejects every_n_train_steps
+# and every_n_epochs on the same instance ("should be mutually exclusive").
+# monitor is unset, so save_top_k=1 just keeps rewriting the latest snapshot.
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_train_steps: 5000
+  save_top_k: 1
+  filename: "step-{step}"
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
+- _target_: rmind.callbacks.GpuMemoryStatsCallback
+  every_n_steps: 100000
+# PredictMetricsCallback is DROPPED here (vs. patch_policy.yaml) for the
+# raw_accel / 2-channel-tokenizer arm: `PatchPolicy._structure()`
+# (src/rmind/models/patch_policy.py:1162-1176) hardcodes the old 4-channel
+# gas_pedal/brake_pedal/steering_angle/turn_signal positional layout, and this
+# arm's chunk is only 3-wide (acceleration, steering_angle, turn_signal via
+# turn_signal_head) -- `chunk[..., 3]` in the discrete-field line is out of
+# bounds and raises IndexError on the first validation batch regardless of
+# which objectives are requested (score_l1's internal `_structure(ground_truth)`
+# call runs even when GROUND_TRUTH itself isn't in `keys`). The primary
+# checkpoint-selection metric, offset_argmax_recon_last, is computed in
+# PatchPolicy.compute_metrics (patch_policy.py:972) via the normal
+# training/validation_step path, NOT through predict_step/_structure, so
+# dropping this callback does not affect checkpoint selection.
+# TODO: re-add once _structure() is generalized to the tokenizer's own
+# `targets` leaf order instead of the hardcoded 4-slot layout (see
+# docs/action_tokenizer_repair_plan.md Phase 4.1 steps 25-26).
+- _target_: rmind.callbacks.TrainingQualityLogger
+  every_n_steps: 100
