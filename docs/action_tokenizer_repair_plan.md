@@ -498,11 +498,14 @@ change is not supported by these two runs.
 
 ## Phase 4.1 — acceleration as the longitudinal action. Runs before Phase 4.
 
-**Status 2026-09-12: step 23 (data gate) done, step 24 (2-channel tokenizer)
-config landed, retrain launched.** See "Step 23 result" below for the gate
-table, and the retrain run ID appended at the end of this section once
-training completes. Steps 25/26 (decode head, contract change) remain
-untouched, as scoped.
+**Status 2026-09-12: steps 23-24 done, retrained (`ujef8lzw:v9`), GATE NOT
+PASSED.** See "Step 23 result" and "Step 24 result" below. Steering
+reconstruction regressed in 5/6 speed bands (mean +9.1%) instead of
+improving as it did at 4→3 — per this section's own stated gate ("if it
+does not, the capacity story is exhausted — report and stop"), stop here
+and get a decision before iterating further (retrying `channel_weights`,
+more epochs, a different `Scaler` range, or abandoning the merge). Steps
+25/26 (decode head, contract change) remain untouched, as scoped.
 
 Phase 4 conditions the model on per-drive gains. Phase 4.1 attacks the same
 finding from the other side: `gas_pedal`/`brake_pedal` are **actuator commands**
@@ -676,6 +679,58 @@ Step 23 re-establishes it on the training population before anything is built.
     are field-count-agnostic and auto-label from `targets`; section [3] self-skips.
     **GATE:** steering reconstruction must improve again, as it did at 4 → 3. If
     it does not, the capacity story is exhausted — report and stop.
+
+    **Step 24 result (2026-09-12, `yaak/rmind/runs/ujef8lzw`,
+    `model-ujef8lzw:v9`, 10 epochs / 1239 steps/epoch, uniform
+    `channel_weights`, full val split n=27,676):**
+
+    ```bash
+    nix develop --command uv run python scripts/action_tokenizer_ceiling.py \
+        --artifact yaak/rmind/model-ujef8lzw:v9 \
+        --config-dir /home/alex/rmind/config \
+        --experiment yaak/action_tokenizer/pretrain \
+        --batches 100000 --device cuda
+    ```
+
+    **Per-field / per-chunk-step reconstruction L1** (normalized units):
+
+    | field          | mean L1 |
+    | -------------- | ------- |
+    | acceleration   | 0.0163  |
+    | steering_angle | 0.0096  |
+
+    **Steering reconstruction L1, `q6ocue9a:v9` (3ch) → `ujef8lzw:v9` (2ch),
+    per speed band:**
+
+    | band (km/h) | n      | q6ocue9a steer | ujef8lzw steer | Δ          |
+    | ----------- | ------ | -------------- | -------------- | ---------- |
+    | 0–5         | 22,587 | 0.0125         | 0.0118          | **−5.6%**  |
+    | 5–10        | 5,638  | 0.0249         | 0.0264          | +6.0%      |
+    | 10–20       | 15,785 | 0.0193         | 0.0202          | +4.7%      |
+    | 20–35       | 38,764 | 0.0087         | 0.0099          | +13.8%     |
+    | 35–60       | 50,409 | 0.0051         | 0.0062          | **+21.6%** |
+    | 60–130      | 32,873 | 0.0045         | 0.0048          | +6.7%      |
+    | mean        | —      | 0.0088         | 0.0096          | +9.1%      |
+
+    Per-channel share of decoded-distance `d_q(c)`: `acceleration` 54.1%,
+    `steering_angle` 45.9% — a much less lopsided split than `turn_signal`'s
+    38.9%-of-4 at Phase 1, i.e. the merge freed far less relative capacity
+    than the "near-mutually-exclusive gas/brake" argument predicted.
+
+    **GATE: NOT PASSED.** Steering regressed in 5/6 bands (only 0–5 km/h
+    improved), mean +9.1%, with the 35–60 km/h band at +21.6% — well past
+    the handoff's ~2% steering noise floor, so this is a real regression,
+    not noise. Unlike the 4→3 transition (which improved every channel in
+    every band), collapsing gas+brake into one `acceleration` channel does
+    not clearly free RVQ capacity for steering here; `acceleration`'s own
+    reconstruction L1 (0.0163) is higher than either individual pedal was
+    under `q6ocue9a` (gas 0.0087, brake 0.0044 mean), consistent with it
+    absorbing more of the codebook's budget rather than less. Per this
+    section's own gate language, this is a stop-and-report point, not a
+    default green light to proceed to step 25 — candidate next moves (not
+    yet decided): non-uniform `channel_weights` favoring steering, more
+    training epochs, revisiting the `Scaler` range, or concluding the
+    capacity argument does not transfer to this merge and abandoning it.
 
 01. **Prove the representation before touching drivr.** The end state is still
     "emit acceleration, change drivr"; this is sequencing, not a substitute. The
