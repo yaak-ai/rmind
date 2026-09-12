@@ -733,6 +733,12 @@ samples:
                 time_unit: us
               speed:
                 _target_: polars.Float32
+              acceleration_x:
+                _target_: polars.Float32
+              acceleration_y:
+                _target_: polars.Float32
+              acceleration_z:
+                _target_: polars.Float32
               gas_pedal_normalized:
                 _target_: polars.Float32
               brake_pedal_normalized:
@@ -768,6 +774,12 @@ samples:
                   key: time_stamp
                   columns:
                     speed:
+                      method: interp
+                    acceleration_x:
+                      method: interp
+                    acceleration_y:
+                      method: interp
+                    acceleration_z:
                       method: interp
                     gas_pedal_normalized:
                       method: interp
@@ -826,6 +838,9 @@ samples:
               SELECT
                   "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[${action_clip}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
                   "meta/VehicleMotion/speed"::FLOAT[${action_clip}] AS "meta/VehicleMotion/speed",
+                  "meta/VehicleMotion/acceleration_x"::FLOAT[${action_clip}] AS "meta/VehicleMotion/acceleration_x",
+                  "meta/VehicleMotion/acceleration_y"::FLOAT[${action_clip}] AS "meta/VehicleMotion/acceleration_y",
+                  "meta/VehicleMotion/acceleration_z"::FLOAT[${action_clip}] AS "meta/VehicleMotion/acceleration_z",
                   "meta/VehicleMotion/gas_pedal_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/gas_pedal_normalized",
                   "meta/VehicleMotion/brake_pedal_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/brake_pedal_normalized",
                   "meta/VehicleMotion/steering_angle_normalized"::FLOAT[${action_clip}] AS "meta/VehicleMotion/steering_angle_normalized",

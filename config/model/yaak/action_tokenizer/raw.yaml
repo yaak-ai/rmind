@@ -10,13 +10,34 @@ input_transform:
     - _target_: rmind.components.nn.Remapper
       paths:
         continuous:
-          gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
-          brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
+          # acceleration_y, not _x -- confirmed empirically (Phase 4.1 step
+          # 23): correlates r=0.84 with realized dv, vs r=-0.005 for _x.
+          # acceleration_z is dead (always exactly 0.0). See
+          # docs/action_tokenizer_repair_plan.md Phase 4.1.
+          acceleration: [data, meta/VehicleMotion/acceleration_y]
           steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
     - _target_: rmind.components.containers.ModuleDict
       modules:
         continuous:
-          _target_: rmind.components.nn.Identity
+          # Raw acceleration is m/s^2, a different dynamic range from
+          # steering's [-1, 1] -- Phase 1 showed the RVQ spends capacity in
+          # proportion to dynamic range (the turn_signal finding), so an
+          # unscaled channel here would skew capacity the same way.
+          # Bounds validated against the full train population (Phase 4.1
+          # step 23, docs/accel_data_gate.json: 654 drives, 2 537 955
+          # samples): mean -0.033, std 0.611, 99.9th/0.1th percentiles are
+          # only +2.49/-2.81 m/s^2 -- the population's true min/max
+          # (-9.32/10.24) are rare (<0.1%) single-tick outliers, not
+          # sustained driving values. [-4.0, 4.0] sits comfortably past the
+          # 99.9th percentile on both sides, so it clips only that extreme
+          # tail while giving the RVQ full resolution over real driving
+          # dynamics -- see docs/action_tokenizer_repair_plan.md Phase 4.1.
+          acceleration:
+            _target_: rmind.components.norm.Scaler
+            in_range: [-4.0, 4.0]
+            out_range: [-1.0, 1.0]
+          steering_angle:
+            _target_: rmind.components.nn.Identity
 
 encoder:
   _target_: torch.nn.Sequential
@@ -48,17 +69,16 @@ decoder:
 
 targets:
   continuous:
-    gas_pedal: [continuous, gas_pedal]
-    brake_pedal: [continuous, brake_pedal]
+    acceleration: [continuous, acceleration]
     steering_angle: [continuous, steering_angle]
 
 commitment_weight: 1.0
 vq_weight: 5.0
 
 # Per-channel weight on the reconstruction L1, in `targets` leaf order
-# (gas_pedal, brake_pedal, steering_angle). null == uniform == a provable
-# no-op vs. plain F.l1_loss. See docs/action_tokenizer_repair_plan.md Phase 2a
-# step 6/7 before setting real values — they come from re-running
+# (acceleration, steering_angle). null == uniform == a provable no-op vs.
+# plain F.l1_loss. See docs/action_tokenizer_repair_plan.md Phase 2a step 6/7
+# before setting real values — they come from re-running
 # scripts/action_tokenizer_ceiling.py on the retrained (uniform-weight)
 # artifact, not from guessing.
 channel_weights: null
