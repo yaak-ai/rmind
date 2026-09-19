@@ -23,6 +23,14 @@ _K_AS = (Modality.SUMMARY, SummaryToken.ACTION_SUMMARY)
 PATCHES = ("input_embeddings", "image", "cam_front_left")
 
 
+def world_latent_os_as(
+    episode: "Episode", embedding: Tensor
+) -> tuple[Tensor, Tensor]:
+    """(OS, AS) summary tokens over all timesteps -> (b, t, |OS|, d), (b, t, |AS|, d)."""
+    summary = episode.index.select(_K_OS, _K_AS).parse(embedding)
+    return summary.get(_K_OS), summary.get(_K_AS)
+
+
 def world_latent_context(episode: "Episode", embedding: Tensor) -> Tensor:
     """[OS ; AS] summary tokens over all timesteps -> (b, t, 65, d)."""
     summary = episode.index.select(_K_OS, _K_AS).parse(embedding)

@@ -451,12 +451,19 @@ lr_scheduler:
 
 latent:
   _target_: rmind.components.world_latent.WorldModelLatent
+  # Conditional Self-Attention: AS conditions/updates OS -> OS'; the latent reads
+  # K=V=OS' (action reweights observation tokens, never enters their content).
+  conditioner:
+    _target_: rmind.components.conditional_attention.ConditionalSelfAttention
+    dim: ${encoder_embedding_dim}
+    num_heads: ${num_heads}
+    attn_dropout: 0.1
   latent:
     _target_: rmind.components.transformer.CrossAttentionDecoderHead
     decoder:
       _target_: rmind.components.transformer.CrossAttentionDecoder
       dim_model: ${image_embedding_dim}
-      num_layers: 2
+      num_layers: 4
       num_heads: 4
       attn_dropout: 0.1
       resid_dropout: 0.1

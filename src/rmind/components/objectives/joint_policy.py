@@ -145,7 +145,60 @@ class PolicyObjective(Objective):
         tokenizers: ModuleDict | None = None,
         latent: Tensor | None = None,
     ) -> TensorDict:
-        return TensorDict({}, batch_size=[])
+        assert latent is not None
+        predictions: dict[ObjectivePredictionKey, Prediction] = {}
+        tokenizer = self.tokenizer
+        action_space = tokenizer._action_features  # noqa: SLF001
+
+        # policy conditions on the last timestep and predicts the strictly-future chunk
+        b, t = episode.input.batch_size
+        time_index = torch.arange(t, device=embedding.device).expand(b, -1)[:, -1:]
+
+        if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
+            # strictly-future GT chunk (drop the current step), matching compute_metrics
+            chunk = tokenizer._normalize(  # noqa: SLF001
+                episode.get(self.chunk)[:, -1, 1:].flatten(-2, -1)
+            ).unflatten(-1, (-1, action_space))  # (b, action_clip, action_space)
+            actions = TensorDict({
+                "continuous": TensorDict({
+                    "gas_pedal": chunk[..., 0],
+                    "brake_pedal": chunk[..., 1],
+                    "steering_angle": chunk[..., 2],
+                }),
+                "discrete": TensorDict({"turn_signal": chunk[..., 3].long()}),
+            })
+            predictions[key] = Prediction(value=actions, time_index=time_index)
+
+        if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
+            features = self._features(episode=episode, latent=latent)
+            _, codes, offset = self._predict(features)
+
+            chunk = (tokenizer.invert(codes) + offset).unflatten(
+                -1, (-1, action_space)
+            )  # (b, action_clip, action_space)
+            offset_unflat = offset.unflatten(-1, (-1, action_space))
+            actions = TensorDict({
+                "continuous": TensorDict({
+                    "gas_pedal": chunk[..., 0],
+                    "brake_pedal": chunk[..., 1],
+                    "steering_angle": chunk[..., 2],
+                }),
+                "discrete": TensorDict({
+                    "turn_signal": torch.bucketize(
+                        chunk[..., 3] * 2, torch.tensor([0.5, 1.5], device=chunk.device)
+                    )
+                }),
+                "codes": codes.float(),  # (b, num_quantizers)
+                "offset": TensorDict({
+                    "gas_pedal": offset_unflat[..., 0],
+                    "brake_pedal": offset_unflat[..., 1],
+                    "steering_angle": offset_unflat[..., 2],
+                    "turn_signal": offset_unflat[..., 3],
+                }),
+            })
+            predictions[key] = Prediction(value=actions, time_index=time_index)
+
+        return TensorDict(predictions).auto_batch_size_(2)
 
 
 @final
