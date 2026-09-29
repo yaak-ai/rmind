@@ -1,0 +1,74 @@
+#@yaml/text-templated-strings
+---
+_target_: rbyte.viz.loggers.RerunLogger
+_convert_: all
+_recursive_: false
+application_id: prediction_policy_zero
+recording_name: [batch, meta, input_id]
+schema:
+  batch/cam_front_left/time_stamp:
+    _target_: rerun.TimeColumn
+    columns:
+      timestamp: [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+    dtype: datetime64[us]
+
+  batch/cam_front_left/frame_idx:
+    _target_: rerun.TimeColumn
+    columns:
+      sequence: [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+
+  batch/cam_front_left:
+    - _target_: rerun.Image.columns
+      columns:
+        buffer: [batch, data, cam_front_left]
+
+    - static: true
+      _target_: rerun.Image.from_fields
+      fields:
+        format:
+          _target_: rerun.components.ImageFormat
+          height: 324
+          width: 576
+          color_model: RGB
+          channel_datatype: u8
+
+  #@ channels = {"continuous": ["gas_pedal", "brake_pedal", "steering_angle"], "discrete": ["turn_signal"]}
+  #@ gt_key = {
+  #@   "gas_pedal": "meta/VehicleMotion/gas_pedal_normalized",
+  #@   "brake_pedal": "meta/VehicleMotion/brake_pedal_normalized",
+  #@   "steering_angle": "meta/VehicleMotion/steering_angle_normalized",
+  #@   "turn_signal": "meta/VehicleState/turn_signal",
+  #@ }
+  #@ horizon = 6
+  #@ for modality, keys in channels.items():
+  #@   for key in keys:
+  #@     gt_path = gt_key[key]
+  #@     for h in range(horizon):
+  #! predicted action for horizon step h -> its OWN series, all shown at frame_idx[6] = F+60
+  #! (last batch frame + 1 sample), so they align with the GT point there
+  prediction/policy/prediction_value/(@=modality@)/(@=key@)/h(@=str(h)@):
+    - _target_: rerun.Scalars.columns
+      columns:
+        scalars:
+          path: [prediction, policy, prediction_value, value, (@=modality@), (@=key@)]
+          index: "[(@=str(h)@)]"
+      time_index:
+        index: "[6]"
+    - static: true
+      _target_: rerun.SeriesLines
+      fields:
+        names: pred/(@=key@)/h(@=str(h)@)
+  #@     end
+  #! ground truth: all frames of the window at their own frame_idx. Overlapping windows re-log
+  #! shared frames with identical values -> smooth playback; the duplication is storage-only
+  #! (rerun shows one point per frame_idx), and it is robust to windows dropped by the filter.
+  batch/(@=gt_path@):
+    - _target_: rerun.Scalars.columns
+      columns:
+        scalars: [batch, data, (@=gt_path@)]
+    - static: true
+      _target_: rerun.SeriesLines
+      fields:
+        names: gt/(@=key@)
+  #@   end
+  #@ end

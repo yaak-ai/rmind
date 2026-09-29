@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import final, override
+from typing import Literal, final, override
 
 import torch
 from einops import rearrange
@@ -53,11 +53,16 @@ class InverseDynamicsObjective(Objective):
         targets: CodeTargets,
         value_norm: InstanceOf[Module] | None = None,
         key_norm: InstanceOf[Module] | None = None,
+        latent_decoder: InstanceOf[Module] | None = None,
+        key_source: Literal["latent", "image"] = "latent",
         readout: int = 0,
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
         self.decoder = decoder
+        # W1: queries read L(t) first (K=V=L), then `decoder` reads I(t+1) with K=V=I
+        self.latent_decoder: Module | None = latent_decoder
+        self.key_source: Literal["latent", "image"] = key_source
         self.heads = heads
         self.losses = losses
         self.targets: CodeTargets = targets
@@ -78,13 +83,13 @@ class InverseDynamicsObjective(Objective):
         assert latent is not None
         patches = episode.get(PATCHES)
         value = self.value_norm(patches) if self.value_norm is not None else patches
-        key = self.key_norm(latent) if self.key_norm is not None else latent
-        queries = episode.embeddings.get((Modality.UTILITY, "inv"))
-        features = self.decoder({
-            "query": queries[:, :-1],  # inv token @ t = 0..T-2
-            "key": key[:, :-1],        # L(t)
-            "value": value[:, 1:],     # I(t+1) actual next frame
-        })
+        lat = self.key_norm(latent) if self.key_norm is not None else latent
+        lat, value = lat[:, :-1], value[:, 1:]  # L(t), I(t+1) actual next frame
+        queries = episode.embeddings.get((Modality.UTILITY, "inv"))[:, :-1]  # t = 0..T-2
+        if self.latent_decoder is not None:
+            queries = self.latent_decoder({"query": queries, "key": lat, "value": lat})
+        key = lat if self.key_source == "latent" else value
+        features = self.decoder({"query": queries, "key": key, "value": value})
         features = features[:, :, self.readout]
 
         (tokenizer,) = tree_leaves(self.tokenizer)

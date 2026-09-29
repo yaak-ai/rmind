@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import Any, final, override
+from typing import Any, Literal, final, override
 
 import torch
 from einops import rearrange
@@ -30,6 +30,10 @@ class PolicyObjective(Objective):
     and the raw patches I (values, LN'd) to a single feature, which predicts the
     frozen chunk tokenizer's residual-VQ codes plus a code-conditioned continuous
     offset; the action chunk is `decode(codes) + offset`.
+
+    With a `latent_decoder` (W1), the queries first read the latent (K=V=L), then
+    `decoder` reads the patches with `key_source="image"` (K=V=I), so L need not be
+    patch-aligned. Without it (W0), `decoder` reads K=L, V=I as above.
     """
 
     @validate_call
@@ -44,11 +48,15 @@ class PolicyObjective(Objective):
         chunk: Path,
         value_norm: InstanceOf[Module] | None = None,
         key_norm: InstanceOf[Module] | None = None,
+        latent_decoder: InstanceOf[Module] | None = None,
+        key_source: Literal["latent", "image"] = "latent",
         readout: int = 0,
         sample_codes: bool = True,
     ) -> None:
         super().__init__()
         self.decoder = decoder
+        self.latent_decoder: Module | None = latent_decoder
+        self.key_source: Literal["latent", "image"] = key_source
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
         self.code_head = code_head
         self.offset_head = offset_head
@@ -71,9 +79,12 @@ class PolicyObjective(Objective):
         patches = episode.get(PATCHES)[:, -1:]
         value = self.value_norm(patches) if self.value_norm is not None else patches
         # latent is latent[T-2] which is anchored in I[T-1]
-        key = latent[:, -2:-1]
-        key = self.key_norm(key) if self.key_norm is not None else key
+        lat = latent[:, -2:-1]
+        lat = self.key_norm(lat) if self.key_norm is not None else lat
         queries = episode.embeddings.get((Modality.UTILITY, "policy"))[:, -1:]
+        if self.latent_decoder is not None:
+            queries = self.latent_decoder({"query": queries, "key": lat, "value": lat})
+        key = lat if self.key_source == "latent" else value
         features = self.decoder({"query": queries, "key": key, "value": value})
         return features[:, :, self.readout].squeeze(1)  # (b, d)
 
@@ -150,9 +161,16 @@ class PolicyObjective(Objective):
         tokenizer = self.tokenizer
         action_space = tokenizer._action_features  # noqa: SLF001
 
-        # policy conditions on the last timestep and predicts the strictly-future chunk
+        # Anchor the whole H-step chunk at the DECISION frame (the last observed frame) so the H
+        # predicted steps render as H separate series there -- the 6th frame, not the last frame.
+        # Observed = t-H when the episode also carries the H future frames (12-frame foresight),
+        # else t (6-frame inference window); either way the decision frame is index 5.
         b, t = episode.input.batch_size
-        time_index = torch.arange(t, device=embedding.device).expand(b, -1)[:, -1:]
+
+        def _decision_index(h: int) -> Tensor:
+            observed = t - h if t > h else t
+            d = observed - 1
+            return torch.arange(t, device=embedding.device).expand(b, -1)[:, d : d + 1]
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             # strictly-future GT chunk (drop the current step), matching compute_metrics
@@ -167,7 +185,9 @@ class PolicyObjective(Objective):
                 }),
                 "discrete": TensorDict({"turn_signal": chunk[..., 3].long()}),
             })
-            predictions[key] = Prediction(value=actions, time_index=time_index)
+            predictions[key] = Prediction(
+                value=actions, time_index=_decision_index(chunk.shape[1])
+            )
 
         if (key := ObjectivePredictionKey.PREDICTION_VALUE) in keys:
             features = self._features(episode=episode, latent=latent)
@@ -196,7 +216,9 @@ class PolicyObjective(Objective):
                     "turn_signal": offset_unflat[..., 3],
                 }),
             })
-            predictions[key] = Prediction(value=actions, time_index=time_index)
+            predictions[key] = Prediction(
+                value=actions, time_index=_decision_index(chunk.shape[1])
+            )
 
         return TensorDict(predictions).auto_batch_size_(2)
 

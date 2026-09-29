@@ -1,0 +1,51 @@
+# @package _global_
+---
+# Open-loop policy prediction for the rmind_zero (Zero) model on a SINGLE drive.
+# Uses the current-API single-drive datamodule (yaak/predict_drive: PathTensorSource JPG
+# frames, 6-frame windows, parameterized by drive_dir) — matches the drahve model's
+# chunk-stripped, 6-frame episode. Pass drive_dir=/path/to/<drive>. Only prediction_value
+# is produced (no ground_truth, since the future-chunk build is stripped for inference).
+defaults:
+  - /model: yaak/rmind_zero/drahve
+  - /datamodule: yaak/predict_drive
+  - /paths: yaak/default
+  - /logger: yaak/rerun/prediction_policy_zero
+  - _self_
+
+drive_dir: ???
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  _convert_: all
+  accelerator: gpu
+  devices: 1
+  benchmark: true
+  precision: "bf16-mixed"
+  logger: false
+  callbacks:
+    - _target_: rmind.callbacks.PredictionConfigSetter
+      config:
+        objectives: [prediction_value]
+
+    - _target_: rmind.callbacks.RerunPredictionWriter
+      write_interval: batch
+      logger: ${logger}
+
+    - _target_: rmind.callbacks.DataFramePredictionWriter
+      write_interval: batch
+      path: ${hydra:run.dir}/predictions/${oc.select:model.artifact,}/{batch_idx:06}.parquet
+      select:
+        - [batch, data, meta/ImageMetadata.cam_front_left/time_stamp]
+        - [batch, data, meta/ImageMetadata.cam_front_left/frame_idx]
+        - [batch, meta, input_id]
+        - [policy, prediction_value, value, continuous, gas_pedal]
+        - [policy, prediction_value, value, continuous, brake_pedal]
+        - [policy, prediction_value, value, continuous, steering_angle]
+        - [policy, prediction_value, value, discrete, turn_signal]
+        - [policy, prediction_value, value, codes]
+      writer:
+        _target_: polars.DataFrame.write_parquet
+        _partial_: true
+
+    - _target_: pytorch_lightning.callbacks.ModelSummary
+      max_depth: 3

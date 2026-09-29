@@ -28,16 +28,16 @@ episode_builder:
     utility:
       latent:
         _target_: builtins.range
-        _args_: [0, 256]
+        _args_: [0, 32]
       inv:
         _target_: builtins.range
-        _args_: [256, 264]
+        _args_: [32, 40]
       policy:
         _target_: builtins.range
-        _args_: [264, 272]
+        _args_: [40, 48]
       fwd:
         _target_: builtins.range
-        _args_: [272, 528]
+        _args_: [48, 304]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -291,7 +291,7 @@ episode_builder:
 
       utility:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 528
+        num_embeddings: 304
         embedding_dim: ${encoder_embedding_dim}
 
       joint_actions: null
@@ -540,6 +540,26 @@ objectives:
               _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
               artifact: yaak/rmind/model-m35hyvbp:v9
               weights_only: false
+      # stage 1: queries read the latent (K = V = L); stage 2 (`decoder`) reads the image
+      # (K = V = I) with latent-informed queries -> no key_i <-> value_i pairing, N latents free
+      latent_decoder:
+        _target_: rmind.components.transformer.CrossAttentionDecoderHead
+        decoder:
+          _target_: rmind.components.transformer.CrossAttentionDecoder
+          dim_model: ${encoder_embedding_dim}
+          num_layers: 2
+          num_heads: 4
+          attn_dropout: 0.1
+          resid_dropout: 0.1
+          mlp_dropout: 0.1
+          hidden_layer_multiplier: 1
+          self_attn: true
+        final_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: ${encoder_embedding_dim}
+        output_projection:
+          _target_: torch.nn.Identity
+      key_source: image
       decoder:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:
@@ -582,6 +602,26 @@ objectives:
       key_norm:  # LN the keys (=L) locally, since L is no longer LN'd at the latent head
         _target_: torch.nn.LayerNorm
         normalized_shape: ${encoder_embedding_dim}
+      # stage 1: queries read the latent (K = V = L); stage 2 (`decoder`) reads the image
+      # (K = V = I) with latent-informed queries -> no key_i <-> value_i pairing, N latents free
+      latent_decoder:
+        _target_: rmind.components.transformer.CrossAttentionDecoderHead
+        decoder:
+          _target_: rmind.components.transformer.CrossAttentionDecoder
+          dim_model: ${encoder_embedding_dim}
+          num_layers: 2
+          num_heads: 4
+          attn_dropout: 0.1
+          resid_dropout: 0.1
+          mlp_dropout: 0.1
+          hidden_layer_multiplier: 1
+          self_attn: true
+        final_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: ${encoder_embedding_dim}
+        output_projection:
+          _target_: torch.nn.Identity
+      key_source: image
       decoder:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:

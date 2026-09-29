@@ -1,0 +1,26 @@
+---
+# Inference/prediction variant of the rmind_zero (Zero) model for open-loop policy
+# rollout on a recorded drive (paired with config/inference/yaak/rmind_zero/drahve.yaml).
+#
+# At inference there is no future, so we drop the future-chunk build stages
+# (StackFields(joint_actions_chunk) + the chunk ChunkFields) and the joint_actions_chunk
+# field everywhere. The episode is then just the 6 observed frames; POLICY predicts the
+# future chunk from the latent (prediction_value only — ground_truth needs joint_actions_chunk).
+# The image transform is kept as trained (PathTensorSource feeds raw 576x324 JPGs, so the
+# model still needs CenterCrop -> Resize -> Normalize). The orphaned *_diff channels
+# (left over after removing MEM) are stripped, and the policy decodes deterministically.
+_target_: rmind.models.zero.Zero.load_from_wandb_artifact
+artifact: ???
+filename: model.ckpt
+map_location: cpu
+strict: false
+hparams_jq: |
+  .episode_builder.input_transform._args_ |= [.[0], .[3], .[4], .[5]]
+  | del(.episode_builder.input_transform._args_[2].modules.joint_actions_chunk)
+  | del(.episode_builder.tokenizers.modules.joint_actions_chunk)
+  | del(.episode_builder.embeddings.modules.joint_actions_chunk)
+  | del(.episode_builder.projections.modules.joint_actions_chunk)
+  | delpaths([paths | select(.. | type == "string" and endswith("_diff"))])
+  | del(.objectives.modules.forward_dynamics)
+  | del(.objectives.modules.inverse_dynamics)
+  | .objectives.modules.policy.sample_codes = false
