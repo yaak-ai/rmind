@@ -178,6 +178,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     `JointPolicyObjective` (frozen residual-VQ chunk tokenizer; focal code loss +
     teacher-forced L1 offset).
 
+    `speed_dropout`/`goal_dropout` (default `0.0` = off) optionally apply
+    conditioning dropout to the two non-visual signals (see `_drop_condition`), so
+    the policy cannot rely on either shortcut -- speed is strongly autocorrelated
+    with the action chunk, and the goal latent reaches every patch token. Each
+    needs its learned `null_speed`/`null_goal` token.
+
     Readout position (opt-in, `use_readout_token`): by default the last token of a
     frame is the last image patch -- fragile, and with multiple cameras arbitrary
     (it depends on which camera happens to be last). With `use_readout_token` the
@@ -249,7 +255,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
 
     @validate_call
-    def __init__(  # noqa: C901, PLR0913, PLR0915
+    def __init__(  # noqa: C901, PLR0912, PLR0913, PLR0915
         self,
         *,
         input_transform: HydraConfig[Module] | InstanceOf[Module],
@@ -277,6 +283,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # trajectory_head. None (default) leaves this model unchanged.
         mode_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
         cameras: tuple[str, ...] = ("cam_front_left",),
+        null_speed: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        null_goal: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        speed_dropout: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        goal_dropout: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
         speed: Path = ("continuous", "speed"),
         waypoints: Path = ("context", "waypoints"),
         chunk: Path = ("joint_actions",),
@@ -375,6 +385,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 raise ValueError(msg)
 
         self.cameras: tuple[str, ...] = cameras
+
+        # conditioning dropout: learned "absent" tokens substituted for the speed
+        # token / goal latent (see `_drop_condition`)
+        self.null_speed: Module | None = init_hydra_param(
+            hparams, "null_speed", null_speed
+        )
+        self.null_goal: Module | None = init_hydra_param(
+            hparams, "null_goal", null_goal
+        )
+        for name, p, null in (
+            ("speed", speed_dropout, self.null_speed),
+            ("goal", goal_dropout, self.null_goal),
+        ):
+            if p > 0.0 and null is None:
+                msg = f"{name}_dropout > 0 requires null_{name}"
+                raise ValueError(msg)
+        self.speed_dropout = speed_dropout
+        self.goal_dropout = goal_dropout
         self.speed: Path = speed
         self.waypoints: Path = waypoints
         self.chunk: Path = chunk
@@ -439,6 +467,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "fusion_norm": fusion_norm,
             "use_readout_token": use_readout_token,
             "num_register_tokens": num_register_tokens,
+            "speed_dropout": speed_dropout,
+            "goal_dropout": goal_dropout,
         }
 
         # opt-in dedicated readout + register tokens (default off: existing arms
@@ -499,6 +529,26 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             msg = f"input {path!r} missing from transformed batch"
             raise KeyError(msg)
         return value
+
+    def _drop_condition(self, x: Tensor, p: float, null: Module | None) -> Tensor:
+        """Replace `x` with a learned null token for a random subset of CLIPS.
+
+        Conditioning dropout, so no `1/(1-p)` rescale -- this substitutes a token,
+        it does not zero units. One draw per batch element (not per frame): the
+        trunk is causal across frames and both signals are ~constant within a clip,
+        so a per-frame mask would leak the dropped signal from frame t-1.
+        """
+        if null is None or not self.training:
+            return x
+
+        keep = torch.rand(x.shape[0], device=x.device) >= p
+        # NOTE: `where` keeps `null` in the autograd graph even when nothing is
+        # dropped, so DDP never sees it as an unused parameter
+        return torch.where(
+            keep.reshape(-1, *(1,) * (x.ndim - 1)),
+            x,
+            null(torch.zeros(1, dtype=torch.long, device=x.device)),
+        )
 
     def _init_readout_tokens(
         self, *, use_readout_token: bool, num_register_tokens: int
@@ -593,6 +643,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
 
+        # NOTE: outside the `no_grad` above, or `null_goal` never gets gradient
+        goal = self._drop_condition(goal, self.goal_dropout, self.null_goal)
+
         # each camera contributes its own `p` patches through the same frozen
         # encoder/patch_projection -- no new parameters, just a longer per-frame
         # token block (https://arxiv.org/pdf/2607.18236 section 2.1 generalizes
@@ -612,6 +665,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         patches = self.patch_projection(patches)  # (b, t, p, d)
 
         speed_token = self.speed_embedding(self.speed_tokenizer(speed))  # (b, t, 1, d)
+        speed_token = self._drop_condition(
+            speed_token, self.speed_dropout, self.null_speed
+        )
 
         # speed first so the frame block ENDS on the readout position: the learned
         # readout token when `use_readout_token`, else the last patch token

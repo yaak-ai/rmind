@@ -154,6 +154,10 @@ def _make_model(  # noqa: PLR0913
     trajectory_weight: float = 1.0,
     with_mode_head: bool = False,
     mode_weight: float = 1.0,
+    speed_dropout: float = 0.0,
+    goal_dropout: float = 0.0,
+    nulls: bool = False,
+    trunk_dropout: float = 0.1,
 ) -> PatchPolicy:
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
@@ -190,6 +194,9 @@ def _make_model(  # noqa: PLR0913
             num_layers=2,
             num_heads=2,
             max_sequence_length=EPISODE_LENGTH * tokens_per_frame,
+            attn_dropout=trunk_dropout,
+            resid_dropout=trunk_dropout,
+            mlp_dropout=trunk_dropout,
         ),
         tokenizer=_make_continuous_only_tokenizer()
         if turn_signal_head
@@ -215,6 +222,10 @@ def _make_model(  # noqa: PLR0913
         else ModuleDict(modules=default_loss_modules),
         norm=torch.nn.LayerNorm(POLICY_DIM),
         sample_codes=sample_codes,
+        null_speed=Embedding(1, POLICY_DIM) if nulls else None,
+        null_goal=Embedding(1, GOAL_DIM) if nulls else None,
+        speed_dropout=speed_dropout,
+        goal_dropout=goal_dropout,
         teacher_force_offset=teacher_force_offset,
         prediction_config=PredictionConfig(
             objectives={
@@ -1454,3 +1465,96 @@ def test_mode_head_predict_step() -> None:
     assert (
         predictions["trajectory", "predicted_index"] < NUM_TRAJECTORY_HYPOTHESES
     ).all()
+
+
+# speed is binned at 130/SPEED_BINS per bin, so it needs a shift wide enough to
+# land in a different bin -- a small delta leaves the speed token untouched and
+# would make these tests vacuous
+_DELTA = {("continuous", "speed"): 130.0 / SPEED_BINS + 1.0}
+
+
+def _perturbed(batch: dict, path: tuple[str, str]) -> dict:
+    """Copy of `batch` with the tensor at `path` shifted."""
+    outer, inner = path
+    other = {k: dict(v) if isinstance(v, dict) else v for k, v in batch.items()}
+    other[outer][inner] = batch[outer][inner] + _DELTA.get(path, 1.0)
+    return other
+
+
+def _features_seeded(model: PatchPolicy, batch: dict) -> Tensor:
+    torch.manual_seed(0)
+    return model._features(batch)[0]  # noqa: SLF001
+
+
+def test_goal_dropout_removes_waypoint_dependence() -> None:
+    """With `goal_dropout=1.0` the goal latent never reaches the trunk."""
+    model = _make_model(goal_dropout=1.0, nulls=True, trunk_dropout=0.0).train()
+    batch = _make_batch()
+
+    torch.testing.assert_close(
+        _features_seeded(model, batch),
+        _features_seeded(model, _perturbed(batch, ("context", "waypoints"))),
+    )
+    # ...while the image still does
+    assert not torch.allclose(
+        _features_seeded(model, batch),
+        _features_seeded(model, _perturbed(batch, ("image", "cam_front_left"))),
+    )
+
+
+def test_speed_dropout_removes_speed_dependence() -> None:
+    model = _make_model(speed_dropout=1.0, nulls=True, trunk_dropout=0.0).train()
+    batch = _make_batch()
+
+    torch.testing.assert_close(
+        _features_seeded(model, batch),
+        _features_seeded(model, _perturbed(batch, ("continuous", "speed"))),
+    )
+
+
+def test_conditioning_dropout_is_train_only() -> None:
+    """In eval mode both conditioning signals must reach the trunk regardless of p."""
+    model = _make_model(
+        speed_dropout=1.0, goal_dropout=1.0, nulls=True, trunk_dropout=0.0
+    ).eval()
+    batch = _make_batch()
+    features = _features_seeded(model, batch)
+
+    for path in (("context", "waypoints"), ("continuous", "speed")):
+        assert not torch.allclose(
+            features, _features_seeded(model, _perturbed(batch, path))
+        ), path
+
+
+def test_null_tokens_are_trained() -> None:
+    """The null embeddings must receive gradient -- guards against building them
+    inside the frozen-encoder `no_grad` block, and against DDP flagging them as
+    unused on a step where nothing happens to be dropped."""
+    model = _make_model(speed_dropout=0.5, goal_dropout=0.5, nulls=True).train()
+
+    model._compute_metrics(_make_batch())["policy", "loss"].sum(  # noqa: SLF001
+        reduce=True
+    ).backward()
+
+    for null in (model.null_speed, model.null_goal):
+        assert null is not None
+        assert null.weight.grad is not None
+
+    # with p=1.0 the nulls are the only conditioning signal, so gradient is nonzero
+    model = _make_model(speed_dropout=1.0, goal_dropout=1.0, nulls=True).train()
+    model._compute_metrics(_make_batch())["policy", "loss"].sum(  # noqa: SLF001
+        reduce=True
+    ).backward()
+
+    for null in (model.null_speed, model.null_goal):
+        assert null is not None
+        assert null.weight.grad is not None
+        assert null.weight.grad.abs().sum() > 0
+
+
+def test_dropout_without_null_token_raises() -> None:
+    with pytest.raises(ValueError, match="speed_dropout"):
+        _make_model(speed_dropout=0.5, nulls=False)
+
+    with pytest.raises(ValueError, match="goal_dropout"):
+        _make_model(goal_dropout=0.5, nulls=False)

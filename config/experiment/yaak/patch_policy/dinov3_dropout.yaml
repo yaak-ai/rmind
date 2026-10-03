@@ -1,0 +1,31 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov3
+  - _self_
+
+# conditioning-dropout arm: with probability p the speed token / the waypoints
+# goal latent is replaced by a learned "absent" token FOR THE WHOLE CLIP, so the
+# trunk must sometimes act without them. Targets the shortcuts both signals offer
+# -- speed is strongly autocorrelated with the action chunk (copycat), and the
+# goal latent (fused into every patch token) makes it cheap to ignore the image.
+# Whole-clip rather than per-frame: attention is causal across frames and both
+# signals are ~constant within a clip, so a per-frame mask leaks from frame t-1.
+# Everything else (encoder, trunk, data, batch, LR schedule) identical to dinov3.
+speed_dropout: 0.1
+goal_dropout: 0.1
+
+model:
+  speed_dropout: ${speed_dropout}
+  goal_dropout: ${goal_dropout}
+  null_speed:
+    _target_: rmind.components.nn.Embedding
+    num_embeddings: 1
+    embedding_dim: ${policy_embedding_dim}
+  null_goal:
+    _target_: rmind.components.nn.Embedding
+    num_embeddings: 1
+    embedding_dim: ${waypoint_latent_dim}
+
+wandb:
+  tags: [patch_policy, dinov3_dropout]

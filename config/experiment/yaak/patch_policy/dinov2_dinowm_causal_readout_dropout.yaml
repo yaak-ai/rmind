@@ -1,0 +1,27 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout
+  - _self_
+
+# Conditioning dropout on top of the readout/registers arm: with probability p the
+# speed token / waypoints goal latent is replaced by a learned "absent" token for
+# the WHOLE clip (see PatchPolicy._drop_condition). Rates default to 0.0 (off);
+# set them per run, e.g. `++speed_dropout=0.1 ++goal_dropout=0.1`.
+speed_dropout: 0.0
+goal_dropout: 0.0
+
+model:
+  speed_dropout: ${speed_dropout}
+  goal_dropout: ${goal_dropout}
+  null_speed:
+    _target_: rmind.components.nn.Embedding
+    num_embeddings: 1
+    embedding_dim: ${policy_embedding_dim}
+  null_goal:
+    _target_: rmind.components.nn.Embedding
+    num_embeddings: 1
+    embedding_dim: ${waypoint_latent_dim}
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal, dropout]
