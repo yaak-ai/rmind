@@ -1,9 +1,14 @@
 """KV-cached one-tick decode step for `PatchPolicy` -- the deployment export target.
 
 Per tick the graph encodes exactly ONE new frame (1 speed token prepended to 256
-goal-fused patch tokens = 257 queries), runs those 257 queries against the cached
-K/V of the past frames, and returns the action chunk plus the new frame's K/V.
-Old frames are never re-encoded and never re-attended to each other.
+goal-fused patch tokens = 257 queries; with `use_readout_token` the frame gains
+`num_register_tokens` register tokens plus a learned readout token, e.g.
+257 + 2 + 1 = 260), runs those queries against the cached K/V of the past
+frames, and returns the action chunk plus the new frame's K/V. Old frames are
+never re-encoded and never re-attended to each other. Every `257` in the shape
+table below is really the trunk's `tokens_per_frame` -- read it from
+`step.trunk.tokens_per_frame`, and note the cache/bias/`new_k`/`new_v` bindings
+all scale with it.
 
 Runtime contract (drivr)
 ------------------------
@@ -146,7 +151,7 @@ class PatchPolicyDecoderStep(nn.Module):
 
         tokens = policy._frame_tokens(  # noqa: SLF001
             image, inputs["speed"], inputs["waypoints"]
-        )  # (b, 1, 257, d)
+        )  # (b, 1, tokens_per_frame, d)
 
         out, new_k, new_v = self.trunk.step(
             tokens[:, 0],
@@ -158,7 +163,8 @@ class PatchPolicyDecoderStep(nn.Module):
             readout_only_final_block=self.readout_only_final_block,
         )
 
-        features = out[:, -1]  # the frame's last patch token = the readout position
+        features = out[:, -1]  # the frame's last token = the readout position
+        # (the learned readout token with `use_readout_token`, else the last patch)
         if policy.norm is not None:
             features = policy.norm(features)
 

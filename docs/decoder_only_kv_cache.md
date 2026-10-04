@@ -1124,4 +1124,54 @@ Two traps this check walked into, both worth remembering:
 * **Speed and waypoints are synthetic**, which makes this harness ~7× harsher than
   the road on the baseline arm. Do not quote 2/200 as a deployment rate.
 * **Margins are per-checkpoint.** Re-run §12.5 and §12.6 for every checkpoint
-  before serving it below fp32. A verdict cannot be inherited from a sibling.
+  before serving it below fp32. A verdict cannot be inherited from a sibling —
+  and per §12.10, not from a *parent* either.
+
+### 12.10 A fine-tuned child does not inherit the parent's precision verdict
+
+Exporting the motionlab fine-tune `model-c1n9agob:v1` (a warm start from
+`do8m9ot8:v2`, **84 optimizer steps** on 8.1 minutes of one closed course)
+produced the same latency as its parent — 59.66 ms against 59.67 ms, 0.02 %, as
+expected since weights do not move a static-shape engine — but **not** the same
+precision verdict.
+
+**Verified here, from the archived `--exportLayerInfo` of all three engines:**
+
+| engine | `Reformat` nodes | FP16 layer outputs | KV cache |
+| --- | --- | --- | --- |
+| fp32 (`--noTF32`) | **0** | **0 of 389** | 120.47 MiB |
+| fp16 | 12 | 305 of 326 | 120.47 MiB |
+| fp16cache | **7** | 302 of 321 | **60.23 MiB** |
+
+Two things follow, both read directly out of the layer info rather than inferred:
+
+1. **§12.7's reformat claim is confirmed structurally**, not just by timing. The
+   plain fp16 engine ends in *three* `Reformat` CopyNodes — one each for
+   `policy.joint_actions`, `new_k`, `new_v` — while the fp16cache engine has only
+   the first. That is the 12 → 7 node drop and the mechanism behind 17.01 →
+   13.62 ms.
+2. **An fp32 output binding is not fp32 logits.** On both fp16 engines the final
+   node emits `policy.joint_actions` as `Row major linear FP32` while *consuming*
+   `Row major linear FP16`. The binding dtype is a cast of an fp16 result. This is
+   why the per-layer audit replaced the build-log grep in
+   `decoder_only_trt_measure.sh`, and why the fp32 arm's "0 of 389" is the claim
+   worth checking rather than the binding dtypes.
+
+**Reported but NOT reproduced** — recorded with provenance, deliberately not as a
+measured row above. A single export run (2026-08-19, one agent, one seed) screened
+the parent and the child on the same three real frames and reported the §12.5
+minimum ULP margin falling **3.146 → 0.821**, i.e. out of "marginal" and into
+"fp16 will flip actions", with fp16 decision changes rising 3/200 → 7/200. The
+four frozen waypoints-RVQ probes were byte-identical between the checkpoints and
+to §12.5's published values, which does establish that the two screens saw
+identical inputs and that only the trained `code_head` moved. **It has not been
+re-run, and the same report contained two claims that did not survive checking**
+(a pooled 16/400 significance test it retracted, since fp16's flip set is a strict
+subset of fp16cache's; and a claim to have added the `fp16cache` mode to this
+repo's script when it had actually forked the script into a NAS archive). Treat
+the direction as credible and the magnitude as unconfirmed: re-screen before
+serving `c1n9agob:v1` below fp32.
+
+The operational rule stands on §12.9's logic regardless of that magnitude: 84
+steps is enough to change which side of the margin threshold a checkpoint sits
+on, so a precision verdict cannot be inherited across a fine-tune, however short.
