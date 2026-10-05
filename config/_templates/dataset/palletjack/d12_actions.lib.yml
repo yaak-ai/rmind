@@ -61,7 +61,8 @@ samples:
 
   inputs:
     input_id: #@ jobs
-    mcap_path: #@ ["${paths.d12}/" + j + "/data.mcap" for j in jobs]
+    #! the training copy: steering sign-corrected (see rmind.data.d12.MCAP_FILE)
+    mcap_path: #@ ["${paths.d12}/" + j + "/data_for_training.mcap" for j in jobs]
 
   pipeline:
     _target_: pipefunc.Pipeline

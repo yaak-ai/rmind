@@ -99,11 +99,16 @@ relative_position_embedding:
       pattern: "b t d -> b t 1 d"
 
 lr: 1e-4
-lr_warmup_steps: 100
-lr_total_steps: 1000
+# The run is sized in optimizer steps and ends exactly where the cosine does:
+# past `num_training_steps` the schedule does not hold at 0, it climbs back up.
+# 28 jobs = 13992 samples; at batch 8 that is 1749 steps/epoch, so 35000 steps is
+# ~20 epochs. Re-derive when the job list or the batch size changes.
+lr_warmup_steps: 1000
+lr_total_steps: 35000
 
 trainer:
-  max_epochs: 20
+  max_steps: ${lr_total_steps}
+  max_epochs: -1
   precision: "bf16-mixed"
   gradient_clip_val: 1.0
   log_every_n_steps: 10

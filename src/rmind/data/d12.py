@@ -11,8 +11,12 @@ Python and not a DuckDB query.
 
 Job layout (`/nasa/data/d12/yaak/{job-id}/`):
 
-    data.mcap                            protobuf + zstd, palleter.* schemas
-    job-id.txt                           the recording's UUID
+    data.mcap                            protobuf + zstd, palleter.* schemas, as
+                                         recorded - NOT read for training
+    data_for_training.mcap               the same, with steering sign-corrected
+                                         to the 2026-10-02 convention (08-25 and
+                                         09-10 recorded it negated); `MCAP_FILE`
+    job-id.txt                          the recording's UUID
     {camera}/video.mp4                   h264 1920x1080, one per camera
     {camera}/frame_info_{camera}.txt     "w,h,codec" then one ns stamp per frame
     {camera}/frames/{W}x{H}/%06d.jpg     what training reads, from
@@ -32,8 +36,8 @@ Observations (model inputs, not targets):
 
     speed                 lindelot/vehicle_state.speed             m/s
     fork_above_300        lindelot/vehicle_state.fork_above_300    bool -> 0.0 / 1.0
-    relative_ego_pos      qorvo pose + qorvo pallet pose   WORLD ego, pallet, target
-    relative_dropoff_pos  qorvo pose + dropoff.parquet     -> ego frame IN THE CONFIG
+    relative_ego_pos      rtls/pose + rtls/pallet_pose     WORLD ego, pallet, target
+    relative_dropoff_pos  rtls/pose + dropoff.parquet      -> ego frame IN THE CONFIG
 
 The two `relative_*` tokens are the intention (see the constants block). This
 module does NOT compute them: it emits the WORLD-frame ego pose, live pallet
@@ -84,6 +88,9 @@ logger = get_logger(__name__)
 
 CAMERAS: Final = ("cam_fork", "cam_left_forward", "cam_right_forward")
 
+# the training copy of each job's recording (see the job layout above)
+MCAP_FILE: Final = "data_for_training.mcap"
+
 # a skew needs at least two frames to be measurable
 MIN_FRAMES_FOR_SKEW: Final = 2
 
@@ -127,23 +134,29 @@ TRACTION_SOURCES: Final = {
 
 # --- intention: two ego-frame position tokens -----------------------------------
 #
-# The qorvo UWB RTLS carries the vehicle pose (`qorvo/pose`) and the pallet
-# position (`qorvo/pallet_pose`) in ONE world frame, in metres (gnss is all-zero
-# indoors and unused). `relative_ego_pos` points the model at the pallet to pick
-# up; `relative_dropoff_pos` at where to leave it - the dropoff, which is NOT a
+# The RTLS topics carry the vehicle pose (`rtls/pose`) and the pallet position
+# (`rtls/pallet_pose`) in ONE world frame, in metres (gnss is all-zero indoors and
+# unused). `rtls/*` is the unified topic every training mcap carries, whatever
+# system recorded it: on 2026-08-25 it holds the pozyx fixes (`source` 2), on
+# 2026-09-10 it is bit-identical to the legacy `qorvo/*` topics (`source` 1), and
+# from 2026-10-02 on it is the only one. Never read `qorvo/*` or `pozyx/*`.
+#
+# `relative_ego_pos` points the model at the pallet to pick up;
+# `relative_dropoff_pos` at where to leave it - the dropoff, which is NOT a
 # sensor reading and comes from `dropoff.parquet` (written by
 # `scripts.prepare_dropoff`, joined by time so it can vary within a job). This
 # module emits both targets and the ego pose in WORLD metres; the dataset config
 # translates by -ego, rotates by -heading and scales to ~[-1, 1], so the frame
 # transform lives in one place, exactly as the car model's waypoints.
 #
-# `qorvo/pose` carries heading (CCW from +x, degrees) already valid on the jobs
-# recorded so far, which the config's rotation depends on. Earlier recordings used
-# a `pozyx/pose` + `pozyx/tag` system; that is no longer read.
+# `rtls/pose` carries heading (CCW from +x, degrees; `has_heading` is set on every
+# fix recorded so far), which the config's rotation depends on. Fixes the RTLS
+# itself flagged `rejected` (~1% on some 2026-08-25 jobs) are dropped before the
+# join, so the nearest-in-time join falls back to a neighbouring good fix.
 #
 # These are inputs, never targets.
-POSE_TOPIC: Final = "qorvo/pose"
-PALLET_TOPIC: Final = "qorvo/pallet_pose"
+POSE_TOPIC: Final = "rtls/pose"
+PALLET_TOPIC: Final = "rtls/pallet_pose"
 DROPOFF_FILE: Final = "dropoff.parquet"
 
 # the world-frame columns the row builder emits for the config to transform
@@ -207,11 +220,13 @@ def read_mcap(
         "x_m": pl.Float32(),
         "y_m": pl.Float32(),
         "heading_deg": pl.Float32(),
+        "rejected": pl.Boolean(),
     }
     fields[PALLET_TOPIC] = {
         "log_time": pl.Datetime("ns"),
         "x_m": pl.Float32(),
         "y_m": pl.Float32(),
+        "rejected": pl.Boolean(),
     }
 
     return McapReader(decoder_factories=[ProtobufDecoderFactory], fields=fields)(path)
@@ -251,7 +266,7 @@ def row_table(
     Raises:
         ValueError: if a camera is missing, or its pairing skew exceeds `max_skew_s`.
     """
-    topics = read_mcap(job_dir / "data.mcap", cameras, traction_source)
+    topics = read_mcap(job_dir / MCAP_FILE, cameras, traction_source)
 
     per_camera: dict[str, pl.DataFrame] = {}
     for camera in cameras:
@@ -352,6 +367,7 @@ def _world_positions(
     """
     ego = (
         topics[POSE_TOPIC]
+        .filter(~pl.col("rejected"))
         .sort("log_time")
         .select(
             "log_time",
@@ -362,6 +378,7 @@ def _world_positions(
     )
     pallet = (
         topics[PALLET_TOPIC]
+        .filter(~pl.col("rejected"))
         .sort("log_time")
         .select(
             "log_time",

@@ -16,6 +16,10 @@ image_remap:
   cam_left_forward: [data, cam_left_forward]
   cam_right_forward: [data, cam_right_forward]
 
+# half the batch, twice the steps for the same ~20 epochs (see d12.yaml)
+lr_warmup_steps: 2000
+lr_total_steps: 70000
+
 datamodule:
   train:
     batch_size: 4

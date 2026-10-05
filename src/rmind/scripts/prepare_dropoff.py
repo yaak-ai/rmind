@@ -1,4 +1,4 @@
-"""Precompute a D12 job's dropoff target and write it beside `data.mcap`.
+"""Precompute a D12 job's dropoff target and write it beside the recording.
 
 The intention the policy is conditioned on has two parts (see `rmind.data.d12`):
 the live pallet position, which is in the mcap already, and the DROPOFF - where the
@@ -10,7 +10,7 @@ Output, next to the recording:
 
     {job-dir}/dropoff.parquet     log_time (ns) | x_m (f32) | y_m (f32)
 
-world-frame qorvo metres, keyed by time. `rmind.data.d12` asof-joins it onto the
+world-frame RTLS metres (`rtls/pallet_pose`), keyed by time. `rmind.data.d12` asof-joins it onto the
 frame timeline with a BACKWARD strategy, so a row applies from its `log_time`
 forward until the next row: one row is a constant goal for the whole job, several
 rows are a goal that changes partway. The dataset config rotates the target into
@@ -33,12 +33,15 @@ from structlog import get_logger
 
 logger = get_logger(__name__)
 
-PALLET_TOPIC: Final = "qorvo/pallet_pose"
+# the unified RTLS topic, as `rmind.data.d12.PALLET_TOPIC`
+PALLET_TOPIC: Final = "rtls/pallet_pose"
 DROPOFF_FILE: Final = "dropoff.parquet"
+# kept in step with `rmind.data.d12.MCAP_FILE`
+MCAP_FILE: Final = "data_for_training.mcap"
 
 
 def pallet_fixes(mcap_path: Path) -> pl.DataFrame:
-    """Every pallet pose fix in the job, world-frame metres, sorted by time."""
+    """Every accepted pallet pose fix in the job, world-frame metres, by time."""
     from rbyte.samples.mcap import McapReader, ProtobufDecoderFactory  # noqa: PLC0415
 
     fields: dict[str, dict[str, pl.DataType | None]] = {
@@ -46,6 +49,7 @@ def pallet_fixes(mcap_path: Path) -> pl.DataFrame:
             "log_time": pl.Datetime("ns"),
             "x_m": pl.Float32(),
             "y_m": pl.Float32(),
+            "rejected": pl.Boolean(),
         }
     }
     topics = McapReader(decoder_factories=[ProtobufDecoderFactory], fields=fields)(
@@ -54,6 +58,7 @@ def pallet_fixes(mcap_path: Path) -> pl.DataFrame:
 
     return (
         topics[PALLET_TOPIC]
+        .filter(~pl.col("rejected"))
         .sort("log_time")
         .select(
             "log_time", pl.col("x_m").cast(pl.Float32), pl.col("y_m").cast(pl.Float32)
@@ -83,7 +88,7 @@ def dropoff(fixes: pl.DataFrame) -> pl.DataFrame:
 
 
 def main(job_dir: Path) -> None:
-    fixes = pallet_fixes(job_dir / "data.mcap")
+    fixes = pallet_fixes(job_dir / MCAP_FILE)
     target = dropoff(fixes)
     out = job_dir / DROPOFF_FILE
     target.write_parquet(out)

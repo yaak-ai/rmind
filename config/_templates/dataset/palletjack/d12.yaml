@@ -1,6 +1,11 @@
 #@yaml/text-templated-strings
 
 #@ jobs = [
+#@    '2026-08-25--16-35-31',
+#@    '2026-08-25--16-45-01',
+#@    '2026-08-25--16-46-37',
+#@    '2026-08-25--16-47-34',
+#@    '2026-08-25--16-48-36',
 #@    '2026-09-10--15-00-09',
 #@    '2026-09-10--15-01-36',
 #@    '2026-09-10--15-03-07',
@@ -14,13 +19,24 @@
 #@    '2026-09-10--15-15-31',
 #@    '2026-09-10--15-16-22',
 #@    '2026-09-10--15-17-38',
+#@    '2026-10-02--15-01-01',
+#@    '2026-10-02--15-39-58',
+#@    '2026-10-02--15-41-04',
+#@    '2026-10-02--15-41-49',
+#@    '2026-10-02--15-42-48',
+#@    '2026-10-02--15-44-02',
+#@    '2026-10-02--15-45-07',
+#@    '2026-10-02--15-46-49',
+#@    '2026-10-02--15-48-24',
+#@    '2026-10-02--15-49-44',
 #@ ]
 #@ cameras = ['cam_fork', 'cam_left_forward', 'cam_right_forward']
 #@ reference = 'cam_fork'
 #@ frame_size = '256x144'
 
 ---
-# Real D12 recordings: actuations from `data.mcap`, frames from the JPEGs that
+# Real D12 recordings: actuations from `data_for_training.mcap` (steering
+# sign-corrected), frames from the JPEGs that
 # `scripts/extract_d12_frames.sh` writes beside each camera's video.
 #
 # Samples are built HERE, at load time, by `rmind.data.d12.D12SampleBuilder` - one
@@ -33,10 +49,12 @@
 #
 # Job directories are named by datetime and that name is the `input_id`.
 #
-# These are the 2026-09-10 qorvo-RTLS recordings (ego pose from `qorvo/pose`,
-# pallet from `qorvo/pallet_pose`). The earlier 2026-08-25 pozyx recordings are
-# retired - the loader no longer reads `pozyx/pose`/`pozyx/tag`. Four 2026-09-10
-# jobs are deliberately EXCLUDED: 15-04-25, 15-12-15 and 15-18-40 blow the
+# Every job of the three sessions in `${paths.d12}`: 2026-08-25 (pozyx), 2026-09-10
+# (qorvo) and 2026-10-02 (rtls). Whatever system recorded them, poses come from
+# the unified `rtls/pose` and `rtls/pallet_pose` topics every training mcap
+# carries; see `rmind.data.d12`. All 28 pass the pairing-skew guard on all three
+# cameras (worst 0.8s). Four further 2026-09-10 jobs, not in that directory, are
+# deliberately EXCLUDED: 15-04-25, 15-12-15 and 15-18-40 blow the
 # pairing-skew guard (>1s of dropped frames), and 14-51-59 loses its ego fix after
 # ~10s of a 78s job, so its intention tokens cannot be trusted.
 #
