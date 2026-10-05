@@ -1,0 +1,71 @@
+# @package _global_
+
+# D12 on the VQ-BeT PatchPolicy: 1 camera (cam_fork), 5Hz, predicting the next
+# 2s of actions as a chunk from the last 1s of frames.
+#
+#   just train experiment=palletjack/patch_policy/d12_vqbet
+#
+# Inherits cameras, image pipeline, trunk size and paths from `d12`; swaps the
+# Gaussian single-step heads for a code + offset head over the frozen action
+# tokenizer, and the separate intention tokens for a fused `goal`.
+defaults:
+  - /experiment/palletjack/patch_policy/d12
+  - override /model: palletjack/patch_policy/vqbet
+  - _self_
+
+# EPISODE, in raw (~30Hz) reference frames. Why these values: actions move little
+# within 0.6s and decorrelate over 2-3.4s, so the chunk spans 2s; at 200ms
+# spacing the sampling loss (0.003-0.007 L1 vs 30Hz) is far below the
+# tokenizer's own error (0.028), and 10Hz bought nothing at chunk level.
+episode_step: 6 # 5Hz
+# a clip at EVERY raw frame: all six 30Hz phases, ~6x the distinct clips of a
+# fixed grid (val stays on one grid, see d12_val)
+episode_stride: 1
+episode_length: 6 # 1.0s of history
+window: 6
+action_horizon: 10 # 2.0s of future: steps t .. t+9
+
+# fitted on exactly this chunk shape (10 x 200ms, 32 codes x 6 levels; val L1
+# 0.028) on the steering-corrected data; must match `action_horizon`/spacing
+action_tokenizer_artifact: yaak/rmind-palleter/model-7viwkthm:v5 # step 9000, the evaluated one
+# the tokenizer run, for the wandb tag (keep in step with the artifact)
+tokenizer_run: 7viwkthm
+tokenizer_num_quantizers: 6
+tokenizer_codebook_size: 32
+
+# [ego fwd, ego lat, dropoff fwd, dropoff lat, fork_above_300]
+goal_dim: 5
+# element RMS of `goal` over the train set, for the fusion gain (measured)
+goal_rms: 0.4125
+
+lr: 1e-4
+# 35912 train clips at batch 8 -> 4489 steps/epoch; 35000 steps ~ 7.8 epochs,
+# the same optimizer budget as the d12 Gaussian runs
+lr_warmup_steps: 1000
+lr_total_steps: 35000
+
+# Runs keep wandb's generated names; what a run IS lives in its tags (filterable)
+# and notes (readable). Both interpolate the config, so an override on the
+# command line shows up in them.
+wandb:
+  tags:
+    - palletjack
+    - patch_policy
+    - vqbet
+    - d12
+    - "cams:${num_cameras}"
+    - "hz:${eval:'30 // ${episode_step}'}"
+    - "hist:${episode_length}f"
+    - "horizon:${action_horizon}"
+    - "stride:${episode_stride}"
+    - "tok:${tokenizer_run}"
+  notes: >-
+    VQ-BeT PatchPolicy on D12, cameras ${cameras}.
+    Every ${episode_step} raw frames (${eval:'30 // ${episode_step}'}Hz): ${episode_length}
+    frames of history, predicting the next ${action_horizon} steps
+    (${eval:'${action_horizon} * ${episode_step} / 30'}s) of [traction, steering, fork1]
+    per frame; a train clip every ${episode_stride} raw frame(s), val on a fixed
+    grid. Tokenizer ${action_tokenizer_artifact}
+    (${tokenizer_num_quantizers}x${tokenizer_codebook_size} codes). Goal fused into
+    patches: [pallet fwd/lat, dropoff fwd/lat, fork_above_300], fusion RMS ${goal_rms}.
+    ${lr_total_steps} steps, lr ${lr}, batch ${datamodule.train.batch_size}.

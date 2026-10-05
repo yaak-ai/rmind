@@ -532,7 +532,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             ValueError: if the goal-gain calibration RMS is not finite/positive
                 (1/RMS would be inf, NaN-ing the first step).
         """
-        goal_dim = self.goal_encoder.quantizer.dim
+        # a learned goal encoder is an RVQ and reports its latent width there; a
+        # parameter-free one (`components.nn.GoalVector`) reports it as `dim`
+        goal_dim = getattr(self.goal_encoder, "dim", None) or (
+            self.goal_encoder.quantizer.dim
+        )
         patch_dim = self.patch_projection.in_features - goal_dim
         self.fusion_patch_norm: Module | None = nn.LayerNorm(patch_dim)
         self.fusion_patch_gain: nn.Parameter | None = nn.Parameter(torch.tensor(1.0))

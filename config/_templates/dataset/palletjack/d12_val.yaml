@@ -1,0 +1,4 @@
+#@ load("d12.lib.yml", "dataset", "val_jobs")
+
+#! val: one fixed grid (stride = step), so the val clip set never moves
+--- #@ dataset(val_jobs, "${episode_step}")

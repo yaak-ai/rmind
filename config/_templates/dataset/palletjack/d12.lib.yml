@@ -1,6 +1,13 @@
-#@yaml/text-templated-strings
+#! Shared by d12_train.yaml / d12_val.yaml: the real-D12 policy dataset. A
+#! `.lib.yml` is never emitted by `just generate-config`; the two templates
+#! differ only in their jobs and the clip stride.
 
-#@ jobs = [
+#! Every job of the three sessions in `${paths.d12}`: 2026-08-25 (pozyx), 2026-09-10
+#! (qorvo) and 2026-10-02 (rtls); all pass the pairing-skew guard on all three
+#! cameras (worst 0.8s). Four further 2026-09-10 jobs, not in that directory, are
+#! excluded: 15-04-25, 15-12-15 and 15-18-40 blow the skew guard, and 14-51-59
+#! loses its ego fix after ~10s of a 78s job.
+#@ all_jobs = [
 #@    '2026-08-25--16-35-31',
 #@    '2026-08-25--16-45-01',
 #@    '2026-08-25--16-46-37',
@@ -30,11 +37,44 @@
 #@    '2026-10-02--15-48-24',
 #@    '2026-10-02--15-49-44',
 #@ ]
+
+#! one held-out job per recording session - the same three as the tokenizer
+#@ val_jobs = [
+#@    '2026-08-25--16-48-36',
+#@    '2026-09-10--15-17-38',
+#@    '2026-10-02--15-49-44',
+#@ ]
+#@ train_jobs = [j for j in all_jobs if j not in val_jobs]
+
 #@ cameras = ['cam_fork', 'cam_left_forward', 'cam_right_forward']
 #@ reference = 'cam_fork'
 #@ frame_size = '256x144'
 
----
+#! one JPEG stream per camera per job (`frame_idx` is the 0-based encoded frame)
+#@ def streams(jobs):
+#@   return {
+#@     camera: {
+#@       "index": camera + "/frame_idx",
+#@       "sources": {
+#@         j: {
+#@           "_target_": "rbyte.streams.path.PathSource",
+#@           "path": "${paths.d12}/" + j + "/" + camera + "/frames/" + frame_size + "/{:06d}.jpg",
+#@           "decoder": {
+#@             "_target_": "simplejpeg.decode_jpeg",
+#@             "_partial_": True,
+#@             "colorspace": "rgb",
+#@             "fastdct": True,
+#@             "fastupsample": True,
+#@           },
+#@         }
+#@         for j in jobs
+#@       },
+#@     }
+#@     for camera in cameras
+#@   }
+#@ end
+
+#@ def dataset(jobs, stride):
 # Real D12 recordings: actuations from `data_for_training.mcap` (steering
 # sign-corrected), frames from the JPEGs that
 # `scripts/extract_d12_frames.sh` writes beside each camera's video.
@@ -73,21 +113,7 @@
 _target_: rbyte.Dataset.from_config
 _recursive_: false
 _convert_: all
-streams:
-  #@ for/end camera in cameras:
-  (@=camera@):
-    index: (@=camera@)/frame_idx
-    sources:
-      #@ for/end job_id in jobs:
-      (@=job_id@):
-        _target_: rbyte.streams.path.PathSource
-        path: "${paths.d12}/(@=job_id@)/(@=camera@)/frames/(@=frame_size@)/{:06d}.jpg"
-        decoder:
-          _target_: simplejpeg.decode_jpeg
-          _partial_: true
-          colorspace: rgb
-          fastdct: true
-          fastupsample: true
+streams: #@ streams(jobs)
 
 samples:
   # A handful of jobs, each decoded once at startup. The default pipefunc executor
@@ -100,9 +126,7 @@ samples:
 
   inputs:
     # one job directory per pipeline invocation
-    job_dir:
-      #@ for/end job_id in jobs:
-      - ${paths.d12}/(@=job_id@)
+    job_dir: #@ ["${paths.d12}/" + j for j in jobs]
 
   pipeline:
     _target_: pipefunc.Pipeline
@@ -114,10 +138,8 @@ samples:
         mapspec: "job_dir[i] -> row_table[i]"
         func:
           _target_: rmind.data.d12.D12RowTableBuilder
-          cameras:
-            #@ for/end camera in cameras:
-            - (@=camera@)
-          reference: (@=reference@)
+          cameras: #@ cameras
+          reference: #@ reference
           # signed traction command, the field the vehicle actually applies
           traction_source: command
           max_skew_s: 1.0
@@ -145,21 +167,32 @@ samples:
                   pallet_x - ego_x AS _pdx, pallet_y - ego_y AS _pdy,
                   target_x - ego_x AS _tdx, target_y - ego_y AS _tdy
                 FROM row_table
+              ),
+              positioned AS (
+                SELECT
+                  * EXCLUDE (
+                    ego_x, ego_y, ego_heading, pallet_x, pallet_y, target_x, target_y,
+                    _t, _pdx, _pdy, _tdx, _tdy
+                  ),
+                  [
+                    greatest(-1.0, least(1.0, ( cos(_t)*_pdx + sin(_t)*_pdy) / 10.0)),
+                    greatest(-1.0, least(1.0, (-sin(_t)*_pdx + cos(_t)*_pdy) / 10.0))
+                  ] AS relative_ego_pos,
+                  [
+                    greatest(-1.0, least(1.0, ( cos(_t)*_tdx + sin(_t)*_tdy) / 10.0)),
+                    greatest(-1.0, least(1.0, (-sin(_t)*_tdx + cos(_t)*_tdy) / 10.0))
+                  ] AS relative_dropoff_pos
+                FROM ego
               )
+              -- `goal`: the same intention + the mast switch as ONE 5-vector
+              -- [ego fwd, ego lat, dropoff fwd, dropoff lat, fork_above_300], for
+              -- a model that fuses a goal into every patch (PatchPolicy)
               SELECT
-                * EXCLUDE (
-                  ego_x, ego_y, ego_heading, pallet_x, pallet_y, target_x, target_y,
-                  _t, _pdx, _pdy, _tdx, _tdy
-                ),
-                [
-                  greatest(-1.0, least(1.0, ( cos(_t)*_pdx + sin(_t)*_pdy) / 10.0)),
-                  greatest(-1.0, least(1.0, (-sin(_t)*_pdx + cos(_t)*_pdy) / 10.0))
-                ] AS relative_ego_pos,
-                [
-                  greatest(-1.0, least(1.0, ( cos(_t)*_tdx + sin(_t)*_tdy) / 10.0)),
-                  greatest(-1.0, least(1.0, (-sin(_t)*_tdx + cos(_t)*_tdy) / 10.0))
-                ] AS relative_dropoff_pos
-              FROM ego
+                *,
+                list_concat(
+                  relative_ego_pos, relative_dropoff_pos, [fork_above_300::DOUBLE]
+                ) AS goal
+              FROM positioned
 
       # 3. sliding-window episodes over the positioned row table
       - _target_: pipefunc.PipeFunc
@@ -169,14 +202,14 @@ samples:
           frames: positioned
         func:
           _target_: rmind.data.d12.D12EpisodeWindower
-          cameras:
-            #@ for/end camera in cameras:
-            - (@=camera@)
-          # episode shape follows the experiment
+          cameras: #@ cameras
+          # episode shape follows the experiment; all spacings in RAW (~30Hz)
+          # reference frames: `episode_step` between steps (6 -> 5Hz), a clip
+          # every `stride` raw frames, `action_horizon` future steps per chunk
           episode_length: ${episode_length}
-          stride: 1
-          # reference-frame decimation, 30 -> 10Hz
-          every_nth: 3
+          step: ${episode_step}
+          stride: #@ stride
+          horizon: "${oc.select:action_horizon,1}"
 
       # 4. plain vertical concat: every row already carries its job's `input_id`
       - _target_: pipefunc.PipeFunc
@@ -185,3 +218,4 @@ samples:
           values: samples_per_job
         func:
           _target_: rbyte.samples.dataframe.DataFrameConcatenator
+#@ end

@@ -11,7 +11,10 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 from torch.optim import Optimizer
-from torch.utils._pytree import MappingKey  # ruff: ignore[import-private-name]
+from torch.utils._pytree import (  # ruff: ignore[import-private-name]
+    MappingKey,
+    tree_map,
+)
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
@@ -92,6 +95,17 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
     Every frame is a supervised readout, as in `PatchPolicy` - a `T`-frame clip
     yields `T` targets from one frozen-ViT pass. `forward` returns only the last
     frame's, which is what the vehicle acts on.
+
+    `action_horizon` > 1 predicts an action CHUNK per frame instead of the current
+    action alone - the same chunk the VQ-BeT `PatchPolicy` codes, as an
+    independent Gaussian per chunk step. Each head then outputs `2 * H` (a mean and
+    log-variance per step) and every target must arrive as `(b, t, H)`, i.e. the
+    config unfolds the action columns with `components.nn.ChunkFields`. The loss
+    is the same Gaussian NLL, now over every step; `chunk_l1*` metrics score the
+    predicted means against the target chunk in the units `offset_argmax_recon*`
+    uses, the first `near_horizon` steps separately (what is executed before
+    re-planning). With the default `H == 1` nothing - heads, loss, metrics,
+    checkpoints - differs from the single-step model.
     """
 
     @validate_call
@@ -119,6 +133,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         prediction_config: Annotated[
             PredictionConfig, Field(default_factory=PredictionConfig)
         ],
+        action_horizon: Annotated[int, Field(ge=1)] = 1,
+        near_horizon: Annotated[int, Field(ge=1)] = 3,
     ) -> None:
         super().__init__()
 
@@ -157,6 +173,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         self.cameras: tuple[str, ...] = cameras
         self.speed: Path = speed
         self.observations: Mapping[str, Path] = observations or {}
+        self.action_horizon: int = action_horizon
+        self.near_horizon: int = min(near_horizon, action_horizon)
 
         # an observation with no embedding would be read and silently discarded,
         # and an embedding with no observation never called; both are config bugs
@@ -184,6 +202,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         hparams["cameras"] = cameras
         hparams["speed"] = speed
         hparams["observations"] = self.observations
+        hparams["action_horizon"] = action_horizon
+        hparams["near_horizon"] = near_horizon
         self.save_hyperparameters(hparams)
 
     @classmethod
@@ -228,8 +248,12 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         for key, value in kwargs.items():
             setattr(model, key, value)
 
-        # index 1 of the input_transform Sequential is the per-modality ModuleDict
-        model.input_transform[1]["image"] = Identity()
+        # the per-modality ModuleDict: index 1 of the input_transform Sequential,
+        # or 2 when a chunk config unfolds the actions (`ChunkFields`) before it
+        modalities = next(
+            module for module in model.input_transform if isinstance(module, ModuleDict)
+        )
+        modalities["image"] = Identity()
 
         # RoPE defaults to float64 for exact long-episode frame counters; neither
         # onnxruntime-CPU nor TensorRT has a float64 Cos kernel, and a fixed
@@ -313,9 +337,21 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
 
         return self.norm(features) if self.norm is not None else features
 
-    def _predict(self, features: Tensor) -> TensorDict:
-        """Gaussian mean per actuation, shaped like `features`' leading axes."""
+    def _heads(self, features: Tensor) -> Any:
+        """Per-actuation `(mean, log-variance)` on a trailing axis of 2.
+
+        A chunk head's flat `2 * H` output is split to `(..., H, 2)`, so the loss
+        and the mean readout index the last axis exactly as for one step.
+        """
         logits = self.heads(features)
+        if self.action_horizon == 1:
+            return logits
+
+        return tree_map(lambda x: rearrange(x, "... (h p) -> ... h p", p=2), logits)
+
+    def _predict(self, features: Tensor) -> TensorDict:
+        """Gaussian mean per actuation: `features`' leading axes, `+ (H,)` if chunked."""
+        logits = self._heads(features)
 
         return TensorDict(logits).apply(operator.itemgetter((..., 0)))  # ty:ignore[invalid-return-type]
 
@@ -329,7 +365,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
         inputs = self.input_transform(batch)
         features = self._features(batch)
-        logits = self.heads(features)
+        logits = self._heads(features)
 
         # every frame is a readout, so targets keep their full time axis
         targets = {
@@ -339,11 +375,17 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
             }
             for modality, names in self.targets.items()
         }
+        # before the loss, whose broadcasting would hide a target of the wrong shape
+        chunk_metrics = (
+            self._chunk_metrics(logits, targets) if self.action_horizon > 1 else None
+        )
         losses = self.losses(logits, targets)
 
         metrics = TensorDict({"loss": losses})
         total = metrics.sum(reduce=True)
         metrics["loss", "total"] = total
+        if chunk_metrics is not None:
+            metrics["metric"] = chunk_metrics
 
         self.log_dict(
             {
@@ -356,6 +398,47 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         )
 
         return {"loss": total}
+
+    def _chunk_metrics(
+        self,
+        logits: Mapping[str, Mapping[str, Tensor]],
+        targets: Mapping[str, Mapping[str, Tensor]],
+    ) -> dict[str, Tensor]:
+        """L1 of the predicted chunk MEANS against the target chunk.
+
+        Over every actuation in `targets` order, so in raw action units, the same
+        space as `PatchPolicy`'s `offset_argmax_recon*` (its tokenizer's
+        normalizer is the identity on palletjack): `chunk_l1` over all frames and
+        steps, `_last` at the newest frame only (the served readout), `_near` over
+        the first `near_horizon` steps (what runs before re-planning).
+
+        Raises:
+            ValueError: if a target is not the `(b, t, H)` chunk the head predicts,
+                e.g. a config that skipped `ChunkFields`.
+        """
+        with torch.no_grad():
+            errors = []
+            for modality, names in targets.items():
+                for name, target in names.items():
+                    mean = logits[modality][name][..., 0]
+                    if mean.shape != target.shape:
+                        msg = (
+                            f"target {modality}/{name} has shape "
+                            f"{tuple(target.shape)}, expected the predicted chunk's "
+                            f"{tuple(mean.shape)}"
+                        )
+                        raise ValueError(msg)
+                    errors.append((mean.float() - target.float()).abs())
+
+            error = torch.stack(errors, dim=-1)  # (b, t, h, actuations)
+            near = error[:, :, : self.near_horizon]
+
+            return {
+                "chunk_l1": error.mean(),
+                "chunk_l1_last": error[:, -1].mean(),
+                "chunk_l1_near": near.mean(),
+                "chunk_l1_near_last": near[:, -1].mean(),
+            }
 
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:

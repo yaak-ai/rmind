@@ -4,8 +4,11 @@
 - _target_: pytorch_lightning.callbacks.TQDMProgressBar
 - _target_: pytorch_lightning.callbacks.ModelSummary
   max_depth: 2
+# Every N optimizer STEPS, not epochs: runs end at `max_steps`, usually mid-epoch,
+# and an epoch-based checkpoint never saves that last partial epoch. Keep
+# `lr_total_steps` a multiple of this so the final step is saved.
 - _target_: pytorch_lightning.callbacks.ModelCheckpoint
-  every_n_epochs: 1
-  save_on_train_epoch_end: True
+  every_n_train_steps: 5000
+  save_last: true
 - _target_: pytorch_lightning.callbacks.LearningRateMonitor
   logging_interval: step

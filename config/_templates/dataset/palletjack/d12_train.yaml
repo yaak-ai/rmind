@@ -1,0 +1,4 @@
+#@ load("d12.lib.yml", "dataset", "train_jobs")
+
+#! train: a clip at every `episode_stride` raw frames (1 = every phase)
+--- #@ dataset(train_jobs, "${episode_stride}")

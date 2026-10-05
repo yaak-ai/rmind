@@ -25,6 +25,10 @@ defaults:
   - _self_
 
 episode_length: 6
+# episode spacing in RAW (~30Hz) reference frames: a step every 3 (10Hz), a clip
+# every 3, i.e. one fixed grid. This single-step model predicts no future actions.
+episode_step: 3
+episode_stride: 3
 
 cameras: [cam_fork]
 num_cameras: 1
@@ -160,5 +164,20 @@ image_transform:
       mean: [0.485, 0.456, 0.406]
       std: [0.229, 0.224, 0.225]
 
+# Runs keep wandb's generated names; the description is in tags and notes.
 wandb:
-  tags: [palletjack, patch_policy, d12, cam_fork]
+  tags:
+    - palletjack
+    - patch_policy
+    - gaussian
+    - d12
+    - "cams:${num_cameras}"
+    - "hz:${eval:'30 // ${episode_step}'}"
+    - "hist:${episode_length}f"
+    - "stride:${episode_stride}"
+  notes: >-
+    Gaussian single-step PatchPolicyContinuous on D12, cameras ${cameras}.
+    Every ${episode_step} raw frames (${eval:'30 // ${episode_step}'}Hz),
+    ${episode_length} frames of history; intention as two ego-frame tokens plus
+    fork_above_300. ${lr_total_steps} steps, lr ${lr}, batch
+    ${datamodule.train.batch_size}.

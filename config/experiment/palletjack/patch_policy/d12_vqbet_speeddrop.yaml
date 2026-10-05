@@ -1,0 +1,40 @@
+# @package _global_
+
+# d12_vqbet with heavy speed dropout: half of the training CLIPS see no speed at
+# all (every frame's speed token replaced by a learned "unknown" embedding), so
+# the policy cannot get traction from "still moving, keep going" and has to read
+# it from the camera and the goal. Eval and serving always get the real speed.
+defaults:
+  - /experiment/palletjack/patch_policy/d12_vqbet
+  - _self_
+
+speed_dropout: 0.5
+
+# a fresh node rather than a merge into the model's plain Embedding (a merge
+# would keep its `num_embeddings`/`embedding_dim` keys on the Sequential)
+speed_embedding_with_dropout:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.nn.TokenDropout
+      p: ${speed_dropout}
+      mask_index: ${speed_bins} # one past the real bins
+    - _target_: rmind.components.nn.Embedding
+      num_embeddings: "${eval:'${speed_bins} + 1'}"
+      embedding_dim: ${policy_embedding_dim}
+
+model:
+  speed_embedding: ${speed_embedding_with_dropout}
+
+wandb:
+  tags:
+    - palletjack
+    - patch_policy
+    - vqbet
+    - d12
+    - "cams:${num_cameras}"
+    - "hz:${eval:'30 // ${episode_step}'}"
+    - "hist:${episode_length}f"
+    - "horizon:${action_horizon}"
+    - "stride:${episode_stride}"
+    - "tok:${tokenizer_run}"
+    - "speed_dropout:${speed_dropout}"

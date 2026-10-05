@@ -1,7 +1,7 @@
 """Build an rbyte sample table from a D12 job: `data.mcap` + per-camera directories.
 
 `D12RowTableBuilder` and `D12EpisodeWindower` are pipefunc stages driven from
-`config/_templates/dataset/palletjack/d12.yaml`: per job, the builder decodes the
+`config/_templates/dataset/palletjack/d12.lib.yml`: per job, the builder decodes the
 mcap into a per-frame row table, a DuckDB stage in the config turns the world-frame
 positions into the ego-frame intention tokens, the windower slices sliding
 episodes, and the pipeline concatenates jobs. There is no sample parquet on disk -
@@ -80,6 +80,7 @@ away.
 from pathlib import Path
 from typing import Final, NamedTuple, final
 
+import numpy as np
 import polars as pl
 from pydantic import InstanceOf, validate_call
 from structlog import get_logger
@@ -174,6 +175,14 @@ POSITION_DIM: Final = 2  # (forward, lateral); z/height is `fork_above_300`'s jo
 
 # the ego-frame token columns the config's DuckDB stage produces from the above
 POSITIONS: Final = ("relative_ego_pos", "relative_dropoff_pos")
+
+# optional: the same intention plus `fork_above_300` as ONE per-frame vector, for a
+# model that fuses a goal into every patch (`PatchPolicy`) instead of taking
+# separate tokens; the dataset config builds it when the experiment wants it
+GOAL: Final = "goal"
+
+# the policy's targets - the columns that become action chunks
+ACTIONS: Final = ("traction", "steering", "fork1")
 
 
 def resolve_signal(name: str, traction_source: str) -> Signal:
@@ -440,49 +449,74 @@ def _drop_invalid(table: pl.DataFrame, validity: list[str]) -> pl.DataFrame:
     return kept
 
 
-def episodes(
+def episodes(  # ruff: ignore[too-many-arguments]
     table: pl.DataFrame,
     *,
     cameras: tuple[str, ...],
     episode_length: int,
+    step: int,
     stride: int,
-    every_nth: int,
+    horizon: int = 1,
 ) -> pl.DataFrame:
-    """Sliding windows over the (decimated) timeline of a positioned row table.
+    """Sliding windows over a positioned row table, on the RAW frame grid.
 
-    Expects the two `POSITIONS` columns already present (the config's DuckDB stage
-    adds them as 2-lists); `input_id` is carried through from the row builder.
+    One row of `table` per reference-camera frame (~30Hz). An episode is
+    `episode_length` frames `step` rows apart, and a clip starts every `stride`
+    rows. `stride < step` starts clips between grid points, so every raw-frame
+    phase is used; `stride == step` is a single fixed grid (what val wants, so its
+    clip set never moves).
+
+    `horizon > 1` makes the episode predict action CHUNKS: the action columns
+    (`ACTIONS`) then run `horizon - 1` steps past the last frame - `episode_length
+    + horizon - 1` values at the same spacing - so `ChunkFields` can unfold the
+    chunk starting at every frame. Everything else (frames, observations) stays
+    `episode_length` long, so no frame is decoded only to be thrown away.
+
+    List-valued columns (the `POSITIONS` 2-vectors, `goal`) window to
+    `Array(f32, (n, width))`; `input_id` is carried through from the row builder.
 
     Raises:
         ValueError: if the job is too short for one episode.
     """
-    rows = table.gather_every(every_nth)
-    if len(rows) < episode_length:
-        msg = f"{len(rows)} usable frames < episode_length {episode_length}"
+    clip = episode_length + horizon - 1
+    span = (clip - 1) * step + 1
+    if len(table) < span:
+        msg = f"{len(table)} usable frames < one clip of {span} raw frames"
         raise ValueError(msg)
 
-    input_id = rows["input_id"][0]  # constant within a job
+    starts = np.arange(0, len(table) - span + 1, stride)
+    input_id = table["input_id"][0]  # constant within a job
 
-    # scalar columns window to Array(dtype, L); the position columns are 2-lists
-    # per row, so they window to Array(_, (L, 2))
-    scalar_columns = [f"{c}/frame_idx" for c in cameras] + list(SIGNALS)
-    starts = range(0, len(rows) - episode_length + 1, stride)
+    history = [f"{c}/frame_idx" for c in cameras] + [
+        name for name in SIGNALS if name not in ACTIONS or horizon == 1
+    ]
+    chunked = list(ACTIONS) if horizon > 1 else []
+    lists = [c for c in (*POSITIONS, GOAL) if c in table.columns]
 
-    windows = {
-        column: [
-            rows[column][start : start + episode_length].to_list() for start in starts
-        ]
-        for column in [*scalar_columns, *POSITIONS]
+    def gather(column: str, n: int) -> np.ndarray:
+        values = table[column]
+        array = np.stack(values.to_list()) if column in lists else values.to_numpy()
+        return array[starts[:, None] + step * np.arange(n)]
+
+    columns: dict[str, pl.Series] = {
+        "input_id": pl.Series("input_id", [input_id] * len(starts), pl.String())
     }
-
-    schema: dict[str, pl.DataType] = {"input_id": pl.String()}
-    for column in scalar_columns:
+    for column in history:
         dtype = pl.Int32() if column.endswith("frame_idx") else pl.Float32()
-        schema[column] = pl.Array(dtype, episode_length)
-    for column in POSITIONS:
-        schema[column] = pl.Array(pl.Float32(), (episode_length, POSITION_DIM))
+        array = gather(column, episode_length).astype(
+            np.int32 if column.endswith("frame_idx") else np.float32
+        )
+        columns[column] = pl.Series(column, array, pl.Array(dtype, episode_length))
+    for column in chunked:
+        array = gather(column, clip).astype(np.float32)
+        columns[column] = pl.Series(column, array, pl.Array(pl.Float32(), clip))
+    for column in lists:
+        array = gather(column, episode_length).astype(np.float32)
+        columns[column] = pl.Series(
+            column, array, pl.Array(pl.Float32(), array.shape[1:])
+        )
 
-    return pl.DataFrame({"input_id": [input_id] * len(starts)} | windows, schema=schema)
+    return pl.DataFrame(list(columns.values()))
 
 
 @final
@@ -583,7 +617,8 @@ class D12EpisodeWindower:
     """Pipefunc stage: a positioned row table -> its sliding-window episodes.
 
     The training parameters that shape the episodes are constructor arguments so
-    the dataset config can wire them to the experiment's values.
+    the dataset config can wire them to the experiment's values. All three
+    spacings are in RAW reference-camera frames (~30Hz); see `episodes`.
     """
 
     @validate_call
@@ -592,13 +627,15 @@ class D12EpisodeWindower:
         *,
         cameras: tuple[str, ...],
         episode_length: int = 6,
-        stride: int = 1,
-        every_nth: int = 3,
+        step: int = 3,
+        stride: int = 3,
+        horizon: int = 1,
     ) -> None:
         self._cameras = cameras
         self._episode_length = episode_length
+        self._step = step
         self._stride = stride
-        self._every_nth = every_nth
+        self._horizon = horizon
 
     @validate_call
     def __call__(self, *, frames: InstanceOf[pl.DataFrame]) -> pl.DataFrame:
@@ -606,8 +643,9 @@ class D12EpisodeWindower:
             frames,
             cameras=self._cameras,
             episode_length=self._episode_length,
+            step=self._step,
             stride=self._stride,
-            every_nth=self._every_nth,
+            horizon=self._horizon,
         )
         logger.info("windowed d12 episodes", episodes=len(samples))
 

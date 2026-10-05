@@ -49,5 +49,17 @@ trainer:
   max_epochs: -1
   log_every_n_steps: 20
 
+# Runs keep wandb's generated names; the description is in tags and notes.
 wandb:
-  tags: [palletjack, action_tokenizer, d12]
+  tags:
+    - palletjack
+    - action_tokenizer
+    - d12
+    - "chunk:${action_clip}x${eval:'${action_step} * 100 // 3'}ms"
+    - "codes:${num_quantizers}x${codebook_size}"
+  notes: >-
+    Residual-VQ action tokenizer on action-only D12 chunks: ${action_clip} steps
+    of [traction, steering, fork1] every ${action_step} raw frames
+    (${eval:'${action_clip} * ${action_step} / 30'}s), ${num_quantizers} levels x
+    ${codebook_size} codes, latent ${action_latent_dim}. ${lr_total_steps} steps, lr
+    ${lr}.

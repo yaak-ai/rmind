@@ -196,6 +196,59 @@ class Frozen(Module):
 
 
 @final
+class GoalVector(Module):
+    """A parameter-free goal "encoder": the goal IS its own latent.
+
+    `PatchPolicy` fuses a frozen goal encoder's `encode(x) -> (b, t, g)` into
+    every patch. The car learns that latent (a waypoint RVQ) because its goal is
+    a long polyline; a goal that is already a handful of normalized numbers needs
+    no encoder, and a frozen one could not train anyway. `dim` is `g`, for the
+    patch projection's input width.
+    """
+
+    @validate_call
+    def __init__(self, *, dim: int) -> None:
+        super().__init__()
+
+        self.dim = dim
+
+    def encode(self, x: Tensor) -> Tensor:  # ruff: ignore[no-self-use]
+        return x
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        return self.encode(x)
+
+
+@final
+class TokenDropout(Module):
+    """Training-only: replace a sample's token indices with `mask_index`.
+
+    For an input the policy should not lean on (speed predicting traction is the
+    classic causal confusion), the embedding table gets one extra "unknown" row,
+    and each SAMPLE has all of its indices swapped for it with probability `p` -
+    whole clips, not single frames, or the model would read the value off the
+    neighbouring frames. A no-op in eval, so serving always sees the real input.
+    """
+
+    @validate_call
+    def __init__(self, *, p: float, mask_index: int) -> None:
+        super().__init__()
+
+        self.p = p
+        self.mask_index = mask_index
+
+    @override
+    def forward(self, indices: Tensor) -> Tensor:
+        if not self.training or self.p <= 0.0:
+            return indices
+
+        shape = (indices.shape[0],) + (1,) * (indices.ndim - 1)
+        drop = torch.rand(shape, device=indices.device) < self.p
+        return torch.where(drop, torch.full_like(indices, self.mask_index), indices)
+
+
+@final
 class StackFields(Module):
     """Gather ordered `paths` and stack them on a trailing axis under `out_key`.
 

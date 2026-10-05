@@ -1,7 +1,7 @@
 ---
 defaults:
-  - /dataset/palletjack/d12@train.dataset
-  - /dataset/palletjack/d12@val.dataset
+  - /dataset/palletjack/d12_train@train.dataset
+  - /dataset/palletjack/d12_val@val.dataset
   - _self_
 
 _target_: rmind.datamodules.GenericDataModule

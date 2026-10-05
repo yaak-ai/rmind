@@ -1,0 +1,13 @@
+# @package _global_
+
+# d12_vqbet predicting 1s ahead instead of 2s: 5 chunk steps at 5Hz. The chunk
+# shape changes, so the tokenizer must be one fitted on 5 x 200ms chunks - pass
+# it as `action_tokenizer_artifact=... tokenizer_run=...` (the queue job fits it
+# first).
+defaults:
+  - /experiment/palletjack/patch_policy/d12_vqbet
+  - _self_
+
+action_horizon: 5
+action_tokenizer_artifact: ???
+tokenizer_run: ???

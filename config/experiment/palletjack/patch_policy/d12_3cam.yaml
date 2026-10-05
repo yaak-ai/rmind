@@ -26,5 +26,3 @@ datamodule:
   val:
     batch_size: 4
 
-wandb:
-  tags: [palletjack, patch_policy, d12, 3cam]

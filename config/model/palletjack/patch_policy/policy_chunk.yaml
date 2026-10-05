@@ -1,0 +1,197 @@
+---
+# Palletjack policy on the patch-policy trunk, with continuous Gaussian heads over
+# an action CHUNK: every frame predicts the next `action_horizon` steps of
+# [traction, steering, fork1], the chunk the VQ-BeT arm (`vqbet.yaml`) codes, as
+# an independent (mean, log-variance) per step. Otherwise `policy.yaml` exactly.
+#
+# Trunk is `patch_policy.PatchPolicy`'s, unchanged in shape: frozen ViT patches
+# -> policy width, an embedded speed token per frame, causal-over-frames trunk,
+# each frame's last patch token as the readout. The VQ-BeT code/offset head is
+# replaced by one Gaussian head per actuation - see the model docstring for why
+# (no recorded actions to fit a residual-VQ chunk tokenizer to).
+#
+# The paper's goal-latent fusion is absent: no route indoors, so patches project
+# from `image_embedding_dim` alone rather than `+ waypoint_latent_dim`.
+_target_: rmind.models.patch_policy_continuous.PatchPolicyContinuous
+_recursive_: false
+_convert_: all
+
+cameras: ${cameras}
+
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: rmind.components.nn.Remapper
+      paths:
+        # one entry per camera; supplied by the experiment so the same model
+        # config serves the 1-camera and 3-camera recording arms
+        image: ${image_remap}
+
+        continuous:
+          speed: [data, speed]
+          fork_above_300: [data, fork_above_300]
+          # intention: ego-frame [fwd, lat] metres to the pallet and to the
+          # dropoff. Absent from data on any arm that does not supply them, in
+          # which case they resolve to None and are simply not observed.
+          relative_ego_pos: [data, relative_ego_pos]
+          relative_dropoff_pos: [data, relative_dropoff_pos]
+          traction: [data, traction]
+          steering: [data, steering]
+          fork1: [data, fork1]
+
+    # the action columns arrive `episode_length + action_horizon - 1` long; unfold
+    # them into the chunk starting at every frame, (b, t, horizon)
+    - _target_: rmind.components.nn.ChunkFields
+      episode_length: ${episode_length}
+      action_horizon: ${action_horizon}
+      unfold_paths:
+        - [continuous, traction]
+        - [continuous, steering]
+        - [continuous, fork1]
+
+    - _target_: rmind.components.containers.ModuleDict
+      modules:
+        image: ${image_transform}
+
+        continuous:
+          _target_: rmind.components.nn.AtLeast3D
+
+image_encoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.timm_backbone.TimmBackbone
+      model_name: ${image_encoder_name}
+      out_indices: [10]
+      img_size: ${image_resize}
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... c h w -> ... (h w) c"
+
+# T x P x D -> policy width (no goal latent concatenated)
+patch_projection:
+  _target_: rmind.components.nn.Linear
+  in_features: ${image_embedding_dim}
+  out_features: ${policy_embedding_dim}
+
+# SIGNED range: the palletjack drives backwards as much as forwards, and
+# `lindelot/vehicle_state.speed` reports that with a sign (down to -3.4 m/s on the
+# recordings so far). A [0, 15] range clamped every reverse reading into bin 0,
+# making "reversing" indistinguishable from "stationary". 64 bins over 30 m/s is
+# 0.47 m/s per bin, which is finer than the actuation resolution anyway.
+speed_tokenizer:
+  _target_: rmind.components.norm.UniformBinner
+  range: [-15.0, 15.0]
+  bins: ${speed_bins}
+
+speed_embedding:
+  _target_: rmind.components.nn.Embedding
+  num_embeddings: ${speed_bins}
+  embedding_dim: ${policy_embedding_dim}
+
+# Extra scalar observations, one token per frame each, embedded the way speed is.
+# Inputs only - `fork_above_300` says whether the mast is raised past 300mm, which
+# the policy conditions on while separately predicting `fork1`, the command that
+# moves it. Supplied by the experiment: an arm with no such reading leaves
+# `observations` empty and the frame block is speed + patches alone.
+observations: ${observations}
+observation_embeddings:
+  _target_: rmind.components.containers.ModuleDict
+  modules: ${observation_embeddings}
+
+# decoder-only trunk: causal over frame blocks, bidirectional within a frame
+encoder:
+  _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
+  dim_model: ${policy_embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  # every camera adds its own patch block to the frame, and every scalar
+  # observation (speed, plus `observations`) adds one token
+  tokens_per_frame: "${eval:'${num_cameras} * ${num_patches} + 1 + ${num_observations}'}"
+  window: ${window}
+  attention_impl: ${attention_impl}
+  attn_dropout: 0.0
+  rope_base: 1000.0
+  # Pinned to the trunk palletjack was trained with before the car's
+  # intra-position work landed, whose defaults are `norm_gain` + per-block
+  # activation checkpointing. `norm_gain` adds `intra_position_norm`/`_gain`
+  # parameters, so changing this breaks loading every existing palletjack
+  # checkpoint; adopt it deliberately, with a fresh run, not by default.
+  intra_position_scaling: none
+  intra_position_factorization: flat
+  # small trunk, small batches: activations fit, so trade no compute for memory
+  checkpoint: false
+  # frame layout is [speed, observations..., patches] (PatchPolicyContinuous)
+  num_prefix_tokens: "${eval:'1 + ${num_observations}'}"
+  num_suffix_tokens: 0
+
+norm:
+  _target_: torch.nn.LayerNorm
+  normalized_shape: ${policy_embedding_dim}
+
+action_horizon: ${action_horizon}
+# chunk steps scored separately as `chunk_l1_near*`: what the kit executes before
+# it re-plans
+near_horizon: ${near_horizon}
+
+# (mean, log-variance) per actuation and chunk step, flat as [m_0, lv_0, m_1, ...]
+heads:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    continuous:
+      traction:
+        _target_: torchvision.ops.MLP
+        in_channels: ${policy_embedding_dim}
+        hidden_channels:
+          - "${policy_embedding_dim}"
+          - "${eval:'2 * ${action_horizon}'}"
+        bias: false
+      steering:
+        _target_: torchvision.ops.MLP
+        in_channels: ${policy_embedding_dim}
+        hidden_channels:
+          - "${policy_embedding_dim}"
+          - "${eval:'2 * ${action_horizon}'}"
+        bias: false
+      fork1:
+        _target_: torchvision.ops.MLP
+        in_channels: ${policy_embedding_dim}
+        hidden_channels:
+          - "${policy_embedding_dim}"
+          - "${eval:'2 * ${action_horizon}'}"
+        bias: false
+
+targets:
+  continuous:
+    traction: [continuous, traction]
+    steering: [continuous, steering]
+    fork1: [continuous, fork1]
+
+losses:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    continuous:
+      traction:
+        _target_: rmind.components.loss.GaussianNLLLoss
+      steering:
+        _target_: rmind.components.loss.GaussianNLLLoss
+      fork1:
+        _target_: rmind.components.loss.GaussianNLLLoss
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: ${lr}
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}
