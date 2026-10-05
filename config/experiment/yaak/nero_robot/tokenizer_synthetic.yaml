@@ -1,0 +1,10 @@
+# @package _global_
+# Smoke: the chunk tokenizer on synthetic robot-native chunks (no images).
+defaults:
+  - /experiment/yaak/nero_robot/tokenizer
+  - override /datamodule: yaak/nero_robot_random
+  - _self_
+
+synthetic_images: false
+batch_size: 64
+num_train_batches: 200

@@ -1,0 +1,12 @@
+# nero_robot without the image streams (the tokenizer and the stats fit read no pixels)
+---
+defaults:
+  - /datamodule/yaak/nero_robot@_here_
+  - _self_
+
+train:
+  dataset:
+    streams: null
+val:
+  dataset:
+    streams: null

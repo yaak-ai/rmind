@@ -139,6 +139,10 @@ AttentionImpl = Literal["sdpa", "flex"]
 # for the measured cost of that misalignment (6-29% extra computed area, and
 # padding the frame to 384 to align it is 2.23x -- strictly worse).
 FLEX_BLOCK_SIZE: int = 128
+#: above this many tokens (on CUDA) the BlockMask is built by the COMPILED
+#: `create_block_mask`: the eager one is O(seq_len^2) memory. Training clips
+#: (32 x 482 = 15.4k tokens) stay on the eager path they were validated with.
+EAGER_BLOCK_MASK_MAX_TOKENS: int = 32768
 
 
 def frame_block_causal_mask(
@@ -221,15 +225,32 @@ def frame_block_causal_block_mask(
     caller fail with "Torch not compiled with CUDA enabled".
     """
     seq_len = num_frames * tokens_per_frame
-    return create_block_mask(
+    device = torch.device("cpu") if device is None else torch.device(device)
+    # Eager `create_block_mask` vmaps `mask_mod` over the DENSE (Q, KV) grid before
+    # reducing it to blocks: O(seq_len^2) memory -- ~84 GiB at 220 frames x 482
+    # tokens (an offline windowed replay of a whole episode). The compiled form
+    # never materializes it (~0.1 GiB) and yields the identical BlockMask.
+    build = (
+        _compiled_create_block_mask()
+        if device.type == "cuda" and seq_len > EAGER_BLOCK_MASK_MAX_TOKENS
+        else create_block_mask
+    )
+    return build(
         frame_block_causal_mask_mod(tokens_per_frame, window),
         B=None,
         H=None,
         Q_LEN=seq_len,
         KV_LEN=seq_len,
-        device=torch.device("cpu") if device is None else device,
+        device=device,
         BLOCK_SIZE=FLEX_BLOCK_SIZE,
     )
+
+
+@cache
+def _compiled_create_block_mask() -> Callable[..., BlockMask]:
+    """`torch.compile`d `create_block_mask` (torch's recommended replacement for
+    its deprecated `_compile=True` flag), built lazily like the attention kernel."""
+    return torch.compile(create_block_mask)
 
 
 @cache

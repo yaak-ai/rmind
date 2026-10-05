@@ -1,5 +1,10 @@
 # nero-arms policy — serving handover
 
+> **Robot-native serving (contract v3, the patch family) is documented in
+> `docs/nero_robot_patch_policy.md`** -- KV-cached ONNX decoder step, 10 Hz
+> observations, 100-step chunks, hand token, no goal. This page describes the
+> older glove SE(3) stand-in.
+
 A **random-weight** checkpoint you can build a serving app against today, before any model is
 trained. Shapes and the interface are real; the numbers it outputs are meaningless.
 

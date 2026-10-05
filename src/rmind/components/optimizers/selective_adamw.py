@@ -69,6 +69,20 @@ class SelectiveAdamW(AdamW):
                 # and re-open the patch/goal scale gap it exists to close)
                 case "fusion_patch_gain" | "fusion_goal_gain":
                     weight_decay_param_blacklist.add(param_name)
+
+                # nero: learned substitution tokens (no_goal / no_depth / no_hand
+                # stand in for a missing input and must not be pulled toward 0),
+                # the token-scale gain of NormedTokenEmbedding (same reason as the
+                # fusion gains) and AxisShrinkage's threshold (playbook: never
+                # weight-decay tau)
+                case (
+                    "no_goal"
+                    | "no_depth"
+                    | "no_hand"
+                    | "token_gain"
+                    | "raw_threshold"
+                ):
+                    weight_decay_param_blacklist.add(param_name)
                 case "weight":
                     if isinstance(
                         submodules[submodule_name], weight_decay_module_blacklist

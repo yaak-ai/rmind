@@ -1,0 +1,12 @@
+# @package _global_
+# P5 ablation: relative actions on the "all" dims, anchored per FRAME at that
+# frame's measured q / hand_prev. Needs action_standardizer_all.json and a tokenizer
+# trained in this mode (NERO_TOKENIZER_CKPT).
+defaults:
+  - /experiment/yaak/nero_robot/causal
+  - _self_
+
+relative_mode: all
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, relative_all]

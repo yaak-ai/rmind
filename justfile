@@ -47,6 +47,41 @@ train *ARGS: generate-config check-git
         --config-name train.yaml \
         {{ ARGS }}
 
+# --- robot-native nero (docs/nero_robot_patch_policy.md, "Environment") ------
+# The ONE supported invocation of the nero robot pipeline. Its rbyte ingestion
+# (NeroRobotDataFrameBuilder, NeroRobotWindowBuilder, TransformedTensorSource)
+# lives on rbyte's feat/nero-arms-depth branch, not in the pinned PyPI rbyte, so
+# that checkout (RBYTE_SRC, default ../rbyte) SHADOWS it on PYTHONPATH; the
+# `nero` dependency group adds its MCAP deps. Not `uv run --with-editable`: that
+# overlay resolves rbyte's deps on its own and pulls in a second torch.
+rbyte_src := env("RBYTE_SRC", justfile_directory() / ".." / "rbyte")
+
+# fail fast unless rbyte resolves to RBYTE_SRC and carries the nero ingestion
+nero-check-env:
+    PYTHONPATH={{ rbyte_src }}/src uv run --extra train --group nero python -c \
+        "import pathlib, rbyte, mcap, mcap_protobuf; \
+        from rbyte.io import NeroRobotDataFrameBuilder, NeroRobotWindowBuilder, TransformedTensorSource; \
+        src = pathlib.Path(rbyte.__file__).resolve(); \
+        want = pathlib.Path('{{ rbyte_src }}').resolve(); \
+        assert want in src.parents, f'rbyte from {src}, not RBYTE_SRC={want}'; \
+        print('rbyte', src)"
+
+# e.g. `just nero-train experiment=yaak/nero_robot/tokenizer relative_mode=hand`
+nero-train *ARGS: generate-config nero-check-env
+    PYTHONPATH={{ rbyte_src }}/src uv run \
+        --extra train --group nero \
+        rmind-train \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name train.yaml \
+        {{ ARGS }}
+
+# any nero script, e.g. `just nero-run rmind.scripts.nero_fit_stats --experiment
+# yaak/nero_robot/tokenizer --out $NERO_STATS_DIR`
+nero-run MODULE *ARGS: generate-config nero-check-env
+    PYTHONPATH={{ rbyte_src }}/src uv run \
+        --extra train --extra export --group nero \
+        python -m {{ MODULE }} {{ ARGS }}
+
 train-debug *ARGS: generate-config
     WANDB_MODE=disabled \
     uv run \

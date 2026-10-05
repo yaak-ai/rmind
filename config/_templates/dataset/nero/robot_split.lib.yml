@@ -1,0 +1,13 @@
+#@ # THE SPLIT MANIFEST (by source episode directory, never by row: overlapping
+#@ # windows, 3 phases and 100-step chunks make neighbouring rows near-duplicates).
+#@ # Committed here so the split is reviewable; standardizers and the tokenizer
+#@ # are fitted on `train` only (nero_fit_stats), and test_nero_robot asserts the
+#@ # two lists are disjoint. 4 pulled episodes today: smoke only.
+#@ train = [
+#@     "2026-10-02--16-58-59-231200",
+#@     "2026-10-02--17-03-36-532664",
+#@     "2026-10-02--17-26-08-722810",
+#@ ]
+#@ val = [
+#@     "2026-10-02--17-33-40-543761",
+#@ ]

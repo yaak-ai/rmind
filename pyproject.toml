@@ -85,6 +85,17 @@ test = [
   "pytest>=9.0.2",
   "pytest-lazy-fixtures>=1.4.0",
 ]
+# The robot-native nero pipeline reads MCAP episodes through rbyte's
+# feat/nero-arms-depth ingestion (NeroRobotDataFrameBuilder, ...), which the
+# pinned PyPI rbyte does not ship: these are that path's runtime deps (rbyte's
+# own `nero` extra). The rbyte code itself comes from RBYTE_SRC -- see
+# `just nero-train` and docs/nero_robot_patch_policy.md ("Environment").
+nero = [
+  "mcap>=1.3.1",
+  "mcap-protobuf-support>=0.5.4",
+  "protobuf",
+  "pyyaml>=6.0.2",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -125,6 +136,11 @@ allow-direct-references = true
 preview = true
 fix = true
 unsafe-fixes = true
+# nero_image.py is pinned by SHA256 in the serving contract (image.preprocessing_sha256)
+# and vendored verbatim by nutron-cli: no tool may rewrite it, even when a hook
+# passes it explicitly (hence force-exclude).
+extend-exclude = ["src/rmind/data/nero_image.py"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["ALL"]

@@ -1,0 +1,11 @@
+# @package _global_
+# P6 ablation: add the measured finger position group (current, pos_err, pos).
+defaults:
+  - /experiment/yaak/nero_robot/causal
+  - _self_
+
+hand_groups: [current, pos_err, pos]
+hand_token_dim: 20
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, hand_pos]
