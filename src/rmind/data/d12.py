@@ -539,6 +539,24 @@ class DuckDBStage:
 
 
 @final
+class InputStage:
+    """A pipefunc stage that calls `func(input)` through one named `input` parameter.
+
+    rbyte's `DataFrameAligner.__call__(input=None, **kwargs)` reads to pipefunc as a
+    second required input called `kwargs`; this pins the signature to `input` alone
+    (what `makefun.create_function` does in the car templates, without the
+    dependency). Bind it to the upstream output with `renames: {input: ...}`.
+    """
+
+    @validate_call
+    def __init__(self, *, func: InstanceOf[object]) -> None:
+        self._func = func
+
+    def __call__(self, *, input: object) -> pl.DataFrame:
+        return self._func(input)  # ty: ignore[call-non-callable]
+
+
+@final
 class D12EpisodeWindower:
     """Pipefunc stage: a positioned row table -> its sliding-window episodes.
 

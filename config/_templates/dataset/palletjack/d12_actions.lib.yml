@@ -1,0 +1,208 @@
+#! Shared by d12_actions_train.yaml / d12_actions_val.yaml: the action-only D12
+#! dataset the action tokenizer is fitted on. A `.lib.yml` is never emitted by
+#! `just generate-config`; the two templates only differ in their job lists.
+
+#! Every job with a usable action stream. Unlike the policy dataset this needs no
+#! frames, no pose and no dropoff, so it takes jobs the policy has to refuse: the
+#! pairing-skew failures, the lost-ego-fix one, the retired pozyx recordings and the
+#! rtls ones its builder cannot read yet.
+#@ all_jobs = [
+#@    '2026-08-25--16-35-31',
+#@    '2026-08-25--16-45-01',
+#@    '2026-08-25--16-46-37',
+#@    '2026-08-25--16-47-34',
+#@    '2026-08-25--16-48-36',
+#@    '2026-09-10--15-00-09',
+#@    '2026-09-10--15-01-36',
+#@    '2026-09-10--15-03-07',
+#@    '2026-09-10--15-05-33',
+#@    '2026-09-10--15-06-41',
+#@    '2026-09-10--15-07-47',
+#@    '2026-09-10--15-09-02',
+#@    '2026-09-10--15-11-26',
+#@    '2026-09-10--15-13-22',
+#@    '2026-09-10--15-14-23',
+#@    '2026-09-10--15-15-31',
+#@    '2026-09-10--15-16-22',
+#@    '2026-09-10--15-17-38',
+#@    '2026-10-02--15-01-01',
+#@    '2026-10-02--15-39-58',
+#@    '2026-10-02--15-41-04',
+#@    '2026-10-02--15-41-49',
+#@    '2026-10-02--15-42-48',
+#@    '2026-10-02--15-44-02',
+#@    '2026-10-02--15-45-07',
+#@    '2026-10-02--15-46-49',
+#@    '2026-10-02--15-48-24',
+#@    '2026-10-02--15-49-44',
+#@ ]
+
+#! one held-out job per recording session, so val sees every rig/driver variant
+#@ val_jobs = [
+#@    '2026-08-25--16-48-36',
+#@    '2026-09-10--15-17-38',
+#@    '2026-10-02--15-49-44',
+#@ ]
+
+#@ train_jobs = [j for j in all_jobs if j not in val_jobs]
+
+#@ def dataset(jobs):
+_target_: rbyte.Dataset.from_config
+_recursive_: false
+_convert_: all
+#! action-only: no video stream, no frame decode
+streams: {}
+
+samples:
+  #! a handful of small jobs: a thread pool, not a process pool per core
+  executor:
+    _target_: concurrent.futures.ThreadPoolExecutor
+    max_workers: 4
+
+  inputs:
+    input_id: #@ jobs
+    mcap_path: #@ ["${paths.d12}/" + j + "/data.mcap" for j in jobs]
+
+  pipeline:
+    _target_: pipefunc.Pipeline
+    validate_type_annotations: false
+    functions:
+      #! 1. the action topics and the reference camera's frame clock
+      - _target_: pipefunc.PipeFunc
+        renames:
+          path: mcap_path
+        output_name: topics
+        mapspec: "mcap_path[i] -> topics[i]"
+        func:
+          _target_: rbyte.samples.mcap.McapReader
+          decoder_factories: [rbyte.samples.mcap.ProtobufDecoderFactory]
+          fields:
+            cam_fork/frame:
+              log_time:
+                _target_: polars.Datetime
+                time_unit: ns
+            #! signed traction COMMAND, the field the truck actually applies -
+            #! the same source the policy dataset uses (`traction_source: command`)
+            lindelot/vehicle_state:
+              log_time:
+                _target_: polars.Datetime
+                time_unit: ns
+              traction_command_pct:
+                _target_: polars.Float32
+            lindelot/adc:
+              log_time:
+                _target_: polars.Datetime
+                time_unit: ns
+              steering_angle_normalised:
+                _target_: polars.Float32
+            linde/fork:
+              log_time:
+                _target_: polars.Datetime
+                time_unit: ns
+              fork1_pct:
+                _target_: polars.Float32
+
+      #! 2. onto cam_fork's frame clock (~30Hz), the timeline the policy steps on.
+      #! The signals are continuous commands at 10-80Hz, so interpolate rather
+      #! than take the nearest sample - the car templates do the same.
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: topics
+        output_name: aligned
+        mapspec: "topics[i] -> aligned[i]"
+        func:
+          _target_: rmind.data.d12.InputStage
+          func:
+            _target_: rbyte.samples.dataframe.DataFrameAligner
+            separator: /
+            fields:
+              cam_fork/frame:
+                key: log_time
+              lindelot/vehicle_state:
+                key: log_time
+                columns:
+                  traction_command_pct:
+                    method: interp
+              lindelot/adc:
+                key: log_time
+                columns:
+                  steering_angle_normalised:
+                    method: interp
+              linde/fork:
+                key: log_time
+                columns:
+                  fork1_pct:
+                    method: interp
+
+      #! 3. the policy's action units: percent -> [-1, 1], steering already is.
+      #! Interpolation is null outside each signal's span, i.e. at the job's
+      #! edges; those rows go BEFORE numbering, so the index stays contiguous.
+      - _target_: pipefunc.PipeFunc
+        renames:
+          row_table: aligned
+        output_name: actions
+        mapspec: "aligned[i] -> actions[i]"
+        func:
+          _target_: rmind.data.d12.DuckDBStage
+          query: |
+            SELECT
+              (row_number() OVER (ORDER BY "cam_fork/frame/log_time") - 1)::INT32 AS frame_idx,
+              "cam_fork/frame/log_time" AS log_time,
+              ("lindelot/vehicle_state/traction_command_pct" * 0.01)::FLOAT AS traction,
+              "lindelot/adc/steering_angle_normalised"::FLOAT AS steering,
+              ("linde/fork/fork1_pct" * 0.01)::FLOAT AS fork1
+            FROM (SELECT * FROM row_table WHERE COLUMNS(*) IS NOT NULL)
+
+      #! 4. one chunk per raw frame: `action_clip` steps, `action_step` raw frames
+      #! apart (3 -> 10Hz, the policy's rate). Starting a chunk at EVERY raw frame
+      #! rather than every `action_step`-th covers all three 30Hz phases, i.e.
+      #! 3x the chunks from the same recordings - the tokenizer is data-starved.
+      - _target_: pipefunc.PipeFunc
+        renames:
+          input: actions
+        output_name: grouped
+        mapspec: "actions[i] -> grouped[i]"
+        func:
+          _target_: rbyte.samples.dataframe.DataFrameDynamicGrouper
+          index_column: frame_idx
+          every: 1i
+          period: "${eval:'(${action_clip} - 1) * ${action_step} + 1'}i"
+          closed: left
+          gather_every: ${action_step}
+
+      #! 5. keep only complete chunks: the right length, contiguous on the frame
+      #! clock, and with no wall-clock jump - a dropped camera frame stretches
+      #! one step by 33ms, a recording pause by far more
+      - _target_: pipefunc.PipeFunc
+        renames:
+          row_table: grouped
+        output_name: chunks
+        mapspec: "grouped[i] -> chunks[i]"
+        func:
+          _target_: rmind.data.d12.DuckDBStage
+          query: |
+            SELECT
+              frame_idx::INT32[${action_clip}] AS frame_idx,
+              traction::FLOAT[${action_clip}] AS traction,
+              steering::FLOAT[${action_clip}] AS steering,
+              fork1::FLOAT[${action_clip}] AS fork1
+            FROM row_table
+            WHERE
+              len(frame_idx) = ${action_clip}
+              AND list_last(frame_idx) - list_first(frame_idx) = (${action_clip} - 1) * ${action_step}
+              AND list_max(
+                list_transform(
+                  list_zip(log_time, log_time[2:]),
+                  x -> date_diff('millisecond', x[1], x[2])
+                )
+              ) <= ${max_frame_gap_ms}
+
+      - _target_: pipefunc.PipeFunc
+        renames:
+          keys: input_id
+          values: chunks
+        output_name: samples
+        func:
+          _target_: rbyte.samples.dataframe.DataFrameConcatenator
+          key_column: input_id
+#@ end
