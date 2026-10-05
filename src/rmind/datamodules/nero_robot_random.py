@@ -1,4 +1,4 @@
-"""Synthetic robot-native nero batches in the EXACT rbyte `NeroRobotWindowBuilder` schema.
+"""Synthetic robot-native nero batches in the EXACT rbyte `NeroRobotWindowGrouper` schema.
 
 For tests, the export gates and smoke runs ONLY -- no claim about real data.
 Keys and shapes match what rbyte emits per sample (`T` frames on the 10 Hz grid,
@@ -39,7 +39,7 @@ from torch import Tensor
 __all__ = ["NeroRobotRandomDataLoader", "nero_robot_batch"]
 
 CAMERAS = ("base", "side_left", "side_right")
-#: the model grid: rbyte's `TransformedTensorSource(NeroImagePreprocess)` emits it
+#: the model grid: rbyte's `TransformedSource(NeroImagePreprocess)` emits it
 IMAGE_HW = (140, 224)
 OPEN_ATOM = 0.05
 SAG = 0.02  # steady-state arm tracking offset (command - measured), rad

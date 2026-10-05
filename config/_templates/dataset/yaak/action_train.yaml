@@ -700,9 +700,9 @@ samples:
         mapspec: "yaak_metadata_path[i] -> meta[i]"
         cache: true
         func:
-          _target_: rbyte.io.YaakMetadataDataFrameBuilder
-          fields:
-            rbyte.io.yaak.proto.sensor_pb2.ImageMetadata:
+          _target_: rbyte.samples.yaak.YaakMetadataReader
+          messages:
+            ImageMetadata:
               time_stamp:
                 _target_: polars.Datetime
                 time_unit: us
@@ -720,14 +720,14 @@ samples:
                   - cam_right_backward
                   - cam_rear
 
-            rbyte.io.yaak.proto.can_pb2.VehicleState:
+            VehicleState:
               time_stamp:
                 _target_: polars.Datetime
                 time_unit: us
               turn_signal:
                 _target_: polars.Int8
 
-            rbyte.io.yaak.proto.can_pb2.VehicleMotion:
+            VehicleMotion:
               time_stamp:
                 _target_: polars.Datetime
                 time_unit: us
@@ -750,7 +750,7 @@ samples:
           _target_: makefun.create_function
           func_signature: "align(*, meta)"
           func_impl:
-            _target_: rbyte.io.DataFrameAligner
+            _target_: rbyte.samples.dataframe.DataFrameAligner
             separator: /
             fields:
               meta:
@@ -787,7 +787,7 @@ samples:
           _target_: makefun.create_function
           func_signature: "filter(*, aligned)"
           func_impl:
-            _target_: rbyte.io.DuckDBDataFrameQuery
+            _target_: rbyte.samples.duckdb.DuckDBQuery
             query: |
               SELECT * EXCLUDE ("meta/VehicleMotion/gear")
               FROM aligned
@@ -807,7 +807,7 @@ samples:
         output_name: samples
         mapspec: "filtered[i] -> samples[i]"
         func:
-          _target_: rbyte.io.DataFrameGroupByDynamic
+          _target_: rbyte.samples.dataframe.DataFrameDynamicGrouper
           index_column: meta/ImageMetadata.cam_front_left/frame_idx
           every: "${action_stride}i"
           period: ${clip_period}
@@ -821,7 +821,7 @@ samples:
           _target_: makefun.create_function
           func_signature: "cast(*, samples)"
           func_impl:
-            _target_: rbyte.io.DuckDBDataFrameQuery
+            _target_: rbyte.samples.duckdb.DuckDBQuery
             query: |
               SELECT
                   "meta/ImageMetadata.cam_front_left/frame_idx"::INT32[${action_clip}] AS "meta/ImageMetadata.cam_front_left/frame_idx",
@@ -842,7 +842,7 @@ samples:
           values: samples_cast
         output_name: samples_aggregated
         func:
-          _target_: rbyte.io.DataFrameConcater
+          _target_: rbyte.samples.dataframe.DataFrameConcatenator
           key_column: input_id
 
       - _target_: pipefunc.PipeFunc

@@ -60,7 +60,7 @@ one path, chosen by config, so the duplicate is never consumed.
 
 The 46↔60 conversion is the shared boundary of §5, and it is verified against the
 other side rather than assumed: `rmind.data.nero.pose_quat_to_9d` is
-**bit-identical** to `rbyte.io.nero.rotation.pose_quat_to_9d` on random poses,
+**bit-identical** to `rbyte.samples.nero.rotation.pose_quat_to_9d` on random poses,
 and `state_quat_to_9d` matches structurally (arm `[0:7]`, fingers `[7:42]` in
 thumb→little order, hub quaternion `[42:46]`).
 

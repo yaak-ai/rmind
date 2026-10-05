@@ -1106,11 +1106,9 @@ def test_export_records_the_checkpoint_sha(tmp_path: Path) -> None:
 
 
 def test_rbyte_training_path_equals_the_serving_preprocess() -> None:
-    """P10: rbyte's TransformedTensorSource(NeroImagePreprocess) on decoded native
+    """P10: rbyte's TransformedSource(NeroImagePreprocess) on decoded native
     frames == `preprocess` on the same RGB array (what serving runs): diff 0."""
-    rbyte_io = pytest.importorskip("rbyte.io")
-    if not hasattr(rbyte_io, "TransformedTensorSource"):
-        pytest.skip("rbyte without the robot ingestion (use the local checkout)")
+    transformed = pytest.importorskip("rbyte.streams.transformed")
     torch.manual_seed(0)
     native = torch.randint(0, 256, (4, 3, 800, 1280), dtype=torch.uint8)
 
@@ -1121,7 +1119,7 @@ def test_rbyte_training_path_equals_the_serving_preprocess() -> None:
         def __len__(self) -> int:
             return len(native)
 
-    source = rbyte_io.TransformedTensorSource(
+    source = transformed.TransformedSource(
         source=_Decoded(), transform=nero_image.NeroImagePreprocess((140, 224))
     )
     training = source[[0, 2]]

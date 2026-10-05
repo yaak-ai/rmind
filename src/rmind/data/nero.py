@@ -282,7 +282,7 @@ def state_quat_to_9d(state: Tensor) -> Tensor:
     `state.pose` as `(T, 2, 60)`. rbyte implements §5.2, so the loader emits
     **46** per side -- 6 poses x 7 plus the hub's 4-dim orientation quaternion --
     and the 9D expansion happens **here**, at the model boundary. This is the
-    mirror of `rbyte.io.nero.state_quat_to_9d`; the two must stay in step.
+    mirror of `rbyte.samples.nero.state_quat_to_9d`; the two must stay in step.
 
     Raises:
         ValueError: if the last dimension is not `STATE_QUAT_DIM`.

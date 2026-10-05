@@ -2,10 +2,10 @@
 #@ # One episode == one directory under ${nero_robot_dir} with data.mcap,
 #@ # base/side_left/side_right.mp4 and outcome.json.
 #@ #
-#@ # Pipeline: NeroRobotDataFrameBuilder (convert.py rules, robot-native
+#@ # Pipeline: NeroRobotReader (convert.py rules, robot-native
 #@ # state/action, 100-step hold-padded chunks, hand token blocks via the
 #@ # vendored hand_features) -> semi-join on the frames each mp4 really has ->
-#@ # NeroRobotWindowBuilder (T frames on the 10 Hz grid, every gathered frame
+#@ # NeroRobotWindowGrouper (T frames on the 10 Hz grid, every gathered frame
 #@ # 3 apart in a COMPLETE 30 Hz run; window starts every episode_stride, coprime
 #@ # to 3 so all 30 Hz phases are used).
 #@ #
@@ -28,9 +28,9 @@ streams:
       #@ for episode in episodes:
       #@yaml/text-templated-strings
       (@=episode@):
-        _target_: rbyte.io.TransformedTensorSource
+        _target_: rbyte.streams.transformed.TransformedSource
         source:
-          _target_: rbyte.io.TorchCodecFrameSource
+          _target_: rbyte.streams.video.TorchCodecVideoSource
           source: #@ "${nero_robot_dir}/" + episode + "/" + camera + ".mp4"
           #! native 1080p/800p decode is the data-loading bottleneck (measured
           #! ~4.6 s per 2 x 32-frame batch single-threaded): give ffmpeg threads
@@ -67,7 +67,7 @@ samples:
         output_name: nero
         mapspec: "mcap_path[i] -> nero[i]"
         func:
-          _target_: rbyte.io.NeroRobotDataFrameBuilder
+          _target_: rbyte.samples.nero.NeroRobotReader
           chunk_size: ${chunk_size}
 
       #@ for camera in cameras:
@@ -77,7 +77,7 @@ samples:
         output_name: #@ camera + "_meta"
         mapspec: #@ camera + "_path[i] -> " + camera + "_meta[i]"
         func:
-          _target_: rbyte.io.VideoDataFrameBuilder
+          _target_: rbyte.samples.video.VideoFrameIndexer
           fields:
             frame_idx:
               _target_: polars.Int32
@@ -90,7 +90,7 @@ samples:
           _target_: makefun.create_function
           func_signature: "filter(*, nero, base_meta, side_left_meta, side_right_meta)"
           func_impl:
-            _target_: rbyte.io.DuckDBDataFrameQuery
+            _target_: rbyte.samples.duckdb.DuckDBQuery
             query: |
               SELECT *
               FROM
@@ -109,7 +109,7 @@ samples:
         output_name: samples
         mapspec: "filtered[i] -> samples[i]"
         func:
-          _target_: rbyte.io.NeroRobotWindowBuilder
+          _target_: rbyte.samples.nero.NeroRobotWindowGrouper
           clip_frames: ${episode_length}
           frame_stride: ${frame_stride}
           episode_stride: ${episode_stride}
@@ -121,6 +121,6 @@ samples:
           values: samples
         output_name: samples_aggregated
         func:
-          _target_: rbyte.io.DataFrameConcater
+          _target_: rbyte.samples.dataframe.DataFrameConcatenator
           key_column: input_id
 #@ end

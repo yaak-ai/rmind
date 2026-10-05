@@ -3,8 +3,8 @@
 One function, `preprocess`, maps a NATIVE camera frame (uint8 RGB, CHW) to the
 model grid: torch bilinear antialias resize straight to the isotropic fit, round
 to uint8, then symmetric letterbox padding with `PAD_VALUE`. Training calls it
-on the frames rbyte decodes at native resolution (`rbyte.io.TransformedTensorSource`
-around a transform-free `TorchCodecFrameSource`); serving calls it on the relay
+on the frames rbyte decodes at native resolution (`rbyte.streams.transformed.TransformedSource`
+around a transform-free `TorchCodecVideoSource`); serving calls it on the relay
 frame. Same function, same bytes: the only remaining train/serve difference is
 the codec (mp4 vs relay JPEG), which no resize can remove and which is measured
 separately.
@@ -119,7 +119,7 @@ def preprocessing_sha256() -> str:
 
 
 class NeroImagePreprocess(nn.Module):
-    """`preprocess` as a module (for rbyte's `TransformedTensorSource`)."""
+    """`preprocess` as a module (for rbyte's `TransformedSource`)."""
 
     def __init__(self, input_hw: tuple[int, int] = (140, 224)) -> None:
         super().__init__()

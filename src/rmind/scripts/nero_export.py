@@ -125,7 +125,7 @@ def hand_features_module(nutron_cli: Path | None) -> Any:
         ImportError: when neither is available.
     """
     try:
-        from rbyte.io.nero._vendor import hand_features  # noqa: PLC0415
+        from rbyte.samples.nero._vendor import hand_features  # noqa: PLC0415
     except ImportError:
         hand_features = None
     if hand_features is not None:

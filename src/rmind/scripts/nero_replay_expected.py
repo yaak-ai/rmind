@@ -20,10 +20,10 @@ anchor, giving `expected_actions (N, 100, 26)` ABSOLUTE and side-major, plus
 `expected_codes (N, Q)` of the first valid side (the graph's `codes` output).
 
 `--episode` additionally checks INPUT parity (what step 3 cannot see): for every
-bundle tick it finds rbyte's `NeroRobotDataFrameBuilder` row with the same base
+bundle tick it finds rbyte's `NeroRobotReader` row with the same base
 `t_ns` and compares the raw state, the composed hand token (the policy's hand
 groups, `rmind.data.nero_robot.compose_hand_token`), and the three images decoded
-by rbyte's `TorchCodecFrameSource` at the row's `frame_index.<camera>` and mapped
+by rbyte's `TorchCodecVideoSource` at the row's `frame_index.<camera>` and mapped
 by `rmind.data.nero_image.preprocess` -- the training data path. Non-zero exit when
 any input differs (state/hand: exactly; images: `--image-atol` uint8 levels).
 """
@@ -120,14 +120,12 @@ def input_parity(  # noqa: PLR0914
     image_atol: int,
 ) -> dict[str, Any]:
     """Bundle inputs (serving's producer) vs rbyte's training rows for the same frames."""
-    from rbyte.io import (  # noqa: PLC0415
-        NeroRobotDataFrameBuilder,
-        TorchCodecFrameSource,
-    )
+    from rbyte.samples.nero import NeroRobotReader  # noqa: PLC0415
+    from rbyte.streams.video import TorchCodecVideoSource  # noqa: PLC0415
 
     from rmind.data.nero_image import preprocess  # noqa: PLC0415
 
-    df = NeroRobotDataFrameBuilder(chunk_size=100)(episode / "data.mcap")
+    df = NeroRobotReader(chunk_size=100)(episode / "data.mcap")
     t_rows = df["t_ns"].to_numpy()
     where = {int(t): i for i, t in enumerate(t_rows)}
     ticks = bundle["t_ns"].astype(np.int64)
@@ -179,7 +177,7 @@ def input_parity(  # noqa: PLR0914
     hw = tuple(int(v) for v in bundle["images_u8"].shape[-2:])
     images = {}
     for index, camera in enumerate(policy.cameras):
-        source = TorchCodecFrameSource(source=str(episode / f"{camera}.mp4"))
+        source = TorchCodecVideoSource(source=str(episode / f"{camera}.mp4"))
         ordinals = [int(v) for v in df[f"frame_index.{camera}"].to_numpy()[idx]]
         frames = source[ordinals]  # (n, H, W, 3) or (n, 3, H, W) uint8
         if frames.shape[-1] == 3:  # noqa: PLR2004

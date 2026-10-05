@@ -1,4 +1,4 @@
-"""DDP-aware drop-in for ``rbyte.dataloader.TorchDataNodeDataLoader``.
+"""DDP-aware drop-in for ``rbyte.dataloader.NodeDataLoader``.
 
 rbyte's loader hard-codes ``RandomSampler`` and is not a ``torch.utils.data
 .DataLoader``, so Lightning cannot inject a ``DistributedSampler``. Under
@@ -41,7 +41,7 @@ logger = get_logger(__name__)
 
 
 class DistributedTorchDataNodeDataLoader[T](Iterable[T], Sized):
-    """rbyte TorchDataNodeDataLoader with DDP-sharded sampling."""
+    """rbyte NodeDataLoader with DDP-sharded sampling."""
 
     @validate_call
     def __init__(  # noqa: PLR0913

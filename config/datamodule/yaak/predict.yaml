@@ -5,7 +5,7 @@ defaults:
 
 _target_: rmind.datamodules.GenericDataModule
 predict:
-  _target_: rbyte.dataloader.TorchDataNodeDataLoader
+  _target_: rbyte.dataloader.NodeDataLoader
   batch_size: 16
   shuffle: false
   collate_fn:

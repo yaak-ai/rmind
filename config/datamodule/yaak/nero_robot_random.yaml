@@ -1,4 +1,4 @@
-# Synthetic robot-native batches in the EXACT rbyte NeroRobotWindowBuilder schema,
+# Synthetic robot-native batches in the EXACT rbyte NeroRobotWindowGrouper schema,
 # with the hand-dependent grasp task (src/rmind/datamodules/nero_robot_random.py).
 # Smoke/tests only.
 _target_: rmind.datamodules.generic.GenericDataModule

@@ -310,7 +310,7 @@ takes clips from 11 to 21 samples, and 64 frames would need 69. Consequences:
   ~23 s;
 * **the train-set SIZE barely changes**, which is worth stating because the
   opposite is the intuitive guess. The sampler is
-  `rbyte.io.DataFrameGroupByDynamic(every=${episode_stride} = 10i,
+  `rbyte.samples.dataframe.DataFrameDynamicGrouper(every=${episode_stride} = 10i,
   period=${clip_period}, gather_every=${episode_step})`: clip *starts* are strided
   by `every`, independently of `period`, so a longer clip does not thin the
   windows — it only truncates each drive's tail. Going from `clip_length` 11 to 37

@@ -17,9 +17,9 @@ defaults the model is the glove model, bit for bit (the existing
 | | decision | implementation |
 |---|---|---|
 | P1 | causal decoder | `git merge --no-ff origin/feat/patch-policy-decoder-causal` (d45d1c6f = #269 + #276): no textual conflicts. `NeroPatchPolicy` does not subclass `PatchPolicy`, so the pieces were ported, not inherited: FlexAttention long-context training (`attention_impl: flex`, `episode_length 32 > window 16`), token norms (`token_norms` in `_frame_tokens`/`_features`), `TrainingQualityLogger` (`trainer/callbacks/nero_robot.yaml`), code confidence/entropy/margin/usage/dependence (`models/nero_quality.py`), and a NEW `NeroPatchPolicyDecoderStep` (`models/nero_patch_policy_decoder.py`) + `scripts/nero_export.py`. |
-| P2 | 10 Hz observations, context | rbyte `NeroRobotWindowBuilder` (every 3rd 30 Hz frame of a COMPLETE run, starts every `episode_stride=7` -> all 3 phases); `window: 16`, trained at `episode_length: 32`. |
+| P2 | 10 Hz observations, context | rbyte `NeroRobotWindowGrouper` (every 3rd 30 Hz frame of a COMPLETE run, starts every `episode_stride=7` -> all 3 phases); `window: 16`, trained at `episode_length: 32`. |
 | P3 | 100-step 30 Hz chunk, re-fit tokenizer | `NeroChunkTokenizer`: 34 keyframes (10 Hz) + fixed in-graph linear interpolation to 100 steps; playbook recipe. `n_next_actions` default 6 in the manifest (serving owns the clock). |
-| P4 | robot-native action space | rbyte `NeroRobotDataFrameBuilder`: `chunk[k]` = `robot.command.q` + `robot.hand.command/1000` at `t + k/30`; state = measured q + `hand_prev`. Left only via `side_valid`. |
+| P4 | robot-native action space | rbyte `NeroRobotReader`: `chunk[k]` = `robot.command.q` + `robot.hand.command/1000` at `t + k/30`; state = measured q + `hand_prev`. Left only via `side_valid`. |
 | P5 | relative flag | `relative_mode: none|hand|all` (policy + tokenizer, must match); per-FRAME anchor; one standardizer + tokenizer per mode. |
 | P6 | hand token | `hand_groups`, `hand_embedding` (`NormedTokenEmbedding`), learned `no_hand`, sample + frame dropout; newest sample only via the shared `hand_features.build_tokens`. |
 | P7 | no goal | `goal_mode: no_goal` (goal channel kept, always the learned `no_goal`; no goal frame read; no goal input in the export). `none` drops the channel. |
@@ -215,8 +215,8 @@ policy_check.py --patch-replay b_expected.npz --contract ART/policy_contract.jso
 ```
 
 Input parity compares, for every tick, the bundle's raw state, composed hand
-token and three uint8 image grids with rbyte's `NeroRobotDataFrameBuilder` row at
-the same base `t_ns` (images decoded by rbyte's `TorchCodecFrameSource` +
+token and three uint8 image grids with rbyte's `NeroRobotReader` row at
+the same base `t_ns` (images decoded by rbyte's `TorchCodecVideoSource` +
 `nero_image.preprocess`). Ticks in the last ~1.7 s of a run have no rbyte row
 (chunks more than half padding are dropped) and are reported, not failed.
 
@@ -250,27 +250,18 @@ a checkpoint that is not the artifact's:
 
 ## Environment
 
-rmind pins `rbyte==0.38.1` from PyPI for the car pipeline. That release has none
-of the robot ingestion (`NeroRobotDataFrameBuilder`, `NeroRobotWindowBuilder`,
-`TransformedTensorSource`), which lives on rbyte's `feat/nero-arms-depth` branch
--- a branch cut BEFORE 0.38.1 (it lacks #101 batch/dedup `Dataset.get_batch`,
-#104 rerun logger). Every nero run so far used that branch's rbyte in full, so
-that is the tested configuration. The ONE supported invocation:
+rmind takes rbyte from rbyte's `feat/nero-arms-depth` branch (yaak-ai/rbyte#109 +
+#110, rebased onto rbyte v0.40.0), pinned by commit as a git source in
+`pyproject.toml` (`[tool.uv.sources]`) and locked in `uv.lock`. That one rbyte
+serves both the car pipeline and the robot ingestion (`NeroRobotReader`,
+`NeroRobotWindowGrouper`, `TransformedSource`); the robot path's MCAP deps come
+with rbyte's `nero` extra. No `PYTHONPATH` or sibling checkout is involved:
+`just nero-check-env` asserts the installed rbyte has the nero ingestion, and
+`just nero-train ARGS` (rmind-train) / `just nero-run MODULE ARGS` (any script) are
+plain `uv run`s.
 
-* rbyte: a checkout of `feat/nero-arms-depth` at `RBYTE_SRC` (default
-  `../rbyte`), put FIRST on `PYTHONPATH` so it shadows the pinned wheel (for the
-  nero run only -- the car paths keep 0.38.1);
-* its MCAP deps: the `nero` dependency group (`mcap`, `mcap-protobuf-support`,
-  `protobuf`, `pyyaml`; locked in `uv.lock`);
-* the `just` recipes that do both: `just nero-check-env` (fails unless rbyte
-  resolves to `RBYTE_SRC` and has the nero ingestion), `just nero-train ARGS`
-  (rmind-train), `just nero-run MODULE ARGS` (any script).
-
-Not `uv run --with-editable ../rbyte[nero]`: that overlay resolves rbyte's deps on
-its own and shadows the project's torch 2.12 with a second torch.
-
-Until main rebases rbyte's branch onto main, releases it and bumps the pin (main's
-call), this is the only reproducible path.
+Once rbyte releases the nero ingestion, the git source is replaced by
+`rbyte[jpeg,nero,yaak]==<release>` (see the TODO in `pyproject.toml`).
 
 ## How to run (local)
 
@@ -304,10 +295,8 @@ Ablations: `yaak/nero_robot/relative_{hand,all}` (each with its own tokenizer),
   contract carries it verbatim and any later calibration means retraining.
 * The hand path is validated on synthetic data only (1 of 4 pulled episodes has
   `robot.hand.tactile`, at the 3.4 Hz polled rate).
-* rmind pins `rbyte==0.38.1` from PyPI, which has none of the robot ingestion;
-  the nero path runs rbyte from a branch checkout (see "Environment"). Rebase
-  rbyte `feat/nero-arms-depth` onto main (it predates 0.38.1), release, bump the
-  pin -- main's call.
+* rbyte comes from a git source pinned to the rebased `feat/nero-arms-depth`
+  (see "Environment") until rbyte releases the nero ingestion; then bump the pin.
 * Checkpoints from before the `input_norm` / code-conditioned offset /
   event-reference changes do not load strictly into the current config (the
   embeddings lost `in_norm.*`, the offset head is wider); retrain.

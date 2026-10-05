@@ -164,7 +164,7 @@ def compose_hand_token(
     """`hf.TokenBlocks.compose` in torch: `(..., dim)`, refused rows all zero.
 
     Reads `<prefix><group>` blocks, `<prefix>age`, `<prefix>motor_ok` and (when
-    tip is selected) `<prefix>tip_ok`, as rbyte's `NeroRobotDataFrameBuilder`
+    tip is selected) `<prefix>tip_ok`, as rbyte's `NeroRobotReader`
     stores them. `hand_valid` is the LAST column.
     """
     sel = normalize_hand_groups(groups)
