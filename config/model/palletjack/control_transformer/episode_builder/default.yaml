@@ -1,0 +1,236 @@
+---
+# Episode builder for the Linde D12 palletjack: one camera and three actuations
+# (traction, steering, fork1). The camera is `cam_left_backward`, which is the one
+# facing the operator at the tiller. Signals are normalized to [-1, 1] with
+# sign carrying direction:
+#   traction  -1 full reverse  0 stopped   +1 full forward
+#   steering  -1 full left     0 straight  +1 full right
+#   fork1     -1 lowering      0 hold      +1 raising
+#
+# `${image_transform}` is supplied by the experiment config, so training runs can
+# swap in augmentation without touching the model definition.
+_target_: rmind.components.episode.EpisodeBuilder
+_recursive_: true
+_convert_: all
+timestep:
+  - [observation, image, cam_left_backward]
+  - [special, foresight, cam_left_backward]
+  - [special, summary, observation_summary]
+  - [special, summary, observation_history]
+  - [action, continuous, traction]
+  - [action, continuous, steering]
+  - [action, continuous, fork1]
+  - [special, summary, action_summary]
+
+special_tokens:
+  foresight:
+    cam_left_backward:
+      _target_: builtins.range
+      _args_:
+        - 256
+
+  summary:
+    observation_summary: [0]
+    observation_history: [1]
+    action_summary: [2]
+
+  utility:
+    mask: [0]
+
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: rmind.components.nn.Remapper
+      paths:
+        image:
+          cam_left_backward: [data, cam_left_backward]
+
+        continuous:
+          traction: [data, traction]
+          traction_diff: [data, traction]
+          steering: [data, steering]
+          steering_diff: [data, steering]
+          fork1: [data, fork1]
+          fork1_diff: [data, fork1]
+
+    - _target_: rmind.components.containers.ModuleDict
+      modules:
+        image: ${image_transform}
+
+        continuous:
+          traction:
+            _target_: rmind.components.nn.AtLeast3D
+
+          traction_diff:
+            _target_: rmind.components.nn.DiffLast
+            append:
+              _target_: hydra.utils.get_object
+              path: math.nan
+
+          steering:
+            _target_: rmind.components.nn.AtLeast3D
+
+          steering_diff:
+            _target_: rmind.components.nn.DiffLast
+            append:
+              _target_: hydra.utils.get_object
+              path: math.nan
+
+          fork1:
+            _target_: rmind.components.nn.AtLeast3D
+
+          fork1_diff:
+            _target_: rmind.components.nn.DiffLast
+            append:
+              _target_: hydra.utils.get_object
+              path: math.nan
+
+tokenizers:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    image:
+      _target_: rmind.components.nn.Identity
+
+    continuous:
+      traction:
+        _target_: rmind.components.norm.UniformBinner
+        range: [-1.0, 1.0]
+        bins: ${traction_bins}
+
+      # NOTE: if x in [-1.0, 1.0] then dx in [-2.0, 2.0], so rescale before mulaw
+      traction_diff:
+        _target_: rmind.components.nn.Sequential
+        _args_:
+          - _target_: rmind.components.norm.Scaler
+            in_range: [-2.0, 2.0]
+            out_range: [-1.0, 1.0]
+          - _target_: rmind.components.norm.MuLawEncoding
+            quantization_channels: ${traction_bins}
+
+      steering:
+        _target_: rmind.components.norm.UniformBinner
+        range: [-1.0, 1.0]
+        bins: ${steering_bins}
+
+      steering_diff:
+        _target_: rmind.components.nn.Sequential
+        _args_:
+          - _target_: rmind.components.norm.Scaler
+            in_range: [-2.0, 2.0]
+            out_range: [-1.0, 1.0]
+          - _target_: rmind.components.norm.MuLawEncoding
+            quantization_channels: ${steering_bins}
+
+      fork1:
+        _target_: rmind.components.norm.UniformBinner
+        range: [-1.0, 1.0]
+        bins: ${fork1_bins}
+
+      fork1_diff:
+        _target_: rmind.components.nn.Sequential
+        _args_:
+          - _target_: rmind.components.norm.Scaler
+            in_range: [-2.0, 2.0]
+            out_range: [-1.0, 1.0]
+          - _target_: rmind.components.norm.MuLawEncoding
+            quantization_channels: ${fork1_bins}
+
+embeddings:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    image:
+      _target_: torch.nn.Sequential
+      _args_:
+        - _target_: rmind.components.timm_backbone.TimmBackbone
+          model_name: vit_small_patch16_dinov3.lvd1689m
+          out_indices: [10]
+          img_size: [256, 256]
+        - _target_: einops.layers.torch.Rearrange
+          pattern: "... c h w -> ... (h w) c"
+
+    continuous:
+      traction:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: ${traction_bins}
+        embedding_dim: ${encoder_embedding_dim}
+      steering:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: ${steering_bins}
+        embedding_dim: ${encoder_embedding_dim}
+      fork1:
+        _target_: rmind.components.nn.Embedding
+        num_embeddings: ${fork1_bins}
+        embedding_dim: ${encoder_embedding_dim}
+      traction_diff: null
+      steering_diff: null
+      fork1_diff: null
+
+    foresight:
+      _target_: rmind.components.nn.Embedding
+      num_embeddings: 256
+      embedding_dim: ${encoder_embedding_dim}
+
+    summary:
+      _target_: rmind.components.nn.Embedding
+      num_embeddings: 3
+      embedding_dim: ${encoder_embedding_dim}
+
+    utility:
+      _target_: rmind.components.nn.Embedding
+      num_embeddings: 1
+      embedding_dim: ${encoder_embedding_dim}
+
+projections:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    image:
+      _target_: torch.nn.Sequential
+      _args_:
+        - _target_: torch.nn.LayerNorm
+          normalized_shape: ${image_embedding_dim}
+        - _target_: rmind.components.norm.ScaleByVectorDimensionality
+          dim: ${image_embedding_dim}
+        - _target_: rmind.components.nn.Linear
+          in_features: ${image_embedding_dim}
+          out_features: ${encoder_embedding_dim}
+
+    continuous:
+      traction:
+        _target_: rmind.components.nn.Linear
+        in_features: ${encoder_embedding_dim}
+        out_features: ${encoder_embedding_dim}
+      steering:
+        _target_: rmind.components.nn.Linear
+        in_features: ${encoder_embedding_dim}
+        out_features: ${encoder_embedding_dim}
+      fork1:
+        _target_: rmind.components.nn.Linear
+        in_features: ${encoder_embedding_dim}
+        out_features: ${encoder_embedding_dim}
+      traction_diff: null
+      steering_diff: null
+      fork1_diff: null
+
+    foresight:
+      _target_: rmind.components.nn.Linear
+      in_features: ${encoder_embedding_dim}
+      out_features: ${encoder_embedding_dim}
+
+    summary:
+      _target_: rmind.components.nn.Linear
+      in_features: ${encoder_embedding_dim}
+      out_features: ${encoder_embedding_dim}
+
+    utility:
+      _target_: rmind.components.nn.Linear
+      in_features: ${encoder_embedding_dim}
+      out_features: ${encoder_embedding_dim}
+
+role_encoding: # (modality, type)
+  _target_: rmind.components.nn.Embedding
+  num_embeddings: 8
+  embedding_dim: ${encoder_embedding_dim}
+
+attention_mask_builder:
+  _target_: rmind.components.mask.FactorizedCausalAttentionMaskBuilder

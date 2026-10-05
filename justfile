@@ -28,6 +28,13 @@ check:
 check-git:
     uv run rmind-check-git
 
+# build image tagged with HEAD commit; requires a clean, pushed tree so the tag is truthful
+docker-build *ARGS: check-git
+    docker build \
+        --build-arg COMMIT_SHA=$(git rev-parse HEAD) \
+        -t rmind:$(git rev-parse HEAD) \
+        {{ ARGS }} .
+
 prek *ARGS:
     prek --all-files {{ ARGS }}
 
@@ -47,6 +54,15 @@ train *ARGS: generate-config check-git
         --config-name train.yaml \
         {{ ARGS }}
 
+# train without the git cleanliness check — for docker, where the image is pinned to a commit
+train-unsafe *ARGS: generate-config
+    uv run \
+        --extra train \
+        rmind-train \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name train.yaml \
+        {{ ARGS }}
+
 train-debug *ARGS: generate-config
     WANDB_MODE=disabled \
     uv run \
@@ -58,6 +74,14 @@ train-debug *ARGS: generate-config
         datamodule=yaak/train_debug \
         ++model.encoder.disable=true \
         {{ ARGS }}
+
+train-action *ARGS: generate-config
+    uv run rmind-train \
+          --config-path {{ justfile_directory() }}/config \
+          --config-name train.yaml \
+          experiment=yaak/action_tokenizer/pretrain \
+          datamodule=yaak/action_train \
+          {{ ARGS }}
 
 predict +ARGS: generate-config
     uv run \
@@ -94,6 +118,15 @@ export-onnx *ARGS: generate-config
         --config-path {{ justfile_directory() }}/config \
         --config-name export_onnx.yaml \
         {{ ARGS }}
+
+convert-models model engine:
+    trtexec \
+        --onnx="{{ model }}" \
+        --saveEngine="{{ engine }}" \
+        --skipInference \
+        --avgTiming=16 \
+        --memPoolSize=workspace:24G \
+        --builderOptimizationLevel=5
 
 onnxvis *ARGS:
     uvx --python 3.12 --with=ai-edge-model-explorer --from=model-explorer-onnx onnxvis {{ ARGS }}

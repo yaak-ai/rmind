@@ -13,9 +13,9 @@ from torch.utils._pytree import (  # ruff: ignore[import-private-name]
     key_get,
     tree_map,
 )
-from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
+from wandb import Image
 
 from .common import (
     _bind_hook_arguments,

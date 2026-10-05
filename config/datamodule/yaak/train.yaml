@@ -6,7 +6,7 @@ defaults:
 
 _target_: rmind.datamodules.GenericDataModule
 train:
-  _target_: rbyte.dataloader.NodeDataLoader
+  _target_: rmind.components.dataloader.DistributedTorchDataNodeDataLoader
   batch_size: 64
   shuffle: true
   drop_last: true
@@ -18,9 +18,9 @@ train:
   method: thread
 
 val:
-  _target_: rbyte.dataloader.NodeDataLoader
+  _target_: rmind.components.dataloader.DistributedTorchDataNodeDataLoader
   batch_size: 32
-  shuffle: false
+  shuffle: true
   collate_fn:
     _target_: rbyte.types.Batch.to_dict
     _partial_: true

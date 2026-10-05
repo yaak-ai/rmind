@@ -1,0 +1,164 @@
+# @package _global_
+
+# Real D12 recordings on the patch-policy trunk.
+#
+#   bash src/rmind/scripts/extract_d12_frames.sh /nasa/data/d12/yaak/<job-id>
+#   just train experiment=palletjack/patch_policy/d12
+#
+# Offline steps are frame extraction and `scripts.prepare_dropoff` (writes each
+# job's dropoff.parquet); the sample table (mcap decode + clock alignment + the
+# intention transform) is built at load time by `rmind.data.d12` from the dataset
+# config, so there is nothing else to prepare and nothing to go stale.
+#
+# LIMITED TO ONE CAMERA for now. The model and the dataset are both 3-camera
+# capable - the dataset declares all three streams and the trunk concatenates
+# cameras along the patch axis - but `cameras` here lists only cam_fork. Switch
+# to `experiment=palletjack/patch_policy/d12_3cam` for all three; nothing else
+# needs to change.
+defaults:
+  - /model: palletjack/patch_policy/policy
+  - /datamodule: palletjack/d12
+  - /trainer: default
+  - /trainer/callbacks: palletjack_patch_policy
+  - /paths: palletjack/default
+  - /wandb: palletjack/default
+  - _self_
+
+episode_length: 6
+
+cameras: [cam_fork]
+num_cameras: 1
+image_remap:
+  cam_fork: [data, cam_fork]
+
+image_encoder_name: vit_small_patch16_dinov3.lvd1689m
+# 256x144 keeps the camera's 16:9 aspect and its full field of view. A square
+# 256x256 would either squash horizontally by 1.78x (what the card rig and the
+# yaak pipeline both do) or crop away 44% of the width. At patch 16 this is a
+# 16x9 grid = 144 patch tokens per camera, FEWER than a square 256's 256, so
+# correcting the aspect also costs less than the squashed version did.
+image_resize: [144, 256] # (H, W), as timm expects
+image_embedding_dim: 384
+num_patches: 144
+
+window: 6
+attention_impl: sdpa
+
+policy_embedding_dim: 512
+num_layers: 8
+num_heads: 8
+
+speed_bins: 64
+
+# `fork_above_300` is the mast height switch from `lindelot/vehicle_state`, an
+# input the policy conditions on (it is NOT a target - `fork1` is the command that
+# moves the mast, and that is predicted). Two bins over [0, 1] make the binner an
+# is-it-set test on the 0.0/1.0 the builder emits; rows where the ECU had
+# not yet answered are dropped there rather than passed off as a confident 0.
+#
+# INTENTION. `relative_ego_pos` / `relative_dropoff_pos` are the two goal tokens:
+# ego-frame [forward, lateral] to the pallet, and to the dropoff (the pallet's
+# final resting position, from `dropoff.parquet`). The dataset config already did
+# the whole transform - translate onto the ego, rotate by heading, /10, clamp to
+# [-1, 1] - so by the time they reach the model they are just a 2-vector in
+# [-1, 1], the same as the car model consumes `waypoints/xy_normalized`. The
+# embedding is therefore only a Linear into the policy width plus a token axis.
+#
+# Each observation is one token per frame; `num_observations` feeds the total into
+# the trunk's `tokens_per_frame`. Changing this list changes token positions, so a
+# checkpoint trained with a different set cannot be finetuned from directly.
+observations:
+  fork_above_300: [continuous, fork_above_300]
+  relative_ego_pos: [continuous, relative_ego_pos]
+  relative_dropoff_pos: [continuous, relative_dropoff_pos]
+observation_embeddings:
+  fork_above_300:
+    _target_: torch.nn.Sequential
+    _args_:
+      # is-it-set test on the 0.0/1.0 the builder emits; rows where the ECU had
+      # not yet answered are dropped there rather than passed off as a confident 0
+      - _target_: rmind.components.norm.UniformBinner
+        range: [0.0, 1.0]
+        bins: 2
+      - _target_: rmind.components.nn.Embedding
+        num_embeddings: 2
+        embedding_dim: ${policy_embedding_dim}
+  relative_ego_pos: ${relative_position_embedding}
+  relative_dropoff_pos: ${relative_position_embedding}
+num_observations: 3
+
+# both intention tokens: an already-normalized 2-vector -> policy width, then a
+# token axis so it slots in beside the speed and fork tokens
+relative_position_embedding:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.nn.Linear
+      in_features: 2
+      out_features: ${policy_embedding_dim}
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "b t d -> b t 1 d"
+
+lr: 1e-4
+# The run is sized in optimizer steps and ends exactly where the cosine does:
+# past `num_training_steps` the schedule does not hold at 0, it climbs back up.
+# 28 jobs = 13992 samples; at batch 8 that is 1749 steps/epoch, so 35000 steps is
+# ~20 epochs. Re-derive when the job list or the batch size changes.
+lr_warmup_steps: 1000
+lr_total_steps: 35000
+
+trainer:
+  max_steps: ${lr_total_steps}
+  max_epochs: -1
+  precision: "bf16-mixed"
+  gradient_clip_val: 1.0
+  log_every_n_steps: 10
+
+datamodule:
+  train:
+    batch_size: 8
+  val:
+    batch_size: 8
+
+# Frames arrive already at 256x144 from extract_d12_frames.sh, so there is no
+# resize or crop here - only channel order, dtype, augmentation and normalize.
+#
+# NOTE the augmentation is deliberately mild, and deliberately NOT the card rig's.
+# That one models a printed sheet held up by hand (strong perspective, +/-20
+# degrees of rotation, illumination gradients); these cameras are bolted to the
+# truck, so that variation cannot occur and training on it would only cost
+# accuracy. No horizontal flip either: mirroring inverts steering while leaving
+# the label untouched.
+image_transform:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... h w c -> ... c h w"
+    - _target_: torchvision.transforms.v2.ToDtype
+      scale: true
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+    - _target_: rmind.components.nn.TrainOnly
+      module:
+        _target_: torch.nn.Sequential
+        _args_:
+          # lighting and exposure change through a shift; geometry barely does
+          - _target_: torchvision.transforms.v2.ColorJitter
+            brightness: 0.3
+            contrast: 0.25
+            saturation: 0.2
+            hue: 0.02
+          # small mount flex / calibration drift, not hand-held motion
+          - _target_: torchvision.transforms.v2.RandomAffine
+            degrees: 3
+            translate: [0.03, 0.03]
+            scale: [0.95, 1.05]
+          - _target_: torchvision.transforms.v2.GaussianBlur
+            kernel_size: 5
+            sigma: [0.1, 1.2]
+    - _target_: torchvision.transforms.v2.Normalize
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+wandb:
+  tags: [palletjack, patch_policy, d12, cam_fork]

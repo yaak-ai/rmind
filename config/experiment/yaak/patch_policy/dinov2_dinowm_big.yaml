@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm
+  - _self_
+
+# Capacity-scaling arm on the closed-loop winner (dinov2_dinowm): trunk
+# 12L/768d/12H (~85M trainable vs 31.5M at 8L/512d). Sized to the serving
+# budget: stellar-hill's 8L/512d ran ~100ms in fp16 against a 300ms budget;
+# this is ~3.4x trunk FLOPs.
+policy_embedding_dim: 768
+num_layers: 12
+num_heads: 12
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_big]

@@ -1,0 +1,38 @@
+# @package _global_
+---
+# Head-only ONNX export for on-the-fly decoding (see PatchPolicyHead docstring).
+# Input dict: trunk readout features (b, d) + caller-chosen codes
+# (b, num_quantizers). Outputs: code_logits (b, g, c), the full offset table
+# (b, g, c, action_dim), and chunk (b, horizon, fields) = decode(codes) +
+# offset@codes. Code selection (argmax / sampling / temperature / entropy
+# gating) is the caller's, outside the graph.
+#
+#   just export-onnx export=yaak/patch_policy/head model.artifact=yaak/rmind/model-<run>:vN
+
+model:
+  _target_: rmind.models.patch_policy.PatchPolicy.load_head_for_export
+  artifact: ???
+
+feature_dim: 512
+num_quantizers: 4
+
+input:
+  features:
+    _target_: torch.testing.make_tensor
+    _args_: [1, "${feature_dim}"]
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.float32
+    device: cpu
+    low: -1.0
+    high: 1.0
+
+  codes:
+    _target_: torch.testing.make_tensor
+    _args_: [1, "${num_quantizers}"]
+    dtype:
+      _target_: hydra.utils.get_object
+      path: torch.int64
+    device: cpu
+    low: 0
+    high: 16

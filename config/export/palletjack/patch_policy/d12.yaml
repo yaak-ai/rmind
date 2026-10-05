@@ -1,0 +1,86 @@
+# @package _global_
+---
+# ONNX export for the D12 policy, single camera (cam_fork).
+#
+#   just export-onnx export=palletjack/patch_policy/d12 \
+#     "model.checkpoint_path='/path/to/model.ckpt'"
+#
+#   in   cam_fork                     float32 [1, 6, 3, 144, 256]
+#   in   speed                        float32 [1, 6, 1]
+#   in   fork_above_300               float32 [1, 6, 1]  (0.0 / 1.0)
+#   in   relative_ego_pos             float32 [1, 6, 2]  ego-frame [fwd,lat], [-1,1]
+#   in   relative_dropoff_pos         float32 [1, 6, 2]  ego-frame [fwd,lat], [-1,1]
+#   out  policy.continuous.traction   float32 [1, 1]
+#   out  policy.continuous.steering   float32 [1, 1]
+#   out  policy.continuous.fork1      float32 [1, 1]
+#
+# 144x256 is the camera's own 16:9 aspect at patch-16 granularity (9x16 = 144
+# patch tokens). The caller owns crop/resize/normalize, as with every other
+# palletjack graph; `extract_d12_frames.sh` is the reference for the resize.
+#
+# For all three cameras use export=palletjack/patch_policy/d12_3cam.
+model:
+  _target_: rmind.models.patch_policy_continuous.PatchPolicyContinuous.load_for_export
+  checkpoint_path: ???
+
+input:
+  data:
+    cam_fork:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 3, 144, 256]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float
+      device: cpu
+      low: -3
+      high: 3
+
+    speed:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 1]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 0
+
+    # mast height switch: 0.0 or 1.0, binned to a 2-entry embedding in the graph
+    fork_above_300:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 1]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 1
+
+    # intention tokens: ego-frame [fwd, lat], already translated/rotated/scaled to
+    # [-1, 1] by the caller (the dataset config does the same at training time).
+    relative_ego_pos:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 2]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: -1
+      high: 1
+
+    relative_dropoff_pos:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 2]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: -1
+      high: 1
+
+input_names:
+  - cam_fork
+  - speed
+  - fork_above_300
+  - relative_ego_pos
+  - relative_dropoff_pos

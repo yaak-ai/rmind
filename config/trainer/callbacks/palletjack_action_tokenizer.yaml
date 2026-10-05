@@ -1,0 +1,12 @@
+# The yaak tokenizer callbacks checkpoint every epoch; a palletjack epoch is a
+# few dozen steps, and with `log_model: all` that would upload a wandb artifact
+# version per epoch.
+- _target_: pytorch_lightning.callbacks.TQDMProgressBar
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 3
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 25
+  save_last: true
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step

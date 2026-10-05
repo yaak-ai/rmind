@@ -1,0 +1,86 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/patch_policy/raw
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: patch_policy
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+episode_length: 6
+action_horizon: 6
+episode_step: 10
+episode_stride: 10
+# clip-grid phase: drop the first `episode_offset` raw frames of every train
+# drive before the stride grid is laid down, shifting all clip starts by the
+# offset (val is never shifted). 0 = today's grid, bit-for-bit. Meaningful
+# values are 0..episode_stride-1; the dataset is rebuilt per LAUNCH, so rotate
+# it across run segments/continuations (offset = epoch % stride), not within
+# one launch -- see dinov2_dinowm_causal.yaml for why.
+episode_offset: 0
+
+# clip_horizon is the dataset build horizon (max over PT/FT) so the built dataset
+# is shared with the control_transformer configs.
+clip_horizon: 6
+clip_length: "${eval:'${episode_length} + ${clip_horizon} - 1'}"
+clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
+
+# frozen encoders
+image_encoder_name: vit_small_patch16_dinov3.lvd1689m
+image_resize: [256, 256] # 256 / patch 16 -> 16x16 = 256 patch tokens
+image_embedding_dim: 384
+num_patches: 256
+
+waypoints_tokenizer_artifact: yaak/waypoints-tokenizer/model-gzxgumtf:v9
+waypoint_latent_dim: 384
+
+action_tokenizer_artifact: yaak/rmind/model-y74asdtd:v9
+
+# policy trunk (https://arxiv.org/pdf/2607.18236 Table 9, Push-T)
+policy_embedding_dim: 512
+num_layers: 8
+num_heads: 8
+
+# Activation checkpointing on the trunk: true = every block, false = none, k =
+# every k-th. Off by default: checkpointing trades a full extra trunk forward
+# for memory this arm's shape doesn't need -- measured on an A100-80GB at this
+# arm's exact production shape (batch 128, seq 1542 = episode_length 6 *
+# (num_patches 256 + 1), d512/L8), trunk fwd+bwd: checkpoint=True 1129ms/8.8GB
+# vs checkpoint=False 874ms/33.1GB (1.29x), out of 80GB available. Every
+# patch_policy arm inherits this var; the causal (CausalFrameTransformer) family
+# overrides it back to `true` in dinov2_dinowm_causal.yaml -- its windowed/flex
+# shape is not the one measured here, and is already documented to run tight on
+# memory even with checkpointing on (docs/decoder_only_kv_cache.md §13).
+trunk_checkpointing: false
+
+# batch 128 with linearly-scaled LR (baseline: 5e-5 @ 64). The clip11 train set
+# is ~1.97M samples (FT baseline zcglgth4: 308,038 steps @ batch 64 for 10
+# epochs) -> ~15.4k steps/epoch @ 128; cosine hits zero at the end of epoch 14.
+# NOTE: closed-loop sweeps showed collisions + route deviation keep improving
+# late in training, hence the 15-epoch default. Re-derive both step counts when
+# changing max_epochs or batch size (see get_cosine_schedule_with_warmup's
+# oscillation past num_training_steps).
+lr: 1e-4
+lr_warmup_steps: 18500
+lr_total_steps: 231000
+
+trainer:
+  max_epochs: 15
+
+datamodule:
+  train:
+    batch_size: 128
+
+speed_bins: 512
+
+# supervise the offset head at ground-truth codes (the #258 fix)
+teacher_force_offset: true
+
+# scale-balanced feature fusion (default OFF to preserve comparability with
+# the arms trained before it existed; enable per-arm or via CLI fusion_norm=true)
+fusion_norm: false
+
+wandb:
+  tags: [patch_policy, dinov3]

@@ -1,0 +1,23 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/action_tokenizer/raw
+  - /datamodule: yaak/action_train
+  - /trainer: default
+  - /trainer/callbacks: action_tokenizer
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+action_clip: 6
+action_step: 10
+action_stride: 10
+clip_period: "${eval:'${action_step} * ${action_clip}'}i"
+
+action_space: 4
+action_dim: "${eval:'${action_space} * ${action_clip}'}"
+action_hidden_dim: 128
+action_latent_dim: 384
+
+codebook_size: 16
+num_quantizers: 4

@@ -14,8 +14,7 @@ from rmind.utils.patch import monkeypatched
 
 @final
 class TensorDictPredictionWriter(BasePredictionWriter):
-    """
-    ```yaml
+    """```yaml
     _target_: rmind.callbacks.TensorDictPredictionWriter
     write_interval: batch
     path: ${hydra:run.dir}/predictions/{batch_idx}/
@@ -27,7 +26,7 @@ class TensorDictPredictionWriter(BasePredictionWriter):
       _target_: tensordict.memmap
       _partial_: true
       copy_existing: true
-    ```
+    ```.
     """
 
     @validate_call

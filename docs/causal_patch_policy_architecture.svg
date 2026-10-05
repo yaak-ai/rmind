@@ -1,0 +1,209 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 1500" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+  </defs>
+
+  <rect width="1180" height="1500" fill="#fcfcfd"/>
+  <text x="590" y="38" text-anchor="middle" font-size="24" font-weight="bold" fill="#1a1a2e">Causal Patch Policy — decoder-only trunk with KV cache</text>
+
+  <!-- legend -->
+  <rect x="700" y="56" width="14" height="14" rx="3" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="720" y="68" font-size="13" fill="#333">frozen (not trained)</text>
+  <rect x="860" y="56" width="14" height="14" rx="3" fill="#ffedd5" stroke="#f97316"/>
+  <text x="880" y="68" font-size="13" fill="#333">trained</text>
+  <rect x="950" y="56" width="14" height="14" rx="3" fill="#dcfce7" stroke="#22c55e"/>
+  <text x="970" y="68" font-size="13" fill="#333">KV cache (state, not weights)</text>
+
+  <!-- ===================== BAND 1: per-frame packing ===================== -->
+  <text x="30" y="100" font-size="16" font-weight="bold" fill="#1a1a2e">1 · Per-frame packing Z_t — unchanged from PR #265, plus scale-balanced fusion (fusion_norm)</text>
+
+  <rect x="40" y="118" width="220" height="50" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="150" y="139" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">camera frame t</text>
+  <text x="150" y="157" text-anchor="middle" font-size="12" fill="#555">cam_front_left · 224×224</text>
+
+  <rect x="40" y="196" width="220" height="50" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="150" y="217" text-anchor="middle" font-size="14" font-weight="bold" fill="#1e3a8a">DINOv2 ViT-S (frozen)</text>
+  <text x="150" y="235" text-anchor="middle" font-size="12" fill="#1e3a8a">x_norm_patchtokens → 256×384</text>
+
+  <line x1="150" y1="168" x2="150" y2="196" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="310" y="118" width="220" height="50" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="420" y="139" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">waypoints (ego frame)</text>
+  <text x="420" y="157" text-anchor="middle" font-size="12" fill="#555">10 × 2, /100</text>
+
+  <rect x="310" y="196" width="220" height="50" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="420" y="217" text-anchor="middle" font-size="14" font-weight="bold" fill="#1e3a8a">waypoints tokenizer (frozen)</text>
+  <text x="420" y="235" text-anchor="middle" font-size="12" fill="#1e3a8a">RVQ z_q → g_t (384)</text>
+
+  <line x1="420" y1="168" x2="420" y2="196" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="580" y="118" width="200" height="50" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="680" y="139" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">speed (km/h)</text>
+  <text x="680" y="157" text-anchor="middle" font-size="12" fill="#555">1 scalar per frame</text>
+
+  <rect x="580" y="196" width="200" height="50" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="680" y="217" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">binner + embedding</text>
+  <text x="680" y="235" text-anchor="middle" font-size="12" fill="#7c2d12">512 bins → 512-d token</text>
+
+  <line x1="680" y1="168" x2="680" y2="196" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- fusion norm -->
+  <rect x="40" y="278" width="490" height="66" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="285" y="300" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">fusion_norm — scale-balanced T×P×(D+G) concat</text>
+  <text x="285" y="318" text-anchor="middle" font-size="12" fill="#7c2d12">LN(patches)·gain_p  ⊕  g_t·gain_g   (gain_g init 1/RMS(z_q), data-measured 0.077)</text>
+  <text x="285" y="335" text-anchor="middle" font-size="12" fill="#7c2d12">without it the ~34× patch/goal gap swamps conditioning (H3, measured)</text>
+
+  <line x1="150" y1="246" x2="150" y2="278" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="420" y1="246" x2="420" y2="278" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="40" y="372" width="490" height="44" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="285" y="399" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">Linear(768 → 512) per patch token</text>
+
+  <line x1="285" y1="344" x2="285" y2="372" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- frame block strip -->
+  <rect x="40" y="446" width="740" height="58" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="60" y="470" font-size="13" font-weight="bold" fill="#333">frame block t (257 tokens):</text>
+  <rect x="230" y="458" width="34" height="34" rx="4" fill="#ffedd5" stroke="#f97316"/>
+  <text x="247" y="480" text-anchor="middle" font-size="11" fill="#7c2d12">spd</text>
+  <rect x="270" y="458" width="420" height="34" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="480" y="480" text-anchor="middle" font-size="12" fill="#1e3a8a">256 goal-fused patch tokens</text>
+  <rect x="694" y="458" width="34" height="34" rx="4" fill="#93c5fd" stroke="#1d4ed8"/>
+  <text x="711" y="480" text-anchor="middle" font-size="10" fill="#1e3a8a">read</text>
+  <text x="745" y="480" font-size="11" fill="#555">← readout</text>
+
+  <line x1="285" y1="416" x2="285" y2="446" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="680" y1="246" x2="680" y2="446" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== BAND 2: positional scheme ===================== -->
+  <text x="30" y="548" font-size="16" font-weight="bold" fill="#1a1a2e">2 · Positional scheme — THE causal change (replaces the window-absolute 1542-slot table)</text>
+
+  <rect x="40" y="566" width="440" height="88" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="260" y="590" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">intra-frame: learned 257-slot embedding, TILED</text>
+  <text x="260" y="610" text-anchor="middle" font-size="12" fill="#7c2d12">token k of every frame gets intra_pos[k]</text>
+  <text x="260" y="628" text-anchor="middle" font-size="12" fill="#7c2d12">frame-relative → never stale as the window slides</text>
+
+  <rect x="510" y="566" width="470" height="88" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="745" y="590" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">inter-frame: RoPE at FRAME granularity (base 1000)</text>
+  <text x="745" y="610" text-anchor="middle" font-size="12" fill="#555">all 257 tokens of frame f share one rotation R_f (no params)</text>
+  <text x="745" y="628" text-anchor="middle" font-size="12" fill="#555">(R_f q)ᵀ(R_f k) = qᵀk → intra-frame exactly unrotated; cross-frame</text>
+  <text x="745" y="644" text-anchor="middle" font-size="12" fill="#555">logits depend only on f_q − f_k → cached keys stay valid forever</text>
+
+  <!-- ===================== BAND 3: training ===================== -->
+  <text x="30" y="700" font-size="16" font-weight="bold" fill="#1a1a2e">3 · Training — causal frame transformer, FlexAttention block-sparse window mask</text>
+
+  <!-- mask mini grid: 6 frames, window 3 -->
+  <text x="40" y="726" font-size="13" font-weight="bold" fill="#333">frame-window mask (shown: 6 frames, W=3)</text>
+  <g transform="translate(40,736)">
+    <!-- rows = query frame i, cols = key frame j; allowed: j<=i and i-j<W; diagonal = intra-frame bidirectional -->
+    <!-- row 0 -->
+    <rect x="0"   y="0"  width="26" height="26" fill="#93c5fd"/>
+    <rect x="28"  y="0"  width="26" height="26" fill="#f1f5f9"/>
+    <rect x="56"  y="0"  width="26" height="26" fill="#f1f5f9"/>
+    <rect x="84"  y="0"  width="26" height="26" fill="#f1f5f9"/>
+    <rect x="112" y="0"  width="26" height="26" fill="#f1f5f9"/>
+    <rect x="140" y="0"  width="26" height="26" fill="#f1f5f9"/>
+    <!-- row 1 -->
+    <rect x="0"   y="28" width="26" height="26" fill="#dbeafe"/>
+    <rect x="28"  y="28" width="26" height="26" fill="#93c5fd"/>
+    <rect x="56"  y="28" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="84"  y="28" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="112" y="28" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="140" y="28" width="26" height="26" fill="#f1f5f9"/>
+    <!-- row 2 -->
+    <rect x="0"   y="56" width="26" height="26" fill="#dbeafe"/>
+    <rect x="28"  y="56" width="26" height="26" fill="#dbeafe"/>
+    <rect x="56"  y="56" width="26" height="26" fill="#93c5fd"/>
+    <rect x="84"  y="56" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="112" y="56" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="140" y="56" width="26" height="26" fill="#f1f5f9"/>
+    <!-- row 3: window drops frame 0 -->
+    <rect x="0"   y="84" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="28"  y="84" width="26" height="26" fill="#dbeafe"/>
+    <rect x="56"  y="84" width="26" height="26" fill="#dbeafe"/>
+    <rect x="84"  y="84" width="26" height="26" fill="#93c5fd"/>
+    <rect x="112" y="84" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="140" y="84" width="26" height="26" fill="#f1f5f9"/>
+    <!-- row 4 -->
+    <rect x="0"   y="112" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="28"  y="112" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="56"  y="112" width="26" height="26" fill="#dbeafe"/>
+    <rect x="84"  y="112" width="26" height="26" fill="#dbeafe"/>
+    <rect x="112" y="112" width="26" height="26" fill="#93c5fd"/>
+    <rect x="140" y="112" width="26" height="26" fill="#f1f5f9"/>
+    <!-- row 5 -->
+    <rect x="0"   y="140" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="28"  y="140" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="56"  y="140" width="26" height="26" fill="#f1f5f9"/>
+    <rect x="84"  y="140" width="26" height="26" fill="#dbeafe"/>
+    <rect x="112" y="140" width="26" height="26" fill="#dbeafe"/>
+    <rect x="140" y="140" width="26" height="26" fill="#93c5fd"/>
+  </g>
+  <text x="40" y="928" font-size="11" fill="#555">dark = intra-frame (bidirectional) · light = causal window · gray = masked,</text>
+  <text x="40" y="943" font-size="11" fill="#555">skipped for real by FlexAttention (dense SDPA pays for gray anyway — measured flat in W)</text>
+
+  <!-- trunk box -->
+  <rect x="260" y="736" width="420" height="170" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="470" y="762" text-anchor="middle" font-size="15" font-weight="bold" fill="#7c2d12">CausalFrameTransformer — 8L / 8H / 512</text>
+  <text x="470" y="784" text-anchor="middle" font-size="12" fill="#7c2d12">pre-LN GPT blocks · attention_impl: flex</text>
+  <text x="470" y="804" text-anchor="middle" font-size="12" fill="#7c2d12">episode_length 32 &gt; window 16 — supervision density</text>
+  <text x="470" y="820" text-anchor="middle" font-size="12" fill="#7c2d12">decoupled from context depth: cost linear in frames</text>
+  <text x="470" y="844" text-anchor="middle" font-size="12" fill="#7c2d12">regularizers: drop-path 0→0.1 ramp · label-smoothed</text>
+  <text x="470" y="860" text-anchor="middle" font-size="12" fill="#7c2d12">focal (ε=0.1, focal factor on true class only)</text>
+  <text x="470" y="884" text-anchor="middle" font-size="12" fill="#7c2d12">32 fr × batch 24 = 768 slots/step ≈ 1.05× old step time</text>
+
+  <!-- vq-bet head -->
+  <rect x="720" y="736" width="420" height="170" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="930" y="762" text-anchor="middle" font-size="15" font-weight="bold" fill="#7c2d12">VQ-BeT joint chunk head (#258, unchanged)</text>
+  <text x="930" y="786" text-anchor="middle" font-size="12" fill="#7c2d12">at EVERY frame's readout token:</text>
+  <text x="930" y="806" text-anchor="middle" font-size="12" fill="#7c2d12">code head → 4×16 logits (focal, wd 0.2)</text>
+  <text x="930" y="826" text-anchor="middle" font-size="12" fill="#7c2d12">offset table gathered at GT codes (teacher-forced, L1)</text>
+  <text x="930" y="850" text-anchor="middle" font-size="12" fill="#7c2d12">frozen chunk tokenizer y74asdtd:v9</text>
+  <text x="930" y="870" text-anchor="middle" font-size="12" fill="#1e3a8a">frozen: RVQ codebooks (blue)</text>
+  <text x="930" y="890" text-anchor="middle" font-size="12" fill="#7c2d12">17/32 readouts train under the FULL served window</text>
+
+  <line x1="680" y1="820" x2="720" y2="820" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===================== BAND 4: serving ===================== -->
+  <text x="30" y="985" font-size="16" font-weight="bold" fill="#1a1a2e">4 · Serving — KV-cached decode step (per 333 ms control tick)</text>
+
+  <rect x="40" y="1005" width="250" height="60" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="165" y="1030" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">1 NEW frame only</text>
+  <text x="165" y="1049" text-anchor="middle" font-size="12" fill="#555">encode 257 tokens (not 6×257)</text>
+
+  <rect x="340" y="1005" width="330" height="150" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="505" y="1030" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">trunk.step()</text>
+  <text x="505" y="1052" text-anchor="middle" font-size="12" fill="#7c2d12">257 queries vs (cached ∪ new) keys/values</text>
+  <text x="505" y="1072" text-anchor="middle" font-size="12" fill="#7c2d12">old frames NEVER recomputed or re-attended</text>
+  <text x="505" y="1092" text-anchor="middle" font-size="12" fill="#7c2d12">final block computes the readout position only</text>
+  <text x="505" y="1116" text-anchor="middle" font-size="12" fill="#7c2d12">cos/sin host-computed inputs — zero trig in graph</text>
+  <text x="505" y="1136" text-anchor="middle" font-size="12" fill="#7c2d12">cold = warm (cache_bias masks unfilled slots)</text>
+
+  <line x1="290" y1="1035" x2="340" y2="1035" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="720" y="1005" width="420" height="150" rx="8" fill="#dcfce7" stroke="#22c55e"/>
+  <text x="930" y="1030" text-anchor="middle" font-size="14" font-weight="bold" fill="#14532d">host-side ring: per-layer K/V, W−1 = 15 frames</text>
+  <text x="930" y="1052" text-anchor="middle" font-size="12" fill="#14532d">read-only engine inputs · new frame's K/V are outputs</text>
+  <text x="930" y="1072" text-anchor="middle" font-size="12" fill="#14532d">eviction by age never invalidates retained K/V</text>
+  <text x="930" y="1092" text-anchor="middle" font-size="12" fill="#14532d">cleared on engage / disengage / override</text>
+  <text x="930" y="1116" text-anchor="middle" font-size="12" fill="#14532d">8 MiB per cached frame (this trunk) — memory is</text>
+  <text x="930" y="1132" text-anchor="middle" font-size="12" fill="#14532d">not the binding constraint on Orin</text>
+
+  <line x1="720" y1="1060" x2="670" y2="1060" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="670" y1="1100" x2="720" y2="1100" stroke="#f97316" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="695" y="1050" text-anchor="middle" font-size="10" fill="#14532d">read</text>
+  <text x="695" y="1116" text-anchor="middle" font-size="10" fill="#7c2d12">write</text>
+
+  <!-- measured latency -->
+  <rect x="40" y="1195" width="1100" height="130" rx="8" fill="#fff" stroke="#94a3b8"/>
+  <text x="60" y="1222" font-size="14" font-weight="bold" fill="#1a1a2e">Measured — AGX Orin (delta-dev1), TRT, pinned 918 MHz, this 8L/512 trunk</text>
+  <text x="60" y="1248" font-size="13" fill="#333">block-causal baseline (6-frame window, full recompute): <tspan font-weight="bold">200.9 ms</tspan> — does not fit the 333 ms tick with headroom</text>
+  <text x="60" y="1272" font-size="13" fill="#333">causal decode, fp32: <tspan font-weight="bold">41.8 ms</tspan> @ 6 frames (4.8×) · <tspan font-weight="bold">59.6 ms</tspan> @ W=16 (this arm) · 92.3 ms @ 32 · 160.5 ms @ 64</text>
+  <text x="60" y="1296" font-size="13" fill="#333">causal decode, fp16 (one fused MHA kernel/layer): <tspan font-weight="bold">10.5 ms</tspan> @ 6 · <tspan font-weight="bold">27.2 ms</tspan> @ 32 · 45.7 ms @ 64 — parity ladder pending on trained weights</text>
+  <text x="60" y="1316" font-size="12" fill="#555">streaming ≡ full-window recompute verified to 1.8e-15 (fp64); window-absolute control fails by 5 orders of magnitude</text>
+
+  <text x="590" y="1360" text-anchor="middle" font-size="13" fill="#555">training run: vague-shape-587 (do8m9ot8) · branch feat/patch-policy-decoder-causal · docs/decoder_only_kv_cache.md</text>
+  <text x="590" y="1382" text-anchor="middle" font-size="13" fill="#555">same per-timestep training cost as PR #265 (768 frame-slots/step), 2.7× the served context, 3.4–19× cheaper per tick</text>
+</svg>

@@ -23,6 +23,14 @@ from rmind.components.objectives.base import (
 )
 from rmind.utils.functional import gauss_prob, non_zero_signal_with_threshold
 
+# (modality, name) of the last-timestep tokens concatenated into the head input,
+# in order. Tokens spanning more than one position (e.g. waypoints) are averaged.
+DEFAULT_FEATURES: tuple[tuple[str, str], ...] = (
+    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
+    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
+    (Modality.CONTEXT, "waypoints"),
+)
+
 
 @final
 class PolicyObjective(Objective):
@@ -34,6 +42,7 @@ class PolicyObjective(Objective):
         heads: InstanceOf[ModuleDict],
         losses: InstanceOf[ModuleDict] | None = None,
         targets: Targets | None = None,
+        features: tuple[tuple[str, str], ...] = DEFAULT_FEATURES,
     ) -> None:
         super().__init__()
 
@@ -41,6 +50,7 @@ class PolicyObjective(Objective):
         self.heads: ModuleDict = heads
         self.losses: ModuleDict | None = losses
         self.targets: Targets | None = targets
+        self.features: tuple[tuple[str, str], ...] = features
 
     @override
     def forward(self, episode: Episode, embedding: Tensor) -> TensorDict:
@@ -53,47 +63,23 @@ class PolicyObjective(Objective):
             match nk:
                 case (Modality.CONTINUOUS, _):
                     return x[..., 0]
-                case (Modality.DISCRETE, "turn_signal"):
+                case (Modality.DISCRETE, _):
                     return non_zero_signal_with_threshold(x).class_idx
                 case _:
                     raise NotImplementedError
 
         return TensorDict(logits).named_apply(fn, nested_keys=True)  # ty:ignore[invalid-return-type, invalid-argument-type]
 
-    def _compute_logits(self, *, episode: Episode, embedding: Tensor) -> TensorTree:
-        _b, _ = episode.input.batch_size
+    def _build_features(self, *, episode: Episode, embedding: Tensor) -> Tensor:
+        embeddings = episode.index[-1].select(*self.features).parse(embedding)
 
-        embeddings = (
-            episode
-            .index[-1]
-            .select(
-                (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                (Modality.CONTEXT, "waypoints"),
-            )
-            .parse(embedding)
-        )
-
-        observation_history = embeddings.get((
-            Modality.SUMMARY,
-            SummaryToken.OBSERVATION_HISTORY,
-        ))
-
-        observation_summary = embeddings.get((
-            Modality.SUMMARY,
-            SummaryToken.OBSERVATION_SUMMARY,
-        ))
-
-        waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-            dim=1, keepdim=True
-        )
-
-        features = rearrange(
-            [observation_summary, observation_history, waypoints],
+        return rearrange(
+            [embeddings.get(key).mean(dim=-2, keepdim=True) for key in self.features],
             "i b 1 d -> b 1 (i d)",
         )
 
-        return self.heads(features)
+    def _compute_logits(self, *, episode: Episode, embedding: Tensor) -> TensorTree:
+        return self.heads(self._build_features(episode=episode, embedding=embedding))
 
     @override
     def compute_metrics(self, *, episode: Episode, embedding: Tensor) -> Metrics:
@@ -154,36 +140,7 @@ class PolicyObjective(Objective):
                     embedding
                 )
 
-            embeddings = (
-                episode
-                .index[-1]
-                .select(
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_HISTORY),
-                    (Modality.SUMMARY, SummaryToken.OBSERVATION_SUMMARY),
-                    (Modality.CONTEXT, "waypoints"),
-                )
-                .parse(embedding)
-            )
-
-            observation_history = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_HISTORY,
-            ))
-
-            observation_summary = embeddings.get((
-                Modality.SUMMARY,
-                SummaryToken.OBSERVATION_SUMMARY,
-            ))
-
-            waypoints = embeddings.get((Modality.CONTEXT, "waypoints")).mean(
-                dim=1, keepdim=True
-            )
-
-            features = rearrange(
-                [observation_summary, observation_history, waypoints],
-                "i b 1 d -> b 1 (i d)",
-            )
-
+            features = self._build_features(episode=episode, embedding=embedding)
             logits = TensorDict(self.heads(features), batch_size=[b, 1])
 
             timestep_index = slice(-1, None)
@@ -197,7 +154,7 @@ class PolicyObjective(Objective):
                     match action_type:
                         case (Modality.CONTINUOUS, _):
                             return x[..., 0]
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             return non_zero_signal_with_threshold(x).class_idx
                         case _:
                             msg = f"Invalid action type: {action_type}"
@@ -217,7 +174,7 @@ class PolicyObjective(Objective):
                         case (Modality.CONTINUOUS, _):
                             return torch.sqrt(torch.exp(x[..., 1]))
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             return torch.zeros_like(x[..., 0])  # placeholder
                         case _:
                             msg = f"Invalid action type: {action_type}"
@@ -239,7 +196,7 @@ class PolicyObjective(Objective):
                             std = torch.sqrt(torch.exp(x[..., 1]))
                             return gauss_prob(mean, mean=mean, std=std)
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             return non_zero_signal_with_threshold(x).prob
 
                         case _:
@@ -262,7 +219,7 @@ class PolicyObjective(Objective):
                             std = torch.sqrt(torch.exp(x[..., 1]))
                             return -torch.log(gauss_prob(mean, mean=mean, std=std))
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             gt = episode.input[action_type][:, -1]
                             return F.cross_entropy(
                                 x.squeeze(1),
@@ -289,7 +246,7 @@ class PolicyObjective(Objective):
                         case (Modality.CONTINUOUS, _):
                             return F.l1_loss(x[..., 0], gt, reduction="none")  # ty:ignore[invalid-argument-type]
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             return F.l1_loss(
                                 non_zero_signal_with_threshold(x).class_idx.float(),
                                 gt.float(),
@@ -319,7 +276,7 @@ class PolicyObjective(Objective):
                             prediction = x[..., 0]  # (b, 1)
                             return (prediction - gt).abs() / (gt.abs() + 1e-4)
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             return F.l1_loss(
                                 non_zero_signal_with_threshold(x).class_idx.float(),
                                 gt.float(),
@@ -345,7 +302,7 @@ class PolicyObjective(Objective):
                         case (Modality.CONTINUOUS, _):
                             return x[..., 0] - gt  # ty:ignore[unsupported-operator]
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             return (
                                 non_zero_signal_with_threshold(x).class_idx.float()
                                 - gt.float()
@@ -374,7 +331,7 @@ class PolicyObjective(Objective):
                             prediction = x[..., 0]  # (b, 1)
                             return prediction - gt_prev
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             prediction = non_zero_signal_with_threshold(
                                 x
                             ).class_idx  # (b, 1)
@@ -403,7 +360,7 @@ class PolicyObjective(Objective):
                         case (Modality.CONTINUOUS, _):
                             return gt - gt_prev
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             return (gt != gt_prev).float()
 
                         case _:
@@ -429,7 +386,7 @@ class PolicyObjective(Objective):
                             prediction = x[..., 0]  # (b, 1)
                             return prediction - gt_hist
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             gt_hist = torch.mode(gt_episode, dim=1).values  # (b, 1)
                             prediction = non_zero_signal_with_threshold(
                                 x
@@ -459,7 +416,7 @@ class PolicyObjective(Objective):
                             gt_hist = gt_episode.mean(dim=1)  # (b, 1)
                             return gt - gt_hist
 
-                        case (Modality.DISCRETE, "turn_signal"):
+                        case (Modality.DISCRETE, _):
                             gt_hist = torch.mode(gt_episode, dim=1).values
                             return (gt != gt_hist).float()
 

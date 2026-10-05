@@ -59,6 +59,15 @@ episode_builder:
           discrete:
             turn_signal: [data, meta/VehicleState/turn_signal]
 
+      - _target_: rmind.components.nn.ChunkFields
+        episode_length: ${episode_length}
+        action_horizon: ${action_horizon}
+        unfold_paths:
+          - [continuous, gas_pedal]
+          - [continuous, brake_pedal]
+          - [continuous, steering_angle]
+          - [discrete, turn_signal]
+
       - _target_: rmind.components.containers.ModuleDict
         modules:
           image:
@@ -87,34 +96,55 @@ episode_builder:
               _target_: rmind.components.nn.AtLeast3D
 
             gas_pedal_diff:
-              _target_: rmind.components.nn.DiffLast
-              append:
-                _target_: hydra.utils.get_object
-                path: math.nan
+              _target_: rmind.components.nn.Sequential
+              _args_:
+                # drop the action_horizon=1 chunk axis so DiffLast diffs over T
+                - _target_: rmind.components.nn.Squeeze
+                  dim: -1
+                - _target_: rmind.components.nn.DiffLast
+                  append:
+                    _target_: hydra.utils.get_object
+                    path: math.nan
 
             brake_pedal:
               _target_: rmind.components.nn.AtLeast3D
 
             brake_pedal_diff:
-              _target_: rmind.components.nn.DiffLast
-              append:
-                _target_: hydra.utils.get_object
-                path: math.nan
+              _target_: rmind.components.nn.Sequential
+              _args_:
+                - _target_: rmind.components.nn.Squeeze
+                  dim: -1
+                - _target_: rmind.components.nn.DiffLast
+                  append:
+                    _target_: hydra.utils.get_object
+                    path: math.nan
 
             steering_angle:
               _target_: rmind.components.nn.AtLeast3D
 
             steering_angle_diff:
-              _target_: rmind.components.nn.DiffLast
-              append:
-                _target_: hydra.utils.get_object
-                path: math.nan
+              _target_: rmind.components.nn.Sequential
+              _args_:
+                - _target_: rmind.components.nn.Squeeze
+                  dim: -1
+                - _target_: rmind.components.nn.DiffLast
+                  append:
+                    _target_: hydra.utils.get_object
+                    path: math.nan
 
           discrete:
             _target_: rmind.components.nn.AtLeast3D
 
           context:
             _target_: torch.nn.Identity
+
+      - _target_: rmind.components.nn.StackFields
+        out_key: joint_actions
+        paths:
+          gas_pedal: [continuous, gas_pedal]
+          brake_pedal: [continuous, brake_pedal]
+          steering_angle: [continuous, steering_angle]
+          turn_signal: [discrete, turn_signal]
 
   tokenizers:
     _target_: rmind.components.containers.ModuleDict
@@ -168,6 +198,11 @@ episode_builder:
       context:
         waypoints:
           _target_: rmind.components.nn.Identity
+
+      joint_actions:
+        _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
+        artifact: yaak/rmind/model-m35hyvbp:v9
+        weights_only: false
 
   embeddings:
     _target_: rmind.components.containers.ModuleDict
@@ -229,6 +264,8 @@ episode_builder:
         _target_: rmind.components.nn.Embedding
         num_embeddings: 1
         embedding_dim: ${encoder_embedding_dim}
+
+      joint_actions: null
 
   projections:
     _target_: rmind.components.containers.ModuleDict
@@ -292,6 +329,8 @@ episode_builder:
         in_features: ${encoder_embedding_dim}
         out_features: ${encoder_embedding_dim}
 
+      joint_actions: null
+
   role_encoding: # (modality, type)
     _target_: rmind.components.nn.Embedding
     num_embeddings: 8
@@ -330,57 +369,35 @@ objectives:
   _convert_: all
   modules:
     inverse_dynamics:
-      _target_: rmind.components.objectives.InverseDynamicsPredictionObjective
+      _target_: rmind.components.objectives.joint_inverse_dynamics.JointInverseDynamicsObjective
       norm:
         _target_: torch.nn.LayerNorm
         normalized_shape: ${encoder_embedding_dim}
-      heads:
+      tokenizer:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          continuous:
-            gas_pedal:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${gas_pedal_bins}
-              bias: False
-            brake_pedal:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${brake_pedal_bins}
-              bias: False
-            steering_angle:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${steering_angle_bins}
-              bias: False
-          discrete:
-            turn_signal:
-              _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: 3
-              bias: False
-
-      targets:
-        continuous:
-          gas_pedal: [input_tokens, continuous, gas_pedal]
-          brake_pedal: [input_tokens, continuous, brake_pedal]
-          steering_angle: [input_tokens, continuous, steering_angle]
-        discrete:
-          turn_signal: [input_tokens, discrete, turn_signal]
-
+          joint:
+            actions:
+              _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
+              artifact: yaak/rmind/model-m35hyvbp:v9
+              weights_only: false
       losses:
         _target_: rmind.components.containers.ModuleDict
         modules:
-          continuous:
-            gas_pedal:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-            brake_pedal:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-            steering_angle:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
-          discrete:
-            turn_signal:
-              _target_: rmind.components.loss.LogitBiasCrossEntropyLoss
+          joint:
+            actions:
+              _target_: rmind.components.loss.FocalLoss
+      heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          joint:
+            actions:
+              _target_: torchvision.ops.MLP
+              in_channels: ${encoder_embedding_dim}
+              hidden_channels: [384, 384, 64]
+      targets:
+        joint:
+          actions: [input_tokens, joint_actions]
 
     forward_dynamics:
       _target_: rmind.components.objectives.ForwardDynamicsPredictionObjective

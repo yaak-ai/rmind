@@ -1,0 +1,18 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2
+  - override /model: yaak/patch_policy/continuation
+  - _self_
+
+# Continuation of the dinov2 arm (dashing-dream-514 / wxyp0bzq) after its
+# 10-epoch cosine run: another 10 epochs at CONSTANT lr 3e-5, no warmup,
+# fresh optimizer state (the first run had not converged).
+continuation_artifact: ???
+lr: 3e-5
+
+# NOTE: pass seed=1338 on the CLI for a fresh data order -- setting it here is
+# ineffective (train.yaml's _self_ overrides experiment values for `seed`).
+
+wandb:
+  tags: [patch_policy, dinov2, continuation, from-dashing-dream-514, from-wxyp0bzq]

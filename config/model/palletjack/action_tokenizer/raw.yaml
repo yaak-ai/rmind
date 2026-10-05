@@ -1,0 +1,79 @@
+_target_: rmind.models.action_tokenizer.ActionTokenizer
+_recursive_: false
+_convert_: all
+
+# The dataset already emits the policy's action units: traction and fork1 as
+# percent/100, steering as recorded - all three in [-1, 1] - so there is nothing
+# to normalize here. Keep these names and units in step with the policy dataset,
+# whose chunks this tokenizer will encode.
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: rmind.components.nn.Remapper
+      paths:
+        continuous:
+          traction: [data, traction]
+          steering: [data, steering]
+          fork1: [data, fork1]
+    - _target_: rmind.components.containers.ModuleDict
+      modules:
+        continuous:
+          _target_: rmind.components.nn.Identity
+
+encoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.nn.Linear
+      in_features: ${action_dim}
+      out_features: ${action_hidden_dim}
+    - _target_: torch.nn.GELU
+    - _target_: rmind.components.nn.Linear
+      in_features: ${action_hidden_dim}
+      out_features: ${action_latent_dim}
+
+quantizer:
+  _target_: rmind.components.vq.ResidualVQ
+  dim: ${action_latent_dim}
+  codebook_size: ${codebook_size}
+  num_quantizers: ${num_quantizers}
+
+decoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.nn.Linear
+      in_features: ${action_latent_dim}
+      out_features: ${action_hidden_dim}
+    - _target_: torch.nn.GELU
+    - _target_: rmind.components.nn.Linear
+      in_features: ${action_hidden_dim}
+      out_features: ${action_dim}
+
+# order is the per-step action layout of a chunk: [traction, steering, fork1]
+targets:
+  continuous:
+    traction: [continuous, traction]
+    steering: [continuous, steering]
+    fork1: [continuous, fork1]
+
+commitment_weight: 1.0
+vq_weight: 5.0
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: ${lr}
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}

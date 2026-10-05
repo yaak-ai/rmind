@@ -1,0 +1,132 @@
+---
+# Image-only palletjack policy: the episode carries a single camera and the model
+# regresses the three actuations for the last timestep. No action history, no
+# proprioception — so the kit feeds exactly one tensor at inference.
+#
+# The actions stay in the input transform (the policy needs them as regression
+# targets) but are deliberately not tokens: `embeddings`/`projections` are null
+# for them and they are absent from `timestep`.
+defaults:
+  - /model/palletjack/control_transformer/episode_builder@episode_builder: default
+  - _self_
+
+_target_: rmind.models.control_transformer.ControlTransformer
+_recursive_: false
+_convert_: all
+
+episode_builder:
+  timestep:
+    - [observation, image, cam_left_backward]
+    - [special, foresight, cam_left_backward]
+    - [special, summary, observation_summary]
+    - [special, summary, observation_history]
+
+  embeddings:
+    modules:
+      continuous:
+        traction: null
+        steering: null
+        fork1: null
+
+  projections:
+    modules:
+      continuous:
+        traction: null
+        steering: null
+        fork1: null
+
+encoder:
+  _target_: rmind.utils.functional.compiled
+  backend: inductor
+  module:
+    _target_: rmind.components.transformer.TransformerEncoder
+    dim_model: ${encoder_embedding_dim}
+    num_layers: ${num_layers}
+    num_heads: ${num_heads}
+    attn_dropout: 0.1
+    resid_dropout: 0.1
+    mlp_dropout: 0.1
+    hidden_layer_multiplier: 1
+    emb_norm:
+      _target_: torch.nn.LayerNorm
+      normalized_shape: ${encoder_embedding_dim}
+    rope:
+      _target_: rmind.components.position_encoding.RotaryPositionalEmbeddings
+      dim:
+        _target_: operator.floordiv
+        _args_:
+          - ${encoder_embedding_dim}
+          - ${num_heads}
+      max_seq_len: 256
+      base: 10
+
+objectives:
+  _target_: rmind.components.containers.ModuleDict
+  _convert_: all
+  modules:
+    policy:
+      _target_: rmind.components.objectives.PolicyObjective
+      norm:
+        _target_: torch.nn.LayerNorm
+        normalized_shape: ${encoder_embedding_dim}
+
+      # no waypoint context on a palletjack: the head sees the two summary tokens
+      features:
+        - [summary, observation_summary]
+        - [summary, observation_history]
+
+      heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            traction:
+              _target_: torchvision.ops.MLP
+              in_channels: ${policy_in_channels}
+              hidden_channels: ["${encoder_embedding_dim}", 2]
+              bias: false
+            steering:
+              _target_: torchvision.ops.MLP
+              in_channels: ${policy_in_channels}
+              hidden_channels: ["${encoder_embedding_dim}", 2]
+              bias: false
+            fork1:
+              _target_: torchvision.ops.MLP
+              in_channels: ${policy_in_channels}
+              hidden_channels: ["${encoder_embedding_dim}", 2]
+              bias: false
+
+      targets:
+        continuous:
+          traction: [input, continuous, traction]
+          steering: [input, continuous, steering]
+          fork1: [input, continuous, fork1]
+
+      losses:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            traction:
+              _target_: rmind.components.loss.GaussianNLLLoss
+            steering:
+              _target_: rmind.components.loss.GaussianNLLLoss
+            fork1:
+              _target_: rmind.components.loss.GaussianNLLLoss
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: 1e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${warmup_steps}
+    num_training_steps: ${training_steps}

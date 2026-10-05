@@ -1,0 +1,53 @@
+# @package _global_
+
+# Residual-VQ action tokenizer (VQ-BeT) on D12 action chunks: the frozen code
+# space a chunked PatchPolicy head would classify into.
+#
+#   just train experiment=palletjack/action_tokenizer/pretrain
+#
+# Actions only - no frames, pose or dropoff - so it trains on every job with an
+# action stream, including ones the policy dataset refuses (see
+# config/_templates/dataset/palletjack/d12_actions.lib.yml). Judge it on val
+# `recon` (L1 in action units, [-1, 1]) and `perplexity/q*`: a perplexity far
+# below `codebook_size` means dead codes, and the data is small enough that this
+# is the thing to watch.
+defaults:
+  - /model: palletjack/action_tokenizer/raw
+  - /datamodule: palletjack/d12_actions
+  - /trainer: default
+  - /trainer/callbacks: palletjack_action_tokenizer
+  - /paths: palletjack/default
+  - /wandb: palletjack/default
+  - _self_
+
+# A chunk is `action_clip` steps `action_step` raw (30Hz) frames apart: 6 x 3 =
+# 6 steps at 10Hz, 0.6s - the policy's rate (`every_nth: 3`). This MUST equal
+# the policy's `action_horizon`/rate; a tokenizer fitted on another chunk shape
+# cannot be used by it.
+action_clip: 6
+action_step: 3
+# nominal step is 100ms; a dropped camera frame makes it ~133ms
+max_frame_gap_ms: 200
+
+action_space: 3 # traction, steering, fork1
+action_dim: "${eval:'${action_space} * ${action_clip}'}"
+action_hidden_dim: 128
+action_latent_dim: 384
+
+# same code space as the car tokenizer (16^4)
+codebook_size: 16
+num_quantizers: 4
+
+# a tiny MLP on ~40k chunks: a faster lr and far fewer steps than the car's
+# 5.5e-5 over 50k
+lr: 1e-3
+lr_warmup_steps: 200
+lr_total_steps: 10000
+
+trainer:
+  max_steps: ${lr_total_steps}
+  max_epochs: -1
+  log_every_n_steps: 20
+
+wandb:
+  tags: [palletjack, action_tokenizer, d12]

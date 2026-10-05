@@ -154,6 +154,57 @@ def model_yaak_control_transformer_raw(
     return instantiate(cfg.model.yaak.control_transformer)
 
 
+def _palletjack_model(name: str, overrides: list[str]) -> ControlTransformer:
+    with initialize(version_base=None, config_path=CONFIG_PATH):
+        cfg = compose(
+            f"model/palletjack/control_transformer/{name}",
+            overrides=[
+                "+num_heads=1",
+                "+num_layers=1",
+                "+encoder_embedding_dim=8",
+                "+image_embedding_dim=384",
+                "+traction_bins=255",
+                "+steering_bins=511",
+                "+fork1_bins=127",
+                # the real transform is supplied by the experiment config
+                "+image_transform={_target_:torch.nn.Identity}",
+                *overrides,
+            ],
+        )
+
+    return instantiate(cfg.model.palletjack.control_transformer)
+
+
+@pytest.fixture
+def model_palletjack_control_transformer_raw() -> ControlTransformer:
+    return _palletjack_model("raw", [])
+
+
+@pytest.fixture
+def model_palletjack_control_transformer_policy() -> ControlTransformer:
+    return _palletjack_model(
+        "policy", ["+policy_in_channels=16", "+warmup_steps=1", "+training_steps=2"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("model", "objectives"),
+    [
+        (
+            lf("model_palletjack_control_transformer_raw"),
+            {"inverse_dynamics", "forward_dynamics", "memory_extraction"},
+        ),
+        (lf("model_palletjack_control_transformer_policy"), {"policy"}),
+    ],
+)
+def test_palletjack_config(model: ControlTransformer, objectives: set[str]) -> None:
+    assert set(model.objectives.keys()) == objectives
+
+    parameters = set(model.state_dict())
+    for action in ("traction", "steering", "fork1"):
+        assert any(action in key for key in parameters), action
+
+
 @pytest.mark.parametrize("model", [lf("control_transformer")])
 def test_fit(
     trainer: pl.Trainer, model: pl.LightningModule, datamodule: pl.LightningDataModule
