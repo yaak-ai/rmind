@@ -122,7 +122,7 @@ class ForwardDynamicsPredictionObjective(Objective):
         }
 
     @override
-    def predict(  # noqa: PLR0914
+    def predict(
         self,
         *,
         episode: Episode,
