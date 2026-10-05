@@ -1,0 +1,113 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1a_yaw
+  - _self_
+
+# traj-drift R1b: R1a + clip-constant photometric jitter (colour jitter, blur,
+  # noise, JPEG round trip; rmind.components.augment.ClipPhotometric, train only).
+# input_transform re-stated fully (lists merge by replacement); the only
+# difference from R1a is ClipPhotometric between ToDtype and ImageNormalize.
+
+model:
+  input_transform:
+    _target_: torch.nn.Sequential
+    _convert_: all
+    _args_:
+      - _target_: rmind.components.nn.Remapper
+        paths:
+          image:
+            cam_front_left: [data, cam_front_left]
+          continuous:
+            speed: [data, meta/VehicleMotion/speed]
+            gas_pedal: [data, meta/VehicleMotion/gas_pedal_normalized]
+            brake_pedal: [data, meta/VehicleMotion/brake_pedal_normalized]
+            steering_angle: [data, meta/VehicleMotion/steering_angle_normalized]
+          context:
+            waypoints: [data, waypoints/xy_normalized]
+            heading: [data, headings_denoised/heading]
+            time_stamp: [data, "meta/ImageMetadata.cam_front_left/time_stamp"]
+          discrete:
+            turn_signal: [data, meta/VehicleState/turn_signal]
+
+      - _target_: rmind.components.nn.TrajectoryTarget
+        speed: [continuous, speed]
+        heading: [context, heading]
+        time_stamp: [context, time_stamp]
+        out: [context, trajectory_target]
+        episode_length: ${episode_length}
+        num_poses: ${trajectory_horizon}
+
+      - _target_: rmind.components.nn.ChunkFields
+        episode_length: ${episode_length}
+        action_horizon: ${action_horizon}
+        unfold_paths:
+          - [continuous, gas_pedal]
+          - [continuous, brake_pedal]
+          - [continuous, steering_angle]
+          - [discrete, turn_signal]
+
+      # train-only: shifted 512-wide window + matching rotation of
+      # context.trajectory_target / context.waypoints; identity in eval
+      - _target_: rmind.components.augment.YawShiftCrop
+        crop_width: 512
+        fx: ${yaw_aug_fx}
+        cameras: [cam_front_left]
+        probability: ${yaw_aug_probability}
+        init_max_deg: ${yaw_aug_init_max_deg}
+        step_std_deg: ${yaw_aug_step_std_deg}
+
+      - _target_: rmind.components.containers.ModuleDict
+        modules:
+          image:
+            _target_: torch.nn.Sequential
+            _args_:
+              - _target_: einops.layers.torch.Rearrange
+                pattern: "... h w c -> ... c h w"
+              # 512 wide (was 576): the 32 px margins are YawShiftCrop's
+              # +-4.7 deg range. Serving must crop the same centre window.
+              - _target_: torchvision.transforms.v2.CenterCrop
+                size: [320, 512]
+              - _target_: torchvision.transforms.v2.Resize
+                size: ${image_resize}
+              - _target_: torchvision.transforms.v2.ToDtype
+                scale: true
+                dtype:
+                  _target_: hydra.utils.get_object
+                  path: torch.float32
+              - _target_: rmind.components.augment.ClipPhotometric
+                brightness: 0.2
+                contrast: 0.2
+                saturation: 0.2
+                hue: 0.02
+                blur_p: 0.3
+                noise_p: 0.3
+                jpeg_p: 0.3
+              - _target_: rmind.components.norm.ImageNormalize
+                mean: [0.485, 0.456, 0.406]
+                std: [0.229, 0.224, 0.225]
+          continuous:
+            _target_: rmind.components.nn.AtLeast3D
+          discrete:
+            _target_: rmind.components.nn.AtLeast3D
+          context:
+            _target_: torch.nn.Identity
+
+      # hood band + fisheye arcs blanked in train AND eval (in the export
+      # graph): fixed to the camera, they would otherwise move with
+      # YawShiftCrop's shift and give psi away
+      - _target_: rmind.components.augment.FixedFrameMask
+        cameras: [cam_front_left]
+        size: ${image_resize}
+        max_shift: 32
+        hood_row: 255
+
+      - _target_: rmind.components.nn.StackFields
+        out_key: joint_actions
+        paths:
+          gas_pedal: [continuous, gas_pedal]
+          brake_pedal: [continuous, brake_pedal]
+          steering_angle: [continuous, steering_angle]
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal, neighbor_smoothing, readout_registers, retile, trajectory_head, mode_head, turn_signal_head, dropout, depth_anything_v2, yaw_aug, frame_mask, photometric]

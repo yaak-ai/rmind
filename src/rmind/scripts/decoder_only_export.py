@@ -125,7 +125,7 @@ def build_policy(arm: str, *, episode_length: int) -> tuple[Any, int, int, int]:
     model = instantiate(OmegaConf.to_container(cfg.model, resolve=True))
     model.sample_codes = False  # argmax decoding, as `load_for_export` does
     # deployment supplies already-cropped/resized [0,1] frames; ImageNet norm only
-    model.input_transform[2]["image"] = Normalize(
+    model.modality_transforms()["image"] = Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
     )
     # the frozen artifacts were checkpointed on cuda and raw.yaml passes no
@@ -174,7 +174,7 @@ def load_trained_policy(*, artifact: str | None, ckpt: str | None) -> Any:
         ckpt, map_location="cpu", weights_only=False
     )
     model.sample_codes = False
-    model.input_transform[2]["image"] = Normalize(
+    model.modality_transforms()["image"] = Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
     )
     return model.cpu().eval()

@@ -1,0 +1,45 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1b_yaw_photo
+  - _self_
+
+# traj-drift R1b + R2 bundled: yaw-shift augmentation + photometric jitter +
+# hood/arc mask (R1b), with LayerNorm + GELU trajectory/mode heads (R2).
+# The R2 head keys are restated here rather than pulled in as a second default:
+# both parents share the base experiment's defaults, which Hydra rejects twice.
+
+model:
+  trajectory_head:
+    norm_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+    activation_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.GELU
+  mode_head:
+    norm_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+    activation_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.GELU
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm_causal,
+      neighbor_smoothing,
+      readout_registers,
+      retile,
+      trajectory_head,
+      mode_head,
+      turn_signal_head,
+      dropout,
+      depth_anything_v2,
+      yaw_aug,
+      frame_mask,
+      photometric,
+      head_ln_gelu,
+    ]

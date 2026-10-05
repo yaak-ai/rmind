@@ -1363,11 +1363,26 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         for key, value in kwargs.items():
             setattr(model, key, value)
         model.sample_codes = False
-        # index 2 of the input_transform Sequential is the per-modality ModuleDict
-        model.input_transform[2]["image"] = Normalize(
+        model.modality_transforms()["image"] = Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
         )
         return model.eval()
+
+    def modality_transforms(self) -> ModuleDict:
+        """The per-modality `ModuleDict` inside `input_transform`.
+
+        Located by type, not index: `TrajectoryTarget` and train-time
+        augmentations (`rmind.components.augment.YawShiftCrop`) sit before it,
+        so its position depends on the arm.
+
+        Raises:
+            ValueError: if `input_transform` has no or several `ModuleDict`s.
+        """
+        stages = [m for m in self.input_transform if isinstance(m, ModuleDict)]
+        if len(stages) != 1:
+            msg = f"expected one ModuleDict in input_transform, found {len(stages)}"
+            raise ValueError(msg)
+        return stages[0]
 
     @classmethod
     def load_for_continuation(

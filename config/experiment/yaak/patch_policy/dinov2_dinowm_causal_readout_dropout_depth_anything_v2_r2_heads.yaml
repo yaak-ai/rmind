@@ -1,0 +1,41 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2
+  - _self_
+
+# traj-drift R2: LayerNorm + GELU in the trajectory and mode heads' hidden
+# layers. With plain ReLU, 76% of trajectory_head layer-1 units never fire on
+# 258k val anchors of 2hk1caun:v13 (traj_drift_rmind_R0_results.md (c)).
+# Only the heads change; dict keys merge into dinov3.yaml's head configs.
+model:
+  trajectory_head:
+    norm_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+    activation_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.GELU
+  mode_head:
+    norm_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+    activation_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.GELU
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm_causal,
+      neighbor_smoothing,
+      readout_registers,
+      retile,
+      trajectory_head,
+      mode_head,
+      turn_signal_head,
+      dropout,
+      depth_anything_v2,
+      head_ln_gelu,
+    ]
