@@ -1,0 +1,33 @@
+# Real robot-native episodes through rbyte (config/_templates/dataset/nero/*).
+# `just generate-config` renders the dataset configs from the templates.
+# Batches are flattened from rbyte's `Batch(data=...)` to the plain key layout
+# the model reads (`image.base`, `state`, `action.chunk`, `hand.*`, ...).
+---
+defaults:
+  - /dataset/nero/robot_train@train.dataset
+  - /dataset/nero/robot_val@val.dataset
+  - _self_
+
+_target_: rmind.datamodules.GenericDataModule
+train:
+  _target_: rmind.components.dataloader.DistributedTorchDataNodeDataLoader
+  batch_size: ${batch_size}
+  shuffle: true
+  drop_last: true
+  collate_fn:
+    _target_: rmind.data.nero_robot.flat_rbyte_batch
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+
+val:
+  _target_: rmind.components.dataloader.DistributedTorchDataNodeDataLoader
+  batch_size: ${batch_size}
+  shuffle: false
+  collate_fn:
+    _target_: rmind.data.nero_robot.flat_rbyte_batch
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread

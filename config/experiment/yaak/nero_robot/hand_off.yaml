@@ -1,0 +1,15 @@
+# @package _global_
+# P6 ablation: no hand token at all (tokens_per_frame 481). The baseline the
+# reliance metrics and the hand-on arms are compared against.
+defaults:
+  - /experiment/yaak/nero_robot/causal
+  - _self_
+
+hand_groups: []
+use_hand_token: 0
+reliance_metrics: false
+model:
+  hand_embedding: null
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, hand_off]

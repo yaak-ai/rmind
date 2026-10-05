@@ -13,6 +13,13 @@ episode_length: 6
 action_horizon: 6
 episode_step: 10
 episode_stride: 10
+# clip-grid phase: drop the first `episode_offset` raw frames of every train
+# drive before the stride grid is laid down, shifting all clip starts by the
+# offset (val is never shifted). 0 = today's grid, bit-for-bit. Meaningful
+# values are 0..episode_stride-1; the dataset is rebuilt per LAUNCH, so rotate
+# it across run segments/continuations (offset = epoch % stride), not within
+# one launch -- see dinov2_dinowm_causal.yaml for why.
+episode_offset: 0
 
 # clip_horizon is the dataset build horizon (max over PT/FT) so the built dataset
 # is shared with the control_transformer configs.

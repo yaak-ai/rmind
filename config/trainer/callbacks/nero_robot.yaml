@@ -1,0 +1,13 @@
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 2
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
+# #269: grad/weight norms per module group, dead-grad fraction, train/val gap
+- _target_: rmind.callbacks.TrainingQualityLogger
+  every_n_steps: 50
+  # P9 alarm: val loss > 2x its train-window mean after warmup
+  val_train_ratio_alarm: 2.0
+  alarm_after_step: ${lr_warmup_steps}

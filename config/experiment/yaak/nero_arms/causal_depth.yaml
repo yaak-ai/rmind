@@ -1,0 +1,141 @@
+# @package _global_
+#
+# DEPTH ARM (contract §22) of the nero-arms causal patch policy -- Max: "I'd
+# include the depth".
+#
+# ⚠️ This is an ADDITIVE, OPT-IN arm (§22.6). `causal.yaml` and
+# `config/model/yaak/nero_patch_policy/raw.yaml` are NOT touched by it, so the
+# depth-OFF model is byte-identical at the config level and bit-identical at the
+# weight level. Depth is measured as an A/B, never assumed to help.
+#
+# WHY A FOURTH CAMERA AND NOT A FOURTH CHANNEL (§22.1)
+# ----------------------------------------------------
+# The disparity stream declares `reference_frame: rectified_CAM_B`,
+# `aligned_to: none` -- it lives in the rectified LEFT MONO camera's frame, a
+# different sensor at a different position with a much wider lens (96.0 deg HFOV
+# against `CAM_A`'s 73.7 deg, §21.8). `setDepthAlign` is deliberately NOT applied
+# upstream because warping invalidates the fx_mono*baseline/disparity conversion.
+# Stacking it onto the overhead RGB would silently misregister every pixel.
+#
+# SEQUENCE LENGTH -- compute it before launching anything (PR #265's lesson):
+#
+#   depth-off: 3 * 160 + 1                = 481 tokens/frame -> 6 * 481 = 2886
+#   depth-on:  3 * 160 + 1 + 1 * 40       = 521 tokens/frame -> 6 * 521 = 3126
+#
+#   +8.3% sequence, ~1.17x attention (quadratic).
+#
+# §22.2 suggested "half the patches" for depth (80 -> 561/frame -> 3366, +16.6%).
+# This arm goes one step coarser -- a 5x8 = 40-token grid -- because disparity
+# carries far less high-frequency information than RGB. The grid falls straight
+# out of the patch size: an 80x128 input at patch 16 IS 5x8, with no pooling
+# anywhere. To take §22.2 literally, use 80x256 at patch 16 for [5, 16].
+#
+# ⚠️ THE ENCODER IS A TRAINABLE Linear, NOT THE FROZEN DINOv2 (§22.7). Routing
+# disparity through the RGB ViT was the first cut here and it was wrong: DINOv2
+# is trained on natural RGB and disparity is a smooth geometric signal, the ViT
+# is frozen so the mismatch is uncorrectable, and a fourth ViT pass costs +33%
+# frozen compute per frame to buy +8% sequence -- the larger cost for the worse
+# representation. Linear(16*16*2 + 13 -> 512) is ~269k TRAINABLE parameters
+# against ~22M frozen, and is cheaper in FLOPs than the pass it replaces.
+
+defaults:
+  - /experiment/yaak/nero_arms/causal
+  - _self_
+
+# --- contract §21/§22 depth stream
+use_depth: true
+# §21.3: the OVERHEAD `base` device only. It looks down at the workspace so
+# disparity maps to table position; the SR side cameras sit near-tangent and
+# localise on-plane objects poorly.
+depth_cameras: [base]
+num_depth_cameras: 1
+# §22.7: the depth stream's own ViT-style patch embedding. 400x640 letterboxes
+# to 80x128 (exactly isotropic), which at patch 16 is a 5x8 = 40-token grid.
+depth_image_height: 80
+depth_image_width: 128
+depth_patch_size: 16
+depth_patch_grid: [5, 8]
+depth_patches: 40 # (80/16) x (128/16)
+# §22.5: depth dropout, applied in training REGARDLESS of how much depth the
+# data has, so the policy never becomes depth-DEPENDENT for basic motion and
+# degrades gracefully when the stream is missing at serving time. None of the 104
+# existing episodes have depth and the recorder's --depth is off by default, so
+# the missing case is the common one and must stay in-distribution.
+depth_dropout: 0.25
+
+# ⚠️ PLACEHOLDER STATISTICS. Contract §22.3 + §5.4 require the disparity
+# standardisation to be fitted on the TRAINING SPLIT ONLY, over VALID pixels
+# only. These two numbers are the moments of a uniform prior over 1..95 and are
+# a stand-in so the config is instantiable; `nero_smoke --stage depth` fits and
+# writes the real artifact. For a real run, replace this block with
+#
+#   depth_standardizer:
+#     _target_: rmind.data.nero.DisparityStandardizer.load
+#     path: ${disparity_standardizer_artifact}
+#
+# which is version-gated on load and fails loudly on a semantics change.
+depth_mean: 48.0
+depth_std: 27.4
+
+model:
+  use_depth: ${use_depth}
+  depth_cameras: ${depth_cameras}
+  depth_patch_size: ${depth_patch_size}
+  depth_patch_grid: ${depth_patch_grid}
+  depth_dropout: ${depth_dropout}
+
+  # 400x640 -> 80x128 is EXACTLY isotropic (x0.2), so this is a pure resize with
+  # NO padding for the contract's depth resolution. It is still a letterbox
+  # and not a Resize, for the same reason as the RGB path (§7.2): an anisotropic
+  # resize scales fx and fy independently and invalidates the normalised
+  # intrinsics in the depth stream's own conditioning vector.
+  #
+  # ⚠️ Resizing DISPARITY would be illegal if the model performed the metric
+  # conversion -- §21.9: a resize scales fx but not the stored disparity values,
+  # so fx*baseline/disparity would be wrong by the resize factor. It is legal
+  # here precisely because §22.3 feeds standardised DISPARITY and the model never
+  # converts to metres. The conversion stays in rbyte, at native resolution.
+  #
+  # NOTE: no ToDtype and no ImageNet Normalize. Disparity is not RGB; its
+  # normalisation is the train-split standardisation below, which is the direct
+  # analogue, and it happens BEFORE this transform so that invalid pixels cannot
+  # bleed into their valid neighbours during interpolation.
+  depth_transform:
+    _target_: rmind.components.image.LetterboxResize
+    size: ["${depth_image_height}", "${depth_image_width}"]
+
+  depth_standardizer:
+    _target_: rmind.data.nero.DisparityStandardizer
+    mean: ${depth_mean}
+    std: ${depth_std}
+    max_disparity: 95 # §21.1 default mode; §21.10 DECLARES it per episode
+    source: PLACEHOLDER-uniform-prior
+
+  # §22.7: per depth token, [ patch_size^2 * 2 channels | camera_cond 13 ].
+  # TWO channels: standardised disparity AND the validity mask, so "no
+  # measurement" is a first-class input rather than something the network must
+  # infer from a fill value (§22.4). Projects straight to d_model -- there is no
+  # frozen feature space to pass through.
+  depth_patch_embedding:
+    _target_: rmind.components.nn.Linear
+    in_features: "${eval:'${depth_patch_size} * ${depth_patch_size} * 2 + ${camera_cond_dim}'}"
+    out_features: ${policy_embedding_dim}
+
+  # ⚠️ MUST be updated together with the token layout. The trunk's tiled
+  # intra-frame embedding and frame-RoPE are indexed by this; a stale value does
+  # not necessarily raise, it tiles WRONG. `nero_smoke --stage budget` asserts
+  # this against the actual `_frame_tokens` output.
+  encoder:
+    tokens_per_frame: "${eval:'${num_cameras} * ${num_patches} + 1 + ${num_depth_cameras} * ${depth_patches}'}"
+
+# The synthetic loader emits the depth stream at the real contract shapes
+# (§21.11: (T, 1, 400, 640) -- LARGER than the RGB tensors, because §21.9
+# forbids resizing depth while §8 downscales RGB).
+datamodule:
+  train:
+    depth: true
+  val:
+    depth: true
+
+wandb:
+  tags: [nero_arms, causal_patch_policy, depth]

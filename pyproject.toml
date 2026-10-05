@@ -21,6 +21,7 @@ dependencies = [
   "hydra-core>=1.3.3",
   "jq>=1.11.0",
   "kornia>=0.8.2",
+  "makefun>=1.16.0",
   "more-itertools>=10.4.0",
   "numpy>2.3.0",
   "omegaconf>=2.3.0",
@@ -28,7 +29,7 @@ dependencies = [
   "polars>=1.41.2",
   "pydantic>=2.13.4",
   "pytorch-lightning>=2.6.5",
-  "rbyte[geo,jpeg,yaak]==0.38.1",
+  "rbyte[jpeg,nero,yaak]",
   "structlog>=26.1.0",
   "tensordict>=0.13.0",
   "timm>=1.0.22",
@@ -94,6 +95,7 @@ build-backend = "hatchling.build"
 DEP001 = ["rmind"]
 DEP002 = [
   "funcy",
+  "makefun",
   "onnx",
   "onnxscript",
   "pytest",
@@ -125,6 +127,11 @@ allow-direct-references = true
 preview = true
 fix = true
 unsafe-fixes = true
+# nero_image.py is pinned by SHA256 in the serving contract (image.preprocessing_sha256)
+# and vendored verbatim by nutron-cli: no tool may rewrite it, even when a hook
+# passes it explicitly (hence force-exclude).
+extend-exclude = ["src/rmind/data/nero_image.py"]
+force-exclude = true
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -173,6 +180,14 @@ constraint-dependencies = [
 ]
 
 [tool.uv.sources]
+# TODO: rbyte's nero ingestion (yaak-ai/rbyte#109, #110, on top of v0.40.0) is not
+# released yet, so rbyte comes from its PR branch, pinned by commit. Once it is
+# released, drop this source and pin `rbyte[jpeg,nero,yaak]==<next release>`.
+rbyte = { git = "https://github.com/yaak-ai/rbyte.git", rev = "3887c67d25150e335d18cf37381faaf80979883d" }
+# rbyte's `yaak` extra needs these, and uv does not read a dependency's own
+# [tool.uv.sources] (same sources as rbyte's pyproject.toml)
+m2df = { git = "ssh://git@github.com/yaak-ai/ydks.git", subdirectory = "crates/m2df" }
+ymmv = { git = "ssh://git@github.com/yaak-ai/ydks.git", subdirectory = "crates/ymmv" }
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
   { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },

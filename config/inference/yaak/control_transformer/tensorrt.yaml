@@ -21,7 +21,7 @@ clip_period: "${eval:'${clip_length} * ${episode_step}'}i"
 datamodule:
   _target_: rmind.datamodules.GenericDataModule
   predict:
-    _target_: rbyte.dataloader.TorchDataNodeDataLoader
+    _target_: rbyte.dataloader.NodeDataLoader
     batch_size: 1
     shuffle: false
     collate_fn:
@@ -40,7 +40,7 @@ datamodule:
           index: meta/ImageMetadata.cam_front_left/frame_idx
           sources:
             drive:
-              _target_: rbyte.io.TorchCodecFrameSource
+              _target_: rbyte.streams.video.TorchCodecVideoSource
               source: ${drive_dir}/cam_front_left.pii.mp4
               dimension_order: NCHW
               output_dtype:
@@ -78,9 +78,9 @@ datamodule:
               mapspec: "${.renames.path}[i] -> ${.output_name}[i]"
               cache: true
               func:
-                _target_: rbyte.io.YaakMetadataDataFrameBuilder
-                fields:
-                  rbyte.io.yaak.proto.sensor_pb2.ImageMetadata:
+                _target_: rbyte.samples.yaak.YaakMetadataReader
+                messages:
+                  ImageMetadata:
                     time_stamp:
                       _target_: polars.Datetime
                       time_unit: us
@@ -97,13 +97,13 @@ datamodule:
                       - cam_left_backward
                       - cam_right_backward
                       - cam_rear
-                  rbyte.io.yaak.proto.can_pb2.VehicleState:
+                  VehicleState:
                     time_stamp:
                       _target_: polars.Datetime
                       time_unit: us
                     turn_signal:
                       _target_: polars.Int64
-                  rbyte.io.yaak.proto.can_pb2.VehicleMotion:
+                  VehicleMotion:
                     time_stamp:
                       _target_: polars.Datetime
                       time_unit: us
@@ -122,7 +122,7 @@ datamodule:
                       - "1"
                       - "2"
                       - "3"
-                  rbyte.io.yaak.proto.sensor_pb2.Gnss:
+                  Gnss:
                     time_stamp:
                       _target_: polars.Datetime
                       time_unit: us
@@ -138,7 +138,7 @@ datamodule:
                 _target_: makefun.create_function
                 func_signature: build_waypoints(*, waypoints_path)
                 func_impl:
-                  _target_: rbyte.io.DuckDBDataFrameQuery
+                  _target_: rbyte.samples.duckdb.DuckDBQuery
                   extensions:
                   - spatial
                   config:
@@ -149,16 +149,31 @@ datamodule:
                     FROM ST_Read($waypoints_path)
 
             - _target_: pipefunc.PipeFunc
-              renames:
-                input: waypoints_raw
               output_name: waypoints
               mapspec: waypoints_raw[i] -> waypoints[i]
               func:
-                _target_: rbyte.io.WaypointBuilder
-                length: 91
-                columns:
-                  points: geometry
-                  output: xy
+                _target_: makefun.create_function
+                func_signature: build_waypoint_windows(*, waypoints_raw)
+                func_impl:
+                  _target_: rbyte.samples.duckdb.DuckDBQuery
+                  extensions: [spatial]
+                  query: |
+                      -- each waypoint and the 90 that follow it, the last one repeated past the
+                      -- end (rbyte<0.40 `WaypointBuilder(length=91)`, dropped in rbyte 0.40)
+                      WITH windows AS (
+                        SELECT
+                          timestamp,
+                          list(geometry) OVER (
+                            ORDER BY idx ROWS BETWEEN CURRENT ROW AND 90 FOLLOWING
+                          ) AS points
+                        FROM (SELECT *, row_number() OVER () AS idx FROM waypoints_raw)
+                      )
+                      SELECT
+                        timestamp,
+                        ST_AsWKB(ST_Collect(list_transform(
+                          list_resize(points, 91, points[-1]), p -> ST_GeomFromWKB(p)
+                        ))) AS xy
+                      FROM windows
 
             - _target_: pipefunc.PipeFunc
               output_name: aligned
@@ -167,7 +182,7 @@ datamodule:
                 _target_: makefun.create_function
                 func_signature: "align(*, meta, waypoints)"
                 func_impl:
-                  _target_: rbyte.io.DataFrameAligner
+                  _target_: rbyte.samples.dataframe.DataFrameAligner
                   separator: /
                   fields:
                     meta:
@@ -219,7 +234,7 @@ datamodule:
                 _target_: makefun.create_function
                 func_signature: "filter(*, aligned)"
                 func_impl:
-                  _target_: rbyte.io.DuckDBDataFrameQuery
+                  _target_: rbyte.samples.duckdb.DuckDBQuery
                   extensions:
                   - spatial
                   query: |
@@ -313,7 +328,7 @@ datamodule:
               output_name: samples
               mapspec: filtered[i] -> samples[i]
               func:
-                _target_: rbyte.io.DataFrameGroupByDynamic
+                _target_: rbyte.samples.dataframe.DataFrameDynamicGrouper
                 index_column: meta/ImageMetadata.cam_front_left/frame_idx
                 every: 10i
                 period: 60i
@@ -327,7 +342,7 @@ datamodule:
                 _target_: makefun.create_function
                 func_signature: cast(*, samples)
                 func_impl:
-                  _target_: rbyte.io.DuckDBDataFrameQuery
+                  _target_: rbyte.samples.duckdb.DuckDBQuery
                   query: |
                     SELECT
                         "meta/ImageMetadata.cam_front_left/time_stamp"[1:6]::TIMESTAMP[6] AS "meta/ImageMetadata.cam_front_left/time_stamp",
@@ -366,7 +381,7 @@ datamodule:
                 values: samples_cast
               output_name: samples_aggregated
               func:
-                _target_: rbyte.io.DataFrameConcater
+                _target_: rbyte.samples.dataframe.DataFrameConcatenator
                 key_column: input_id
 
 trainer:

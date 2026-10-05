@@ -27,7 +27,13 @@ from rmind.components.image import LetterboxResize
 from rmind.components.loss import FocalLoss
 from rmind.components.transformer.causal_frame import CausalFrameTransformer
 from rmind.components.vq import ResidualVQ
-from rmind.data.nero import CAMERA_COND_DIM, NUM_SIDES, SIDE_DIM, STATE_QUAT_DIM
+from rmind.data.nero import (
+    CAMERA_COND_DIM,
+    NUM_SIDES,
+    SIDE_DIM,
+    STATE_QUAT_DIM,
+    DisparityStandardizer,
+)
 from rmind.datamodules.nero_random import CAMERA_NAMES, nero_random_batch
 from rmind.models.nero_patch_policy import NeroPatchPolicy
 from rmind.models.nero_pose_tokenizer import NeroPoseTokenizer
@@ -126,6 +132,12 @@ def _policy(**kwargs: Any) -> NeroPatchPolicy:
 
 
 def _batch(*, both_sides: bool = True, seed: int = 0) -> dict[str, Any]:
+    # ⚠️ `seed` only seeds the POSE generator. The images, `camera_cond` and the
+    # depth stream are drawn from the GLOBAL torch RNG, so two calls with the
+    # same `seed` do NOT agree unless the global stream is pinned too. That is
+    # pre-existing behaviour of `nero_random_batch`, not something depth
+    # introduced -- but any test that compares two batches depends on it.
+    torch.manual_seed(seed)
     return nero_random_batch(
         batch_size=2,
         episode_length=EPISODE_LENGTH,
@@ -583,3 +595,332 @@ def test_goal_dropout_does_not_mutate_the_loader_flag() -> None:
             batch, batch_size=2, device=torch.device("cpu")
         )
     assert bool(flag.all()), "goal dropout mutated the caller's goal_valid tensor"
+
+
+# --------------------------------------------------------------- depth (§22)
+#
+# The depth arm is opt-in (§22.6), so the FIRST thing these assert is that it
+# does not exist unless asked for. The rest make the four §22 claims falsifiable:
+# depth is a fourth CAMERA (not a fourth channel), invalid pixels are masked (not
+# zero-filled), absence is handled by a LEARNED embedding (not zeros), and the
+# per-sample flag is genuinely per-sample.
+
+#: §22.7: the depth stream's own patch embedding. A 4x12 input at patch 4 is a
+#: 1x3 = 3-token grid -- coarser than a camera's 6, as §22.2 asks.
+DEPTH_PATCH_SIZE = 4
+DEPTH_INPUT = (4, 12)
+DEPTH_PATCH_GRID = (
+    DEPTH_INPUT[0] // DEPTH_PATCH_SIZE,
+    DEPTH_INPUT[1] // DEPTH_PATCH_SIZE,
+)
+DEPTH_PATCHES = DEPTH_PATCH_GRID[0] * DEPTH_PATCH_GRID[1]
+#: 8x24 -> 4x12 is exactly isotropic, as the contract's 400x640 -> 80x128 is
+DEPTH_TEST_GRIDS = {"base": (8, 24)}
+DEPTH_TOKENS_PER_FRAME = len(CAMERA_NAMES) * NUM_PATCHES + 1 + DEPTH_PATCHES
+
+
+def _depth_policy(**kwargs: Any) -> NeroPatchPolicy:
+    torch.manual_seed(0)
+    action_dim = HORIZON * SIDE_DIM
+    policy = NeroPatchPolicy(
+        image_transform=_Unify(),
+        image_encoder=_TinyImageEncoder(),
+        patch_projection=nn.Linear(2 * IMAGE_DIM + CAMERA_COND_DIM, POLICY_DIM),
+        state_embedding=nn.Linear(NUM_SIDES * SIDE_DIM + NUM_SIDES, POLICY_DIM),
+        encoder=CausalFrameTransformer(
+            dim_model=POLICY_DIM,
+            num_layers=NUM_LAYERS,
+            num_heads=NUM_HEADS,
+            tokens_per_frame=DEPTH_TOKENS_PER_FRAME,
+            window=EPISODE_LENGTH,
+        ),
+        tokenizer=_tokenizer(),
+        code_head=nn.Linear(POLICY_DIM, NUM_QUANTIZERS * CODEBOOK_SIZE),
+        offset_head=nn.Linear(POLICY_DIM, NUM_QUANTIZERS * CODEBOOK_SIZE * action_dim),
+        losses=ModuleDict(modules={"code": FocalLoss(), "offset": nn.L1Loss()}),
+        image_embedding_dim=IMAGE_DIM,
+        policy_embedding_dim=POLICY_DIM,
+        sample_codes=False,
+        use_depth=True,
+        depth_transform=LetterboxResize(size=DEPTH_INPUT),
+        depth_standardizer=DisparityStandardizer(mean=48.0, std=27.4),
+        # §22.7: trainable, and 2 input channels (disparity + validity mask)
+        depth_patch_embedding=nn.Linear(
+            DEPTH_PATCH_SIZE * DEPTH_PATCH_SIZE * 2 + CAMERA_COND_DIM, POLICY_DIM
+        ),
+        depth_patch_size=DEPTH_PATCH_SIZE,
+        depth_patch_grid=DEPTH_PATCH_GRID,
+        **({"goal_dropout": 0.0, "depth_dropout": 0.0} | kwargs),
+    )
+    return policy.eval()
+
+
+def _depth_batch(*, seed: int = 0, depth_present: float = 1.0) -> dict[str, Any]:
+    torch.manual_seed(seed)  # see `_batch`: the global stream must be pinned too
+    return nero_random_batch(
+        batch_size=2,
+        episode_length=EPISODE_LENGTH,
+        action_horizon=HORIZON,
+        grids=TEST_GRIDS,
+        depth=True,
+        depth_grids=DEPTH_TEST_GRIDS,
+        depth_present=depth_present,
+        seed=seed,
+    )
+
+
+def test_depth_off_constructs_nothing_at_all() -> None:
+    """§22.6: the opt-in arm must not touch the existing model.
+
+    Not "the depth branch is skipped" -- there must be no depth PARAMETER, no
+    depth module, and no extra token. A depth-off model that merely never calls
+    the depth path would still have shifted every subsequent init draw.
+    """
+    policy = _policy()
+    assert not policy.use_depth
+    assert not hasattr(policy, "no_depth")
+    assert policy.depth_transform is None
+    assert policy.depth_patch_embedding is None
+    assert policy.depth_standardizer is None
+    assert not [k for k in policy.state_dict() if "depth" in k]
+
+    tokens = policy._frame_tokens(_batch())  # noqa: SLF001
+    assert tokens.shape[-2] == len(CAMERA_NAMES) * NUM_PATCHES + 1
+
+
+def test_a_depth_off_model_ignores_depth_keys_in_the_batch() -> None:
+    """Depth-off must be indifferent to a loader that happens to emit depth."""
+    policy = _policy()
+    with torch.no_grad():
+        plain = policy(_batch(seed=3))["policy", "action"]
+        withdepth = policy(_depth_batch(seed=3))["policy", "action"]
+    assert torch.equal(plain, withdepth)
+
+
+def test_depth_is_a_fourth_camera_with_its_own_coarser_token_block() -> None:
+    """§22.1/§22.2: separate tokens on a COARSER grid, not a channel on the RGB.
+
+    Also pins the placement: depth sits BETWEEN the state token and the RGB
+    patches, so the readout (last token) is still an RGB patch.
+    """
+    policy = _depth_policy()
+    batch = _depth_batch()
+    tokens = policy._frame_tokens(batch)  # noqa: SLF001
+    assert tokens.shape == (2, EPISODE_LENGTH, DEPTH_TOKENS_PER_FRAME, POLICY_DIM)
+    # the depth block is strictly coarser than a camera's block
+    assert DEPTH_PATCHES < NUM_PATCHES
+
+    perturbed = dict(batch)
+    disparity = batch["disparity.base"].clone()
+    disparity[:] = 7
+    perturbed["disparity.base"] = disparity
+    other = policy._frame_tokens(perturbed)  # noqa: SLF001
+
+    depth_slice = slice(1, 1 + DEPTH_PATCHES)
+    rgb_slice = slice(1 + DEPTH_PATCHES, None)
+    assert not torch.equal(tokens[:, :, depth_slice], other[:, :, depth_slice])
+    # depth must not leak into the RGB tokens or the state token
+    assert torch.equal(tokens[:, :, rgb_slice], other[:, :, rgb_slice])
+    assert torch.equal(tokens[:, :, 0], other[:, :, 0])
+
+
+def test_no_depth_embedding_receives_gradient_when_depth_is_absent() -> None:
+    """§22.5: the learned `no_depth` must TRAIN, through a real backward pass.
+
+    The depth-absent case is the normal one -- none of the 104 existing episodes
+    carry depth -- so this embedding is what the model actually sees most of the
+    time. A `no_depth` that never received gradient would be a fancy constant.
+    """
+    policy = _depth_policy()
+    policy.train()
+    batch = _batch()  # NO disparity keys at all: the common real case
+    assert "disparity.base" not in batch
+
+    loss = policy._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss.backward()
+
+    assert policy.no_depth.grad is not None
+    assert torch.any(policy.no_depth.grad != 0)
+    # ...but the trainable patch embedding gets NO gradient from a batch with no
+    # depth in it, which is correct: nothing routed through it. §22.7's embedding
+    # trains on the depth-PRESENT samples; `no_depth` covers the rest.
+    assert policy.depth_patch_embedding.weight.grad is None
+
+
+def test_absent_depth_key_and_depth_valid_false_are_the_same_state() -> None:
+    """The two ways depth can be missing must not be two different models."""
+    policy = _depth_policy()
+    absent = _batch(seed=5)
+    flagged = _depth_batch(seed=5)
+    flagged["depth_valid"] = torch.zeros_like(flagged["depth_valid"])
+
+    with torch.no_grad():
+        a = policy(absent)["policy", "action"]
+        b = policy(flagged)["policy", "action"]
+    # the depth CONDITIONING vector is still present in `flagged`, so allow it to
+    # differ there; compare the depth FEATURE path by zeroing the cond too
+    flagged["disparity_cond"] = torch.zeros_like(flagged["disparity_cond"])
+    with torch.no_grad():
+        c = policy(flagged)["policy", "action"]
+    assert torch.equal(a, c)
+    assert b.shape == a.shape
+
+
+def test_invalid_disparity_pixels_cannot_influence_the_output() -> None:
+    """§22.4: `disparity == 0` is NO MEASUREMENT, so its value must not be read.
+
+    The strong form: change the disparity values ONLY where the mask says
+    invalid, and the output must be BIT-identical. A zero-filling implementation
+    passes a "the mask reaches the model" test but fails this one.
+    """
+    policy = _depth_policy()
+    batch = _depth_batch(seed=1)
+    mask = batch["disparity_valid.base"]
+    assert not bool(mask.all()), "test needs some invalid pixels"
+
+    tampered = dict(batch)
+    disparity = batch["disparity.base"].clone()
+    # garbage, but only under the invalid mask
+    noise = torch.randint(0, 96, disparity.shape, dtype=disparity.dtype)
+    tampered["disparity.base"] = torch.where(mask, disparity, noise)
+
+    with torch.no_grad():
+        a = policy(batch)["policy", "action"]
+        b = policy(tampered)["policy", "action"]
+    assert torch.equal(a, b)
+
+
+def test_the_validity_mask_itself_reaches_the_model() -> None:
+    """Control for the test above: the MASK must matter, not just be respected."""
+    policy = _depth_policy()
+    batch = _depth_batch(seed=1)
+    flipped = dict(batch)
+    flipped["disparity_valid.base"] = torch.ones_like(batch["disparity_valid.base"])
+
+    with torch.no_grad():
+        a = policy(batch)["policy", "action"]
+        b = policy(flipped)["policy", "action"]
+    assert not torch.equal(a, b)
+
+
+def test_depth_valid_is_genuinely_per_sample() -> None:
+    """§22.5: a MIXED batch is the realistic case, not all-on or all-off."""
+    policy = _depth_policy()
+    batch = _depth_batch(seed=2)
+    mixed = dict(batch)
+    flag = torch.tensor([True, False])
+    mixed["depth_valid"] = flag
+
+    none = dict(batch)
+    none["depth_valid"] = torch.zeros(2, dtype=torch.bool)
+
+    with torch.no_grad():
+        mixed_out = policy(mixed)["policy", "action"]
+        none_out = policy(none)["policy", "action"]
+        all_out = policy(batch)["policy", "action"]
+
+    # sample 1 has no depth in either -> identical; sample 0 differs
+    assert torch.equal(mixed_out[1], none_out[1])
+    assert not torch.equal(mixed_out[0], none_out[0])
+    assert torch.equal(mixed_out[0], all_out[0])
+
+
+def test_depth_dropout_replaces_depth_with_the_learned_embedding() -> None:
+    """§22.5: dropout applies in TRAINING only, and lands on `no_depth`."""
+    policy = _depth_policy(depth_dropout=1.0)
+    batch = _depth_batch(seed=4)
+
+    absent = dict(batch)
+    absent["depth_valid"] = torch.zeros(2, dtype=torch.bool)
+
+    policy.train()
+    with torch.no_grad():
+        dropped = policy._frame_tokens(batch)  # noqa: SLF001
+        never = policy._frame_tokens(absent)  # noqa: SLF001
+    assert torch.equal(dropped, never)
+
+    # ...and NOT in eval: serving must use the depth it was given
+    policy.eval()
+    with torch.no_grad():
+        kept = policy._frame_tokens(batch)  # noqa: SLF001
+    assert not torch.equal(kept, never)
+
+
+def test_depth_camera_cond_is_bound_to_the_depth_tokens() -> None:
+    """§22.2: depth carries its own 13-dim cond, from the MONO intrinsics."""
+    policy = _depth_policy()
+    batch = _depth_batch(seed=6)
+    changed = dict(batch)
+    changed["disparity_cond"] = torch.randn_like(batch["disparity_cond"])
+
+    with torch.no_grad():
+        a = policy._frame_tokens(batch)  # noqa: SLF001
+        b = policy._frame_tokens(changed)  # noqa: SLF001
+
+    depth_slice = slice(1, 1 + DEPTH_PATCHES)
+    rgb_slice = slice(1 + DEPTH_PATCHES, None)
+    assert not torch.equal(a[:, :, depth_slice], b[:, :, depth_slice])
+    # the RGB cameras' geometry must be untouched by the depth camera's
+    assert torch.equal(a[:, :, rgb_slice], b[:, :, rgb_slice])
+
+
+def test_a_disparity_stream_without_its_mask_is_rejected() -> None:
+    """§21.4/§22.4: never infer the mask from `disparity != 0`.
+
+    A real loader marks additional pixels invalid (confidence, left-right check)
+    that are NOT zero, so a silent fallback would read fabricated measurements.
+    """
+    policy = _depth_policy()
+    batch = _depth_batch(seed=7)
+    del batch["disparity_valid.base"]
+    with pytest.raises(KeyError, match="validity mask"):
+        _ = policy._frame_tokens(batch)  # noqa: SLF001
+
+
+def test_depth_dropout_does_not_mutate_the_batch() -> None:
+    """Regression: dropout must not write through to the loader's own tensor.
+
+    `present.to(dtype=bool, device=cpu)` returns the SAME tensor, not a copy, so
+    an in-place `&=` for the dropout mask zeroes `batch["depth_valid"]`
+    permanently. With a cached or reused TensorDict that corruption outlives the
+    step and is invisible -- the batch simply claims it never had depth. Caught
+    by a test that failed for a completely unrelated-looking reason.
+    """
+    policy = _depth_policy(depth_dropout=1.0)
+    batch = _depth_batch(seed=4)
+    before = batch["depth_valid"].clone()
+    assert bool(before.all()), "test needs depth present to begin with"
+
+    policy.train()
+    with torch.no_grad():
+        _ = policy._frame_tokens(batch)  # noqa: SLF001
+
+    assert torch.equal(batch["depth_valid"], before)
+
+
+def test_depth_patch_embedding_trains_when_depth_is_present() -> None:
+    """§22.7: the trainable embedding must actually receive gradient.
+
+    This is the substance of the §22.7 correction -- the ~269k trainable
+    parameters that replaced a ~22M-parameter frozen ViT pass. Its counterpart
+    (`test_no_depth_embedding_receives_gradient_when_depth_is_absent`) covers the
+    depth-ABSENT half and asserts this weight gets NO gradient there, so without
+    this test nothing anywhere shows it is ever trained at all. A `Linear` that
+    silently received no gradient would produce an identical-looking loss curve
+    and an identical peak-memory number -- "it did not crash" is not "it trains".
+    """
+    policy = _depth_policy()  # depth_dropout = 0.0
+    policy.train()
+    batch = _depth_batch(seed=8)
+    assert bool(batch["depth_valid"].all()), "test needs depth present"
+
+    loss = policy._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss.backward()
+
+    assert policy.depth_patch_embedding.weight.grad is not None
+    assert torch.any(policy.depth_patch_embedding.weight.grad != 0)
+    # ...and `no_depth` gets only ZERO gradient here, since no token was
+    # substituted. Not `is None`: it is the unselected branch of a `torch.where`,
+    # so autograd still routes a (zero) gradient to it.
+    assert policy.no_depth.grad is not None
+    assert not torch.any(policy.no_depth.grad != 0)

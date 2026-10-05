@@ -1,0 +1,12 @@
+# @package _global_
+# P6 ablation ONLY: all groups incl. the fingertip forces (tip runs on its own
+# clock; a stale tip refuses the whole token -> no_hand).
+defaults:
+  - /experiment/yaak/nero_robot/causal
+  - _self_
+
+hand_groups: [current, pos_err, pos, tip]
+hand_token_dim: 30
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, hand_tip]

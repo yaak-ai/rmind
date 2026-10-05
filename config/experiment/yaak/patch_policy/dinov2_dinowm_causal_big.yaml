@@ -1,0 +1,125 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal
+  - _self_
+
+# ---------------------------------------------------------------------------
+# CAPACITY SCALING ON THE CAUSAL DECODER
+# ---------------------------------------------------------------------------
+# Question: what does the bigger trunk buy the decoder-only causal arm? The
+# capacity scaling was measured on the BLOCK-CAUSAL arm (dinov2_dinowm_big,
+# denim-morning-567: 12L/768d/12H, ~85M trunk vs 31.5M at 8L/512d, ~3.4x FLOPs)
+# and never on the causal one. The causal arm (vague-shape-587) is the variant
+# that succeeded in on-car closed loop -- v2 braked better in turns than v0 --
+# so it is the line worth scaling.
+#
+# These three knobs are the whole capacity change; `policy_embedding_dim` also
+# drives the code/offset heads' in_channels, patch_projection.out_features,
+# speed_embedding.embedding_dim and the trunk LayerNorm (see
+# config/model/yaak/patch_policy/raw.yaml).
+policy_embedding_dim: 768
+num_layers: 12
+num_heads: 12
+
+model:
+  encoder:
+    # 0.1 -> 0.2: stochastic depth scales with DEPTH (timm convention), and this
+    # trunk is 12 layers rather than 8. Cheap, convention-backed insurance.
+    #
+    # Deliberately NOT tuned harder than this. vague-shape's val rises
+    # MONOTONICALLY from its first validation (loss/total 5.58 -> 6.92, and
+    # offset 0.00728 -> 0.00890 -- offset is plain L1, so this is not the H6
+    # focal-calibration artifact), which looks like a mandate for heavy
+    # regularization. It is not: the LATER checkpoint of that same run (v2) beat
+    # the earlier one (v0) on the CAR. Offline metrics on this architecture do
+    # not track deployment -- H8 was falsified at rho=+0.00 against corrected
+    # closed-loop distance. Tuning regularization against val would be tuning
+    # against a signal we have repeatedly shown is not the objective.
+    # => keep every epoch checkpoint and SELECT ON CLOSED LOOP.
+    drop_path_rate: 0.2
+
+  offset_head:
+    # Staged fix #1, reserved in the ledger for "the NEXT causal restart".
+    # torchvision.ops.MLP defaults to activation_layer=nn.ReLU; the offset head's
+    # dead-unit fraction climbed 0.29 -> 0.83 over 27k steps under wd=0.1.
+    # GELU removes the dying-ReLU mechanism WITHOUT touching decay, so wd stays
+    # 0.1 as the overfit control (zeroing it would trade dead-frac for overfit --
+    # stellar/dashing val offset rose 14-21% ep2->10).
+    # NOT bundled with the SmoothL1 offset loss (staged #3) -- that stays out so
+    # this change is attributable.
+    activation_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.GELU
+
+  # Argmax everywhere. `_sample_codes` is reached from exactly two places --
+  # `_predict_chunk` (the PredictMetricsCallback cluster metrics) and the
+  # `sampled_recon` metric, which is `.detach()`ed. NO loss path touches it: the
+  # code losses run on logits vs target_codes and the offset is teacher-forced at
+  # the ground-truth codes. So sampling only ever added variance to the numbers
+  # we read, and the ledger already flags the predict/* cluster metrics as
+  # "entangled with entropy collapse" because of it.
+  # Serving is a separate decision (sampled decoding is what escapes the
+  # standstill freeze); sampled metrics can be recomputed offline from any
+  # checkpoint if a serving comparison needs them.
+  sample_codes: false
+
+wandb:
+  group: causal_capacity_scaling
+  job_type: train
+  # Structured base: / chg: / same: so the run page states what this is derived
+  # from, what actually differs, and what was deliberately held fixed.
+  tags:
+    - patch_policy
+    - causal_decoder
+    - dinov2_dinowm_causal_big
+    # --- what it is based on
+    - base:vague-shape-587
+    - base:do8m9ot8
+    - base:dinov2_dinowm_causal
+    # --- what changed vs that base
+    - chg:trunk_512d8L8H_to_768d12L12H
+    - chg:trunk_31.5M_to_85.3M
+    - chg:droppath_0.1_to_0.2
+    - chg:offsethead_relu_to_gelu
+    - chg:samplecodes_on_to_off
+    - chg:drives_655_to_654
+    - chg:1gpu_to_ddp2x4090
+    - chg:stride10_to_31_tiling
+    # --- deliberately held fixed, so the trunk change is readable
+    - same:eff_bs24
+    - same:lr1e-4
+    - same:readout_budget_189M
+    - same:window16
+    - same:ep_len32
+    - same:label_smooth0.1
+    - same:wd_code0.2
+    - same:fusion_norm
+  notes: >-
+    Capacity scaling of the CAUSAL decoder arm.
+
+    BASE: vague-shape-587 (do8m9ot8, dinov2_dinowm_causal, 512d/8L/8H) -- the variant
+    that succeeded in on-car closed loop (v2 braked better in turns than v0).
+
+    CHANGED vs base: trunk 512d/8L/8H -> 768d/12L/12H (31.5M -> 85.3M trunk, ~3.4x
+    FLOPs; THE experiment). drop_path 0.1 -> 0.2 (stochastic depth scales with depth;
+    12 layers not 8). Offset head ReLU -> GELU (staged fix #1: dead-unit fraction
+    climbed 0.29 -> 0.83 under wd=0.1; GELU removes dying-ReLU without touching decay;
+    SmoothL1 deliberately NOT bundled so this stays attributable). sample_codes true ->
+    false (_sample_codes feeds only _predict_chunk's cluster metrics and the detached
+    sampled_recon -- no loss path uses it, so sampling only added variance to the
+    logged numbers). Train drives 655 -> 654 (dropped Niro115-HQ/2023-05-19--07-08-01:
+    bad left-cam quality, likely a mislabelled student drive; no val/predict split
+    changes). 1 GPU -> DDP 2x RTX 4090, per-rank batch 12 (rmind#259 sharded loader).
+    Episode tiling stride 10 -> 31 (dinov2_dinowm_causal §3: 10.0% -> 99.9% frame
+    coverage, 36.9x -> 1.19x ViT reuse; val pinned to the old stride-10 grid).
+
+    HELD CONSTANT so the trunk change is readable: effective batch 24, lr 1e-4, the
+    ~189M-readout budget (now 9 stride-31 epochs, cosine sized 243k / warmup 19.4k),
+    window 16, episode_length 32, label_smoothing 0.1, code_head wd 0.2,
+    fusion_norm + fusion_goal_rms 0.077.
+
+    SELECTION: select on CLOSED LOOP, not val. On this architecture val rises
+    monotonically from the first validation while on-car behaviour improved; H8
+    (offline tail metrics predict closed loop) was falsified at rho=+0.00 against
+    corrected closed-loop distance. Keep every epoch checkpoint.

@@ -137,6 +137,15 @@ losses:
 
 teacher_force_offset: ${teacher_force_offset}
 
+# neighbour-aware label smoothing (OPT-IN, default off = uniform smoothing).
+# Set a global `neighbor_smoothing_tau` (e.g. 0.02) in an experiment to spread
+# FocalLoss's smoothing mass by decoded-action distance instead of uniformly:
+# measured at tau=0.02, uniform smoothing puts 50.0% of its mass on the farther
+# half of the codebook vs 13.7% distance-aware, keeping 0.389 on the true code
+# (effective support ~7 of 16 codes). Requires losses.modules.code to be a
+# FocalLoss with label_smoothing > 0.
+neighbor_smoothing_tau: ${oc.select:neighbor_smoothing_tau,null}
+
 # scale-balanced fusion: LN + learnable gain on patches, RVQ-calibrated
 # learnable gain on the goal latent (see PatchPolicy docstring)
 fusion_norm: ${fusion_norm}

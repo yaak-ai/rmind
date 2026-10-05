@@ -30,10 +30,22 @@ class TrainingQualityLogger(Callback):
     """
 
     @validate_call
-    def __init__(self, every_n_steps: int = 50, *, repr_max_tokens: int = 8192) -> None:
+    def __init__(
+        self,
+        every_n_steps: int = 50,
+        *,
+        repr_max_tokens: int = 8192,
+        val_train_ratio_alarm: float | None = None,
+        alarm_after_step: int = 0,
+    ) -> None:
         super().__init__()
         self.every_n_steps = every_n_steps
         self.repr_max_tokens = repr_max_tokens
+        # opt-in (nero robot, P9): `quality/alarm/val_train_ratio/<loss>` = 1 when
+        # a val loss exceeds `val_train_ratio_alarm` x its train-window mean
+        # after `alarm_after_step` (warmup). None keeps the logger unchanged.
+        self.val_train_ratio_alarm = val_train_ratio_alarm
+        self.alarm_after_step = alarm_after_step
         self._train_loss_sums: dict[str, float] = defaultdict(float)
         self._train_loss_counts: dict[str, int] = defaultdict(int)
         self._repr_sample: Tensor | None = None  # last val encoder embedding
@@ -163,6 +175,14 @@ class TrainingQualityLogger(Callback):
                 gap = float(value) - train_mean
                 suffix = key.removeprefix("val/")
                 metrics[f"quality/gap/{suffix}"] = gap
+                if (
+                    self.val_train_ratio_alarm is not None
+                    and trainer.global_step >= self.alarm_after_step
+                    and train_mean > 0
+                ):
+                    metrics[f"quality/alarm/val_train_ratio/{suffix}"] = float(
+                        float(value) > self.val_train_ratio_alarm * train_mean
+                    )
 
         # representation health from the captured val encoder embedding
         if self._repr_sample is not None:

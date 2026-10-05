@@ -1,0 +1,37 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal
+  - _self_
+
+# Dedicated readout + register tokens (opt-in arm).
+#
+# The causal arm reads each frame's action features off the LAST IMAGE PATCH
+# (`[:, :, -1]`) -- fragile, and with multiple cameras arbitrary (whichever
+# camera happens to be last supplies the readout). This arm changes the frame
+# layout to
+#
+#     [ speed, 256 patches, register_0, register_1, READOUT ]
+#
+# so the readout is a LEARNED token, and the two register tokens absorb the
+# attention-sink role (https://arxiv.org/abs/2309.16588) without ever being
+# read from.
+#
+# GEOMETRY: tokens_per_frame becomes 256 + 1 + 2 + 1 = 260. That number is
+# load-bearing in the frame-block causal mask, the tiled intra-frame position
+# embedding, the KV-cache (`cached_keys = cache_frames * tokens_per_frame`) and
+# the ONNX/TRT bindings -- all of which derive it from the trunk's
+# `tokens_per_frame` below, and `PatchPolicy._features` cross-checks the layout
+# against the trunk at the first forward. Checkpoints from this arm are NOT
+# cache-compatible with 257-token engines; re-export.
+num_register_tokens: 2
+
+model:
+  use_readout_token: true
+  num_register_tokens: ${num_register_tokens}
+  encoder:
+    # speed + patches + registers + readout
+    tokens_per_frame: "${eval:'${num_patches} + 1 + ${num_register_tokens} + 1'}"
+    # inherited from raw.yaml as episode_length * (num_patches + 1); keep the
+    # clip-vs-window cross-check honest for the widened frame
+    max_sequence_length: "${eval:'${episode_length} * (${num_patches} + 1 + ${num_register_tokens} + 1)'}"

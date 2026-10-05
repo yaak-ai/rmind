@@ -1,0 +1,12 @@
+# @package _global_
+# Smoke: the causal arm on the synthetic hand-dependent task
+# (rmind.datamodules.nero_robot_random) -- no claim about real data.
+defaults:
+  - /experiment/yaak/nero_robot/causal
+  - override /datamodule: yaak/nero_robot_random
+  - _self_
+
+num_train_batches: 200
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, synthetic]

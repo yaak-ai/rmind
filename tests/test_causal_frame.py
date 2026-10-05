@@ -23,7 +23,7 @@ variant of the same trunk, run through the same harness, so a pass is
 falsifiable rather than vacuous.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import override
 
 import pytest
@@ -70,6 +70,20 @@ FLEX_TOL = 1e-5
 MAX_TILE_WASTE = 1.3
 # and the block-sparse kernel must compute clearly less than the dense mask does
 MAX_DENSE_FRACTION = 0.8
+
+
+@pytest.fixture(autouse=True)
+def _restore_tf32() -> Iterator[None]:
+    """The flex gates switch tf32 off process-wide; put it back after every test.
+
+    Without this the setting leaks into whatever pytest runs next in the same
+    process, and suites that compare against tf32-on references fail far from here.
+    """
+    matmul = torch.backends.cuda.matmul.allow_tf32
+    cudnn = torch.backends.cudnn.allow_tf32
+    yield
+    torch.backends.cuda.matmul.allow_tf32 = matmul
+    torch.backends.cudnn.allow_tf32 = cudnn
 
 
 def _trunk(

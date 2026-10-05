@@ -47,6 +47,34 @@ train *ARGS: generate-config check-git
         --config-name train.yaml \
         {{ ARGS }}
 
+# --- robot-native nero (docs/nero_robot_patch_policy.md, "Environment") ------
+# Its rbyte ingestion (NeroRobotReader, NeroRobotWindowGrouper, TransformedSource)
+# comes from the rbyte git source pinned in pyproject.toml ([tool.uv.sources]).
+
+# fail fast unless rbyte carries the nero ingestion
+nero-check-env:
+    uv run --extra train python -c \
+        "import rbyte; \
+        from rbyte.samples.nero import NeroRobotReader, NeroRobotWindowGrouper; \
+        from rbyte.streams.transformed import TransformedSource; \
+        print('rbyte', rbyte.__version__, rbyte.__file__)"
+
+# e.g. `just nero-train experiment=yaak/nero_robot/tokenizer relative_mode=hand`
+nero-train *ARGS: generate-config nero-check-env
+    uv run \
+        --extra train \
+        rmind-train \
+        --config-path {{ justfile_directory() }}/config \
+        --config-name train.yaml \
+        {{ ARGS }}
+
+# any nero script, e.g. `just nero-run rmind.scripts.nero_fit_stats --experiment
+# yaak/nero_robot/tokenizer --out $NERO_STATS_DIR`
+nero-run MODULE *ARGS: generate-config nero-check-env
+    uv run \
+        --extra train --extra export \
+        python -m {{ MODULE }} {{ ARGS }}
+
 train-debug *ARGS: generate-config
     WANDB_MODE=disabled \
     uv run \

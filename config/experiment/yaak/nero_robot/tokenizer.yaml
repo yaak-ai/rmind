@@ -1,0 +1,57 @@
+# @package _global_
+#
+# 100-step robot-native chunk tokenizer (P3), playbook recipe
+# (src/rmind/models/nero_chunk_tokenizer.py). ONE tokenizer per relative mode:
+#   relative_mode=none|hand|all  ->  action_standardizer_<mode>.json
+# Rate sweep by DEPTH at codebook 16: num_quantizers=16|24|32 (64/96/128 bits).
+# Evaluate with `python -m rmind.scripts.nero_tokenizer_report` (EV per axis,
+# quantized vs unquantized, TV ratio, rate-matched DCT baseline, ladder,
+# dead-channel probes) -- never on the training loss alone.
+#
+# The data is the same windowed rbyte dataset as the policy (every frame of a
+# window contributes its chunk), at episode_length 1 so each sample is one
+# 10 Hz frame.
+
+defaults:
+  - /model: yaak/nero_chunk_tokenizer/raw
+  - /datamodule: yaak/nero_robot_noimg
+  - /trainer: default
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+nero_robot_dir: ${oc.env:HOME}/.config/nutron/episodes-pulled/accepted
+nero_stats_dir: ${oc.env:NERO_STATS_DIR,.nero_stats}
+action_standardizer: ${nero_stats_dir}/action_standardizer_${relative_mode}.json
+event_reference: ${nero_stats_dir}/event_reference_${relative_mode}.json
+
+relative_mode: none
+frame_stride: 3
+episode_length: 1
+episode_stride: 1
+episode_offset: 0
+chunk_size: 100
+keyframe_stride: 3
+image_height: 140
+image_width: 224
+
+tokenizer_latent_dim: 128
+tokenizer_channels: 32
+codebook_size: 16
+num_quantizers: 16
+event_weight: 5.0
+
+# playbook step 1: lr 3e-4, wd 0.01; lr_total_steps = the REAL step count
+lr: 3e-4
+lr_warmup_steps: 200
+lr_total_steps: 20000
+batch_size: 256
+num_train_batches: 1000
+
+trainer:
+  max_epochs: 20
+  gradient_clip_val: 1.0
+
+wandb:
+  tags: [nero_robot, chunk_tokenizer]
+

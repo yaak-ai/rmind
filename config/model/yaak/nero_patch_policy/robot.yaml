@@ -1,0 +1,162 @@
+# Robot-native causal patch policy (contract v3, docs/nero_robot_patch_policy.md).
+#
+# Differences from raw.yaml (the glove SE(3) stand-in), all decisions P2-P7:
+#   * images arrive ON the model grid (rbyte decodes native frames and applies
+#     rmind.data.nero_image.preprocess -- the SAME function serving calls), so the
+#     in-model transform is only uint8 -> unit float -> ImageNet norm. A unit float
+#     input (serving) passes ToDtype unchanged, so both paths are bit-identical.
+#   * state = measured q + hand_prev (13/side), standardized in-graph;
+#   * hand token columns standardized in-graph too (HandTokenStandardizer);
+#   * token layout [state][hand][3 x 160 patches]: 482 tokens/frame with the hand;
+#   * the tokenizer is the 100-step NeroChunkTokenizer of THIS relative mode, and
+#     the offset is ONE latent-space vector (not a per-code 100x13 table);
+#   * goal_mode no_goal (P7), hand token (P6), relative flag (P5).
+_target_: rmind.models.nero_patch_policy.NeroPatchPolicy
+_recursive_: false
+_convert_: all
+
+image_transform:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: torchvision.transforms.v2.ToDtype
+      scale: true
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+    - _target_: torchvision.transforms.v2.Normalize
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+image_encoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.timm_backbone.TimmBackbone
+      model_name: ${image_encoder_name}
+      img_size: ["${image_height}", "${image_width}"]
+      norm_patch_tokens: true
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... c h w -> ... (h w) c"
+
+# [obs feature | no_goal (P7, the goal channel is kept but always no_goal) | camera_cond]
+patch_projection:
+  _target_: rmind.components.nn.Linear
+  in_features: "${eval:'${image_embedding_dim} + ${goal_embedding_dim} + ${camera_cond_dim}'}"
+  out_features: ${policy_embedding_dim}
+
+# MLP -> LayerNorm -> gain; gain set from the MEASURED patch RMS on the first
+# training batch (calibrate_token_gain) -- the speed-token 20x lesson. NO input
+# LayerNorm (input_norm: false): it makes the token invariant to x -> a*x + b,
+# erasing the overall current / pos_err level a hand reading carries.
+state_embedding:
+  _target_: rmind.components.nn.NormedTokenEmbedding
+  in_features: "${eval:'${num_sides} * 13 + ${num_sides}'}"
+  out_features: ${policy_embedding_dim}
+  hidden_features: [512]
+  input_norm: false
+
+hand_embedding:
+  _target_: rmind.components.nn.NormedTokenEmbedding
+  in_features: ${hand_token_dim}
+  out_features: ${policy_embedding_dim}
+  hidden_features: [512, 512]
+  input_norm: false
+
+encoder:
+  _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
+  dim_model: ${policy_embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  tokens_per_frame: "${eval:'1 + ${use_hand_token} + ${num_cameras} * ${num_patches}'}"
+  window: ${window}
+  rope_base: 1000.0
+  attention_impl: ${attention_impl}
+  attn_dropout: ${attn_dropout}
+  drop_path_rate: ${drop_path_rate}
+
+tokenizer:
+  _target_: rmind.models.nero_chunk_tokenizer.NeroChunkTokenizer.load_from_checkpoint
+  checkpoint_path: ${tokenizer_ckpt}
+  map_location: cpu
+
+norm:
+  _target_: torch.nn.LayerNorm
+  normalized_shape: ${policy_embedding_dim}
+
+code_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels: [1024, 1024, "${eval:'${num_quantizers} * ${codebook_size}'}"]
+
+# ONE latent-space offset per side (offset_mode latent), against ~340M params
+# for a per-code table at 16x16 codes x 100x13. CODE-CONDITIONED
+# (offset_code_conditioning): the input is [features, stop-grad
+# tokenizer.lookup(codes)] -- target codes in training, argmax at serving -- so
+# the offset refines INSIDE the chosen mode instead of averaging across modes.
+offset_head:
+  _target_: torchvision.ops.MLP
+  in_channels: "${eval:'${policy_embedding_dim} + ${tokenizer_latent_dim}'}"
+  hidden_channels: [512, "${tokenizer_latent_dim}"]
+
+losses:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    code:
+      _target_: rmind.components.loss.FocalLoss
+    offset:
+      _target_: torch.nn.SmoothL1Loss
+      beta: 0.2
+
+state_standardizer:
+  _target_: rmind.data.nero_robot.AxisStandardizer.load
+  path: ${state_standardizer}
+
+# the hand token's fixed per-column affine (in-graph, like the state one): the
+# builder's /1000 columns put current / pos_err at ~0.01-0.1 next to pos / age
+# at ~0.3-0.5, so without it the columns the token exists for contribute a few
+# percent of the first layer. nero_fit_stats fits it on the train split's valid
+# hand rows, else writes the documented physical bands; hand_age / hand_valid
+# pass through. Only instantiated when hand_groups is non-empty.
+hand_standardizer:
+  _target_: rmind.data.nero_robot.HandTokenStandardizer.load
+  path: ${hand_standardizer}
+  groups: ${hand_groups}
+
+image_embedding_dim: ${image_embedding_dim}
+policy_embedding_dim: ${policy_embedding_dim}
+cameras: ${cameras}
+state: [state]
+chunk: [action.chunk]
+convert_state_to_9d: false
+use_goal_image: true
+goal_mode: no_goal
+goal_dropout: 0.0
+action_space: robot
+hand_groups: ${hand_groups}
+hand_dropout_sample: ${hand_dropout_sample}
+hand_dropout_frame: ${hand_dropout_frame}
+relative_mode: ${relative_mode}
+offset_mode: latent
+offset_code_conditioning: true
+teacher_force_offset: true
+calibrate_token_gain: true
+quality_metrics: true
+reliance_metrics: ${reliance_metrics}
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: ${lr}
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}

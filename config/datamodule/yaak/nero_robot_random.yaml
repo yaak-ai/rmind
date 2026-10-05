@@ -1,0 +1,27 @@
+# Synthetic robot-native batches in the EXACT rbyte NeroRobotWindowGrouper schema,
+# with the hand-dependent grasp task (src/rmind/datamodules/nero_robot_random.py).
+# Smoke/tests only.
+_target_: rmind.datamodules.generic.GenericDataModule
+_convert_: all
+
+train:
+  _target_: rmind.datamodules.nero_robot_random.NeroRobotRandomDataLoader
+  num_batches: ${num_train_batches}
+  batch_size: ${batch_size}
+  num_frames: ${episode_length}
+  chunk_size: ${chunk_size}
+  frame_stride: ${frame_stride}
+  image_hw: ["${image_height}", "${image_width}"]
+  images: ${oc.select:synthetic_images,true}
+  seed: 0
+
+val:
+  _target_: rmind.datamodules.nero_robot_random.NeroRobotRandomDataLoader
+  num_batches: 4
+  batch_size: ${batch_size}
+  num_frames: ${episode_length}
+  chunk_size: ${chunk_size}
+  frame_stride: ${frame_stride}
+  image_hw: ["${image_height}", "${image_width}"]
+  images: ${oc.select:synthetic_images,true}
+  seed: 100000

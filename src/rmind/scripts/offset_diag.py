@@ -39,7 +39,7 @@ from rmind.models.control_transformer import ControlTransformer
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-    from rbyte.dataloader import TorchDataNodeDataLoader
+    from rbyte.dataloader import NodeDataLoader
     from torch import Tensor
 
     from rmind.models.action_tokenizer import ActionTokenizer
@@ -101,7 +101,7 @@ def build_dataloader(
     num_workers: int = 2,
     *,
     shuffle: bool | None = None,
-) -> TorchDataNodeDataLoader[dict[str, Any]]:
+) -> NodeDataLoader[dict[str, Any]]:
     """Instantiate a dataloader of the finetune experiment for `split`.
 
     `split` is one of 'train', 'val', 'train_debug'. The 3hz episode
@@ -147,7 +147,7 @@ def build_dataloader(
 
 
 def shutdown_dataloader(dataloader: Any) -> None:
-    """Best-effort shutdown of `TorchDataNodeDataLoader` worker threads.
+    """Best-effort shutdown of `NodeDataLoader` worker threads.
 
     torchdata.nodes has no public shutdown API; abandoning an iterator
     mid-epoch can abort the process at interpreter exit ("terminate called

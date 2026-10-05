@@ -1,0 +1,70 @@
+# Robot-native 100-step chunk tokenizer (P3), the playbook recipe -- see
+# src/rmind/models/nero_chunk_tokenizer.py and docs/nero_robot_patch_policy.md.
+#
+# Rate: num_quantizers * log2(codebook_size) bits per side-chunk. 16 x 16 = 64
+# bits is the START; sweep depth 24/32 (96/128 bits) -- rate by DEPTH, not width.
+_target_: rmind.models.nero_chunk_tokenizer.NeroChunkTokenizer
+_recursive_: false
+_convert_: all
+
+action_horizon: ${chunk_size}
+action_features: 13
+keyframe_stride: ${keyframe_stride}
+relative_mode: ${relative_mode}
+
+# ⚠️ fitted on the TRAIN split for THIS relative mode (nero_fit_stats). The
+# identity default is only for a config that has to instantiate before stats exist.
+standardizer:
+  _target_: rmind.data.nero_robot.AxisStandardizer.load
+  path: ${action_standardizer}
+
+# SoundStream-style dilated temporal conv over the 34 keyframes (k=7, 1/3/9, ELU)
+encoder:
+  _target_: rmind.components.nn.ChunkConvEncoder
+  num_steps: "${eval:'(${chunk_size} - 1) // ${keyframe_stride} + 1'}"
+  num_axes: 13
+  out_features: ${tokenizer_latent_dim}
+  channels: ${tokenizer_channels}
+
+quantizer:
+  _target_: rmind.components.vq.ResidualVQ
+  dim: ${tokenizer_latent_dim}
+  codebook_size: ${codebook_size}
+  num_quantizers: ${num_quantizers}
+
+decoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.nn.ChunkConvDecoder
+      num_steps: "${eval:'(${chunk_size} - 1) // ${keyframe_stride} + 1'}"
+      num_axes: 13
+      in_features: ${tokenizer_latent_dim}
+      channels: ${tokenizer_channels}
+
+# playbook: smooth_l1 with beta BELOW the typical error, + inverse-frequency
+# event weighting on the finger axes (7..12). `event_weight: null` disables it --
+# never `{}`.
+loss: smooth_l1
+smooth_l1_beta: 0.2
+event_weight: ${event_weight}
+event_axes: [7, 8, 9, 10, 11, 12]
+event_threshold: 0.5
+# the per-axis atom, fitted DETERMINISTICALLY on the train split by
+# nero_fit_stats and pinned to the action standardizer's sha256; training refuses
+# to start without it (no first-batch fallback)
+event_reference: ${event_reference}
+vq_weight: 1.0
+commitment_weight: 1.0
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: ${lr}
+  weight_decay: 0.01
+
+# ⚠️ cosine has no clamp: lr_total_steps MUST be the real optimizer step count
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}

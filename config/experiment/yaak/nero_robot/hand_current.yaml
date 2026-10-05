@@ -1,0 +1,11 @@
+# @package _global_
+# P6 ablation: motor current only.
+defaults:
+  - /experiment/yaak/nero_robot/causal
+  - _self_
+
+hand_groups: [current]
+hand_token_dim: 8
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, hand_current]

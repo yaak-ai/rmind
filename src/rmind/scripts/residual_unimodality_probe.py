@@ -47,7 +47,7 @@ mpl.use("Agg")
 import matplotlib.pyplot as plt
 
 if TYPE_CHECKING:
-    from rbyte.dataloader import TorchDataNodeDataLoader
+    from rbyte.dataloader import NodeDataLoader
     from torch import Tensor
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -96,7 +96,7 @@ def load_tokenizer(
 
 def build_dataloader(
     batch_size: int = 2048, num_workers: int = 2
-) -> TorchDataNodeDataLoader[dict[str, Any]]:
+) -> NodeDataLoader[dict[str, Any]]:
     """Instantiate the action-tokenizer TRAIN dataloader (actions only).
 
     Composes `experiment=yaak/action_tokenizer/pretrain` (action_clip=6,
