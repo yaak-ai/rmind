@@ -1,0 +1,31 @@
+# @package _global_
+#
+# The 100-step chunk tokenizer for the BIMANUAL runs (relative_mode all, 16
+# quantizers), weight-shared over the two sides, on the bimanual TRAIN split
+# without images. Also the experiment nero_fit_stats reads the train split
+# through:
+#   python -m rmind.scripts.nero_fit_stats --experiment yaak/nero_robot/bimanual_tokenizer --out $NERO_STATS_DIR
+# lr_total_steps = len(train_dataloader) x max_epochs (`python -m
+# rmind.scripts.nero_steps yaak/nero_robot/bimanual_tokenizer`). Local logging.
+defaults:
+  - /experiment/yaak/nero_robot/tokenizer
+  - override /datamodule: yaak/nero_robot_bimanual_noimg
+  - override /trainer: nero_local
+  - _self_
+
+nero_robot_dir: ${oc.env:NERO_ROBOT_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/2026-10-07}
+nero_runs_dir: ${oc.env:NERO_RUNS_DIR,runs}
+run_name: bimanual_tokenizer
+
+relative_mode: all
+
+# len(train_dataloader) x max_epochs (nero_steps): 16948 train frames,
+# 66 batches of 256 (drop_last) x 20 epochs
+lr_total_steps: 1320
+trainer:
+  max_epochs: 20
+  gradient_clip_val: 1.0
+
+wandb:
+  mode: disabled
+  tags: [nero_robot, chunk_tokenizer, bimanual]

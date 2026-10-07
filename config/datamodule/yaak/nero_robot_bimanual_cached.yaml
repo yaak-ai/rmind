@@ -1,0 +1,34 @@
+# nero_robot_bimanual reading the preprocessed frame cache (${nero_frame_cache},
+# rmind.data.nero_frame_cache) instead of decoding the mp4s: byte-identical image
+# inputs, no decode in the loop; a missing or stale cache is refused. Build it:
+#   python -m rmind.scripts.nero_frame_cache --root ${nero_robot_dir} --out ${nero_frame_cache}
+---
+defaults:
+  - /dataset/nero/robot_bimanual_cached_train@train.dataset
+  - /dataset/nero/robot_bimanual_cached_val@val.dataset
+  - _self_
+
+_target_: rmind.datamodules.GenericDataModule
+train:
+  _target_: rmind.components.dataloader.DistributedTorchDataNodeDataLoader
+  batch_size: ${batch_size}
+  shuffle: true
+  drop_last: true
+  collate_fn:
+    _target_: rmind.data.nero_robot.flat_rbyte_batch
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+
+val:
+  _target_: rmind.components.dataloader.DistributedTorchDataNodeDataLoader
+  batch_size: ${batch_size}
+  shuffle: false
+  collate_fn:
+    # + each sample's take id (`input_id`) for the arm-selection metric
+    _target_: rmind.data.nero_bimanual.flat_rbyte_batch_with_ids
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread

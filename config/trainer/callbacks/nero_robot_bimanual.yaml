@@ -1,0 +1,16 @@
+# trainer/callbacks/nero_robot + the bimanual ARM-SELECTION metric on val
+# (rmind.callbacks.nero_arm_selection; take classes from the shared split JSON)
+- _target_: pytorch_lightning.callbacks.ModelSummary
+  max_depth: 2
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: 1
+  save_on_train_epoch_end: True
+  save_last: True
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step
+- _target_: rmind.callbacks.TrainingQualityLogger
+  every_n_steps: 50
+  val_train_ratio_alarm: 2.0
+  alarm_after_step: ${lr_warmup_steps}
+- _target_: rmind.callbacks.nero_arm_selection.NeroArmSelectionLogger
+  split_file: ${oc.select:nero_split_file,null}

@@ -1,0 +1,18 @@
+# @package _global_
+# BIMANUAL patch policy WITHOUT the hand-sensor token (patch_bim_hand_off):
+# bimanual_causal with hand_off's settings (481 tokens/frame). The state still
+# carries the commanded finger targets (hand_prev), as in ACT. Same split, stats,
+# tokenizer, seed, windows and steps as bimanual_causal, so the two compare.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_causal
+  - _self_
+
+run_name: bimanual_hand_off
+hand_groups: []
+use_hand_token: 0
+reliance_metrics: false
+model:
+  hand_embedding: null
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off]
