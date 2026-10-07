@@ -1,0 +1,1235 @@
+{
+ "schema": "nutron_take_split/1",
+ "name": "nero_cube_bimanual_v1",
+ "source_root": "/nasa/drives/nero-arms/cube-bimanual/2026-10-07",
+ "created_by": "runtime/training/make_split.py",
+ "seed": 20261007,
+ "val_frac": 0.1,
+ "min_val_per_class": 2,
+ "rule": {
+  "arm_range": "max over joints of (max - min) of robot.{side}.command.q over the take [rad]",
+  "hand_range": "max over fingers of (max - min) of robot.{side}.hand.command over the take [counts]",
+  "active": "arm_range > 0.3 AND hand_range > 300",
+  "class": "both if both sides active, else the active side; none active -> larger arm_range (fallback)",
+  "arm_threshold_rad": 0.3,
+  "hand_threshold_counts": 300
+ },
+ "counts": {
+  "total": 85,
+  "train": 76,
+  "val": 9,
+  "by_class": {
+   "left": {
+    "total": 45,
+    "train": 41,
+    "val": 4
+   },
+   "right": {
+    "total": 28,
+    "train": 25,
+    "val": 3
+   },
+   "both": {
+    "total": 12,
+    "train": 10,
+    "val": 2
+   }
+  }
+ },
+ "train": [
+  "2026-10-07--14-15-32-307184",
+  "2026-10-07--14-16-39-691251",
+  "2026-10-07--14-17-07-499832",
+  "2026-10-07--14-18-13-253492",
+  "2026-10-07--14-18-35-599358",
+  "2026-10-07--14-19-14-832509",
+  "2026-10-07--14-19-36-711158",
+  "2026-10-07--14-20-27-386382",
+  "2026-10-07--14-20-52-760039",
+  "2026-10-07--14-21-14-190812",
+  "2026-10-07--14-21-35-513525",
+  "2026-10-07--14-21-57-844875",
+  "2026-10-07--14-22-18-572625",
+  "2026-10-07--14-22-44-148776",
+  "2026-10-07--14-23-05-624289",
+  "2026-10-07--14-23-48-761739",
+  "2026-10-07--14-24-12-585213",
+  "2026-10-07--14-24-32-887332",
+  "2026-10-07--14-24-53-131500",
+  "2026-10-07--14-26-04-156242",
+  "2026-10-07--14-26-26-059261",
+  "2026-10-07--14-26-47-195420",
+  "2026-10-07--14-27-08-746082",
+  "2026-10-07--14-27-30-175062",
+  "2026-10-07--14-27-54-463310",
+  "2026-10-07--14-28-17-871476",
+  "2026-10-07--14-28-37-209054",
+  "2026-10-07--14-29-01-397929",
+  "2026-10-07--14-54-06-772819",
+  "2026-10-07--14-54-29-959912",
+  "2026-10-07--14-54-50-345779",
+  "2026-10-07--14-55-31-646302",
+  "2026-10-07--14-56-12-035185",
+  "2026-10-07--14-56-32-778314",
+  "2026-10-07--14-56-54-780887",
+  "2026-10-07--14-57-31-649186",
+  "2026-10-07--14-57-53-930939",
+  "2026-10-07--14-58-12-848221",
+  "2026-10-07--14-59-42-350567",
+  "2026-10-07--14-59-59-424230",
+  "2026-10-07--15-01-23-928084",
+  "2026-10-07--15-02-33-415257",
+  "2026-10-07--15-03-33-993412",
+  "2026-10-07--15-03-59-451161",
+  "2026-10-07--15-04-23-465222",
+  "2026-10-07--15-05-45-624679",
+  "2026-10-07--15-06-04-737823",
+  "2026-10-07--15-06-23-301639",
+  "2026-10-07--15-06-39-703270",
+  "2026-10-07--15-08-07-452642",
+  "2026-10-07--15-08-24-889475",
+  "2026-10-07--15-08-44-033168",
+  "2026-10-07--15-10-51-780966",
+  "2026-10-07--15-13-05-347923",
+  "2026-10-07--15-14-03-611359",
+  "2026-10-07--15-14-30-506529",
+  "2026-10-07--15-14-47-566381",
+  "2026-10-07--15-15-16-003747",
+  "2026-10-07--15-15-38-197458",
+  "2026-10-07--15-15-55-103484",
+  "2026-10-07--15-16-12-739962",
+  "2026-10-07--15-17-23-888116",
+  "2026-10-07--15-17-42-520773",
+  "2026-10-07--15-18-17-406575",
+  "2026-10-07--15-18-35-906987",
+  "2026-10-07--15-19-29-798820",
+  "2026-10-07--15-20-31-703642",
+  "2026-10-07--15-20-54-512259",
+  "2026-10-07--15-21-59-027113",
+  "2026-10-07--15-22-18-566610",
+  "2026-10-07--15-23-08-502269",
+  "2026-10-07--15-24-08-690535",
+  "2026-10-07--15-24-33-785373",
+  "2026-10-07--15-24-53-162225",
+  "2026-10-07--15-25-40-083141",
+  "2026-10-07--15-26-01-159303"
+ ],
+ "val": [
+  "2026-10-07--14-16-03-494345",
+  "2026-10-07--14-20-04-476604",
+  "2026-10-07--14-59-22-215224",
+  "2026-10-07--15-02-50-494969",
+  "2026-10-07--15-07-50-035053",
+  "2026-10-07--15-12-48-688288",
+  "2026-10-07--15-17-58-702612",
+  "2026-10-07--15-21-16-841539",
+  "2026-10-07--15-22-37-038490"
+ ],
+ "takes": {
+  "2026-10-07--14-15-32-307184": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.4231,
+    "right": 0.6491
+   },
+   "hand_range_counts": {
+    "left": 62,
+    "right": 605
+   }
+  },
+  "2026-10-07--14-16-03-494345": {
+   "class": "right",
+   "split": "val",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.2611,
+    "right": 0.7696
+   },
+   "hand_range_counts": {
+    "left": 132,
+    "right": 595
+   }
+  },
+  "2026-10-07--14-16-39-691251": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7723,
+    "right": 0.2208
+   },
+   "hand_range_counts": {
+    "left": 682,
+    "right": 137
+   }
+  },
+  "2026-10-07--14-17-07-499832": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.1851,
+    "right": 0.7577
+   },
+   "hand_range_counts": {
+    "left": 20,
+    "right": 685
+   }
+  },
+  "2026-10-07--14-18-13-253492": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.9992,
+    "right": 0.2444
+   },
+   "hand_range_counts": {
+    "left": 541,
+    "right": 115
+   }
+  },
+  "2026-10-07--14-18-35-599358": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.1376,
+    "right": 0.6161
+   },
+   "hand_range_counts": {
+    "left": 82,
+    "right": 867
+   }
+  },
+  "2026-10-07--14-19-14-832509": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 1.002,
+    "right": 0.196
+   },
+   "hand_range_counts": {
+    "left": 737,
+    "right": 249
+   }
+  },
+  "2026-10-07--14-19-36-711158": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8698,
+    "right": 0.2248
+   },
+   "hand_range_counts": {
+    "left": 650,
+    "right": 600
+   }
+  },
+  "2026-10-07--14-20-04-476604": {
+   "class": "right",
+   "split": "val",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.229,
+    "right": 0.9112
+   },
+   "hand_range_counts": {
+    "left": 54,
+    "right": 990
+   }
+  },
+  "2026-10-07--14-20-27-386382": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 1.0832,
+    "right": 0.1334
+   },
+   "hand_range_counts": {
+    "left": 894,
+    "right": 604
+   }
+  },
+  "2026-10-07--14-20-52-760039": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.919,
+    "right": 0.1773
+   },
+   "hand_range_counts": {
+    "left": 701,
+    "right": 57
+   }
+  },
+  "2026-10-07--14-21-14-190812": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.9099,
+    "right": 0.1232
+   },
+   "hand_range_counts": {
+    "left": 717,
+    "right": 111
+   }
+  },
+  "2026-10-07--14-21-35-513525": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.873,
+    "right": 0.2814
+   },
+   "hand_range_counts": {
+    "left": 699,
+    "right": 408
+   }
+  },
+  "2026-10-07--14-21-57-844875": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7724,
+    "right": 0.2244
+   },
+   "hand_range_counts": {
+    "left": 635,
+    "right": 381
+   }
+  },
+  "2026-10-07--14-22-18-572625": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.1538,
+    "right": 0.6533
+   },
+   "hand_range_counts": {
+    "left": 133,
+    "right": 990
+   }
+  },
+  "2026-10-07--14-22-44-148776": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8316,
+    "right": 0.1792
+   },
+   "hand_range_counts": {
+    "left": 719,
+    "right": 423
+   }
+  },
+  "2026-10-07--14-23-05-624289": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 1.0249,
+    "right": 0.1409
+   },
+   "hand_range_counts": {
+    "left": 715,
+    "right": 485
+   }
+  },
+  "2026-10-07--14-23-48-761739": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.0945,
+    "right": 0.4966
+   },
+   "hand_range_counts": {
+    "left": 23,
+    "right": 1000
+   }
+  },
+  "2026-10-07--14-24-12-585213": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8225,
+    "right": 0.1698
+   },
+   "hand_range_counts": {
+    "left": 739,
+    "right": 19
+   }
+  },
+  "2026-10-07--14-24-32-887332": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.6544,
+    "right": 0.0978
+   },
+   "hand_range_counts": {
+    "left": 699,
+    "right": 522
+   }
+  },
+  "2026-10-07--14-24-53-131500": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.1302,
+    "right": 0.7624
+   },
+   "hand_range_counts": {
+    "left": 122,
+    "right": 956
+   }
+  },
+  "2026-10-07--14-26-04-156242": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7351,
+    "right": 0.1595
+   },
+   "hand_range_counts": {
+    "left": 742,
+    "right": 594
+   }
+  },
+  "2026-10-07--14-26-26-059261": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.0878,
+    "right": 0.6654
+   },
+   "hand_range_counts": {
+    "left": 36,
+    "right": 990
+   }
+  },
+  "2026-10-07--14-26-47-195420": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 1.36,
+    "right": 0.1037
+   },
+   "hand_range_counts": {
+    "left": 652,
+    "right": 13
+   }
+  },
+  "2026-10-07--14-27-08-746082": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7191,
+    "right": 0.1985
+   },
+   "hand_range_counts": {
+    "left": 723,
+    "right": 24
+   }
+  },
+  "2026-10-07--14-27-30-175062": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.0836,
+    "right": 0.6451
+   },
+   "hand_range_counts": {
+    "left": 41,
+    "right": 990
+   }
+  },
+  "2026-10-07--14-27-54-463310": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.1172,
+    "right": 0.4996
+   },
+   "hand_range_counts": {
+    "left": 19,
+    "right": 944
+   }
+  },
+  "2026-10-07--14-28-17-871476": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8382,
+    "right": 0.1694
+   },
+   "hand_range_counts": {
+    "left": 748,
+    "right": 544
+   }
+  },
+  "2026-10-07--14-28-37-209054": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.6802,
+    "right": 0.2756
+   },
+   "hand_range_counts": {
+    "left": 727,
+    "right": 17
+   }
+  },
+  "2026-10-07--14-29-01-397929": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.621,
+    "right": 0.1974
+   },
+   "hand_range_counts": {
+    "left": 706,
+    "right": 47
+   }
+  },
+  "2026-10-07--14-54-06-772819": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7833,
+    "right": 0.286
+   },
+   "hand_range_counts": {
+    "left": 765,
+    "right": 125
+   }
+  },
+  "2026-10-07--14-54-29-959912": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.9592,
+    "right": 0.385
+   },
+   "hand_range_counts": {
+    "left": 723,
+    "right": 16
+   }
+  },
+  "2026-10-07--14-54-50-345779": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7917,
+    "right": 0.2856
+   },
+   "hand_range_counts": {
+    "left": 704,
+    "right": 505
+   }
+  },
+  "2026-10-07--14-55-31-646302": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.2404,
+    "right": 0.9162
+   },
+   "hand_range_counts": {
+    "left": 31,
+    "right": 987
+   }
+  },
+  "2026-10-07--14-56-12-035185": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.722,
+    "right": 0.2157
+   },
+   "hand_range_counts": {
+    "left": 762,
+    "right": 136
+   }
+  },
+  "2026-10-07--14-56-32-778314": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.2797,
+    "right": 1.5916
+   },
+   "hand_range_counts": {
+    "left": 51,
+    "right": 935
+   }
+  },
+  "2026-10-07--14-56-54-780887": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.2999,
+    "right": 0.6492
+   },
+   "hand_range_counts": {
+    "left": 88,
+    "right": 960
+   }
+  },
+  "2026-10-07--14-57-31-649186": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8731,
+    "right": 0.2867
+   },
+   "hand_range_counts": {
+    "left": 732,
+    "right": 539
+   }
+  },
+  "2026-10-07--14-57-53-930939": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8124,
+    "right": 0.242
+   },
+   "hand_range_counts": {
+    "left": 784,
+    "right": 78
+   }
+  },
+  "2026-10-07--14-58-12-848221": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 1.0686,
+    "right": 0.4442
+   },
+   "hand_range_counts": {
+    "left": 704,
+    "right": 619
+   }
+  },
+  "2026-10-07--14-59-22-215224": {
+   "class": "left",
+   "split": "val",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.6747,
+    "right": 0.2741
+   },
+   "hand_range_counts": {
+    "left": 706,
+    "right": 378
+   }
+  },
+  "2026-10-07--14-59-42-350567": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.6563,
+    "right": 0.2443
+   },
+   "hand_range_counts": {
+    "left": 749,
+    "right": 535
+   }
+  },
+  "2026-10-07--14-59-59-424230": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8383,
+    "right": 0.3957
+   },
+   "hand_range_counts": {
+    "left": 715,
+    "right": 265
+   }
+  },
+  "2026-10-07--15-01-23-928084": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.2997,
+    "right": 0.5795
+   },
+   "hand_range_counts": {
+    "left": 198,
+    "right": 914
+   }
+  },
+  "2026-10-07--15-02-33-415257": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.6687,
+    "right": 0.1436
+   },
+   "hand_range_counts": {
+    "left": 705,
+    "right": 397
+   }
+  },
+  "2026-10-07--15-02-50-494969": {
+   "class": "left",
+   "split": "val",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7672,
+    "right": 0.6133
+   },
+   "hand_range_counts": {
+    "left": 759,
+    "right": 216
+   }
+  },
+  "2026-10-07--15-03-33-993412": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.4043,
+    "right": 1.024
+   },
+   "hand_range_counts": {
+    "left": 44,
+    "right": 912
+   }
+  },
+  "2026-10-07--15-03-59-451161": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.1625,
+    "right": 0.6562
+   },
+   "hand_range_counts": {
+    "left": 56,
+    "right": 955
+   }
+  },
+  "2026-10-07--15-04-23-465222": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.582,
+    "right": 0.1549
+   },
+   "hand_range_counts": {
+    "left": 751,
+    "right": 658
+   }
+  },
+  "2026-10-07--15-05-45-624679": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7671,
+    "right": 0.7931
+   },
+   "hand_range_counts": {
+    "left": 736,
+    "right": 122
+   }
+  },
+  "2026-10-07--15-06-04-737823": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.9392,
+    "right": 0.5683
+   },
+   "hand_range_counts": {
+    "left": 740,
+    "right": 160
+   }
+  },
+  "2026-10-07--15-06-23-301639": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.5967,
+    "right": 0.266
+   },
+   "hand_range_counts": {
+    "left": 760,
+    "right": 177
+   }
+  },
+  "2026-10-07--15-06-39-703270": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.1946,
+    "right": 0.7872
+   },
+   "hand_range_counts": {
+    "left": 44,
+    "right": 888
+   }
+  },
+  "2026-10-07--15-07-50-035053": {
+   "class": "left",
+   "split": "val",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7369,
+    "right": 0.2169
+   },
+   "hand_range_counts": {
+    "left": 736,
+    "right": 530
+   }
+  },
+  "2026-10-07--15-08-07-452642": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.6713,
+    "right": 0.3396
+   },
+   "hand_range_counts": {
+    "left": 714,
+    "right": 296
+   }
+  },
+  "2026-10-07--15-08-24-889475": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 1.0248,
+    "right": 0.3516
+   },
+   "hand_range_counts": {
+    "left": 733,
+    "right": 389
+   }
+  },
+  "2026-10-07--15-08-44-033168": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.3879,
+    "right": 0.7197
+   },
+   "hand_range_counts": {
+    "left": 29,
+    "right": 922
+   }
+  },
+  "2026-10-07--15-10-51-780966": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 1.0144,
+    "right": 0.3728
+   },
+   "hand_range_counts": {
+    "left": 710,
+    "right": 639
+   }
+  },
+  "2026-10-07--15-12-48-688288": {
+   "class": "left",
+   "split": "val",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7175,
+    "right": 0.1928
+   },
+   "hand_range_counts": {
+    "left": 718,
+    "right": 240
+   }
+  },
+  "2026-10-07--15-13-05-347923": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7186,
+    "right": 0.2523
+   },
+   "hand_range_counts": {
+    "left": 692,
+    "right": 552
+   }
+  },
+  "2026-10-07--15-14-03-611359": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.9858,
+    "right": 0.8352
+   },
+   "hand_range_counts": {
+    "left": 49,
+    "right": 845
+   }
+  },
+  "2026-10-07--15-14-30-506529": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7353,
+    "right": 0.2932
+   },
+   "hand_range_counts": {
+    "left": 631,
+    "right": 271
+   }
+  },
+  "2026-10-07--15-14-47-566381": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 1.1272,
+    "right": 0.8552
+   },
+   "hand_range_counts": {
+    "left": 715,
+    "right": 395
+   }
+  },
+  "2026-10-07--15-15-16-003747": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.2505,
+    "right": 0.7028
+   },
+   "hand_range_counts": {
+    "left": 93,
+    "right": 936
+   }
+  },
+  "2026-10-07--15-15-38-197458": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7046,
+    "right": 0.2836
+   },
+   "hand_range_counts": {
+    "left": 741,
+    "right": 557
+   }
+  },
+  "2026-10-07--15-15-55-103484": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.6224,
+    "right": 0.2356
+   },
+   "hand_range_counts": {
+    "left": 759,
+    "right": 87
+   }
+  },
+  "2026-10-07--15-16-12-739962": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7006,
+    "right": 0.6444
+   },
+   "hand_range_counts": {
+    "left": 718,
+    "right": 310
+   }
+  },
+  "2026-10-07--15-17-23-888116": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8492,
+    "right": 0.4444
+   },
+   "hand_range_counts": {
+    "left": 704,
+    "right": 286
+   }
+  },
+  "2026-10-07--15-17-42-520773": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.3546,
+    "right": 0.686
+   },
+   "hand_range_counts": {
+    "left": 34,
+    "right": 922
+   }
+  },
+  "2026-10-07--15-17-58-702612": {
+   "class": "both",
+   "split": "val",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8117,
+    "right": 0.3611
+   },
+   "hand_range_counts": {
+    "left": 718,
+    "right": 598
+   }
+  },
+  "2026-10-07--15-18-17-406575": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.64,
+    "right": 0.51
+   },
+   "hand_range_counts": {
+    "left": 691,
+    "right": 647
+   }
+  },
+  "2026-10-07--15-18-35-906987": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.6946,
+    "right": 0.644
+   },
+   "hand_range_counts": {
+    "left": 47,
+    "right": 839
+   }
+  },
+  "2026-10-07--15-19-29-798820": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.5924,
+    "right": 0.2023
+   },
+   "hand_range_counts": {
+    "left": 640,
+    "right": 144
+   }
+  },
+  "2026-10-07--15-20-31-703642": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7959,
+    "right": 0.4191
+   },
+   "hand_range_counts": {
+    "left": 694,
+    "right": 557
+   }
+  },
+  "2026-10-07--15-20-54-512259": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.1277,
+    "right": 0.6536
+   },
+   "hand_range_counts": {
+    "left": 34,
+    "right": 879
+   }
+  },
+  "2026-10-07--15-21-16-841539": {
+   "class": "both",
+   "split": "val",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7882,
+    "right": 0.3202
+   },
+   "hand_range_counts": {
+    "left": 715,
+    "right": 484
+   }
+  },
+  "2026-10-07--15-21-59-027113": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.497,
+    "right": 0.898
+   },
+   "hand_range_counts": {
+    "left": 85,
+    "right": 901
+   }
+  },
+  "2026-10-07--15-22-18-566610": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.6043,
+    "right": 0.2155
+   },
+   "hand_range_counts": {
+    "left": 718,
+    "right": 16
+   }
+  },
+  "2026-10-07--15-22-37-038490": {
+   "class": "right",
+   "split": "val",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.534,
+    "right": 1.1475
+   },
+   "hand_range_counts": {
+    "left": 137,
+    "right": 936
+   }
+  },
+  "2026-10-07--15-23-08-502269": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7904,
+    "right": 0.3699
+   },
+   "hand_range_counts": {
+    "left": 736,
+    "right": 358
+   }
+  },
+  "2026-10-07--15-24-08-690535": {
+   "class": "left",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.8873,
+    "right": 0.2941
+   },
+   "hand_range_counts": {
+    "left": 722,
+    "right": 174
+   }
+  },
+  "2026-10-07--15-24-33-785373": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.7994,
+    "right": 0.4612
+   },
+   "hand_range_counts": {
+    "left": 706,
+    "right": 352
+   }
+  },
+  "2026-10-07--15-24-53-162225": {
+   "class": "both",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 1.0406,
+    "right": 0.3943
+   },
+   "hand_range_counts": {
+    "left": 686,
+    "right": 310
+   }
+  },
+  "2026-10-07--15-25-40-083141": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.1851,
+    "right": 0.6719
+   },
+   "hand_range_counts": {
+    "left": 24,
+    "right": 821
+   }
+  },
+  "2026-10-07--15-26-01-159303": {
+   "class": "right",
+   "split": "train",
+   "fallback": false,
+   "arm_range_rad": {
+    "left": 0.3328,
+    "right": 0.7994
+   },
+   "hand_range_counts": {
+    "left": 38,
+    "right": 902
+   }
+  }
+ }
+}
