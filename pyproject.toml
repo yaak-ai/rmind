@@ -180,10 +180,11 @@ constraint-dependencies = [
 ]
 
 [tool.uv.sources]
-# TODO: rbyte's nero ingestion (yaak-ai/rbyte#109, #110, on top of v0.40.0) is not
-# released yet, so rbyte comes from its PR branch, pinned by commit. Once it is
+# TODO: rbyte's nero ingestion (yaak-ai/rbyte#109, #110, on top of v0.40.0) and its
+# bimanual reader (branch feat/nero-bimanual, contract layout nero-bimanual-26) are
+# not released yet, so rbyte comes from that branch, pinned by commit. Once it is
 # released, drop this source and pin `rbyte[jpeg,nero,yaak]==<next release>`.
-rbyte = { git = "https://github.com/yaak-ai/rbyte.git", rev = "3887c67d25150e335d18cf37381faaf80979883d" }
+rbyte = { git = "https://github.com/yaak-ai/rbyte.git", rev = "c08920bae09766f7e96d90bf74898b2915d3c120" }
 # rbyte's `yaak` extra needs these, and uv does not read a dependency's own
 # [tool.uv.sources] (same sources as rbyte's pyproject.toml)
 m2df = { git = "ssh://git@github.com/yaak-ai/ydks.git", subdirectory = "crates/m2df" }

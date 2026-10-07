@@ -2069,7 +2069,7 @@ wheels = [
 [[package]]
 name = "rbyte"
 version = "0.40.0"
-source = { git = "https://github.com/yaak-ai/rbyte.git?rev=3887c67d25150e335d18cf37381faaf80979883d#3887c67d25150e335d18cf37381faaf80979883d" }
+source = { git = "https://github.com/yaak-ai/rbyte.git?rev=c08920bae09766f7e96d90bf74898b2915d3c120#c08920bae09766f7e96d90bf74898b2915d3c120" }
 dependencies = [
     { name = "duckdb" },
     { name = "hydra-core" },
@@ -2286,8 +2286,8 @@ requires-dist = [
     { name = "polars", specifier = ">=1.41.2" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytorch-lightning", specifier = ">=2.6.5" },
-    { name = "rbyte", extras = ["jpeg", "nero", "yaak"], git = "https://github.com/yaak-ai/rbyte.git?rev=3887c67d25150e335d18cf37381faaf80979883d" },
-    { name = "rbyte", extras = ["video", "visualize"], marker = "extra == 'predict'", git = "https://github.com/yaak-ai/rbyte.git?rev=3887c67d25150e335d18cf37381faaf80979883d" },
+    { name = "rbyte", extras = ["jpeg", "nero", "yaak"], git = "https://github.com/yaak-ai/rbyte.git?rev=c08920bae09766f7e96d90bf74898b2915d3c120" },
+    { name = "rbyte", extras = ["video", "visualize"], marker = "extra == 'predict'", git = "https://github.com/yaak-ai/rbyte.git?rev=c08920bae09766f7e96d90bf74898b2915d3c120" },
     { name = "structlog", specifier = ">=26.1.0" },
     { name = "tensordict", specifier = ">=0.13.0" },
     { name = "tensorrt-cu12", marker = "sys_platform == 'linux' and extra == 'predict'", specifier = "==11.1.0.106" },
