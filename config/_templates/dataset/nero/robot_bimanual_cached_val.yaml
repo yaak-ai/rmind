@@ -1,0 +1,3 @@
+#@ load("robot.lib.yml", "dataset")
+#@ load("robot_bimanual_split.lib.yml", "val")
+--- #@ dataset(val, "val", frame_cache=True)
