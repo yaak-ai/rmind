@@ -284,6 +284,60 @@ Ablations: `yaak/nero_robot/relative_{hand,all}` (each with its own tokenizer),
 `hand_off`, `hand_current`, `hand_pos`, `hand_tip`; `synthetic` and
 `tokenizer_synthetic` run on the synthetic hand-dependent task.
 
+## Bimanual runs (2026-10-07 cube corpus, nero-bimanual-26)
+
+85 `bus_bimanual` takes, both arms valid in every row (`side_valid [T, T]`),
+read by rbyte's bimanual `NeroRobotReader` (pinned `feat/nero-bimanual`). Two
+patch runs, `bimanual_hand_off` (no hand token, 481 tokens/frame) and
+`bimanual_causal` (two side-tagged hand tokens: needs the per-side hand token
+work before it can train), share everything else:
+
+- **Split**: `config/splits/nero_cube_bimanual_v1.json`, a byte copy of
+  nutron-cli's `runtime/training/splits/nero_cube_bimanual_v1.json` -- the SAME
+  take-level split the ACT runs use (76 train / 9 val, stratified by active arm:
+  left 41/4, right 25/3, both 10/2). `python -m rmind.scripts.nero_split_lib`
+  renders it into `robot_bimanual_split.lib.yml` (`--check`, `--sync-from NUTRON_CLI_ROOT`); never edit the lib by hand.
+- **Data**: a LOCAL copy of the corpus (`NERO_ROBOT_DIR`, default
+  `~/data/nero-arms/cube-bimanual/2026-10-07`) read through the preprocessed
+  **frame cache** (`NERO_FRAME_CACHE`, `rmind.data.nero_frame_cache`): every mp4
+  frame through `nero_image.preprocess` once, uint8 140x224, 7.7 GB for the
+  corpus, built in ~4 min with 8 workers, byte-identical to the decode path
+  (`--verify`, and `tests/test_nero_bimanual.py`). The cache refuses itself when
+  `nero_image.py`, the grid or the mp4 changes. Datamodule
+  `yaak/nero_robot_bimanual` decodes instead (same bytes, decode-bound).
+- **relative_mode all**, one stats dir and one tokenizer for both runs.
+- **lr_total_steps** = len(train_dataloader) x max_epochs, from
+  `python -m rmind.scripts.nero_steps <experiment>` (fails on a mismatch):
+  policy 1425 windows -> 356 batches of 4 x 10 = 3560; tokenizer 16948 frames ->
+  66 batches of 256 x 20 = 1320.
+- **Local logging**: `trainer/nero_local` (CSVLogger under `NERO_RUNS_DIR`,
+  checkpoints next to it), `wandb.mode: disabled`.
+- **Arm selection** on val (`rmind.callbacks.nero_arm_selection`): the cube task
+  moves one arm per take, chosen by the cube's mark, so val logs
+  `val/arm_select/<left|right|both>/...` and the pooled
+  `val/arm_select/{correct_side_rate,take_correct_rate,idle_exc_ratio}` -- a port
+  of nutron_act's metric (same keys and thresholds, executed horizon 50 steps)
+  so the ACT and patch numbers compare.
+
+```sh
+export NERO_ROBOT_DIR=~/data/nero-arms/cube-bimanual/2026-10-07   # rsync of the NAS copy
+export NERO_FRAME_CACHE=~/data/nero-arms/cube-bimanual/frame-cache-140x224/2026-10-07
+export NERO_STATS_DIR=~/data/nero-arms/cube-bimanual/rmind/stats_v1
+export NERO_RUNS_DIR=~/data/nero-arms/cube-bimanual/rmind/runs
+just generate-config
+python -m rmind.scripts.nero_frame_cache --root $NERO_ROBOT_DIR --out $NERO_FRAME_CACHE --workers 8 --verify 16
+python -m rmind.scripts.nero_fit_stats --experiment yaak/nero_robot/bimanual_tokenizer --out $NERO_STATS_DIR
+# fit_report.json: hand.source must be train:hand, hand.per_side rows for both sides
+rmind-train --config-path $PWD/config --config-name train.yaml experiment=yaak/nero_robot/bimanual_tokenizer
+export NERO_TOKENIZER_CKPT=$NERO_RUNS_DIR/bimanual_tokenizer/version_<n>/checkpoints/<last>.ckpt
+rmind-train --config-path $PWD/config --config-name train.yaml experiment=yaak/nero_robot/bimanual_hand_off
+```
+
+`nero_fit_stats` stacks `hand.left.*` and `hand.right.*` rows into the one pooled
+hand standardizer and fails when it finds no hand rows at all. On the train
+split: 16948 rows per side, valid motor rows 16142 left / 15651 right,
+`hand.source train:hand`.
+
 ## Open items
 
 * **Orin latency is unmeasured.** Local RTX 5090, torch eager fp32, random
