@@ -17,6 +17,7 @@ What this file makes falsifiable, on the tiny shapes of `test_nero_robot.py`:
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import pytest
@@ -220,7 +221,7 @@ def test_per_side_dropout_draws_each_side() -> None:
 def test_layout_mismatches_are_refused() -> None:
     sided, single = _sided(), _policy()
     bi, one = _bi_batch(t=2), _batch(t=2)
-    with pytest.raises(ValueError, match="no hand.left"):
+    with pytest.raises(ValueError, match=r"no hand\.left"):
         sided.hand_vector(one)
     with pytest.raises(ValueError, match="hand_sides"):
         single.hand_vector(bi)
@@ -230,6 +231,18 @@ def test_layout_mismatches_are_refused() -> None:
         single.hand_vector({"hand_token": torch.zeros(1, 2, 2, DIM)})
     with pytest.raises(ValueError, match="without hand_groups"):
         _policy(hand=False, hand_sides=SIDES)
+
+
+def test_sided_training_batch_without_hand_columns_is_refused() -> None:
+    """A datamodule that lost every hand column must not silently turn a
+    sided hand_on run into a no-hand model; eval/serving still gets None."""
+    sided = _sided()
+    bare = {k: v for k, v in _bi_batch(t=2).items() if not k.startswith("hand.")}
+    sided.train()
+    with pytest.raises(ValueError, match=r"no hand\.\* columns at all"):
+        sided.hand_vector(bare)
+    sided.eval()
+    assert sided.hand_vector(bare) is None
 
 
 def test_stale_tokens_per_frame_is_refused() -> None:
@@ -392,11 +405,16 @@ def _bi_export(
 
 
 def _wp0_nutron_cli() -> Any:
+    """The WP0 (hand_sides) nutron-cli: run with
+    `NUTRON_CLI_ROOT=<nutron-cli checkout with WP0>`. An explicitly set
+    $NUTRON_CLI_ROOT that lacks WP0 FAILS (it was meant to be checked); only
+    the unset default skips."""
     pc = NUTRON_CLI / "runtime/jetson/policy_contract.py"
     if not pc.exists() or "hand_sides" not in pc.read_text():
-        pytest.skip(
-            f"no WP0 (hand_sides) nutron-cli at {NUTRON_CLI} ($NUTRON_CLI_ROOT)"
-        )
+        msg = f"no WP0 (hand_sides) nutron-cli at {NUTRON_CLI} ($NUTRON_CLI_ROOT)"
+        if os.environ.get("NUTRON_CLI_ROOT"):
+            pytest.fail(msg)
+        pytest.skip(msg)
     return NUTRON_CLI
 
 
@@ -431,6 +449,53 @@ def test_bimanual_export_passes_every_gate_and_nutron_cli(tmp_path: Any) -> None
     loaded = pc.patch_contract_from_manifest(out / "policy_manifest.json", out)
     assert loaded.n_hand_tokens == 2  # noqa: PLR2004
     assert tuple(loaded.hand_token_shape) == (2, DIM)
+
+
+def test_bimanual_hand_off_export_gates_both_sides(tmp_path: Any) -> None:
+    """A bimanual model WITHOUT a hand token (bimanual_hand_off) is gated on
+    the manifest's both-valid side_valid: the right arm's codes and chunk are
+    compared under valid input, not only the left's."""
+    _, report, out = _bi_export(tmp_path, _policy(hand=False), None)
+    assert report["failures"] == [], report
+    gate = report["streaming_vs_windowed"]
+    assert gate["sides_checked"] == len(SIDES), gate
+    assert gate["code_agreement"] == pytest.approx(1.0), gate
+    manifest = json.loads((out / "policy_manifest.json").read_text())
+    assert manifest["side_valid"] == [True, True]
+    assert manifest["tokens_per_frame"] == 1 + 3 * NUM_PATCHES
+
+
+def test_export_refuses_unknown_side_valid(tmp_path: Any) -> None:
+    import argparse  # noqa: PLC0415
+
+    pytest.importorskip("onnxruntime")
+    from rmind.scripts import nero_export, nero_fit_stats  # noqa: PLC0415
+
+    stats = tmp_path / "stats"
+    nero_fit_stats.write(nero_fit_stats.fit([_batch(t=4)]), stats)
+    path = stats / "absolute_action_stats.json"
+    payload = json.loads(path.read_text())
+    payload["side_valid"] = [False, True]
+    path.write_text(json.dumps(payload))
+    args = argparse.Namespace(
+        out=tmp_path / "artifact",
+        stats=stats,
+        camera_cond=None,
+        n_next_actions=6,
+        min_start_index=3,
+        gate_frames=20,
+        ort_frames=2,
+        tol=1e-4,
+        vit_gflops=0.0,
+        nutron_cli=None,
+        no_latency=True,
+        gate_device="cpu",
+        patch_size=14,
+        checkpoint=None,
+    )
+    with pytest.raises(RuntimeError, match="side_valid"):
+        nero_export.run(args, _policy(hand=False), hw=IMAGE_HW)
+    assert not (tmp_path / "artifact" / "policy.onnx").exists()
 
 
 def test_bimanual_export_refuses_single_arm_stats(tmp_path: Any) -> None:

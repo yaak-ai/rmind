@@ -896,15 +896,30 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
     # --- gate 1: streaming == windowed (the trained window over a longer episode).
     # On the GPU when there is one (a 40-frame windowed forward is ~19k tokens),
     # in TRUE fp32: TF32 matmuls would make the comparison measure TF32 noise.
-    # a sided (bimanual) hand token is gated on a BOTH-VALID batch, so every
-    # side's token, codes and chunk are exercised
+    # the gate batch carries the SAME side_valid the manifest ships (the
+    # stats'): a bimanual artifact -- with or without a hand token -- is gated
+    # on a BOTH-VALID batch, so every side's token, codes and chunk are exercised
+    stats_side_valid = [bool(v) for v in stats.get("side_valid", [True, False])]
+    if stats_side_valid not in ([True, False], [True, True]):
+        msg = (
+            f"{args.stats} has side_valid {stats.get('side_valid')}: the export "
+            "gates know single-arm [True, False] and bimanual [True, True] only"
+        )
+        raise RuntimeError(msg)
     batch = nero_robot_batch(
         batch_size=1,
         num_frames=args.gate_frames,
         image_hw=hw,
         seed=7,
-        bimanual=bool(policy.hand_sides),
+        bimanual=all(stats_side_valid),
     )
+    gate_side_valid = [bool(v) for v in batch["side_valid"][0].tolist()]
+    if gate_side_valid != stats_side_valid:
+        msg = (
+            f"gate batch side_valid {gate_side_valid} != the manifest's "
+            f"{stats_side_valid}: the gates would not check the served sides"
+        )
+        raise RuntimeError(msg)
     batch["camera_cond"] = cond.reshape(1, *cond.shape)
     gate_device = torch.device(args.gate_device)
     torch.backends.cuda.matmul.allow_tf32 = False

@@ -363,11 +363,26 @@ first batch). The frame block is `[state][hand.left][hand.right][patches]`:
   output stays `(1, Q)` of the first valid side, while the export's streaming
   gate compares EVERY valid side's codes (`forward_all_codes`) on a both-valid
   batch. Export refuses stats whose `side_valid` sides are not `hand_sides`.
+- every export's gate batch carries the manifest's (the stats') `side_valid`:
+  `bimanual_hand_off` (no hand token) is gated both-valid too, so the right
+  arm's codes and chunk are compared under valid input; a gate batch that
+  differs from the manifest, or stats other than `[T, F]` / `[T, T]`, refuse
+  the export before the gates.
 
 `hand_sides: []` (every single-arm experiment) is the old untagged token read
 from `hand.*`: no new parameters, same init and outputs, `hand_token (1, 14)`.
 A model and batch whose hand layouts disagree raise instead of training on
-`no_hand` everywhere.
+`no_hand` everywhere; so does a sided model in training mode fed a batch with no
+hand columns at all (eval/serving still gets `no_hand`).
+
+The WP0 export test (`test_bimanual_export_passes_every_gate_and_nutron_cli`)
+needs a nutron-cli checkout with `hand_sides` support. It skips when
+`$NUTRON_CLI_ROOT` is unset and its default lacks WP0, and FAILS when
+`$NUTRON_CLI_ROOT` is set to a checkout without it:
+
+```sh
+NUTRON_CLI_ROOT=<nutron-cli checkout with WP0> uv run pytest -q tests/test_nero_hand_sides.py tests/test_nero_robot.py tests/test_nero_bimanual.py
+```
 
 ```sh
 rmind-train --config-path $PWD/config --config-name train.yaml experiment=yaak/nero_robot/bimanual_causal
