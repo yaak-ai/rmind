@@ -171,16 +171,23 @@ def streaming_gate(  # noqa: PLR0914
     *,
     frames: int,
 ) -> dict[str, Any]:
-    """Max |streamed - windowed| over `frames` frames, and code agreement."""
+    """Max |streamed - windowed| over `frames` frames, and code agreement.
+
+    Codes are compared for EVERY valid side (`forward_all_codes`, torch-side):
+    the bound `(1, Q)` output carries only the first valid side's, so a
+    second-side code mismatch would otherwise pass unseen. `code_agreement` is
+    over (frame, valid side) pairs; `bound_code_agreement` checks the bound
+    output against the first valid side.
+    """
     features = policy._features(batch)  # noqa: SLF001
     windowed, windowed_codes = policy._predict_chunk_and_codes(features[0])  # noqa: SLF001
     device = step.camera_cond.device
     past = step.empty_cache(device=device)
-    worst, agree, total = 0.0, 0, 0
+    worst, agree, total, bound_agree = 0.0, 0, 0, 0
     for frame in range(frames):
         inputs = step.frame_inputs(batch, frame)
         cos, sin = (x.to(device) for x in step.rope(frame))
-        actions, new_k, new_v, codes = step(
+        args = (
             inputs["images"],
             inputs["state"],
             inputs["side_valid"],
@@ -189,13 +196,27 @@ def streaming_gate(  # noqa: PLR0914
             sin,
             inputs.get("hand_token"),
         )
+        actions, new_k, new_v, codes = step.forward_all_codes(*args)
+        bound = step(*args)[3]
         past = step.advance(past, new_k, new_v)
         want = windowed[frame].permute(1, 0, 2).reshape(1, actions.shape[1], -1)
         worst = max(worst, float((actions - want).abs().max()))
-        valid_side = int(inputs["side_valid"][0].argmax())
-        agree += int(torch.equal(codes[0], windowed_codes[frame, valid_side]))
-        total += 1
-    return {"max_abs": worst, "code_agreement": agree / total, "frames": total}
+        valid_sides = [
+            i
+            for i, v in enumerate(inputs["side_valid"][0].tolist())
+            if v > 0.5  # noqa: PLR2004
+        ]
+        for side in valid_sides:
+            agree += int(torch.equal(codes[0, side], windowed_codes[frame, side]))
+            total += 1
+        bound_agree += int(torch.equal(bound[0], windowed_codes[frame, valid_sides[0]]))
+    return {
+        "max_abs": worst,
+        "code_agreement": agree / total,
+        "bound_code_agreement": bound_agree / frames,
+        "frames": frames,
+        "sides_checked": total // frames,
+    }
 
 
 def ort_inputs(
@@ -347,7 +368,7 @@ def token_layout(
     per_cam = (hw[0] // patch_size) * (hw[1] // patch_size)
     layout: list[list[Any]] = [["state", 1]]
     if policy.use_hand:
-        layout.append(["hand", 1])
+        layout.append(["hand", policy.n_hand_tokens])
     return layout + [[f"patch:{c}", per_cam] for c in policy.cameras]
 
 
@@ -380,100 +401,109 @@ def manifest(  # noqa: PLR0913
     ]
     sides = ["left", "right"]
     side_valid = stats.get("side_valid", [True, False])
-    return {
-        "policy_type": "nero_patch_policy",
-        "model": {
-            "format": "onnx",
-            "file": files["model"],
-            "sha256": None,
-            "precision": "fp32",
-        },
-        "camera_fps": 30,
-        "frame_stride": 3,
-        "action_fps": 30,
-        "window_frames": window,
-        "tokens_per_frame": int(trunk.tokens_per_frame),
-        "token_layout": layout,
-        "cameras": cameras,
-        "image": {
-            "preprocessing_id": nero_image.PREPROCESSING_ID,
-            "preprocessing_sha256": nero_image.preprocessing_sha256(),
-            "patch_size": patch_size,
-            "value_range": "unit",
-            "channel_order": "rgb",
-            "normalize_in_graph": True,
-            "pad_value": float(nero_image.PAD_VALUE),
-        },
-        "camera_cond": {
-            "values": camera_cond.reshape(len(policy.cameras), 13).tolist(),
-            "placeholder": camera_cond_placeholder,
-        },
-        "sides": sides,
-        "side_valid": [bool(v) for v in side_valid],
-        "state_names": flat_names(sides),
-        "action_names": flat_names(sides),
-        "chunk_size": int(tokenizer.action_horizon),
-        "chunk_t0_offset_steps": 0,
-        "tokenizer": {
-            "file": files["tokenizer"],
-            "sha256": None,
-            "num_quantizers": int(tokenizer.quantizer.num_quantizers),
-            "codebook_size": int(tokenizer.quantizer.codebook_size),
-            "keyframe_stride": int(tokenizer.keyframe_stride),
-            "interpolation": "linear",
-            "in_graph": True,
-        },
-        "standardizers": {
-            "state": {
-                "file": files["state_standardizer"],
+    return (
+        {
+            "policy_type": "nero_patch_policy",
+            "model": {
+                "format": "onnx",
+                "file": files["model"],
                 "sha256": None,
+                "precision": "fp32",
+            },
+            "camera_fps": 30,
+            "frame_stride": 3,
+            "action_fps": 30,
+            "window_frames": window,
+            "tokens_per_frame": int(trunk.tokens_per_frame),
+            "token_layout": layout,
+            "cameras": cameras,
+            "image": {
+                "preprocessing_id": nero_image.PREPROCESSING_ID,
+                "preprocessing_sha256": nero_image.preprocessing_sha256(),
+                "patch_size": patch_size,
+                "value_range": "unit",
+                "channel_order": "rgb",
+                "normalize_in_graph": True,
+                "pad_value": float(nero_image.PAD_VALUE),
+            },
+            "camera_cond": {
+                "values": camera_cond.reshape(len(policy.cameras), 13).tolist(),
+                "placeholder": camera_cond_placeholder,
+            },
+            "sides": sides,
+            "side_valid": [bool(v) for v in side_valid],
+            "state_names": flat_names(sides),
+            "action_names": flat_names(sides),
+            "chunk_size": int(tokenizer.action_horizon),
+            "chunk_t0_offset_steps": 0,
+            "tokenizer": {
+                "file": files["tokenizer"],
+                "sha256": None,
+                "num_quantizers": int(tokenizer.quantizer.num_quantizers),
+                "codebook_size": int(tokenizer.quantizer.codebook_size),
+                "keyframe_stride": int(tokenizer.keyframe_stride),
+                "interpolation": "linear",
                 "in_graph": True,
             },
-            "action": {
-                "file": files["action_standardizer"],
-                "sha256": None,
-                "in_graph": False,
-            },
-        }
-        # the hand token's feature-column affine: in-graph (serving feeds the
-        # raw hf.build_token vector), shipped + hashed so serving refuses an
-        # artifact whose file does not match. Present iff the graph has one.
-        | (
-            {
-                "hand": {
-                    "file": files["hand_standardizer"],
+            "standardizers": {
+                "state": {
+                    "file": files["state_standardizer"],
                     "sha256": None,
                     "in_graph": True,
-                }
+                },
+                "action": {
+                    "file": files["action_standardizer"],
+                    "sha256": None,
+                    "in_graph": False,
+                },
             }
-            if "hand_standardizer" in files
-            else {}
-        ),
-        "absolute_action_stats": {k: stats[k] for k in ("min", "max", "q50")},
-        "relative_mode": policy.relative_mode,
-        "relative_mask": policy_relative_mask(policy, len(sides)),
-        "relative_anchor": RELATIVE_ANCHOR,
-        "n_next_actions": n_next_actions,
-        "min_start_index": min_start_index,
-        "max_missed_ticks": 0,
-        "hand": hand_spec,
-        # the graph has no goal input whether the policy trained "no_goal"
-        # (learned no_goal concatenated in-graph) or "none" (no goal channel)
-        "goal_mode": "none",
-        "depth": None,
-        "kv": {
-            "num_layers": int(trunk.num_layers),
-            "num_heads": int(trunk.num_heads),
-            "head_dim": int(trunk.head_dim),
-            "cache_frames": window - 1,
-            "dtype": "float32",
-            "mask_bias": MASK_BIAS,
-            "rope_base": float(trunk.rope_base),
-            "rope_counter": "frames_since_reset",
-            "ring": "oldest_first_shift",
-        },
-        "io": onnx_io,
-    }
+            # the hand token's feature-column affine: in-graph (serving feeds the
+            # raw hf.build_token vector), shipped + hashed so serving refuses an
+            # artifact whose file does not match. Present iff the graph has one.
+            | (
+                {
+                    "hand": {
+                        "file": files["hand_standardizer"],
+                        "sha256": None,
+                        "in_graph": True,
+                    }
+                }
+                if "hand_standardizer" in files
+                else {}
+            ),
+            "absolute_action_stats": {k: stats[k] for k in ("min", "max", "q50")},
+            "relative_mode": policy.relative_mode,
+            "relative_mask": policy_relative_mask(policy, len(sides)),
+            "relative_anchor": RELATIVE_ANCHOR,
+            "n_next_actions": n_next_actions,
+            "min_start_index": min_start_index,
+            "max_missed_ticks": 0,
+            "hand": hand_spec,
+        }
+        | (
+            # contract v3 `hand_sides` (WP0): one side-tagged token per entry; absent
+            # = the one untagged token every pre-bimanual artifact has
+            {"hand_sides": list(policy.hand_sides)} if policy.hand_sides else {}
+        )
+        | {
+            # the graph has no goal input whether the policy trained "no_goal"
+            # (learned no_goal concatenated in-graph) or "none" (no goal channel)
+            "goal_mode": "none",
+            "depth": None,
+            "kv": {
+                "num_layers": int(trunk.num_layers),
+                "num_heads": int(trunk.num_heads),
+                "head_dim": int(trunk.head_dim),
+                "cache_frames": window - 1,
+                "dtype": "float32",
+                "mask_bias": MASK_BIAS,
+                "rope_base": float(trunk.rope_base),
+                "rope_counter": "frames_since_reset",
+                "ring": "oldest_first_shift",
+            },
+            "io": onnx_io,
+        }
+    )
 
 
 def onnx_io(path: Path) -> dict[str, dict[str, dict[str, Any]]]:
@@ -654,6 +684,7 @@ def contract_mismatches(policy: NeroPatchPolicy, contract: Any) -> list[str]:  #
     check("hand token", bool(policy.use_hand), hand is not None)
     if policy.use_hand and hand is not None:
         check("hand.groups", list(policy.hand_groups), list(hand.get("groups", ())))
+    check("hand_sides", list(policy.hand_sides), list(d.get("hand_sides") or ()))
     stds = d.get("standardizers") or {}
     state_std = policy.state_standardizer or AxisStandardizer()
     have = {"action": tokenizer.standardizer.digest, "state": state_std.digest}
@@ -808,6 +839,8 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
 
     Raises:
         RuntimeError: when the shipped hand standardizer does not round-trip.
+            Or when a sided hand token (`hand_sides`) meets stats whose
+            side_valid sides differ (contract v3: hand_sides == valid sides).
     """
     policy = policy.cpu().eval()
     policy.sample_codes = False
@@ -833,6 +866,25 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
     # the hand-token builder BEFORE the expensive gates: a missing one must not
     # crash after the ONNX is written
     hf = hand_features_module(nutron_cli) if policy.use_hand else None
+    # the stats' side_valid decides the manifest's sides: refuse a sided hand
+    # token against single-arm stats BEFORE the expensive gates
+    stats = json.loads((args.stats / "absolute_action_stats.json").read_text())
+    if policy.hand_sides:
+        stats_sides = [
+            s
+            for s, v in zip(
+                ("left", "right"), stats.get("side_valid", ()), strict=False
+            )
+            if v
+        ]
+        if stats_sides != list(policy.hand_sides):
+            # contract v3: hand_sides == the side_valid-true sides
+            msg = (
+                f"hand_sides {list(policy.hand_sides)} but {args.stats} has "
+                f"side_valid {stats.get('side_valid')}: export with the stats the "
+                "policy trained on (the bimanual fit)"
+            )
+            raise RuntimeError(msg)
     # the checkpoint the artifact is exported from: mac_factory refuses any other
     checkpoint = getattr(args, "checkpoint", None)
     if checkpoint is not None:
@@ -844,8 +896,14 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
     # --- gate 1: streaming == windowed (the trained window over a longer episode).
     # On the GPU when there is one (a 40-frame windowed forward is ~19k tokens),
     # in TRUE fp32: TF32 matmuls would make the comparison measure TF32 noise.
+    # a sided (bimanual) hand token is gated on a BOTH-VALID batch, so every
+    # side's token, codes and chunk are exercised
     batch = nero_robot_batch(
-        batch_size=1, num_frames=args.gate_frames, image_hw=hw, seed=7
+        batch_size=1,
+        num_frames=args.gate_frames,
+        image_hw=hw,
+        seed=7,
+        bimanual=bool(policy.hand_sides),
     )
     batch["camera_cond"] = cond.reshape(1, *cond.shape)
     gate_device = torch.device(args.gate_device)
@@ -905,7 +963,6 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         }
     elif policy.use_hand:
         logger.warning("hand token WITHOUT a hand standardizer (legacy checkpoint)")
-    stats = json.loads((args.stats / "absolute_action_stats.json").read_text())
     hand_spec = None
     if hf is not None:
         hand_spec = hf.token_spec(policy.hand_groups)
@@ -954,7 +1011,11 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         logger.info("latency (local GPU, NOT Orin)", **report["latency"])
 
     failures = []
-    if gate["max_abs"] > args.tol or gate["code_agreement"] < 1.0:
+    if (
+        gate["max_abs"] > args.tol
+        or gate["code_agreement"] < 1.0
+        or gate["bound_code_agreement"] < 1.0
+    ):
         failures.append("streaming != windowed")
     if max(ort["max_abs"].values()) > args.tol or not ort["codes_equal"]:
         failures.append("ONNX != eager")

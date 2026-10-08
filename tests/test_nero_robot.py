@@ -114,10 +114,13 @@ def _policy(
     relative_mode: str = "none",
     hand: bool = True,
     conditioned: bool = True,
+    hand_sides: tuple[str, ...] = (),
     **kwargs: Any,
 ) -> NeroPatchPolicy:
     torch.manual_seed(0)
-    tokens = 1 + int(hand) + 3 * NUM_PATCHES
+    tokens = 1 + int(hand) * (len(hand_sides) or 1) + 3 * NUM_PATCHES
+    if hand_sides:
+        kwargs["hand_sides"] = hand_sides
     if hand:
         kwargs.setdefault(
             "hand_standardizer", HandTokenStandardizer(groups=HAND_GROUPS)
@@ -1231,10 +1234,10 @@ def _sided_hand_batch() -> dict[str, Any]:
 
 
 def test_hand_token_refuses_per_side_only_hand_columns() -> None:
-    """Until the per-side hand token exists, a hand_on model must not silently
-    train with `no_hand` on every frame of a bimanual batch."""
+    """An UNTAGGED hand_on model must not silently train with `no_hand` on every
+    frame of a bimanual batch: it is told to set hand_sides."""
     batch = _sided_hand_batch()
-    with pytest.raises(NotImplementedError, match="per-side hand"):
+    with pytest.raises(ValueError, match=r"per-side hand.*hand_sides"):
         _policy().hand_vector(batch)
     # a hand_off model never reads the hand columns
     assert _policy(hand=False).compute_metrics(batch) is not None

@@ -168,6 +168,7 @@ from torch.optim import Optimizer
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
+from rmind.components.nn import NormedTokenEmbedding
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.data.nero import (
     CAMERA_COND_DIM,
@@ -181,8 +182,10 @@ from rmind.data.nero_robot import (
     RELATIVE_MODES,
     HandTokenStandardizer,
     compose_hand_token,
+    compose_hand_tokens,
     hand_token_dim,
     normalize_hand_groups,
+    normalize_hand_sides,
     to_absolute,
 )
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
@@ -289,6 +292,13 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         goal_mode: Literal["image", "no_goal", "none"] | None = None,
         #: P6: hand token groups (hand_features.SELECTABLE_GROUPS); () = no token
         hand_groups: Sequence[str] = (),
+        #: WP5: () = ONE untagged hand token read from `hand.*` (single arm, the
+        #: pre-bimanual layout and checkpoints); ("left", "right") = one
+        #: side-tagged token PER SIDE read from `hand.{side}.*` (bimanual,
+        #: contract v3 `hand_sides`), all through the one pooled
+        #: `hand_embedding` + `hand_standardizer`, each with its own `no_hand`
+        #: substitution and dropout.
+        hand_sides: Sequence[str] = (),
         hand_embedding: HydraConfig[Module] | InstanceOf[Module] | None = None,
         hand_prefix: str = "hand.",
         hand_token_key: str = "hand_token",
@@ -428,6 +438,12 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.goal_mode = goal_mode
         self.hand_groups = normalize_hand_groups(hand_groups)
         self.use_hand = bool(self.hand_groups)
+        self.hand_sides = normalize_hand_sides(hand_sides)
+        if self.hand_sides and not self.use_hand:
+            msg = f"hand_sides {list(self.hand_sides)} without hand_groups (no hand token)"
+            raise ValueError(msg)
+        #: hand tokens per frame: 0 (no hand), 1 (untagged), len(hand_sides)
+        self.n_hand_tokens = (len(self.hand_sides) or 1) if self.use_hand else 0
         self.hand_embedding: Module | None = None
         if self.use_hand:
             if hand_embedding is None:
@@ -561,6 +577,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "action_space": action_space,
             "goal_mode": goal_mode,
             "hand_groups": self.hand_groups,
+            "hand_sides": self.hand_sides,
             "hand_prefix": hand_prefix,
             "hand_token_key": hand_token_key,
             "hand_dropout_sample": hand_dropout_sample,
@@ -583,6 +600,21 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.lr_scheduler: LRSchedulerHydraConfig | None = lr_scheduler
 
         self.prediction_config = prediction_config
+
+        # WP5: the per-side hand tag. ⚠️ CONSTRUCTED LAST and ONLY when sided,
+        # so a single-token (or hand-off) model draws the identical init RNG
+        # stream and has the identical state_dict it had before hand_sides
+        # existed. It is added BEFORE the hand embedding's output norm (see
+        # `_embed_hand`), to the real token and to `no_hand` alike, so the trunk
+        # sees WHICH hand is refused. (The trunk's learned intra-frame slot
+        # embedding also separates the slots; the tag makes the identity part
+        # of the token itself.)
+        self.hand_side_embedding: nn.Embedding | None = None
+        if self.hand_sides:
+            self.hand_side_embedding = nn.Embedding(
+                len(self.hand_sides), policy_embedding_dim
+            )
+            nn.init.trunc_normal_(self.hand_side_embedding.weight, std=0.02)
 
         self.save_hyperparameters(hparams)
 
@@ -912,48 +944,109 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return std
 
     def hand_vector(self, batch: Any) -> Tensor | None:
-        """`(b, T, dim)` hand token input, `hand_valid` last; None if absent.
+        """Hand token input, `hand_valid` last in every row; None if absent.
 
-        Serving/export hands the composed vector over as `hand_token`; training
-        composes it from rbyte's per-group blocks (`compose_hand_token`, the
-        torch twin of `hf.TokenBlocks.compose`).
+        Untagged (`hand_sides == ()`): `(b, T, dim)` from `hand.*`. Sided:
+        `(b, T, S, dim)` from `hand.{side}.*`, one row per entry of
+        `hand_sides`. Serving/export hands the composed vector over as
+        `hand_token`; training composes it from rbyte's per-group blocks
+        (`compose_hand_token(s)`, the torch twin of `hf.TokenBlocks.compose`).
+        A batch with no hand stream at all gives None (`no_hand` everywhere).
 
         Raises:
-            NotImplementedError: when the batch carries only the per-side
-                `hand.{left,right}.*` columns (bimanual), which this unsided hand
-                token cannot read yet.
+            ValueError: when the batch's hand columns are the other layout
+                (per-side columns for an untagged model, or vice versa), or a
+                sided batch lacks one of `hand_sides` -- silently substituting
+                `no_hand` would train a hand_on run as a no-hand model.
         """
         vec = self._lookup(batch, (self.hand_token_key,))
         if vec is not None:
-            return vec.float()
-        if self._lookup(batch, (f"{self.hand_prefix}motor_ok",)) is None:
-            # A bimanual rbyte row carries `hand.{left,right}.*`, never the
-            # unsided `hand.*`: silently substituting `no_hand` for every frame
-            # would train a hand_on run as a no-hand model. Refuse until the
-            # per-side hand token path (WP5) reads the sided columns.
-            sided = [
-                side
-                for side in ("left", "right")
-                if self._lookup(batch, (f"{self.hand_prefix}{side}.motor_ok",))
-                is not None
-            ]
+            vec = vec.float()
+            want = 4 if self.hand_sides else 3
+            if vec.dim() != want or (
+                self.hand_sides and vec.shape[-2] != len(self.hand_sides)
+            ):
+                msg = (
+                    f"`{self.hand_token_key}` is {tuple(vec.shape)}; this model takes "
+                    + (
+                        f"(b, T, {len(self.hand_sides)}, dim) for hand_sides "
+                        f"{list(self.hand_sides)}"
+                        if self.hand_sides
+                        else "(b, T, dim) (one untagged hand token)"
+                    )
+                )
+                raise ValueError(msg)
+            return vec
+        unsided = self._lookup(batch, (f"{self.hand_prefix}motor_ok",)) is not None
+        sided = [
+            side
+            for side in ("left", "right")
+            if self._lookup(batch, (f"{self.hand_prefix}{side}.motor_ok",)) is not None
+        ]
+        if self.hand_sides:
+            missing = [s for s in self.hand_sides if s not in sided]
+            if not sided and not unsided:
+                return None
+            if missing:
+                msg = (
+                    f"hand_sides {list(self.hand_sides)} but the batch has no "
+                    f"{', '.join(f'{self.hand_prefix}{s}.*' for s in missing)} columns"
+                    + (
+                        f" (it carries the unsided {self.hand_prefix}*)"
+                        if unsided
+                        else ""
+                    )
+                )
+                raise ValueError(msg)
+            return compose_hand_tokens(
+                batch, self.hand_groups, self.hand_sides, prefix=self.hand_prefix
+            )
+        if not unsided:
             if sided:
+                # A bimanual rbyte row carries `hand.{left,right}.*`, never the
+                # unsided `hand.*`.
                 msg = (
                     f"hand token enabled (hand_groups={list(self.hand_groups)}) but "
                     f"the batch carries only per-side hand columns "
                     f"({', '.join(f'{self.hand_prefix}{s}.*' for s in sided)}), "
-                    f"no `{self.hand_prefix}motor_ok`: the per-side hand token is "
-                    "not implemented yet -- train bimanual_hand_off instead"
+                    f"no `{self.hand_prefix}motor_ok`: set hand_sides "
+                    f"{sided} for the per-side hand token (bimanual_causal)"
                 )
-                raise NotImplementedError(msg)
+                raise ValueError(msg)
             return None
         return compose_hand_token(batch, self.hand_groups, prefix=self.hand_prefix)
 
     def _no_hand_token(self) -> Tensor:
+        """`(d,)` untagged, `(S, d)` sided (each side's tag added pre-norm)."""
         embed = self.hand_embedding
+        raw: Tensor = self.no_hand
+        tag = self._hand_side_tag()
+        if tag is not None:
+            if embed is not None and hasattr(embed, "embed_learned"):
+                return embed.embed_learned(raw + tag)
+            return raw + tag
         if embed is not None and hasattr(embed, "embed_learned"):
-            return embed.embed_learned(self.no_hand)
-        return self.no_hand
+            return embed.embed_learned(raw)
+        return raw
+
+    def _hand_side_tag(self) -> Tensor | None:
+        if self.hand_side_embedding is None:
+            return None
+        return self.hand_side_embedding.weight  # (S, d)
+
+    def _embed_hand(self, vec: Tensor) -> Tensor:
+        """`hand_embedding(vec)`, with the per-side tag added BEFORE the output
+        norm when sided (`NormedTokenEmbedding`; after it for any other module),
+        so the tag survives at the token's own scale."""
+        embed = self.hand_embedding
+        assert embed is not None  # noqa: S101
+        tag = self._hand_side_tag()
+        if tag is None:
+            return embed(vec)
+        if isinstance(embed, NormedTokenEmbedding):
+            hidden = embed.mlp(embed.in_norm(vec)) + tag.to(vec.dtype)
+            return embed.token_gain * embed.out_norm(hidden)
+        return embed(vec) + tag.to(vec.dtype)
 
     def _hand_tokens(
         self,
@@ -964,44 +1057,58 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         device: torch.device,
         token_norms: dict[str, Tensor] | None = None,
     ) -> Tensor:
-        """`(b, T, 1, d)`: the embedded newest-sample hand token, or `no_hand`.
+        """`(b, T, n, d)`: the embedded newest-sample hand token(s), or `no_hand`.
 
-        `no_hand` replaces the token wherever `hand_valid` is 0 (refused/stale --
-        a KV stream cannot drop or hold a frame, P6), the hand stream is absent
-        from the batch, or hand dropout fires (training only): per SAMPLE
-        (`hand_dropout_sample`, the whole sequence) and per FRAME
+        `n = 1` untagged, `n = len(hand_sides)` sided (side-major, one token per
+        side). `no_hand` replaces a token wherever ITS `hand_valid` is 0
+        (refused/stale -- a KV stream cannot drop or hold a frame, P6), the hand
+        stream is absent from the batch, or hand dropout fires (training only):
+        per SAMPLE (`hand_dropout_sample`, the whole sequence) and per FRAME
         (`hand_dropout_frame`), so the policy never becomes hand-DEPENDENT for
-        basic motion and degrades gracefully at serving.
+        basic motion and degrades gracefully at serving. Sided, validity and
+        both dropouts are drawn PER SIDE: one hand's refusal never touches the
+        other's token.
         """
         assert self.hand_embedding is not None  # noqa: S101
         b, t = batch_size, num_frames
+        n = len(self.hand_sides)
         vec = self.hand_vector(batch)
-        no_hand = self._no_hand_token()
+        no_hand = self._no_hand_token()  # (d,) | (S, d)
         if vec is None:
-            out = no_hand.expand(b, t, -1)
-            valid = torch.zeros(b, t, dtype=torch.bool, device=device)
+            out = no_hand.expand(b, t, *no_hand.shape)
+            valid = torch.zeros(
+                b, t, *([n] if n else []), dtype=torch.bool, device=device
+            )
         else:
             vec = vec.to(device)
-            valid = vec[..., -1] > 0.5  # noqa: PLR2004
+            valid = vec[..., -1] > 0.5  # noqa: PLR2004  (b, T) | (b, T, S)
+            side = (n,) if n else ()
             if self.training and self.hand_dropout_sample > 0:
-                keep = torch.rand(b, 1, device=device) >= self.hand_dropout_sample
+                keep = (
+                    torch.rand(b, 1, *side, device=device) >= self.hand_dropout_sample
+                )
                 valid = valid & keep  # noqa: PLR6104  (never in place: may alias the batch)
             if self.training and self.hand_dropout_frame > 0:
-                keep = torch.rand(b, t, device=device) >= self.hand_dropout_frame
+                keep = torch.rand(b, t, *side, device=device) >= self.hand_dropout_frame
                 valid = valid & keep  # noqa: PLR6104
             # fixed in-graph affine on the feature columns (hand_valid, read
-            # above, and hand_age pass through unchanged)
+            # above, and hand_age pass through unchanged); ONE pooled affine
+            # for every side
             if self.hand_standardizer is not None:
                 vec = self.hand_standardizer(vec)
-            tokens = self.hand_embedding(vec)
+            tokens = self._embed_hand(vec)
             out = torch.where(valid.unsqueeze(-1), tokens, no_hand.to(tokens.dtype))
         if token_norms is not None:
             with torch.no_grad():
                 if bool(valid.any()):
                     token_norms["hand"] = out.detach()[valid].norm(dim=-1).mean()
-                token_norms["no_hand"] = no_hand.detach().norm()
+                token_norms["no_hand"] = no_hand.detach().norm(dim=-1).mean()
                 token_norms["hand_valid_frac"] = valid.float().mean()
-        return out.unsqueeze(-2)
+                for i, name in enumerate(self.hand_sides):
+                    token_norms[f"hand_valid_frac/{name}"] = (
+                        valid[..., i].float().mean()
+                    )
+        return out if n else out.unsqueeze(-2)
 
     def _chunk(self, batch: Any) -> Tensor:
         """The action chunk in the model-facing 9D form.
@@ -1020,11 +1127,15 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def _frame_tokens(  # ruff: ignore[too-many-locals]
         self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
     ) -> Tensor:
-        """Per-frame token blocks `(b, T, 3P + 1, d)` -- everything below the trunk.
+        """Per-frame token blocks `(b, T, 1 + n_hand + 3P, d)` -- everything below the trunk.
 
         Factored out so a KV-cached one-frame decode step (the
         `PatchPolicyDecoderStep` equivalent) can run the identical pipeline on a
         single frame; nothing here is temporal.
+
+        Raises:
+            ValueError: when the built token count differs from the trunk's
+                configured `tokens_per_frame`.
         """
         state = self._state(batch)  # (b, T, 2, 60)
         valid = self._get(batch, self.side_valid)  # (b, 2) bool
@@ -1104,7 +1215,18 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             blocks.append(depth_tokens)
         # state first, so each frame block ends on a patch token (the readout)
         blocks.append(patch_tokens)
-        return torch.cat(blocks, dim=-2)
+        tokens = torch.cat(blocks, dim=-2)
+        configured = getattr(self.encoder, "tokens_per_frame", None)
+        if isinstance(configured, int) and tokens.shape[-2] != configured:
+            # a stale trunk `tokens_per_frame` (e.g. a sided hand token with
+            # num_hand_tokens still 1) would tile the slot embedding / frame
+            # mask wrong without raising
+            msg = (
+                f"built {tokens.shape[-2]} tokens per frame, the trunk is configured "
+                f"for {configured} (state 1 + hand {self.n_hand_tokens} + patches)"
+            )
+            raise ValueError(msg)
+        return tokens
 
     @torch.no_grad()
     def _calibrate_token_gains(self, patch_tokens: Tensor) -> None:
@@ -1123,7 +1245,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self._calibrate_now = False
 
     def tokens_per_frame(self) -> int:
-        """`1 state + 1 hand (if on) + depth + n_cameras * P`; for budget checks."""
+        """`1 state + n_hand_tokens + depth + n_cameras * P`; for budget checks."""
         return int(self.encoder.tokens_per_frame)
 
     def _features(
@@ -1142,7 +1264,9 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 out = frames.detach().norm(dim=-1)  # (b, T, k)
                 token_norms["out/state"] = out[..., 0].mean()
                 if self.use_hand:
-                    token_norms["out/hand"] = out[..., 1].mean()
+                    token_norms["out/hand"] = out[
+                        ..., 1 : 1 + self.n_hand_tokens
+                    ].mean()
                 token_norms["out/readout"] = out[..., -1].mean()
                 token_norms["out/patch"] = out[..., -self._num_patch_tokens() :].mean()
         if self.norm is not None:
@@ -1155,7 +1279,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             depth = len(self.depth_cameras) * (
                 self.depth_patch_grid[0] * self.depth_patch_grid[1]
             )
-        return self.tokens_per_frame() - 1 - int(self.use_hand) - depth
+        return self.tokens_per_frame() - 1 - self.n_hand_tokens - depth
 
     # ------------------------------------------------------- VQ-BeT head
 
@@ -1390,7 +1514,12 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         `shuffled`: hand vectors permuted across the batch;
         `shift_plus`/`shift_minus`: hand vectors moved +-`shift` frames in time
         (1 s at the 10 Hz frame grid), frames shifted in from outside the
-        window refused.
+        window refused;
+        `no_hand_<side>` (sided models only): that side's token refused on every
+        frame, the other side's untouched.
+
+        Works on both layouts (`(b, T, dim)` and the sided `(b, T, S, dim)`):
+        every ablation but `no_hand_<side>` acts on all sides together.
         """
         vec = self.hand_vector(batch)
         if vec is None:
@@ -1399,6 +1528,9 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         match how:
             case "no_hand":
                 alt = torch.zeros_like(vec)
+            case _ if how.startswith("no_hand_") and how[8:] in self.hand_sides:
+                alt = vec.clone()
+                alt[:, :, self.hand_sides.index(how[8:])] = 0
             case "shuffled":
                 perm = torch.roll(torch.arange(vec.shape[0], device=vec.device), 1)
                 alt = vec[perm]
@@ -1445,7 +1577,9 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """Hand reliance deltas (nutron_act port): ablated minus clean, >0 = relied on."""
         base = self._eval_scores(batch)
         out: dict[str, Tensor] = {}
-        for how in ("no_hand", "shuffled", "shift_plus", "shift_minus"):
+        hows = ["no_hand", "shuffled", "shift_plus", "shift_minus"]
+        hows += [f"no_hand_{side}" for side in self.hand_sides]
+        for how in hows:
             alt = self._eval_scores(self._hand_override(batch, how))
             out[f"reliance/{how}/code_nll"] = alt["code_nll"] - base["code_nll"]
             out[f"reliance/{how}/offset"] = alt["loss"] - base["loss"]

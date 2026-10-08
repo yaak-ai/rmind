@@ -19,10 +19,15 @@ standardizer and the relative mode is undone with each frame's RAW state as the
 anchor, giving `expected_actions (N, 100, 26)` ABSOLUTE and side-major, plus
 `expected_codes (N, Q)` of the first valid side (the graph's `codes` output).
 
+Hand token: the bundle's `hand_token` is `(N, dim)` for one untagged token and
+`(N, S, dim)` for a model with `hand_sides` (bimanual: one row per side in
+`hand_sides` order, each with its own `hand_valid`), exactly as serving feeds it.
+
 `--episode` additionally checks INPUT parity (what step 3 cannot see): for every
 bundle tick it finds rbyte's `NeroRobotReader` row with the same base
 `t_ns` and compares the raw state, the composed hand token (the policy's hand
-groups, `rmind.data.nero_robot.compose_hand_token`), and the three images decoded
+groups, `rmind.data.nero_robot.compose_hand_token`; per side,
+`compose_hand_tokens`, for a model with `hand_sides`), and the three images decoded
 by rbyte's `TorchCodecVideoSource` at the row's `frame_index.<camera>` and mapped
 by `rmind.data.nero_image.preprocess` -- the training data path. Non-zero exit when
 any input differs (state/hand: exactly; images: `--image-atol` uint8 levels).
@@ -40,7 +45,7 @@ import numpy as np
 import torch
 from structlog import get_logger
 
-from rmind.data.nero_robot import compose_hand_token, to_absolute
+from rmind.data.nero_robot import compose_hand_token, compose_hand_tokens, to_absolute
 from rmind.models.nero_patch_policy import NeroPatchPolicy
 
 logger = get_logger(__name__)
@@ -119,7 +124,11 @@ def input_parity(  # noqa: PLR0914
     *,
     image_atol: int,
 ) -> dict[str, Any]:
-    """Bundle inputs (serving's producer) vs rbyte's training rows for the same frames."""
+    """Bundle inputs (serving's producer) vs rbyte's training rows for the same frames.
+
+    Raises:
+        ValueError: when the bundle's hand_token layout is not the policy's.
+    """
     from rbyte.samples.nero import NeroRobotReader  # noqa: PLC0415
     from rbyte.streams.video import TorchCodecVideoSource  # noqa: PLC0415
 
@@ -155,16 +164,30 @@ def input_parity(  # noqa: PLR0914
         for col in df.columns:
             if col.startswith(policy.hand_prefix):
                 blocks[col] = torch.from_numpy(np.stack(df[col].to_numpy()[idx]))
-        token_rb = compose_hand_token(
-            blocks, policy.hand_groups, prefix=policy.hand_prefix
+        token_rb = (
+            compose_hand_tokens(
+                blocks, policy.hand_groups, policy.hand_sides, prefix=policy.hand_prefix
+            )
+            if policy.hand_sides
+            else compose_hand_token(
+                blocks, policy.hand_groups, prefix=policy.hand_prefix
+            )
         ).numpy()
         token_b = bundle["hand_token"][keep]
+        if token_b.shape != token_rb.shape:
+            msg = f"bundle hand_token {token_b.shape} != the policy's {token_rb.shape}"
+            raise ValueError(msg)
         diff = np.abs(token_rb - token_b)
+        # per tick: the worst column over every side's row
+        row_diff = diff.reshape(len(diff), -1).max(axis=1) if len(diff) else diff
         report["hand_max_abs"] = float(diff.max()) if len(idx) else None
-        report["hand_rows_differing"] = int((diff.max(axis=1) > 0).sum())
-        report["hand_valid_rbyte"] = float(token_rb[:, -1].mean())
-        report["hand_valid_bundle"] = float(token_b[:, -1].mean())
-        bad = np.flatnonzero(diff.max(axis=1) > 0)
+        report["hand_rows_differing"] = int((row_diff > 0).sum())
+        report["hand_valid_rbyte"] = float(token_rb[..., -1].mean())
+        report["hand_valid_bundle"] = float(token_b[..., -1].mean())
+        for i, side in enumerate(policy.hand_sides):
+            report[f"hand_valid_rbyte.{side}"] = float(token_rb[:, i, -1].mean())
+            report[f"hand_valid_bundle.{side}"] = float(token_b[:, i, -1].mean())
+        bad = np.flatnonzero(row_diff > 0)
         report["hand_first_diffs"] = [
             {
                 "t_ns": int(ticks[keep][i]),
