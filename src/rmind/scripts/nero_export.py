@@ -57,7 +57,7 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 from structlog import get_logger
@@ -125,10 +125,10 @@ def hand_features_module(nutron_cli: Path | None) -> Any:
         ImportError: when neither is available.
     """
     try:
-        from rbyte.samples.nero._vendor import hand_features  # noqa: PLC0415
+        from rbyte.samples.nero._vendor import hand_features  # noqa: PLC0415, PLC2701
     except ImportError:
-        hand_features = None
-    if hand_features is not None:
+        pass
+    else:
         return hand_features
     if nutron_cli is not None:
         return import_file(nutron_cli / "runtime" / "jetson" / "hand_features.py")
@@ -337,11 +337,23 @@ def latency(
     return out
 
 
+def trunk_window(trunk: CausalFrameTransformer) -> int:
+    """The trunk's KV window, which the streaming export requires.
+
+    Raises:
+        TypeError: for an unwindowed trunk (`window=None`).
+    """
+    if trunk.window is None:
+        msg = "the streaming export needs a windowed trunk, got window=None"
+        raise TypeError(msg)
+    return int(trunk.window)
+
+
 def flops_per_step(
     policy: NeroPatchPolicy, *, cache_frames: int, vit_gflops: float
 ) -> dict[str, float]:
     """Analytic per-step FLOPs (2 x MACs): trunk linear + attention, plus the ViTs."""
-    trunk = policy.encoder
+    trunk = cast("CausalFrameTransformer", policy.encoder)
     d, layers, t = trunk.dim_model, trunk.num_layers, trunk.tokens_per_frame
     mlp = 4 * d
     linear = layers * t * (4 * d * d + 2 * d * mlp) * 2
@@ -393,7 +405,7 @@ def manifest(  # noqa: PLR0913
 ) -> dict[str, Any]:
     trunk = step.trunk
     tokenizer = policy.tokenizer
-    window = int(trunk.window)
+    window = trunk_window(trunk)
     layout = token_layout(policy, hw, patch_size)
     cameras = [
         {"name": c} | nero_image.geometry(NATIVE_WH[c], hw).as_dict()
@@ -626,7 +638,7 @@ def contract_mismatches(policy: NeroPatchPolicy, contract: Any) -> list[str]:  #
     trunk = policy.encoder
     if not isinstance(trunk, CausalFrameTransformer):
         return [f"policy.encoder is {type(trunk).__name__}, not a causal decoder"]
-    window = int(trunk.window)
+    window = trunk_window(trunk)
     tokenizer = policy.tokenizer
     n_sides = len(d.get("sides", ()))
     check("policy_type", "nero_patch_policy", d.get("policy_type"))
@@ -686,7 +698,9 @@ def contract_mismatches(policy: NeroPatchPolicy, contract: Any) -> list[str]:  #
         check("hand.groups", list(policy.hand_groups), list(hand.get("groups", ())))
     check("hand_sides", list(policy.hand_sides), list(d.get("hand_sides") or ()))
     stds = d.get("standardizers") or {}
-    state_std = policy.state_standardizer or AxisStandardizer()
+    state_std = cast(
+        "AxisStandardizer", policy.state_standardizer or AxisStandardizer()
+    )
     have = {"action": tokenizer.standardizer.digest, "state": state_std.digest}
     if policy.hand_standardizer is not None:
         have["hand"] = policy.hand_standardizer.digest
@@ -851,7 +865,7 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         else torch.zeros(len(policy.cameras), 13)
     )
     step = NeroPatchPolicyDecoderStep(policy=policy, camera_cond=cond).eval()
-    window = int(step.trunk.window)
+    window = trunk_window(step.trunk)
 
     args.out.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
@@ -957,7 +971,9 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
     }
     save_tokenizer(policy, args.out / files["tokenizer"])
     policy.tokenizer.standardizer.save(args.out / files["action_standardizer"])
-    state_std = policy.state_standardizer or AxisStandardizer()
+    state_std = cast(
+        "AxisStandardizer", policy.state_standardizer or AxisStandardizer()
+    )
     state_std.save(args.out / files["state_standardizer"])
     if policy.hand_standardizer is not None:
         files["hand_standardizer"] = "hand_standardizer.json"

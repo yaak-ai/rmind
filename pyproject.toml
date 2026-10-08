@@ -35,6 +35,7 @@ dependencies = [
   "timm>=1.0.22",
   "torch>=2.12.1",
   "torchaudio>=2.11.0",
+  "torchdata>=0.11.0",
   "torchvision>=0.27.1",
   "vector-quantize-pytorch>=1.29.1",
 ]
@@ -53,6 +54,7 @@ export = [
   "onnx>=1.22.0",
   "onnxruntime>=1.27.0",
   "onnxscript>=0.7.0",
+  "pillow>=12.2.0",  # decoder_only_verify reads real frames
 ]
 predict = [
   "wandb>=0.27.2",
@@ -91,8 +93,15 @@ test = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.codespell]
+# drivr is the on-car driving stack, not a typo of "driver"
+ignore-words-list = "drivr"
+
 [tool.deptry.per_rule_ignores]
-DEP001 = ["rmind"]
+DEP001 = [
+  "cv2",  # decoder_parity_orin.py only: the Orin system cv2, not a dependency here
+  "rmind",
+]
 DEP002 = [
   "funcy",
   "makefun",
@@ -172,6 +181,13 @@ include = ["src/rmind/inference/backends/tensorrt.py"]
 
 [tool.ty.overrides.analysis]
 allowed-unresolved-imports = ["tensorrt"]
+
+# Orin-only parity script: cv2 exists on the Orin, not in the rmind venv
+[[tool.ty.overrides]]
+include = ["src/rmind/scripts/decoder_parity_orin.py"]
+
+[tool.ty.overrides.analysis]
+allowed-unresolved-imports = ["cv2"]
 
 [tool.uv]
 constraint-dependencies = [

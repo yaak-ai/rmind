@@ -1,13 +1,21 @@
 """The anti-overfitting package for the causal arms: stochastic depth,
 label-smoothed focal code loss, and per-module weight-decay overrides."""
 
+from typing import Any, cast
+
 import pytest
 import torch
-from torch import nn
+from tensordict import TensorDict
+from torch import Tensor, nn
 
 from rmind.components.loss import FocalLoss
 from rmind.components.optimizers.selective_adamw import SelectiveAdamW
-from rmind.components.transformer.causal_frame import CausalFrameTransformer, DropPath
+from rmind.components.transformer.causal_frame import (
+    AttentionImpl,
+    CausalFrameTransformer,
+    CausalFrameTransformerBlock,
+    DropPath,
+)
 from rmind.models.patch_policy import PatchPolicy
 from tests.test_patch_policy import (
     EPISODE_LENGTH,
@@ -57,7 +65,7 @@ def test_drop_path_invalid_rate_raises() -> None:
 
 
 def test_trunk_ramp_is_linear_and_eval_output_unchanged() -> None:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "dim_model": 64,
         "num_layers": 4,
         "num_heads": 4,
@@ -69,7 +77,10 @@ def test_trunk_ramp_is_linear_and_eval_output_unchanged() -> None:
     torch.manual_seed(7)
     reg = CausalFrameTransformer(**kwargs, drop_path_rate=0.1)
 
-    rates = [blk.drop_path.drop_prob for blk in reg.layers]
+    rates = [
+        cast("CausalFrameTransformerBlock", blk).drop_path.drop_prob
+        for blk in reg.layers
+    ]
     assert rates == pytest.approx([0.0, 0.1 / 3, 0.2 / 3, 0.1])
 
     # same seed -> same weights; in eval, drop-path must be invisible
@@ -140,7 +151,7 @@ class _Toy(nn.Module):
         self.norm = nn.LayerNorm(4)
 
 
-def _opt(**kw: object) -> SelectiveAdamW:
+def _opt(**kw: Any) -> SelectiveAdamW:
     return SelectiveAdamW(
         _Toy(),
         lr=1e-4,
@@ -187,7 +198,7 @@ def test_overlapping_override_prefixes_raise() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _causal_regularized_model(attention_impl: str) -> PatchPolicy:
+def _causal_regularized_model(attention_impl: AttentionImpl) -> PatchPolicy:
     model = _make_model()
     model.encoder = CausalFrameTransformer(
         dim_model=POLICY_DIM,
@@ -199,7 +210,7 @@ def _causal_regularized_model(attention_impl: str) -> PatchPolicy:
         window=2,
         max_sequence_length=EPISODE_LENGTH * (NUM_PATCHES + 1),
         attn_dropout=0.0,
-        attention_impl=attention_impl,  # type: ignore[arg-type]
+        attention_impl=attention_impl,
         drop_path_rate=0.1,
     )
     model.losses["code"] = FocalLoss(label_smoothing=0.1)
@@ -218,13 +229,16 @@ def _train_step(model: PatchPolicy, device: str) -> None:
     batch = {}
     src = _make_batch()
 
-    def _to(x: object) -> object:
+    def _to(x: Any) -> Any:
         return (
             {k: _to(v) for k, v in x.items()} if isinstance(x, dict) else x.to(device)
-        )  # type: ignore[union-attr]
+        )
 
     batch = _to(src)
-    loss = model._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    losses = model._compute_metrics(batch)["policy", "loss"]  # noqa: SLF001
+    assert isinstance(losses, TensorDict)
+    loss = losses.sum(reduce=True)
+    assert isinstance(loss, Tensor)
     assert torch.isfinite(loss)
     loss.backward()
     grads = {

@@ -36,7 +36,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
@@ -217,7 +217,8 @@ class NeroFrameCacheSource:
     def __getitem__(self, indexes: int | Sequence[int]) -> Tensor:
         frames = self._frames()
         if isinstance(indexes, Sequence):
-            return torch.from_numpy(frames[list(indexes)])  # fancy index: a copy
+            rows = list(cast("Sequence[int]", indexes))
+            return torch.from_numpy(frames[rows])  # fancy index: a copy
         return torch.from_numpy(np.array(frames[int(indexes)]))  # copy off the map
 
     def __getstate__(self) -> dict[str, Any]:

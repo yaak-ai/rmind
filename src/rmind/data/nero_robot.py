@@ -233,6 +233,10 @@ class AxisStandardizer(nn.Module):
     canonical file bytes and is what a tokenizer checkpoint pins.
     """
 
+    # registered as buffers in __init__
+    mean: Tensor
+    std: Tensor
+
     def __init__(
         self,
         *,
@@ -411,6 +415,11 @@ class HandTokenStandardizer(nn.Module):
     `source` is `"physical_prior"` or `"train:hand"` (fit on the train split's
     valid rows by `nero_fit_stats`).
     """
+
+    # registered as buffers in __init__
+    full_mean: Tensor
+    full_std: Tensor
+    index: Tensor
 
     def __init__(
         self,

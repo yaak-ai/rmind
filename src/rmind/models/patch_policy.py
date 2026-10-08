@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from itertools import chain
-from typing import Annotated, Any, final, override
+from typing import Annotated, Any, Literal, cast, final, overload, override
 
 import pytorch_lightning as pl
 import torch
@@ -19,7 +19,7 @@ from rmind.components.containers import ModuleDict
 from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
 from rmind.components.transformer.utils import run_layer_stack
 from rmind.config import HydraConfig, init_hydra_param
-from rmind.models.action_tokenizer import LRSchedulerHydraConfig
+from rmind.models.action_tokenizer import ActionTokenizer, LRSchedulerHydraConfig
 from rmind.models.control_transformer import PredictionConfig
 from rmind.utils._wandb import LoadableFromArtifact
 from rmind.utils.pytree import key_get_default
@@ -342,6 +342,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.tokenizer.eval()
         return self
 
+    @overload
+    @staticmethod
+    def _get(
+        inputs: Mapping[str, Any], path: Path, *, required: Literal[True] = True
+    ) -> Tensor: ...
+
+    @overload
+    @staticmethod
+    def _get(
+        inputs: Mapping[str, Any], path: Path, *, required: bool
+    ) -> Tensor | None: ...
+
     @staticmethod
     def _get(
         inputs: Mapping[str, Any], path: Path, *, required: bool = True
@@ -450,7 +462,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             # NOTE: no in-place ops -- these tensors come from a no_grad block
             # and the gains must receive gradients
             patches = self.fusion_patch_norm(patches) * self.fusion_patch_gain
-            goal = torch.mul(goal, self.fusion_goal_gain)
+            # set together with fusion_patch_norm by _init_fusion_norm
+            goal = torch.mul(goal, cast("nn.Parameter", self.fusion_goal_gain))
 
         _, _, num_patches, _ = patches.shape
         patches = torch.cat(
@@ -789,6 +802,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         features, chunk = self._features(
             batch, token_norms=token_norms
         )  # (b, t, d), (b, t, h, a)
+        chunk = cast("Tensor", chunk)  # require_chunk: _get raised if missing
         tokenizer = self.tokenizer
 
         with torch.no_grad():
@@ -839,7 +853,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             sampled_recon=sampled_recon,
         )
 
-        return TensorDict({"policy": {"loss": losses, "metric": metrics}})
+        return TensorDict({"policy": {"loss": losses, "metric": metrics}})  # ty:ignore[invalid-argument-type]
 
     def _readout_metrics(  # noqa: PLR0913
         self,
@@ -1040,7 +1054,9 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         if self.trainer.sanity_checking:
             return {
-                "loss": self._compute_metrics(batch)["policy", "loss"].sum(reduce=True)
+                "loss": cast(
+                    "TensorDict", self._compute_metrics(batch)["policy", "loss"]
+                ).sum(reduce=True)
             }
         return self._step(batch, "val")
 
@@ -1048,7 +1064,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def forward(self, batch: Any) -> TensorDict:
         features, _ = self._features(batch, require_chunk=False)
         chunk = self._predict_chunk(features[:, -1])
-        return TensorDict({"policy": {"joint_actions": chunk}})
+        return TensorDict({"policy": {"joint_actions": chunk}})  # ty:ignore[invalid-argument-type]
 
     @classmethod
     def load_for_export(cls, artifact: str, **kwargs: Any) -> "PatchPolicy":
@@ -1153,6 +1169,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         tokenizer = self.tokenizer
 
         features, chunk = self._features(batch)
+        chunk = cast("Tensor", chunk)  # require_chunk: _get raised if missing
         features = features[:, -1]  # predict from the newest frame only
 
         b, t = chunk.shape[:2]
@@ -1198,7 +1215,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     time_index=time_index,
                 )
 
-        return TensorDict({"policy": predictions}).auto_batch_size_(2)
+        return TensorDict({"policy": predictions}).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
@@ -1257,7 +1274,10 @@ class PatchPolicyHead(pl.LightningModule):
         self.norm = norm
         self.code_head = code_head
         self.offset_head = offset_head
-        self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        self.tokenizer = cast(
+            "ActionTokenizer",
+            tokenizer.requires_grad_(False).eval(),  # noqa: FBT003
+        )
 
     @override
     def forward(self, inputs: Mapping[str, Tensor]) -> TensorDict:

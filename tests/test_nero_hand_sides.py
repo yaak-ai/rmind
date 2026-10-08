@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 import torch
 
+from rmind.components.transformer.causal_frame import CausalFrameTransformer
 from rmind.data.nero_robot import (
     compose_hand_token,
     compose_hand_tokens,
@@ -249,6 +250,7 @@ def test_stale_tokens_per_frame_is_refused() -> None:
     """A sided model whose trunk still counts ONE hand token must raise, not
     tile the slot embedding wrong."""
     policy = _policy(hand_sides=SIDES)
+    assert isinstance(policy.encoder, CausalFrameTransformer)
     policy.encoder.tokens_per_frame -= 1
     with pytest.raises(ValueError, match="tokens per frame"):
         policy._frame_tokens(_bi_batch(t=2))  # noqa: SLF001

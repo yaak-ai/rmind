@@ -55,7 +55,7 @@ Measuring the results (delta-dev1, AGX Orin, TRT 10.7) -- see
 
 import argparse
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.fx.experimental._config as _fx_config  # noqa: PLC2701
@@ -150,7 +150,9 @@ def load_trained_policy(*, artifact: str | None, ckpt: str | None) -> Any:
     from torchvision.transforms.v2 import Normalize  # noqa: PLC0415
 
     model = PatchPolicy.load_from_checkpoint(
-        ckpt, map_location="cpu", weights_only=False
+        cast("str", ckpt),  # callers pass --artifact or --ckpt
+        map_location="cpu",
+        weights_only=False,
     )
     model.sample_codes = False
     model.input_transform[2]["image"] = Normalize(

@@ -52,7 +52,7 @@ cheap axis to share; it is still a limitation and is reported as one.
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -61,6 +61,7 @@ from torch import Tensor
 
 from rmind.components.transformer.causal_frame import (
     CausalFrameTransformer,
+    CausalFrameTransformerBlock,
     frame_rope_cos_sin,
 )
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
@@ -237,7 +238,7 @@ def cmd_gates(args: argparse.Namespace) -> int:  # noqa: PLR0914
     # equivalent to sdpa anyway (§11.2). `step` is always sdpa regardless.
     trunk.attention_impl = "sdpa"
     for layer in trunk.layers:
-        layer.attn.attention_impl = "sdpa"
+        cast("CausalFrameTransformerBlock", layer).attn.attention_impl = "sdpa"
 
     num_frames = window + 1  # one frame past a full window: the sliding case
     k = trunk.tokens_per_frame
@@ -568,7 +569,8 @@ def cmd_trials(args: argparse.Namespace) -> int:  # noqa: PLR0914
                 "inputs_rope_cos": cos.numpy().astype(np.float32),
                 "inputs_rope_sin": sin.numpy().astype(np.float32),
             }
-            reference[trial] = sess.run(["policy.joint_actions"], feed)[0][0]
+            out = cast("np.ndarray", sess.run(["policy.joint_actions"], feed)[0])
+            reference[trial] = out[0]
             for name in (
                 "inputs_image",
                 "inputs_speed",

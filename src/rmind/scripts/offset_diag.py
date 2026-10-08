@@ -42,8 +42,6 @@ if TYPE_CHECKING:
     from rbyte.dataloader import NodeDataLoader
     from torch import Tensor
 
-    from rmind.models.action_tokenizer import ActionTokenizer
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_DIR = REPO_ROOT / "config"
 DEFAULT_CKPT = REPO_ROOT / "artifacts" / "model-2gqxhjod:v9" / "model.ckpt"
@@ -79,7 +77,7 @@ def load_policy(
         msg = f"objectives['policy'] is {type(policy).__name__}, expected JointPolicyObjective"
         raise TypeError(msg)
 
-    quantizer = cast("ActionTokenizer", policy.tokenizer).quantizer
+    quantizer = policy.tokenizer.quantizer
     if (quantizer.num_quantizers, quantizer.codebook_size) != (
         EXPECTED_NUM_QUANTIZERS,
         EXPECTED_CODEBOOK_SIZE,
@@ -196,7 +194,7 @@ def iter_policy_tensors(
     """
     device = torch.device(device)
     policy = cast("JointPolicyObjective", model.objectives["policy"])
-    tokenizer = cast("ActionTokenizer", policy.tokenizer)
+    tokenizer = policy.tokenizer
 
     try:
         with torch.inference_mode():

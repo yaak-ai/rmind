@@ -2218,6 +2218,7 @@ dependencies = [
     { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin' and sys_platform != 'linux'" },
     { name = "torchaudio", version = "2.11.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
+    { name = "torchdata" },
     { name = "torchvision", version = "0.27.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torchvision", version = "0.27.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin' and sys_platform != 'linux'" },
     { name = "torchvision", version = "0.27.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
@@ -2229,6 +2230,7 @@ export = [
     { name = "onnx" },
     { name = "onnxruntime" },
     { name = "onnxscript" },
+    { name = "pillow" },
 ]
 predict = [
     { name = "onnxruntime" },
@@ -2283,6 +2285,7 @@ requires-dist = [
     { name = "onnxruntime", marker = "extra == 'predict'", specifier = ">=1.27.0" },
     { name = "onnxscript", marker = "extra == 'export'", specifier = ">=0.7.0" },
     { name = "orjson", specifier = ">=3.10.12" },
+    { name = "pillow", marker = "extra == 'export'", specifier = ">=12.2.0" },
     { name = "polars", specifier = ">=1.41.2" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytorch-lightning", specifier = ">=2.6.5" },
@@ -2298,6 +2301,7 @@ requires-dist = [
     { name = "torchaudio", marker = "sys_platform == 'linux'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchcodec", marker = "sys_platform == 'linux' and extra == 'predict'", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchcodec", marker = "sys_platform != 'linux' and extra == 'predict'", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchmetrics", marker = "extra == 'train'", specifier = ">=1.9" },
     { name = "torchvision", marker = "sys_platform != 'linux'", specifier = ">=0.27.1", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchvision", marker = "sys_platform == 'linux'", specifier = ">=0.27.1", index = "https://download.pytorch.org/whl/cu130" },

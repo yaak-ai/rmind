@@ -334,9 +334,10 @@ class NeroGoalXYZTokenizer(NeroPoseTokenizer):
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**{
+        merged: dict[str, Any] = {
             "action_horizon": 1,
             "action_features": 3,
             "action": ("goal", "xyz"),
             **kwargs,
-        })
+        }
+        super().__init__(**merged)

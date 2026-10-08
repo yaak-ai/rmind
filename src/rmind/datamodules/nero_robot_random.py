@@ -38,7 +38,7 @@ learns the marginal. This is what the reliance metrics are expected to detect
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from typing import Any, final, override
+from typing import Any, cast, final, override
 
 import torch
 from torch import Tensor
@@ -144,7 +144,11 @@ def nero_robot_batch(  # noqa: PLR0913, PLR0914
     }
     if images:
         for camera in CAMERAS:
-            hh, ww = image_hw[camera] if isinstance(image_hw, Mapping) else image_hw
+            hh, ww = (
+                cast("Mapping[str, tuple[int, int]]", image_hw)[camera]
+                if isinstance(image_hw, Mapping)
+                else image_hw
+            )
             batch[f"image.{camera}"] = torch.randint(
                 0, 256, (b, t, 3, hh, ww), dtype=torch.uint8, generator=g
             )

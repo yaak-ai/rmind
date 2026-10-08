@@ -20,12 +20,17 @@ from typing import Any, override
 
 import pytest
 import torch
+from tensordict import TensorDict
 from torch import Tensor, nn
 
 from rmind.components.containers import ModuleDict
 from rmind.components.image import LetterboxResize
 from rmind.components.loss import FocalLoss
-from rmind.components.transformer.causal_frame import CausalFrameTransformer
+from rmind.components.transformer.causal_frame import (
+    CausalFrameTransformer,
+    CausalFrameTransformerBlock,
+    CausalSelfAttention,
+)
 from rmind.components.vq import ResidualVQ
 from rmind.data.nero import (
     CAMERA_COND_DIM,
@@ -35,6 +40,7 @@ from rmind.data.nero import (
     DisparityStandardizer,
 )
 from rmind.datamodules.nero_random import CAMERA_NAMES, nero_random_batch
+from rmind.models.control_transformer import PredictionConfig
 from rmind.models.nero_patch_policy import NeroPatchPolicy
 from rmind.models.nero_pose_tokenizer import NeroPoseTokenizer
 
@@ -104,9 +110,27 @@ def _tokenizer() -> NeroPoseTokenizer:
     )
 
 
+def _total_loss(metrics: TensorDict) -> Tensor:
+    """The summed policy loss (`sum(reduce=True)` of a TensorDict is a Tensor)."""
+    losses = metrics["policy", "loss"]
+    assert isinstance(losses, TensorDict)
+    loss = losses.sum(reduce=True)
+    assert isinstance(loss, Tensor)
+    return loss
+
+
+def _first_attention(policy: NeroPatchPolicy) -> CausalSelfAttention:
+    encoder = policy.encoder
+    assert isinstance(encoder, CausalFrameTransformer)
+    block = encoder.layers[0]
+    assert isinstance(block, CausalFrameTransformerBlock)
+    return block.attn
+
+
 def _policy(**kwargs: Any) -> NeroPatchPolicy:
     torch.manual_seed(0)
     action_dim = HORIZON * SIDE_DIM
+    extra: dict[str, Any] = {"goal_dropout": 0.0} | kwargs
     policy = NeroPatchPolicy(
         image_transform=_Unify(),
         image_encoder=_TinyImageEncoder(),
@@ -126,7 +150,7 @@ def _policy(**kwargs: Any) -> NeroPatchPolicy:
         image_embedding_dim=IMAGE_DIM,
         policy_embedding_dim=POLICY_DIM,
         sample_codes=False,  # determinism
-        **({"goal_dropout": 0.0} | kwargs),
+        **extra,
     )
     return policy.eval()  # no dropout, no goal dropout
 
@@ -281,26 +305,28 @@ def test_invalid_side_contributes_no_loss_rows() -> None:
     batch = _batch(both_sides=False)
     metrics = policy._compute_metrics(batch)  # noqa: SLF001
     # 2 samples x 3 frames x 1 valid side
-    assert metrics["policy", "metric", "valid_rows"].item() == 2 * EPISODE_LENGTH * 1
+    rows = metrics["policy", "metric", "valid_rows"]
+    assert isinstance(rows, Tensor)
+    assert rows.item() == 2 * EPISODE_LENGTH * 1
 
     both = policy._compute_metrics(_batch(both_sides=True))  # noqa: SLF001
-    assert (
-        both["policy", "metric", "valid_rows"].item() == 2 * EPISODE_LENGTH * NUM_SIDES
-    )
+    both_rows = both["policy", "metric", "valid_rows"]
+    assert isinstance(both_rows, Tensor)
+    assert both_rows.item() == 2 * EPISODE_LENGTH * NUM_SIDES
 
 
 def test_invalid_side_action_values_do_not_move_the_loss() -> None:
     """`sum/count` normalisation: garbage in the masked-out rows must be inert."""
     policy = _policy()
     batch = _batch(both_sides=False)
-    baseline = policy._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    baseline = _total_loss(policy._compute_metrics(batch))  # noqa: SLF001
 
     poisoned = dict(batch)
     action = batch["action.future_state"].clone()
     action[:, :, :, 0] = 1e3  # the invalid side's target
     poisoned["action.future_state"] = action
     assert torch.allclose(
-        policy._compute_metrics(poisoned)["policy", "loss"].sum(reduce=True),  # noqa: SLF001
+        _total_loss(policy._compute_metrics(poisoned)),  # noqa: SLF001
         baseline,
         atol=1e-6,
     )
@@ -378,10 +404,10 @@ def test_gradients_flow_to_the_trunk_and_not_to_frozen_modules() -> None:
     policy = _policy()
     policy.train()
     policy.image_encoder.eval()
-    loss = policy._compute_metrics(_batch())["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss = _total_loss(policy._compute_metrics(_batch()))  # noqa: SLF001
     loss.backward()
 
-    assert policy.encoder.layers[0].attn.in_proj_weight.grad is not None
+    assert _first_attention(policy).in_proj_weight.grad is not None
     assert policy.patch_projection.weight.grad is not None
     assert policy.side_embedding.weight.grad is not None
     assert all(p.grad is None for p in policy.tokenizer.parameters())
@@ -458,6 +484,7 @@ def _joint_policy(*, action_features: int, state_features: int) -> NeroPatchPoli
         policy_embedding_dim=POLICY_DIM,
         sample_codes=False,
         goal_dropout=0.0,
+        prediction_config=PredictionConfig(),
     )
 
 
@@ -491,9 +518,9 @@ def test_joint_angle_action_space_needs_no_code_change() -> None:
     # ... and the pose-layout metrics must switch themselves off
     assert not policy.tokenizer.has_pose_layout
 
-    loss = policy._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss = _total_loss(policy._compute_metrics(batch))  # noqa: SLF001
     loss.backward()
-    assert policy.encoder.layers[0].attn.in_proj_weight.grad is not None
+    assert _first_attention(policy).in_proj_weight.grad is not None
     assert policy.offset_head.weight.grad is not None
 
     policy.eval()
@@ -622,6 +649,7 @@ DEPTH_TOKENS_PER_FRAME = len(CAMERA_NAMES) * NUM_PATCHES + 1 + DEPTH_PATCHES
 def _depth_policy(**kwargs: Any) -> NeroPatchPolicy:
     torch.manual_seed(0)
     action_dim = HORIZON * SIDE_DIM
+    extra: dict[str, Any] = {"goal_dropout": 0.0, "depth_dropout": 0.0} | kwargs
     policy = NeroPatchPolicy(
         image_transform=_Unify(),
         image_encoder=_TinyImageEncoder(),
@@ -650,7 +678,7 @@ def _depth_policy(**kwargs: Any) -> NeroPatchPolicy:
         ),
         depth_patch_size=DEPTH_PATCH_SIZE,
         depth_patch_grid=DEPTH_PATCH_GRID,
-        **({"goal_dropout": 0.0, "depth_dropout": 0.0} | kwargs),
+        **extra,
     )
     return policy.eval()
 
@@ -736,7 +764,7 @@ def test_no_depth_embedding_receives_gradient_when_depth_is_absent() -> None:
     batch = _batch()  # NO disparity keys at all: the common real case
     assert "disparity.base" not in batch
 
-    loss = policy._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss = _total_loss(policy._compute_metrics(batch))  # noqa: SLF001
     loss.backward()
 
     assert policy.no_depth.grad is not None
@@ -744,6 +772,7 @@ def test_no_depth_embedding_receives_gradient_when_depth_is_absent() -> None:
     # ...but the trainable patch embedding gets NO gradient from a batch with no
     # depth in it, which is correct: nothing routed through it. §22.7's embedding
     # trains on the depth-PRESENT samples; `no_depth` covers the rest.
+    assert isinstance(policy.depth_patch_embedding, nn.Linear)
     assert policy.depth_patch_embedding.weight.grad is None
 
 
@@ -914,9 +943,10 @@ def test_depth_patch_embedding_trains_when_depth_is_present() -> None:
     batch = _depth_batch(seed=8)
     assert bool(batch["depth_valid"].all()), "test needs depth present"
 
-    loss = policy._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # noqa: SLF001
+    loss = _total_loss(policy._compute_metrics(batch))  # noqa: SLF001
     loss.backward()
 
+    assert isinstance(policy.depth_patch_embedding, nn.Linear)
     assert policy.depth_patch_embedding.weight.grad is not None
     assert torch.any(policy.depth_patch_embedding.weight.grad != 0)
     # ...and `no_depth` gets only ZERO gradient here, since no token was

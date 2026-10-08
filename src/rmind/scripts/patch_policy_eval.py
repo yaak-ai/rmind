@@ -15,7 +15,8 @@ Usage (from a repo checkout with the val rbyte cache built):
 """
 
 import argparse
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, cast
 
 import pytorch_lightning as pl
 import torch
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from rmind.utils import RuleBasedCluster
 
 
-def _to_device(batch: object, device: torch.device) -> object:
+def _to_device(batch: Any, device: torch.device) -> Any:
     return tree_map(
         lambda x: x.to(device, non_blocking=True) if isinstance(x, Tensor) else x, batch
     )
@@ -102,7 +103,7 @@ def _default_cluster_fn() -> "RuleBasedCluster":
 @torch.no_grad()
 def evaluate(  # noqa: C901, PLR0914
     model: PatchPolicy,
-    loader: object,
+    loader: Iterable[Any],
     *,
     device: torch.device,
     max_batches: int,
@@ -121,6 +122,7 @@ def evaluate(  # noqa: C901, PLR0914
         batch = _to_device(cpu_batch, device)
         with torch.autocast(device.type, dtype=torch.bfloat16, enabled=autocast):
             features, chunk = model._features(batch)  # noqa: SLF001
+            chunk = cast("Tensor", chunk)  # require_chunk: _get raised if missing
             target_codes = tokenizer(chunk)  # (b, t, g)
             target = tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
             code_logits, offsets = model._heads(features)  # noqa: SLF001
@@ -181,7 +183,8 @@ def evaluate(  # noqa: C901, PLR0914
         # per-field L1 mean over the action horizon. Skipped when the batch
         # lacks the raw meta series the cluster rules need (synthetic batches).
         try:
-            labels = _default_cluster_fn()(batch, None)
+            # RuleBasedCluster ignores its predictions argument
+            labels = _default_cluster_fn()(batch, None)  # ty:ignore[invalid-argument-type]
         except (KeyError, TypeError):
             labels = None
         if labels is not None:

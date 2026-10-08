@@ -47,7 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -91,7 +91,7 @@ def _get(batch: Any, key: str) -> Any:
 
 def hand_prefixes(batch: Any) -> list[str]:
     """The hand block prefixes a batch carries: per side if bimanual, else `hand.`."""
-    sided = [
+    sided: list[str] = [
         f"hand.{side}."
         for side in SIDES
         if _get(batch, f"hand.{side}.motor_ok") is not None
@@ -196,6 +196,7 @@ def fit(  # noqa: C901, PLR0914, PLR0915
         stats["min"].append(float(col.min()))
         stats["max"].append(float(col.max()))
         stats["q50"].append(float(col.median()))
+    side_valid_any = cast("torch.Tensor", side_valid_any)  # >= 1 batch, see above
     out["absolute_action_stats"] = {
         "min": stats["min"],
         "max": stats["max"],

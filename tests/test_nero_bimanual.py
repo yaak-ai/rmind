@@ -415,7 +415,7 @@ def test_arm_selection_matches_nutron_cli() -> None:
         "ARM_MOVE_RAD",
         "ARM_DECISIVE_FACTOR",
     }
-    body = [
+    body: list[ast.stmt] = [
         n
         for n in tree.body
         if (isinstance(n, ast.FunctionDef) and n.name in keep)
@@ -642,7 +642,7 @@ def test_hand_on_reads_both_hands_on_real_bimanual_windows() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = instantiate(OmegaConf.to_container(cfg.model, resolve=True)).to(device)
     assert model.hand_sides == ("left", "right")
-    assert model.tokens_per_frame() == 483  # noqa: PLR2004
+    assert model.tokens_per_frame() == 483
     batch = _first_batch(instantiate(cfg.datamodule.val))
     batch = {
         k: (v.to(device) if isinstance(v, torch.Tensor) else v)
@@ -652,7 +652,7 @@ def test_hand_on_reads_both_hands_on_real_bimanual_windows() -> None:
     assert vec is not None
     assert vec.shape == (2, cfg.episode_length, 2, 14)
     for side in range(2):
-        assert float(vec[..., side, -1].mean()) > 0.5  # noqa: PLR2004  (~0.9 valid)
+        assert float(vec[..., side, -1].mean()) > 0.5  # ~0.9 valid
     model.train()
     norms: dict[str, torch.Tensor] = {}
     with torch.autocast(

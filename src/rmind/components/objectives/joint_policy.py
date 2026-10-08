@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import Any, final, override
+from typing import TYPE_CHECKING, Any, cast, final, override
 
 import torch
 from einops import rearrange
@@ -8,7 +8,7 @@ from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Module
 
-from rmind.components.base import Modality, SummaryToken
+from rmind.components.base import Modality, SummaryToken, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
@@ -17,6 +17,9 @@ from rmind.components.objectives.base import (
     ObjectivePredictionKey,
     Prediction,
 )
+
+if TYPE_CHECKING:
+    from rmind.models.action_tokenizer import ActionTokenizer
 
 type Path = tuple[str, ...]
 
@@ -29,6 +32,8 @@ class JointPolicyObjective(Objective):
     action tokenizer's residual-VQ codes (one categorical per quantizer) and a
     code-conditioned continuous offset; the action chunk is `decode(codes) + offset`.
     """
+
+    tokenizer: "ActionTokenizer"
 
     @validate_call
     def __init__(  # noqa: PLR0913
@@ -47,7 +52,10 @@ class JointPolicyObjective(Objective):
         super().__init__()
 
         self.norm: Module | None = norm
-        self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
+        self.tokenizer = cast(
+            "ActionTokenizer",
+            tokenizer.requires_grad_(False).eval(),  # noqa: FBT003
+        )
         self.code_head = code_head  # features -> (G*C) code logits
         self.offset_head = (
             offset_head  # features -> (G*C*action_dim): offset per (quantizer, code)
@@ -168,7 +176,7 @@ class JointPolicyObjective(Objective):
 
         code_logits, offsets = self._heads(features)
 
-        losses: dict[str, Tensor] = {}
+        losses: TensorTree = {}
 
         # per-quantizer classification against the ground-truth codes
         for q in range(tokenizer.quantizer.num_quantizers):
@@ -253,4 +261,4 @@ class JointPolicyObjective(Objective):
             })
             predictions[key] = Prediction(value=actions, time_index=time_index)
 
-        return TensorDict(predictions).auto_batch_size_(2)
+        return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

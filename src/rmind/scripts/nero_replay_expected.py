@@ -39,7 +39,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -197,7 +197,7 @@ def input_parity(  # noqa: PLR0914
             for i in bad[:3]
         ]
 
-    hw = tuple(int(v) for v in bundle["images_u8"].shape[-2:])
+    hw = cast("tuple[int, int]", tuple(int(v) for v in bundle["images_u8"].shape[-2:]))
     images = {}
     for index, camera in enumerate(policy.cameras):
         source = TorchCodecVideoSource(source=str(episode / f"{camera}.mp4"))
@@ -265,7 +265,7 @@ def main() -> None:
     actions, codes = expected(policy, bundle, manifest, device=device)
     bundle["expected_actions"] = actions.astype(np.float32)
     bundle["expected_codes"] = codes.astype(np.int64)
-    np.savez(args.out, **bundle)
+    np.savez(args.out, **cast("dict[str, Any]", bundle))
     summary: dict[str, Any] = {
         "frames": len(actions),
         "streams": len(streams(bundle["reset"])),

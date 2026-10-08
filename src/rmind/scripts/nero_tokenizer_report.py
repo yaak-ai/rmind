@@ -33,7 +33,7 @@ import itertools
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import torch
 from torch import Tensor
@@ -44,7 +44,17 @@ from rmind.models.nero_chunk_tokenizer import NeroChunkTokenizer, total_variatio
 from rmind.models.nero_quality import per_axis_ev
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
-GATES = {
+
+
+class Gates(TypedDict):
+    ev_arm_min: float
+    ev_finger_min: float
+    quant_gap_max: float
+    tv_ratio: tuple[float, float]
+    dead_ratio: float
+
+
+GATES: Gates = {
     "ev_arm_min": 0.95,
     "ev_finger_min": 0.90,
     "quant_gap_max": 0.03,
@@ -53,7 +63,9 @@ GATES = {
 }
 
 
-def collect(tokenizer: NeroChunkTokenizer, batches: Any, max_batches: int) -> tuple[Tensor, Tensor]:
+def collect(
+    tokenizer: NeroChunkTokenizer, batches: Any, max_batches: int
+) -> tuple[Tensor, Tensor]:
     rows, reals = [], []
     for i, batch in enumerate(batches):
         if i >= max_batches:
@@ -78,7 +90,9 @@ def decode_both(tokenizer: NeroChunkTokenizer, x: Tensor) -> dict[str, Tensor]:
 
 
 @torch.no_grad()
-def depth_ladder(tokenizer: NeroChunkTokenizer, codes: Tensor, x: Tensor, real: Tensor) -> list[float]:
+def depth_ladder(
+    tokenizer: NeroChunkTokenizer, codes: Tensor, x: Tensor, real: Tensor
+) -> list[float]:
     out = []
     partial = torch.zeros(codes.shape[0], tokenizer.latent_dim, device=codes.device)
     for level in range(tokenizer.quantizer.num_quantizers):
@@ -119,7 +133,9 @@ def dct_baseline(
 
 
 @torch.no_grad()
-def invariance_probe(tokenizer: NeroChunkTokenizer, x: Tensor, axes: tuple[int, ...]) -> dict[str, float]:
+def invariance_probe(
+    tokenizer: NeroChunkTokenizer, x: Tensor, axes: tuple[int, ...]
+) -> dict[str, float]:
     """Set one axis to its atom vs to atom + 2 (std units) over the 2nd half: the
     reconstruction of THAT axis must move (a dead channel's output does not)."""
     ref = torch.nan_to_num(tokenizer.event_reference)
@@ -129,16 +145,24 @@ def invariance_probe(tokenizer: NeroChunkTokenizer, x: Tensor, axes: tuple[int, 
         low[:, :, axis] = ref[axis]
         high[:, :, axis] = ref[axis]
         high[:, x.shape[1] // 2 :, axis] = ref[axis] + 2.0
-        r_low = tokenizer.decode_latent(tokenizer.quantizer(tokenizer.encode_latent(low))[1])
-        r_high = tokenizer.decode_latent(tokenizer.quantizer(tokenizer.encode_latent(high))[1])
-        moved = (r_high[:, x.shape[1] // 2 :, axis] - r_low[:, x.shape[1] // 2 :, axis]).mean()
+        r_low = tokenizer.decode_latent(
+            tokenizer.quantizer(tokenizer.encode_latent(low))[1]
+        )
+        r_high = tokenizer.decode_latent(
+            tokenizer.quantizer(tokenizer.encode_latent(high))[1]
+        )
+        moved = (
+            r_high[:, x.shape[1] // 2 :, axis] - r_low[:, x.shape[1] // 2 :, axis]
+        ).mean()
         out[AXIS_NAMES[axis]] = float(moved / 2.0)
     return out
 
 
 @torch.no_grad()
 def report(  # noqa: PLR0914
-    tokenizer: NeroChunkTokenizer, train: tuple[Tensor, Tensor], holdout: tuple[Tensor, Tensor]
+    tokenizer: NeroChunkTokenizer,
+    train: tuple[Tensor, Tensor],
+    holdout: tuple[Tensor, Tensor],
 ) -> dict[str, Any]:
     x, real = holdout
     xt, real_t = train
@@ -147,8 +171,12 @@ def report(  # noqa: PLR0914
     ev_q = per_axis_ev(hold["quantized"], x, real)
     ev_u = per_axis_ev(hold["unquantized"], x, real)
     ev_train = per_axis_ev(tr["quantized"], xt, real_t)
-    tv_ratio = total_variation(hold["quantized"], real) / total_variation(x, real).clamp_min(1e-9)
-    interp = linear_keyframe_matrix(tokenizer.action_horizon, tokenizer.keyframe_stride).to(x)
+    tv_ratio = total_variation(hold["quantized"], real) / total_variation(
+        x, real
+    ).clamp_min(1e-9)
+    interp = linear_keyframe_matrix(
+        tokenizer.action_horizon, tokenizer.keyframe_stride
+    ).to(x)
     floor = torch.einsum("tk,nka->nta", interp, x[:, :: tokenizer.keyframe_stride])
     ev_floor = per_axis_ev(floor, x, real)
     w = real.bool()
@@ -175,7 +203,9 @@ def report(  # noqa: PLR0914
         "beats_dct": float(ev_q.mean()) > dct["ev"],
         "quant_gap": float((ev_u - ev_q).max()) <= GATES["quant_gap_max"],
         "tv_ratio": bool(
-            ((tv_ratio >= GATES["tv_ratio"][0]) & (tv_ratio <= GATES["tv_ratio"][1])).all()
+            (
+                (tv_ratio >= GATES["tv_ratio"][0]) & (tv_ratio <= GATES["tv_ratio"][1])
+            ).all()
         ),
         "no_dead_channel": bool((sd_ratio >= GATES["dead_ratio"]).all()),
         "finger_invariance": all(v > 0.1 for v in invariance.values()),  # noqa: PLR2004
@@ -210,7 +240,9 @@ def report(  # noqa: PLR0914
 
 def batches_for(args: argparse.Namespace, split: str) -> Any:
     if args.synthetic:
-        from rmind.datamodules.nero_robot_random import NeroRobotRandomDataLoader  # noqa: PLC0415
+        from rmind.datamodules.nero_robot_random import (  # noqa: PLC0415
+            NeroRobotRandomDataLoader,
+        )
 
         return NeroRobotRandomDataLoader(
             num_batches=args.max_batches,
@@ -219,12 +251,16 @@ def batches_for(args: argparse.Namespace, split: str) -> Any:
             images=False,
             seed=0 if split == "train" else 100_000,
         )
-    import rmind  # noqa: F401, PLC0415
     from hydra import compose, initialize_config_dir  # noqa: PLC0415
     from hydra.utils import instantiate  # noqa: PLC0415
 
+    import rmind  # noqa: F401, PLC0415
+
     with initialize_config_dir(config_dir=str(CONFIG_DIR), version_base=None):
-        cfg = compose(config_name="train", overrides=[f"experiment={args.experiment}", *args.override])
+        cfg = compose(
+            config_name="train",
+            overrides=[f"experiment={args.experiment}", *args.override],
+        )
     dm = instantiate(cfg.datamodule)
     return dm.train_dataloader() if split == "train" else dm.val_dataloader()
 
@@ -239,7 +275,9 @@ def main() -> None:
     parser.add_argument("--max-batches", type=int, default=16)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    tokenizer = NeroChunkTokenizer.load_from_checkpoint(args.ckpt, map_location="cpu").eval()
+    tokenizer = NeroChunkTokenizer.load_from_checkpoint(
+        args.ckpt, map_location="cpu"
+    ).eval()
     result = report(
         tokenizer,
         collect(tokenizer, batches_for(args, "train"), args.max_batches),
@@ -247,11 +285,12 @@ def main() -> None:
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=1) + "\n")
-    print(json.dumps({k: result[k] for k in ("relative_mode", "bits", "gates")}, indent=1))  # noqa: T201
+    print(  # noqa: T201
+        json.dumps({k: result[k] for k in ("relative_mode", "bits", "gates")}, indent=1)
+    )
     q = result["ev_quantized"]
     print(  # noqa: T201
-        "EV quantized arm %.3f finger %.3f | DCT %.3f | gap max %.3f"
-        % (
+        "EV quantized arm {:.3f} finger {:.3f} | DCT {:.3f} | gap max {:.3f}".format(
             sum(q[:7]) / 7,
             sum(q[7:]) / 6,
             result["dct_rate_matched"]["ev"],

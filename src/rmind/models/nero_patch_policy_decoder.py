@@ -52,6 +52,8 @@ __all__ = ["NeroPatchPolicyDecoderStep"]
 class NeroPatchPolicyDecoderStep(nn.Module):
     """Export wrapper: one 10 Hz frame through a trained robot-native `NeroPatchPolicy`."""
 
+    camera_cond: Tensor  # buffer, (1, n_cameras, 13)
+
     def __init__(
         self,
         *,

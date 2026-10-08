@@ -30,7 +30,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import matplotlib as mpl
 import numpy as np
@@ -49,6 +49,7 @@ import matplotlib.pyplot as plt
 if TYPE_CHECKING:
     from rbyte.dataloader import NodeDataLoader
     from torch import Tensor
+    from torch.nn import Sequential
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_DIR = REPO_ROOT / "config"
@@ -129,7 +130,7 @@ def gather_chunk(tokenizer: ActionTokenizer, batch: dict[str, Any]) -> Tensor:
     of `tokenizer.targets`), but reads the RAW values through the Remapper
     only - normalization is left to `tokenizer._normalize` / `tokenizer()`.
     """
-    remapped = tokenizer.input_transform[0](batch)
+    remapped = cast("Sequential", tokenizer.input_transform)[0](batch)
     gathered = tree_map(
         lambda path: key_get_default(
             remapped, tuple(MappingKey(part) for part in path), None

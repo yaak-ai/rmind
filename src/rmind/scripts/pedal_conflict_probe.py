@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from torch import Tensor
+    from torch.nn import Sequential
 
     from rmind.components.containers import ModuleDict
     from rmind.components.objectives.joint_policy import JointPolicyObjective
@@ -69,7 +70,7 @@ def check_pedal_normalization(
         TypeError: if a pedal field's transform is not `torch.nn.Identity`.
         ValueError: if `_normalize` changes the pedal dims numerically.
     """
-    norm = cast("ModuleDict", tokenizer.input_transform[-1])
+    norm = cast("ModuleDict", cast("Sequential", tokenizer.input_transform)[-1])
     transforms = {
         field: norm.get_deepest(("continuous", field))
         for field in ("gas_pedal", "brake_pedal")
@@ -119,7 +120,7 @@ def collect(
     q=0 code logits).
     """
     policy = cast("JointPolicyObjective", model.objectives["policy"])
-    tokenizer = cast("ActionTokenizer", policy.tokenizer)
+    tokenizer = policy.tokenizer
     # load_policy forces sample_codes=False; for the sampled-decoding variant we
     # re-enable it here (seeded by the caller) to measure stochastic deployment
     policy.sample_codes = decoding == "sampled"
@@ -249,7 +250,7 @@ def summarize(collected: dict[str, Tensor]) -> dict[str, Any]:
     }
 
 
-def _log_wandb(results: dict[str, Any], out_path: Path) -> str:
+def _log_wandb(results: dict[str, Any], out_path: Path) -> str | None:
     import wandb  # noqa: PLC0415
 
     run = wandb.init(
@@ -288,7 +289,7 @@ def main(args: argparse.Namespace) -> None:
     torch.manual_seed(args.seed)
     model = load_policy(args.ckpt, args.device)
     policy = cast("JointPolicyObjective", model.objectives["policy"])
-    tokenizer = cast("ActionTokenizer", policy.tokenizer)
+    tokenizer = policy.tokenizer
 
     normalization_check = check_pedal_normalization(
         tokenizer, torch.device(args.device)

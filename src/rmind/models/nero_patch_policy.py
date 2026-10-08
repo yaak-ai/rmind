@@ -152,7 +152,7 @@ replaced by joint-angle degrees.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Any, Literal, final, override
+from typing import Annotated, Any, Literal, cast, final, override
 
 import pytorch_lightning as pl
 import torch
@@ -211,8 +211,10 @@ type Path = tuple[str, ...]
 class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     """Causal patch policy over 3 cameras + bimanual SE(3) state. See module docstring."""
 
+    token_gain_calibrated: Tensor  # buffer, registered iff calibrate_token_gain
+
     @validate_call
-    def __init__(  # ruff: ignore[too-many-arguments, too-many-statements]
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-statements, complex-structure, too-many-branches]
         self,
         *,
         image_transform: HydraConfig[Module] | InstanceOf[Module],
@@ -301,7 +303,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         hand_sides: Sequence[str] = (),
         hand_embedding: HydraConfig[Module] | InstanceOf[Module] | None = None,
         hand_prefix: str = "hand.",
-        hand_token_key: str = "hand_token",
+        hand_token_key: str = "hand_token",  # ruff: ignore[hardcoded-password-default]
         hand_dropout_sample: float = 0.2,
         hand_dropout_frame: float = 0.1,
         #: robot: train-split per-axis state standardizer (in-graph at serving)
@@ -1028,15 +1030,15 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
     def _no_hand_token(self) -> Tensor:
         """`(d,)` untagged, `(S, d)` sided (each side's tag added pre-norm)."""
-        embed = self.hand_embedding
+        embed_learned = getattr(self.hand_embedding, "embed_learned", None)
         raw: Tensor = self.no_hand
         tag = self._hand_side_tag()
         if tag is not None:
-            if embed is not None and hasattr(embed, "embed_learned"):
-                return embed.embed_learned(raw + tag)
+            if embed_learned is not None:
+                return embed_learned(raw + tag)
             return raw + tag
-        if embed is not None and hasattr(embed, "embed_learned"):
-            return embed.embed_learned(raw)
+        if embed_learned is not None:
+            return embed_learned(raw)
         return raw
 
     def _hand_side_tag(self) -> Tensor | None:
@@ -1248,15 +1250,17 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """
         rms = float(patch_tokens.detach().float().pow(2).mean().sqrt())
         for module in (self.state_embedding, self.hand_embedding):
-            if module is not None and hasattr(module, "calibrate"):
-                module.calibrate(rms)
+            calibrate = getattr(module, "calibrate", None)  # None-safe
+            if calibrate is not None:
+                calibrate(rms)
         if hasattr(self, "token_gain_calibrated"):
             self.token_gain_calibrated.fill_(1.0)
         self._calibrate_now = False
 
     def tokens_per_frame(self) -> int:
         """`1 state + n_hand_tokens + depth + n_cameras * P`; for budget checks."""
-        return int(self.encoder.tokens_per_frame)
+        encoder: Any = self.encoder  # the causal-frame trunk, duck-typed
+        return int(encoder.tokens_per_frame)
 
     def _features(
         self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
@@ -1388,7 +1392,11 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
     @staticmethod
     def _elementwise(loss: Module, pred: Tensor, target: Tensor) -> Tensor:
-        """The configured offset loss, unreduced (for the `action_is_pad` mask)."""
+        """The configured offset loss, unreduced (for the `action_is_pad` mask).
+
+        Raises:
+            TypeError: for a loss with no unreduced form here.
+        """
         if isinstance(loss, nn.SmoothL1Loss):
             return F.smooth_l1_loss(pred, target, beta=loss.beta, reduction="none")
         if isinstance(loss, nn.MSELoss):
@@ -1512,10 +1520,11 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     features=features,
                 )
         return TensorDict(
-            {"policy": {"loss": losses, "metric": metrics}}, batch_size=[]
+            {"policy": {"loss": losses, "metric": metrics}},  # ty:ignore[invalid-argument-type]
+            batch_size=[],
         )
 
-    # ---------------------------------------------------------- reliance (P9)
+    # ---------------------------------------------------------- reliance, P9
 
     def _hand_override(self, batch: Any, how: str, shift: int = 10) -> dict[str, Any]:
         """A copy of `batch` whose `hand_token` is ablated `how`.
@@ -1530,6 +1539,10 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         Works on both layouts (`(b, T, dim)` and the sided `(b, T, S, dim)`):
         every ablation but `no_hand_<side>` acts on all sides together.
+
+        Raises:
+            KeyError: when the batch carries no hand inputs.
+            ValueError: for an unknown ablation `how`.
         """
         vec = self.hand_vector(batch)
         if vec is None:
@@ -1659,7 +1672,8 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 )
 
         return TensorDict(
-            {"policy": {"loss": losses, "metric": metrics}}, batch_size=[]
+            {"policy": {"loss": losses, "metric": metrics}},  # ty:ignore[invalid-argument-type]
+            batch_size=[],
         )
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
@@ -1707,7 +1721,9 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         if self.trainer.sanity_checking:
             return {
-                "loss": self._compute_metrics(batch)["policy", "loss"].sum(reduce=True)
+                "loss": cast(
+                    "TensorDict", self._compute_metrics(batch)["policy", "loss"]
+                ).sum(reduce=True)
             }
         out = self._step(batch, "val")
         if self.reliance_metrics and self.robot and self.use_hand:
@@ -1738,7 +1754,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def forward(self, batch: Any) -> TensorDict:
         """Newest frame's bimanual action chunk, `(b, 2, horizon, action_features)`."""
         chunk = self._predict_chunk(self._features(batch)[:, -1])
-        return TensorDict({"policy": {"action": chunk}}, batch_size=[])
+        return TensorDict({"policy": {"action": chunk}}, batch_size=[])  # ty:ignore[invalid-argument-type]
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
