@@ -24,7 +24,7 @@
 # * lr_total_steps = len(train_dataloader) x max_epochs, from
 #   `python -m rmind.scripts.nero_steps yaak/nero_robot/bimanual_causal`
 #   (tests/test_nero_bimanual.py asserts it while the corpus is reachable);
-# * local logging only: CSV under NERO_RUNS_DIR, wandb disabled;
+# * logging: CSV under NERO_RUNS_DIR (checkpoints, metrics.csv) plus wandb (yaak/rmind);
 # * val logs the ARM-SELECTION metric per active-arm class (val/arm_select/...).
 
 defaults:
@@ -53,5 +53,4 @@ trainer:
   max_epochs: 10
 
 wandb:
-  mode: disabled
   tags: [nero_robot, causal_patch_policy, bimanual]
