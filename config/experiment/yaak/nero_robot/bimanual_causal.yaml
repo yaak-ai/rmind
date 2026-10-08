@@ -6,8 +6,11 @@
 #
 # ⚠️ Needs the per-side hand token (WP5: two side-tagged 14-d tokens through one
 # pooled hand standardizer, 483 tokens/frame). Until that lands the model reads
-# the single-arm `hand.*` columns, which a bimanual rbyte row does not carry; use
-# bimanual_hand_off meanwhile.
+# the single-arm `hand.*` columns, which a bimanual rbyte row does not carry, and
+# NeroPatchPolicy.hand_vector RAISES NotImplementedError on the first batch that
+# carries only `hand.{left,right}.*` (rather than silently training with no_hand
+# on every frame); use bimanual_hand_off meanwhile. WP5 replaces that guard with
+# the per-side token path.
 #
 # Everything else is shared with bimanual_hand_off (and bimanual_tokenizer):
 # * split: config/splits/nero_cube_bimanual_v1.json -- THE take-level split the
@@ -35,6 +38,9 @@ defaults:
 nero_robot_dir: ${oc.env:NERO_ROBOT_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/2026-10-07}
 nero_frame_cache: ${oc.env:NERO_FRAME_CACHE,${oc.env:HOME}/data/nero-arms/cube-bimanual/frame-cache-140x224/2026-10-07}
 nero_runs_dir: ${oc.env:NERO_RUNS_DIR,runs}
+# the BIMANUAL stats (side_valid [True, True]); never the single-arm .nero_stats
+# default inherited from causal/tokenizer, whose right side is mean 0 / std 1
+nero_stats_dir: ${oc.env:NERO_STATS_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/rmind/stats_v1}
 run_name: bimanual_causal
 
 relative_mode: all

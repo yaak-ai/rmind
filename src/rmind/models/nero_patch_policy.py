@@ -917,11 +917,35 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         Serving/export hands the composed vector over as `hand_token`; training
         composes it from rbyte's per-group blocks (`compose_hand_token`, the
         torch twin of `hf.TokenBlocks.compose`).
+
+        Raises:
+            NotImplementedError: when the batch carries only the per-side
+                `hand.{left,right}.*` columns (bimanual), which this unsided hand
+                token cannot read yet.
         """
         vec = self._lookup(batch, (self.hand_token_key,))
         if vec is not None:
             return vec.float()
         if self._lookup(batch, (f"{self.hand_prefix}motor_ok",)) is None:
+            # A bimanual rbyte row carries `hand.{left,right}.*`, never the
+            # unsided `hand.*`: silently substituting `no_hand` for every frame
+            # would train a hand_on run as a no-hand model. Refuse until the
+            # per-side hand token path (WP5) reads the sided columns.
+            sided = [
+                side
+                for side in ("left", "right")
+                if self._lookup(batch, (f"{self.hand_prefix}{side}.motor_ok",))
+                is not None
+            ]
+            if sided:
+                msg = (
+                    f"hand token enabled (hand_groups={list(self.hand_groups)}) but "
+                    f"the batch carries only per-side hand columns "
+                    f"({', '.join(f'{self.hand_prefix}{s}.*' for s in sided)}), "
+                    f"no `{self.hand_prefix}motor_ok`: the per-side hand token is "
+                    "not implemented yet -- train bimanual_hand_off instead"
+                )
+                raise NotImplementedError(msg)
             return None
         return compose_hand_token(batch, self.hand_groups, prefix=self.hand_prefix)
 

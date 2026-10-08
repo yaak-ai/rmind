@@ -1213,3 +1213,33 @@ def test_long_sequence_block_mask_is_the_eager_one(
     cf.frame_block_causal_block_mask.cache_clear()
     for a, b in zip(eager.as_tuple()[2:6], compiled.as_tuple()[2:6], strict=True):
         assert torch.equal(a, b)
+
+
+# ------------------------------------------- bimanual hand columns (WP4 guard)
+
+
+def _sided_hand_batch() -> dict[str, Any]:
+    """A batch whose hand columns are per-side (`hand.{left,right}.*`) only, the
+    way a bimanual rbyte row carries them."""
+    batch = _batch()
+    out = {k: v for k, v in batch.items() if not k.startswith("hand.")}
+    for side in ("left", "right"):
+        for key, value in batch.items():
+            if key.startswith("hand."):
+                out[f"hand.{side}.{key.removeprefix('hand.')}"] = value
+    return out
+
+
+def test_hand_token_refuses_per_side_only_hand_columns() -> None:
+    """Until the per-side hand token exists, a hand_on model must not silently
+    train with `no_hand` on every frame of a bimanual batch."""
+    batch = _sided_hand_batch()
+    with pytest.raises(NotImplementedError, match="per-side hand"):
+        _policy().hand_vector(batch)
+    # a hand_off model never reads the hand columns
+    assert _policy(hand=False).compute_metrics(batch) is not None
+
+
+def test_hand_token_absent_hand_stream_still_falls_back_to_no_hand() -> None:
+    batch = {k: v for k, v in _batch().items() if not k.startswith("hand.")}
+    assert _policy().hand_vector(batch) is None
