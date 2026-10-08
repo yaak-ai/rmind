@@ -1,0 +1,33 @@
+# @package _global_
+#
+# bimanual_tokenizer, re-tuned so the 16 x 16 codes carry the ARMS (playbook
+# diagnosis, scratchpad tok_iter/LOG.md). Same interface as bimanual_tokenizer
+# (16 quantizers x codebook 16, latent 128, relative_mode all, stats_v1), so a
+# patch policy only swaps NERO_TOKENIZER_CKPT -- no head change, no stats refit.
+#
+# What changed and why (pooled val EV, arm / finger):
+# * schedule: 20 -> 150 epochs with lr_total_steps = 66 x 150. At 20 epochs
+#   the cosine reached lr 0 at step 1320 with train EV ~ val EV (underfit, the
+#   playbook's step-1 trap): 0.53 -> 0.86 arm.
+# * event_weight null: the 5x finger event boost gave the fingers ~60% of the
+#   loss budget, and the RVQ's first levels went to fingers. In relative "all"
+#   the finger atom share is only 4-14% with a graded remainder, not the D12
+#   zero-atom-plus-bimodal shape the weighting exists for: 0.86 -> 0.91 arm,
+#   fingers 0.96 -> 0.94 (event magnitude / invariance probes stay healthy).
+# * loss l2: EV is an MSE metric; small extra arm gain, mostly on the worst joint.
+# * channels 64: +0.005 arm (at the edge of seed noise, ~0.002).
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_tokenizer
+  - _self_
+
+run_name: bimanual_tokenizer_v2
+
+event_weight: null
+tokenizer_channels: 64
+model:
+  loss: l2
+
+# len(train_dataloader) x max_epochs = 66 x 150 (cosine has no clamp)
+lr_total_steps: 9900
+trainer:
+  max_epochs: 150
