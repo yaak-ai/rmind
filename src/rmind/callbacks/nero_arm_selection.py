@@ -62,7 +62,9 @@ class NeroArmSelectionLogger(pl.Callback):
         if trainer.sanity_checking:
             return False
         epoch = int(trainer.current_epoch)
-        last = trainer.max_epochs is not None and epoch + 1 >= int(trainer.max_epochs)
+        max_epochs = trainer.max_epochs
+        # max_epochs -1 / None: unbounded, no last epoch
+        last = max_epochs is not None and max_epochs > 0 and epoch + 1 >= max_epochs
         return last or (epoch + 1) % self.every_n_epochs == 0
 
     def _reset(self) -> None:

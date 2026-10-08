@@ -533,6 +533,8 @@ def test_arm_selection_every_n_epochs() -> None:
     cb = NeroArmSelectionLogger(every_n_epochs=3)
     ran = [e for e in range(10) if cb.active(_Trainer(e, 10))]  # ty: ignore[invalid-argument-type]
     assert ran == [2, 5, 8, 9]  # every 3rd, plus the last
+    unbounded = [e for e in range(10) if cb.active(_Trainer(e, -1))]  # ty: ignore[invalid-argument-type]
+    assert unbounded == [2, 5, 8]
     assert not cb.active(_Trainer(2, 10, sanity=True))  # ty: ignore[invalid-argument-type]
     assert all(
         NeroArmSelectionLogger().active(_Trainer(e, 10))  # ty: ignore[invalid-argument-type]
