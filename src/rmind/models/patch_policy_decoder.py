@@ -77,6 +77,10 @@ class PatchPolicyDecoderStep(nn.Module):
     `speed_embedding`, `norm`, and the VQ-BeT `code_head`/`offset_head`/tokenizer.
     """
 
+    # ImageNet stats, registered as buffers in __init__
+    image_mean: Tensor
+    image_std: Tensor
+
     def __init__(
         self, *, policy: PatchPolicy, readout_only_final_block: bool = True
     ) -> None:
@@ -168,7 +172,7 @@ class PatchPolicyDecoderStep(nn.Module):
         if policy.norm is not None:
             features = policy.norm(features)
 
-        return TensorDict({
+        return TensorDict({  # ty:ignore[invalid-argument-type]
             "policy": {"joint_actions": policy._predict_chunk(features)},  # noqa: SLF001
             "new_k": new_k,
             "new_v": new_v,

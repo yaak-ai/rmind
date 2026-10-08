@@ -103,7 +103,7 @@ defect.
 
 from collections.abc import Callable
 from functools import cache
-from typing import Literal, final, get_args, override
+from typing import Literal, cast, final, get_args, override
 
 import torch
 from torch import Tensor, nn
@@ -761,7 +761,7 @@ class CausalFrameTransformer(nn.Module):
         new_v: list[Tensor] = []
         last = self.num_layers - 1
         for i, layer in enumerate(self.layers):
-            x, k, v = layer.step(
+            x, k, v = cast("CausalFrameTransformerBlock", layer).step(
                 x,
                 cos,
                 sin,

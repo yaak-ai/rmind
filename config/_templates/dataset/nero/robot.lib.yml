@@ -13,9 +13,16 @@
 #@ # rmind.data.nero_image.preprocess -- the function serving calls (P10). No
 #@ # decoder-side (swscale) resize anywhere on this path.
 
+#@ # FRAME CACHE (opt-in, `frame_cache=True`): the image streams read
+#@ # `${nero_frame_cache}/<take>/<camera>.npy`, every mp4 frame already through
+#@ # `preprocess` (rmind.data.nero_frame_cache; build it with
+#@ # `python -m rmind.scripts.nero_frame_cache`). Byte-identical inputs, no decode
+#@ # in the loop; the source refuses a stale or unfinished cache. The samples
+#@ # pipeline below is the same either way.
+
 #@ cameras = ["base", "side_left", "side_right"]
 
-#@ def dataset(episodes, split):
+#@ def dataset(episodes, split, frame_cache=False):
 _target_: rbyte.Dataset.from_config
 _recursive_: false
 _convert_: all
@@ -26,6 +33,14 @@ streams:
     index: #@ "frame_index." + camera
     sources:
       #@ for episode in episodes:
+      #@ if frame_cache:
+      #@yaml/text-templated-strings
+      (@=episode@):
+        _target_: rmind.data.nero_frame_cache.NeroFrameCacheSource
+        path: #@ "${nero_frame_cache}/" + episode + "/" + camera + ".npy"
+        video: #@ "${nero_robot_dir}/" + episode + "/" + camera + ".mp4"
+        input_hw: ["${image_height}", "${image_width}"]
+      #@ else:
       #@yaml/text-templated-strings
       (@=episode@):
         _target_: rbyte.streams.transformed.TransformedSource
@@ -38,6 +53,7 @@ streams:
         transform:
           _target_: rmind.data.nero_image.NeroImagePreprocess
           input_hw: ["${image_height}", "${image_width}"]
+      #@ end
       #@ end
   #@ end
 

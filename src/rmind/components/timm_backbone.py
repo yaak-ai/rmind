@@ -1,5 +1,5 @@
 from math import isqrt, prod
-from typing import override
+from typing import Any, override
 
 import torch
 from timm import create_model
@@ -54,9 +54,12 @@ class TimmBackbone(nn.Module):
     def forward(self, input: Tensor) -> Tensor:
         *b, c, h, w = input.shape
         x = input.view(prod(b), c, h, w)
+        # timm's forward_intermediates/forward_features/num_prefix_tokens live on
+        # the concrete architectures (ViT, EVA, ...), not on nn.Module
+        model: Any = self.model
 
         if self.norm_indices is not None:
-            feats = self.model.forward_intermediates(
+            feats = model.forward_intermediates(
                 x,
                 indices=self.norm_indices,
                 norm=True,
@@ -66,8 +69,8 @@ class TimmBackbone(nn.Module):
             x = torch.cat(feats, dim=1)
         elif self.norm_patch_tokens:
             # (B, prefix + P, D), final norm applied by timm's forward_features
-            tokens = self.model.forward_features(x)
-            tokens = tokens[:, self.model.num_prefix_tokens :]
+            tokens = model.forward_features(x)
+            tokens = tokens[:, model.num_prefix_tokens :]
             # NON-SQUARE inputs are legal (nero-arms feeds a 10x16 grid), so take
             # the grid from the patch embedding rather than assuming isqrt(P).
             # Identical result for square inputs.

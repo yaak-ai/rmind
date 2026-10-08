@@ -55,6 +55,12 @@ def _to(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return {k: v.to(device, non_blocking=True) for k, v in batch.items()}
 
 
+def _bimanual(cfg: Any) -> bool:
+    """A sided hand token (`hand_sides`) reads `hand.{left,right}.*`: feed it
+    both-valid bimanual synthetic batches."""
+    return bool(cfg.get("hand_sides"))
+
+
 def _model(cfg: Any) -> Any:
     from hydra.utils import instantiate  # noqa: PLC0415
     from omegaconf import OmegaConf  # noqa: PLC0415
@@ -68,11 +74,12 @@ def _model(cfg: Any) -> Any:
 def stage_budget(cfg: Any) -> dict[str, Any]:
     model = _model(cfg).eval()
     hw = (int(cfg.image_height), int(cfg.image_width))
-    batch = nero_robot_batch(batch_size=1, num_frames=2, image_hw=hw, seed=0)
+    batch = nero_robot_batch(batch_size=1, num_frames=2, image_hw=hw, seed=0, bimanual=_bimanual(cfg))
     with torch.no_grad():
         built = int(model._frame_tokens(batch).shape[-2])  # noqa: SLF001
     configured = int(model.encoder.tokens_per_frame)
-    arithmetic = 1 + int(cfg.use_hand_token) + int(cfg.num_cameras) * int(cfg.num_patches)
+    n_hand = int(cfg.use_hand_token) * max(1, len(cfg.get("hand_sides") or ()))
+    arithmetic = 1 + n_hand + int(cfg.num_cameras) * int(cfg.num_patches)
     head_dim = int(cfg.policy_embedding_dim) // int(cfg.num_heads)
     offset_params = sum(p.numel() for p in model.offset_head.parameters())
     report = {
@@ -176,6 +183,7 @@ def _policy_batches(args: argparse.Namespace, cfg: Any) -> Any:
             num_frames=int(cfg.episode_length),
             image_hw=hw,
             seed=0 if args.overfit else step,
+            bimanual=_bimanual(cfg),
         )
         step += 1
 
@@ -244,13 +252,13 @@ def stage_policy(args: argparse.Namespace, out: Path) -> dict[str, Any]:  # noqa
     hw = (int(cfg.image_height), int(cfg.image_width))
     with torch.no_grad():
         held = _to(
-            nero_robot_batch(batch_size=args.batch_size, num_frames=int(cfg.episode_length), image_hw=hw, seed=123_456),
+            nero_robot_batch(batch_size=args.batch_size, num_frames=int(cfg.episode_length), image_hw=hw, seed=123_456, bimanual=_bimanual(cfg)),
             device,
         )
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
             reliance = {k: float(v) for k, v in model.reliance_metrics_for(held).items()} if model.use_hand else {}
             if args.overfit:
-                train_batch = _to(nero_robot_batch(batch_size=args.batch_size, num_frames=int(cfg.episode_length), image_hw=hw, seed=0), device)
+                train_batch = _to(nero_robot_batch(batch_size=args.batch_size, num_frames=int(cfg.episode_length), image_hw=hw, seed=0, bimanual=_bimanual(cfg)), device)
                 reliance_train = {k: float(v) for k, v in model.reliance_metrics_for(train_batch).items()} if model.use_hand else {}
             else:
                 reliance_train = {}

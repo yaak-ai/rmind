@@ -17,6 +17,13 @@ Keys and shapes match what rbyte emits per sample (`T` frames on the 10 Hz grid,
 | `hand.motor_ok/tip_ok`    | `(T,)` bool                  |
 | `camera_cond`             | `(3, 13)` float32 (zeros = placeholder) |
 
+BIMANUAL (`bimanual=True`, rbyte `nero-bimanual-26`): `side_valid [True, True]`,
+the right side's state / chunk filled from an independent draw (its own contact
+time, fingers and hand stream; same padding pattern), and the hand blocks per
+side as `hand.left.*` / `hand.right.*` instead of `hand.*`. The left side and
+the images are BIT-identical to the single-arm batch of the same seed (the right
+side comes from a separate generator), so `bimanual=False` is unchanged.
+
 THE HAND-DEPENDENT TASK (`hand_dependent=True`). Each sample has a hidden
 "contact" time; the fingers start closing `grasp_delay_steps` (0.5 s) AFTER it,
 to a per-finger plateau (850-1000 counts) from an open atom (~50 counts). The
@@ -31,7 +38,7 @@ learns the marginal. This is what the reliance metrics are expected to detect
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from typing import Any, final, override
+from typing import Any, cast, final, override
 
 import torch
 from torch import Tensor
@@ -48,11 +55,13 @@ SAG = 0.02  # steady-state arm tracking offset (command - measured), rad
 def _smooth(noise: Tensor, width: int) -> Tensor:
     kernel = torch.ones(1, 1, width) / width
     x = noise.transpose(-1, -2).reshape(-1, 1, noise.shape[-2])
-    out = torch.nn.functional.conv1d(x, kernel, padding=width // 2)[..., : noise.shape[-2]]
+    out = torch.nn.functional.conv1d(x, kernel, padding=width // 2)[
+        ..., : noise.shape[-2]
+    ]
     return out.reshape(noise.shape[0], noise.shape[-1], -1).transpose(-1, -2)
 
 
-def nero_robot_batch(  # noqa: PLR0913, PLR0914, PLR0915
+def nero_robot_batch(  # noqa: PLR0913, PLR0914
     *,
     batch_size: int = 2,
     num_frames: int = 6,
@@ -64,6 +73,7 @@ def nero_robot_batch(  # noqa: PLR0913, PLR0914, PLR0915
     hand_invalid_frac: float = 0.1,
     pad_tail: bool = True,
     images: bool = True,
+    bimanual: bool = False,
     seed: int = 0,
     device: torch.device | str = "cpu",
 ) -> dict[str, Any]:
@@ -134,11 +144,50 @@ def nero_robot_batch(  # noqa: PLR0913, PLR0914, PLR0915
     }
     if images:
         for camera in CAMERAS:
-            hh, ww = image_hw[camera] if isinstance(image_hw, Mapping) else image_hw
+            hh, ww = (
+                cast("Mapping[str, tuple[int, int]]", image_hw)[camera]
+                if isinstance(image_hw, Mapping)
+                else image_hw
+            )
             batch[f"image.{camera}"] = torch.randint(
                 0, 256, (b, t, 3, hh, ww), dtype=torch.uint8, generator=g
             )
+    if bimanual:
+        batch = _add_right_side(
+            batch,
+            nero_robot_batch(
+                batch_size=b,
+                num_frames=t,
+                chunk_size=h,
+                frame_stride=s,
+                hand_dependent=hand_dependent,
+                grasp_delay_steps=grasp_delay_steps,
+                hand_invalid_frac=hand_invalid_frac,
+                pad_tail=pad_tail,
+                images=False,
+                seed=seed + RIGHT_SEED_OFFSET,
+            ),
+        )
     return {k: v.to(device) for k, v in batch.items()}
+
+
+#: the right side's independent draw (any offset that no test seed collides with)
+RIGHT_SEED_OFFSET = 1_000_003
+
+
+def _add_right_side(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """A single-arm batch + another one's LEFT side as the right side."""
+    out = {k: v for k, v in left.items() if not k.startswith("hand.")}
+    out["state"] = left["state"].clone()
+    out["state"][:, :, 1] = right["state"][:, :, 0]
+    out["action.chunk"] = left["action.chunk"].clone()
+    out["action.chunk"][..., 1, :] = right["action.chunk"][..., 0, :]
+    out["side_valid"] = torch.ones_like(left["side_valid"])
+    for side, source in (("left", left), ("right", right)):
+        for key, value in source.items():
+            if key.startswith("hand."):
+                out[f"hand.{side}.{key.removeprefix('hand.')}"] = value
+    return out
 
 
 class _Dataset(torch.utils.data.IterableDataset):
@@ -159,7 +208,9 @@ class _Dataset(torch.utils.data.IterableDataset):
 class NeroRobotRandomDataLoader:
     """`DataLoader`-shaped wrapper (the dataset already yields collated batches)."""
 
-    def __init__(self, *, num_batches: int = 1000, seed: int = 0, **kwargs: Any) -> None:
+    def __init__(
+        self, *, num_batches: int = 1000, seed: int = 0, **kwargs: Any
+    ) -> None:
         self.dataset = _Dataset(num_batches=num_batches, seed=seed, **kwargs)
 
     def __len__(self) -> int:

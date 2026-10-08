@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 import torch
+from tensordict import TensorDict
 from torch import Tensor, nn
 from torchvision.transforms import v2
 
@@ -114,10 +115,13 @@ def _policy(
     relative_mode: str = "none",
     hand: bool = True,
     conditioned: bool = True,
+    hand_sides: tuple[str, ...] = (),
     **kwargs: Any,
 ) -> NeroPatchPolicy:
     torch.manual_seed(0)
-    tokens = 1 + int(hand) + 3 * NUM_PATCHES
+    tokens = 1 + int(hand) * (len(hand_sides) or 1) + 3 * NUM_PATCHES
+    if hand_sides:
+        kwargs["hand_sides"] = hand_sides
     if hand:
         kwargs.setdefault(
             "hand_standardizer", HandTokenStandardizer(groups=HAND_GROUPS)
@@ -218,7 +222,7 @@ def test_standardizer_json_is_the_nutron_format(tmp_path: Path) -> None:
     assert payload["schema"] == "nutron_standardizer"
     assert payload["version"] == 1
     assert payload["names"] == flat_names()
-    assert payload["std"][3] == 1.0
+    assert payload["std"][3] == 1.0  # noqa: RUF069
     assert payload["mean"][3] == pytest.approx(0.7)
     assert payload["mean"][13:] == [0.0] * 13
     assert payload["std"][13:] == [1.0] * 13
@@ -293,11 +297,15 @@ def test_robot_policy_trains_and_reports() -> None:
     batch = _batch(t=4)
     norms: dict[str, Tensor] = {}
     out = policy.compute_metrics(batch, token_norms=norms)
-    loss = out["policy", "loss"].sum(reduce=True)
+    losses = out["policy", "loss"]
+    assert isinstance(losses, TensorDict)
+    loss = losses.sum(reduce=True)
+    assert isinstance(loss, Tensor)
     loss.backward()
     assert torch.isfinite(loss)
     assert policy.no_hand.grad is not None
-    assert policy.hand_embedding.token_gain.grad is not None  # ty: ignore[possibly-missing-attribute]
+    assert isinstance(policy.hand_embedding, NormedTokenEmbedding)
+    assert policy.hand_embedding.token_gain.grad is not None
     metrics = out["policy", "metric"]
     for key in (
         "ev/finger/h00_09",
@@ -315,6 +323,7 @@ def test_padded_steps_carry_no_loss() -> None:
     batch = _batch(t=3)
     assert batch["action.is_pad"].any()
     base = policy.compute_metrics(batch)["policy", "loss", "offset"]
+    assert isinstance(base, Tensor)
     garbage = dict(batch)
     chunk = batch["action.chunk"].clone()
     chunk[batch["action.is_pad"][..., None, None].expand_as(chunk)] = 1e3
@@ -386,8 +395,9 @@ def test_no_goal_mode_reads_no_goal_frames() -> None:
 
 
 def test_relative_mode_must_match_the_tokenizer() -> None:
+    kwargs: dict[str, Any] = {**_policy_kwargs(), "relative_mode": "hand"}
     with pytest.raises(ValueError, match="relative_mode"):
-        NeroPatchPolicy(**{**_policy_kwargs(), "relative_mode": "hand"})
+        NeroPatchPolicy(**kwargs)
 
 
 def _policy_kwargs() -> dict[str, Any]:
@@ -411,7 +421,7 @@ def _policy_kwargs() -> dict[str, Any]:
 
 
 def test_action_standardizer_pin_is_enforced() -> None:
-    kwargs = _policy_kwargs() | {
+    kwargs: dict[str, Any] = _policy_kwargs() | {
         "hand_groups": (),
         "goal_mode": "no_goal",
         "state": ("state",),
@@ -434,8 +444,10 @@ def test_token_gain_calibration_measures_the_patch_rms() -> None:
         policy._features(batch, token_norms=norms)  # noqa: SLF001
     ratio = float(norms["state"] / norms["patch"])
     assert 0.3 < ratio < 3.0, ratio  # noqa: PLR2004
-    gain = float(policy.state_embedding.token_gain)  # ty: ignore[possibly-missing-attribute]
-    assert gain == float(policy.hand_embedding.token_gain)  # ty: ignore[possibly-missing-attribute]
+    assert isinstance(policy.state_embedding, NormedTokenEmbedding)
+    assert isinstance(policy.hand_embedding, NormedTokenEmbedding)
+    gain = float(policy.state_embedding.token_gain)
+    assert gain == float(policy.hand_embedding.token_gain)  # noqa: RUF069
 
 
 def test_selective_adamw_handles_the_learned_tokens() -> None:
@@ -451,12 +463,13 @@ def test_selective_adamw_handles_the_learned_tokens() -> None:
     no_decay = {
         id(p)
         for group in optimizer.param_groups
-        if group["weight_decay"] == 0.0
+        if group["weight_decay"] == 0.0  # noqa: RUF069
         for p in group["params"]
     }
     for name in ("no_hand", "no_goal"):
         assert id(getattr(policy, name)) in no_decay
-    assert id(policy.state_embedding.token_gain) in no_decay  # ty: ignore[possibly-missing-attribute]
+    assert isinstance(policy.state_embedding, NormedTokenEmbedding)
+    assert id(policy.state_embedding.token_gain) in no_decay
 
 
 def test_reliance_metrics_report_every_ablation() -> None:
@@ -502,16 +515,18 @@ def test_code_conditioned_offset_depends_on_the_codes() -> None:
 
 
 def test_offset_head_width_is_checked_against_the_conditioning() -> None:
-    kwargs = _policy_kwargs() | {
+    kwargs: dict[str, Any] = _policy_kwargs() | {
         "hand_groups": (),
         "goal_mode": "no_goal",
         "state": ("state",),
         "convert_state_to_9d": False,
     }
+    unconditioned: dict[str, Any] = kwargs | {"offset_code_conditioning": False}
     with pytest.raises(ValueError, match="offset_head takes"):
-        NeroPatchPolicy(**kwargs | {"offset_code_conditioning": False})
+        NeroPatchPolicy(**unconditioned)
+    table: dict[str, Any] = kwargs | {"offset_mode": "table"}
     with pytest.raises(ValueError, match="offset_code_conditioning"):
-        NeroPatchPolicy(**kwargs | {"offset_mode": "table"})
+        NeroPatchPolicy(**table)
 
 
 def test_normed_token_embedding_keeps_the_affine_level() -> None:
@@ -640,7 +655,8 @@ def test_hand_standardizer_is_in_graph_and_self_contained() -> None:
     assert "hand_standardizer.index" not in sd  # the selection is config
     fresh = _policy()
     fresh.load_state_dict(sd)
-    assert torch.equal(fresh.hand_standardizer.full_mean, fitted.full_mean)  # ty: ignore[possibly-missing-attribute]
+    assert fresh.hand_standardizer is not None
+    assert torch.equal(fresh.hand_standardizer.full_mean, fitted.full_mean)
     with pytest.raises(ValueError, match="groups"):
         _policy(hand_standardizer=HandTokenStandardizer(groups=("current",)))
 
@@ -693,7 +709,7 @@ def test_hand_standardizer_balances_the_first_layer() -> None:
 
 
 @pytest.mark.parametrize("relative_mode", ["none", "hand", "all"])
-def test_streaming_equals_windowed(relative_mode: str) -> None:
+def test_streaming_equals_windowed(relative_mode: str) -> None:  # noqa: PLR0914
     """THE serving correctness gate (#269): ring of W-1 == one windowed forward."""
     policy = _policy(relative_mode=relative_mode)
     batch = _batch(t=40, b=1, seed=3)
@@ -836,9 +852,9 @@ def test_tokenizer_event_weights_boost_fingers_and_drop_padding() -> None:
     real = torch.ones(2, CHUNK, dtype=torch.bool)
     real[1, 80:] = False
     w = tokenizer.weights(target, real)
-    assert w[0, 60, 9] == 5.0  # noqa: PLR2004
-    assert w[0, 60, 2] == 1.0
-    assert w[0, 10, 9] == 1.0
+    assert w[0, 60, 9] == 5.0  # noqa: PLR2004, RUF069
+    assert w[0, 60, 2] == 1.0  # noqa: RUF069
+    assert w[0, 10, 9] == 1.0  # noqa: RUF069
     assert (w[1, 80:] == 0).all()
 
 
@@ -1133,7 +1149,7 @@ def test_rbyte_training_path_equals_the_serving_preprocess() -> None:
 
 
 @pytest.mark.parametrize("relative_mode", ["none", "all"])
-def test_replay_expected_equals_the_streamed_absolute_chunks(
+def test_replay_expected_equals_the_streamed_absolute_chunks(  # noqa: PLR0914
     relative_mode: str,
 ) -> None:
     """`nero_replay_expected.expected` (one windowed forward PER STREAM, split at
@@ -1212,4 +1228,36 @@ def test_long_sequence_block_mask_is_the_eager_one(
     compiled = cf.frame_block_causal_block_mask(12, 482, window=WINDOW, device=device)
     cf.frame_block_causal_block_mask.cache_clear()
     for a, b in zip(eager.as_tuple()[2:6], compiled.as_tuple()[2:6], strict=True):
+        assert a is not None
+        assert b is not None
         assert torch.equal(a, b)
+
+
+# ------------------------------------------- bimanual hand columns (WP4 guard)
+
+
+def _sided_hand_batch() -> dict[str, Any]:
+    """A batch whose hand columns are per-side (`hand.{left,right}.*`) only, the
+    way a bimanual rbyte row carries them."""
+    batch = _batch()
+    out = {k: v for k, v in batch.items() if not k.startswith("hand.")}
+    for side in ("left", "right"):
+        for key, value in batch.items():
+            if key.startswith("hand."):
+                out[f"hand.{side}.{key.removeprefix('hand.')}"] = value
+    return out
+
+
+def test_hand_token_refuses_per_side_only_hand_columns() -> None:
+    """An UNTAGGED hand_on model must not silently train with `no_hand` on every
+    frame of a bimanual batch: it is told to set hand_sides."""
+    batch = _sided_hand_batch()
+    with pytest.raises(ValueError, match=r"per-side hand.*hand_sides"):
+        _policy().hand_vector(batch)
+    # a hand_off model never reads the hand columns
+    assert _policy(hand=False).compute_metrics(batch) is not None
+
+
+def test_hand_token_absent_hand_stream_still_falls_back_to_no_hand() -> None:
+    batch = {k: v for k, v in _batch().items() if not k.startswith("hand.")}
+    assert _policy().hand_vector(batch) is None

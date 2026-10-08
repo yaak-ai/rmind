@@ -50,11 +50,13 @@ __all__ = [
     "EventReference",
     "HandTokenStandardizer",
     "compose_hand_token",
+    "compose_hand_tokens",
     "flat_names",
     "hand_feature_columns",
     "hand_token_columns",
     "hand_token_dim",
     "normalize_hand_groups",
+    "normalize_hand_sides",
     "relative_mask",
     "to_absolute",
     "to_relative",
@@ -177,6 +179,46 @@ def compose_hand_token(
     return torch.where(ok.unsqueeze(-1), token, torch.zeros_like(token))
 
 
+def normalize_hand_sides(sides: Sequence[str] | None) -> tuple[str, ...]:
+    """`()` = ONE untagged hand token (the single-arm layout, `hand.*` columns);
+    else one side-tagged token per entry, in `SIDES` order (contract v3
+    `hand_sides`, side-major like everything else).
+
+    Raises:
+        ValueError: on an unknown, repeated or out-of-order side.
+    """
+    sides = tuple(sides or ())
+    if any(s not in SIDES for s in sides) or sides != tuple(
+        s for s in SIDES if s in sides
+    ):
+        msg = f"hand sides {sides!r}: a subset of {SIDES}, in that order, no repeats"
+        raise ValueError(msg)
+    return sides
+
+
+def compose_hand_tokens(
+    batch: Mapping[str, Any],
+    groups: Sequence[str],
+    sides: Sequence[str],
+    *,
+    prefix: str = "hand.",
+) -> Tensor:
+    """Per-side `compose_hand_token`: `(..., S, dim)`, one row per side in `sides`.
+
+    Side `s` reads rbyte's bimanual `<prefix><s>.<block>` columns
+    (`hand.left.current`, ...); every row carries its OWN `hand_valid` (last
+    column), so one side's refused reading never touches the other's. This is
+    the layout nutron-cli serving feeds as `hand_token (1, S, dim)`.
+    """
+    return torch.stack(
+        [
+            compose_hand_token(batch, groups, prefix=f"{prefix}{side}.")
+            for side in sides
+        ],
+        dim=-2,
+    )
+
+
 # ------------------------------------------------------------------ standardizer
 
 
@@ -190,6 +232,10 @@ class AxisStandardizer(nn.Module):
     because the serving loader applies no floor. `digest` is the SHA256 of the
     canonical file bytes and is what a tokenizer checkpoint pins.
     """
+
+    # registered as buffers in __init__
+    mean: Tensor
+    std: Tensor
 
     def __init__(
         self,
@@ -369,6 +415,11 @@ class HandTokenStandardizer(nn.Module):
     `source` is `"physical_prior"` or `"train:hand"` (fit on the train split's
     valid rows by `nero_fit_stats`).
     """
+
+    # registered as buffers in __init__
+    full_mean: Tensor
+    full_std: Tensor
+    index: Tensor
 
     def __init__(
         self,

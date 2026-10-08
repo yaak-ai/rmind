@@ -34,25 +34,31 @@ the policy cannot pair it with a mismatched one: the policy reads both from here
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Sequence  # noqa: TC003 (pydantic validate_call)
 from typing import Any, Literal, Self, override
 
 import pytorch_lightning as pl
 import torch
-from lightning_fabric.utilities.types import _MAP_LOCATION_TYPE, _PATH
+from lightning_fabric.utilities.types import (  # noqa: TC002 (pydantic validate_call)
+    _MAP_LOCATION_TYPE,
+    _PATH,
+)
 from pydantic import ConfigDict, InstanceOf, validate_call
 from pytorch_lightning.utilities.model_helpers import (
     _restricted_classmethod,  # noqa: PLC2701
 )
-from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
+from pytorch_lightning.utilities.types import (  # noqa: TC002
+    STEP_OUTPUT,
+    OptimizerLRScheduler,
+)
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
-from torch.optim import Optimizer
+from torch.optim import Optimizer  # noqa: TC002 (pydantic validate_call)
 
 from rmind.components import optimizers
 from rmind.components.nn import KeyframeInterpolation
-from rmind.components.vq import ResidualVQ
+from rmind.components.vq import ResidualVQ  # noqa: TC001 (pydantic validate_call)
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.data.nero_robot import (
     ARM_AXES,
@@ -63,7 +69,9 @@ from rmind.data.nero_robot import (
     EventReference,
     to_relative,
 )
-from rmind.models.action_tokenizer import LRSchedulerHydraConfig
+from rmind.models.action_tokenizer import (  # noqa: TC001 (pydantic validate_call)
+    LRSchedulerHydraConfig,
+)
 from rmind.utils._wandb import LoadableFromArtifact
 
 __all__ = ["NeroChunkTokenizer", "explained_variance", "total_variation"]
@@ -100,8 +108,10 @@ def total_variation(x: Tensor, weight: Tensor | None = None) -> Tensor:
 class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
     """RVQ autoencoder over one side's standardized `(H, A)` robot chunk."""
 
+    event_reference: Tensor  # buffer, (A,)
+
     @validate_call
-    def __init__(  # noqa: PLR0913, PLR0917
+    def __init__(  # noqa: PLR0913
         self,
         *,
         encoder: HydraConfig[Module] | InstanceOf[Module],
@@ -139,9 +149,7 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
         self.quantizer: ResidualVQ = init_hydra_param(hparams, "quantizer", quantizer)
         self.decoder = init_hydra_param(hparams, "decoder", decoder)
         std = init_hydra_param(hparams, "standardizer", standardizer)
-        self.standardizer: AxisStandardizer = (
-            AxisStandardizer() if std is None else std  # ty: ignore[invalid-assignment]
-        )
+        self.standardizer: AxisStandardizer = AxisStandardizer() if std is None else std
         self.interpolate = KeyframeInterpolation(
             num_steps=action_horizon, num_axes=action_features, stride=keyframe_stride
         )

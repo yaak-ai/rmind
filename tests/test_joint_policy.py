@@ -135,7 +135,7 @@ def _predict_reference(
     objective: JointPolicyObjective, features: Tensor
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Verbatim pre-refactor `_predict` (origin/feat/action-tokenizer)."""
-    quantizer = cast("ActionTokenizer", objective.tokenizer).quantizer
+    quantizer = objective.tokenizer.quantizer
     g, c = quantizer.num_quantizers, quantizer.codebook_size
 
     code_logits = rearrange(objective.code_head(features), "b (g c) -> b g c", g=g, c=c)
@@ -167,7 +167,7 @@ def _offset_loss_reference(
     are RNG-free and therefore omitted.
     """
     features = objective._features(episode, embedding)  # noqa: SLF001
-    tokenizer = cast("ActionTokenizer", objective.tokenizer)
+    tokenizer = objective.tokenizer
 
     with torch.no_grad():
         chunk = episode.get(objective.chunk)[:, -1]

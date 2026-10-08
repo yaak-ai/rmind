@@ -10,7 +10,7 @@ from torch import Tensor
 from torch.nn import Module
 from torch.utils._pytree import tree_leaves, tree_map  # noqa: PLC2701
 
-from rmind.components.base import Modality, SummaryToken
+from rmind.components.base import Modality, SummaryToken, TensorTree
 from rmind.components.containers import ModuleDict
 from rmind.components.episode import Episode
 from rmind.components.objectives.base import (
@@ -75,7 +75,7 @@ class JointInverseDynamicsObjective(Objective):
             lambda lg: rearrange(lg, "b t (g c) -> b t g c", g=g), self.heads(features)
         )
 
-        losses: dict[str, Tensor] = {}
+        losses: TensorTree = {}
         for q in range(g):
             (losses[f"quantizer_{q}"],) = tree_leaves(
                 self.losses(
@@ -119,4 +119,4 @@ class JointInverseDynamicsObjective(Objective):
                 value=TensorDict(value), timestep_indices=slice(1, None)
             )
 
-        return TensorDict(predictions).auto_batch_size_(2)
+        return TensorDict(predictions).auto_batch_size_(2)  # ty:ignore[invalid-argument-type]

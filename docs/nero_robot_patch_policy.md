@@ -269,6 +269,8 @@ Once rbyte releases the nero ingestion, the git source is replaced by
 export NERO_STATS_DIR=/path/stats
 just nero-check-env
 just nero-run rmind.scripts.nero_fit_stats --experiment yaak/nero_robot/tokenizer --override episode_stride=1 --out $NERO_STATS_DIR
+# nero_fit_stats refuses a split with NO hand rows (pre-tactile takes); add
+# --allow-no-hand to fall back to the physical hand prior deliberately
 just nero-run rmind.scripts.nero_robot_smoke --stage tokenizer --real --relative-mode none --steps 3000 --out OUT
 export NERO_TOKENIZER_CKPT=OUT/tokenizer_none_q16.ckpt
 just nero-run rmind.scripts.nero_robot_smoke --stage budget --real
@@ -283,6 +285,113 @@ NUTRON_CLI_ROOT=../nutron-cli-patch-policy just nero-run rmind.scripts.nero_expo
 Ablations: `yaak/nero_robot/relative_{hand,all}` (each with its own tokenizer),
 `hand_off`, `hand_current`, `hand_pos`, `hand_tip`; `synthetic` and
 `tokenizer_synthetic` run on the synthetic hand-dependent task.
+
+## Bimanual runs (2026-10-07 cube corpus, nero-bimanual-26)
+
+85 `bus_bimanual` takes, both arms valid in every row (`side_valid [T, T]`),
+read by rbyte's bimanual `NeroRobotReader` (pinned `feat/nero-bimanual`). Two
+patch runs, `bimanual_hand_off` (no hand token, 481 tokens/frame) and
+`bimanual_causal` (two side-tagged hand tokens, 483 tokens/frame; see "Per-side
+hand token" below), share everything else:
+
+- **Split**: `config/splits/nero_cube_bimanual_v1.json`, a byte copy of
+  nutron-cli's `runtime/training/splits/nero_cube_bimanual_v1.json` -- the SAME
+  take-level split the ACT runs use (76 train / 9 val, stratified by active arm:
+  left 41/4, right 25/3, both 10/2). `python -m rmind.scripts.nero_split_lib`
+  renders it into `robot_bimanual_split.lib.yml` (`--check`, `--sync-from NUTRON_CLI_ROOT`); never edit the lib by hand.
+- **Data**: a LOCAL copy of the corpus (`NERO_ROBOT_DIR`, default
+  `~/data/nero-arms/cube-bimanual/2026-10-07`) read through the preprocessed
+  **frame cache** (`NERO_FRAME_CACHE`, `rmind.data.nero_frame_cache`): every mp4
+  frame through `nero_image.preprocess` once, uint8 140x224, 7.7 GB for the
+  corpus, built in ~4 min with 8 workers, byte-identical to the decode path
+  (`--verify`, and `tests/test_nero_bimanual.py`). The cache refuses itself when
+  `nero_image.py`, the grid or the mp4 changes. Datamodule
+  `yaak/nero_robot_bimanual` decodes instead (same bytes, decode-bound).
+- **relative_mode all**, one stats dir and one tokenizer for both runs.
+- **lr_total_steps** = len(train_dataloader) x max_epochs, from
+  `python -m rmind.scripts.nero_steps <experiment>` (fails on a mismatch):
+  policy 1425 windows -> 356 batches of 4 x 10 = 3560; tokenizer 16948 frames ->
+  66 batches of 256 x 20 = 1320.
+- **Local logging**: `trainer/nero_local` (CSVLogger under `NERO_RUNS_DIR`,
+  checkpoints next to it), `wandb.mode: disabled`.
+- **Arm selection** on val (`rmind.callbacks.nero_arm_selection`): the cube task
+  moves one arm per take, chosen by the cube's mark, so val logs
+  `val/arm_select/<left|right|both>/...` and the pooled
+  `val/arm_select/{correct_side_rate,take_correct_rate,idle_exc_ratio}` -- a port
+  of nutron_act's metric (same keys and thresholds, executed horizon 50 steps)
+  so the ACT and patch numbers compare.
+
+```sh
+export NERO_ROBOT_DIR=~/data/nero-arms/cube-bimanual/2026-10-07   # rsync of the NAS copy
+export NERO_FRAME_CACHE=~/data/nero-arms/cube-bimanual/frame-cache-140x224/2026-10-07
+export NERO_STATS_DIR=~/data/nero-arms/cube-bimanual/rmind/stats_v1
+export NERO_RUNS_DIR=~/data/nero-arms/cube-bimanual/rmind/runs
+just generate-config
+python -m rmind.scripts.nero_frame_cache --root $NERO_ROBOT_DIR --out $NERO_FRAME_CACHE --workers 8 --verify 16
+python -m rmind.scripts.nero_fit_stats --experiment yaak/nero_robot/bimanual_tokenizer --out $NERO_STATS_DIR
+# fit_report.json: hand.source must be train:hand, hand.per_side rows for both sides
+rmind-train --config-path $PWD/config --config-name train.yaml experiment=yaak/nero_robot/bimanual_tokenizer
+export NERO_TOKENIZER_CKPT=$NERO_RUNS_DIR/bimanual_tokenizer/version_<n>/checkpoints/<last>.ckpt
+rmind-train --config-path $PWD/config --config-name train.yaml experiment=yaak/nero_robot/bimanual_hand_off
+```
+
+`nero_fit_stats` stacks `hand.left.*` and `hand.right.*` rows into the one pooled
+hand standardizer and fails when it finds no hand rows at all (`--allow-no-hand`
+to accept the physical prior). The bimanual experiments default `nero_stats_dir`
+to the path above when NERO_STATS_DIR is unset (never the single-arm
+`.nero_stats`). On the train
+split: 16948 rows per side, valid motor rows 16142 left / 15651 right,
+`hand.source train:hand`.
+
+### Per-side hand token (`hand_sides`)
+
+`bimanual_causal` sets `hand_sides: [left, right]` (and `num_hand_tokens: 2`,
+which the trunk's `tokens_per_frame` reads; the model refuses a mismatch on the
+first batch). The frame block is `[state][hand.left][hand.right][patches]`:
+
+- each token is `compose_hand_tokens` of that side's rbyte columns
+  `hand.{side}.*` (the per-side `hf.token_spec`, 14-d for current + pos_err,
+  `hand_valid` last), through ONE `hand_embedding` and ONE pooled
+  `HandTokenStandardizer`, plus a learned per-side tag added before the
+  embedding's output norm;
+- `no_hand` (side-tagged too) replaces a side's token where THAT side's
+  `hand_valid` is 0; sample/frame dropout is drawn per side; reliance metrics
+  add `no_hand_left` / `no_hand_right`; `quality/token_norm/*/hand_valid_frac/<side>`
+  is logged;
+- serving feeds `hand_token (1, 2, 14)`; the manifest carries `hand_sides`
+  and `token_layout [..., ["hand", 2], ...]` (contract v3); the bound `codes`
+  output stays `(1, Q)` of the first valid side, while the export's streaming
+  gate compares EVERY valid side's codes (`forward_all_codes`) on a both-valid
+  batch. Export refuses stats whose `side_valid` sides are not `hand_sides`.
+- every export's gate batch carries the manifest's (the stats') `side_valid`:
+  `bimanual_hand_off` (no hand token) is gated both-valid too, so the right
+  arm's codes and chunk are compared under valid input; a gate batch that
+  differs from the manifest, or stats other than `[T, F]` / `[T, T]`, refuse
+  the export before the gates.
+
+`hand_sides: []` (every single-arm experiment) is the old untagged token read
+from `hand.*`: no new parameters, same init and outputs, `hand_token (1, 14)`.
+A model and batch whose hand layouts disagree raise instead of training on
+`no_hand` everywhere; so does a sided model in training mode fed a batch with no
+hand columns at all (eval/serving still gets `no_hand`).
+
+The WP0 export test (`test_bimanual_export_passes_every_gate_and_nutron_cli`)
+needs a nutron-cli checkout with `hand_sides` support. It skips when
+`$NUTRON_CLI_ROOT` is unset and its default lacks WP0, and FAILS when
+`$NUTRON_CLI_ROOT` is set to a checkout without it:
+
+```sh
+NUTRON_CLI_ROOT=<nutron-cli checkout with WP0> uv run pytest -q tests/test_nero_hand_sides.py tests/test_nero_robot.py tests/test_nero_bimanual.py
+```
+
+```sh
+rmind-train --config-path $PWD/config --config-name train.yaml experiment=yaak/nero_robot/bimanual_causal
+```
+
+Smoke (2026-10-08, 30 train / 20 val batches, real windows): val
+`hand_valid_frac` 0.95 left / 0.93 right; export of that checkpoint: 483
+tokens/frame, streaming == windowed 5.9e-6 with both sides' codes equal, ORT ==
+eager 5.6e-6, nutron-cli (WP0) contract + bindings ok.
 
 ## Open items
 

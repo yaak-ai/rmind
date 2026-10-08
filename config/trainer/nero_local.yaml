@@ -1,0 +1,25 @@
+# trainer/default with LOCAL CSV logging (under ${nero_runs_dir}) PLUS wandb: the
+# bimanual nero runs. A full copy, not a merge over default: default's inline
+# WandbLogger keys (log_model) would survive a merge and break CSVLogger. CSV
+# stays FIRST, so checkpoints still land under the CSV logger's version dir and
+# the local metrics.csv keeps working; the WandbLogger attaches to the run that
+# scripts/train.py already opened from cfg.wandb. log_model false: every epoch's
+# checkpoint is kept locally (~430 MB each), uploading them all is not wanted.
+# Checkpoints land in <save_dir>/<name>/version_<n>/checkpoints.
+_target_: pytorch_lightning.Trainer
+_convert_: all
+accelerator: gpu
+devices: 1
+benchmark: true
+precision: "bf16-mixed"
+max_epochs: 10
+log_every_n_steps: 20 # the tokenizer has 66 steps per epoch
+gradient_clip_val: 1.0
+check_val_every_n_epoch: 1
+enable_model_summary: false
+logger:
+  - _target_: pytorch_lightning.loggers.CSVLogger
+    save_dir: ${oc.select:nero_runs_dir,runs}
+    name: ${oc.select:run_name,nero}
+  - _target_: pytorch_lightning.loggers.WandbLogger
+    log_model: false

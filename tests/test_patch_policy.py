@@ -19,7 +19,7 @@ from rmind.components.containers import ModuleDict
 from rmind.components.loss import FocalLoss
 from rmind.components.nn import Embedding
 from rmind.components.norm import Scaler, UniformBinner
-from rmind.components.objectives.base import ObjectivePredictionKey
+from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
 from rmind.components.objectives.joint_policy import JointPolicyObjective
 from rmind.components.transformer.causal_frame import (
     CausalFrameTransformer,
@@ -205,6 +205,7 @@ def test_features_and_metrics_shapes() -> None:
 
     features, chunk = model._features(batch)  # noqa: SLF001
     assert features.shape == (BATCH_SIZE, EPISODE_LENGTH, POLICY_DIM)
+    assert chunk is not None
     assert chunk.shape == (BATCH_SIZE, EPISODE_LENGTH, ACTION_HORIZON, ACTION_FIELDS)
 
     metrics = model._compute_metrics(batch)  # noqa: SLF001
@@ -308,6 +309,7 @@ def test_frozen_modules_receive_no_grad() -> None:
         "TensorDict",
         model._compute_metrics(_make_batch())["policy", "loss"],  # noqa: SLF001
     ).sum(reduce=True)
+    assert isinstance(loss, Tensor)
     loss.backward()
 
     assert all(p.grad is None for p in model.tokenizer.parameters())
@@ -362,6 +364,7 @@ def test_teacher_forcing_gradient_routing() -> None:
     batch = _make_batch()
 
     features, chunk = model._features(batch)  # noqa: SLF001
+    assert chunk is not None
     with torch.no_grad():
         target_codes = model.tokenizer(chunk)
         target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
@@ -402,7 +405,7 @@ def test_forward_and_predict_step() -> None:
         ObjectivePredictionKey.SCORE_L1,
         ObjectivePredictionKey.SCORE_SIGNED_ERROR,
     ):
-        prediction = predictions["policy", key]
+        prediction = cast("Prediction", predictions["policy", key])
         assert prediction.value["continuous", "gas_pedal"].shape == (
             BATCH_SIZE,
             ACTION_HORIZON,
@@ -412,7 +415,7 @@ def test_forward_and_predict_step() -> None:
             ACTION_HORIZON,
         )
 
-    score = predictions["policy", ObjectivePredictionKey.SCORE_L1]
+    score = cast("Prediction", predictions["policy", ObjectivePredictionKey.SCORE_L1])
     assert (score.value["continuous", "gas_pedal"] >= 0).all()
 
 
@@ -442,6 +445,9 @@ def test_readout_is_causally_valid() -> None:
 def test_fusion_norm_balances_sources() -> None:
     model = _make_model(fusion_norm=True)
     batch = _make_batch()
+    assert model.fusion_patch_norm is not None
+    assert model.fusion_patch_gain is not None
+    assert model.fusion_goal_gain is not None
 
     inputs = model.input_transform(batch)
     patches = model.image_encoder(inputs["image"]["cam_front_left"])
@@ -467,6 +473,7 @@ def test_fusion_norm_balances_sources() -> None:
         "TensorDict",
         model._compute_metrics(batch)["policy", "loss"],  # noqa: SLF001
     ).sum(reduce=True)
+    assert isinstance(loss, Tensor)
     loss.backward()
     assert model.fusion_goal_gain.grad is not None
 
@@ -497,7 +504,10 @@ def test_argmax_decode_metrics_are_the_deployment_path() -> None:
     model.sample_codes = True  # make the sampled path genuinely differ from argmax
     batch = _make_batch()
 
-    metrics = model._compute_metrics(batch)["policy", "metric"]  # noqa: SLF001
+    metrics = cast(
+        "TensorDict",
+        model._compute_metrics(batch)["policy", "metric"],  # noqa: SLF001
+    )
 
     expected_keys = {
         "offset_argmax_recon",
@@ -505,15 +515,16 @@ def test_argmax_decode_metrics_are_the_deployment_path() -> None:
         "code_acc_joint_last",
         *(f"code_acc_{q}_last" for q in range(NUM_QUANTIZERS)),
     }
-    assert expected_keys <= set(cast("dict[str, Tensor]", metrics).keys()), (
-        f"missing: {expected_keys - set(cast('dict[str, Tensor]', metrics).keys())}"
+    values = cast("dict[str, Tensor]", metrics)
+    assert expected_keys <= set(values.keys()), (
+        f"missing: {expected_keys - set(values.keys())}"
     )
     for key in expected_keys:
-        assert metrics[key].isfinite()
+        assert values[key].isfinite()
 
     # accuracies are proportions, and joint correctness cannot exceed any marginal
-    marginals = [float(metrics[f"code_acc_{q}_last"]) for q in range(NUM_QUANTIZERS)]
-    joint = float(metrics["code_acc_joint_last"])
+    marginals = [float(values[f"code_acc_{q}_last"]) for q in range(NUM_QUANTIZERS)]
+    joint = float(values["code_acc_joint_last"])
     for acc in [*marginals, joint]:
         assert 0.0 <= acc <= 1.0
     assert joint <= min(marginals) + 1e-6
@@ -527,6 +538,7 @@ def _assert_argmax_decode_matches(
     """Recompute the argmax decode independently -- it must match exactly."""
     with torch.no_grad():
         features, chunk = model._features(batch)  # noqa: SLF001
+        assert chunk is not None
         target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
         code_logits, offsets = model._heads(features)  # noqa: SLF001
         codes = code_logits.argmax(dim=-1)
@@ -605,6 +617,7 @@ def test_teacher_forcing_routes_the_offset_loss_through_ground_truth_codes() -> 
 
     with torch.no_grad():
         features, chunk = model._features(batch)  # noqa: SLF001
+        assert chunk is not None
         target = model.tokenizer._normalize(chunk.flatten(-2, -1))  # noqa: SLF001
         _, offsets = model._heads(features)  # noqa: SLF001
         target_codes = model.tokenizer(chunk)
@@ -622,6 +635,7 @@ def test_teacher_forcing_routes_the_offset_loss_through_ground_truth_codes() -> 
     free.load_state_dict(model.state_dict())
     free.sample_codes = True
     free_loss = free._compute_metrics(batch)["policy", "loss", "offset"]  # noqa: SLF001
+    assert isinstance(free_loss, Tensor)
     assert not torch.allclose(free_loss, expected)
 
 
@@ -705,6 +719,7 @@ def test_readout_and_register_tokens_receive_gradient() -> None:
         "TensorDict",
         model._compute_metrics(_make_batch())["policy", "loss"],  # noqa: SLF001
     ).sum(reduce=True)
+    assert isinstance(loss, Tensor)
     loss.backward()
     assert model.readout_token is not None
     assert model.register_tokens is not None

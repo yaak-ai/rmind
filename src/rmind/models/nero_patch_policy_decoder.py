@@ -15,6 +15,7 @@ I/O (bound BY NAME; shapes are nutron-cli `policy_contract.patch_io_shapes`):
 | `state`      | `(1, 26)` float32                       | RAW side-major state (measured q + hand_prev/1000); the state standardizer is in-graph |
 | `side_valid` | `(1, 2)` float32                        | 1 = valid side |
 | `hand_token` | `(1, dim)` float32                      | `hf.build_token` vector, `hand_valid` LAST (only with a hand token) |
+|              | `(1, S, dim)` with `hand_sides`         | one row per side in `hand_sides` order, each row's own `hand_valid` LAST (bimanual) |
 | `past_k/v`   | `(L, 1, heads, cache_frames*T, head_dim)` | read-only ring, oldest first |
 | `cache_bias` | `(1, 1, 1, cache_frames*T)`             | 0 = filled, `-1e4` = empty |
 | `rope_cos/sin` | `(1, head_dim)` float32               | host-computed (float64) from the int64 frames-since-reset counter |
@@ -23,7 +24,7 @@ I/O (bound BY NAME; shapes are nutron-cli `policy_contract.patch_io_shapes`):
 |-----------|--------------------------|-------|
 | `actions` | `(1, 100, 26)` float32   | in the ACTION STANDARDIZER's (relative-mode) space; the host unstandardizes and adds the anchor (`relative_mask`, anchor = the state of THIS observation) |
 | `new_k/v` | `(L, 1, heads, T, head_dim)` | the host shifts them into its ring |
-| `codes`   | `(1, num_quantizers)` int64 | the first VALID side's argmax codes (diagnostic) |
+| `codes`   | `(1, num_quantizers)` int64 | the first VALID side's argmax codes (diagnostic), also with two sides; every side's codes come from `forward_all_codes` (eager only, the export's streaming gate) |
 
 Goal: none (`goal_mode` no_goal/none) -- there is no goal input. `camera_cond` is
 a CONSTANT of the graph (the contract carries the same array verbatim).
@@ -31,7 +32,7 @@ a CONSTANT of the graph (the contract carries the same array verbatim).
 
 from __future__ import annotations
 
-from typing import Any, override
+from typing import TYPE_CHECKING, Any, override
 
 import torch
 from torch import Tensor, nn
@@ -40,13 +41,18 @@ from rmind.components.transformer.causal_frame import (
     CausalFrameTransformer,
     frame_rope_cos_sin,
 )
-from rmind.models.nero_patch_policy import NeroPatchPolicy
+from rmind.data.nero_robot import hand_token_dim
+
+if TYPE_CHECKING:
+    from rmind.models.nero_patch_policy import NeroPatchPolicy
 
 __all__ = ["NeroPatchPolicyDecoderStep"]
 
 
 class NeroPatchPolicyDecoderStep(nn.Module):
     """Export wrapper: one 10 Hz frame through a trained robot-native `NeroPatchPolicy`."""
+
+    camera_cond: Tensor  # buffer, (1, n_cameras, 13)
 
     def __init__(
         self,
@@ -72,9 +78,14 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         self.trunk: CausalFrameTransformer = policy.encoder
         self.readout_only_final_block = readout_only_final_block
         n_cams = len(policy.cameras)
-        cond = torch.zeros(1, n_cams, 13) if camera_cond is None else camera_cond.reshape(1, n_cams, 13)
+        cond = (
+            torch.zeros(1, n_cams, 13)
+            if camera_cond is None
+            else camera_cond.reshape(1, n_cams, 13)
+        )
         self.register_buffer("camera_cond", cond.float())
         self.use_hand = policy.use_hand
+        self.hand_sides = tuple(policy.hand_sides)
 
     # ---------------------------------------------------------------- host side
 
@@ -123,12 +134,10 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         composed exactly as training does. For the streaming gate and replay.
         """
         policy = self.policy
-        images = torch.stack(
-            [
-                batch[policy.image_key.format(camera=c)][0, frame].float() / 255.0
-                for c in policy.cameras
-            ]
-        ).unsqueeze(0)
+        images = torch.stack([
+            batch[policy.image_key.format(camera=c)][0, frame].float() / 255.0
+            for c in policy.cameras
+        ]).unsqueeze(0)
         out = {
             "images": images,
             "state": batch[policy.state[0]][0, frame].reshape(1, -1).float(),
@@ -136,15 +145,20 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         }
         if self.use_hand:
             vec = policy.hand_vector(batch)
+            n = len(self.hand_sides)
             if vec is None:
-                vec = torch.zeros(1, 1, 1)
-            out["hand_token"] = vec[0, frame].reshape(1, -1).float()
+                # no hand stream: every row refused (hand_valid 0)
+                dim = hand_token_dim(policy.hand_groups)
+                shape = (1, batch[policy.state[0]].shape[1], *([n] if n else []), dim)
+                vec = torch.zeros(shape, device=batch[policy.state[0]].device)
+            token = vec[0, frame].float()
+            out["hand_token"] = token.reshape(1, n, -1) if n else token.reshape(1, -1)
         return out
 
     # -------------------------------------------------------------------- graph
 
     @override
-    def forward(  # noqa: PLR0913, PLR0917
+    def forward(
         self,
         images: Tensor,
         state: Tensor,
@@ -156,6 +170,45 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         rope_sin: Tensor,
         hand_token: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        actions, new_k, new_v, codes = self.forward_all_codes(
+            images,
+            state,
+            side_valid,
+            past_k,
+            past_v,
+            cache_bias,
+            rope_cos,
+            rope_sin,
+            hand_token,
+        )
+        # the bound `codes` output: the first VALID side's (1, Q)
+        first_valid = (side_valid > 0.5).to(torch.int64).argmax(dim=-1)  # noqa: PLR2004  (1,)
+        side_codes = codes.gather(
+            1, first_valid.reshape(1, 1, 1).expand(1, 1, codes.shape[-1])
+        ).squeeze(1)
+        return actions, new_k, new_v, side_codes
+
+    def forward_all_codes(  # noqa: PLR0913, PLR0917
+        self,
+        images: Tensor,
+        state: Tensor,
+        side_valid: Tensor,
+        past_k: Tensor,
+        past_v: Tensor,
+        cache_bias: Tensor,
+        rope_cos: Tensor,
+        rope_sin: Tensor,
+        hand_token: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """`forward`, but with EVERY side's argmax codes `(1, S, Q)`.
+
+        Eager only (the export's torch-side streaming gate compares each
+        side's codes against the windowed forward); the exported graph binds
+        `forward`'s first-valid `(1, Q)`.
+
+        Raises:
+            ValueError: when the policy has a hand token and `hand_token` is None.
+        """
         policy = self.policy
         n_sides = side_valid.shape[-1]
         valid = side_valid > 0.5  # noqa: PLR2004
@@ -170,7 +223,10 @@ class NeroPatchPolicyDecoderStep(nn.Module):
             if hand_token is None:
                 msg = "this policy has a hand token; `hand_token` is required"
                 raise ValueError(msg)
-            batch[policy.hand_token_key] = hand_token.reshape(1, 1, -1)
+            n = len(self.hand_sides)
+            batch[policy.hand_token_key] = (
+                hand_token.reshape(1, 1, n, -1) if n else hand_token.reshape(1, 1, -1)
+            )
 
         tokens = policy._frame_tokens(batch)  # noqa: SLF001  (1, 1, T, d)
         out, new_k, new_v = self.trunk.step(
@@ -188,8 +244,4 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         chunk, codes = policy._predict_chunk_and_codes(features)  # noqa: SLF001
         # (1, S, H, A) -> (1, H, S*A): the contract's side-major flat layout
         actions = chunk.permute(0, 2, 1, 3).reshape(1, chunk.shape[2], -1)
-        first_valid = valid.to(torch.int64).argmax(dim=-1)  # (1,)
-        side_codes = codes.gather(
-            1, first_valid.reshape(1, 1, 1).expand(1, 1, codes.shape[-1])
-        ).squeeze(1)
-        return actions, new_k, new_v, side_codes
+        return actions, new_k, new_v, codes

@@ -311,6 +311,7 @@ class OnnxOutputUnpacker(Module):
 # out (timestep, axis) with the axis fastest-varying.
 # --------------------------------------------------------------------------
 
+
 def _dct_ii_basis(num_steps: int, num_coefficients: int) -> Tensor:
     """First `num_coefficients` rows of the orthonormal DCT-II matrix, `(k, T)`.
 
@@ -599,6 +600,9 @@ def linear_keyframe_matrix(num_steps: int, stride: int) -> Tensor:
     Keyframe `j` sits at step `j * stride`; `(num_steps - 1) % stride == 0` so the
     last step is a keyframe and nothing is extrapolated. Rows at keyframes are
     one-hot, so interpolating the keyframes of a signal returns them exactly.
+
+    Raises:
+        ValueError: if `num_steps - 1` is not a multiple of `stride`.
     """
     if stride < 1 or (num_steps - 1) % stride:
         msg = f"(num_steps - 1) = {num_steps - 1} must be a multiple of stride {stride}"
@@ -625,6 +629,8 @@ class KeyframeInterpolation(Module):
     and served -- at 30 Hz in one graph. Its error floor on ground truth is the
     tokenizer's best case and is reported separately (`interp_floor_ev`).
     """
+
+    weight: Tensor  # buffer, (num_steps, num_keyframes)
 
     @validate_call
     def __init__(self, *, num_steps: int, num_axes: int, stride: int) -> None:

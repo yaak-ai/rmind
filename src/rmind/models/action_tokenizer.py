@@ -1,11 +1,11 @@
-from typing import Any, ClassVar, Literal, override
+from typing import Any, ClassVar, Literal, cast, override
 
 import pytorch_lightning as pl
 import torch
 from pydantic import BaseModel, ConfigDict, InstanceOf, validate_call
 from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from torch import Tensor
-from torch.nn import Module
+from torch.nn import Module, Sequential
 from torch.nn import functional as F
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -113,7 +113,8 @@ class ActionTokenizer(pl.LightningModule, LoadableFromArtifact):
             self.targets,
             is_leaf=lambda x: isinstance(x, tuple),
         )
-        normalized = self.input_transform[-1](structured)
+        # the configured input_transform is an nn.Sequential, the normalizer last
+        normalized = cast("Sequential", self.input_transform)[-1](structured)
         return torch.stack(tree_leaves(normalized), dim=-1).reshape(*batch, action_dim)
 
     def _gather_actions(self, inputs: Any) -> Tensor:

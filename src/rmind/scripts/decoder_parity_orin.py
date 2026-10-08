@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -120,9 +121,9 @@ class TRTRunner:
         import torch
 
         self.torch = torch
-        logger = trt.Logger(trt.Logger.ERROR)
+        logger = trt.Logger(trt.Logger.ERROR)  # ty:ignore[unresolved-attribute]
         with open(path, "rb") as f:
-            self.engine = trt.Runtime(logger).deserialize_cuda_engine(f.read())
+            self.engine = trt.Runtime(logger).deserialize_cuda_engine(f.read())  # ty:ignore[unresolved-attribute]
         if self.engine is None:
             raise SystemExit(f"failed to deserialize {path} (TRT/arch mismatch?)")
         self.ctx = self.engine.create_execution_context()
@@ -131,7 +132,7 @@ class TRTRunner:
             name = self.engine.get_tensor_name(i)
             self.io.append((
                 name,
-                self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT,
+                self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT,  # ty:ignore[unresolved-attribute]
                 tuple(self.engine.get_tensor_shape(name)),
                 trt.nptype(self.engine.get_tensor_dtype(name)),
             ))
@@ -287,7 +288,8 @@ def main() -> int:
                 "inputs_rope_cos": cos,
                 "inputs_rope_sin": sin,
             }
-            reference[trial] = sess.run(["policy.joint_actions"], feed)[0][0]
+            out = cast("np.ndarray", sess.run(["policy.joint_actions"], feed)[0])
+            reference[trial] = out[0]
             for label, runner in runners.items():
                 got[label][trial] = runner({k: v for k, v in feed.items()})[
                     "policy.joint_actions"

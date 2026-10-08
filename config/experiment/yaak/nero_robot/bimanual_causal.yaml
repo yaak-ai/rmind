@@ -1,0 +1,56 @@
+# @package _global_
+#
+# BIMANUAL robot-native causal patch policy, WITH the hand-sensor tokens
+# (patch_bim_hand_on). The 2026-10-07 cube corpus: 85 bus_bimanual takes, both
+# arms valid in every row (state (2, 13), side_valid [True, True]).
+#
+# The per-side hand token (WP5): TWO side-tagged 14-d tokens (hand_sides
+# [left, right], read from rbyte's `hand.{left,right}.*`) through ONE pooled hand
+# embedding + hand standardizer (nero_fit_stats pools both sides' rows), each
+# with its own learned side tag, `no_hand` substitution (its own hand_valid) and
+# dropout: 1 state + 2 hand + 3 x 160 = 483 tokens/frame. Serving feeds
+# `hand_token (1, 2, 14)` and the manifest carries `hand_sides` (contract v3).
+#
+# Everything else is shared with bimanual_hand_off (and bimanual_tokenizer):
+# * split: config/splits/nero_cube_bimanual_v1.json -- THE take-level split the
+#   ACT runs use too (76 train / 9 val, stratified by active arm), rendered into
+#   config/_templates/dataset/nero/robot_bimanual_split.lib.yml by
+#   `python -m rmind.scripts.nero_split_lib`;
+# * data: the LOCAL corpus copy (NERO_ROBOT_DIR) read through the preprocessed
+#   frame cache (NERO_FRAME_CACHE; datamodule yaak/nero_robot_bimanual decodes
+#   the mp4s instead, same bytes);
+# * relative_mode all; NERO_STATS_DIR (nero_fit_stats on the train split of
+#   bimanual_tokenizer) and NERO_TOKENIZER_CKPT (bimanual_tokenizer, same mode);
+# * lr_total_steps = len(train_dataloader) x max_epochs, from
+#   `python -m rmind.scripts.nero_steps yaak/nero_robot/bimanual_causal`
+#   (tests/test_nero_bimanual.py asserts it while the corpus is reachable);
+# * logging: CSV under NERO_RUNS_DIR (checkpoints, metrics.csv) plus wandb (yaak/rmind);
+# * val logs the ARM-SELECTION metric per active-arm class (val/arm_select/...).
+
+defaults:
+  - /experiment/yaak/nero_robot/causal
+  - override /datamodule: yaak/nero_robot_bimanual_cached
+  - override /trainer: nero_local
+  - override /trainer/callbacks: nero_robot_bimanual
+  - _self_
+
+nero_robot_dir: ${oc.env:NERO_ROBOT_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/2026-10-07}
+nero_frame_cache: ${oc.env:NERO_FRAME_CACHE,${oc.env:HOME}/data/nero-arms/cube-bimanual/frame-cache-140x224/2026-10-07}
+nero_runs_dir: ${oc.env:NERO_RUNS_DIR,runs}
+# the BIMANUAL stats (side_valid [True, True]); never the single-arm .nero_stats
+# default inherited from causal/tokenizer, whose right side is mean 0 / std 1
+nero_stats_dir: ${oc.env:NERO_STATS_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/rmind/stats_v1}
+run_name: bimanual_causal
+
+relative_mode: all
+hand_sides: [left, right]
+num_hand_tokens: 2
+
+# len(train_dataloader) x max_epochs (nero_steps): 1425 train windows,
+# 356 batches of 4 (drop_last) x 10 epochs
+lr_total_steps: 3560
+trainer:
+  max_epochs: 10
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual]

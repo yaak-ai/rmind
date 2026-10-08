@@ -1,0 +1,13 @@
+# nero_robot_bimanual without the image streams (the tokenizer and the stats fit
+# read no pixels)
+---
+defaults:
+  - /datamodule/yaak/nero_robot_bimanual@_here_
+  - _self_
+
+train:
+  dataset:
+    streams: null
+val:
+  dataset:
+    streams: null

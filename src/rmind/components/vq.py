@@ -72,9 +72,8 @@ class ResidualVQ(Module):
         return self.vq.get_output_from_indices(codes)
 
     def codebook(self, level: int) -> Tensor:
-        return self.vq.layers[level]._codebook.embed.reshape(  # noqa: SLF001
-            -1, self.dim
-        )
+        codebook = cast("Module", self.vq.layers[level]._codebook)  # noqa: SLF001
+        return cast("Tensor", codebook.embed).reshape(-1, self.dim)
 
     @torch.no_grad()
     def perplexity(self, codes: Tensor) -> Tensor:

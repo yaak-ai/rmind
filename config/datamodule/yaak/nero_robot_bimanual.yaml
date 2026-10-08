@@ -1,0 +1,35 @@
+# nero_robot on the BIMANUAL split (config/_templates/dataset/nero/robot_bimanual_*:
+# the take-level split nutron-cli's make_split wrote, shared with the ACT runs),
+# frames DECODED from the mp4s (the reference path). Same loaders as nero_robot
+# (a copy: Hydra cannot override a config include), except that the val collate
+# also carries each window's take id (`input_id`) for the arm-selection metric.
+---
+defaults:
+  - /dataset/nero/robot_bimanual_train@train.dataset
+  - /dataset/nero/robot_bimanual_val@val.dataset
+  - _self_
+
+_target_: rmind.datamodules.GenericDataModule
+train:
+  _target_: rmind.components.dataloader.DistributedTorchDataNodeDataLoader
+  batch_size: ${batch_size}
+  shuffle: true
+  drop_last: true
+  collate_fn:
+    _target_: rmind.data.nero_robot.flat_rbyte_batch
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread
+
+val:
+  _target_: rmind.components.dataloader.DistributedTorchDataNodeDataLoader
+  batch_size: ${batch_size}
+  shuffle: false
+  collate_fn:
+    # + each sample's take id (`input_id`) for the arm-selection metric
+    _target_: rmind.data.nero_bimanual.flat_rbyte_batch_with_ids
+    _partial_: true
+  pin_memory: true
+  num_workers: 2
+  method: thread

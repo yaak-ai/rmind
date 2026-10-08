@@ -24,7 +24,7 @@ falsifiable rather than vacuous.
 """
 
 from collections.abc import Callable, Iterator
-from typing import override
+from typing import Any, override
 
 import pytest
 import torch
@@ -36,6 +36,7 @@ from rmind.components.transformer.causal_frame import (
     MASK_BIAS,
     AttentionImpl,
     CausalFrameTransformer,
+    CausalFrameTransformerBlock,
     apply_rope,
     frame_block_causal_block_mask,
     frame_block_causal_mask,
@@ -72,7 +73,7 @@ MAX_TILE_WASTE = 1.3
 MAX_DENSE_FRACTION = 0.8
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True)  # noqa: RUF076
 def _restore_tf32() -> Iterator[None]:
     """The flex gates switch tf32 off process-wide; put it back after every test.
 
@@ -87,7 +88,9 @@ def _restore_tf32() -> Iterator[None]:
 
 
 def _trunk(
-    *, window: int | None = None, cls: type[CausalFrameTransformer] | None = None
+    *,
+    window: int | None = None,
+    cls: Callable[..., CausalFrameTransformer] | None = None,
 ) -> CausalFrameTransformer:
     torch.manual_seed(0)
     trunk = (cls or CausalFrameTransformer)(
@@ -118,7 +121,9 @@ def _readouts(flat_out: Tensor, num_frames: int) -> Tensor:
     return flat_out.reshape(b, num_frames, s // num_frames, d)[:, :, -1]
 
 
-class WindowAbsoluteTrunk(CausalFrameTransformer):
+# `CausalFrameTransformer` is `@final` for library users; this negative control
+# deliberately overrides its positional encoding and nothing else.
+class WindowAbsoluteTrunk(CausalFrameTransformer):  # ty: ignore[subclass-of-final-class]
     """Negative control: the CURRENT scheme -- a learned embedding over the
     flattened window, indexed window-absolutely, and no RoPE.
 
@@ -129,8 +134,8 @@ class WindowAbsoluteTrunk(CausalFrameTransformer):
 
     MAX_FRAMES = 16
 
-    def __init__(self, **kwargs: object) -> None:
-        super().__init__(**kwargs)  # ty:ignore[missing-argument]
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self.absolute_position_embedding = nn.Embedding(
             self.MAX_FRAMES * self.tokens_per_frame, self.dim_model
         )
@@ -185,6 +190,7 @@ class WindowAbsoluteTrunk(CausalFrameTransformer):
         new_k: list[Tensor] = []
         new_v: list[Tensor] = []
         for i, layer in enumerate(self.layers):
+            assert isinstance(layer, CausalFrameTransformerBlock)
             x, k, v = layer.step(x, cos, sin, past_k[i], past_v[i], cache_bias)
             new_k.append(k)
             new_v.append(v)
@@ -445,7 +451,11 @@ def test_cold_cache_ignores_unfilled_slots() -> None:
         batch_size=2, cache_frames=5, dtype=tokens.dtype
     )
     cos, sin = frame_rope_cos_sin(torch.tensor(0), head_dim=trunk.head_dim)
-    kwargs = {"cos": cos.double(), "sin": sin.double(), "cache_bias": bias}
+    kwargs: dict[str, Any] = {
+        "cos": cos.double(),
+        "sin": sin.double(),
+        "cache_bias": bias,
+    }
     clean, *_ = trunk.step(tokens[:, 0], past_k=past_k, past_v=past_v, **kwargs)
     g = torch.Generator().manual_seed(7)
     garbage_k = torch.randn(past_k.shape, generator=g, dtype=torch.float64) * 100
@@ -469,7 +479,7 @@ def test_readout_only_final_block_matches_full_final_block() -> None:
     past_v = torch.randn(past_v.shape, generator=g, dtype=torch.float64)
     bias = torch.zeros_like(bias)
     cos, sin = frame_rope_cos_sin(torch.tensor(5), head_dim=trunk.head_dim)
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "past_k": past_k,
         "past_v": past_v,
         "cos": cos.double(),
@@ -492,9 +502,9 @@ def test_multihead_attention_state_dict_is_loadable() -> None:
     """
     ref = nn.MultiheadAttention(embed_dim=DIM, num_heads=HEADS, batch_first=True)
     trunk = _trunk(window=6)
-    missing, unexpected = trunk.layers[0].attn.load_state_dict(
-        ref.state_dict(), strict=False
-    )
+    block = trunk.layers[0]
+    assert isinstance(block, CausalFrameTransformerBlock)
+    missing, unexpected = block.attn.load_state_dict(ref.state_dict(), strict=False)
     assert not missing
     assert not unexpected
 

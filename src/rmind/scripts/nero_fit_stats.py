@@ -4,7 +4,8 @@
     python -m rmind.scripts.nero_fit_stats --synthetic --out STATS   # smoke
 
 Iterates `datamodule.train` of the experiment (only the TRAIN split: the split
-is by source episode in `config/_templates/dataset/nero/robot_split.lib.yml`)
+is by source episode in `config/_templates/dataset/nero/robot_split.lib.yml`, or
+`robot_bimanual_split.lib.yml` for the `bimanual_*` experiments)
 and writes, all `nutron_standardizer` v1 JSON unless noted:
 
 * `state_standardizer.json`: per-axis over every frame's raw state (measured q +
@@ -28,6 +29,15 @@ and writes, all `nutron_standardizer` v1 JSON unless noted:
   which. hand_age / hand_valid are never scaled;
 * `fit_report.json`: counts and the train episode ids seen.
 
+BIMANUAL takes (rbyte `nero-bimanual-26`) carry the hand blocks per side as
+`hand.{left,right}.*`. Both sides' rows are stacked into ONE pooled block (the
+hand standardizer is shared by the two side-tagged hand tokens; its API is
+unchanged), and the report's `hand.per_side` gives each side's rows and valid
+motor rows. A single-arm take's unsided `hand.*` blocks are read as before. A
+fit that finds NO hand rows at all fails (`--allow-no-hand` to accept the
+physical prior anyway): it means the loader's hand columns were not the ones
+read here, and a silently prior-only standardizer would be shipped as fitted.
+
 The degenerate-axis rule (train std < 1e-6 -> std 1, mean = the constant; an
 invalid side -> mean 0, std 1) is `AxisStandardizer.fit`'s.
 """
@@ -37,13 +47,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
 from rmind.data.nero_robot import (
     HAND_GROUPS,
     RELATIVE_MODES,
+    SIDES,
     AxisStandardizer,
     EventReference,
     HandTokenStandardizer,
@@ -78,13 +89,30 @@ def _get(batch: Any, key: str) -> Any:
         return None
 
 
+def hand_prefixes(batch: Any) -> list[str]:
+    """The hand block prefixes a batch carries: per side if bimanual, else `hand.`."""
+    sided: list[str] = [
+        f"hand.{side}."
+        for side in SIDES
+        if _get(batch, f"hand.{side}.motor_ok") is not None
+    ]
+    if sided:
+        return sided
+    return ["hand."] if _get(batch, "hand.motor_ok") is not None else []
+
+
 def fit(  # noqa: C901, PLR0914, PLR0915
-    batches: Any, *, max_batches: int | None = None, hand_min_rows: int = 1000
+    batches: Any,
+    *,
+    max_batches: int | None = None,
+    hand_min_rows: int = 1000,
+    require_hand: bool = True,
 ) -> dict[str, Any]:
     states, valids_state = [], []
     hand: dict[str, list[torch.Tensor]] = {
         g: [] for g in (*HAND_GROUPS, "motor_ok", "tip_ok")
     }
+    hand_seen: dict[str, dict[str, int]] = {}
     rel: dict[str, list[torch.Tensor]] = {m: [] for m in RELATIVE_MODES}
     valids_chunk = []
     seen = 0
@@ -103,12 +131,18 @@ def fit(  # noqa: C901, PLR0914, PLR0915
             r = to_relative(chunk, state, mode)[real]  # (m, S, A)
             rel[mode].append(r)
         valids_chunk.append(valid[:, None, None].expand(b, t, h, s)[real])
-        if _get(batch, "hand.motor_ok") is not None:
+        # bimanual: left rows then right rows, stacked into one pooled block
+        for prefix in hand_prefixes(batch):
             for key, rows in hand.items():
-                value = _get(batch, f"hand.{key}")
+                value = _get(batch, f"{prefix}{key}")
                 if value is not None:
                     width = value.shape[-1] if key in HAND_GROUPS else 1
                     rows.append(value.reshape(-1, width))
+            ok = _get(batch, f"{prefix}motor_ok").reshape(-1).bool()
+            side = prefix.removeprefix("hand.").rstrip(".") or "unsided"
+            seen_side = hand_seen.setdefault(side, {"rows": 0, "motor_ok_rows": 0})
+            seen_side["rows"] += int(ok.numel())
+            seen_side["motor_ok_rows"] += int(ok.sum())
         side_valid_any = (
             valid.any(0) if side_valid_any is None else side_valid_any | valid.any(0)
         )
@@ -140,6 +174,14 @@ def fit(  # noqa: C901, PLR0914, PLR0915
     # rows SEEN (refused or not): 0 here means the loader carried no hand
     # stream at all, not "every reading refused"
     hand_report["rows_seen"] = int(motor_ok.numel())
+    hand_report["per_side"] = hand_seen
+    if require_hand and hand_report["rows_seen"] == 0:
+        msg = (
+            "no hand rows in the train split (no hand.motor_ok / "
+            "hand.{left,right}.motor_ok columns): the hand standardizer would be the "
+            "physical prior. Pass --allow-no-hand if that is intended."
+        )
+        raise ValueError(msg)
     absolute = torch.cat(rel["none"])  # (m, S, A) absolute chunk steps
     flat = absolute.reshape(absolute.shape[0], -1)  # side-major 26
     flat_valid = chunk_valid[:, :, None].expand_as(absolute).reshape(flat.shape)
@@ -154,6 +196,7 @@ def fit(  # noqa: C901, PLR0914, PLR0915
         stats["min"].append(float(col.min()))
         stats["max"].append(float(col.max()))
         stats["q50"].append(float(col.median()))
+    side_valid_any = cast("torch.Tensor", side_valid_any)  # >= 1 batch, see above
     out["absolute_action_stats"] = {
         "min": stats["min"],
         "max": stats["max"],
@@ -201,6 +244,11 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument(
+        "--allow-no-hand",
+        action="store_true",
+        help="accept a train split without hand rows (prior-only hand standardizer)",
+    )
+    parser.add_argument(
         "--hand-min-rows",
         type=int,
         default=1000,
@@ -208,7 +256,9 @@ def main() -> None:
     )
     args = parser.parse_args()
     if args.synthetic:
-        from rmind.datamodules.nero_robot_random import NeroRobotRandomDataLoader
+        from rmind.datamodules.nero_robot_random import (  # noqa: PLC0415
+            NeroRobotRandomDataLoader,
+        )
 
         batches = NeroRobotRandomDataLoader(
             num_batches=args.max_batches or 32, batch_size=8, num_frames=8, images=False
@@ -224,7 +274,12 @@ def main() -> None:
             )
         batches = batches_from_experiment(args.experiment, args.override)
     digests = write(
-        fit(batches, max_batches=args.max_batches, hand_min_rows=args.hand_min_rows),
+        fit(
+            batches,
+            max_batches=args.max_batches,
+            hand_min_rows=args.hand_min_rows,
+            require_hand=not args.allow_no_hand,
+        ),
         args.out,
     )
     print(json.dumps(digests, indent=1))  # noqa: T201
