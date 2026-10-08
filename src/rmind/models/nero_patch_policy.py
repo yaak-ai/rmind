@@ -956,8 +956,10 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         Raises:
             ValueError: when the batch's hand columns are the other layout
                 (per-side columns for an untagged model, or vice versa), or a
-                sided batch lacks one of `hand_sides` -- silently substituting
-                `no_hand` would train a hand_on run as a no-hand model.
+                sided batch lacks one of `hand_sides`, or a sided model in
+                training mode gets a batch with no hand columns at all --
+                silently substituting `no_hand` would train a hand_on run as a
+                no-hand model.
         """
         vec = self._lookup(batch, (self.hand_token_key,))
         if vec is not None:
@@ -986,6 +988,14 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         if self.hand_sides:
             missing = [s for s in self.hand_sides if s not in sided]
             if not sided and not unsided:
+                if self.training:
+                    # a datamodule that lost the hand columns would silently
+                    # train this sided hand_on model as a no-hand model
+                    msg = (
+                        f"hand_sides {list(self.hand_sides)} but the training "
+                        f"batch has no {self.hand_prefix}* columns at all"
+                    )
+                    raise ValueError(msg)
                 return None
             if missing:
                 msg = (
