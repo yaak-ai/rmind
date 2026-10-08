@@ -269,6 +269,8 @@ Once rbyte releases the nero ingestion, the git source is replaced by
 export NERO_STATS_DIR=/path/stats
 just nero-check-env
 just nero-run rmind.scripts.nero_fit_stats --experiment yaak/nero_robot/tokenizer --override episode_stride=1 --out $NERO_STATS_DIR
+# nero_fit_stats refuses a split with NO hand rows (pre-tactile takes); add
+# --allow-no-hand to fall back to the physical hand prior deliberately
 just nero-run rmind.scripts.nero_robot_smoke --stage tokenizer --real --relative-mode none --steps 3000 --out OUT
 export NERO_TOKENIZER_CKPT=OUT/tokenizer_none_q16.ckpt
 just nero-run rmind.scripts.nero_robot_smoke --stage budget --real
@@ -334,7 +336,10 @@ rmind-train --config-path $PWD/config --config-name train.yaml experiment=yaak/n
 ```
 
 `nero_fit_stats` stacks `hand.left.*` and `hand.right.*` rows into the one pooled
-hand standardizer and fails when it finds no hand rows at all. On the train
+hand standardizer and fails when it finds no hand rows at all (`--allow-no-hand`
+to accept the physical prior). The bimanual experiments default `nero_stats_dir`
+to the path above when NERO_STATS_DIR is unset (never the single-arm
+`.nero_stats`). On the train
 split: 16948 rows per side, valid motor rows 16142 left / 15651 right,
 `hand.source train:hand`.
 

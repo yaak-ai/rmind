@@ -173,6 +173,21 @@ def test_bimanual_experiment_composes(experiment: str) -> None:
 
 
 @pytest.mark.usefixtures("generated_config")
+@pytest.mark.parametrize("experiment", EXPERIMENTS)
+def test_bimanual_stats_dir_defaults_to_the_bimanual_fit(
+    experiment: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without NERO_STATS_DIR a bimanual run must not pick up the single-arm
+    `.nero_stats` (side_valid [T, F]: right side mean 0 / std 1, no error)."""
+    monkeypatch.delenv("NERO_STATS_DIR", raising=False)
+    cfg = _compose(experiment)
+    assert cfg.nero_stats_dir == str(
+        Path.home() / "data/nero-arms/cube-bimanual/rmind/stats_v1"
+    )
+    assert _compose("causal").nero_stats_dir == ".nero_stats"
+
+
+@pytest.mark.usefixtures("generated_config")
 def test_single_arm_datasets_unchanged() -> None:
     cfg = _compose("causal")
     source = next(
@@ -503,7 +518,60 @@ def test_arm_selection_callback_rows(tmp_path: Path) -> None:
     assert out["val/arm_select/left/frames"] == 6
 
 
+class _Trainer:
+    def __init__(self, epoch: int, max_epochs: int, *, sanity: bool = False) -> None:
+        self.current_epoch, self.max_epochs, self.sanity_checking = (
+            epoch,
+            max_epochs,
+            sanity,
+        )
+
+
+def test_arm_selection_every_n_epochs() -> None:
+    from rmind.callbacks.nero_arm_selection import NeroArmSelectionLogger
+
+    cb = NeroArmSelectionLogger(every_n_epochs=3)
+    ran = [e for e in range(10) if cb.active(_Trainer(e, 10))]  # ty: ignore[invalid-argument-type]
+    assert ran == [2, 5, 8, 9]  # every 3rd, plus the last
+    assert not cb.active(_Trainer(2, 10, sanity=True))  # ty: ignore[invalid-argument-type]
+    assert all(
+        NeroArmSelectionLogger().active(_Trainer(e, 10))  # ty: ignore[invalid-argument-type]
+        for e in range(10)
+    )
+    with pytest.raises(ValueError, match="every_n_epochs"):
+        NeroArmSelectionLogger(every_n_epochs=0)
+
+
 # ---------------------------------------------------- real-window smoke (GPU)
+
+
+def _first_batch(loader: Any) -> Any:
+    """The loader's first batch, then its torchdata worker/pin/prefetch threads
+    stopped and joined. Left running, a thread killed mid-decode at interpreter
+    teardown aborts the process ('terminate called without an active
+    exception') after pytest has already reported success."""
+    import gc
+
+    it = iter(loader)
+    try:
+        return next(it)
+    finally:
+        seen: set[int] = set()
+        stack: list[Any] = [it, getattr(loader, "_loader", None)]
+        while stack:
+            node = stack.pop()
+            if node is None or id(node) in seen:
+                continue
+            seen.add(id(node))
+            shutdown = getattr(node, "_shutdown", None)
+            if callable(shutdown):
+                shutdown()
+            stack.extend(
+                getattr(node, attr, None)
+                for attr in ("_it", "root", "source", "_root", "_source", "loader")
+            )
+        del it
+        gc.collect()
 
 
 @needs_corpus
@@ -524,7 +592,7 @@ def test_hand_off_forward_backward_on_real_bimanual_windows() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = instantiate(OmegaConf.to_container(cfg.model, resolve=True)).to(device)
     loader = instantiate(cfg.datamodule.val)
-    batch = next(iter(loader))
+    batch = _first_batch(loader)
     takes = batch[INPUT_ID]
     assert len(takes) == 2
     assert all(t in nero_split_lib.load_split()["val"] for t in takes)
@@ -559,7 +627,7 @@ def test_real_val_batches_carry_take_ids() -> None:
     from hydra.utils import instantiate
 
     cfg = _compose("bimanual_tokenizer", ["batch_size=8"])
-    batch = next(iter(instantiate(cfg.datamodule.val)))
+    batch = _first_batch(instantiate(cfg.datamodule.val))
     assert len(batch[INPUT_ID]) == 8
     assert set(batch[INPUT_ID]) <= set(nero_split_lib.load_split()["val"])
     assert bool(batch["side_valid"].all())
