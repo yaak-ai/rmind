@@ -57,7 +57,7 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from structlog import get_logger
@@ -75,6 +75,9 @@ from rmind.data.nero_robot import (
 from rmind.datamodules.nero_robot_random import nero_robot_batch
 from rmind.models.nero_patch_policy import NeroPatchPolicy
 from rmind.models.nero_patch_policy_decoder import NeroPatchPolicyDecoderStep
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = get_logger(__name__)
 
@@ -151,16 +154,47 @@ def import_file(path: Path) -> Any:
 # ---------------------------------------------------------------------- gates
 
 
-def image_hw(policy: NeroPatchPolicy) -> tuple[int, int]:
-    backbone = (
-        policy.image_encoder[0]
-        if hasattr(policy.image_encoder, "__getitem__")
-        else None
-    )
-    size = getattr(backbone, "img_size", None) or getattr(policy, "image_hw", None)
+def image_hw(
+    policy: NeroPatchPolicy, override: Sequence[int] | None = None
+) -> tuple[int, int]:
+    """The model's image grid: `override` (--image-hw), else the timm ViT's
+    `patch_embed.img_size`. A convolutional encoder (ResNetBackbone) has no
+    intrinsic size, so it needs `--image-hw` (e.g. 416 640).
+
+    Raises:
+        ValueError: when no size can be determined (no silent 140x224 default).
+    """
+    if override:
+        return (int(override[0]), int(override[1]))
+    size = next(
+        (
+            getattr(getattr(m, "patch_embed", None), "img_size", None)
+            for m in policy.image_encoder.modules()
+            if getattr(getattr(m, "patch_embed", None), "img_size", None) is not None
+        ),
+        None,
+    ) or getattr(policy, "image_hw", None)
     if size is None:
-        return (140, 224)
+        msg = "cannot infer the image grid from this encoder: pass --image-hw H W"
+        raise ValueError(msg)
     return (int(size[0]), int(size[1]))
+
+
+@torch.no_grad()
+def encoder_patch_size(policy: NeroPatchPolicy, hw: tuple[int, int]) -> int:
+    """The square patch (stride) `p` with `(h // p) * (w // p)` == the encoder's tokens.
+
+    Raises:
+        ValueError: if no integer stride tiles the grid into that many tokens.
+    """
+    device = next(policy.parameters()).device
+    images = torch.zeros(1, 1, 3, *hw, dtype=torch.uint8, device=device)
+    n = int(policy._encode_images(images).shape[-2])  # noqa: SLF001
+    for p in range(1, max(hw) + 1):
+        if (hw[0] // p) * (hw[1] // p) == n and hw[0] % p == 0 and hw[1] % p == 0:
+            return p
+    msg = f"no square patch tiles {hw} into the encoder's {n} tokens"
+    raise ValueError(msg)
 
 
 @torch.no_grad()
@@ -822,7 +856,19 @@ def main() -> None:
     parser.add_argument(
         "--gate-device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
-    parser.add_argument("--patch-size", type=int, default=14)
+    parser.add_argument(
+        "--patch-size",
+        type=int,
+        default=None,
+        help="default: derived from the encoder's token grid (14 DINOv2, 32 ResNet)",
+    )
+    parser.add_argument(
+        "--image-hw",
+        type=int,
+        nargs=2,
+        default=None,
+        help="the model's input grid; required for a convolutional encoder",
+    )
     parser.add_argument(
         "--weights",
         type=Path,
@@ -841,7 +887,13 @@ def main() -> None:
         policy.load_state_dict(state.get("state_dict", state))
     if args.ckpt is not None:
         args.checkpoint = args.ckpt
-    report = run(args, policy, hw=image_hw(policy))
+    hw = image_hw(policy, args.image_hw)
+    derived = encoder_patch_size(policy, hw)
+    if args.patch_size is not None and args.patch_size != derived:
+        msg = f"--patch-size {args.patch_size} but the encoder tiles {hw} at {derived}"
+        raise SystemExit(msg)
+    args.patch_size = derived
+    report = run(args, policy, hw=hw)
     if report["failures"]:
         raise SystemExit(1)
 
