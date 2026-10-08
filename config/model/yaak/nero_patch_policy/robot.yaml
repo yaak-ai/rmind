@@ -66,7 +66,9 @@ encoder:
   dim_model: ${policy_embedding_dim}
   num_layers: ${num_layers}
   num_heads: ${num_heads}
-  tokens_per_frame: "${eval:'1 + ${use_hand_token} + ${num_cameras} * ${num_patches}'}"
+  # 1 state + n hand tokens (0 off, 1 untagged, 2 = one per side with
+  # hand_sides) + patches: 482 single-arm, 483 bimanual hand_on, 481 hand_off
+  tokens_per_frame: "${eval:'1 + ${use_hand_token} * ${num_hand_tokens} + ${num_cameras} * ${num_patches}'}"
   window: ${window}
   rope_base: 1000.0
   attention_impl: ${attention_impl}
@@ -132,6 +134,7 @@ goal_mode: no_goal
 goal_dropout: 0.0
 action_space: robot
 hand_groups: ${hand_groups}
+hand_sides: ${hand_sides}
 hand_dropout_sample: ${hand_dropout_sample}
 hand_dropout_frame: ${hand_dropout_frame}
 relative_mode: ${relative_mode}

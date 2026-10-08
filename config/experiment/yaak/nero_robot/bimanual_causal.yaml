@@ -4,13 +4,12 @@
 # (patch_bim_hand_on). The 2026-10-07 cube corpus: 85 bus_bimanual takes, both
 # arms valid in every row (state (2, 13), side_valid [True, True]).
 #
-# ⚠️ Needs the per-side hand token (WP5: two side-tagged 14-d tokens through one
-# pooled hand standardizer, 483 tokens/frame). Until that lands the model reads
-# the single-arm `hand.*` columns, which a bimanual rbyte row does not carry, and
-# NeroPatchPolicy.hand_vector RAISES NotImplementedError on the first batch that
-# carries only `hand.{left,right}.*` (rather than silently training with no_hand
-# on every frame); use bimanual_hand_off meanwhile. WP5 replaces that guard with
-# the per-side token path.
+# The per-side hand token (WP5): TWO side-tagged 14-d tokens (hand_sides
+# [left, right], read from rbyte's `hand.{left,right}.*`) through ONE pooled hand
+# embedding + hand standardizer (nero_fit_stats pools both sides' rows), each
+# with its own learned side tag, `no_hand` substitution (its own hand_valid) and
+# dropout: 1 state + 2 hand + 3 x 160 = 483 tokens/frame. Serving feeds
+# `hand_token (1, 2, 14)` and the manifest carries `hand_sides` (contract v3).
 #
 # Everything else is shared with bimanual_hand_off (and bimanual_tokenizer):
 # * split: config/splits/nero_cube_bimanual_v1.json -- THE take-level split the
@@ -44,6 +43,8 @@ nero_stats_dir: ${oc.env:NERO_STATS_DIR,${oc.env:HOME}/data/nero-arms/cube-biman
 run_name: bimanual_causal
 
 relative_mode: all
+hand_sides: [left, right]
+num_hand_tokens: 2
 
 # len(train_dataloader) x max_epochs (nero_steps): 1425 train windows,
 # 356 batches of 4 (drop_last) x 10 epochs

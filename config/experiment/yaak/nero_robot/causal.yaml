@@ -68,6 +68,12 @@ num_sides: 2
 hand_groups: [current, pos_err]
 use_hand_token: 1
 hand_token_dim: 14 # 6 + 6 + age + valid (hf.token_dim)
+# [] = ONE untagged hand token from `hand.*` (single arm); [left, right] = one
+# side-tagged token per side from `hand.{side}.*` (bimanual_causal). Keep
+# num_hand_tokens = max(1, len(hand_sides)): the trunk's tokens_per_frame uses it
+# (and the model refuses a mismatch on the first batch).
+hand_sides: []
+num_hand_tokens: 1
 hand_dropout_sample: 0.2
 hand_dropout_frame: 0.1
 reliance_metrics: true

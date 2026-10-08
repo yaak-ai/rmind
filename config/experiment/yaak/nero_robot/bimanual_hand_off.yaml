@@ -9,6 +9,8 @@ defaults:
 
 run_name: bimanual_hand_off
 hand_groups: []
+hand_sides: []
+num_hand_tokens: 0
 use_hand_token: 0
 reliance_metrics: false
 model:
