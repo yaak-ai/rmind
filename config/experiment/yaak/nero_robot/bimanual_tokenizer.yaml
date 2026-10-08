@@ -30,5 +30,4 @@ trainer:
   gradient_clip_val: 1.0
 
 wandb:
-  mode: disabled
   tags: [nero_robot, chunk_tokenizer, bimanual]
