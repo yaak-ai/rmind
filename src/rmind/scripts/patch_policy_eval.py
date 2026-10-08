@@ -183,8 +183,7 @@ def evaluate(  # noqa: C901, PLR0914
         # per-field L1 mean over the action horizon. Skipped when the batch
         # lacks the raw meta series the cluster rules need (synthetic batches).
         try:
-            # RuleBasedCluster ignores its predictions argument
-            labels = _default_cluster_fn()(batch, None)  # ty:ignore[invalid-argument-type]
+            labels = _default_cluster_fn()(batch, None)
         except (KeyError, TypeError):
             labels = None
         if labels is not None:

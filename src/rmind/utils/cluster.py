@@ -43,7 +43,7 @@ class RuleBasedCluster:
         return result
 
     def __call__(
-        self, batch: dict[str, TensorDict], _predictions: TensorDict
+        self, batch: dict[str, TensorDict], _predictions: TensorDict | None
     ) -> list[str]:
         scalars = {
             name: self._extract(batch, spec).cpu()
