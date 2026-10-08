@@ -15,6 +15,9 @@ defaults:
 
 nero_robot_dir: ${oc.env:NERO_ROBOT_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/2026-10-07}
 nero_runs_dir: ${oc.env:NERO_RUNS_DIR,runs}
+# the BIMANUAL stats (side_valid [True, True]); never the single-arm .nero_stats
+# default inherited from causal/tokenizer, whose right side is mean 0 / std 1
+nero_stats_dir: ${oc.env:NERO_STATS_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/rmind/stats_v1}
 run_name: bimanual_tokenizer
 
 relative_mode: all
