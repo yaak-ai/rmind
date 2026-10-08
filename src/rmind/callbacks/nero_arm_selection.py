@@ -12,8 +12,10 @@ same keys the ACT family logs.
 
 Needs the take id per sample (`input_id`), which the bimanual datamodules' val
 collate (`flat_rbyte_batch_with_ids`) adds; a batch without it is skipped. Costs
-one extra forward per val batch (no model change: it reuses the policy's own
-row/decode helpers, read-only).
+one extra trunk forward per val batch (no model change: it reuses the policy's own
+row/decode helpers, read-only), i.e. roughly doubles val compute on the epochs it
+runs; `every_n_epochs` (yaml: `nero_arm_select_every_n_epochs`) thins it out --
+it always runs on the last epoch.
 """
 
 from __future__ import annotations
@@ -36,7 +38,11 @@ _ARM = slice(ARM_AXES[0], ARM_AXES[-1] + 1)
 
 class NeroArmSelectionLogger(pl.Callback):
     def __init__(
-        self, *, split_file: str | Path | None = None, exec_steps: int = EXEC_STEPS
+        self,
+        *,
+        split_file: str | Path | None = None,
+        exec_steps: int = EXEC_STEPS,
+        every_n_epochs: int = 1,
     ) -> None:
         from rmind.scripts.nero_split_lib import (  # noqa: PLC0415
             SPLIT_JSON,
@@ -45,7 +51,19 @@ class NeroArmSelectionLogger(pl.Callback):
 
         self.classes = take_classes(Path(split_file) if split_file else SPLIT_JSON)
         self.exec_steps = int(exec_steps)
+        if int(every_n_epochs) < 1:
+            msg = f"every_n_epochs must be >= 1, got {every_n_epochs}"
+            raise ValueError(msg)
+        self.every_n_epochs = int(every_n_epochs)
         self._reset()
+
+    def active(self, trainer: pl.Trainer) -> bool:
+        """Whether this val epoch computes the metric (every n-th, and the last)."""
+        if trainer.sanity_checking:
+            return False
+        epoch = int(trainer.current_epoch)
+        last = trainer.max_epochs is not None and epoch + 1 >= int(trainer.max_epochs)
+        return last or (epoch + 1) % self.every_n_epochs == 0
 
     def _reset(self) -> None:
         self._pred: list[np.ndarray] = []
@@ -89,7 +107,7 @@ class NeroArmSelectionLogger(pl.Callback):
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> None:
-        if trainer.sanity_checking or INPUT_ID not in batch:
+        if not self.active(trainer) or INPUT_ID not in batch:
             return
         if not getattr(pl_module, "robot", False):
             return
