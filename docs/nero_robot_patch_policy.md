@@ -291,8 +291,8 @@ Ablations: `yaak/nero_robot/relative_{hand,all}` (each with its own tokenizer),
 85 `bus_bimanual` takes, both arms valid in every row (`side_valid [T, T]`),
 read by rbyte's bimanual `NeroRobotReader` (pinned `feat/nero-bimanual`). Two
 patch runs, `bimanual_hand_off` (no hand token, 481 tokens/frame) and
-`bimanual_causal` (two side-tagged hand tokens: needs the per-side hand token
-work before it can train), share everything else:
+`bimanual_causal` (two side-tagged hand tokens, 483 tokens/frame; see "Per-side
+hand token" below), share everything else:
 
 - **Split**: `config/splits/nero_cube_bimanual_v1.json`, a byte copy of
   nutron-cli's `runtime/training/splits/nero_cube_bimanual_v1.json` -- the SAME
@@ -342,6 +342,41 @@ to the path above when NERO_STATS_DIR is unset (never the single-arm
 `.nero_stats`). On the train
 split: 16948 rows per side, valid motor rows 16142 left / 15651 right,
 `hand.source train:hand`.
+
+### Per-side hand token (`hand_sides`)
+
+`bimanual_causal` sets `hand_sides: [left, right]` (and `num_hand_tokens: 2`,
+which the trunk's `tokens_per_frame` reads; the model refuses a mismatch on the
+first batch). The frame block is `[state][hand.left][hand.right][patches]`:
+
+- each token is `compose_hand_tokens` of that side's rbyte columns
+  `hand.{side}.*` (the per-side `hf.token_spec`, 14-d for current + pos_err,
+  `hand_valid` last), through ONE `hand_embedding` and ONE pooled
+  `HandTokenStandardizer`, plus a learned per-side tag added before the
+  embedding's output norm;
+- `no_hand` (side-tagged too) replaces a side's token where THAT side's
+  `hand_valid` is 0; sample/frame dropout is drawn per side; reliance metrics
+  add `no_hand_left` / `no_hand_right`; `quality/token_norm/*/hand_valid_frac/<side>`
+  is logged;
+- serving feeds `hand_token (1, 2, 14)`; the manifest carries `hand_sides`
+  and `token_layout [..., ["hand", 2], ...]` (contract v3); the bound `codes`
+  output stays `(1, Q)` of the first valid side, while the export's streaming
+  gate compares EVERY valid side's codes (`forward_all_codes`) on a both-valid
+  batch. Export refuses stats whose `side_valid` sides are not `hand_sides`.
+
+`hand_sides: []` (every single-arm experiment) is the old untagged token read
+from `hand.*`: no new parameters, same init and outputs, `hand_token (1, 14)`.
+A model and batch whose hand layouts disagree raise instead of training on
+`no_hand` everywhere.
+
+```sh
+rmind-train --config-path $PWD/config --config-name train.yaml experiment=yaak/nero_robot/bimanual_causal
+```
+
+Smoke (2026-10-08, 30 train / 20 val batches, real windows): val
+`hand_valid_frac` 0.95 left / 0.93 right; export of that checkpoint: 483
+tokens/frame, streaming == windowed 5.9e-6 with both sides' codes equal, ORT ==
+eager 5.6e-6, nutron-cli (WP0) contract + bindings ok.
 
 ## Open items
 

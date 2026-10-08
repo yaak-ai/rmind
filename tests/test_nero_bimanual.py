@@ -625,6 +625,52 @@ def test_hand_off_forward_backward_on_real_bimanual_windows() -> None:
 
 @needs_corpus
 @pytest.mark.usefixtures("generated_config")
+@pytest.mark.skipif(
+    not (os.environ.get("NERO_STATS_DIR") and os.environ.get("NERO_TOKENIZER_CKPT")),
+    reason="needs NERO_STATS_DIR and NERO_TOKENIZER_CKPT (bimanual stats + tokenizer)",
+)
+def test_hand_on_reads_both_hands_on_real_bimanual_windows() -> None:
+    """WP5: bimanual_causal builds two hand tokens per frame from the real
+    `hand.{left,right}.*` columns (no no_hand-everywhere fallback), and the
+    loss reaches both sides' hand path."""
+    from hydra.utils import instantiate
+    from omegaconf import OmegaConf
+
+    cfg = _compose(
+        "bimanual_causal", ["batch_size=2", "datamodule=yaak/nero_robot_bimanual"]
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = instantiate(OmegaConf.to_container(cfg.model, resolve=True)).to(device)
+    assert model.hand_sides == ("left", "right")
+    assert model.tokens_per_frame() == 483  # noqa: PLR2004
+    batch = _first_batch(instantiate(cfg.datamodule.val))
+    batch = {
+        k: (v.to(device) if isinstance(v, torch.Tensor) else v)
+        for k, v in batch.items()
+    }
+    vec = model.hand_vector(batch)
+    assert vec is not None
+    assert vec.shape == (2, cfg.episode_length, 2, 14)
+    for side in range(2):
+        assert float(vec[..., side, -1].mean()) > 0.5  # noqa: PLR2004  (~0.9 valid)
+    model.train()
+    norms: dict[str, torch.Tensor] = {}
+    with torch.autocast(
+        device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
+    ):
+        loss = model.compute_metrics(batch, token_norms=norms)["policy", "loss"].sum(
+            reduce=True
+        )
+    assert torch.isfinite(loss)
+    loss.backward()
+    grad = model.hand_side_embedding.weight.grad
+    assert grad is not None
+    assert (grad.abs().sum(dim=-1) > 0).all()
+    assert {"hand_valid_frac/left", "hand_valid_frac/right"} <= set(norms)
+
+
+@needs_corpus
+@pytest.mark.usefixtures("generated_config")
 def test_real_val_batches_carry_take_ids() -> None:
     from hydra.utils import instantiate
 
