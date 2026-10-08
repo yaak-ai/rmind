@@ -120,6 +120,11 @@ class NeroPatchPolicyDecoderStep(nn.Module):
     ) -> tuple[Tensor, Tensor, Tensor]:
         """Ring update (`ring: oldest_first_shift`): drop the oldest frame, append."""
         past_k, past_v, bias = past
+        if past_k.shape[-2] == 0:
+            # window 1: no ring (cache_frames 0). Without this the slice of an
+            # empty cache is empty and the cat would GROW K/V to one frame while
+            # the bias stays empty -- a shape error on the next step.
+            return past
         k = new_k.shape[-2]
         return (
             torch.cat((past_k[..., k:, :], new_k), dim=-2),

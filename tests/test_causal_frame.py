@@ -358,7 +358,7 @@ def test_stream_equals_full_recompute_unbounded() -> None:
     torch.testing.assert_close(streamed, recompute, rtol=0, atol=TOL)
 
 
-@pytest.mark.parametrize("window", [2, 3, 6])
+@pytest.mark.parametrize("window", [1, 2, 3, 6])
 def test_stream_equals_sliding_window_recompute(window: int) -> None:
     """§5.1, in the form that is exact.
 
@@ -828,7 +828,7 @@ def test_unknown_attention_impl_is_rejected() -> None:
         )
 
 
-@pytest.mark.parametrize("window", [2, 3, 6])
+@pytest.mark.parametrize("window", [1, 2, 3, 6])
 def test_ring_slot_write_matches_shift_left(window: int) -> None:
     """The host may write the new frame into slot `t % cache_frames` and move
     nothing, instead of shifting the whole cache left.

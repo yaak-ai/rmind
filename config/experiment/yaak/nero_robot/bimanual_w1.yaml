@@ -1,0 +1,41 @@
+# @package _global_
+#
+# BIMANUAL patch policy with a HISTORY OF ONE FRAME (window 1): the policy sees
+# only the current observation, like ACT. bimanual_causal (hand_on) otherwise.
+#
+# Why: on the 76-take corpus every window-16 run overfits once it selects the arm
+# (val arm/finger EV best at epochs 0-1, long-horizon EV negative later) while ACT
+# -- one observation, no history -- generalises. Hypothesis: the 1.6 s history lets
+# the trunk memorise takes.
+#
+# Window 1 consistently:
+# * episode_length 1: a sample IS one frame (32-frame clips would only repeat the
+#   same no-context readout); episode_stride 1: EVERY 30 Hz frame of every train
+#   take is a sample (16948 train frames; the window-16 run used 1425 clips/epoch);
+# * the trunk mask is a single bidirectional frame, so plain sdpa (no flex block
+#   mask, no compile); RoPE cancels within a frame (q and k share the rotation);
+# * serving: window_frames 1, kv.cache_frames 0 (an empty ring, contract-legal);
+#   NeroPatchPolicyDecoderStep.advance is a no-op on an empty cache;
+# * batch 32 like ACT (481-483 tokens/sample, not 15k) and ACT's budget: 38
+#   epochs ~ 20k steps x 32 ~ 640k samples (ACT: 20k x 32). An epoch is only 529
+#   steps, so val + checkpoint every 2nd epoch (~1058 steps, ~34k samples).
+# lr_total_steps = len(train_dataloader) x max_epochs (nero_steps): 16948 frames
+# -> 529 batches of 32 (drop_last) x 38 epochs = 20102.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_causal
+  - override /trainer/callbacks: nero_robot_bimanual_sweep
+  - _self_
+
+run_name: bimanual_w1
+window: 1
+episode_length: 1
+episode_stride: 1
+attention_impl: sdpa
+batch_size: 32
+lr_total_steps: 20102
+trainer:
+  max_epochs: 38
+  check_val_every_n_epoch: 2
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, window1, sweep]

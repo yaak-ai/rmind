@@ -1,0 +1,24 @@
+# @package _global_
+# bimanual_w1_hand_off + the ACT-gap closers, the base the encoder comparison
+# shares (patch/sweep):
+# * dropout: attn_dropout 0.1 (legal: w1 is sdpa, not flex) and stochastic depth
+#   drop_path_rate 0.1 on top of the trunk's resid/mlp dropout 0.1 (always on);
+# * the image encoder FINE-TUNED (model.image_encoder_trainable) at its own lr
+#   1e-5 (ACT's optimizer_lr_backbone; SelectiveAdamW lr_overrides), trunk 1e-4.
+# Pick the encoder with `image_encoder=dinov2|resnet18` (config/image_encoder).
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_w1_hand_off
+  - _self_
+
+run_name: bimanual_w1_ft
+attn_dropout: 0.1
+drop_path_rate: 0.1
+image_encoder_lr: 1e-5
+model:
+  image_encoder_trainable: true
+  optimizer:
+    lr_overrides:
+      image_encoder: ${image_encoder_lr}
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, window1, hand_off, sweep, encoder_ft]

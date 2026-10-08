@@ -1,0 +1,7 @@
+# @package _global_
+# image_encoder=dinov2: the default of model/yaak/nero_patch_policy/robot (timm
+# vit_small_patch14_dinov2.lvd142m, final-norm patch tokens, 384-d, 160 patches
+# at 140x224). Selecting it changes nothing; it exists so `image_encoder=` names
+# both choices. Frozen unless model.image_encoder_trainable.
+image_encoder_name: vit_small_patch14_dinov2.lvd142m
+image_embedding_dim: 384

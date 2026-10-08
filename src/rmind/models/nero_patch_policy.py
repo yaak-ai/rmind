@@ -337,6 +337,16 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         reliance_metrics: bool = False,
         #: an expected action-standardizer digest; refused if the tokenizer's differs
         action_standardizer_sha256: str | None = None,
+        #: FINE-TUNE the image encoder (default False: the frozen DINOv2 feature
+        #: extractor every existing checkpoint was trained with). True: its
+        #: parameters train (give them their own low lr with SelectiveAdamW's
+        #: `lr_overrides: {image_encoder: 1e-5}`), it follows the module's
+        #: train/eval mode and its forward keeps the graph.
+        image_encoder_trainable: bool = False,
+        #: with `image_encoder_trainable`: None = the whole encoder; K = only the
+        #: last K transformer blocks + the final norm of a timm ViT (patch/pos
+        #: embedding and the earlier blocks stay frozen).
+        image_encoder_trainable_blocks: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -351,6 +361,13 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             .requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
             .eval()
         )
+        self.image_encoder_trainable = image_encoder_trainable
+        self.image_encoder_trainable_blocks = image_encoder_trainable_blocks
+        if image_encoder_trainable:
+            self._unfreeze_image_encoder(image_encoder_trainable_blocks)
+        elif image_encoder_trainable_blocks is not None:
+            msg = "image_encoder_trainable_blocks needs image_encoder_trainable=True"
+            raise ValueError(msg)
         self.tokenizer = (
             init_hydra_param(hparams, "tokenizer", tokenizer)
             .requires_grad_(False)  # ruff: ignore[boolean-positional-value-in-call]
@@ -591,6 +608,8 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "quality_metrics": quality_metrics,
             "reliance_metrics": reliance_metrics,
             "action_standardizer_sha256": action_standardizer_sha256,
+            "image_encoder_trainable": image_encoder_trainable,
+            "image_encoder_trainable_blocks": image_encoder_trainable_blocks,
         }
 
         if optimizer is not None:
@@ -620,10 +639,39 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         self.save_hyperparameters(hparams)
 
+    def _unfreeze_image_encoder(self, last_blocks: int | None) -> None:
+        """`requires_grad` on the whole encoder, or a timm ViT's last K blocks + norm.
+
+        Raises:
+            ValueError: if `last_blocks` is given but the encoder has no timm
+                `blocks` list, or K is out of range.
+        """
+        if last_blocks is None:
+            self.image_encoder.requires_grad_(True)  # ruff: ignore[boolean-positional-value-in-call]
+            return
+        vit = next(
+            (
+                m
+                for m in self.image_encoder.modules()
+                if isinstance(getattr(m, "blocks", None), nn.Sequential)
+            ),
+            None,
+        )
+        if vit is None or not 1 <= last_blocks <= len(vit.blocks):
+            msg = f"image_encoder_trainable_blocks={last_blocks}: no timm ViT with that many blocks"
+            raise ValueError(msg)
+        for block in list(vit.blocks)[-last_blocks:]:
+            block.requires_grad_(True)  # ruff: ignore[boolean-positional-value-in-call]
+        norm = getattr(vit, "norm", None)
+        if isinstance(norm, Module):
+            norm.requires_grad_(True)  # ruff: ignore[boolean-positional-value-in-call]
+
     @override
     def train(self, mode: bool = True) -> "NeroPatchPolicy":
         super().train(mode)
-        self.image_encoder.eval()
+        if not self.image_encoder_trainable:
+            # frozen feature extractor: never leaves eval mode
+            self.image_encoder.eval()
         self.tokenizer.eval()
         return self
 
@@ -652,7 +700,9 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return value
 
     def _encode_images(self, images: Tensor) -> Tensor:
-        """`(..., 3, H, W)` uint8 -> frozen patch features `(..., P, D)`."""
+        """`(..., 3, H, W)` uint8 -> patch features `(..., P, D)` (frozen unless trainable)."""
+        if self.image_encoder_trainable:
+            return self.image_encoder(self.image_transform(images))
         with torch.no_grad():
             return self.image_encoder(self.image_transform(images))
 

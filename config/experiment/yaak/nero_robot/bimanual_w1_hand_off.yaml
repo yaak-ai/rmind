@@ -1,0 +1,18 @@
+# @package _global_
+# bimanual_w1 (window 1, current observation only) WITHOUT the hand-sensor
+# token: the hand_off settings of bimanual_hand_off (481 tokens/frame).
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_w1
+  - _self_
+
+run_name: bimanual_w1_hand_off
+hand_groups: []
+hand_sides: []
+num_hand_tokens: 0
+use_hand_token: 0
+reliance_metrics: false
+model:
+  hand_embedding: null
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, window1, hand_off, sweep]

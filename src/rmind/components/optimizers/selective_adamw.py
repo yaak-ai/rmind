@@ -44,15 +44,25 @@ class SelectiveAdamW(AdamW):
     """
 
     @validate_call
-    def __init__(
+    def __init__(  # ruff: ignore[complex-structure]
         self,
         module: InstanceOf[Module],
         *,
         weight_decay: float = 1e-2,
         weight_decay_module_blacklist: tuple[type[Module], ...],
         weight_decay_overrides: dict[str, float] | None = None,
+        lr_overrides: dict[str, float] | None = None,
         **kwargs: Any,
     ) -> None:
+        """`lr_overrides` `{module prefix: lr}`: those params get their own lr
+        (each weight-decay group is split by prefix; e.g. a fine-tuned image
+        encoder at 1e-5 under a 1e-4 trunk). Params that never get a gradient
+        (frozen) are left out of every group, so they cannot be decayed.
+
+        Raises:
+            ValueError: on `params` in kwargs, zero weight decay, or an
+                `lr_overrides` prefix matching no trainable parameter.
+        """
         if "params" in kwargs or weight_decay == 0.0:  # noqa: RUF069
             raise ValueError
 
@@ -76,11 +86,7 @@ class SelectiveAdamW(AdamW):
                 # fusion gains) and AxisShrinkage's threshold (playbook: never
                 # weight-decay tau)
                 case (
-                    "no_goal"
-                    | "no_depth"
-                    | "no_hand"
-                    | "token_gain"
-                    | "raw_threshold"
+                    "no_goal" | "no_depth" | "no_hand" | "token_gain" | "raw_threshold"
                 ):
                     weight_decay_param_blacklist.add(param_name)
                 case "weight":
@@ -137,4 +143,55 @@ class SelectiveAdamW(AdamW):
             ),
         ]
 
+        if lr_overrides:
+            param_groups = _split_lr_groups(
+                param_groups, lr_overrides, {id(p): n for n, p in params.items()}
+            )
+
         super().__init__(params=param_groups, **kwargs)
+
+
+def _split_lr_groups(
+    groups: list[dict[str, Any]], lr_overrides: dict[str, float], names: dict[int, str]
+) -> list[dict[str, Any]]:
+    """Split every group by `lr_overrides` prefix; trainable params only.
+
+    Raises:
+        ValueError: on a prefix that matches no trainable parameter.
+    """
+    used: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for group in groups:
+        rest = []
+        by_prefix: dict[str, list[Any]] = {
+            prefix: [] for prefix in sorted(lr_overrides)
+        }
+        for param in group["params"]:
+            if not param.requires_grad:
+                continue
+            name = names[id(param)]
+            match = next(
+                (
+                    prefix
+                    for prefix in sorted(lr_overrides)
+                    if name == prefix or name.startswith(prefix + ".")
+                ),
+                None,
+            )
+            if match is None:
+                rest.append(param)
+            else:
+                by_prefix[match].append(param)
+                used.add(match)
+        if rest:
+            out.append({**group, "params": rest})
+        out.extend(
+            {**group, "params": ps, "lr": lr_overrides[prefix]}
+            for prefix, ps in by_prefix.items()
+            if ps
+        )
+    missing = set(lr_overrides) - used
+    if missing:
+        msg = f"lr_overrides prefixes {sorted(missing)} match no trainable parameter"
+        raise ValueError(msg)
+    return out
