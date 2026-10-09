@@ -85,6 +85,11 @@ samples:
         func:
           _target_: rbyte.samples.nero.NeroRobotReader
           chunk_size: ${chunk_size}
+          #! null = rbyte's default chunk_size // 2: rows whose chunk pads more
+          #! steps are DROPPED (the last 50 frames of every run, ~19% of the
+          #! corpus). chunk_size - 1 keeps every row like ACT (hold-padded,
+          #! `action.is_pad` masks the loss): experiment key `max_pad_steps`.
+          max_pad_steps: "${oc.select:max_pad_steps,null}"
 
       #@ for camera in cameras:
       - _target_: pipefunc.PipeFunc

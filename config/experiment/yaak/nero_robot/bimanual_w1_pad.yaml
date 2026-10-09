@@ -1,0 +1,25 @@
+# @package _global_
+# bimanual_w1_hand_off on EVERY frame, like ACT: rows whose 100-step chunk runs
+# past the take end are kept hold-padded (rbyte NeroRobotReader max_pad_steps
+# 99; the default chunk_size // 2 = 50 drops the last 50 frames of every run).
+# 2026-10-07 corpus: 20848 train / 3094 val rows (vs 16948 / 2644) = exactly
+# nutron-cli convert.py's ACT frames; frac(action.is_pad) 0.189 on train.
+#
+# Losses on padded steps: the codes head encodes the HELD chunk as-is (a code
+# cannot be masked per step; the held tail is the "arm stops" target) and masks
+# the offset loss with `action.is_pad`; the l1 head (`+action_head=l1`) masks
+# its L1 loss. Budget ~ the sweep's 20102 steps x 32: 651 batches (drop_last)
+# x 30 epochs = 19530 (an even epoch count so the last epoch validates and
+# checkpoints at check_val_every_n_epoch 2; 32 epochs would be 20832).
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_w1_hand_off
+  - _self_
+
+run_name: bimanual_w1_pad
+max_pad_steps: 99
+lr_total_steps: 19530
+trainer:
+  max_epochs: 30
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, window1, hand_off, sweep, pad]

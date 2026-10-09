@@ -1,0 +1,17 @@
+# @package _global_
+# bimanual_w1_ft (dropout + fine-tuned image encoder at lr 1e-5) on every frame
+# (bimanual_w1_pad's max_pad_steps 99 and 30 x 651 steps). With
+# image_encoder=resnet18 the 416x640 frame cache must hold the padded rows'
+# frames too.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_w1_ft
+  - _self_
+
+run_name: bimanual_w1_ft_pad
+max_pad_steps: 99
+lr_total_steps: 19530
+trainer:
+  max_epochs: 30
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, window1, hand_off, sweep, encoder_ft, pad]
