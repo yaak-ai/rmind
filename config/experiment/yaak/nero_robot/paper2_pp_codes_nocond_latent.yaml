@@ -1,0 +1,45 @@
+# @package _global_
+#
+# patch/paper round 2, OPTIONAL third offset arm "unconditioned, latent":
+# paper2_pp_codes_cond with an offset that is NOT indexed by (and does not see)
+# the code, living in the tokenizer LATENT space. The clean ablation twin of
+# the cond arm is paper2_pp_codes_nocond (action-space, differs only in the
+# code conditioning); this one also changes the offset's space.
+#
+# rmind's offset options (NeroPatchPolicy):
+# * offset_mode action: ONE (H x A) action-space offset per side regressed from
+#   the readout, added to tokenizer.invert(codes) -- paper2_pp_codes_nocond;
+# * offset_mode table: the offset head emits a (level, code, H x A) table and
+#   the chosen codes' entries are summed (VQ-BeT) -- code-INDEXED; this is the
+#   cond twin and paper_pp_w2_c10_codes (offset_code_conditioning is false
+#   there, but that flag only exists for latent mode: the table is conditioned
+#   by construction);
+# * offset_mode latent: ONE offset in the tokenizer latent space regressed from
+#   the per-side trunk readout, added to lookup(codes) and decoded by the frozen
+#   tokenizer decoder; offset_code_conditioning true additionally feeds the
+#   stop-grad lookup(codes) into the offset head (the robot.yaml default),
+#   false = the head sees the trunk readout only;
+# * teacher_force_offset true: the offset loss decodes the TARGET codes + offset
+#   (training), serving decodes the ARGMAX codes + offset.
+# Here: offset_mode latent + offset_code_conditioning false.
+#
+# The offset head output is the tokenizer latent: 512 for cb64 / cb256, 1024
+# (2 x 512) for paper2_tok_split -- set offset_latent_dim at launch.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_pp_codes_cond
+  - _self_
+
+run_name: paper2_pp_codes_nocond_latent
+offset_latent_dim: ${tokenizer_latent_dim}
+
+model:
+  offset_mode: latent
+  offset_code_conditioning: false
+  teacher_force_offset: true
+  offset_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels: [1024, 1024, "${offset_latent_dim}"]
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, c10, offset_nocond_latent]

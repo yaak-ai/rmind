@@ -1,43 +1,31 @@
 # @package _global_
 #
 # patch/paper round 2, offset ABLATION arm "unconditioned": paper2_pp_codes_cond
-# with an offset that is NOT indexed by (and does not see) the code.
+# with the code conditioning removed and NOTHING else changed. The cond arm's
+# VQ-BeT table (offset_mode table) regresses one (10 x 13) action-space offset
+# per (level, code) and sums the chosen codes' entries; here (offset_mode
+# action) the head regresses ONE (10 x 13) action-space offset per side from
+# the same per-side readout, the same MLP [1024, 1024], added to
+# tokenizer.invert(codes) whichever codes are chosen -- not indexed by the
+# codes, not through the decoder. Same tokenizer, data, loss (teacher-forced on
+# the target codes in training, argmax codes at inference) and recipe.
 #
-# rmind's offset options (NeroPatchPolicy):
-# * offset_mode table: the offset head emits a (level, code, H x A) table and
-#   the chosen codes' entries are summed (VQ-BeT) -- code-INDEXED; this is the
-#   cond twin and paper_pp_w2_c10_codes (offset_code_conditioning is false
-#   there, but that flag only exists for latent mode: the table is conditioned
-#   by construction);
-# * offset_mode latent: ONE offset in the tokenizer latent space regressed from
-#   the per-side trunk readout, added to lookup(codes) and decoded by the frozen
-#   tokenizer decoder; offset_code_conditioning true additionally feeds the
-#   stop-grad lookup(codes) into the offset head (the robot.yaml default),
-#   false = the head sees the trunk readout only;
-# * teacher_force_offset true: the offset loss decodes the TARGET codes + offset
-#   (training), serving decodes the ARGMAX codes + offset.
-# Unconditioned = offset_mode latent + offset_code_conditioning false. Note the
-# second difference to the cond twin: the offset lives in latent space (through
-# the decoder), not in action space -- rmind has no unconditioned action-space
-# offset.
-#
-# The offset head output is the tokenizer latent: 512 for cb64 / cb256, 1024
-# (2 x 512) for paper2_tok_split -- set offset_latent_dim at launch.
+# Launch-time settings as paper2_pp_codes_cond (NERO_TOKENIZER_CKPT,
+# codebook_size / num_quantizers of the POLICY, lr_total_steps).
 defaults:
   - /experiment/yaak/nero_robot/paper2_pp_codes_cond
   - _self_
 
 run_name: paper2_pp_codes_nocond
-offset_latent_dim: ${tokenizer_latent_dim}
 
 model:
-  offset_mode: latent
+  offset_mode: action
   offset_code_conditioning: false
   teacher_force_offset: true
   offset_head:
     _target_: torchvision.ops.MLP
     in_channels: ${policy_embedding_dim}
-    hidden_channels: [1024, 1024, "${offset_latent_dim}"]
+    hidden_channels: [1024, 1024, "${eval:'${chunk_size} * 13'}"]
 
 wandb:
   tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, c10, offset_nocond]

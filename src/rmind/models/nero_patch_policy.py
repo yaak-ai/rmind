@@ -314,8 +314,12 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         relative_mode: Literal["none", "hand", "all"] = "none",
         #: "table" = VQ-BeT per-code full-chunk offsets (glove default);
         #: "latent" = one offset in tokenizer latent space, decoded through the
-        #: frozen tokenizer decoder (robot; the table is ~340M params at 100x13)
-        offset_mode: Literal["table", "latent"] = "table",
+        #: frozen tokenizer decoder (robot; the table is ~340M params at 100x13);
+        #: "action" = ONE full-chunk action-space offset `(H * A)` regressed from
+        #: the per-side readout, NOT indexed by the codes, added to
+        #: `tokenizer.invert(codes)` (robot): the table without the code
+        #: conditioning (VQ-BeT's offset minus the per-code gather)
+        offset_mode: Literal["table", "latent", "action"] = "table",
         #: latent only: feed the stop-grad quantized latent of the codes
         #: (`tokenizer.lookup(codes)`) into the offset head, concatenated to the
         #: features -- TARGET codes in training (teacher forcing), the ARGMAX
@@ -544,6 +548,9 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise ValueError(msg)
         if offset_code_conditioning and offset_mode != "latent":
             msg = "offset_code_conditioning needs offset_mode='latent'"
+            raise ValueError(msg)
+        if offset_mode == "action" and action_space != "robot":
+            msg = "offset_mode='action' is robot-only"
             raise ValueError(msg)
         self.offset_mode = offset_mode
         self.offset_code_conditioning = offset_code_conditioning
@@ -1421,6 +1428,9 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             # through the frozen tokenizer decoder (`_decode`)
             return code_logits, features
         assert self.offset_head is not None  # noqa: S101
+        if self.offset_mode == "action":
+            # ONE flat `(..., H * A)` offset, the same whichever codes are chosen
+            return code_logits, self.offset_head(features)
         offsets = rearrange(
             self.offset_head(features), "... (g c a) -> ... g c a", g=g, c=c
         )
@@ -1498,14 +1508,20 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def _decode(self, offsets: Tensor, codes: Tensor) -> Tensor:
         """Robot rows: codes `(n, g)` + offsets -> STANDARDIZED `(n, H, A)`.
 
-        `offsets` is the offset table (table mode) or the offset context
-        (latent mode, see `_heads`).
+        `offsets` is the offset table (table mode), the offset context (latent
+        mode, see `_heads`) or the one flat `(n, H * A)` offset (action mode).
         """
         tokenizer = self.tokenizer
         if self.offset_mode == "latent":
             offset = self._latent_offset(offsets, codes)
             return tokenizer.decode_latent(tokenizer.lookup(codes) + offset)
-        flat = tokenizer.invert(codes) + self._offset(offsets, codes)
+        if self.offset_mode == "action":
+            offset = offsets
+            if self.offset_scale is not None:
+                offset = torch.tanh(offset / self.offset_scale) * self.offset_scale
+            flat = tokenizer.invert(codes) + offset
+        else:
+            flat = tokenizer.invert(codes) + self._offset(offsets, codes)
         return flat.reshape(-1, tokenizer.action_horizon, tokenizer.action_features)
 
     @staticmethod

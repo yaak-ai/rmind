@@ -110,13 +110,14 @@ def _tokenizer(relative_mode: str = "none") -> NeroChunkTokenizer:
     ).eval()
 
 
-def _policy(
+def _policy(  # noqa: PLR0913
     *,
     relative_mode: str = "none",
     hand: bool = True,
     conditioned: bool = True,
     hand_sides: tuple[str, ...] = (),
     l1: bool = False,
+    offset_mode: str = "latent",
     **kwargs: Any,
 ) -> NeroPatchPolicy:
     torch.manual_seed(0)
@@ -183,7 +184,7 @@ def _policy(
             else None
         ),
         relative_mode=relative_mode,  # ty: ignore[invalid-argument-type]
-        offset_mode="latent",
+        offset_mode=offset_mode,  # ty: ignore[invalid-argument-type]
         offset_code_conditioning=conditioned,
         sample_codes=False,
         **kwargs,
@@ -527,6 +528,40 @@ def test_code_conditioned_offset_depends_on_the_codes() -> None:
             plain._latent_offset(context, a),  # noqa: SLF001
             plain._latent_offset(context, b),  # noqa: SLF001
         )
+
+
+def test_action_offset_is_not_indexed_by_the_codes() -> None:
+    """offset_mode 'action': one flat action-space offset from the readout, the
+    same whichever codes are decoded, added to `tokenizer.invert(codes)`."""
+    policy = _policy(
+        conditioned=False,
+        offset_mode="action",
+        offset_head=nn.Linear(POLICY_DIM, CHUNK * 13),
+    )
+    features = torch.randn(4, POLICY_DIM)
+    a = torch.zeros(4, QUANTIZERS, dtype=torch.long)
+    b = torch.full((4, QUANTIZERS), CODEBOOK - 1, dtype=torch.long)
+    with torch.no_grad():
+        _, offsets = policy._heads(features)  # noqa: SLF001
+        assert offsets.shape == (4, CHUNK * 13)
+        tok = policy.tokenizer
+        for codes in (a, b):
+            decoded = policy._decode(offsets, codes).flatten(1)  # noqa: SLF001
+            torch.testing.assert_close(decoded - tok.invert(codes), offsets)
+    trained = _policy(
+        conditioned=False,
+        offset_mode="action",
+        offset_head=nn.Linear(POLICY_DIM, CHUNK * 13),
+    ).train()
+    out = trained.compute_metrics(_batch(t=4))
+    losses = out["policy", "loss"]
+    assert isinstance(losses, TensorDict)
+    loss = losses.sum(reduce=True)
+    assert isinstance(loss, Tensor)
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert trained.offset_head is not None
+    assert next(trained.offset_head.parameters()).grad is not None
 
 
 def test_offset_head_width_is_checked_against_the_conditioning() -> None:
