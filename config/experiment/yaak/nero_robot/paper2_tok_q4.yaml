@@ -1,0 +1,11 @@
+# @package _global_
+# paper_tok_c10_q4 (RVQ depth 4 x 16 = 16 bits per side-chunk = 0.123
+# bits/value) on paper2_tok_cb64's v3 corpus and 1000-epoch schedule: the
+# tokenizer of the optional intermediate policy point paper2_pp_codes_q4_nocond.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_cb64
+  - _self_
+
+run_name: paper2_tok_q4
+codebook_size: 16
+num_quantizers: 4
