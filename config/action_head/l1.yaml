@@ -1,0 +1,19 @@
+# @package _global_
+# action_head=l1 (`+action_head=l1`): the CONTINUOUS ACT-style head in place of
+# the VQ-BeT codes + latent offset. Each per-side readout (the shared readout +
+# side embedding, as for the code head) goes through an MLP of the code head's
+# width straight to the full STANDARDIZED 100 x 13 chunk -- the relative-mode
+# ("all") action space the tokenizer encodes, with the SAME action standardizer
+# (stats_v1, carried by the frozen tokenizer). Loss: L1 on the real
+# (`action.is_pad`-masked) steps, sum / count (nutron_act: L1 on standardized
+# actions, chunk 100). The tokenizer is never encoded or decoded; the export
+# graph returns `actions` with no `codes` output (manifest `action_head: l1`).
+action_features: 13
+model:
+  action_head: l1
+  code_head: null
+  offset_head: null
+  l1_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels: [1024, 1024, "${eval:'${chunk_size} * ${action_features}'}"]

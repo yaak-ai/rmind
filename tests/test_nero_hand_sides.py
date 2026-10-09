@@ -301,6 +301,7 @@ def test_streaming_equals_windowed_with_every_sides_codes() -> None:
     with torch.no_grad():
         bound = step(*args)[3]
         every = step.forward_all_codes(*args)[3]
+    assert every is not None
     assert bound.shape == (1, every.shape[-1])
     assert every.shape[:2] == (1, 2)
     assert torch.equal(bound[0], every[0, 0])

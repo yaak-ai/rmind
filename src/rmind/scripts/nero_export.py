@@ -26,6 +26,19 @@ GATES (non-zero exit on failure):
 2. **ONNX == eager**: ONNX Runtime (CPU) against the eager step on the first
    `--ort-frames` streamed frames (warm cache included): same tolerance on
    `actions`, identical `codes`, and new_k/new_v.
+
+CONTINUOUS HEAD (`action_head: l1`): the graph returns `actions` directly from
+the policy's L1 head -- no codes, no tokenizer decode -- so it has three outputs
+(`actions`, `new_k`, `new_v`; `codes` is an optional role in contract v3) and the
+code checks of gates 1-2 are skipped. The manifest carries `action_head: "l1"`
+(the key is absent for the codes head, whose manifest is unchanged); the
+`tokenizer` block and `tokenizer.pt` stay, describing the frozen tokenizer that
+only defines the action space (relative mode + `standardizers.action`, which the
+host applies exactly as before). nutron-cli's strict contract parse refuses the
+unknown `action_head` key today, so gate 3 is run twice for an l1 bundle: as
+written (the refusal is recorded as `expected_refusal`, a warning) and on a copy
+without the key (`nutron_cli_compat`, which must pass: proof that the graph,
+bindings and every other field already serve).
 3. nutron-cli's own `patch_contract_from_manifest` validates the manifest and
    `binding_problems` checks the REAL ONNX bindings -- what serving runs before
    the first step. The checkout is `--nutron-cli` (default `$NUTRON_CLI_ROOT`).
@@ -96,6 +109,14 @@ INPUT_ORDER = (
     "hand_token",
 )
 OUTPUT_ORDER = ("actions", "new_k", "new_v", "codes")
+#: the continuous (`action_head: l1`) graph: no codes output
+OUTPUT_ORDER_L1 = ("actions", "new_k", "new_v")
+
+
+def output_order(policy: NeroPatchPolicy) -> tuple[str, ...]:
+    return OUTPUT_ORDER_L1 if policy.action_head == "l1" else OUTPUT_ORDER
+
+
 # mac_factory refuses a checkpoint the export did not pin, unless this is "1"
 ALLOW_UNPINNED_ENV = "NERO_ALLOW_UNPINNED_CKPT"
 
@@ -231,10 +252,15 @@ def streaming_gate(  # noqa: PLR0914
             inputs.get("hand_token"),
         )
         actions, new_k, new_v, codes = step.forward_all_codes(*args)
-        bound = step(*args)[3]
+        bound_out = step(*args)
         past = step.advance(past, new_k, new_v)
         want = windowed[frame].permute(1, 0, 2).reshape(1, actions.shape[1], -1)
         worst = max(worst, float((actions - want).abs().max()))
+        worst = max(worst, float((bound_out[0] - want).abs().max()))
+        if codes is None or windowed_codes is None:
+            # continuous head: nothing discrete to compare
+            continue
+        bound = bound_out[3]
         valid_sides = [
             i
             for i, v in enumerate(inputs["side_valid"][0].tolist())
@@ -244,6 +270,14 @@ def streaming_gate(  # noqa: PLR0914
             agree += int(torch.equal(codes[0, side], windowed_codes[frame, side]))
             total += 1
         bound_agree += int(torch.equal(bound[0], windowed_codes[frame, valid_sides[0]]))
+    if windowed_codes is None:
+        return {
+            "max_abs": worst,
+            "code_agreement": None,
+            "bound_code_agreement": None,
+            "frames": frames,
+            "action_head": "l1",
+        }
     return {
         "max_abs": worst,
         "code_agreement": agree / total,
@@ -274,6 +308,7 @@ def ort_inputs(
 def export_onnx(
     step: NeroPatchPolicyDecoderStep, example: dict[str, Tensor], out: Path
 ) -> None:
+    order = output_order(step.policy)
     names = [n for n in INPUT_ORDER if n in example]
     args = tuple(example[n] for n in names)
     exported = torch.export.export(step, args=args, strict=False)
@@ -284,7 +319,7 @@ def export_onnx(
         external_data=False,
         optimize=True,
         input_names=list(names),
-        output_names=list(OUTPUT_ORDER),
+        output_names=list(order),
         report=False,
     )
 
@@ -306,18 +341,21 @@ def ort_gate(
     bound = {i.name for i in session.get_inputs()}
     past = step.empty_cache()
     worst = {"actions": 0.0, "new_k": 0.0, "new_v": 0.0}
-    codes_equal = True
+    order = output_order(step.policy)
+    has_codes = "codes" in order
+    codes_equal: bool | None = True if has_codes else None
     for frame in range(frames):
         named = ort_inputs(step, step.frame_inputs(batch, frame), past, frame)
         eager = step(*(named[n] for n in INPUT_ORDER if n in named))
         feeds = {k: v.numpy() for k, v in named.items() if k in bound}
-        outputs = dict(
-            zip(OUTPUT_ORDER, session.run(list(OUTPUT_ORDER), feeds), strict=True)
-        )
+        outputs = dict(zip(order, session.run(list(order), feeds), strict=True))
         for i, name in enumerate(("actions", "new_k", "new_v")):
             diff = (torch.from_numpy(outputs[name]) - eager[i]).abs().max()
             worst[name] = max(worst[name], float(diff))
-        codes_equal &= bool((torch.from_numpy(outputs["codes"]) == eager[3]).all())
+        if has_codes:
+            codes_equal = bool(codes_equal) and bool(
+                (torch.from_numpy(outputs["codes"]) == eager[3]).all()
+            )
         past = step.advance(past, eager[1], eager[2])
     return {"max_abs": worst, "codes_equal": codes_equal, "frames": frames}
 
@@ -531,6 +569,11 @@ def manifest(  # noqa: PLR0913
             # = the one untagged token every pre-bimanual artifact has
             {"hand_sides": list(policy.hand_sides)} if policy.hand_sides else {}
         )
+        | (
+            # the continuous head: the graph's `actions` come from the L1 head
+            # (no codes output, no tokenizer decode). Absent for the codes head.
+            {"action_head": "l1"} if policy.action_head == "l1" else {}
+        )
         | {
             # the graph has no goal input whether the policy trained "no_goal"
             # (learned no_goal concatenated in-graph) or "none" (no goal channel)
@@ -612,6 +655,45 @@ def nutron_gate(
     }
 
 
+def l1_nutron_gate(
+    pc_path: Path,
+    payload: dict[str, Any],
+    as_written: dict[str, Any],
+    out: Path,
+    onnx_path: Path,
+) -> dict[str, Any]:
+    """Gate 3 for a continuous-head bundle: today's nutron-cli refuses the unknown
+    `action_head` key, so the manifest is ALSO validated without it (`compat`):
+    status `expected_refusal` (+ compat ok) = everything but the flag serves;
+    a compat refusal / binding problem keeps that status (a real failure)."""
+    if as_written["status"] == "ok":
+        return as_written  # a nutron-cli that knows the flag
+    probe = out / "nutron_compat_probe"
+    probe.mkdir(exist_ok=True)
+    stripped = {k: v for k, v in payload.items() if k != "action_head"}
+    for name in ("model", "tokenizer"):
+        target = probe / payload[name]["file"]
+        target.unlink(missing_ok=True)
+        target.symlink_to((out / payload[name]["file"]).resolve())
+    for block in payload["standardizers"].values():
+        target = probe / block["file"]
+        target.unlink(missing_ok=True)
+        target.symlink_to((out / block["file"]).resolve())
+    stripped_path = probe / "policy_manifest.json"
+    stripped_path.write_text(json.dumps(stripped, indent=1, sort_keys=True) + "\n")
+    compat = nutron_gate(pc_path, stripped_path, probe, onnx_path)
+    refused_on_flag = as_written["status"] == "refused" and "action_head" in str(
+        as_written.get("error", "")
+    )
+    if refused_on_flag and compat["status"] == "ok":
+        return {
+            "status": "expected_refusal",
+            "as_written": as_written,
+            "compat_without_action_head": compat,
+        }
+    return compat | {"as_written": as_written}
+
+
 def save_tokenizer(policy: NeroPatchPolicy, path: Path) -> None:
     tokenizer = policy.tokenizer
     torch.save(
@@ -638,7 +720,7 @@ class RoleDecoderStep(torch.nn.Module):
 
     def forward(self, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
         outputs = self.step(*(inputs[n].float() for n in INPUT_ORDER if n in inputs))
-        return dict(zip(OUTPUT_ORDER, outputs, strict=True))
+        return dict(zip(output_order(self.step.policy), outputs, strict=True))
 
 
 def _contract_dict(contract: Any) -> dict[str, Any]:
@@ -1086,6 +1168,15 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
     else:
         report["nutron_cli"] = nutron_gate(pc_path, manifest_path, args.out, onnx_path)
         logger.info("nutron-cli contract", **report["nutron_cli"])
+        if "action_head" in payload:
+            report["nutron_cli"] = l1_nutron_gate(
+                pc_path, payload, report["nutron_cli"], args.out, onnx_path
+            )
+            if report["nutron_cli"]["status"] == "expected_refusal":
+                warnings.append(
+                    "nutron-cli does not know `action_head` yet (expected refusal); "
+                    "the manifest without it passes contract + bindings"
+                )
 
     flops = flops_per_step(policy, cache_frames=window - 1, vit_gflops=args.vit_gflops)
     report["flops_per_step"] = flops
@@ -1094,13 +1185,12 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         logger.info("latency (local GPU, NOT Orin)", **report["latency"])
 
     failures = []
-    if (
-        gate["max_abs"] > args.tol
-        or gate["code_agreement"] < 1.0
-        or gate["bound_code_agreement"] < 1.0
+    if gate["max_abs"] > args.tol or (
+        gate["code_agreement"] is not None
+        and (gate["code_agreement"] < 1.0 or gate["bound_code_agreement"] < 1.0)
     ):
         failures.append("streaming != windowed")
-    if max(ort["max_abs"].values()) > args.tol or not ort["codes_equal"]:
+    if max(ort["max_abs"].values()) > args.tol or ort["codes_equal"] is False:
         failures.append("ONNX != eager")
     gate3 = report["nutron_cli"]
     if gate3["status"] == "refused":

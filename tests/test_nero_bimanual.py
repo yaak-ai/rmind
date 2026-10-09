@@ -493,6 +493,9 @@ class _StubPolicy:
         out[1::2, :, 3] = 0.2  # the policy moves the RIGHT arm
         return out
 
+    def rows_prediction(self, rows: dict[str, torch.Tensor]) -> torch.Tensor:
+        return self._decode(rows["offsets"], rows["code_logits"].argmax(dim=-1))
+
     def _anchor_rows(self, batch: Any, row_valid: torch.Tensor) -> torch.Tensor:
         return torch.zeros(int(row_valid.sum()), 13)
 

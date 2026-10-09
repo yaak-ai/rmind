@@ -83,7 +83,7 @@ class NeroArmSelectionLogger(pl.Callback):
         """(b*T, S) predicted and demonstrated arm excursions (nan for an invalid side)."""
         features = pl_module._features(batch)  # noqa: SLF001
         rows = pl_module._robot_rows(batch, features)  # noqa: SLF001
-        decoded = pl_module._decode(rows["offsets"], rows["code_logits"].argmax(dim=-1))  # noqa: SLF001
+        decoded = pl_module.rows_prediction(rows)  # argmax codes or the l1 chunk
         anchor = pl_module._anchor_rows(batch, rows["row_valid"])  # noqa: SLF001
         pred = pl_module._absolute(decoded, anchor, rows["side"]).float()  # noqa: SLF001
         demo = pl_module._absolute(rows["target"], anchor, rows["side"]).float()  # noqa: SLF001

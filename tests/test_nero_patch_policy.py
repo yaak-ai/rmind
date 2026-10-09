@@ -521,6 +521,7 @@ def test_joint_angle_action_space_needs_no_code_change() -> None:
     loss = _total_loss(policy._compute_metrics(batch))  # noqa: SLF001
     loss.backward()
     assert _first_attention(policy).in_proj_weight.grad is not None
+    assert isinstance(policy.offset_head, nn.Linear)
     assert policy.offset_head.weight.grad is not None
 
     policy.eval()

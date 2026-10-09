@@ -223,8 +223,6 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         state_embedding: HydraConfig[Module] | InstanceOf[Module],
         encoder: HydraConfig[Module] | InstanceOf[Module],
         tokenizer: HydraConfig[Module] | InstanceOf[Module],
-        code_head: HydraConfig[Module] | InstanceOf[Module],
-        offset_head: HydraConfig[Module] | InstanceOf[Module],
         losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
         image_embedding_dim: int,
         policy_embedding_dim: int,
@@ -347,6 +345,19 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         #: last K transformer blocks + the final norm of a timm ViT (patch/pos
         #: embedding and the earlier blocks stay frozen).
         image_encoder_trainable_blocks: int | None = None,
+        #: "codes" (default): the VQ-BeT head -- `code_head` logits over the
+        #: frozen tokenizer's RVQ codes + `offset_head`, decoded through the
+        #: tokenizer. "l1": a CONTINUOUS head (ACT-style) -- `l1_head` maps each
+        #: per-side readout straight to the full STANDARDIZED `(H, A)` chunk in
+        #: the tokenizer's relative-mode action space, trained with an L1 loss
+        #: masked by `action.is_pad`. The frozen tokenizer then only carries
+        #: `prepare` (relative transform + action standardizer, the serving
+        #: contract's `standardizers.action`); it never encodes or decodes, and
+        #: `code_head` / `offset_head` must be None.
+        action_head: Literal["codes", "l1"] = "codes",
+        code_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        offset_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        l1_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
 
@@ -381,8 +392,25 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             hparams, "state_embedding", state_embedding
         )
         self.encoder: Module = init_hydra_param(hparams, "encoder", encoder)
-        self.code_head = init_hydra_param(hparams, "code_head", code_head)
-        self.offset_head = init_hydra_param(hparams, "offset_head", offset_head)
+        if action_head not in {"codes", "l1"}:
+            msg = f"action_head {action_head!r} not in ('codes', 'l1')"
+            raise ValueError(msg)
+        if action_head == "codes" and (code_head is None or offset_head is None):
+            msg = "action_head='codes' needs code_head and offset_head"
+            raise ValueError(msg)
+        if action_head == "l1" and (
+            code_head is not None or offset_head is not None or l1_head is None
+        ):
+            msg = "action_head='l1' needs l1_head and no code_head / offset_head"
+            raise ValueError(msg)
+        self.action_head = action_head
+        # None for the l1 head (no unused parameters)
+        self.code_head: Module | None = init_hydra_param(
+            hparams, "code_head", code_head
+        )
+        self.offset_head: Module | None = init_hydra_param(
+            hparams, "offset_head", offset_head
+        )
         self.losses: ModuleDict = init_hydra_param(hparams, "losses", losses)
         self.norm: Module | None = init_hydra_param(hparams, "norm", norm)
 
@@ -519,7 +547,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise ValueError(msg)
         self.offset_mode = offset_mode
         self.offset_code_conditioning = offset_code_conditioning
-        if offset_mode == "latent":
+        if offset_mode == "latent" and self.offset_head is not None:
             first = next(
                 (m for m in self.offset_head.modules() if isinstance(m, nn.Linear)),
                 None,
@@ -610,6 +638,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "action_standardizer_sha256": action_standardizer_sha256,
             "image_encoder_trainable": image_encoder_trainable,
             "image_encoder_trainable_blocks": image_encoder_trainable_blocks,
+            "action_head": action_head,
         }
 
         if optimizer is not None:
@@ -637,7 +666,28 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
             nn.init.trunc_normal_(self.hand_side_embedding.weight, std=0.02)
 
+        # the continuous head. ⚠️ CONSTRUCTED LAST and ONLY for action_head l1,
+        # so a codes model keeps its init RNG stream and state_dict.
+        self.l1_head: Module | None = None
+        if action_head == "l1":
+            if not self.robot:
+                msg = "action_head='l1' is robot action space only"
+                raise ValueError(msg)
+            self.l1_head = init_hydra_param(hparams, "l1_head", l1_head)
+            last = [m for m in self.l1_head.modules() if isinstance(m, nn.Linear)]
+            want = self._chunk_numel()
+            if last and last[-1].out_features != want:
+                msg = (
+                    f"l1_head outputs {last[-1].out_features}, the tokenizer's chunk "
+                    f"is {want} (action_horizon x action_features)"
+                )
+                raise ValueError(msg)
+
         self.save_hyperparameters(hparams)
+
+    def _chunk_numel(self) -> int:
+        tokenizer = self.tokenizer
+        return int(tokenizer.action_horizon) * int(tokenizer.action_features)
 
     def _unfreeze_image_encoder(self, last_blocks: int | None) -> None:
         """`requires_grad` on the whole encoder, or a timm ViT's last K blocks + norm.
@@ -1360,6 +1410,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         `_latent_offset`, because with `offset_code_conditioning` it depends on
         which codes were picked.
         """
+        assert self.code_head is not None  # noqa: S101  (action_head codes)
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
         code_logits = rearrange(
@@ -1369,6 +1420,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             # ONE offset in the tokenizer's latent space `(..., L)`, decoded
             # through the frozen tokenizer decoder (`_decode`)
             return code_logits, features
+        assert self.offset_head is not None  # noqa: S101
         offsets = rearrange(
             self.offset_head(features), "... (g c a) -> ... g c a", g=g, c=c
         )
@@ -1400,8 +1452,23 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """`(..., d)` -> STANDARDISED chunk `(..., 2, horizon, action_features)`."""
         return self._predict_chunk_and_codes(features)[0]
 
-    def _predict_chunk_and_codes(self, features: Tensor) -> tuple[Tensor, Tensor]:
-        """`(..., d)` -> (STANDARDISED `(..., 2, H, A)` chunk, `(..., 2, g)` codes)."""
+    def _l1_chunk(self, side_features: Tensor) -> Tensor:
+        """Continuous head: per-side features `(..., d)` -> STANDARDIZED `(..., H, A)`."""
+        assert self.l1_head is not None  # noqa: S101
+        tokenizer = self.tokenizer
+        return self.l1_head(side_features).unflatten(
+            -1, (int(tokenizer.action_horizon), int(tokenizer.action_features))
+        )
+
+    def _predict_chunk_and_codes(
+        self, features: Tensor
+    ) -> tuple[Tensor, Tensor | None]:
+        """`(..., d)` -> (STANDARDISED `(..., 2, H, A)` chunk, `(..., 2, g)` codes).
+
+        The l1 head has no codes: `(chunk, None)`.
+        """
+        if self.action_head == "l1":
+            return self._l1_chunk(self._per_side_features(features)), None
         code_logits, offsets = self._heads(self._per_side_features(features))
         codes = self._sample_codes(code_logits)
         if self.robot:
@@ -1422,6 +1489,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         if self.offset_code_conditioning:
             z_q = self.tokenizer.lookup(codes).detach().to(context.dtype)
             inputs = torch.cat([context, z_q], dim=-1)
+        assert self.offset_head is not None  # noqa: S101
         offset = self.offset_head(inputs)
         if self.offset_scale is not None:
             offset = torch.tanh(offset / self.offset_scale) * self.offset_scale
@@ -1490,12 +1558,24 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             .expand(b, t, NUM_SIDES)
             .reshape(-1)[row_valid]
         )
-        with torch.no_grad():
-            target, real = tokenizer.prepare(batch)  # (n, H, A), (n, H)
-            target_codes = tokenizer.encode(target)  # (n, g)
         side_features = self._per_side_features(features).reshape(
             -1, features.shape[-1]
         )[row_valid]
+        if self.action_head == "l1":
+            # no tokenizer encode/decode: `prepare` only (relative transform +
+            # action standardizer + the `action.is_pad` mask)
+            with torch.no_grad():
+                target, real = tokenizer.prepare(batch)  # (n, H, A), (n, H)
+            return {
+                "row_valid": row_valid,
+                "side": side,
+                "target": target,
+                "real": real,
+                "pred": self._l1_chunk(side_features),
+            }
+        with torch.no_grad():
+            target, real = tokenizer.prepare(batch)  # (n, H, A), (n, H)
+            target_codes = tokenizer.encode(target)  # (n, g)
         code_logits, offsets = self._heads(side_features)
         return {
             "row_valid": row_valid,
@@ -1507,12 +1587,62 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "offsets": offsets,
         }
 
+    def rows_prediction(self, rows: Mapping[str, Tensor]) -> Tensor:
+        """The SERVING prediction for `_robot_rows` output: STANDARDIZED `(n, H, A)`.
+
+        l1: the continuous chunk; codes: the argmax codes decoded with their offset.
+        """
+        if self.action_head == "l1":
+            return rows["pred"]
+        return self._decode(rows["offsets"], rows["code_logits"].argmax(dim=-1))
+
+    @staticmethod
+    def _masked_l1(pred: Tensor, target: Tensor, real: Tensor) -> Tensor:
+        """L1 over the REAL (unpadded) steps: sum / count of real elements."""
+        w = real.unsqueeze(-1).to(pred.dtype).expand_as(pred)
+        return ((pred - target).abs() * w).sum() / w.sum().clamp_min(1.0)
+
+    def _compute_l1_metrics(
+        self,
+        batch: Any,
+        features: Tensor,
+        rows: dict[str, Tensor],
+        token_norms: dict[str, Tensor] | None,
+    ) -> TensorDict:
+        """The continuous head's loss (ACT: L1 on standardized actions, pad-masked)."""
+        target, real, pred = rows["target"], rows["real"], rows["pred"]
+        losses = {"action_l1": self._masked_l1(pred, target, real)}
+        metrics: dict[str, Tensor] = {
+            "valid_rows": rows["row_valid"].sum().to(features.dtype)
+        }
+        with torch.no_grad():
+            metrics["real_frac"] = real.float().mean()
+            if self.quality_metrics:
+                anchor = self._anchor_rows(batch, rows["row_valid"])
+                pred_abs = self._absolute(pred.detach(), anchor, rows["side"])
+                gt_abs = self._absolute(target, anchor, rows["side"])
+                metrics |= horizon_ev_metrics(pred_abs, gt_abs, real)
+                metrics |= grasp_event_metrics(pred_abs, gt_abs, real)
+                metrics |= alarm_metrics(
+                    pred=pred_abs,
+                    target=gt_abs,
+                    real=real,
+                    token_norms=token_norms,
+                    features=features,
+                )
+        return TensorDict(
+            {"policy": {"loss": losses, "metric": metrics}},  # ty:ignore[invalid-argument-type]
+            batch_size=[],
+        )
+
     def _compute_robot_metrics(  # ruff: ignore[too-many-locals]
         self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
     ) -> TensorDict:
         tokenizer = self.tokenizer
         features = self._features(batch, token_norms=token_norms)  # (b, T, d)
         rows = self._robot_rows(batch, features)
+        if self.action_head == "l1":
+            return self._compute_l1_metrics(batch, features, rows, token_norms)
         target, real = rows["target"], rows["real"]
         target_codes, code_logits = rows["target_codes"], rows["code_logits"]
         offsets = rows["offsets"]
@@ -1623,12 +1753,16 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def _eval_scores(self, batch: Any) -> dict[str, Tensor]:
         features = self._features(batch)
         rows = self._robot_rows(batch, features)
-        logits, target_codes = rows["code_logits"], rows["target_codes"]
-        nll = torch.stack([
-            F.cross_entropy(logits[:, q], target_codes[:, q])
-            for q in range(logits.shape[1])
-        ]).sum()
-        decoded = self._decode(rows["offsets"], logits.argmax(dim=-1))
+        decoded = self.rows_prediction(rows)
+        if self.action_head == "l1":
+            # no code distribution: the L1 loss stands in for the code NLL
+            nll = self._masked_l1(decoded, rows["target"], rows["real"])
+        else:
+            logits, target_codes = rows["code_logits"], rows["target_codes"]
+            nll = torch.stack([
+                F.cross_entropy(logits[:, q], target_codes[:, q])
+                for q in range(logits.shape[1])
+            ]).sum()
         anchor = self._anchor_rows(batch, rows["row_valid"])
         pred = self._absolute(decoded, anchor, rows["side"])
         gt = self._absolute(rows["target"], anchor, rows["side"])
