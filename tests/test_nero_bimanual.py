@@ -73,6 +73,19 @@ def test_split_lib_is_generated_from_the_json() -> None:
     ), "stale lib: python -m rmind.scripts.nero_split_lib"
 
 
+def test_v3_split_lib_is_generated_and_pins_v1() -> None:
+    name = "nero_cube_bimanual_v3"
+    path = nero_split_lib.split_json(name)
+    assert nero_split_lib.split_lib(name).name == "robot_bimanual_split_v3.lib.yml"
+    assert nero_split_lib.split_lib(name).read_text() == nero_split_lib.render(path), (
+        "stale lib: python -m rmind.scripts.nero_split_lib --split " + name
+    )
+    v3, v1 = nero_split_lib.load_split(path), nero_split_lib.load_split()
+    assert (len(v3["train"]), len(v3["val"])) == (117, 14)
+    assert set(v1["val"]) <= set(v3["val"])
+    assert set(v1["train"]) <= set(v3["train"])
+
+
 def test_split_is_disjoint_and_stratified() -> None:
     split = nero_split_lib.load_split()
     train, val, takes = split["train"], split["val"], split["takes"]

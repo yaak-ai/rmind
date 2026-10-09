@@ -1,0 +1,17 @@
+# v3 split (nero_cube_bimanual_v3: 2026-10-07 + 2026-10-09, 117 train / 14 val,
+# v1's takes pinned; robot_bimanual_split_v3.lib.yml). NERO_ROBOT_DIR (and
+# NERO_FRAME_CACHE) must hold BOTH days' takes: one directory of per-take
+# symlinks. Otherwise identical to nero_robot_bimanual_noimg.yaml.
+# nero_robot_bimanual without the image streams (the tokenizer and the stats fit
+# read no pixels)
+---
+defaults:
+  - /datamodule/yaak/nero_robot_bimanual_v3@_here_
+  - _self_
+
+train:
+  dataset:
+    streams: null
+val:
+  dataset:
+    streams: null
