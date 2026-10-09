@@ -1,0 +1,12 @@
+# @package _global_
+#
+# bimanual_tokenizer_v2 at 32 quantizers (128 bits per side-chunk): the rate
+# Pareto point. Val EV arm 0.96 / finger 0.97 in the harness vs 0.92 / 0.95 at
+# 16. NOT a drop-in: a patch policy on it needs `num_quantizers: 32` (its code
+# head becomes 32 x 16 = 512 logits and 32 code slots per side).
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_tokenizer_v2
+  - _self_
+
+run_name: bimanual_tokenizer_v2_q32
+num_quantizers: 32

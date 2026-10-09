@@ -1,0 +1,11 @@
+# @package _global_
+#
+# bimanual_tokenizer_v2 with the finger event weight KEPT at 2 (instead of
+# null): the balanced 16 x 16 point -- slightly less arm (pooled val EV ~0.90
+# vs 0.91), more finger (~0.95 vs 0.945). Same policy interface as v2.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_tokenizer_v2
+  - _self_
+
+run_name: bimanual_tokenizer_v2_ew2
+event_weight: 2.0
