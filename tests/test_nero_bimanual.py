@@ -218,7 +218,10 @@ def test_lr_total_steps_consistent_across_runs() -> None:
 
 @needs_corpus
 @pytest.mark.usefixtures("generated_config")
-@pytest.mark.parametrize("experiment", ["bimanual_hand_off", "bimanual_tokenizer"])
+@pytest.mark.parametrize(
+    "experiment",
+    ["bimanual_hand_off", "bimanual_tokenizer", "bimanual_w1", "bimanual_w1_hand_off"],
+)
 def test_lr_total_steps_is_the_real_step_count(experiment: str) -> None:
     from rmind.scripts.nero_steps import step_count
 

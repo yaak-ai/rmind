@@ -1,0 +1,24 @@
+# @package _global_
+# image_encoder=resnet18: the ACT backbone (torchvision resnet18 IMAGENET1K_V1,
+# FrozenBatchNorm2d, avgpool/fc dropped; rmind.components.resnet_backbone) in
+# place of DINOv2. Its stride-32 layer4 map (512-d) is the per-camera patch grid.
+#
+# GRID: ONE 416x640 letterbox grid for all three cameras (13 x 20 = 260 tokens
+# per camera at stride 32): base 1920x1080 -> 640x360 + 28 px pad top/bottom,
+# sides 1280x800 -> 640x400 + 8 px. ACT's native-ish 360x640 / 400x640, on the
+# single grid the frame cache, `num_patches`, tokens_per_frame and serving's
+# input_hw all assume. Needs a frame cache AT 416x640 (nero_frame_cache).
+image_encoder_name: resnet18
+image_embedding_dim: 512
+image_height: 416
+image_width: 640
+num_patches: 260
+model:
+  image_encoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: rmind.components.resnet_backbone.ResNetBackbone
+        model_name: resnet18
+        weights: IMAGENET1K_V1
+      - _target_: einops.layers.torch.Rearrange
+        pattern: "... c h w -> ... (h w) c"
