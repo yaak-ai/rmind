@@ -40,6 +40,8 @@ streams:
         path: #@ "${nero_frame_cache}/" + episode + "/" + camera + ".npy"
         video: #@ "${nero_robot_dir}/" + episode + "/" + camera + ".mp4"
         input_hw: ["${image_height}", "${image_width}"]
+        #! letterbox (contract default) | stretch (patch/paper 224x224)
+        preprocessing: "${oc.select:image_preprocessing,letterbox}"
       #@ else:
       #@yaml/text-templated-strings
       (@=episode@):
@@ -51,8 +53,9 @@ streams:
           #! ~4.6 s per 2 x 32-frame batch single-threaded): give ffmpeg threads
           num_ffmpeg_threads: "${oc.select:nero_decode_threads,4}"
         transform:
-          _target_: rmind.data.nero_image.NeroImagePreprocess
+          _target_: rmind.data.nero_frame_cache.preprocess_module
           input_hw: ["${image_height}", "${image_width}"]
+          preprocessing: "${oc.select:image_preprocessing,letterbox}"
       #@ end
       #@ end
   #@ end

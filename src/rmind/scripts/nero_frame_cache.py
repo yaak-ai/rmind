@@ -5,7 +5,8 @@
 
 Caches every take of the bimanual split (`config/splits/*.json`, train + val) or
 the takes named with `--take`, for the three cameras, at the experiment grid
-(`--input-hw`, default 140 224). Up-to-date entries (a manifest matching the
+(`--input-hw`, default 140 224) with the `--preprocessing` mapping (`letterbox`,
+the contract default, or `stretch` for the patch/paper 224x224 runs). Up-to-date entries (a manifest matching the
 current preprocessing, grid and mp4) are skipped unless `--force`. `--verify N`
 decodes N random frames per (take, camera) through the rbyte decode path
 (`TransformedSource(TorchCodecVideoSource, NeroImagePreprocess)`) and requires
@@ -39,6 +40,7 @@ def _build_one(  # noqa: PLR0913, PLR0917
     hw: tuple[int, int],
     threads: int,
     force: bool,  # noqa: FBT001
+    preprocessing: str = "letterbox",
 ) -> dict[str, Any]:
     from rmind.data.nero_frame_cache import (  # noqa: PLC0415
         build_camera_cache,
@@ -48,10 +50,14 @@ def _build_one(  # noqa: PLR0913, PLR0917
 
     video = Path(root) / take / f"{camera}.mp4"
     npy, _ = cache_paths(out, take, camera)
-    if not force and not manifest_problems(npy, input_hw=hw, video=video):
+    if not force and not manifest_problems(
+        npy, input_hw=hw, video=video, preprocessing=preprocessing
+    ):
         return {"take": take, "camera": camera, "status": "up-to-date"}
     t0 = time.monotonic()
-    manifest = build_camera_cache(video, npy, input_hw=hw, num_threads=threads)
+    manifest = build_camera_cache(
+        video, npy, input_hw=hw, num_threads=threads, preprocessing=preprocessing
+    )
     return {
         "take": take,
         "camera": camera,
@@ -62,7 +68,13 @@ def _build_one(  # noqa: PLR0913, PLR0917
 
 
 def _verify_one(  # noqa: PLR0913, PLR0917
-    root: str, out: str, take: str, camera: str, hw: tuple[int, int], n: int
+    root: str,
+    out: str,
+    take: str,
+    camera: str,
+    hw: tuple[int, int],
+    n: int,
+    preprocessing: str = "letterbox",
 ) -> str | None:
     import torch  # noqa: PLC0415
     from rbyte.streams.transformed import TransformedSource  # noqa: PLC0415
@@ -73,13 +85,19 @@ def _verify_one(  # noqa: PLR0913, PLR0917
         cache_paths,
     )
     from rmind.data.nero_image import NeroImagePreprocess  # noqa: PLC0415
+    from rmind.data.nero_image_stretch import NeroImageStretch  # noqa: PLC0415
 
     video = Path(root) / take / f"{camera}.mp4"
     npy, _ = cache_paths(out, take, camera)
-    cached = NeroFrameCacheSource(path=npy, input_hw=hw, video=video)
+    cached = NeroFrameCacheSource(
+        path=npy, input_hw=hw, video=video, preprocessing=preprocessing
+    )
+    transform = (
+        NeroImageStretch(hw) if preprocessing == "stretch" else NeroImagePreprocess(hw)
+    )
     decoded = TransformedSource(
         source=TorchCodecVideoSource(source=video, num_ffmpeg_threads=2),
-        transform=NeroImagePreprocess(hw),
+        transform=transform,
     )
     total = len(cached)
     rng = random.Random(f"{take}/{camera}")  # noqa: S311  (sampling, not crypto)
@@ -102,6 +120,9 @@ def main() -> int:
         "--take", action="append", default=None, help="only these takes"
     )
     parser.add_argument("--input-hw", type=int, nargs=2, default=(140, 224))
+    parser.add_argument(
+        "--preprocessing", choices=("letterbox", "stretch"), default="letterbox"
+    )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
         "--threads", type=int, default=4, help="ffmpeg threads per worker"
@@ -120,10 +141,17 @@ def main() -> int:
     time.monotonic()
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = {
-            pool.submit(_build_one, root, out, t, c, hw, args.threads, args.force): (
+            pool.submit(
+                _build_one,
+                root,
+                out,
                 t,
                 c,
-            )
+                hw,
+                args.threads,
+                args.force,
+                args.preprocessing,
+            ): (t, c)
             for t, c in jobs
         }
         built = 0
@@ -138,7 +166,9 @@ def main() -> int:
                 print(f"[{done}/{len(jobs)}] {json.dumps(result)}", flush=True)  # noqa: T201
         if args.verify and not failures:
             futures = {
-                pool.submit(_verify_one, root, out, t, c, hw, args.verify): (t, c)
+                pool.submit(
+                    _verify_one, root, out, t, c, hw, args.verify, args.preprocessing
+                ): (t, c)
                 for t, c in jobs
             }
             for future in as_completed(futures):

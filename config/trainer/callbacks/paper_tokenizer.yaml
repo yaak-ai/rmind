@@ -1,0 +1,9 @@
+# patch/paper tokenizer runs: keep EVERY validated epoch (the policy pins one by
+# path; pick it from the val EV curve), weights + optimizer state (small model).
+- _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  every_n_epochs: ${oc.select:trainer.check_val_every_n_epoch,1}
+  save_on_train_epoch_end: True
+  save_last: True
+  save_top_k: -1
+- _target_: pytorch_lightning.callbacks.LearningRateMonitor
+  logging_interval: step

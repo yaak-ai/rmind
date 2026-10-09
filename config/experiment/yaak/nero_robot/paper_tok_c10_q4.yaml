@@ -1,0 +1,9 @@
+# @package _global_
+# paper_tok_c10 at residual depth 4 (16 bits per side-chunk): the fallback if
+# depth 2 cannot carry the arms (pooled val arm EV < 0.9).
+defaults:
+  - /experiment/yaak/nero_robot/paper_tok_c10
+  - _self_
+
+run_name: paper_tok_c10_q4
+num_quantizers: 4

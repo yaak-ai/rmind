@@ -1,0 +1,95 @@
+# @package _global_
+#
+# patch/paper: the PAPER-FAITHFUL bimanual patch policy (Patch Policy arXiv
+# 2607.18236, real robot, Table 10) with a VQ-BeT head used as VQ-BeT intends
+# (short chunk + small residual VQ, arXiv 2403.03181). Contrast with the
+# bimanual_w1* sweep: 100-step chunk, 16 x 16 tokenizer, 140x224, width 512,
+# bs 32, lr 1e-4, wd 0.1, dropout 0.1.
+#
+# Paper settings:
+# * frozen DINOv2 ViT-S/14 at 224x224 = 16 x 16 = 256 patches/camera, 3 cameras;
+#   the 16:9 / 16:10 frames are STRETCHED onto the square grid
+#   (rmind.data.nero_image_stretch, the 224x224 frame cache built with
+#   `nero_frame_cache --input-hw 224 224 --preprocessing stretch`): full field of
+#   view, every patch real content (letterbox would be the 140x224 pixels plus
+#   ~40% black patches; a centre crop cuts the arms at the image sides);
+# * observation window 2 frames, at the 10 Hz observation grid (frame_stride 3:
+#   frames t-100 ms and t). The paper does not give the stride. Consecutive 30 Hz
+#   frames are 33 ms apart and nearly identical at this rig's speeds (median
+#   arm speed ~0.1 rad/s -> ~3 mrad per frame), so the second frame would carry
+#   almost no motion cue; 100 ms is the grid every earlier patch run and the
+#   serving ring use. Trained on 2-frame clips (episode_length 2) with the loss
+#   on both frames (frame 0 = the cold start), every 30 Hz frame a clip start;
+# * action window 10 steps at 30 Hz (Table 10: 5-10), relative "all", the
+#   tokenizer paper_tok_c10 (RVQ depth 2 x 16, latent 512) -- NERO_TOKENIZER_CKPT;
+# * trunk 8 layers / 8 heads / width 384, NO dropout (attn/resid/mlp 0, no
+#   drop_path);
+# * VQ-BeT head: focal code classification per RVQ level + the VQ-BeT
+#   action-space offset TABLE (offset_mode table: one 10 x 13 offset per
+#   (level, code), the chosen ones summed, Fig. 2), MLPs [1024, 1024] as VQ-BeT;
+# * batch 128, lr 3e-4, weight decay 1e-4, bf16-mixed;
+# * hand_off (no hand tokens), every row like ACT (max_pad_steps 9).
+#
+# Tokens: 2 frames x (1 state + 3 x 256) = 1538 per sample.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_hand_off
+  - override /trainer/callbacks: nero_robot_bimanual_sweep
+  - _self_
+
+run_name: paper_pp_w2_c10_codes
+nero_stats_dir: ${oc.env:NERO_STATS_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/rmind/stats_c10}
+nero_frame_cache: ${oc.env:NERO_FRAME_CACHE,${oc.env:HOME}/data/nero-arms/cube-bimanual/frame-cache-224x224-stretch/2026-10-07}
+
+# --- observation window
+window: 2
+episode_length: 2
+episode_stride: 1
+frame_stride: 3
+attention_impl: sdpa
+attn_dropout: 0.0
+drop_path_rate: 0.0
+
+# --- action chunk / tokenizer geometry
+chunk_size: 10
+keyframe_stride: 1
+max_pad_steps: 9
+tokenizer_latent_dim: 512
+codebook_size: 16
+num_quantizers: 2
+
+# --- images
+image_height: 224
+image_width: 224
+num_patches: 256
+image_preprocessing: stretch
+
+# --- trunk
+policy_embedding_dim: 384
+num_layers: 8
+num_heads: 8
+
+# --- optimization
+batch_size: 128
+lr: 3e-4
+lr_warmup_steps: 500
+# len(train_dataloader) x max_epochs (nero_steps)
+lr_total_steps: 20000
+trainer:
+  max_epochs: 100
+  check_val_every_n_epoch: 4
+
+model:
+  encoder:
+    resid_dropout: 0.0
+    mlp_dropout: 0.0
+  optimizer:
+    weight_decay: 1e-4
+  offset_mode: table
+  offset_code_conditioning: false
+  offset_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels: [1024, 1024, "${eval:'${num_quantizers} * ${codebook_size} * ${chunk_size} * 13'}"]
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, window2, c10]

@@ -1,0 +1,74 @@
+# VQ-BeT-style residual VQ-VAE over a SHORT chunk (patch/paper): an MLP encoder
+# and decoder over the flattened (H x A) chunk, as VQ-BeT (arXiv 2403.03181)
+# does for its 1-10 step action windows, instead of raw.yaml's dilated temporal
+# conv (k=7 at dilations 1/3/9 is built for the 34-keyframe 100-step chunk; on
+# 10 steps the 9-dilation unit sees padding only). VQ-BeT: hidden 128; here
+# 2 x ${tokenizer_hidden_dim} (default 256: the 130-value side-chunk is wider
+# than VQ-BeT's sim windows), into the latent of `tokenizer_latent_dim` (VQ-BeT
+# real robot: 512). Everything else is raw.yaml's (standalone copy: a defaults
+# merge would keep the conv nodes' keys). `keyframe_stride` 1 makes
+# KeyframeInterpolation the identity.
+_target_: rmind.models.nero_chunk_tokenizer.NeroChunkTokenizer
+_recursive_: false
+_convert_: all
+
+action_horizon: ${chunk_size}
+action_features: 13
+keyframe_stride: ${keyframe_stride}
+relative_mode: ${relative_mode}
+
+# ⚠️ fitted on the TRAIN split for THIS relative mode (nero_fit_stats). The
+# identity default is only for a config that has to instantiate before stats exist.
+standardizer:
+  _target_: rmind.data.nero_robot.AxisStandardizer.load
+  path: ${action_standardizer}
+
+encoder:
+  _target_: torchvision.ops.MLP
+  in_channels: "${eval:'${chunk_size} * 13'}"
+  hidden_channels:
+    - ${tokenizer_hidden_dim}
+    - ${tokenizer_hidden_dim}
+    - ${tokenizer_latent_dim}
+
+quantizer:
+  _target_: rmind.components.vq.ResidualVQ
+  dim: ${tokenizer_latent_dim}
+  codebook_size: ${codebook_size}
+  num_quantizers: ${num_quantizers}
+
+decoder:
+  _target_: torchvision.ops.MLP
+  in_channels: ${tokenizer_latent_dim}
+  hidden_channels:
+    - ${tokenizer_hidden_dim}
+    - ${tokenizer_hidden_dim}
+    - "${eval:'${chunk_size} * 13'}"
+
+# playbook: smooth_l1 with beta BELOW the typical error, + inverse-frequency
+# event weighting on the finger axes (7..12). `event_weight: null` disables it --
+# never `{}`.
+loss: smooth_l1
+smooth_l1_beta: 0.2
+event_weight: ${event_weight}
+event_axes: [7, 8, 9, 10, 11, 12]
+event_threshold: 0.5
+# the per-axis atom, fitted DETERMINISTICALLY on the train split by
+# nero_fit_stats and pinned to the action standardizer's sha256; training refuses
+# to start without it (no first-batch fallback)
+event_reference: ${event_reference}
+vq_weight: 1.0
+commitment_weight: 1.0
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: ${lr}
+  weight_decay: 0.01
+
+# ⚠️ cosine has no clamp: lr_total_steps MUST be the real optimizer step count
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}

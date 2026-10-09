@@ -1,0 +1,54 @@
+# @package _global_
+#
+# patch/paper: the action tokenizer of the paper-faithful patch policy (Patch
+# Policy arXiv 2607.18236 real robot, Table 10; VQ-BeT arXiv 2403.03181): a
+# SHORT chunk + a SMALL residual VQ, trained to convergence in its own stage.
+#
+# * chunk 10 steps at 30 Hz (0.33 s; Table 10 action window 5-10), per side
+#   10 x 13 (7 arm rad + 6 finger counts/1000), relative "all", weight-shared
+#   over the two sides like bimanual_tokenizer;
+# * residual VQ depth 2 (Table 10 "2 groups") x codebook 16, latent 512:
+#   2 x 4 = 8 bits per side-chunk = 0.062 bits/value (v2: 64 bits / 1300 values
+#   = 0.049);
+# * MLP encoder/decoder (model yaak/nero_chunk_tokenizer/mlp, VQ-BeT's choice for
+#   short windows), keyframe_stride 1 (no keyframe interpolation at 10 steps);
+# * stats: NERO_STATS_DIR must be the CHUNK-10 refit (stats_c10): the "all"
+#   action standardizer pools every real chunk step, and the 100-step spreads are
+#   ~3-10x the 10-step ones (nero_fit_stats with this experiment);
+# * every row like ACT: max_pad_steps 9 (= chunk_size - 1) keeps the take ends
+#   hold-padded (masked in the loss);
+# * playbook: loss l2 (EV is an MSE metric), no event weighting (v2's finding in
+#   "all"), lr 3e-4 cosine with lr_total_steps = len(train_dataloader) x
+#   max_epochs (nero_steps), VQ-BeT-scale training length (hundreds of epochs).
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_tokenizer
+  - /trainer/callbacks: paper_tokenizer
+  - override /model: yaak/nero_chunk_tokenizer/mlp
+  - _self_
+
+run_name: paper_tok_c10
+nero_stats_dir: ${oc.env:NERO_STATS_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/rmind/stats_c10}
+
+chunk_size: 10
+keyframe_stride: 1
+max_pad_steps: 9
+
+tokenizer_latent_dim: 512
+tokenizer_hidden_dim: 256
+codebook_size: 16
+num_quantizers: 2
+event_weight: null
+model:
+  loss: l2
+
+lr: 3e-4
+lr_warmup_steps: 500
+# len(train_dataloader) x max_epochs (nero_steps): 20848 train rows,
+# 81 batches of 256 (drop_last) x 400 epochs
+lr_total_steps: 32400
+trainer:
+  max_epochs: 400
+  check_val_every_n_epoch: 10
+
+wandb:
+  tags: [nero_robot, chunk_tokenizer, bimanual, paper, c10]

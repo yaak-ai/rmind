@@ -42,23 +42,51 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from rmind.data.nero_image import PREPROCESSING_ID, preprocess, preprocessing_sha256
+from rmind.data import nero_image, nero_image_stretch
 
 if TYPE_CHECKING:
     import os
 
 __all__ = [
     "MANIFEST_SCHEMA",
+    "PREPROCESSINGS",
     "NeroFrameCacheSource",
     "build_camera_cache",
     "cache_paths",
     "manifest_problems",
+    "preprocess_module",
     "video_fingerprint",
 ]
 
 MANIFEST_SCHEMA = "nero_frame_cache/1"
 _FINGERPRINT_BYTES = 1 << 20
 _DECODE_CHUNK = 64
+
+#: the selectable native-frame -> model-grid mappings: `letterbox` (THE contract
+#: preprocessing, `rmind.data.nero_image`, the default) and `stretch`
+#: (`rmind.data.nero_image_stretch`, the patch/paper 224x224 runs). The manifest
+#: records the id + file SHA256 of the one used; a source refuses any other.
+PREPROCESSINGS: dict[str, Any] = {
+    "letterbox": nero_image,
+    "stretch": nero_image_stretch,
+}
+
+
+def _preprocessing(name: str) -> Any:
+    if name not in PREPROCESSINGS:
+        msg = f"preprocessing {name!r} not in {sorted(PREPROCESSINGS)}"
+        raise ValueError(msg)
+    return PREPROCESSINGS[name]
+
+
+def preprocess_module(
+    input_hw: Sequence[int], preprocessing: str = "letterbox"
+) -> torch.nn.Module:
+    """The decode-path transform module for `preprocessing` (rbyte `TransformedSource`)."""
+    hw = (int(input_hw[0]), int(input_hw[1]))
+    if _preprocessing(preprocessing) is nero_image_stretch:
+        return nero_image_stretch.NeroImageStretch(hw)
+    return nero_image.NeroImagePreprocess(hw)
 
 
 def cache_paths(
@@ -99,6 +127,7 @@ def build_camera_cache(
     *,
     input_hw: tuple[int, int],
     num_threads: int = 4,
+    preprocessing: str = "letterbox",
 ) -> dict[str, Any]:
     """Decode every frame of `video`, preprocess it, write `npy` + its manifest.
 
@@ -108,6 +137,7 @@ def build_camera_cache(
         RuntimeError: if the decoder yields a different frame count than its
             metadata announces (the rbyte frame index would not line up).
     """
+    prep = _preprocessing(preprocessing)
     npy = Path(npy)
     manifest_path = npy.with_suffix(".json")
     manifest_path.unlink(missing_ok=True)  # a stale manifest must not bless a new npy
@@ -126,14 +156,14 @@ def build_camera_cache(
         if frames.shape[0] != stop - start:
             msg = f"{video}: decoded {frames.shape[0]} frames for [{start}, {stop})"
             raise RuntimeError(msg)
-        out[start:stop] = preprocess(frames, (h, w)).numpy()
+        out[start:stop] = prep.preprocess(frames, (h, w)).numpy()
     out.flush()
     del out
     tmp.replace(npy)
     manifest = {
         "schema": MANIFEST_SCHEMA,
-        "preprocessing_id": PREPROCESSING_ID,
-        "preprocessing_sha256": preprocessing_sha256(),
+        "preprocessing_id": prep.PREPROCESSING_ID,
+        "preprocessing_sha256": prep.preprocessing_sha256(),
         "input_hw": [h, w],
         "num_frames": int(n),
         "video": Path(video).name,
@@ -148,8 +178,10 @@ def manifest_problems(
     *,
     input_hw: Sequence[int],
     video: str | os.PathLike[str] | None = None,
+    preprocessing: str = "letterbox",
 ) -> list[str]:
     """Why the cache at `npy` must not be used (empty = usable)."""
+    prep = _preprocessing(preprocessing)
     npy = Path(npy)
     manifest_path = npy.with_suffix(".json")
     if not npy.is_file() or not manifest_path.is_file():
@@ -158,10 +190,15 @@ def manifest_problems(
     problems = []
     if m.get("schema") != MANIFEST_SCHEMA:
         problems.append(f"schema {m.get('schema')!r} != {MANIFEST_SCHEMA!r}")
-    if m.get("preprocessing_sha256") != preprocessing_sha256():
+    if m.get("preprocessing_id") != prep.PREPROCESSING_ID:
         problems.append(
-            "built with a different rmind.data.nero_image (preprocessing_sha256 "
-            f"{m.get('preprocessing_sha256')} != {preprocessing_sha256()})"
+            f"preprocessing_id {m.get('preprocessing_id')!r} != "
+            f"{prep.PREPROCESSING_ID!r} ({preprocessing})"
+        )
+    if m.get("preprocessing_sha256") != prep.preprocessing_sha256():
+        problems.append(
+            f"built with a different {prep.__name__} (preprocessing_sha256 "
+            f"{m.get('preprocessing_sha256')} != {prep.preprocessing_sha256()})"
         )
     if list(m.get("input_hw", [])) != [int(v) for v in input_hw]:
         problems.append(f"input_hw {m.get('input_hw')} != {list(input_hw)}")
@@ -194,9 +231,12 @@ class NeroFrameCacheSource:
         path: str | os.PathLike[str],
         input_hw: Sequence[int],
         video: str | os.PathLike[str] | None = None,
+        preprocessing: str = "letterbox",
     ) -> None:
         self._path = Path(path)
-        problems = manifest_problems(self._path, input_hw=input_hw, video=video)
+        problems = manifest_problems(
+            self._path, input_hw=input_hw, video=video, preprocessing=preprocessing
+        )
         if problems:
             msg = (
                 "frame cache refused (rebuild it with "
