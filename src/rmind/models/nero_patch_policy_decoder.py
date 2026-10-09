@@ -24,7 +24,7 @@ I/O (bound BY NAME; shapes are nutron-cli `policy_contract.patch_io_shapes`):
 |-----------|--------------------------|-------|
 | `actions` | `(1, 100, 26)` float32   | in the ACTION STANDARDIZER's (relative-mode) space; the host unstandardizes and adds the anchor (`relative_mask`, anchor = the state of THIS observation) |
 | `new_k/v` | `(L, 1, heads, T, head_dim)` | the host shifts them into its ring |
-| `codes`   | `(1, num_quantizers)` int64 | the first VALID side's argmax codes (diagnostic), also with two sides; every side's codes come from `forward_all_codes` (eager only, the export's streaming gate) |
+| `codes`   | `(1, num_quantizers)` int64 | the first VALID side's argmax codes (diagnostic), also with two sides; every side's codes come from `forward_all_codes` (eager only, the export's streaming gate). ABSENT for a continuous (`action_head: l1`) policy: the graph then has three outputs |
 
 Goal: none (`goal_mode` no_goal/none) -- there is no goal input. `camera_cond` is
 a CONSTANT of the graph (the contract carries the same array verbatim).
@@ -174,7 +174,7 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         rope_cos: Tensor,
         rope_sin: Tensor,
         hand_token: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, ...]:
         actions, new_k, new_v, codes = self.forward_all_codes(
             images,
             state,
@@ -186,6 +186,9 @@ class NeroPatchPolicyDecoderStep(nn.Module):
             rope_sin,
             hand_token,
         )
+        if codes is None:
+            # continuous head: no codes output
+            return actions, new_k, new_v
         # the bound `codes` output: the first VALID side's (1, Q)
         first_valid = (side_valid > 0.5).to(torch.int64).argmax(dim=-1)  # noqa: PLR2004  (1,)
         side_codes = codes.gather(
@@ -204,8 +207,8 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         rope_cos: Tensor,
         rope_sin: Tensor,
         hand_token: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        """`forward`, but with EVERY side's argmax codes `(1, S, Q)`.
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor | None]:
+        """`forward`, but with EVERY side's argmax codes `(1, S, Q)` (None: l1 head).
 
         Eager only (the export's torch-side streaming gate compares each
         side's codes against the windowed forward); the exported graph binds

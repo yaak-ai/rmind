@@ -9,7 +9,7 @@ Writes into `--out`:
 | file                         | what |
 |------------------------------|------|
 | `policy.onnx`                | `NeroPatchPolicyDecoderStep`, fp32, opset from torch's dynamo exporter |
-| `tokenizer.pt`               | the frozen tokenizer (state_dict + hparams; in-graph, shipped for audit) |
+| `tokenizer.pt`               | the frozen tokenizer (state_dict + hparams; in-graph, shipped for audit); NOT written for an `action_head: l1` policy |
 | `action_standardizer.json`   | the tokenizer's relative-mode action standardizer (nutron_standardizer v1) |
 | `state_standardizer.json`    | the policy's state standardizer (in-graph) |
 | `hand_standardizer.json`     | the hand token's per-column affine (in-graph; only with a hand token) |
@@ -26,6 +26,17 @@ GATES (non-zero exit on failure):
 2. **ONNX == eager**: ONNX Runtime (CPU) against the eager step on the first
    `--ort-frames` streamed frames (warm cache included): same tolerance on
    `actions`, identical `codes`, and new_k/new_v.
+
+CONTINUOUS HEAD (`action_head: l1`): the graph returns `actions` directly from
+the policy's L1 head -- no codes, no tokenizer decode -- so it has three outputs
+(`actions`, `new_k`, `new_v`; `codes` is an optional role in contract v3) and the
+code checks of gates 1-2 are skipped. The manifest carries `action_head: "l1"`
+and `tokenizer: null` (both as nutron-cli's contract v3 defines them, `patch/l1-serving`;
+the codes head's manifest is unchanged: no key, a tokenizer block): the frozen
+tokenizer only defines the action space -- relative mode + `standardizers.action`,
+which the host applies exactly as for the codes head -- so no `tokenizer.pt` is
+written or shipped. Gate 3 needs a nutron-cli that knows `action_head` (an older
+checkout refuses the key: a recorded failure, not a pass).
 3. nutron-cli's own `patch_contract_from_manifest` validates the manifest and
    `binding_problems` checks the REAL ONNX bindings -- what serving runs before
    the first step. The checkout is `--nutron-cli` (default `$NUTRON_CLI_ROOT`).
@@ -96,6 +107,14 @@ INPUT_ORDER = (
     "hand_token",
 )
 OUTPUT_ORDER = ("actions", "new_k", "new_v", "codes")
+#: the continuous (`action_head: l1`) graph: no codes output
+OUTPUT_ORDER_L1 = ("actions", "new_k", "new_v")
+
+
+def output_order(policy: NeroPatchPolicy) -> tuple[str, ...]:
+    return OUTPUT_ORDER_L1 if policy.action_head == "l1" else OUTPUT_ORDER
+
+
 # mac_factory refuses a checkpoint the export did not pin, unless this is "1"
 ALLOW_UNPINNED_ENV = "NERO_ALLOW_UNPINNED_CKPT"
 
@@ -231,10 +250,15 @@ def streaming_gate(  # noqa: PLR0914
             inputs.get("hand_token"),
         )
         actions, new_k, new_v, codes = step.forward_all_codes(*args)
-        bound = step(*args)[3]
+        bound_out = step(*args)
         past = step.advance(past, new_k, new_v)
         want = windowed[frame].permute(1, 0, 2).reshape(1, actions.shape[1], -1)
         worst = max(worst, float((actions - want).abs().max()))
+        worst = max(worst, float((bound_out[0] - want).abs().max()))
+        if codes is None or windowed_codes is None:
+            # continuous head: nothing discrete to compare
+            continue
+        bound = bound_out[3]
         valid_sides = [
             i
             for i, v in enumerate(inputs["side_valid"][0].tolist())
@@ -244,6 +268,14 @@ def streaming_gate(  # noqa: PLR0914
             agree += int(torch.equal(codes[0, side], windowed_codes[frame, side]))
             total += 1
         bound_agree += int(torch.equal(bound[0], windowed_codes[frame, valid_sides[0]]))
+    if windowed_codes is None:
+        return {
+            "max_abs": worst,
+            "code_agreement": None,
+            "bound_code_agreement": None,
+            "frames": frames,
+            "action_head": "l1",
+        }
     return {
         "max_abs": worst,
         "code_agreement": agree / total,
@@ -274,6 +306,7 @@ def ort_inputs(
 def export_onnx(
     step: NeroPatchPolicyDecoderStep, example: dict[str, Tensor], out: Path
 ) -> None:
+    order = output_order(step.policy)
     names = [n for n in INPUT_ORDER if n in example]
     args = tuple(example[n] for n in names)
     exported = torch.export.export(step, args=args, strict=False)
@@ -284,7 +317,7 @@ def export_onnx(
         external_data=False,
         optimize=True,
         input_names=list(names),
-        output_names=list(OUTPUT_ORDER),
+        output_names=list(order),
         report=False,
     )
 
@@ -306,18 +339,21 @@ def ort_gate(
     bound = {i.name for i in session.get_inputs()}
     past = step.empty_cache()
     worst = {"actions": 0.0, "new_k": 0.0, "new_v": 0.0}
-    codes_equal = True
+    order = output_order(step.policy)
+    has_codes = "codes" in order
+    codes_equal: bool | None = True if has_codes else None
     for frame in range(frames):
         named = ort_inputs(step, step.frame_inputs(batch, frame), past, frame)
         eager = step(*(named[n] for n in INPUT_ORDER if n in named))
         feeds = {k: v.numpy() for k, v in named.items() if k in bound}
-        outputs = dict(
-            zip(OUTPUT_ORDER, session.run(list(OUTPUT_ORDER), feeds), strict=True)
-        )
+        outputs = dict(zip(order, session.run(list(order), feeds), strict=True))
         for i, name in enumerate(("actions", "new_k", "new_v")):
             diff = (torch.from_numpy(outputs[name]) - eager[i]).abs().max()
             worst[name] = max(worst[name], float(diff))
-        codes_equal &= bool((torch.from_numpy(outputs["codes"]) == eager[3]).all())
+        if has_codes:
+            codes_equal = bool(codes_equal) and bool(
+                (torch.from_numpy(outputs["codes"]) == eager[3]).all()
+            )
         past = step.advance(past, eager[1], eager[2])
     return {"max_abs": worst, "codes_equal": codes_equal, "frames": frames}
 
@@ -482,7 +518,11 @@ def manifest(  # noqa: PLR0913
             "action_names": flat_names(sides),
             "chunk_size": int(tokenizer.action_horizon),
             "chunk_t0_offset_steps": 0,
-            "tokenizer": {
+            # the continuous head serves without a tokenizer (contract v3: null
+            # only with action_head "l1")
+            "tokenizer": None
+            if policy.action_head == "l1"
+            else {
                 "file": files["tokenizer"],
                 "sha256": None,
                 "num_quantizers": int(tokenizer.quantizer.num_quantizers),
@@ -530,6 +570,11 @@ def manifest(  # noqa: PLR0913
             # contract v3 `hand_sides` (WP0): one side-tagged token per entry; absent
             # = the one untagged token every pre-bimanual artifact has
             {"hand_sides": list(policy.hand_sides)} if policy.hand_sides else {}
+        )
+        | (
+            # the continuous head: the graph's `actions` come from the L1 head
+            # (no codes output, no tokenizer decode). Absent for the codes head.
+            {"action_head": "l1"} if policy.action_head == "l1" else {}
         )
         | {
             # the graph has no goal input whether the policy trained "no_goal"
@@ -638,7 +683,7 @@ class RoleDecoderStep(torch.nn.Module):
 
     def forward(self, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
         outputs = self.step(*(inputs[n].float() for n in INPUT_ORDER if n in inputs))
-        return dict(zip(OUTPUT_ORDER, outputs, strict=True))
+        return dict(zip(output_order(self.step.policy), outputs, strict=True))
 
 
 def _contract_dict(contract: Any) -> dict[str, Any]:
@@ -649,7 +694,26 @@ def _contract_dict(contract: Any) -> dict[str, Any]:
     return json.loads(json.dumps(dict(contract)))
 
 
-def contract_mismatches(policy: NeroPatchPolicy, contract: Any) -> list[str]:  # noqa: PLR0914, PLR0915
+def _tokenizer_mismatches(policy: NeroPatchPolicy, d: dict[str, Any]) -> list[str]:
+    """The codes head decodes through the tokenizer: its geometry must match the
+    contract's block. An l1 policy serves without one (contract: null)."""
+    if policy.action_head == "l1":
+        return []
+    tokenizer = policy.tokenizer
+    tok = d.get("tokenizer") or {}
+    have = {
+        "num_quantizers": int(tokenizer.quantizer.num_quantizers),
+        "codebook_size": int(tokenizer.quantizer.codebook_size),
+        "keyframe_stride": int(tokenizer.keyframe_stride),
+    }
+    return [
+        f"tokenizer.{key}: checkpoint {value!r}, contract {tok.get(key)!r}"
+        for key, value in have.items()
+        if value != tok.get(key)
+    ]
+
+
+def contract_mismatches(policy: NeroPatchPolicy, contract: Any) -> list[str]:  # noqa: PLR0915
     """Everything a served contract v3 states about the MODEL, checked against a
     loaded policy: [] = this policy is the one the artifact describes.
 
@@ -710,22 +774,8 @@ def contract_mismatches(policy: NeroPatchPolicy, contract: Any) -> list[str]:  #
         "relative_mask", policy_relative_mask(policy, n_sides), d.get("relative_mask")
     )
     check("chunk_size", int(tokenizer.action_horizon), d.get("chunk_size"))
-    tok = d.get("tokenizer") or {}
-    check(
-        "tokenizer.num_quantizers",
-        int(tokenizer.quantizer.num_quantizers),
-        tok.get("num_quantizers"),
-    )
-    check(
-        "tokenizer.codebook_size",
-        int(tokenizer.quantizer.codebook_size),
-        tok.get("codebook_size"),
-    )
-    check(
-        "tokenizer.keyframe_stride",
-        int(tokenizer.keyframe_stride),
-        tok.get("keyframe_stride"),
-    )
+    check("action_head", policy.action_head, d.get("action_head", "codes"))
+    out.extend(_tokenizer_mismatches(policy, d))
     hand = d.get("hand")
     check("hand token", bool(policy.use_hand), hand is not None)
     if policy.use_hand and hand is not None:
@@ -1021,7 +1071,12 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         "state_standardizer": "state_standardizer.json",
         "action_standardizer": "action_standardizer.json",
     }
-    save_tokenizer(policy, args.out / files["tokenizer"])
+    if policy.action_head == "l1":
+        # no tokenizer at serving: not written, not named, not shipped
+        del files["tokenizer"]
+        (args.out / "tokenizer.pt").unlink(missing_ok=True)
+    else:
+        save_tokenizer(policy, args.out / files["tokenizer"])
     policy.tokenizer.standardizer.save(args.out / files["action_standardizer"])
     state_std = cast(
         "AxisStandardizer", policy.state_standardizer or AxisStandardizer()
@@ -1094,13 +1149,12 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         logger.info("latency (local GPU, NOT Orin)", **report["latency"])
 
     failures = []
-    if (
-        gate["max_abs"] > args.tol
-        or gate["code_agreement"] < 1.0
-        or gate["bound_code_agreement"] < 1.0
+    if gate["max_abs"] > args.tol or (
+        gate["code_agreement"] is not None
+        and (gate["code_agreement"] < 1.0 or gate["bound_code_agreement"] < 1.0)
     ):
         failures.append("streaming != windowed")
-    if max(ort["max_abs"].values()) > args.tol or not ort["codes_equal"]:
+    if max(ort["max_abs"].values()) > args.tol or ort["codes_equal"] is False:
         failures.append("ONNX != eager")
     gate3 = report["nutron_cli"]
     if gate3["status"] == "refused":

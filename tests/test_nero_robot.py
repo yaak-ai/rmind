@@ -116,9 +116,26 @@ def _policy(
     hand: bool = True,
     conditioned: bool = True,
     hand_sides: tuple[str, ...] = (),
+    l1: bool = False,
     **kwargs: Any,
 ) -> NeroPatchPolicy:
     torch.manual_seed(0)
+    heads: dict[str, Any] = (
+        {  # the continuous head in place of codes + offset
+            "action_head": "l1",
+            "code_head": None,
+            "offset_head": None,
+            "l1_head": nn.Sequential(
+                nn.Linear(POLICY_DIM, 32), nn.ReLU(), nn.Linear(32, CHUNK * 13)
+            ),
+        }
+        if l1
+        else {
+            "code_head": nn.Linear(POLICY_DIM, QUANTIZERS * CODEBOOK),
+            "offset_head": nn.Linear(POLICY_DIM + LATENT * int(conditioned), LATENT),
+        }
+    )
+    kwargs = heads | kwargs
     tokens = 1 + int(hand) * (len(hand_sides) or 1) + 3 * NUM_PATCHES
     if hand_sides:
         kwargs["hand_sides"] = hand_sides
@@ -145,8 +162,6 @@ def _policy(
             attn_dropout=0.0,
         ),
         tokenizer=_tokenizer(relative_mode),
-        code_head=nn.Linear(POLICY_DIM, QUANTIZERS * CODEBOOK),
-        offset_head=nn.Linear(POLICY_DIM + LATENT * int(conditioned), LATENT),
         losses=ModuleDict(
             modules={"code": FocalLoss(), "offset": nn.SmoothL1Loss(beta=0.2)}
         ),
@@ -716,6 +731,7 @@ def test_streaming_equals_windowed(relative_mode: str) -> None:  # noqa: PLR0914
     with torch.no_grad():
         features = policy._features(batch)  # noqa: SLF001  (1, 40, d)
         windowed, windowed_codes = policy._predict_chunk_and_codes(features[0])  # noqa: SLF001
+    assert windowed_codes is not None
     step = NeroPatchPolicyDecoderStep(policy=policy)
     past = step.empty_cache()
     assert past[0].shape[-2] == (WINDOW - 1) * step.tokens_per_frame
@@ -1261,3 +1277,116 @@ def test_hand_token_refuses_per_side_only_hand_columns() -> None:
 def test_hand_token_absent_hand_stream_still_falls_back_to_no_hand() -> None:
     batch = {k: v for k, v in _batch().items() if not k.startswith("hand.")}
     assert _policy().hand_vector(batch) is None
+
+
+# ------------------------------------------------- continuous (l1) action head
+
+
+def test_l1_head_trains_with_a_single_masked_l1_loss() -> None:
+    policy = _policy(l1=True, quality_metrics=True).train()
+    assert policy.code_head is None
+    assert policy.offset_head is None
+    out = policy.compute_metrics(_batch(t=4))
+    losses = out["policy", "loss"]
+    assert isinstance(losses, TensorDict)
+    assert set(losses.keys()) == {"action_l1"}
+    loss = losses["action_l1"]
+    assert isinstance(loss, Tensor)
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert policy.l1_head is not None
+    assert all(p.grad is not None for p in policy.l1_head.parameters())
+    assert "ev/arm/h10_29" in out["policy", "metric"]
+
+
+def test_l1_padded_steps_carry_no_loss() -> None:
+    """Garbage in the hold-padded steps must not move the l1 loss at all."""
+    policy = _policy(l1=True)
+    batch = _batch(t=3)
+    assert batch["action.is_pad"].any()
+    base = policy.compute_metrics(batch)["policy", "loss", "action_l1"]
+    garbage = dict(batch)
+    chunk = batch["action.chunk"].clone()
+    chunk[batch["action.is_pad"][..., None, None].expand_as(chunk)] = 1e3
+    garbage["action.chunk"] = chunk
+    moved = policy.compute_metrics(garbage)["policy", "loss", "action_l1"]
+    assert isinstance(base, Tensor)
+    assert isinstance(moved, Tensor)
+    assert torch.allclose(base, moved, rtol=0, atol=1e-6)
+
+
+def test_masked_l1_is_the_mean_over_real_elements() -> None:
+    pred = torch.zeros(2, 4, 3)
+    target = torch.ones(2, 4, 3)
+    target[:, 2:] = 100.0  # padded
+    real = torch.tensor([[1, 1, 0, 0], [1, 1, 0, 0]], dtype=torch.bool)
+    loss = NeroPatchPolicy._masked_l1(pred, target, real)  # noqa: SLF001
+    assert loss.item() == pytest.approx(1.0)
+
+
+def test_l1_head_config_is_checked() -> None:
+    with pytest.raises(ValueError, match="no code_head"):
+        _policy(l1=True, code_head=nn.Linear(POLICY_DIM, QUANTIZERS * CODEBOOK))
+    with pytest.raises(ValueError, match="l1_head outputs"):
+        _policy(l1=True, l1_head=nn.Linear(POLICY_DIM, 7))
+    with pytest.raises(ValueError, match="needs code_head"):
+        _policy(code_head=None)
+    with pytest.raises(ValueError, match="'codes' or 'l1'"):
+        _policy(action_head="mse")
+
+
+def test_l1_streaming_equals_windowed_and_has_no_codes_output() -> None:  # noqa: PLR0914
+    policy = _policy(l1=True, relative_mode="all")
+    batch = _batch(t=20, b=1, seed=3)
+    with torch.no_grad():
+        features = policy._features(batch)  # noqa: SLF001
+        windowed, codes = policy._predict_chunk_and_codes(features[0])  # noqa: SLF001
+    assert codes is None
+    step = NeroPatchPolicyDecoderStep(policy=policy)
+    past = step.empty_cache()
+    worst = 0.0
+    for frame in range(20):
+        inputs = step.frame_inputs(batch, frame)
+        cos, sin = step.rope(frame)
+        with torch.no_grad():
+            out = step(
+                inputs["images"],
+                inputs["state"],
+                inputs["side_valid"],
+                *past,
+                cos,
+                sin,
+                inputs.get("hand_token"),
+            )
+        assert len(out) == 3  # noqa: PLR2004  (actions, new_k, new_v)
+        actions, new_k, new_v = out
+        past = step.advance(past, new_k, new_v)
+        want = windowed[frame].permute(1, 0, 2).reshape(1, CHUNK, 26)
+        worst = max(worst, float((actions - want).abs().max()))
+    assert worst <= 1e-4, worst  # noqa: PLR2004
+
+
+def test_l1_export_flags_the_head_and_names_no_tokenizer(tmp_path: Path) -> None:
+    """The l1 bundle: three ONNX outputs, manifest `action_head: l1` and
+    `tokenizer: null` (no tokenizer.pt); a nutron-cli that knows the head
+    (patch/l1-serving) validates the manifest and the real ONNX bindings. An
+    older checkout refuses the key -- a recorded failure, never a pass."""
+    if not (NUTRON_CLI / "runtime/jetson/policy_contract.py").exists():
+        pytest.skip("no nutron-cli checkout ($NUTRON_CLI_ROOT)")
+    if (
+        "action_head"
+        not in (NUTRON_CLI / "runtime/jetson/policy_contract.py").read_text()
+    ):
+        pytest.skip("this nutron-cli checkout predates action_head (patch/l1-serving)")
+    _, report, out = _export(tmp_path, _policy(l1=True), nutron_cli=NUTRON_CLI)
+    assert report["failures"] == [], report
+    manifest = json.loads((out / "policy_manifest.json").read_text())
+    assert manifest["action_head"] == "l1"
+    assert manifest["tokenizer"] is None
+    assert not (out / "tokenizer.pt").exists()
+    assert "tokenizer" not in report["files"]
+    assert "codes" not in manifest["io"]["outputs"]
+    gate3 = report["nutron_cli"]
+    assert gate3["status"] == "ok", gate3
+    assert gate3["binding_problems"] == []
+    assert report["streaming_vs_windowed"]["code_agreement"] is None

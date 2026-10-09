@@ -113,7 +113,12 @@ def expected(  # noqa: PLR0914
         out_actions.append(
             absolute.reshape(t, absolute.shape[1], -1).float().cpu().numpy()
         )
-        out_codes.append(codes[:, first_valid].cpu().numpy())
+        out_codes.append(
+            # the continuous (l1) head has no codes: an empty (t, 0) column
+            np.zeros((t, 0), dtype=np.int64)
+            if codes is None
+            else codes[:, first_valid].cpu().numpy()
+        )
     return np.concatenate(out_actions), np.concatenate(out_codes)
 
 
