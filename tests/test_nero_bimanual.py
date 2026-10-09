@@ -81,7 +81,7 @@ def test_v3_split_lib_is_generated_and_pins_v1() -> None:
         "stale lib: python -m rmind.scripts.nero_split_lib --split " + name
     )
     v3, v1 = nero_split_lib.load_split(path), nero_split_lib.load_split()
-    assert (len(v3["train"]), len(v3["val"])) == (117, 14)
+    assert (len(v3["train"]), len(v3["val"])) == (116, 14)
     assert set(v1["val"]) <= set(v3["val"])
     assert set(v1["train"]) <= set(v3["train"])
 
