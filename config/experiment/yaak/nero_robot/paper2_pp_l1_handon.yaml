@@ -10,8 +10,15 @@
 # paper_pp_w2_c10_l1's recipe.
 #
 # Tokens: 2 frames x (1 state + 2 hand + 3 x 256) = 1542 per sample.
+# v3 corpus (2026-10-07 + 2026-10-09, split nero_cube_bimanual_v3): datamodule
+# nero_robot_bimanual_v3_cached, NERO_STATS_DIR = stats_c10_v3, NERO_ROBOT_DIR /
+# NERO_FRAME_CACHE = the v3 roots (224x224 stretch), and pass
+# +nero_split_file=<repo>/config/splits/nero_cube_bimanual_v3.json (the
+# arm-selection callback reads the classes from it). lr_total_steps
+# (nero_steps): 298 batches of 128 x 124 epochs = 36952.
 defaults:
   - /experiment/yaak/nero_robot/paper_pp_w2_c10_l1
+  - override /datamodule: yaak/nero_robot_bimanual_v3_cached
   - _self_
 
 run_name: paper2_pp_l1_handon
@@ -33,6 +40,8 @@ model:
     out_features: ${policy_embedding_dim}
     hidden_features: [512, 512]
     input_norm: false
+
+lr_total_steps: 36952
 
 wandb:
   tags: [nero_robot, causal_patch_policy, bimanual, hand_on, paper, paper2, window2, c10, l1]

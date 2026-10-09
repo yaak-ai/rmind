@@ -12,13 +12,21 @@
 # * codebook_size / num_quantizers = what the POLICY predicts: for a
 #   paper2_tok_split tokenizer num_quantizers is 4 (2 arm + 2 hand levels, the
 #   code head emits 4 x 16 logits per side); for cb64 / cb256 it is 2;
-# * lr_total_steps = len(train_dataloader) x max_epochs for the corpus in use.
 # Inference codes are ARGMAX (sample_codes false, the default).
+# v3 corpus (2026-10-07 + 2026-10-09, split nero_cube_bimanual_v3): datamodule
+# nero_robot_bimanual_v3_cached, NERO_STATS_DIR = stats_c10_v3, NERO_ROBOT_DIR /
+# NERO_FRAME_CACHE = the v3 roots (224x224 stretch), and pass
+# +nero_split_file=<repo>/config/splits/nero_cube_bimanual_v3.json (the
+# arm-selection callback reads the classes from it). lr_total_steps
+# (nero_steps): 298 batches of 128 x 124 epochs = 36952.
 defaults:
   - /experiment/yaak/nero_robot/paper_pp_w2_c10_codes
+  - override /datamodule: yaak/nero_robot_bimanual_v3_cached
   - _self_
 
 run_name: paper2_pp_codes_cond
+
+lr_total_steps: 36952
 
 wandb:
   tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, c10, offset_cond]
