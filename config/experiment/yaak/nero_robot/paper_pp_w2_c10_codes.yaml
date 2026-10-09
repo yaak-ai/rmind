@@ -72,10 +72,14 @@ num_heads: 8
 batch_size: 128
 lr: 3e-4
 lr_warmup_steps: 500
-# len(train_dataloader) x max_epochs (nero_steps)
-lr_total_steps: 20000
+# len(train_dataloader) x max_epochs (nero_steps): ~20.6k 2-frame clips (the
+# 20848 rows minus each run's first 3 frames, which have no t-3 frame) -> 161
+# batches of 128 (drop_last, 2-frame clips) x 124 epochs = 19964 (~20k steps x
+# 128 = 2.6M samples, ~125 passes over the corpus; validate + checkpoint every
+# 4th epoch = every 644 steps)
+lr_total_steps: 19964
 trainer:
-  max_epochs: 100
+  max_epochs: 124
   check_val_every_n_epoch: 4
 
 model:
