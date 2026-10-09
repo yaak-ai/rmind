@@ -1366,21 +1366,27 @@ def test_l1_streaming_equals_windowed_and_has_no_codes_output() -> None:  # noqa
     assert worst <= 1e-4, worst  # noqa: PLR2004
 
 
-def test_l1_export_flags_the_head_and_serves_without_the_flag(tmp_path: Path) -> None:
-    """The l1 bundle: three ONNX outputs, manifest `action_head: l1`; today's
-    nutron-cli refuses only the unknown key (the manifest without it passes the
-    contract and the real ONNX bindings)."""
+def test_l1_export_flags_the_head_and_names_no_tokenizer(tmp_path: Path) -> None:
+    """The l1 bundle: three ONNX outputs, manifest `action_head: l1` and
+    `tokenizer: null` (no tokenizer.pt); a nutron-cli that knows the head
+    (patch/l1-serving) validates the manifest and the real ONNX bindings. An
+    older checkout refuses the key -- a recorded failure, never a pass."""
     if not (NUTRON_CLI / "runtime/jetson/policy_contract.py").exists():
         pytest.skip("no nutron-cli checkout ($NUTRON_CLI_ROOT)")
+    if (
+        "action_head"
+        not in (NUTRON_CLI / "runtime/jetson/policy_contract.py").read_text()
+    ):
+        pytest.skip("this nutron-cli checkout predates action_head (patch/l1-serving)")
     _, report, out = _export(tmp_path, _policy(l1=True), nutron_cli=NUTRON_CLI)
     assert report["failures"] == [], report
     manifest = json.loads((out / "policy_manifest.json").read_text())
     assert manifest["action_head"] == "l1"
+    assert manifest["tokenizer"] is None
+    assert not (out / "tokenizer.pt").exists()
+    assert "tokenizer" not in report["files"]
     assert "codes" not in manifest["io"]["outputs"]
     gate3 = report["nutron_cli"]
-    assert gate3["status"] in {"ok", "expected_refusal"}, gate3
-    if gate3["status"] == "expected_refusal":
-        compat = gate3["compat_without_action_head"]
-        assert compat["status"] == "ok", compat
-        assert compat["binding_problems"] == []
+    assert gate3["status"] == "ok", gate3
+    assert gate3["binding_problems"] == []
     assert report["streaming_vs_windowed"]["code_agreement"] is None

@@ -9,7 +9,7 @@ Writes into `--out`:
 | file                         | what |
 |------------------------------|------|
 | `policy.onnx`                | `NeroPatchPolicyDecoderStep`, fp32, opset from torch's dynamo exporter |
-| `tokenizer.pt`               | the frozen tokenizer (state_dict + hparams; in-graph, shipped for audit) |
+| `tokenizer.pt`               | the frozen tokenizer (state_dict + hparams; in-graph, shipped for audit); NOT written for an `action_head: l1` policy |
 | `action_standardizer.json`   | the tokenizer's relative-mode action standardizer (nutron_standardizer v1) |
 | `state_standardizer.json`    | the policy's state standardizer (in-graph) |
 | `hand_standardizer.json`     | the hand token's per-column affine (in-graph; only with a hand token) |
@@ -31,14 +31,12 @@ CONTINUOUS HEAD (`action_head: l1`): the graph returns `actions` directly from
 the policy's L1 head -- no codes, no tokenizer decode -- so it has three outputs
 (`actions`, `new_k`, `new_v`; `codes` is an optional role in contract v3) and the
 code checks of gates 1-2 are skipped. The manifest carries `action_head: "l1"`
-(the key is absent for the codes head, whose manifest is unchanged); the
-`tokenizer` block and `tokenizer.pt` stay, describing the frozen tokenizer that
-only defines the action space (relative mode + `standardizers.action`, which the
-host applies exactly as before). nutron-cli's strict contract parse refuses the
-unknown `action_head` key today, so gate 3 is run twice for an l1 bundle: as
-written (the refusal is recorded as `expected_refusal`, a warning) and on a copy
-without the key (`nutron_cli_compat`, which must pass: proof that the graph,
-bindings and every other field already serve).
+and `tokenizer: null` (both as nutron-cli's contract v3 defines them, `patch/l1-serving`;
+the codes head's manifest is unchanged: no key, a tokenizer block): the frozen
+tokenizer only defines the action space -- relative mode + `standardizers.action`,
+which the host applies exactly as for the codes head -- so no `tokenizer.pt` is
+written or shipped. Gate 3 needs a nutron-cli that knows `action_head` (an older
+checkout refuses the key: a recorded failure, not a pass).
 3. nutron-cli's own `patch_contract_from_manifest` validates the manifest and
    `binding_problems` checks the REAL ONNX bindings -- what serving runs before
    the first step. The checkout is `--nutron-cli` (default `$NUTRON_CLI_ROOT`).
@@ -520,7 +518,11 @@ def manifest(  # noqa: PLR0913
             "action_names": flat_names(sides),
             "chunk_size": int(tokenizer.action_horizon),
             "chunk_t0_offset_steps": 0,
-            "tokenizer": {
+            # the continuous head serves without a tokenizer (contract v3: null
+            # only with action_head "l1")
+            "tokenizer": None
+            if policy.action_head == "l1"
+            else {
                 "file": files["tokenizer"],
                 "sha256": None,
                 "num_quantizers": int(tokenizer.quantizer.num_quantizers),
@@ -655,45 +657,6 @@ def nutron_gate(
     }
 
 
-def l1_nutron_gate(
-    pc_path: Path,
-    payload: dict[str, Any],
-    as_written: dict[str, Any],
-    out: Path,
-    onnx_path: Path,
-) -> dict[str, Any]:
-    """Gate 3 for a continuous-head bundle: today's nutron-cli refuses the unknown
-    `action_head` key, so the manifest is ALSO validated without it (`compat`):
-    status `expected_refusal` (+ compat ok) = everything but the flag serves;
-    a compat refusal / binding problem keeps that status (a real failure)."""
-    if as_written["status"] == "ok":
-        return as_written  # a nutron-cli that knows the flag
-    probe = out / "nutron_compat_probe"
-    probe.mkdir(exist_ok=True)
-    stripped = {k: v for k, v in payload.items() if k != "action_head"}
-    for name in ("model", "tokenizer"):
-        target = probe / payload[name]["file"]
-        target.unlink(missing_ok=True)
-        target.symlink_to((out / payload[name]["file"]).resolve())
-    for block in payload["standardizers"].values():
-        target = probe / block["file"]
-        target.unlink(missing_ok=True)
-        target.symlink_to((out / block["file"]).resolve())
-    stripped_path = probe / "policy_manifest.json"
-    stripped_path.write_text(json.dumps(stripped, indent=1, sort_keys=True) + "\n")
-    compat = nutron_gate(pc_path, stripped_path, probe, onnx_path)
-    refused_on_flag = as_written["status"] == "refused" and "action_head" in str(
-        as_written.get("error", "")
-    )
-    if refused_on_flag and compat["status"] == "ok":
-        return {
-            "status": "expected_refusal",
-            "as_written": as_written,
-            "compat_without_action_head": compat,
-        }
-    return compat | {"as_written": as_written}
-
-
 def save_tokenizer(policy: NeroPatchPolicy, path: Path) -> None:
     tokenizer = policy.tokenizer
     torch.save(
@@ -731,7 +694,26 @@ def _contract_dict(contract: Any) -> dict[str, Any]:
     return json.loads(json.dumps(dict(contract)))
 
 
-def contract_mismatches(policy: NeroPatchPolicy, contract: Any) -> list[str]:  # noqa: PLR0914, PLR0915
+def _tokenizer_mismatches(policy: NeroPatchPolicy, d: dict[str, Any]) -> list[str]:
+    """The codes head decodes through the tokenizer: its geometry must match the
+    contract's block. An l1 policy serves without one (contract: null)."""
+    if policy.action_head == "l1":
+        return []
+    tokenizer = policy.tokenizer
+    tok = d.get("tokenizer") or {}
+    have = {
+        "num_quantizers": int(tokenizer.quantizer.num_quantizers),
+        "codebook_size": int(tokenizer.quantizer.codebook_size),
+        "keyframe_stride": int(tokenizer.keyframe_stride),
+    }
+    return [
+        f"tokenizer.{key}: checkpoint {value!r}, contract {tok.get(key)!r}"
+        for key, value in have.items()
+        if value != tok.get(key)
+    ]
+
+
+def contract_mismatches(policy: NeroPatchPolicy, contract: Any) -> list[str]:  # noqa: PLR0915
     """Everything a served contract v3 states about the MODEL, checked against a
     loaded policy: [] = this policy is the one the artifact describes.
 
@@ -792,22 +774,8 @@ def contract_mismatches(policy: NeroPatchPolicy, contract: Any) -> list[str]:  #
         "relative_mask", policy_relative_mask(policy, n_sides), d.get("relative_mask")
     )
     check("chunk_size", int(tokenizer.action_horizon), d.get("chunk_size"))
-    tok = d.get("tokenizer") or {}
-    check(
-        "tokenizer.num_quantizers",
-        int(tokenizer.quantizer.num_quantizers),
-        tok.get("num_quantizers"),
-    )
-    check(
-        "tokenizer.codebook_size",
-        int(tokenizer.quantizer.codebook_size),
-        tok.get("codebook_size"),
-    )
-    check(
-        "tokenizer.keyframe_stride",
-        int(tokenizer.keyframe_stride),
-        tok.get("keyframe_stride"),
-    )
+    check("action_head", policy.action_head, d.get("action_head", "codes"))
+    out.extend(_tokenizer_mismatches(policy, d))
     hand = d.get("hand")
     check("hand token", bool(policy.use_hand), hand is not None)
     if policy.use_hand and hand is not None:
@@ -1103,7 +1071,12 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         "state_standardizer": "state_standardizer.json",
         "action_standardizer": "action_standardizer.json",
     }
-    save_tokenizer(policy, args.out / files["tokenizer"])
+    if policy.action_head == "l1":
+        # no tokenizer at serving: not written, not named, not shipped
+        del files["tokenizer"]
+        (args.out / "tokenizer.pt").unlink(missing_ok=True)
+    else:
+        save_tokenizer(policy, args.out / files["tokenizer"])
     policy.tokenizer.standardizer.save(args.out / files["action_standardizer"])
     state_std = cast(
         "AxisStandardizer", policy.state_standardizer or AxisStandardizer()
@@ -1168,15 +1141,6 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
     else:
         report["nutron_cli"] = nutron_gate(pc_path, manifest_path, args.out, onnx_path)
         logger.info("nutron-cli contract", **report["nutron_cli"])
-        if "action_head" in payload:
-            report["nutron_cli"] = l1_nutron_gate(
-                pc_path, payload, report["nutron_cli"], args.out, onnx_path
-            )
-            if report["nutron_cli"]["status"] == "expected_refusal":
-                warnings.append(
-                    "nutron-cli does not know `action_head` yet (expected refusal); "
-                    "the manifest without it passes contract + bindings"
-                )
 
     flops = flops_per_step(policy, cache_frames=window - 1, vit_gflops=args.vit_gflops)
     report["flops_per_step"] = flops
