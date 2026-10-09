@@ -58,7 +58,10 @@ from torch.optim import Optimizer  # noqa: TC002 (pydantic validate_call)
 
 from rmind.components import optimizers
 from rmind.components.nn import KeyframeInterpolation
-from rmind.components.vq import ResidualVQ  # noqa: TC001 (pydantic validate_call)
+from rmind.components.vq import (  # noqa: TC001 (pydantic validate_call)
+    GroupedResidualVQ,
+    ResidualVQ,
+)
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.data.nero_robot import (
     ARM_AXES,
@@ -115,7 +118,12 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
         self,
         *,
         encoder: HydraConfig[Module] | InstanceOf[Module],
-        quantizer: HydraConfig[ResidualVQ] | InstanceOf[ResidualVQ],
+        #: `GroupedResidualVQ` (with `AxisGroupChunkMLPEncoder/Decoder`) gives
+        #: each axis group, e.g. arm and fingers, its own codes (opt-in)
+        quantizer: HydraConfig[ResidualVQ]
+        | HydraConfig[GroupedResidualVQ]
+        | InstanceOf[ResidualVQ]
+        | InstanceOf[GroupedResidualVQ],
         decoder: HydraConfig[Module] | InstanceOf[Module],
         standardizer: HydraConfig[Module] | InstanceOf[Module] | None = None,
         action_horizon: int = 100,
@@ -146,7 +154,9 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
 
         hparams: dict[str, Any] = {}
         self.encoder = init_hydra_param(hparams, "encoder", encoder)
-        self.quantizer: ResidualVQ = init_hydra_param(hparams, "quantizer", quantizer)
+        self.quantizer: ResidualVQ | GroupedResidualVQ = init_hydra_param(
+            hparams, "quantizer", quantizer
+        )
         self.decoder = init_hydra_param(hparams, "decoder", decoder)
         std = init_hydra_param(hparams, "standardizer", standardizer)
         self.standardizer: AxisStandardizer = AxisStandardizer() if std is None else std

@@ -1,0 +1,38 @@
+# @package _global_
+#
+# patch/paper round 2: the paper L1 policy (paper_pp_w2_c10_l1: window 2 at
+# 10 Hz, chunk 10, 224x224 stretch x 3 cameras, 8L/8H/384, continuous L1 head)
+# WITH hand feedback: one side-tagged hand token per side per frame (groups
+# current + pos_err, + hand_age + hand_valid = 14-d per side), exactly the
+# bimanual_causal hand_on token (hand_sides left/right, the pooled
+# NormedTokenEmbedding + HandTokenStandardizer, no_hand substitution with
+# dropout 0.2 per sample / 0.1 per frame). Everything else is
+# paper_pp_w2_c10_l1's recipe.
+#
+# Tokens: 2 frames x (1 state + 2 hand + 3 x 256) = 1542 per sample.
+defaults:
+  - /experiment/yaak/nero_robot/paper_pp_w2_c10_l1
+  - _self_
+
+run_name: paper2_pp_l1_handon
+
+hand_groups: [current, pos_err]
+hand_sides: [left, right]
+num_hand_tokens: 2
+use_hand_token: 1
+hand_token_dim: 14 # 6 + 6 + age + valid
+hand_dropout_sample: 0.2
+hand_dropout_frame: 0.1
+reliance_metrics: true
+
+model:
+  # bimanual_hand_off nulls it; robot.yaml's hand embedding
+  hand_embedding:
+    _target_: rmind.components.nn.NormedTokenEmbedding
+    in_features: ${hand_token_dim}
+    out_features: ${policy_embedding_dim}
+    hidden_features: [512, 512]
+    input_norm: false
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_on, paper, paper2, window2, c10, l1]

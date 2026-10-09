@@ -1,0 +1,9 @@
+# @package _global_
+# paper2_tok_cb64 with codebook 256: depth 2 x 8 = 16 bits per side-chunk =
+# 0.123 bits/value (inside the paper's ~0.11-0.23).
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_cb64
+  - _self_
+
+run_name: paper2_tok_cb256
+codebook_size: 256

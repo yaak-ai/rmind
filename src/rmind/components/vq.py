@@ -84,3 +84,88 @@ class ResidualVQ(Module):
             entropy = -(p * p.clamp_min(1e-10).log()).sum()
             out.append(entropy.exp())
         return torch.stack(out)
+
+
+@final
+class GroupedResidualVQ(Module):
+    """Independent residual VQs over consecutive latent slices (one per axis group).
+
+    Presents the `ResidualVQ` interface over the concatenation, so a consumer that
+    only knows "g levels x c codes over a `dim` latent" (the patch policy's code
+    head, `lookup`, `perplexity`) is unchanged: `num_quantizers` is
+    `groups * depth` and the code columns are group-major ([g0 q0, g0 q1, g1 q0,
+    g1 q1, ...]). Each group has its own codebooks; `dim` is `groups * group_dim`.
+    """
+
+    def __init__(
+        self,
+        *,
+        groups: int,
+        group_dim: int,
+        codebook_size: int,
+        num_quantizers_per_group: int,
+        **kwargs: float | bool,
+    ) -> None:
+        super().__init__()
+        self.groups = groups
+        self.group_dim = group_dim
+        self.depth = num_quantizers_per_group
+        self.dim = groups * group_dim
+        self.codebook_size = codebook_size
+        self.num_quantizers = groups * num_quantizers_per_group
+        self.quantizers: list[ResidualVQ] = torch.nn.ModuleList(  # ty:ignore[invalid-assignment]
+            ResidualVQ(
+                dim=group_dim,
+                codebook_size=codebook_size,
+                num_quantizers=num_quantizers_per_group,
+                **kwargs,  # ty:ignore[invalid-argument-type]
+            )
+            for _ in range(groups)
+        )
+
+    @property
+    def codebook_sizes(self) -> tuple[int, ...]:
+        return (self.codebook_size,) * self.num_quantizers
+
+    def forward(self, z: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
+        codes, z_q, commit = [], [], z.new_zeros(())
+        for quantizer, zg in zip(
+            self.quantizers, z.split(self.group_dim, dim=-1), strict=True
+        ):
+            c, q, vq = quantizer(zg)
+            codes.append(c)
+            z_q.append(q)
+            commit += vq["commit"]
+        return (
+            torch.cat(codes, dim=-1),
+            torch.cat(z_q, dim=-1),
+            {"codebook": z.new_zeros(()), "commit": commit},
+        )
+
+    def lookup(self, codes: Tensor) -> Tensor:
+        return torch.cat(
+            [
+                quantizer.lookup(c.contiguous())
+                for quantizer, c in zip(
+                    self.quantizers, codes.split(self.depth, dim=-1), strict=True
+                )
+            ],
+            dim=-1,
+        )
+
+    def codebook(self, level: int) -> Tensor:
+        """Level `level`'s codebook embedded in the full latent `(c, dim)` (zeros elsewhere)."""
+        g, q = divmod(level, self.depth)
+        book = self.quantizers[g].codebook(q)
+        out = book.new_zeros(book.shape[0], self.dim)
+        out[:, g * self.group_dim : (g + 1) * self.group_dim] = book
+        return out
+
+    @torch.no_grad()
+    def perplexity(self, codes: Tensor) -> Tensor:
+        return torch.cat([
+            quantizer.perplexity(c)
+            for quantizer, c in zip(
+                self.quantizers, codes.split(self.depth, dim=-1), strict=True
+            )
+        ])

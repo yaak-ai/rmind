@@ -1,0 +1,15 @@
+# @package _global_
+# paper2_tok_cb64's schedule with SEPARATE arm and hand codes (model
+# yaak/nero_chunk_tokenizer/mlp_split): per side an arm chunk 10 x 7 and a hand
+# chunk 10 x 6, each its own MLP encoder/decoder and RVQ depth 2 x 16 (latent
+# 512 each). 2 x 8 = 16 bits per side-chunk = 0.123 bits/value; 0.114 bits/value
+# on the arm (8 / 70), 0.133 on the hand (8 / 60). A policy on it predicts 4
+# code levels (num_quantizers 4 on the POLICY side).
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_cb64
+  - override /model: yaak/nero_chunk_tokenizer/mlp_split
+  - _self_
+
+run_name: paper2_tok_split
+codebook_size: 16
+num_quantizers: 2

@@ -1,0 +1,27 @@
+# @package _global_
+#
+# patch/paper round 2: paper_tok_c10 (MLP RVQ-VAE, 10 x 13 per side, depth 2,
+# latent 512) with a BIGGER codebook and a LONG schedule.
+#
+# * bits: depth 2 x codebook 64 = 12 bits per side-chunk = 0.092 bits/value
+#   (paper_tok_c10: 8 bits = 0.062; the Patch Policy / VQ-BeT real-robot
+#   settings are ~0.11-0.23 bits/value, paper2_tok_cb256 / _split sit inside);
+# * 1500 epochs (paper_tok_c10: 400, val EV still rising), val + checkpoint
+#   every 10th epoch, cosine to 0 at the end;
+# * ⚠️ lr_total_steps MUST be len(train_dataloader) x max_epochs for the corpus
+#   in use (nero_steps). The value here is the 2026-10-07 corpus (81 batches of
+#   256); a larger corpus overrides it on the command line.
+defaults:
+  - /experiment/yaak/nero_robot/paper_tok_c10
+  - _self_
+
+run_name: paper2_tok_cb64
+codebook_size: 64
+
+lr_total_steps: 121500
+trainer:
+  max_epochs: 1500
+  check_val_every_n_epoch: 10
+
+wandb:
+  tags: [nero_robot, chunk_tokenizer, bimanual, paper, paper2, c10]

@@ -1,0 +1,74 @@
+# mlp.yaml with SEPARATE codes for the arm and the hand (patch/paper, opt-in):
+# the side-chunk's 7 arm axes (10 x 7) and 6 finger axes (10 x 6) each get their
+# own MLP encoder, their own residual VQ (depth ${num_quantizers} x
+# ${codebook_size}, latent ${tokenizer_latent_dim}) and their own MLP decoder
+# (`AxisGroupChunkMLPEncoder/Decoder`, `GroupedResidualVQ`). To the policy it is
+# one tokenizer with 2 x ${num_quantizers} code levels (group-major: arm levels,
+# then hand levels) over a 2 x ${tokenizer_latent_dim} latent, so the code head
+# predicts both code sets with no policy change: set the POLICY's
+# `num_quantizers` to 2 x the tokenizer depth. Everything else is mlp.yaml's.
+_target_: rmind.models.nero_chunk_tokenizer.NeroChunkTokenizer
+_recursive_: false
+_convert_: all
+
+action_horizon: ${chunk_size}
+action_features: 13
+keyframe_stride: ${keyframe_stride}
+relative_mode: ${relative_mode}
+
+# ⚠️ fitted on the TRAIN split for THIS relative mode (nero_fit_stats). The
+# identity default is only for a config that has to instantiate before stats exist.
+standardizer:
+  _target_: rmind.data.nero_robot.AxisStandardizer.load
+  path: ${action_standardizer}
+
+encoder:
+  _target_: rmind.components.nn.AxisGroupChunkMLPEncoder
+  num_steps: ${chunk_size}
+  num_axes: 13
+  axis_groups: [[0, 1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]]
+  hidden_channels: ["${tokenizer_hidden_dim}", "${tokenizer_hidden_dim}"]
+  latent_dim: ${tokenizer_latent_dim}
+
+quantizer:
+  _target_: rmind.components.vq.GroupedResidualVQ
+  groups: 2
+  group_dim: ${tokenizer_latent_dim}
+  codebook_size: ${codebook_size}
+  num_quantizers_per_group: ${num_quantizers}
+
+decoder:
+  _target_: rmind.components.nn.AxisGroupChunkMLPDecoder
+  num_steps: ${chunk_size}
+  num_axes: 13
+  axis_groups: [[0, 1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]]
+  hidden_channels: ["${tokenizer_hidden_dim}", "${tokenizer_hidden_dim}"]
+  latent_dim: ${tokenizer_latent_dim}
+
+# playbook: smooth_l1 with beta BELOW the typical error, + inverse-frequency
+# event weighting on the finger axes (7..12). `event_weight: null` disables it --
+# never `{}`.
+loss: smooth_l1
+smooth_l1_beta: 0.2
+event_weight: ${event_weight}
+event_axes: [7, 8, 9, 10, 11, 12]
+event_threshold: 0.5
+# the per-axis atom, fitted DETERMINISTICALLY on the train split by
+# nero_fit_stats and pinned to the action standardizer's sha256; training refuses
+# to start without it (no first-batch fallback)
+event_reference: ${event_reference}
+vq_weight: 1.0
+commitment_weight: 1.0
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: ${lr}
+  weight_decay: 0.01
+
+# ⚠️ cosine has no clamp: lr_total_steps MUST be the real optimizer step count
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}

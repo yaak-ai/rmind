@@ -1,0 +1,24 @@
+# @package _global_
+#
+# patch/paper round 2, offset ABLATION arm "conditioned": paper_pp_w2_c10_codes
+# (VQ-BeT head with the per-code action-space offset TABLE: one 10 x 13 offset
+# per (level, code), the ARGMAX/target codes' entries gathered and summed --
+# VQ-BeT Fig. 2, i.e. the offset is indexed by the code) on a round-2 tokenizer.
+# Twin: paper2_pp_codes_nocond (same tokenizer, data and recipe, offset NOT
+# indexed by the code).
+#
+# Launch-time settings (they depend on the tokenizer chosen):
+# * NERO_TOKENIZER_CKPT = the round-2 tokenizer checkpoint;
+# * codebook_size / num_quantizers = what the POLICY predicts: for a
+#   paper2_tok_split tokenizer num_quantizers is 4 (2 arm + 2 hand levels, the
+#   code head emits 4 x 16 logits per side); for cb64 / cb256 it is 2;
+# * lr_total_steps = len(train_dataloader) x max_epochs for the corpus in use.
+# Inference codes are ARGMAX (sample_codes false, the default).
+defaults:
+  - /experiment/yaak/nero_robot/paper_pp_w2_c10_codes
+  - _self_
+
+run_name: paper2_pp_codes_cond
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, c10, offset_cond]

@@ -515,6 +515,113 @@ class ChunkConvDecoder(Module):
         )
 
 
+def _check_axis_groups(axis_groups: tuple[tuple[int, ...], ...], num_axes: int) -> None:
+    flat = sorted(a for group in axis_groups for a in group)
+    if flat != list(range(num_axes)):
+        msg = f"axis_groups {axis_groups} must partition range({num_axes})"
+        raise ValueError(msg)
+
+
+@final
+class AxisGroupChunkMLPEncoder(Module):
+    """Flat `(n, H * A)` chunk -> concatenated per-axis-group latents `(n, G * L)`.
+
+    One independent MLP per axis group (e.g. arm joints 0..6 and fingers 7..12):
+    each sees only its own `(H, |group|)` slice, so a `GroupedResidualVQ` after it
+    gives every group its own codes. Pairs with `AxisGroupChunkMLPDecoder`.
+    """
+
+    order: Tensor  # buffer: the axes, group after group
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        num_steps: int,
+        num_axes: int,
+        axis_groups: tuple[tuple[int, ...], ...],
+        hidden_channels: tuple[int, ...],
+        latent_dim: int,
+    ) -> None:
+        from torchvision.ops import MLP  # noqa: PLC0415
+
+        super().__init__()
+        _check_axis_groups(axis_groups, num_axes)
+        self.num_steps = num_steps
+        self.num_axes = num_axes
+        self.axis_groups = axis_groups
+        self.sizes = [len(group) for group in axis_groups]
+        self.register_buffer(
+            "order", torch.tensor([a for g in axis_groups for a in g]), persistent=False
+        )
+        self.mlps = nn.ModuleList(
+            MLP(num_steps * len(group), [*hidden_channels, latent_dim])
+            for group in axis_groups
+        )
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        *batch, _ = x.shape
+        chunk = x.reshape(*batch, self.num_steps, self.num_axes)
+        groups = chunk.index_select(-1, self.order).split(self.sizes, dim=-1)
+        return torch.cat(
+            [mlp(g.flatten(-2)) for mlp, g in zip(self.mlps, groups, strict=True)],
+            dim=-1,
+        )
+
+
+@final
+class AxisGroupChunkMLPDecoder(Module):
+    """Concatenated per-group latents `(n, G * L)` -> flat `(n, H * A)` chunk.
+
+    Each group's latent slice is decoded by its own MLP to `(H, |group|)` and the
+    axes are scattered back to their original positions.
+    """
+
+    inverse: Tensor  # buffer: concatenated group outputs -> original axis order
+
+    @validate_call
+    def __init__(
+        self,
+        *,
+        num_steps: int,
+        num_axes: int,
+        axis_groups: tuple[tuple[int, ...], ...],
+        hidden_channels: tuple[int, ...],
+        latent_dim: int,
+    ) -> None:
+        from torchvision.ops import MLP  # noqa: PLC0415
+
+        super().__init__()
+        _check_axis_groups(axis_groups, num_axes)
+        self.num_steps = num_steps
+        self.num_axes = num_axes
+        self.axis_groups = axis_groups
+        self.latent_dim = latent_dim
+        order = [a for group in axis_groups for a in group]
+        # concatenated group outputs -> original axis order
+        self.register_buffer("inverse", torch.tensor(order).argsort(), persistent=False)
+        self.mlps = nn.ModuleList(
+            MLP(latent_dim, [*hidden_channels, num_steps * len(group)])
+            for group in axis_groups
+        )
+
+    @override
+    def forward(self, z: Tensor) -> Tensor:
+        *batch, _ = z.shape
+        parts = [
+            mlp(zg).reshape(*batch, self.num_steps, len(group))
+            for mlp, zg, group in zip(
+                self.mlps,
+                z.split(self.latent_dim, dim=-1),
+                self.axis_groups,
+                strict=True,
+            )
+        ]
+        chunk = torch.cat(parts, dim=-1).index_select(-1, self.inverse)
+        return chunk.reshape(*batch, self.num_steps * self.num_axes)
+
+
 @final
 class AxisShrinkage(Module):
     """Soft-threshold selected axes of a flat chunk, so quiet regions decode to EXACTLY zero.
