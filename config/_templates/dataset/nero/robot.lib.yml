@@ -22,7 +22,12 @@
 
 #@ cameras = ["base", "side_left", "side_right"]
 
-#@ def dataset(episodes, split, frame_cache=False):
+#@ # ACCEPT_RELABEL (opt-in, `accept_relabel=True`, the v3 templates): read the
+#@ # takes with rmind.data.nero_relabel.NeroRobotRelabelReader -- an outcome.json
+#@ # success relabel with provenance overrides the MCAP outcome, as nutron-cli's
+#@ # convert.py --accept-relabel. Default: rbyte's NeroRobotReader, unchanged.
+
+#@ def dataset(episodes, split, frame_cache=False, accept_relabel=False):
 _target_: rbyte.Dataset.from_config
 _recursive_: false
 _convert_: all
@@ -86,7 +91,12 @@ samples:
         output_name: nero
         mapspec: "mcap_path[i] -> nero[i]"
         func:
+          #@ if accept_relabel:
+          _target_: rmind.data.nero_relabel.NeroRobotRelabelReader
+          accept_relabel: true
+          #@ else:
           _target_: rbyte.samples.nero.NeroRobotReader
+          #@ end
           chunk_size: ${chunk_size}
           #! null = rbyte's default chunk_size // 2: rows whose chunk pads more
           #! steps are DROPPED (the last 50 frames of every run, ~19% of the
