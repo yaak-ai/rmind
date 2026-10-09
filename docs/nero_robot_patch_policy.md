@@ -14,17 +14,17 @@ defaults the model is the glove model, bit for bit (the existing
 
 ## Decisions -> where they live
 
-| | decision | implementation |
-|---|---|---|
-| P1 | causal decoder | `git merge --no-ff origin/feat/patch-policy-decoder-causal` (d45d1c6f = #269 + #276): no textual conflicts. `NeroPatchPolicy` does not subclass `PatchPolicy`, so the pieces were ported, not inherited: FlexAttention long-context training (`attention_impl: flex`, `episode_length 32 > window 16`), token norms (`token_norms` in `_frame_tokens`/`_features`), `TrainingQualityLogger` (`trainer/callbacks/nero_robot.yaml`), code confidence/entropy/margin/usage/dependence (`models/nero_quality.py`), and a NEW `NeroPatchPolicyDecoderStep` (`models/nero_patch_policy_decoder.py`) + `scripts/nero_export.py`. |
-| P2 | 10 Hz observations, context | rbyte `NeroRobotWindowGrouper` (every 3rd 30 Hz frame of a COMPLETE run, starts every `episode_stride=7` -> all 3 phases); `window: 16`, trained at `episode_length: 32`. |
-| P3 | 100-step 30 Hz chunk, re-fit tokenizer | `NeroChunkTokenizer`: 34 keyframes (10 Hz) + fixed in-graph linear interpolation to 100 steps; playbook recipe. `n_next_actions` default 6 in the manifest (serving owns the clock). |
-| P4 | robot-native action space | rbyte `NeroRobotReader`: `chunk[k]` = `robot.command.q` + `robot.hand.command/1000` at `t + k/30`; state = measured q + `hand_prev`. Left only via `side_valid`. |
-| P5 | relative flag | `relative_mode: none|hand|all` (policy + tokenizer, must match); per-FRAME anchor; one standardizer + tokenizer per mode. |
-| P6 | hand token | `hand_groups`, `hand_embedding` (`NormedTokenEmbedding`), learned `no_hand`, sample + frame dropout; newest sample only via the shared `hand_features.build_tokens`. |
-| P7 | no goal | `goal_mode: no_goal` (goal channel kept, always the learned `no_goal`; no goal frame read; no goal input in the export). `none` drops the channel. |
-| P9 | metrics | `quality_metrics`, `reliance_metrics` (see below). |
-| P10 | parity | hand features: rbyte vendors `hand_features.py` verbatim, SHA256-pinned; images: `rmind/data/nero_image.py` is THE preprocessing function (rbyte calls it on native frames; serving vendors it; the contract carries its id + file hash). |
+|     | decision                               | implementation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1  | causal decoder                         | `git merge --no-ff origin/feat/patch-policy-decoder-causal` (d45d1c6f = #269 + #276): no textual conflicts. `NeroPatchPolicy` does not subclass `PatchPolicy`, so the pieces were ported, not inherited: FlexAttention long-context training (`attention_impl: flex`, `episode_length 32 > window 16`), token norms (`token_norms` in `_frame_tokens`/`_features`), `TrainingQualityLogger` (`trainer/callbacks/nero_robot.yaml`), code confidence/entropy/margin/usage/dependence (`models/nero_quality.py`), and a NEW `NeroPatchPolicyDecoderStep` (`models/nero_patch_policy_decoder.py`) + `scripts/nero_export.py`. |
+| P2  | 10 Hz observations, context            | rbyte `NeroRobotWindowGrouper` (every 3rd 30 Hz frame of a COMPLETE run, starts every `episode_stride=7` -> all 3 phases); `window: 16`, trained at `episode_length: 32`.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| P3  | 100-step 30 Hz chunk, re-fit tokenizer | `NeroChunkTokenizer`: 34 keyframes (10 Hz) + fixed in-graph linear interpolation to 100 steps; playbook recipe. `n_next_actions` default 6 in the manifest (serving owns the clock).                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| P4  | robot-native action space              | rbyte `NeroRobotReader`: `chunk[k]` = `robot.command.q` + `robot.hand.command/1000` at `t + k/30`; state = measured q + `hand_prev`. Left only via `side_valid`.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| P5  | relative flag                          | \`relative_mode: none                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| P6  | hand token                             | `hand_groups`, `hand_embedding` (`NormedTokenEmbedding`), learned `no_hand`, sample + frame dropout; newest sample only via the shared `hand_features.build_tokens`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| P7  | no goal                                | `goal_mode: no_goal` (goal channel kept, always the learned `no_goal`; no goal frame read; no goal input in the export). `none` drops the channel.                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| P9  | metrics                                | `quality_metrics`, `reliance_metrics` (see below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| P10 | parity                                 | hand features: rbyte vendors `hand_features.py` verbatim, SHA256-pinned; images: `rmind/data/nero_image.py` is THE preprocessing function (rbyte calls it on native frames; serving vendors it; the contract carries its id + file hash).                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## Data (rbyte, `docs/nero_robot.md` there)
 
@@ -48,7 +48,7 @@ Token layout per frame: `[state][hand][3 x 160 patches]` = 482 (481 without the
 hand). The readout stays the last patch token, so a `no_hand` can never be the
 readout.
 
-* **Scale-matched vector tokens.** State and hand embeddings are
+- **Scale-matched vector tokens.** State and hand embeddings are
   `MLP -> LayerNorm -> gain` (`NormedTokenEmbedding`). There is deliberately NO
   input LayerNorm (`input_norm: false`, kept as an ablation flag): a per-sample
   LayerNorm over a heterogeneous physical vector makes the token exactly
@@ -61,7 +61,7 @@ readout.
   weight-decayed. `no_hand` goes through the same output norm and gain. The
   ratios `token_ratio/{state,hand}_patch` are logged with an alarm outside
   `[0.3, 3]` (the #276 speed token entered ~20x low).
-* **Hand token standardizer (`HandTokenStandardizer`, in-graph).** Dropping
+- **Hand token standardizer (`HandTokenStandardizer`, in-graph).** Dropping
   the input LayerNorm left nothing standardizing the hand token: `hf.build_token`
   emits fixed `/1000` columns built for ACT, which standardizes with dataset
   stats. On the one tactile episode (val, 2026-10-02--17-33-40; 348 valid
@@ -76,45 +76,43 @@ readout.
   weight-decayed. `hand_age` and `hand_valid` pass through unchanged. The
   graph's `no_hand` switch is the raw last column. Serving keeps feeding the
   raw `hf.build_token` vector.
-  * The file is `hand_standardizer.json` (`nero_hand_token_standardizer` v1).
+  - The file is `hand_standardizer.json` (`nero_hand_token_standardizer` v1).
     It holds all 28 feature columns of all four groups, so one file serves
     every `hand_groups` ablation. Its SHA256 is in the manifest as
     `standardizers.hand {file, sha256, in_graph: true}`.
-  * `nero_fit_stats` fits it on the TRAIN split's valid rows: motor_ok for
+  - `nero_fit_stats` fits it on the TRAIN split's valid rows: motor_ok for
     current/pos_err/pos, tip_ok for tip. A group needs at least
     `--hand-min-rows` (1000) rows. A column whose fitted std is below 0.1x its
     band keeps the band.
-  * Otherwise it writes the documented physical bands (`HAND_PHYSICAL_PRIOR`,
+  - Otherwise it writes the documented physical bands (`HAND_PHYSICAL_PRIOR`,
     in counts/1000):
-    * current: 0 +- 0.1, a tenth of the +-1000 clip;
-    * pos_err: 0 +- 0.05;
-    * pos: 0.5 +- 0.289, uniform over the 0..1000 range;
-    * tip: 0 +- 1, a placeholder.
-  * **Today the train split has 0 valid hand rows**, so the shipped file is
+    - current: 0 +- 0.1, a tenth of the +-1000 clip;
+    - pos_err: 0 +- 0.05;
+    - pos: 0.5 +- 0.289, uniform over the 0..1000 range;
+    - tip: 0 +- 1, a placeholder.
+  - **Today the train split has 0 valid hand rows**, so the shipped file is
     the physical prior (`source: physical_prior`, `fit_report.json` `hand`).
-  * The val episode is quoted above as a sanity check only. It is never fitted.
-  * The checkpoint is self-contained: the affine's values go into hparams as
+  - The val episode is quoted above as a sanity check only. It is never fitted.
+  - The checkpoint is self-contained: the affine's values go into hparams as
     a plain `HandTokenStandardizer(...)` config, and its buffers go into the
     state_dict.
-  * A checkpoint from before this change has no `hand_standardizer` hparam.
+  - A checkpoint from before this change has no `hand_standardizer` hparam.
     It loads as identity, with a warning, and so keeps the behaviour it was
     trained with.
-  * With the affine, age is ~2-3 % of the first layer. It is left unscaled on
+  - With the affine, age is ~2-3 % of the first layer. It is left unscaled on
     purpose, as the finding asked.
-* **Offset head deviation (pitfall 2).** The VQ-BeT per-code offset table is
-  `Q x C x 100 x 13` outputs: ~340M parameters at 16x16 codes. `offset_mode:
-  latent` predicts ONE offset in the tokenizer's latent space and decodes
+- **Offset head deviation (pitfall 2).** The VQ-BeT per-code offset table is
+  `Q x C x 100 x 13` outputs: ~340M parameters at 16x16 codes. `offset_mode: latent` predicts ONE offset in the tokenizer's latent space and decodes
   `z_q + offset` through the frozen tokenizer decoder (+ interpolation). This is
   an architectural change to the nero head, flagged for the user.
   `offset_code_conditioning: true` (the robot config) makes the offset
-  CODE-CONDITIONED (the brief's option b): the head reads `[features, stop-grad
-  tokenizer.lookup(codes)]` -- the TARGET codes in training (teacher forcing),
+  CODE-CONDITIONED (the brief's option b): the head reads `[features, stop-grad tokenizer.lookup(codes)]` -- the TARGET codes in training (teacher forcing),
   the ARGMAX codes at serving and in the decoder step / ONNX graph -- so it
   refines inside the chosen mode instead of returning the residual averaged
   across modes. ~0.39M parameters at d 512 + latent 128 (the 5M budget assert in
   `nero_robot_smoke --stage budget` still holds). `offset_to_code_norm` is
   computed with the argmax codes' offset, i.e. the serving one.
-* **Standardization.** The state standardizer is in-graph (serving sends raw
+- **Standardization.** The state standardizer is in-graph (serving sends raw
   state); the model OUTPUTS the chunk in the action standardizer's space, and the
   host unstandardizes and adds the anchor (`relative_mask`, anchor = the state of
   the observation the chunk came from).
@@ -125,8 +123,7 @@ readout.
 (34) through `ChunkConvEncoder/Decoder` (k=7, dilations 1/3/9, ELU, no norm,
 ported verbatim from `feat/palletjack-3cam-retile`), RVQ codebook 16 x depth 16
 (64 bits; sweep 24/32 by depth), `smooth_l1` beta 0.2, event weight 5 on the
-finger axes (elements more than 0.5 std from the axis's reference; `event_weight:
-null` disables -- never `{}`), lr 3e-4, wd 0.01, vq weight 1, cosine with the
+finger axes (elements more than 0.5 std from the axis's reference; `event_weight: null` disables -- never `{}`), lr 3e-4, wd 0.01, vq weight 1, cosine with the
 REAL step count. `AxisShrinkage` is ported and available for the finger axes
 (append it to `model.decoder._args_`), only together with that loss.
 
@@ -141,7 +138,7 @@ action standardizer's SHA256 and the tokenizer refuses a mismatch; training with
 config). The file also reports `atom_share` and `event_fraction` (the share of
 steps the weighting boosts). On the 4 pulled episodes (relative none) only the
 pinky has a real atom (54% exactly open, event fraction 0.30); thumbs, index,
-middle, ring have no dominant exact value (<= 16%) and an event fraction of
+middle, ring have no dominant exact value (\<= 16%) and an event fraction of
 0.43-0.60 -- there the "event" weighting boosts the majority of steps, i.e. it is
 close to a plain ~3x finger-axis weight, not inverse-frequency weighting.
 
@@ -155,18 +152,18 @@ per finger -- and evaluates the acceptance gates (smoke only on 4 episodes).
 
 All under `train/` and `val/` `policy/metric/...` with `quality_metrics: true`:
 
-* code accuracy per RVQ level, joint, dependence; entropy/confidence/margin/usage
+- code accuracy per RVQ level, joint, dependence; entropy/confidence/margin/usage
   per level (#276);
-* EV of the decoded ABSOLUTE chunk per axis and per horizon bucket
+- EV of the decoded ABSOLUTE chunk per axis and per horizon bucket
   (`h00_09`, `h10_29`, `h30_99`);
-* grasp events per finger: close/open onset error (ms), miss rate, hold error
+- grasp events per finger: close/open onset error (ms), miss rate, hold error
   (counts), under-grip rate;
-* `offset_to_code_norm` (latent offset vs code);
-* `quality/token_norm/{prefix}/{patch,state,hand,no_hand,out/*}`;
-* alarms (0/1): `alarm/code_usage_below_half`, `alarm/dead_finger_channel`,
+- `offset_to_code_norm` (latent offset vs code);
+- `quality/token_norm/{prefix}/{patch,state,hand,no_hand,out/*}`;
+- alarms (0/1): `alarm/code_usage_below_half`, `alarm/dead_finger_channel`,
   `alarm/token_ratio_{state,hand}`, `alarm/nonfinite_features`; a warning when
   `lr_total_steps` disagrees with the trainer's step count;
-* hand reliance (val, `reliance_metrics: true`): deltas of code NLL, offset loss
+- hand reliance (val, `reliance_metrics: true`): deltas of code NLL, offset loss
   and finger EV (globally and in +-0.5 s grasp windows) with the hand token
   (a) `no_hand` everywhere, (b) shuffled across the batch, (c) shifted +-1 s.
 
@@ -180,10 +177,12 @@ also runs nutron-cli's `patch_contract_from_manifest` + `binding_problems` and
 writes `policy_contract.json`. Gates (non-zero exit on failure):
 
 1. streaming == windowed: 40 frames through the decoder step with a ring of
-   `window - 1` equal one windowed forward, max |diff| <= 1e-4 fp32, identical
+   `window - 1` equal one windowed forward, max |diff| \<= 1e-4 fp32, identical
    codes (run on the GPU in strict fp32, TF32 off);
-2. ONNX Runtime CPU == eager on streamed frames (actions/new_k/new_v, codes);
-3. nutron-cli's own validation of the manifest (including
+
+1. ONNX Runtime CPU == eager on streamed frames (actions/new_k/new_v, codes);
+
+1. nutron-cli's own validation of the manifest (including
    `standardizers.hand`: file sha, schema `nero_hand_token_standardizer` v1,
    `in_graph: true`) and the real ONNX bindings. The checkout is `--nutron-cli`,
    default `$NUTRON_CLI_ROOT` (no home-path default). A refusal is recorded in
@@ -226,20 +225,18 @@ A whole episode is ~220 frames x 482 tokens = 106k tokens: above
 on the eager path.
 
 The Mac's torch backend serves the TRAINED model through nutron-cli's
-`--patch-backend rmind`: `NERO_POLICY_CKPT=model.ckpt mac_policy_server.py --ckpt
-ART/policy_contract.json --patch-backend rmind --rmind-factory
-rmind.scripts.nero_export:mac_factory` (the artifact has no torch weights, hence
+`--patch-backend rmind`: `NERO_POLICY_CKPT=model.ckpt mac_policy_server.py --ckpt ART/policy_contract.json --patch-backend rmind --rmind-factory rmind.scripts.nero_export:mac_factory` (the artifact has no torch weights, hence
 the env var). nutron-cli's `TorchModuleBackend` takes its signature from the
 contract's own io block, so `mac_factory` does the matching itself and REFUSES
 a checkpoint that is not the artifact's:
 
-* with `--ckpt`, the export writes the checkpoint's sha256 to
+- with `--ckpt`, the export writes the checkpoint's sha256 to
   `export_report.json` (`checkpoint.sha256`); `$NERO_POLICY_CKPT` must hash to
   it. `export_report.json` must therefore travel with `policy_contract.json`.
   An artifact without a pin (an `--experiment`/`--weights` export, or a missing
   report) is refused unless `NERO_ALLOW_UNPINNED_CKPT=1`, which logs a warning:
   the structural check alone cannot tell two epochs of one run apart;
-* `contract_mismatches(policy, contract)` must be empty. It covers cameras,
+- `contract_mismatches(policy, contract)` must be empty. It covers cameras,
   window/`kv.cache_frames`/layers/heads/head_dim/rope_base, tokens_per_frame,
   token_layout, relative_mode + mask, chunk_size, the tokenizer's
   num_quantizers/codebook_size/keyframe_stride, hand token presence + groups,
@@ -343,6 +340,42 @@ to the path above when NERO_STATS_DIR is unset (never the single-arm
 split: 16948 rows per side, valid motor rows 16142 left / 15651 right,
 `hand.source train:hand`.
 
+### v3 corpus (2026-10-07 + 2026-10-09), opt-in
+
+`config/splits/nero_cube_bimanual_v3.json`, a byte copy of nutron-cli's: 130 takes,
+116 train / 14 val. v1's 85 takes keep their side, so v1's 9 val takes stay val.
+The 45 new takes are drawn by the same rule and seed (2 left + 3 right val).
+Per class, train/val: left 59/6, right 47/6, both 10/2. `nero_split_lib --split nero_cube_bimanual_v3` renders `robot_bimanual_split_v3.lib.yml`, and the
+datamodules `yaak/nero_robot_bimanual_v3{,_cached,_noimg}` read it. Those
+datamodules use `rmind.data.nero_relabel.NeroRobotRelabelReader` (`dataset(..., accept_relabel=True)`), which applies nutron-cli convert.py's `--accept-relabel`
+rule: an `outcome.json` success that carries relabel provenance overrides the MCAP
+outcome, and each take accepted that way is logged. In this corpus that is only
+2026-10-09--11-57-55. The v1 configs are unchanged.
+
+`NERO_ROBOT_DIR` and `NERO_FRAME_CACHE` are single roots, so each one is a
+directory of per-take symlinks covering both days:
+
+```sh
+# NAS (any host that mounts /nasa)
+export NERO_ROBOT_DIR=/nasa/max/nero-cache/cube-bimanual/takes-v3
+export NERO_FRAME_CACHE=/nasa/max/nero-cache/cube-bimanual/frame-cache-224x224-stretch/v3   # or frame-cache-140x224/v3
+export NERO_STATS_DIR=/nasa/max/nero-cache/cube-bimanual/stats_c10_v3                      # 100-step: stats_v3
+# the arm-selection callback must read the v3 classes (the default is v1's JSON):
+EXTRA="datamodule=yaak/nero_robot_bimanual_v3_cached +nero_split_file=$PWD/config/splits/nero_cube_bimanual_v3.json"
+```
+
+The stats were fitted on the v3 TRAIN split with the v1 recipe, which reproduces
+stats_v1 and stats_c10 byte for byte on v1:
+
+```sh
+nero_fit_stats --experiment yaak/nero_robot/bimanual_tokenizer --override datamodule=yaak/nero_robot_bimanual_v3_noimg --out stats_v3
+nero_fit_stats --experiment yaak/nero_robot/paper_tok_c10 --override datamodule=yaak/nero_robot_bimanual_v3_noimg --out stats_c10_v3
+```
+
+`lr_total_steps` changes with the split (`nero_steps` on v3): paper_tok_c10 60000
+(configured 32400), paper_pp_w2_c10_codes 36952 (19964), bimanual_tokenizer 2540
+(1320), bimanual_causal 7820 (3560). Override it on v3 runs.
+
 ### Per-side hand token (`hand_sides`)
 
 `bimanual_causal` sets `hand_sides: [left, right]` (and `num_hand_tokens: 2`,
@@ -395,18 +428,18 @@ eager 5.6e-6, nutron-cli (WP0) contract + bindings ok.
 
 ## Open items
 
-* **Orin latency is unmeasured.** Local RTX 5090, torch eager fp32, random
+- **Orin latency is unmeasured.** Local RTX 5090, torch eager fp32, random
   weights, window 16, 482 tokens: ~30 ms per step (p50). The brief's projection
   for the Orin is ~165-175 ms at window 16 fp32 against a 100 ms budget;
   fallbacks in order: fewer patches per camera, window 8, fp16 trunk with the
   ViT stem and decoder/offset/tokenizer path in fp32.
-* `camera_cond` is a zero placeholder (no calibration on the robot rig); the
+- `camera_cond` is a zero placeholder (no calibration on the robot rig); the
   contract carries it verbatim and any later calibration means retraining.
-* The hand path is validated on synthetic data only (1 of 4 pulled episodes has
+- The hand path is validated on synthetic data only (1 of 4 pulled episodes has
   `robot.hand.tactile`, at the 3.4 Hz polled rate).
-* rbyte comes from a git source pinned to the rebased `feat/nero-arms-depth`
+- rbyte comes from a git source pinned to the rebased `feat/nero-arms-depth`
   (see "Environment") until rbyte releases the nero ingestion; then bump the pin.
-* Checkpoints from before the `input_norm` / code-conditioned offset /
+- Checkpoints from before the `input_norm` / code-conditioned offset /
   event-reference changes do not load strictly into the current config (the
   embeddings lost `in_norm.*`, the offset head is wider); retrain.
 
@@ -428,11 +461,11 @@ linear 24, attention 61, 3 ViT passes ~14). Orin: unmeasured.
 **Tokenizer** (real data, 3000 steps, holdout = the val episode, 30 Hz real steps):
 
 | mode / bits | holdout EV arm | holdout EV fingers | unquantized (arm / fingers) | train EV (arm / fingers) | rate-matched DCT |
-|---|---|---|---|---|---|
-| none / 64 | -1.27 | 0.60 | -0.92 / 0.73 | 0.95 / 0.95 | 0.49 |
-| none / 128 | -0.87 | 0.64 | -0.71 / 0.74 | 0.96 / 0.97 | 0.69 |
-| hand / 64 | -1.44 | 0.70 | -1.10 / 0.86 | 0.94 / 0.94 | 0.54 |
-| all / 64 | 0.24 | 0.81 | 0.35 / 0.94 | 0.64 / 0.94 | 0.57 |
+| ----------- | -------------- | ------------------ | --------------------------- | ------------------------ | ---------------- |
+| none / 64   | -1.27          | 0.60               | -0.92 / 0.73                | 0.95 / 0.95              | 0.49             |
+| none / 128  | -0.87          | 0.64               | -0.71 / 0.74                | 0.96 / 0.97              | 0.69             |
+| hand / 64   | -1.44          | 0.70               | -1.10 / 0.86                | 0.94 / 0.94              | 0.54             |
+| all / 64    | 0.24           | 0.81               | 0.35 / 0.94                 | 0.64 / 0.94              | 0.57             |
 
 Every gate fails in every mode and the tokenizer never beats the rate-matched
 DCT on holdout. Readings: absolute arm targets do not transfer across episodes
@@ -447,15 +480,15 @@ atom share 0.76, recon/target sd 0.29, event magnitude 0.16, invariance probe
 **Policy** (synthetic hand-dependent task unless noted; batch 2, 32 frames,
 window 16, flex attention, bf16 autocast; 0.24 s/step, 2.9 GB peak):
 
-* overfit one batch, relative none: loss 15.3 -> 0.40 (38x), no NaN,
+- overfit one batch, relative none: loss 15.3 -> 0.40 (38x), no NaN,
   state/patch and hand/patch token-norm ratios 0.83 (in band);
-* fresh batches, 200 steps each, relative none / hand / all: no NaN; ratios
+- fresh batches, 200 steps each, relative none / hand / all: no NaN; ratios
   0.67-0.78; held-out hand reliance (ablated minus clean): code NLL +3.8 / +3.8 /
   +4.4 with `no_hand`, +26 / +7.6 / +16 shuffled; finger EV +0.15 / +0.31 /
   +0.22 -- the policy uses the hand token on the task built to need it;
-* real data, overfit one batch (2 windows), relative none: loss 21.4 -> 0.08
+- real data, overfit one batch (2 windows), relative none: loss 21.4 -> 0.08
   (280x), no NaN (no valid hand frame in that batch);
-* `rmind.scripts.train experiment=yaak/nero_robot/synthetic` (30 steps + val):
+- `rmind.scripts.train experiment=yaak/nero_robot/synthetic` (30 steps + val):
   runs end to end (SelectiveAdamW, scheduler, TrainingQualityLogger, reliance in
   val, checkpoint), and the checkpoint exports through `--ckpt`.
 
@@ -481,11 +514,11 @@ Synthetic tokenizers (600 steps, `stats_synth`), then three `rmind.scripts.train
 runs on `nero_robot_random` (200 steps, batch 2, 32 frames, CSV logger,
 TrainingQualityLogger every 10 steps, one val pass):
 
-| run | hand | relative | tokens/frame | train loss | NaN/inf | alarms that fired |
-|---|---|---|---|---|---|---|
-| a `hand_off` | none | none | 481 | 38.9 -> 19.2 | none | `code_usage_below_half` only |
-| b `relative_all` + `hand_groups=[current,pos_err,pos]` | 20-dim | all | 482 | 39.4 -> 11.4 | none | `code_usage_below_half` only |
-| c `relative_hand` | current,pos_err | hand | 482 | 39.6 -> 13.6 | none | `code_usage_below_half` only |
+| run                                                    | hand            | relative | tokens/frame | train loss   | NaN/inf | alarms that fired            |
+| ------------------------------------------------------ | --------------- | -------- | ------------ | ------------ | ------- | ---------------------------- |
+| a `hand_off`                                           | none            | none     | 481          | 38.9 -> 19.2 | none    | `code_usage_below_half` only |
+| b `relative_all` + `hand_groups=[current,pos_err,pos]` | 20-dim          | all      | 482          | 39.4 -> 11.4 | none    | `code_usage_below_half` only |
+| c `relative_hand`                                      | current,pos_err | hand     | 482          | 39.6 -> 13.6 | none    | `code_usage_below_half` only |
 
 Token-norm ratios state/patch and hand/patch 1.00-1.01 (band 0.3-3); val reliance
 deltas are logged for b and c. Every export passed its gates (streaming vs windowed
@@ -499,7 +532,7 @@ a single frame) 4.3e-6. Over the wire (nutron-cli's `RemotePatchPredictor`, op
 b through the Mac server on ORT (1 stream, 3.8e-6), c through the Mac server on ORT
 and on the rmind torch backend (4 injected streams, 4.3e-6 / 4.4e-6). The synthetic
 10 Hz hand episode `synth-contact-000` (640x360/640x400 video) gives exact state
-and hand-token input parity at 98 % hand-valid ticks; its images differ by <= 2
+and hand-token input parity at 98 % hand-valid ticks; its images differ by \<= 2
 levels because the bundle builder resizes non-native video to `native_wh` first.
 A negative control (expected chunks computed without a reset the bundle has)
 fails at 3.0e-2, so the check discriminates.
