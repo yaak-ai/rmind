@@ -375,6 +375,11 @@ export NERO_STATS_DIR=/nasa/max/nero-cache/cube-bimanual/stats_c10_v3           
 EXTRA="datamodule=yaak/nero_robot_bimanual_v3_cached +nero_split_file=$PWD/config/splits/nero_cube_bimanual_v3.json"
 ```
 
+This is for the generic experiments. The paper2\_\* run experiments already set
+the v3 datamodule, `nero_split_file` and the NAS roots through the
+`cube_v3_c10*` data profiles ([nero_runs.md](nero_runs.md)); they need no
+extra arguments.
+
 The stats were fitted on the v3 TRAIN split with the v1 recipe, which reproduces
 stats_v1 and stats_c10 byte for byte on v1:
 
