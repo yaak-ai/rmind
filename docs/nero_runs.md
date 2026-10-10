@@ -261,10 +261,11 @@ Results:
   Without `--stats-dir`, it reads the hparams paths. The copy has a new sha256,
   so the pins above still name the originals. The script is deterministic: re-running it on
   the same input reproduces the copy byte for byte, so the hashes below are the
-  ones to pin once someone writes a copy under `NERO_CKPT_ROOT`. Nobody has
-  published one yet; the copies below were scratch builds. They give
-  bit-identical standardization, codes, latents and decodes to the original
-  on renate, on 192 real chunks:
+  ones to pin. The three copies below are published (2026-10-10, read-only)
+  next to their originals under `NERO_CKPT_ROOT`, as
+  `<same dir>/<same name>.selfcontained.ckpt`; the original files are unchanged.
+  No pin uses them yet. They give bit-identical standardization, codes, latents
+  and decodes to the original on renate, on 192 real chunks:
 
   | copy of              | standardizer sha256 | self-contained sha256                                              |
   | -------------------- | ------------------- | ------------------------------------------------------------------ |
