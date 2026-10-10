@@ -1,3 +1,4 @@
+import math
 from collections.abc import Mapping
 from itertools import chain
 from typing import Annotated, Any, ClassVar, cast, final, override
@@ -17,6 +18,12 @@ from torch.utils.checkpoint import checkpoint
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
+from rmind.components.counterfactual import (
+    PlanFn,
+    expected_plan,
+    goal_sensitivity,
+    speed_echo,
+)
 from rmind.components.loss import (
     winner_takes_all_pose_l1,
     winner_takes_all_pose_l1_components,
@@ -250,9 +257,22 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     NOT zero, so runs launched before it existed reproduce bit-for-bit. Like
     `trajectory_head`, this is training-time only and never feeds
     `joint_actions` or any served/exported output.
+
+    `counterfactual_val_frames` (opt-in, `0` = off; requires `trajectory_head`):
+    on about that many validation clips (newest frame of each, batches taken at
+    a fixed stride across the val set), rerun the trunk and heads with the
+    conditioning swapped (`rmind.components.counterfactual`; the frozen image
+    features are reused) and log `val/policy/metric/goal_sensitivity_{yaw,
+    lateral}` (synthetic left-turn minus right-turn route, at frames moving >=
+    `_GOAL_PROBE_MIN_SPEED_KMH`) and `val/policy/metric/speed_echo{,_real}`
+    (plan-end forward distance at frames stopped < `_STOPPED_MAX_SPEED_KMH`,
+    speed input forced to 10 km/h vs the real one). Logging only; training is
+    unaffected.
     """
 
     _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
+    _GOAL_PROBE_MIN_SPEED_KMH: ClassVar[float] = 5.0
+    _STOPPED_MAX_SPEED_KMH: ClassVar[float] = 1.0
 
     @validate_call
     def __init__(  # noqa: C901, PLR0912, PLR0913, PLR0915
@@ -295,6 +315,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         num_trajectory_hypotheses: int = 5,
         trajectory_weight: float = 0.0,
         mode_weight: float = 1.0,
+        counterfactual_val_frames: Annotated[int, Field(ge=0)] = 0,
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
@@ -383,6 +404,10 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     "torch.nn.CrossEntropyLoss) to supervise it"
                 )
                 raise ValueError(msg)
+        if counterfactual_val_frames and self.trajectory_head is None:
+            msg = "counterfactual_val_frames > 0 requires a trajectory_head to probe"
+            raise ValueError(msg)
+        self.counterfactual_val_frames = counterfactual_val_frames
 
         self.cameras: tuple[str, ...] = cameras
 
@@ -459,6 +484,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "num_trajectory_hypotheses": num_trajectory_hypotheses,
             "trajectory_weight": trajectory_weight,
             "mode_weight": mode_weight,
+            "counterfactual_val_frames": counterfactual_val_frames,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "neighbor_smoothing_channels": neighbor_smoothing_channels,
@@ -614,11 +640,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
     def _frame_tokens(
         self,
-        images: Tensor,
+        images: Tensor | None,
         speed: Tensor,
         waypoints: Tensor,
         *,
         token_norms: dict[str, Tensor] | None = None,
+        patches: Tensor | None = None,
     ) -> Tensor:
         """Per-frame token blocks `(b, t, k, d)` -- everything below the trunk.
 
@@ -638,9 +665,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         training-quality signal that guards against one token type's scale
         running away. It is an out-parameter (rather than module state) so the
         `torch.export`ed serving graphs never see a module mutation.
+
+        `patches`, if given, is the frozen `image_encoder` output `(b, t, cam, p,
+        d_img)` for `images`, which is then not re-encoded (the counterfactual
+        probes rerun everything downstream of it).
         """
         with torch.no_grad():
-            patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
+            if patches is None:
+                patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
             goal = self.goal_encoder.encode(waypoints)  # (b, t, g)
 
         # NOTE: outside the `no_grad` above, or `null_goal` never gets gradient
@@ -748,7 +780,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise ValueError(msg)
         self.fusion_goal_gain: nn.Parameter | None = nn.Parameter(1.0 / rms)
 
-    def _features(
+    def _features(  # noqa: PLR0913
         self,
         batch: Any,
         *,
@@ -756,6 +788,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         token_norms: dict[str, Tensor] | None = None,
         turn_signal_chunk: dict[str, Tensor] | None = None,
         trajectory_target_out: dict[str, Tensor] | None = None,
+        counterfactual_inputs: dict[str, Tensor] | None = None,
     ) -> tuple[Tensor, Tensor | None]:
         """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
 
@@ -778,11 +811,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         widening this method's return tuple) so no existing call site needs
         updating.
 
-        Raises:
-            ValueError: if the encoder was built for a different
-                `tokens_per_frame` than the frame layout produces (e.g.
-                `use_readout_token`/`num_register_tokens` changed without
-                updating the encoder/serving geometry).
+        `counterfactual_inputs`, same convention: filled with the frozen image
+        features (`"patches"`) and the conditioning inputs (`"speed"`,
+        `"waypoints"`) that `_counterfactual_plan` reruns from.
+
+        The trunk itself runs in `_readout`, which validates the frame geometry.
         """
         inputs = self.input_transform(batch)
 
@@ -804,7 +837,29 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             [image_by_camera[camera] for camera in self.cameras], dim=2
         )  # (b, t, cam, c, h, w)
 
-        tokens = self._frame_tokens(images, speed, waypoints, token_norms=token_norms)
+        with torch.no_grad():
+            patches = self.image_encoder(images)  # (b, t, cam, p, d_img)
+        if counterfactual_inputs is not None:
+            counterfactual_inputs.update(
+                patches=patches,
+                speed=cast("Tensor", speed),
+                waypoints=cast("Tensor", waypoints),
+            )
+
+        tokens = self._frame_tokens(
+            images, speed, waypoints, token_norms=token_norms, patches=patches
+        )
+        return self._readout(tokens), chunk
+
+    def _readout(self, tokens: Tensor) -> Tensor:
+        """Trunk over frame token blocks `(b, t, k, d)` -> readout features `(b, t, d)`.
+
+        Raises:
+            ValueError: if the encoder was built for a different
+                `tokens_per_frame` than the frame layout produces (e.g.
+                `use_readout_token`/`num_register_tokens` changed without
+                updating the encoder/serving geometry).
+        """
         _, num_frames, tokens_per_frame, _ = tokens.shape
 
         # the causal trunk's mask/RoPE/KV-cache geometry is built from ITS
@@ -832,7 +887,22 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         if self.norm is not None:
             features = self.norm(features)
 
-        return features, chunk
+        return features
+
+    def _counterfactual_plan(
+        self, patches: Tensor, waypoints: Tensor, speed: Tensor
+    ) -> Tensor:
+        """Probability-weighted plan `(b, p, 3)` at each clip's newest frame, from
+        cached frozen image features and (possibly substituted) conditioning.
+
+        Caller must check `self.trajectory_head is not None` first.
+        """
+        tokens = self._frame_tokens(None, speed, waypoints, patches=patches)
+        features = self._readout(tokens)[:, -1]
+        return expected_plan(
+            self._predict_trajectory(features),
+            self._predict_mode(features) if self.mode_head is not None else None,
+        )
 
     # VQ-BeT joint head -- mirrors `JointPolicyObjective` (incl. the teacher-forced
     # offset fix) with a leading (b, t) batch instead of (b,).
@@ -1023,7 +1093,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         return losses
 
     def _compute_metrics(  # noqa: PLR0914
-        self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
+        self,
+        batch: Any,
+        *,
+        token_norms: dict[str, Tensor] | None = None,
+        counterfactual_inputs: dict[str, Tensor] | None = None,
     ) -> TensorDict:
         turn_signal_chunk: dict[str, Tensor] = {}
         trajectory_target_out: dict[str, Tensor] = {}
@@ -1032,6 +1106,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             token_norms=token_norms,
             turn_signal_chunk=turn_signal_chunk,
             trajectory_target_out=trajectory_target_out,
+            counterfactual_inputs=counterfactual_inputs,
         )  # (b, t, d), (b, t, h, a)
         tokenizer = self.tokenizer
 
@@ -1090,6 +1165,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
             if self.mode_head is not None:
                 mode_logits = self._predict_mode(features)  # (b, t, q)
+            if counterfactual_inputs is not None:
+                # the real-input plan the speed probe is compared against
+                counterfactual_inputs["plan"] = expected_plan(
+                    trajectory_pred[:, -1].detach(),
+                    None if mode_logits is None else mode_logits[:, -1].detach(),
+                )
 
         turn_signal_logits: Tensor | None = None
         turn_signal_target: Tensor | None = None
@@ -1289,12 +1370,27 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         return metrics
 
-    def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
+    def _step(
+        self, batch: Any, prefix: str, *, batch_idx: int | None = None
+    ) -> STEP_OUTPUT:
         token_norms: dict[str, Tensor] = {}
+        # cheap to fill (references only); the probes themselves run only on the
+        # batches `_probe_batch` selects
+        counterfactual_inputs: dict[str, Tensor] | None = (
+            {} if batch_idx is not None and self.counterfactual_val_frames else None
+        )
         # Optional profiling: set environment variable `TORCH_PROFILER` to enable.
         # If `TORCH_PROFILER_DIR` is set, a chrome trace will be written there.
         with maybe_profile(f"{prefix}_step"):
-            metrics = self._compute_metrics(batch, token_norms=token_norms)
+            metrics = self._compute_metrics(
+                batch,
+                token_norms=token_norms,
+                counterfactual_inputs=counterfactual_inputs,
+            )
+        if counterfactual_inputs and self._probe_batch(
+            cast("int", batch_idx), counterfactual_inputs["speed"].shape[0]
+        ):
+            self._log_counterfactual_metrics(counterfactual_inputs, prefix)
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
         metrics["loss", "total"] = losses.sum(reduce=True)
@@ -1323,17 +1419,73 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         return {"loss": metrics["loss", "total"]}
 
+    def _probe_batch(self, batch_idx: int, batch_size: int) -> bool:
+        """Whether val batch `batch_idx` is one of the ~`counterfactual_val_frames
+        / batch_size` probe batches, spread at a fixed stride over the val set (so
+        the subset covers every drive rather than the first few)."""
+        wanted = math.ceil(self.counterfactual_val_frames / batch_size)
+        num_batches = self.trainer.num_val_batches
+        total = num_batches[0] if num_batches else math.inf
+        stride = max(1, int(total) // wanted) if math.isfinite(total) else 1
+        return batch_idx % stride == 0 and batch_idx // stride < wanted
+
+    @torch.no_grad()
+    def counterfactual_metrics(
+        self, inputs: Mapping[str, Tensor]
+    ) -> dict[str, tuple[Tensor, int]]:
+        """`{name: (mean, num_frames)}` for the conditioning probes (see class
+        docstring) on the `_features(counterfactual_inputs=...)` capture plus the
+        real-input `"plan"` from `_compute_metrics`. A metric with no eligible
+        frame in the batch is omitted.
+        """
+        patches, waypoints, speed = (
+            inputs["patches"],
+            inputs["waypoints"],
+            inputs["speed"],
+        )
+        speed_now = speed[:, -1, 0]
+
+        def plan_fn(clips: Tensor) -> PlanFn:
+            # the trunk reruns on the eligible clips only
+            clip_patches = patches[clips]
+            return lambda w, s: self._counterfactual_plan(clip_patches, w, s)
+
+        out: dict[str, tuple[Tensor, int]] = {}
+        if (moving := speed_now >= self._GOAL_PROBE_MIN_SPEED_KMH).any():
+            yaw, lateral = goal_sensitivity(
+                plan_fn(moving), waypoints[moving], speed[moving]
+            )
+            n = int(moving.sum())
+            out["goal_sensitivity_yaw"] = (yaw.mean(), n)
+            out["goal_sensitivity_lateral"] = (lateral.mean(), n)
+        if (stopped := speed_now < self._STOPPED_MAX_SPEED_KMH).any():
+            echo = speed_echo(plan_fn(stopped), waypoints[stopped], speed[stopped])
+            n = int(stopped.sum())
+            out["speed_echo"] = (echo.mean(), n)
+            out["speed_echo_real"] = (inputs["plan"][stopped, -1, 1].mean(), n)
+        return out
+
+    def _log_counterfactual_metrics(
+        self, inputs: Mapping[str, Tensor], prefix: str
+    ) -> None:
+        # `batch_size` = eligible frames, so the epoch aggregate is the pooled
+        # per-frame mean rather than a mean of per-batch means
+        for name, (value, n) in self.counterfactual_metrics(inputs).items():
+            self.log(
+                f"{prefix}/policy/metric/{name}", value, batch_size=n, sync_dist=True
+            )
+
     @override
     def training_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
         return self._step(batch, "train")
 
     @override
-    def validation_step(self, batch: dict[str, Any], _batch_idx: int) -> STEP_OUTPUT:
+    def validation_step(self, batch: dict[str, Any], batch_idx: int) -> STEP_OUTPUT:
         if self.trainer.sanity_checking:
             return {
                 "loss": self._compute_metrics(batch)["policy", "loss"].sum(reduce=True)
             }
-        return self._step(batch, "val")
+        return self._step(batch, "val", batch_idx=batch_idx)
 
     @override
     def forward(self, batch: Any) -> TensorDict:

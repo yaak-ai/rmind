@@ -109,5 +109,15 @@ model:
           brake_pedal: [continuous, brake_pedal]
           steering_angle: [continuous, steering_angle]
 
+  # goal-sensitivity / speed-echo probes on ~2k val clips (logging only;
+  # speed_goal_conditioning_rmind_plan.md T5)
+  counterfactual_val_frames: 2048
+
+# unshuffled val so the strided probe subset is the same clips every val epoch
+# (full-set val averages do not depend on order)
+datamodule:
+  val:
+    shuffle: false
+
 wandb:
   tags: [patch_policy, dinov2_dinowm_causal, neighbor_smoothing, readout_registers, retile, trajectory_head, mode_head, turn_signal_head, dropout, depth_anything_v2, yaw_aug, frame_mask, photometric]

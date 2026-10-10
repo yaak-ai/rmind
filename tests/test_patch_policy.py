@@ -5,6 +5,7 @@ teacher-forced offset semantics inherited from `JointPolicyObjective` (#258),
 and equivalence of the batched `_gather_offset` with the joint-policy original.
 """
 
+from types import SimpleNamespace
 from typing import Any, cast, override
 
 import pytest
@@ -158,6 +159,7 @@ def _make_model(  # noqa: PLR0913
     goal_dropout: float = 0.0,
     nulls: bool = False,
     trunk_dropout: float = 0.1,
+    counterfactual_val_frames: int = 0,
 ) -> PatchPolicy:
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
@@ -217,6 +219,7 @@ def _make_model(  # noqa: PLR0913
         if with_mode_head
         else None,
         mode_weight=mode_weight,
+        counterfactual_val_frames=counterfactual_val_frames,
         losses=losses
         if losses is not None
         else ModuleDict(modules=default_loss_modules),
@@ -1558,3 +1561,97 @@ def test_dropout_without_null_token_raises() -> None:
 
     with pytest.raises(ValueError, match="goal_dropout"):
         _make_model(goal_dropout=0.5, nulls=False)
+
+
+# counterfactual conditioning probes (speed_goal_conditioning_rmind_plan.md T5)
+
+
+def _probe_batch_inputs(model: PatchPolicy) -> dict[str, Tensor]:
+    """Clip 0 moving at 50 km/h, clip 1 stopped -- one frame per probe."""
+    batch = _make_batch(with_trajectory_target=True)
+    batch["continuous"]["speed"][0] = 50.0
+    batch["continuous"]["speed"][1] = 0.0
+    inputs: dict[str, Tensor] = {}
+    model._compute_metrics(batch, counterfactual_inputs=inputs)  # noqa: SLF001
+    return inputs
+
+
+def test_counterfactual_metrics_keys_and_counts() -> None:
+    model = _make_model(
+        with_trajectory_head=True, with_mode_head=True, counterfactual_val_frames=8
+    )
+    metrics = model.counterfactual_metrics(_probe_batch_inputs(model))
+
+    assert set(metrics) == {
+        "goal_sensitivity_yaw",
+        "goal_sensitivity_lateral",
+        "speed_echo",
+        "speed_echo_real",
+    }
+    for name, (value, n) in metrics.items():
+        assert n == 1, name
+        assert value.isfinite(), name
+
+
+@pytest.mark.parametrize("causal_frame", [False, True])
+def test_counterfactual_rerun_reproduces_real_plan(*, causal_frame: bool) -> None:
+    """The cached-patch rerun path must match the full forward on real inputs,
+    also for the trained arm's trunk (windowed `CausalFrameTransformer` with
+    readout + register tokens)."""
+    model = (
+        _make_model(
+            with_trajectory_head=True,
+            with_mode_head=True,
+            use_readout_token=True,
+            num_register_tokens=2,
+            encoder=CausalFrameTransformer(
+                dim_model=POLICY_DIM,
+                num_layers=2,
+                num_heads=2,
+                tokens_per_frame=NUM_PATCHES + 1 + 2 + 1,
+                window=2,
+            ),
+        )
+        if causal_frame
+        else _make_model(with_trajectory_head=True, with_mode_head=True)
+    )
+    inputs = _probe_batch_inputs(model)
+
+    with torch.no_grad():
+        plan = model._counterfactual_plan(  # noqa: SLF001
+            inputs["patches"], inputs["waypoints"], inputs["speed"]
+        )
+    torch.testing.assert_close(plan, inputs["plan"])
+
+
+def test_goal_sensitivity_zero_for_goal_blind_model() -> None:
+    model = _make_model(with_trajectory_head=True, counterfactual_val_frames=8)
+    goal_encoder = cast("_GoalEncoderStub", model.goal_encoder)
+    torch.nn.init.zeros_(goal_encoder.proj.weight)
+    torch.nn.init.zeros_(goal_encoder.proj.bias)
+
+    metrics = model.counterfactual_metrics(_probe_batch_inputs(model))
+
+    for name in ("goal_sensitivity_yaw", "goal_sensitivity_lateral"):
+        value, _ = metrics[name]
+        torch.testing.assert_close(value, torch.zeros_like(value), rtol=0, atol=0)
+
+
+def test_counterfactual_requires_trajectory_head() -> None:
+    with pytest.raises(ValueError, match="counterfactual_val_frames"):
+        _make_model(counterfactual_val_frames=8)
+
+
+def test_probe_batches_are_strided_over_val_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _make_model(with_trajectory_head=True, counterfactual_val_frames=100)
+    monkeypatch.setattr(
+        PatchPolicy,
+        "trainer",
+        property(lambda _self: SimpleNamespace(num_val_batches=[100])),
+    )
+
+    # ceil(100 / 32) = 4 batches, stride 100 // 4 = 25
+    selected = [i for i in range(100) if model._probe_batch(i, 32)]  # noqa: SLF001
+    assert selected == [0, 25, 50, 75]
