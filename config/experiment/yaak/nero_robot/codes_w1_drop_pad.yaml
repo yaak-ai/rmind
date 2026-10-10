@@ -1,0 +1,14 @@
+# @package _global_
+# bimanual_w1_pad (every frame, hold-padded chunk tails, max_pad_steps 99, 30 x
+# 651 steps) + attention dropout / drop_path 0.1, codes head, bimanual_tokenizer_v2.
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/codes_w1_drop_pad`
+# reproduces the run (sisyphos, 554f7fde); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_w1_pad
+  - /nero_data@_global_: cube_v1_140x224
+  - /nero_tokenizer@_global_: bimanual_tokenizer_v2
+  - _self_
+
+run_name: codes_w1_drop_pad
+attn_dropout: 0.1
+drop_path_rate: 0.1

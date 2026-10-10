@@ -7,24 +7,26 @@
 # Twin: paper2_pp_codes_nocond (same tokenizer, data and recipe, offset NOT
 # indexed by the code).
 #
-# Launch-time settings (they depend on the tokenizer chosen):
-# * NERO_TOKENIZER_CKPT = the round-2 tokenizer checkpoint;
-# * codebook_size / num_quantizers = what the POLICY predicts: for a
-#   paper2_tok_split tokenizer num_quantizers is 4 (2 arm + 2 hand levels, the
-#   code head emits 4 x 16 logits per side); for cb64 / cb256 it is 2;
+# The tokenizer it ran with (pinned, docs/nero_runs.md): paper2_tok_cb64's final
+# epoch (epoch=999-step=150000, sha256 60eb4449...), so the POLICY predicts
+# codebook_size 64 x num_quantizers 2 (a paper2_tok_split tokenizer would need
+# num_quantizers 4: 2 arm + 2 hand levels, 4 x 16 logits per side; cb256: 256 x 2).
 # Inference codes are ARGMAX (sample_codes false, the default).
 # v3 corpus (2026-10-07 + 2026-10-09, split nero_cube_bimanual_v3): datamodule
-# nero_robot_bimanual_v3_cached, NERO_STATS_DIR = stats_c10_v3, NERO_ROBOT_DIR /
-# NERO_FRAME_CACHE = the v3 roots (224x224 stretch), and pass
-# +nero_split_file=<repo>/config/splits/nero_cube_bimanual_v3.json (the
-# arm-selection callback reads the classes from it). lr_total_steps
-# (nero_steps): 298 batches of 128 x 124 epochs = 36952.
+# nero_robot_bimanual_v3_cached + the nero_data profile cube_v3_c10_224s
+# (takes-v3, stats_c10_v3, the v3 224x224 stretch cache, nero_split_file for the
+# arm-selection callback). lr_total_steps (nero_steps): 298 batches of 128 x 124
+# epochs = 36952. No CLI overrides.
 defaults:
   - /experiment/yaak/nero_robot/paper_pp_w2_c10_codes
   - override /datamodule: yaak/nero_robot_bimanual_v3_cached
+  - override /nero_data@_global_: cube_v3_c10_224s
+  - override /nero_tokenizer@_global_: paper2_tok_cb64_e999
   - _self_
 
 run_name: paper2_pp_codes_cond
+codebook_size: 64
+num_quantizers: 2
 
 lr_total_steps: 36952
 

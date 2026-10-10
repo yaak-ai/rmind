@@ -1,0 +1,13 @@
+# @package _global_
+# bimanual_w1_ft (window 1, hand_off, attn/drop-path 0.1, image encoder
+# FINE-TUNED at lr 1e-5) with DINOv2 at 140x224, bimanual_tokenizer_v2.
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/sweep_w1_off_dinoft`
+# reproduces the run (sisyphos, a9f83e69); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_w1_ft
+  - /nero_data@_global_: cube_v1_140x224
+  - /nero_tokenizer@_global_: bimanual_tokenizer_v2
+  - /image_encoder: dinov2
+  - _self_
+
+run_name: sweep_w1_off_dinoft

@@ -7,9 +7,9 @@
 #   (paper_tok_c10: 8 bits = 0.062; the Patch Policy / VQ-BeT real-robot
 #   settings are ~0.11-0.23 bits/value, paper2_tok_cb256 / _split sit inside);
 # * the v3 corpus (2026-10-07 + 2026-10-09, split nero_cube_bimanual_v3,
-#   datamodule nero_robot_bimanual_v3_noimg; NERO_STATS_DIR = stats_c10_v3,
-#   NERO_ROBOT_DIR = the v3 take root; pass
-#   +nero_split_file=<repo>/config/splits/nero_cube_bimanual_v3.json);
+#   datamodule nero_robot_bimanual_v3_noimg) through the nero_data profile
+#   cube_v3_c10 (takes-v3, stats_c10_v3, nero_split_file) under NERO_DATA_ROOT /
+#   NERO_STATS_ROOT; no CLI overrides (docs/nero_runs.md);
 # * 1000 epochs (paper_tok_c10: 400, val EV still rising), val + checkpoint
 #   every 10th epoch, cosine to 0 at the end;
 # * lr_total_steps = len(train_dataloader) x max_epochs (nero_steps): v3 has
@@ -17,6 +17,7 @@
 defaults:
   - /experiment/yaak/nero_robot/paper_tok_c10
   - override /datamodule: yaak/nero_robot_bimanual_v3_noimg
+  - override /nero_data@_global_: cube_v3_c10
   - _self_
 
 run_name: paper2_tok_cb64

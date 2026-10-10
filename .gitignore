@@ -144,6 +144,8 @@ multirun/
 # generated
 config/dataset/*
 config/logger/*
+config/nero_data/*
+config/nero_tokenizer/*
 
 # editor
 .helix/

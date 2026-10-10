@@ -31,14 +31,21 @@
 # * hand_off (no hand tokens), every row like ACT (max_pad_steps 9).
 #
 # Tokens: 2 frames x (1 state + 3 x 256) = 1538 per sample.
+#
+# Inputs (docs/nero_runs.md): nero_data profile cube_v1_c10_224s (2026-10-07
+# corpus, stats_c10, the 224x224 stretch frame cache) under NERO_DATA_ROOT /
+# NERO_FRAME_CACHE_ROOT / NERO_STATS_ROOT; the tokenizer is paper_tok_c10's final
+# epoch (epoch=399-step=32400, sha256 b33dc8e5...) under NERO_CKPT_ROOT. The
+# NERO_ROBOT_DIR / NERO_FRAME_CACHE / NERO_STATS_DIR / NERO_TOKENIZER_CKPT of the
+# generic experiments are not read. Children re-pin what they change.
 defaults:
   - /experiment/yaak/nero_robot/bimanual_hand_off
+  - /nero_data@_global_: cube_v1_c10_224s
+  - /nero_tokenizer@_global_: paper_tok_c10_e399
   - override /trainer/callbacks: nero_robot_bimanual_sweep
   - _self_
 
 run_name: paper_pp_w2_c10_codes
-nero_stats_dir: ${oc.env:NERO_STATS_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/rmind/stats_c10}
-nero_frame_cache: ${oc.env:NERO_FRAME_CACHE,${oc.env:HOME}/data/nero-arms/cube-bimanual/frame-cache-224x224-stretch/2026-10-07}
 
 # --- observation window
 window: 2

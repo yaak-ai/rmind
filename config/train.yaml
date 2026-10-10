@@ -4,7 +4,10 @@ defaults:
   - experiment: null
   - _self_
 
-seed: 1337
+# `_self_` comes after `experiment`, so an experiment cannot set `seed` itself:
+# it sets `experiment_seed` instead (e.g. yaak/nero_robot/l1_codes_w1_drop_seed2);
+# a CLI `seed=` still wins over both
+seed: ${oc.select:experiment_seed,1337}
 matmul_precision: "high"
 
 # optional checkpoint to resume from (passed to trainer.fit)

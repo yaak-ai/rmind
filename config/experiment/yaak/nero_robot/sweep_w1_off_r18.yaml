@@ -1,0 +1,15 @@
+# @package _global_
+# bimanual_w1_ft with the ACT backbone: ResNet18 (ImageNet, FrozenBatchNorm)
+# fine-tuned at 416x640 letterbox (13 x 20 = 260 patches/camera). Needs the
+# 416x640 frame cache (profile cube_v1_416x640; the run read a /dev/shm copy that
+# is gone: rebuild it, docs/nero_runs.md).
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/sweep_w1_off_r18`
+# reproduces the run (sisyphos, a9f83e69); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_w1_ft
+  - /nero_data@_global_: cube_v1_416x640
+  - /nero_tokenizer@_global_: bimanual_tokenizer_v2
+  - /image_encoder: resnet18
+  - _self_
+
+run_name: sweep_w1_off_r18

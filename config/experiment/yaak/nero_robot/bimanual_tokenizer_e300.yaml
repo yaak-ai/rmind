@@ -1,0 +1,14 @@
+# @package _global_
+# bimanual_tokenizer (v1 recipe) trained 15x longer: 300 epochs, the cosine over
+# 66 x 300 = 19800 steps (CLI-only at the time; tok_iter/LOG.md: arm val EV
+# 0.56 -> 0.86). The diagnosis run behind bimanual_tokenizer_v2.
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/bimanual_tokenizer_e300`
+# reproduces the run (sisyphos, 745c5853); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_tokenizer
+  - _self_
+
+run_name: bimanual_tokenizer_e300
+lr_total_steps: 19800
+trainer:
+  max_epochs: 300

@@ -285,6 +285,15 @@ Ablations: `yaak/nero_robot/relative_{hand,all}` (each with its own tokenizer),
 
 ## Bimanual runs (2026-10-07 cube corpus, nero-bimanual-26)
 
+Every bimanual run that was actually trained has a run experiment named after it,
+and `just train experiment=yaak/nero_robot/<run>` reproduces it with no CLI
+overrides. Those experiments pin the data through `nero_data` profiles and the
+tokenizer through `nero_tokenizer` pins (path + sha256), under `NERO_DATA_ROOT` /
+`NERO_CKPT_ROOT`, which default to NAS. They ignore the per-directory `NERO_*`
+variables below. See [nero_runs.md](nero_runs.md) for the table, the environment
+and the verification. The generic experiments below still read the `NERO_*`
+variables.
+
 85 `bus_bimanual` takes, both arms valid in every row (`side_valid [T, T]`),
 read by rbyte's bimanual `NeroRobotReader` (pinned `feat/nero-bimanual`). Two
 patch runs, `bimanual_hand_off` (no hand token, 481 tokens/frame) and
@@ -336,7 +345,9 @@ rmind-train --config-path $PWD/config --config-name train.yaml experiment=yaak/n
 hand standardizer and fails when it finds no hand rows at all (`--allow-no-hand`
 to accept the physical prior). The bimanual experiments default `nero_stats_dir`
 to the path above when NERO_STATS_DIR is unset (never the single-arm
-`.nero_stats`). On the train
+`.nero_stats`). The exceptions are `bimanual_tokenizer` and the experiments
+derived from it: they take stats_v1 from the `cube_v1` data profile under
+`NERO_STATS_ROOT` ([nero_runs.md](nero_runs.md)). On the train
 split: 16948 rows per side, valid motor rows 16142 left / 15651 right,
 `hand.source train:hand`.
 
@@ -368,13 +379,16 @@ The stats were fitted on the v3 TRAIN split with the v1 recipe, which reproduces
 stats_v1 and stats_c10 byte for byte on v1:
 
 ```sh
-nero_fit_stats --experiment yaak/nero_robot/bimanual_tokenizer --override datamodule=yaak/nero_robot_bimanual_v3_noimg --out stats_v3
-nero_fit_stats --experiment yaak/nero_robot/paper_tok_c10 --override datamodule=yaak/nero_robot_bimanual_v3_noimg --out stats_c10_v3
+nero_fit_stats --experiment yaak/nero_robot/bimanual_tokenizer --override datamodule=yaak/nero_robot_bimanual_v3_noimg --override nero_data@_global_=cube_v3_c10 --out stats_v3
+nero_fit_stats --experiment yaak/nero_robot/paper_tok_c10 --override datamodule=yaak/nero_robot_bimanual_v3_noimg --override nero_data@_global_=cube_v3_c10 --out stats_c10_v3
+# (both experiments take their takes from a nero_data profile: the v3 profile
+# points nero_robot_dir at takes-v3; the --out dir is what is fitted)
 ```
 
 `lr_total_steps` changes with the split (`nero_steps` on v3): paper_tok_c10 60000
 (configured 32400), paper_pp_w2_c10_codes 36952 (19964), bimanual_tokenizer 2540
-(1320), bimanual_causal 7820 (3560). Override it on v3 runs.
+(1320), bimanual_causal 7820 (3560). Override it on v3 runs (the paper2\_\* run
+experiments already carry their v3 counts).
 
 ### Per-side hand token (`hand_sides`)
 

@@ -1,0 +1,10 @@
+# @package _global_
+# codes_w1_drop_pad with the L1 action head (action_head l1).
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/l1_w1_drop_pad`
+# reproduces the run (sisyphos, 554f7fde); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/codes_w1_drop_pad
+  - /action_head: l1
+  - _self_
+
+run_name: l1_w1_drop_pad

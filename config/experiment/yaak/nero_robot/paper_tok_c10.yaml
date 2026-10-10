@@ -20,14 +20,17 @@
 # * playbook: loss l2 (EV is an MSE metric), no event weighting (v2's finding in
 #   "all"), lr 3e-4 cosine with lr_total_steps = len(train_dataloader) x
 #   max_epochs (nero_steps), VQ-BeT-scale training length (hundreds of epochs).
+#
+# Data: nero_data profile cube_v1_c10 (the 2026-10-07 corpus + stats_c10) under
+# NERO_DATA_ROOT / NERO_STATS_ROOT; NERO_STATS_DIR is not read.
 defaults:
   - /experiment/yaak/nero_robot/bimanual_tokenizer
   - /trainer/callbacks: paper_tokenizer
   - override /model: yaak/nero_chunk_tokenizer/mlp
+  - override /nero_data@_global_: cube_v1_c10
   - _self_
 
 run_name: paper_tok_c10
-nero_stats_dir: ${oc.env:NERO_STATS_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/rmind/stats_c10}
 
 chunk_size: 10
 keyframe_stride: 1

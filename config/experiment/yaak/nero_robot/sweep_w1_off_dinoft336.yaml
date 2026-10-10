@@ -1,0 +1,15 @@
+# @package _global_
+# sweep_w1_off_dinoft at 210x336 (15 x 24 = 360 patches/camera). Needs the
+# 210x336 frame cache (profile cube_v1_210x336; the run read a /dev/shm copy that
+# is gone: rebuild it, docs/nero_runs.md).
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/sweep_w1_off_dinoft336`
+# reproduces the run (sisyphos, a9f83e69); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/sweep_w1_off_dinoft
+  - override /nero_data@_global_: cube_v1_210x336
+  - _self_
+
+run_name: sweep_w1_off_dinoft336
+image_height: 210
+image_width: 336
+num_patches: 360

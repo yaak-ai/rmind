@@ -1,0 +1,11 @@
+# @package _global_
+# sweep_w1_off + attention dropout 0.1 + stochastic depth (drop_path_rate) 0.1.
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/sweep_w1_off_drop`
+# reproduces the run (sisyphos, 9450f679); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/sweep_w1_off
+  - _self_
+
+run_name: sweep_w1_off_drop
+attn_dropout: 0.1
+drop_path_rate: 0.1

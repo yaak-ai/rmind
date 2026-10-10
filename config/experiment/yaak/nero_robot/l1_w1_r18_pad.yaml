@@ -1,0 +1,16 @@
+# @package _global_
+# bimanual_w1_ft_pad (encoder fine-tuned, every frame) with ResNet18 at 416x640
+# and the L1 action head. Needs the 416x640 frame cache (profile cube_v1_416x640;
+# the run read a /dev/shm copy on tresor that is gone: rebuild it,
+# docs/nero_runs.md).
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/l1_w1_r18_pad`
+# reproduces the run (tresor, 554f7fde); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_w1_ft_pad
+  - /nero_data@_global_: cube_v1_416x640
+  - /nero_tokenizer@_global_: bimanual_tokenizer_v2
+  - /image_encoder: resnet18
+  - /action_head: l1
+  - _self_
+
+run_name: l1_w1_r18_pad

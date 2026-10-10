@@ -1,0 +1,53 @@
+#@ # Data profiles of the bimanual nero runs (docs/nero_runs.md).
+#@ #
+#@ # A PROFILE is one corpus (take set + its split) x one stats fit x (optionally)
+#@ # one preprocessed frame-cache grid. It renders to config/nero_data/<name>.yaml
+#@ # (`just generate-config`); a run experiment selects it with
+#@ #   - /nero_data@_global_: <name>
+#@ # and so pins nero_robot_dir / nero_stats_dir / nero_frame_cache (and the v3
+#@ # nero_split_file) under ROOT env vars only:
+#@ #   NERO_DATA_ROOT         takes, frame caches, stats  (default: the NAS copy)
+#@ #   NERO_FRAME_CACHE_ROOT  frame caches only, e.g. a /dev/shm copy (default: NERO_DATA_ROOT)
+#@ #   NERO_STATS_ROOT        stats fits only (default: NERO_DATA_ROOT)
+#@ # The per-directory NERO_ROBOT_DIR / NERO_FRAME_CACHE / NERO_STATS_DIR the
+#@ # generic experiments read are IGNORED by a profile: a stale shell cannot swap
+#@ # a run's stats or corpus. Layout under a root (the NAS one, /nasa/max/nero-cache/
+#@ # cube-bimanual; renate's ~/paper/data/cube-bimanual has the same layout):
+#@ #   2026-10-07/<take>/...                           the v1 corpus (85 takes)
+#@ #   takes-v3/<take> -> .../<day>/<take>              the v3 corpus (130 takes, symlinks)
+#@ #   frame-cache-<H>x<W>[-stretch]/<corpus>/<take>/   nero_frame_cache output
+#@ #   stats_v1 | stats_c10 | stats_c10_v3              nero_fit_stats output
+#@ # Tokenizer checkpoints: nero_tokenizer/nero_tokenizer.lib.yml.
+
+#@ nas_data = "/nasa/max/nero-cache/cube-bimanual"
+
+#@ split_v3 = "config/splits/nero_cube_bimanual_v3.json"
+
+#@ profiles = {
+#@   "cube_v1": {"takes": "2026-10-07", "stats": "stats_v1"},
+#@   "cube_v1_140x224": {"takes": "2026-10-07", "stats": "stats_v1", "cache": "frame-cache-140x224/2026-10-07"},
+#@   "cube_v1_210x336": {"takes": "2026-10-07", "stats": "stats_v1", "cache": "frame-cache-210x336/2026-10-07"},
+#@   "cube_v1_416x640": {"takes": "2026-10-07", "stats": "stats_v1", "cache": "frame-cache-416x640/2026-10-07"},
+#@   "cube_v1_c10": {"takes": "2026-10-07", "stats": "stats_c10"},
+#@   "cube_v1_c10_224s": {"takes": "2026-10-07", "stats": "stats_c10", "cache": "frame-cache-224x224-stretch/2026-10-07"},
+#@   "cube_v3_c10": {"takes": "takes-v3", "stats": "stats_c10_v3", "split": split_v3},
+#@   "cube_v3_c10_224s": {"takes": "takes-v3", "stats": "stats_c10_v3", "cache": "frame-cache-224x224-stretch/v3", "split": split_v3},
+#@ }
+
+#@ def profile(name):
+#@   p = profiles[name]
+nero_data_root: #@ "${oc.env:NERO_DATA_ROOT," + nas_data + "}"
+nero_stats_root: "${oc.env:NERO_STATS_ROOT,${nero_data_root}}"
+nero_robot_dir: #@ "${nero_data_root}/" + p["takes"]
+nero_stats_dir: #@ "${nero_stats_root}/" + p["stats"]
+#@ if "cache" in p:
+nero_frame_cache_root: "${oc.env:NERO_FRAME_CACHE_ROOT,${nero_data_root}}"
+nero_frame_cache: #@ "${nero_frame_cache_root}/" + p["cache"]
+#@ end
+#@ if "split" in p:
+#! the arm-selection callback's take classes (relative to the repo root, where
+#! `just train` runs); v1 runs use the callback's default (the v1 split)
+nero_split_file: #@ p["split"]
+#@ end
+#@ end
+

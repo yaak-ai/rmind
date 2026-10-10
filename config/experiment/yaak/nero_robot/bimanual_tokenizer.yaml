@@ -7,17 +7,21 @@
 #   python -m rmind.scripts.nero_fit_stats --experiment yaak/nero_robot/bimanual_tokenizer --out $NERO_STATS_DIR
 # lr_total_steps = len(train_dataloader) x max_epochs (`python -m
 # rmind.scripts.nero_steps yaak/nero_robot/bimanual_tokenizer`). Local logging.
+#
+# Also the RUN experiment of bimanual_tokenizer (v1; docs/nero_runs.md): data
+# through the nero_data profile cube_v1 (the 2026-10-07 corpus + the BIMANUAL
+# stats stats_v1, side_valid [True, True]; never the single-arm .nero_stats
+# default inherited from causal/tokenizer, whose right side is mean 0 / std 1),
+# under NERO_DATA_ROOT / NERO_STATS_ROOT (NAS default). NERO_ROBOT_DIR /
+# NERO_STATS_DIR are not read. The v2 tokenizers and paper_tok_c10 inherit it.
 defaults:
   - /experiment/yaak/nero_robot/tokenizer
+  - /nero_data@_global_: cube_v1
   - override /datamodule: yaak/nero_robot_bimanual_noimg
   - override /trainer: nero_local
   - _self_
 
-nero_robot_dir: ${oc.env:NERO_ROBOT_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/2026-10-07}
 nero_runs_dir: ${oc.env:NERO_RUNS_DIR,runs}
-# the BIMANUAL stats (side_valid [True, True]); never the single-arm .nero_stats
-# default inherited from causal/tokenizer, whose right side is mean 0 / std 1
-nero_stats_dir: ${oc.env:NERO_STATS_DIR,${oc.env:HOME}/data/nero-arms/cube-bimanual/rmind/stats_v1}
 run_name: bimanual_tokenizer
 
 relative_mode: all
