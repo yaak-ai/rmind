@@ -1,0 +1,21 @@
+# @package _global_
+# Control for paper2_pp_l1_handon: identical (paper L1 regime, v3 corpus, same
+# tokenizer pin / standardizer, steps, seed) but hand_off -- no hand tokens.
+# Separates the hand-token effect from the v1 -> v3 (85 -> 130 takes) corpus
+# effect. Tokens: 2 frames x (1 state + 3 x 256) = 1538 per sample.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_pp_l1_handon
+  - _self_
+
+run_name: paper2_pp_l1_handoff
+
+hand_groups: []
+hand_sides: []
+num_hand_tokens: 0
+use_hand_token: 0
+reliance_metrics: false
+model:
+  hand_embedding: null
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, c10, l1]
