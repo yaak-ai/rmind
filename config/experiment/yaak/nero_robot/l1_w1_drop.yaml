@@ -1,0 +1,11 @@
+# @package _global_
+# sweep_w1_off_drop with the CONTINUOUS L1 action head (action_head l1) in place
+# of codes + offset.
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/l1_w1_drop`
+# reproduces the run (sisyphos, 554f7fde); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/sweep_w1_off_drop
+  - /action_head: l1
+  - _self_
+
+run_name: l1_w1_drop

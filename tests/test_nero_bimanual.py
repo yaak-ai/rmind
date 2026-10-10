@@ -193,10 +193,18 @@ def test_bimanual_stats_dir_defaults_to_the_bimanual_fit(
     """Without NERO_STATS_DIR a bimanual run must not pick up the single-arm
     `.nero_stats` (side_valid [T, F]: right side mean 0 / std 1, no error)."""
     monkeypatch.delenv("NERO_STATS_DIR", raising=False)
+    monkeypatch.delenv("NERO_DATA_ROOT", raising=False)
+    monkeypatch.delenv("NERO_STATS_ROOT", raising=False)
     cfg = _compose(experiment)
-    assert cfg.nero_stats_dir == str(
-        Path.home() / "data/nero-arms/cube-bimanual/rmind/stats_v1"
+    # bimanual_tokenizer is also a RUN experiment: stats_v1 through the cube_v1
+    # data profile, NAS default (docs/nero_runs.md); the generic bases keep the
+    # local default
+    root = (
+        Path("/nasa/max/nero-cache/cube-bimanual")
+        if experiment == "bimanual_tokenizer"
+        else Path.home() / "data/nero-arms/cube-bimanual/rmind"
     )
+    assert cfg.nero_stats_dir == str(root / "stats_v1")
     assert _compose("causal").nero_stats_dir == ".nero_stats"
 
 

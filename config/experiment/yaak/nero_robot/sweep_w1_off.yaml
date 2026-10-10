@@ -1,0 +1,13 @@
+# @package _global_
+# patch/sweep round 1 baseline: bimanual_w1_hand_off (window 1, hand_off, frozen
+# DINOv2 140x224, bs 32, 38 epochs) on bimanual_tokenizer_v2 (sha256 1ba2f3b2...),
+# 2026-10-07 corpus + stats_v1 + the 140x224 frame cache.
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/sweep_w1_off`
+# reproduces the run (sisyphos, 9450f679); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_w1_hand_off
+  - /nero_data@_global_: cube_v1_140x224
+  - /nero_tokenizer@_global_: bimanual_tokenizer_v2
+  - _self_
+
+run_name: sweep_w1_off

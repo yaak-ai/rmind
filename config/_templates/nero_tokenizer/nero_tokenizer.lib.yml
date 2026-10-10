@@ -1,0 +1,44 @@
+#@ # Tokenizer pins of the bimanual nero runs (docs/nero_runs.md): the frozen
+#@ # chunk tokenizer a patch policy loads, by path under NERO_CKPT_ROOT (default
+#@ # /nasa/max/nero-sweep-ckpts) + its sha256 (`tokenizer_ckpt_sha256`, checked
+#@ # by rmind-train before the model is built). Each renders to
+#@ # config/nero_tokenizer/<name>.yaml; a run experiment selects one with
+#@ #   - /nero_tokenizer@_global_: <name>
+#@ # NERO_TOKENIZER_CKPT (read by the generic experiments) is ignored.
+
+#@ nas_ckpt = "/nasa/max/nero-sweep-ckpts"
+
+#@ # path under NERO_CKPT_ROOT, sha256 of the file; the run that produced it
+#@ tokenizers = {
+#@   "bimanual_tokenizer_v1": {
+#@     "path": "bimanual_tokenizer/version_1/checkpoints/epoch=19-step=1320.ckpt",
+#@     "sha256": "9b5257364a3406f33daa742e27927e1272553e1535e6153e87aa3be7b7ad05b5"},
+#@   "bimanual_tokenizer_v2": {
+#@     "path": "bimanual_tokenizer_v2/version_0/checkpoints/epoch=149-step=9900.ckpt",
+#@     "sha256": "1ba2f3b2c10891c6bec3b77ab73a544257afc0eefd018da8baeeb897e32a93f2"},
+#@   "bimanual_tokenizer_v2_q32": {
+#@     "path": "bimanual_tokenizer_v2_q32/version_0/checkpoints/epoch=149-step=9900.ckpt",
+#@     "sha256": "a1ec2a431a1f89a3bd9502e702a481a1e8051a8fa7a95dc288f2d824c7b8aa75"},
+#@   "paper_tok_c10_e399": {
+#@     "path": "paper_tok_c10/version_0/checkpoints/epoch=399-step=32400.ckpt",
+#@     "sha256": "b33dc8e51e4f9f84f1f1365395a23e9b206fcc1ef7d38feef087c1c9c5808e41"},
+#@   "paper_tok_c10_e89": {
+#@     "path": "paper_tok_c10/version_0/checkpoints/epoch=89-step=7290.ckpt",
+#@     "sha256": "af48270187ba35dcb74b521316074cf8567b23cfabbea7f5e2cb0800ca309007"},
+#@   "paper2_tok_cb64_e999": {
+#@     "path": "paper2_tok_cb64/checkpoints/epoch=999-step=150000.ckpt",
+#@     "sha256": "60eb44496305740a5c72561aae1ea1b77f18c9a426b2573d7dd46def15888ccd"},
+#@   "paper2_tok_cb64_e9": {
+#@     "path": "paper2_tok_cb64/checkpoints/epoch=9-step=1500.ckpt",
+#@     "sha256": "24848d226ec8a6fb0771d6a0069565c150e79462ba11a0c406b835b11cdc8d45"},
+#@   "paper2_tok_q4_e999": {
+#@     "path": "paper2_tok_q4/checkpoints/epoch=999-step=150000.ckpt",
+#@     "sha256": "3b7249d71fc753c0ccefc72a64cec40ee7d1650a6e0d26914265d2c616ab3aec"},
+#@ }
+
+#@ def tokenizer(name):
+#@   t = tokenizers[name]
+nero_ckpt_root: #@ "${oc.env:NERO_CKPT_ROOT," + nas_ckpt + "}"
+tokenizer_ckpt: #@ "${nero_ckpt_root}/" + t["path"]
+tokenizer_ckpt_sha256: #@ t["sha256"]
+#@ end

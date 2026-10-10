@@ -1,0 +1,2 @@
+#@ load("nero_tokenizer.lib.yml", "tokenizer")
+--- #@ tokenizer("bimanual_tokenizer_v2")

@@ -1,0 +1,15 @@
+# @package _global_
+# bimanual_hand_off (window 16, 100-step chunk, 140x224 DINOv2) on the FIRST bimanual
+# tokenizer, bimanual_tokenizer v1 (version_1, epoch=19-step=1320, sha256
+# 9b525736...), 2026-10-07 corpus + stats_v1 + the 140x224 frame cache, every
+# epoch kept. The `_v2` rerun of bimanual_hand_off (which kept only the last
+# epoch).
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/bimanual_hand_off_v2`
+# reproduces the run (sisyphos, b069267e + save_top_k -1); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_hand_off
+  - /nero_data@_global_: cube_v1_140x224
+  - /nero_tokenizer@_global_: bimanual_tokenizer_v1
+  - _self_
+
+run_name: bimanual_hand_off_v2

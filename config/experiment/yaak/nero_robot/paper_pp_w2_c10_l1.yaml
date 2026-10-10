@@ -2,10 +2,13 @@
 # paper_pp_w2_c10_codes with the CONTINUOUS L1 head (action_head l1, patch/l1head)
 # in place of codes + offset: isolates the head in the short-chunk regime. The
 # tokenizer is still loaded (it owns the chunk-10 action standardizer and the
-# horizon) but never encodes or decodes.
+# horizon) but never encodes or decodes. The run loaded paper_tok_c10's epoch 89
+# (epoch=89-step=7290, sha256 af482701...: the tokenizer was still training at
+# launch; only its chunk-10 standardizer + horizon matter to the l1 head).
 defaults:
   - /experiment/yaak/nero_robot/paper_pp_w2_c10_codes
   - /action_head: l1
+  - override /nero_tokenizer@_global_: paper_tok_c10_e89
   - _self_
 
 run_name: paper_pp_w2_c10_l1

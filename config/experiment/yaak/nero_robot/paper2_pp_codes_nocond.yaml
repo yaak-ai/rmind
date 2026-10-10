@@ -10,8 +10,8 @@
 # codes, not through the decoder. Same tokenizer, data, loss (teacher-forced on
 # the target codes in training, argmax codes at inference) and recipe.
 #
-# Launch-time settings as paper2_pp_codes_cond (NERO_TOKENIZER_CKPT,
-# codebook_size / num_quantizers of the POLICY, lr_total_steps).
+# Tokenizer (paper2_tok_cb64 epoch 999, codebook 64 x 2), data and steps are
+# paper2_pp_codes_cond's (inherited). No CLI overrides.
 defaults:
   - /experiment/yaak/nero_robot/paper2_pp_codes_cond
   - _self_

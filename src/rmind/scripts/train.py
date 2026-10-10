@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from subprocess import check_output  # noqa: S404
 
@@ -15,7 +16,23 @@ from rmind.utils.precision import auto_precision
 logger = get_logger(__name__)
 
 
+def check_pins(cfg: DictConfig) -> None:
+    """Refuse a pinned input whose bytes changed (`tokenizer_ckpt_sha256`).
+
+    Raises:
+        ValueError: if `tokenizer_ckpt` does not hash to `tokenizer_ckpt_sha256`.
+    """
+    if (expected := cfg.get("tokenizer_ckpt_sha256")) is None:
+        return
+    path = Path(cfg.tokenizer_ckpt)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != expected:
+        msg = f"tokenizer_ckpt {path} has sha256 {digest}, the config pins {expected}"
+        raise ValueError(msg)
+
+
 def _train(cfg: DictConfig) -> None:
+    check_pins(cfg)
     pl.seed_everything(cfg.seed, workers=True)
     torch.set_float32_matmul_precision(cfg.matmul_precision)
 

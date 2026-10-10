@@ -1,0 +1,12 @@
+# @package _global_
+# bimanual_hand_off_v2 with the tokenizer swapped for bimanual_tokenizer_v2
+# (epoch=149-step=9900, sha256 1ba2f3b2...), a drop-in 16 x 16.
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/bimanual_hand_off_tokv2`
+# reproduces the run (sisyphos, 63db0f6e); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/bimanual_hand_off
+  - /nero_data@_global_: cube_v1_140x224
+  - /nero_tokenizer@_global_: bimanual_tokenizer_v2
+  - _self_
+
+run_name: bimanual_hand_off_tokv2

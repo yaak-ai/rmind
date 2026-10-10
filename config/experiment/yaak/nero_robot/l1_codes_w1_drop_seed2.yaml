@@ -1,0 +1,12 @@
+# @package _global_
+# sweep_w1_off_drop (codes head) repeated with seed 2: the seed-noise control of
+# the patch/l1head comparison.
+# Run experiment (docs/nero_runs.md): `just train experiment=yaak/nero_robot/l1_codes_w1_drop_seed2`
+# reproduces the run (sisyphos, a9f83e69); no CLI overrides.
+defaults:
+  - /experiment/yaak/nero_robot/sweep_w1_off_drop
+  - _self_
+
+run_name: l1_codes_w1_drop_seed2
+# train.yaml's `seed` reads it (an experiment cannot set `seed` itself)
+experiment_seed: 2
