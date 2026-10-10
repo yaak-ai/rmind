@@ -239,7 +239,46 @@ Results:
     `~/data/nero-arms/cube-bimanual/rmind/stats_{v1,c10_v3}`. They load on all
     three hosts.
 
-  On another host, link the byte-identical NAS stats dir to the stored path,
+  The numbers themselves were always in the checkpoint (`standardizer.mean/std`
+  and `event_reference` are buffers); only `__init__` needed the files. Since
+  rmind#283, a newly saved tokenizer checkpoint also stores both JSON payloads
+  under `checkpoint["nero_tokenizer_stats"]` and loads on any host. It does not
+  need the paths. If they exist, it compares them with the embedded stats, and
+  if they differ it warns loudly and uses the embedded ones. Checkpoints without the key, which
+  includes every one listed above, load exactly as before.
+
+  To make an existing checkpoint portable, write a self-contained copy. The
+  original is never written, and the script refuses stats files that do not
+  match the checkpoint's buffers:
+
+  ```sh
+  python -m rmind.scripts.nero_tokenizer_embed_stats \
+      "$NERO_CKPT_ROOT/paper2_tok_q4/checkpoints/epoch=999-step=150000.ckpt" \
+      --stats-dir /nasa/max/nero-cache/cube-bimanual/stats_c10_v3
+  # -> .../epoch=999-step=150000.selfcontained.ckpt, prints its sha256
+  ```
+
+  Without `--stats-dir`, it reads the hparams paths. The copy has a new sha256,
+  so the pins above still name the originals. The script is deterministic: re-running it on
+  the same input reproduces the copy byte for byte, so the hashes below are the
+  ones to pin. The three copies below are published (2026-10-10, read-only)
+  next to their originals under `NERO_CKPT_ROOT`, as
+  `<same dir>/<same name>.selfcontained.ckpt`; the original files are unchanged.
+  No pin uses them yet. They give bit-identical standardization, codes, latents
+  and decodes to the original on renate, on 192 real chunks:
+
+  | copy of              | standardizer sha256 | self-contained sha256                                              |
+  | -------------------- | ------------------- | ------------------------------------------------------------------ |
+  | `paper_tok_c10_e399` | `18a2edb93934`      | `9ff3ec2fdcfacc9a51878a219dc623c6a9e5f3f7431ea19dc7f0bca82370f2d5` |
+  | `paper_tok_c10_e89`  | `18a2edb93934`      | `b3649e285e54dc10eb80d39aeb949884e2b3cdf9a2b771049d2ec88ec79343da` |
+  | `paper2_tok_q4_e999` | `57d535d08900`      | `1ff32f5beda82a8e034f7c0e2c70d52e8735e064e3c1090378ea54b42faa3bb3` |
+
+  A policy checkpoint still re-loads its tokenizer from the `tokenizer_ckpt`
+  path in its own hparams, so it needs that file to exist. The fix above only
+  removes the second hop, from the tokenizer to the stats.
+
+  For an original on another host, link the byte-identical NAS stats dir to
+  the stored path,
   e.g. `mkdir -p ~/paper/data/cube-bimanual && ln -s /nasa/max/nero-cache/cube-bimanual/stats_c10_v3 ~/paper/data/cube-bimanual/`.
 
 - **Code drift.** Runs from before `04fc11e1` trained on older code (the "code"

@@ -29,16 +29,30 @@ debugging playbook" instead of the inherited VQ-BeT defaults:
 The tokenizer OWNS the action standardizer of its relative mode (train-split,
 per axis, nutron_standardizer JSON) and applies the relative transform itself, so
 the policy cannot pair it with a mismatched one: the policy reads both from here.
+
+**Self-contained checkpoints.** The standardizer and event-reference numbers are
+buffers (`standardizer.mean/std`, `event_reference`), but `__init__` builds them
+from the JSON paths in hparams, so a checkpoint used to load only where those
+absolute paths exist. `on_save_checkpoint` now also stores both JSON payloads
+under `checkpoint["nero_tokenizer_stats"]`, and `load_from_checkpoint` builds
+from them, never reading the paths (it only compares when they exist and warns
+if they differ). A checkpoint without the key (every one saved before this)
+loads exactly as before. `nero_tokenizer_embed_stats` upgrades an old one into a
+new `<name>.selfcontained.ckpt`.
 """
 
 from __future__ import annotations
 
 import math
+import os
+import warnings
 from collections.abc import Sequence  # noqa: TC003 (pydantic validate_call)
+from pathlib import Path as FsPath
 from typing import Any, Literal, Self, override
 
 import pytorch_lightning as pl
 import torch
+from lightning_fabric.utilities.cloud_io import _load as pl_load  # noqa: PLC2701
 from lightning_fabric.utilities.types import (  # noqa: TC002 (pydantic validate_call)
     _MAP_LOCATION_TYPE,
     _PATH,
@@ -51,6 +65,7 @@ from pytorch_lightning.utilities.types import (  # noqa: TC002
     STEP_OUTPUT,
     OptimizerLRScheduler,
 )
+from structlog import get_logger
 from torch import Tensor
 from torch.nn import Module
 from torch.nn import functional as F
@@ -77,9 +92,56 @@ from rmind.models.action_tokenizer import (  # noqa: TC001 (pydantic validate_ca
 )
 from rmind.utils._wandb import LoadableFromArtifact
 
-__all__ = ["NeroChunkTokenizer", "explained_variance", "total_variation"]
+__all__ = [
+    "STATS_KEY",
+    "NeroChunkTokenizer",
+    "embedded_stats",
+    "explained_variance",
+    "total_variation",
+]
 
 type Path = tuple[str, ...]
+
+logger = get_logger(__name__)
+
+#: checkpoint key holding the embedded standardizer / event-reference payloads
+STATS_KEY = "nero_tokenizer_stats"
+STATS_VERSION = 1
+
+
+def embedded_stats(
+    standardizer: AxisStandardizer,
+    event_reference: EventReference | None,
+    event_reference_source: str | None = None,
+) -> dict[str, Any]:
+    """The `checkpoint[STATS_KEY]` entry: both JSON payloads and their sha256."""
+    return {
+        "version": STATS_VERSION,
+        "action_standardizer": {
+            "payload": standardizer.payload(),
+            "sha256": standardizer.digest,
+            "source": standardizer.source,
+        },
+        "event_reference": None
+        if event_reference is None
+        else {
+            "payload": event_reference.payload(),
+            "sha256": event_reference.digest,
+            "source": event_reference_source,
+        },
+    }
+
+
+def _loud(msg: str) -> None:
+    logger.warning(msg)
+    warnings.warn(msg, stacklevel=3)
+
+
+def _hparam_path(value: Any) -> FsPath | None:
+    """The JSON path an hparams entry points at (`str` or `{path: ...}`), if any."""
+    if isinstance(value, dict):
+        value = value.get("path")
+    return FsPath(value) if isinstance(value, str) else None
 
 
 def explained_variance(
@@ -182,6 +244,9 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
         self.register_buffer(
             "event_reference", torch.full((action_features,), float("nan"))
         )
+        # the installed EventReference and where it came from, re-embedded at save
+        self._event_reference: EventReference | None = None
+        self._event_reference_source: str | None = event_reference
         if event_reference is not None:
             self.set_event_reference(EventReference.load(event_reference))
         hparams |= {
@@ -222,13 +287,68 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
         weights_only: bool | None = False,
         **kwargs: Any,
     ) -> Self:  # ty:ignore[invalid-method-override]
-        return super().load_from_checkpoint(
+        """Load, building the stats from the checkpoint when it embeds them.
+
+        A checkpoint without `STATS_KEY` (saved before it existed) loads exactly
+        as before: `__init__` reads the hparams JSON paths. With it, the
+        standardizer and event reference come from the embedded payloads and the
+        paths are only compared against (a loud warning if they differ).
+        """
+        stats, hparams = None, {}
+        if isinstance(checkpoint_path, (str, os.PathLike)):
+            checkpoint = pl_load(
+                checkpoint_path, map_location="cpu", weights_only=False
+            )
+            stats = checkpoint.get(STATS_KEY)
+            hparams = checkpoint.get("hyper_parameters", {})
+        if stats is None:
+            return super().load_from_checkpoint(
+                checkpoint_path,
+                map_location=map_location,
+                strict=strict,
+                weights_only=weights_only,
+                **kwargs,
+            )
+
+        std, ref = _from_embedded(stats, hparams)
+        kwargs = {
+            "standardizer": {
+                "_target_": "rmind.data.nero_robot.AxisStandardizer.from_payload",
+                "payload": std.payload(),
+                "source": std.source,
+            },
+            "event_reference": None,  # the buffer comes from the state_dict
+        } | kwargs
+        model = super().load_from_checkpoint(
             checkpoint_path,
             map_location=map_location,
             strict=strict,
             weights_only=weights_only,
             **kwargs,
         )
+        if ref is not None:
+            model._adopt_event_reference(*ref)  # noqa: SLF001
+        return model
+
+    @override
+    def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        checkpoint[STATS_KEY] = embedded_stats(
+            self.standardizer, self._event_reference, self._event_reference_source
+        )
+
+    def _adopt_event_reference(
+        self, reference: EventReference, source: str | None
+    ) -> None:
+        """Remember an embedded reference (to re-embed) whose values the buffer holds."""
+        self._check_event_reference(reference)
+        want = torch.tensor(reference.reference, dtype=self.event_reference.dtype)
+        if not torch.equal(want.to(self.event_reference.device), self.event_reference):
+            _loud(
+                "embedded event reference differs from the checkpoint's "
+                "event_reference buffer; the buffer is used"
+            )
+        self._event_reference = reference
+        self._event_reference_source = source
 
     # ------------------------------------------------------------ geometry
 
@@ -332,7 +452,13 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
 
     @torch.no_grad()
     def set_event_reference(self, reference: EventReference) -> None:
-        """Install a train-split `EventReference`.
+        """Install a train-split `EventReference` (`_check_event_reference`)."""
+        self._check_event_reference(reference)
+        self.event_reference.copy_(torch.tensor(reference.reference))
+        self._event_reference = reference
+
+    def _check_event_reference(self, reference: EventReference) -> None:
+        """Refuse a reference this tokenizer cannot use.
 
         Raises:
             ValueError: if it was fitted for another relative mode or in the units
@@ -351,7 +477,6 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
                 f"{self.standardizer_digest}: re-run nero_fit_stats"
             )
             raise ValueError(msg)
-        self.event_reference.copy_(torch.tensor(reference.reference))
 
     def _require_event_reference(self) -> None:
         if self.event_weight is None or not self.event_axes:
@@ -443,3 +568,49 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
             )
             return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
         return {"optimizer": optimizer}
+
+
+def _from_embedded(
+    stats: dict[str, Any], hparams: dict[str, Any]
+) -> tuple[AxisStandardizer, tuple[EventReference, str | None] | None]:
+    """The embedded standardizer / event reference, compared with the hparams paths.
+
+    Raises:
+        ValueError: on an unknown version or a payload that does not hash to its
+            recorded sha256.
+    """
+    if stats.get("version") != STATS_VERSION:
+        msg = f"{STATS_KEY} version {stats.get('version')!r} != {STATS_VERSION}"
+        raise ValueError(msg)
+    entry = stats["action_standardizer"]
+    std = AxisStandardizer.from_payload(
+        entry["payload"], source=entry.get("source") or "checkpoint"
+    )
+    if std.digest != entry["sha256"]:
+        msg = f"embedded action standardizer hashes to {std.digest}, not {entry['sha256']}"
+        raise ValueError(msg)
+    path = _hparam_path(hparams.get("standardizer"))
+    if path is not None and path.is_file():
+        on_disk = AxisStandardizer.load(path)
+        if on_disk.digest != std.digest:
+            _loud(
+                f"action standardizer at {path} ({on_disk.digest}) differs from the "
+                f"one embedded in the checkpoint ({std.digest}); using the embedded one"
+            )
+
+    entry = stats.get("event_reference")
+    if entry is None:
+        return std, None
+    ref = EventReference.from_payload(entry["payload"], source="checkpoint")
+    if ref.digest != entry["sha256"]:
+        msg = f"embedded event reference hashes to {ref.digest}, not {entry['sha256']}"
+        raise ValueError(msg)
+    path = _hparam_path(hparams.get("event_reference"))
+    if path is not None and path.is_file():
+        on_disk = EventReference.load(path)
+        if on_disk.digest != ref.digest:
+            _loud(
+                f"event reference at {path} ({on_disk.digest}) differs from the one "
+                f"embedded in the checkpoint ({ref.digest}); using the embedded one"
+            )
+    return std, (ref, entry.get("source"))
