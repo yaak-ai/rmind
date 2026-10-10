@@ -1,0 +1,11 @@
+# @package _global_
+# paper2_pp_codes_nocond (unconditioned action-space offset, argmax codes) on the
+# depth-4 tokenizer paper2_tok_q4 (RVQ 4 x 16, 16 bits per side-chunk):
+# the optional intermediate point. NERO_TOKENIZER_CKPT = paper2_tok_q4.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_pp_codes_nocond
+  - _self_
+
+run_name: paper2_pp_codes_q4_nocond
+codebook_size: 16
+num_quantizers: 4
