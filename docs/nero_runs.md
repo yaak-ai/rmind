@@ -241,10 +241,10 @@ Results:
 
   The numbers themselves were always in the checkpoint (`standardizer.mean/std`
   and `event_reference` are buffers); only `__init__` needed the files. Since
-  `tok/stats-in-ckpt`, a newly saved tokenizer checkpoint also stores both JSON
-  payloads under `checkpoint["nero_tokenizer_stats"]` and loads on any host. It
-  never reads the paths; if they exist and differ from the embedded stats, it
-  warns loudly and uses the embedded ones. Checkpoints without the key, which
+  rmind#283, a newly saved tokenizer checkpoint also stores both JSON payloads
+  under `checkpoint["nero_tokenizer_stats"]` and loads on any host. It does not
+  need the paths. If they exist, it compares them with the embedded stats, and
+  if they differ it warns loudly and uses the embedded ones. Checkpoints without the key, which
   includes every one listed above, load exactly as before.
 
   To make an existing checkpoint portable, write a self-contained copy. The
@@ -259,10 +259,12 @@ Results:
   ```
 
   Without `--stats-dir`, it reads the hparams paths. The copy has a new sha256,
-  so the pins above still name the originals. To use a copy, add a pin with
-  the new hash. These copies were checked to give bit-identical
-  standardization, codes, latents and decodes to the original on renate, on 192
-  real chunks:
+  so the pins above still name the originals. The script is deterministic: re-running it on
+  the same input reproduces the copy byte for byte, so the hashes below are the
+  ones to pin once someone writes a copy under `NERO_CKPT_ROOT`. Nobody has
+  published one yet; the copies below were scratch builds. They give
+  bit-identical standardization, codes, latents and decodes to the original
+  on renate, on 192 real chunks:
 
   | copy of              | standardizer sha256 | self-contained sha256                                              |
   | -------------------- | ------------------- | ------------------------------------------------------------------ |
