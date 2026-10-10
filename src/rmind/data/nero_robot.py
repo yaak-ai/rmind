@@ -327,23 +327,33 @@ class AxisStandardizer(nn.Module):
         if sha256 is not None and hashlib.sha256(raw).hexdigest() != sha256:
             msg = f"{path}: sha256 does not match the pinned {sha256}"
             raise ValueError(msg)
-        payload = json.loads(raw)
+        return cls.from_payload(json.loads(raw), source=str(path))
+
+    @classmethod
+    def from_payload(
+        cls, payload: dict[str, Any], *, source: str = "payload"
+    ) -> AxisStandardizer:
+        """Build from a parsed `nutron_standardizer` JSON (`payload()`'s inverse).
+
+        Raises:
+            ValueError: on a schema/version/name mismatch.
+        """
         if (payload.get("schema"), payload.get("version")) != (
             STANDARDIZER_SCHEMA,
             STANDARDIZER_VERSION,
         ):
-            msg = f"{path}: not a {STANDARDIZER_SCHEMA} v{STANDARDIZER_VERSION}"
+            msg = f"{source}: not a {STANDARDIZER_SCHEMA} v{STANDARDIZER_VERSION}"
             raise ValueError(msg)
         sides = tuple(dict.fromkeys(n.split(".", 1)[0] for n in payload["names"]))
         if payload["names"] != flat_names(sides):
-            msg = f"{path}: names are not the side-major robot layout"
+            msg = f"{source}: names are not the side-major robot layout"
             raise ValueError(msg)
         shape = (len(sides), NUM_AXES)
         return cls(
             mean=torch.tensor(payload["mean"]).reshape(shape),
             std=torch.tensor(payload["std"]).reshape(shape),
             sides=sides,
-            source=str(path),
+            source=source,
         )
 
 
@@ -740,20 +750,26 @@ class EventReference:
 
     @classmethod
     def load(cls, path: str | Path) -> EventReference:
-        """Load an `event_reference_<mode>.json`.
+        """Load an `event_reference_<mode>.json` (checked by `from_payload`)."""
+        return cls.from_payload(json.loads(Path(path).read_bytes()), source=str(path))
+
+    @classmethod
+    def from_payload(
+        cls, payload: dict[str, Any], *, source: str = "payload"
+    ) -> EventReference:
+        """Build from a parsed `event_reference_<mode>.json` (`payload()`'s inverse).
 
         Raises:
             ValueError: on a schema/version/axis mismatch.
         """
-        payload = json.loads(Path(path).read_bytes())
         if (payload.get("schema"), payload.get("version")) != (
             EVENT_REFERENCE_SCHEMA,
             EVENT_REFERENCE_VERSION,
         ):
-            msg = f"{path}: not a {EVENT_REFERENCE_SCHEMA} v{EVENT_REFERENCE_VERSION}"
+            msg = f"{source}: not a {EVENT_REFERENCE_SCHEMA} v{EVENT_REFERENCE_VERSION}"
             raise ValueError(msg)
         if payload.get("axes") != list(AXIS_NAMES):
-            msg = f"{path}: axes are not the robot layout {AXIS_NAMES}"
+            msg = f"{source}: axes are not the robot layout {AXIS_NAMES}"
             raise ValueError(msg)
         return cls(
             reference=payload["reference"],
