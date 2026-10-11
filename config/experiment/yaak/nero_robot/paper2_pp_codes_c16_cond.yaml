@@ -1,0 +1,21 @@
+# @package _global_
+#
+# patch/token-overfit baseline: paper2_pp_codes_cond (VQ-BeT head, per-code
+# offset TABLE, argmax codes, v3 corpus, paper2 recipe) on the v3 2 x 16
+# tokenizer paper2_tok_c16 (8 bits per side-chunk) instead of cb64 (12 bits).
+# The cond arm is the stronger existing codes baseline (replay val9 k5 arm L1
+# best/late5 0.0243/0.0248 vs nocond 0.0253/0.0263). This is the matching
+# baseline for the token-overfit mitigations (label smoothing, primary/secondary
+# level weights, distance-aware soft targets).
+# Launch: NERO_TOKENIZER_CKPT = paper2_tok_c16's last checkpoint, v3 env as
+# paper2_pp_codes_cond.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_pp_codes_cond
+  - _self_
+
+run_name: paper2_pp_codes_c16_cond
+codebook_size: 16
+num_quantizers: 2
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, c10, offset_cond, token_overfit]
