@@ -272,6 +272,17 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         sample_codes: bool = False,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
+        # --- token-overfit mitigations (codes head, robot rows), OPT-IN.
+        # `code_loss_weights`: per-RVQ-level weight on the code loss (VQ-BeT's
+        # primary/secondary 5.0 / 0.5); the last value repeats for deeper levels.
+        # `code_soft_tau`: distance-aware smoothing target p(v) ~ exp(-d(v)/tau),
+        # d(v) = mean |invert(gt codes with level q <- v) - invert(gt codes)| in
+        # standardized action units (prefix/other levels held at ground truth:
+        # RVQ residual levels are not additive). It replaces the UNIFORM term of
+        # FocalLoss's label smoothing, so the code loss must be a FocalLoss with
+        # label_smoothing > 0 (= the weight of the soft target).
+        code_loss_weights: Sequence[float] | None = None,
+        code_soft_tau: float | None = None,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -600,6 +611,26 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
+        self.code_loss_weights = (
+            None
+            if code_loss_weights is None
+            else tuple(float(w) for w in code_loss_weights)
+        )
+        self.code_soft_tau = code_soft_tau
+        if code_soft_tau is not None:
+            from rmind.components.loss import FocalLoss  # noqa: PLC0415
+
+            code_loss = self.losses["code"]
+            if (
+                code_soft_tau <= 0.0
+                or not isinstance(code_loss, FocalLoss)
+                or not code_loss.label_smoothing
+            ):
+                msg = (
+                    "code_soft_tau needs tau > 0 and losses.code = FocalLoss with "
+                    f"label_smoothing > 0, got tau={code_soft_tau}, {code_loss!r}"
+                )
+                raise ValueError(msg)
         self.image_embedding_dim = image_embedding_dim
         self.policy_embedding_dim = policy_embedding_dim
         hparams |= {
@@ -626,6 +657,8 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "offset_scale": offset_scale,
+            "code_loss_weights": self.code_loss_weights,
+            "code_soft_tau": code_soft_tau,
             "image_embedding_dim": image_embedding_dim,
             "policy_embedding_dim": policy_embedding_dim,
             "action_space": action_space,
@@ -1448,6 +1481,48 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             return offset
         return torch.tanh(offset / self.offset_scale) * self.offset_scale
 
+    def _robot_code_losses(
+        self, code_logits: Tensor, target_codes: Tensor
+    ) -> dict[str, Tensor]:
+        """Per-level code loss `(n, g, c)` vs `(n, g)`, with the opt-in level
+        weights and distance-aware soft smoothing targets."""
+        g = target_codes.shape[-1]
+        soft = (
+            self._code_soft_targets(target_codes)
+            if self.code_soft_tau is not None
+            else None
+        )
+        losses: dict[str, Tensor] = {}
+        for q in range(g):
+            args = (code_logits[:, q], target_codes[:, q])
+            loss = (
+                self.losses["code"](*args)
+                if soft is None
+                else self.losses["code"](*args, soft[:, q])
+            )
+            if self.code_loss_weights is not None:
+                w = self.code_loss_weights
+                loss *= w[min(q, len(w) - 1)]
+            losses[f"code_{q}"] = loss
+        return losses
+
+    @torch.no_grad()
+    def _code_soft_targets(self, target_codes: Tensor) -> Tensor:
+        """`softmax(-d / tau)` `(n, g, c)`, d = prefix-conditioned decoded distance."""
+        tokenizer = self.tokenizer
+        n, g = target_codes.shape
+        c = int(tokenizer.quantizer.codebook_size)
+        base = tokenizer.invert(target_codes).float()  # (n, H * A)
+        distances = base.new_empty(n, g, c)
+        candidates = torch.arange(c, device=target_codes.device)
+        for q in range(g):
+            cand = target_codes[:, None, :].repeat(1, c, 1)
+            cand[:, :, q] = candidates[None]
+            decoded = tokenizer.invert(cand.reshape(n * c, g)).float().reshape(n, c, -1)
+            distances[:, q] = (decoded - base[:, None]).abs().mean(dim=-1)
+        assert self.code_soft_tau is not None  # noqa: S101
+        return torch.softmax(-distances / self.code_soft_tau, dim=-1)
+
     def _sample_codes(self, code_logits: Tensor) -> Tensor:
         *batch, g, c = code_logits.shape
         if self.sample_codes:
@@ -1664,10 +1739,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         offsets = rows["offsets"]
         g = tokenizer.quantizer.num_quantizers
 
-        losses: dict[str, Tensor] = {
-            f"code_{q}": self.losses["code"](code_logits[:, q], target_codes[:, q])
-            for q in range(g)
-        }
+        losses = self._robot_code_losses(code_logits, target_codes)
         codes = self._sample_codes(code_logits)
         if self.teacher_force_offset:
             predicted = self._decode(offsets, target_codes)
