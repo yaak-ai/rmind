@@ -1,0 +1,22 @@
+# @package _global_
+#
+# patch/token-overfit LONG-HORIZON track: paper2_tok_cb64 (MLP RVQ-VAE, latent 512,
+# v3, 1000 epochs) on a 50-step chunk (50 x 30 Hz = 1.67 s) with RVQ depth 5 x 16
+# (20 bits per side-chunk). Depth 2 = the fixed 2-token baseline; depth H/10 =
+# token count scaled with the horizon, codebook 16 per level (pair with the AR code
+# head). Toy: depth-scaled AR RVQ with K=16 matched H/10 temporal AR tokens
+# (H=32/50: 0.145/0.150 vs 2x64 0.214/0.280); with K=64 it hit the cliff (99-100%
+# unique train tuples, 0.182/0.247). NERO_STATS_DIR = the chunk-50 refit
+# (nero_fit_stats with chunk_size=50 max_pad_steps=49: stats_c50_v3).
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_cb64
+  - _self_
+
+run_name: paper2_tok_h50_q5k16
+chunk_size: 50
+max_pad_steps: 49
+codebook_size: 16
+num_quantizers: 5
+
+wandb:
+  tags: [nero_robot, chunk_tokenizer, bimanual, paper, paper2, token_overfit, long_horizon]
