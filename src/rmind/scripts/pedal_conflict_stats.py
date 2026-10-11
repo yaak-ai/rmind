@@ -30,7 +30,6 @@ from pathlib import Path
 
 import polars as pl
 from rbyte.io import YaakMetadataDataFrameBuilder
-from rbyte.io.yaak.proto import can_pb2, sensor_pb2
 
 DATA_ROOT = Path("/nasa/drives/yaak/data")
 CONFIG_ROOT = Path(__file__).parents[3] / "config/_templates/dataset/yaak"
@@ -40,15 +39,15 @@ GAS_THRESH: float = 1.0 / 255 + 0.001  # ≈ 0.0049
 BRAKE_THRESH: float = 1.0 / 164 + 0.001  # ≈ 0.0071
 
 BUILDER = YaakMetadataDataFrameBuilder(
-    fields={  # ty:ignore[invalid-argument-type]
-        can_pb2.VehicleMotion: {
+    messages={  # ty:ignore[invalid-argument-type]
+        "VehicleMotion": {
             "time_stamp": pl.Datetime(time_unit="us"),
             "speed": pl.Float32(),
             "gas_pedal_normalized": pl.Float32(),
             "brake_pedal_normalized": pl.Float32(),
             "gear": pl.Enum(["0", "1", "2", "3"]),
         },
-        sensor_pb2.ImageMetadata: {
+        "ImageMetadata": {
             "time_stamp": pl.Datetime(time_unit="us"),
             "frame_idx": pl.Int32(),
             "camera_name": pl.Enum([

@@ -22,8 +22,10 @@
       mkShell {
         packages = [
           nushell
+          gh
           git
           git-lfs
+          openssh
           uvWrapped
           ytt
           just
@@ -31,9 +33,14 @@
           skim
           openssl
           ffmpeg
+          # private rbyte[yaak] deps (ymmv, m2df) are Rust crates built from git (#261)
+          cargo
+          rustc
         ];
 
         env = {
+          MATURIN_NO_INSTALL_RUST = "1";
+          PYO3_PYTHON = "${python312}/bin/python";
           UV_PYTHON = "${python312}/bin/python";
           UV_NO_MANAGED_PYTHON = "1";
           UV_PYTHON_DOWNLOADS = "never";
@@ -59,8 +66,10 @@
       mkShell {
         packages = [
           nushell
+          gh
           git
           git-lfs
+          openssh
           uvWrapped
           ytt
           just
@@ -68,9 +77,14 @@
           skim
           openssl
           ffmpeg
+          # private rbyte[yaak] deps (ymmv, m2df) are Rust crates built from git (#261)
+          cargo
+          rustc
         ];
 
         env = {
+          MATURIN_NO_INSTALL_RUST = "1";
+          PYO3_PYTHON = "${python312}/bin/python";
           UV_PYTHON = "${python312}/bin/python";
           UV_NO_MANAGED_PYTHON = "1";
           UV_PYTHON_DOWNLOADS = "never";

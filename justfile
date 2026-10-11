@@ -30,7 +30,7 @@ check-git:
 
 # build image tagged with HEAD commit; requires a clean, pushed tree so the tag is truthful
 docker-build *ARGS: check-git
-    docker build \
+    docker build --ssh default \
         --build-arg COMMIT_SHA=$(git rev-parse HEAD) \
         -t rmind:$(git rev-parse HEAD) \
         {{ ARGS }} .
