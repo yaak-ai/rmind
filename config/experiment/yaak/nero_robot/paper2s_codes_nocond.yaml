@@ -1,0 +1,20 @@
+# @package _global_
+#
+# patch/token-overfit lever matrix: the short schedule of paper2s_codes_cond with
+# the UNCONDITIONED action-space offset (paper2_pp_codes_nocond): used for the
+# FSQ 4375-code tokenizer, whose per-code offset table (4375 x 130 outputs,
+# ~580M params) is impractical. Confound vs the cond baseline: flagged.
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_codes_cond
+  - _self_
+
+run_name: paper2s_codes_nocond
+
+model:
+  offset_mode: action
+  offset_code_conditioning: false
+  teacher_force_offset: true
+  offset_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels: [1024, 1024, "${eval:'${chunk_size} * 13'}"]

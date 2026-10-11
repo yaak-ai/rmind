@@ -1,0 +1,26 @@
+# @package _global_
+#
+# patch/token-overfit LEVER MATRIX baseline: paper2_pp_codes_cond (VQ-BeT head,
+# per-code offset table, argmax codes, cb64 2 x 64 tokenizer = 12 bits, v3,
+# paper2 recipe) on a SHORT schedule: 32 epochs, cosine to 0 at the end, val +
+# checkpoint every 4th epoch (8 checkpoints). The replay-best checkpoints of the
+# full 124-epoch runs were all early (e7-e15) and train code accuracy saturated by
+# ~e20-30, so 32 epochs still reaches the memorizing regime. Every lever run
+# (paper2s_codes_cond_*) changes ONE thing against this file; the tokenizer
+# (bits) arms reuse it with NERO_TOKENIZER_CKPT + codebook_size / num_quantizers
+# overrides. lr_total_steps (nero_steps): 298 batches of 128 x 32 = 9536.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_pp_codes_cond
+  - _self_
+
+run_name: paper2s_codes_cond
+# cb64 (paper2_pp_codes_cond took these at launch); NERO_TOKENIZER_CKPT = paper2_tok_cb64
+codebook_size: 64
+num_quantizers: 2
+lr_total_steps: 9536
+trainer:
+  max_epochs: 32
+  check_val_every_n_epoch: 4
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, c10, offset_cond, token_overfit, lever_matrix]

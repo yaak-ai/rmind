@@ -207,6 +207,72 @@ logger = get_logger(__name__)
 type Path = tuple[str, ...]
 
 
+_AUGMENTATION_KEYS = frozenset({"shift_px", "brightness", "contrast", "saturation"})
+_LUMA = (0.299, 0.587, 0.114)
+
+
+def _random_shift(x: Tensor, pad: int) -> Tensor:
+    """`(b, t, c, h, w)` float: replicate-pad by `pad`, crop back at one random
+    integer offset per sample (shared by its t frames)."""
+    b, t, c, h, w = x.shape
+    dev = x.device
+    flat = F.pad(x.reshape(b * t, c, h, w), (pad, pad, pad, pad), mode="replicate")
+    dy = torch.randint(0, 2 * pad + 1, (b,), device=dev).repeat_interleave(t)
+    dx = torch.randint(0, 2 * pad + 1, (b,), device=dev).repeat_interleave(t)
+    rows = (dy[:, None] + torch.arange(h, device=dev)[None])[:, None, :, None]
+    cols = (dx[:, None] + torch.arange(w, device=dev)[None])[:, None, None, :]
+    frame = torch.arange(b * t, device=dev)[:, None, None, None]
+    channel = torch.arange(c, device=dev)[None, :, None, None]
+    return flat[frame, channel, rows, cols].reshape(b, t, c, h, w)
+
+
+def _color_jitter(
+    x: Tensor, brightness: float, contrast: float, saturation: float
+) -> Tensor:
+    """`(b, t, 3, h, w)` float in [0, 255]; factors uniform in `[1 - s, 1 + s]`,
+    one per sample (shared by its t frames)."""
+    b = x.shape[0]
+
+    def factor(strength: float) -> Tensor:
+        return 1 + (torch.rand(b, 1, 1, 1, 1, device=x.device) * 2 - 1) * strength
+
+    luma = torch.tensor(_LUMA, device=x.device).view(1, 1, 3, 1, 1)
+    if brightness > 0:
+        x *= factor(brightness)
+    if contrast > 0:
+        mean = (x * luma).sum(2, keepdim=True).mean((-2, -1), keepdim=True)
+        x = (x - mean) * factor(contrast) + mean
+    if saturation > 0:
+        grey = (x * luma).sum(2, keepdim=True)
+        x = (x - grey) * factor(saturation) + grey
+    return x
+
+
+@torch.no_grad()
+def augment_images(
+    images: Tensor,
+    *,
+    shift_px: float = 0.0,
+    brightness: float = 0.0,
+    contrast: float = 0.0,
+    saturation: float = 0.0,
+) -> Tensor:
+    """Random shift + colour jitter of uint8 `(b, T, 3, H, W)` (or `(b, 3, H, W)`)
+    frames, ONE draw per sample shared by its T frames (the window stays
+    temporally consistent). Shift: replicate-pad by `shift_px` and crop back at a
+    random integer offset (DrQ, arXiv 2004.13649). Jitter factors are uniform in
+    `[1 - x, 1 + x]`: brightness scales, contrast scales around the per-image
+    grey mean, saturation blends with the grey image. Returns uint8, same shape.
+    """
+    squeeze = images.ndim == 4  # noqa: PLR2004
+    x = (images[:, None] if squeeze else images).float()
+    if int(shift_px) > 0:
+        x = _random_shift(x, int(shift_px))
+    x = _color_jitter(x, brightness, contrast, saturation)
+    out = x.clamp(0, 255).round().to(images.dtype)
+    return out[:, 0] if squeeze else out
+
+
 @final
 class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     """Causal patch policy over 3 cameras + bimanual SE(3) state. See module docstring."""
@@ -291,6 +357,12 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # g * codebook_size). The toy (token-overfit) showed parallel per-level
         # heads predicting mutually inconsistent level tuples.
         code_ar: bool = False,
+        # `image_augmentation` (OPT-IN, TRAINING ONLY; None = off): DrQ-style
+        # random shift (replicate-pad by `shift_px`, random crop back) plus mild
+        # colour jitter (`brightness` / `contrast` / `saturation` = max relative
+        # change) on the OBSERVATION images, one draw per (sample, camera) shared
+        # by every frame of the window. Eval / inference never augment.
+        image_augmentation: Mapping[str, float] | None = None,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -431,17 +503,32 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.code_head: Module | None = init_hydra_param(
             hparams, "code_head", code_head
         )
+        self.image_augmentation = (
+            None if image_augmentation is None else dict(image_augmentation)
+        )
+        if self.image_augmentation is not None and not (
+            set(self.image_augmentation) <= _AUGMENTATION_KEYS
+        ):
+            msg = (
+                f"image_augmentation keys {sorted(self.image_augmentation)} "
+                f"not in {sorted(_AUGMENTATION_KEYS)}"
+            )
+            raise ValueError(msg)
         self.code_ar = code_ar
         if code_ar:
             if action_head != "codes" or sample_codes:
                 msg = "code_ar needs action_head='codes' and argmax codes"
                 raise ValueError(msg)
-            g_ar = int(self.tokenizer.quantizer.num_quantizers)
-            c_ar = int(self.tokenizer.quantizer.codebook_size)
+            quantizer = self.tokenizer.quantizer
             # zero-init code embeddings: at init every level sees the plain readout
-            self.code_ar_embedding = nn.Embedding(g_ar * c_ar, policy_embedding_dim)
+            self.code_ar_embedding = nn.Embedding(
+                int(quantizer.num_quantizers) * int(quantizer.codebook_size),
+                policy_embedding_dim,
+            )
             nn.init.zeros_(self.code_ar_embedding.weight)
-            self.code_ar_level = nn.Parameter(torch.zeros(g_ar, policy_embedding_dim))
+            self.code_ar_level = nn.Parameter(
+                torch.zeros(int(quantizer.num_quantizers), policy_embedding_dim)
+            )
             nn.init.trunc_normal_(self.code_ar_level, std=0.02)
         self.offset_head: Module | None = init_hydra_param(
             hparams, "offset_head", offset_head
@@ -680,6 +767,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "code_loss_weights": self.code_loss_weights,
             "code_soft_tau": code_soft_tau,
             "code_ar": code_ar,
+            "image_augmentation": self.image_augmentation,
             "image_embedding_dim": image_embedding_dim,
             "policy_embedding_dim": policy_embedding_dim,
             "action_space": action_space,
@@ -809,6 +897,13 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             msg = f"input {path!r} missing from batch"
             raise KeyError(msg)
         return value
+
+    def _observation_images(self, batch: Any, camera: str) -> Tensor:
+        """The camera's observation frames, augmented in training if enabled."""
+        images = self._get(batch, (self.image_key.format(camera=camera),))
+        if self.training and self.image_augmentation is not None:
+            images = augment_images(images, **self.image_augmentation)
+        return images
 
     def _encode_images(self, images: Tensor) -> Tensor:
         """`(..., 3, H, W)` uint8 -> patch features `(..., P, D)` (frozen unless trainable)."""
@@ -1320,7 +1415,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         per_camera: list[Tensor] = []
         for index, camera in enumerate(self.cameras):
-            images = self._get(batch, (self.image_key.format(camera=camera),))
+            images = self._observation_images(batch, camera)
             patches = self._encode_images(images)  # (b, T, P, D)
             parts = [patches]
             if goal is not None:
