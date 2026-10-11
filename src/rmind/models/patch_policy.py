@@ -253,6 +253,15 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     `trajectory_head`, this is training-time only and never feeds
     `joint_actions` or any served/exported output.
 
+    `action_weight` (default `1.0`, the unweighted behaviour) scales the
+    VQ-BeT action losses (`code_*` and `offset`) before they enter the total.
+    `0.0` keeps `code_head`/`offset_head` constructed and their diagnostics
+    logged, but sends no action gradient into the trunk -- for trajectory-only
+    arms whose train-time augmentation (`YawShiftCrop`) rotates the trajectory
+    target but not the recorded steering, so the action labels would be wrong
+    on shifted clips. `turn_signal` is unaffected. The served `joint_actions`
+    then come from untrained heads; only the trajectory output is meaningful.
+
     `counterfactual_val_frames` (opt-in, `0` = off; requires `trajectory_head`):
     on about that many validation clips (newest frame of each, batches taken at
     a fixed stride across the val set), rerun the trunk and heads with the
@@ -310,6 +319,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         num_trajectory_hypotheses: int = 5,
         trajectory_weight: float = 0.0,
         mode_weight: float = 1.0,
+        action_weight: float = 1.0,
         counterfactual_val_frames: Annotated[int, Field(ge=0)] = 0,
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
@@ -431,6 +441,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.num_trajectory_hypotheses = num_trajectory_hypotheses
         self.trajectory_weight = trajectory_weight
         self.mode_weight = mode_weight
+        self.action_weight = action_weight
         self.sample_codes = sample_codes
         self.teacher_force_offset = teacher_force_offset
         self.offset_scale = offset_scale
@@ -479,6 +490,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "num_trajectory_hypotheses": num_trajectory_hypotheses,
             "trajectory_weight": trajectory_weight,
             "mode_weight": mode_weight,
+            "action_weight": action_weight,
             "counterfactual_val_frames": counterfactual_val_frames,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
@@ -1142,6 +1154,8 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             raise RuntimeError(msg)
 
         losses["offset"] = self.losses["offset"](predicted_chunk, target)
+        # x * 1.0 is exact, so the default reproduces the old loss bit-for-bit
+        losses = {k: self.action_weight * v for k, v in losses.items()}
 
         # auxiliary, non-VQ trajectory head (DrivoR, arXiv:2601.05083):
         # direct multi-hypothesis regression against the dead-reckoned
