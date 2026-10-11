@@ -1655,3 +1655,25 @@ def test_probe_batches_are_strided_over_val_set(
     # ceil(100 / 32) = 4 batches, stride 100 // 4 = 25
     selected = [i for i in range(100) if model._probe_batch(i, 32)]  # noqa: SLF001
     assert selected == [0, 25, 50, 75]
+
+
+def test_counterfactual_probes_keep_the_batch_shape() -> None:
+    """Every probe rerun must hand the trunk the full val batch: a compiled
+    trunk recompiles on each new shape and, past dynamo's recompile limit,
+    flex attention falls back to dense math attention and OOMs (T1 hzr1r37u)."""
+    model = _make_model(
+        with_trajectory_head=True, with_mode_head=True, counterfactual_val_frames=8
+    )
+    inputs = _probe_batch_inputs(model)  # one moving clip, one stopped clip
+    shapes: list[torch.Size] = []
+    handle = model.encoder.register_forward_hook(
+        lambda _module, args, _output: shapes.append(args[0].shape)
+    )
+    try:
+        model.counterfactual_metrics(inputs)
+    finally:
+        handle.remove()
+
+    probe_reruns = len(("left route", "right route", "speed probe"))
+    assert len(shapes) == probe_reruns
+    assert {shape[0] for shape in shapes} == {BATCH_SIZE}

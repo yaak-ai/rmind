@@ -18,12 +18,7 @@ from torch.utils.checkpoint import checkpoint
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
-from rmind.components.counterfactual import (
-    PlanFn,
-    expected_plan,
-    goal_sensitivity,
-    speed_echo,
-)
+from rmind.components.counterfactual import expected_plan, goal_sensitivity, speed_echo
 from rmind.components.loss import (
     winner_takes_all_pose_l1,
     winner_takes_all_pose_l1_components,
@@ -1445,23 +1440,25 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         )
         speed_now = speed[:, -1, 0]
 
-        def plan_fn(clips: Tensor) -> PlanFn:
-            # the trunk reruns on the eligible clips only
-            clip_patches = patches[clips]
-            return lambda w, s: self._counterfactual_plan(clip_patches, w, s)
+        # NOTE: the trunk reruns on the WHOLE batch and frames are selected
+        # afterwards. Rerunning on the eligible clips only gives a new batch size
+        # per val batch, and with a compiled trunk (CausalFrameTransformer's flex
+        # attention) every new shape recompiles until dynamo's recompile limit,
+        # after which flex attention falls back to dense math attention and OOMs
+        # (T1 run hzr1r37u, first val pass).
+        def plan_fn(probe_waypoints: Tensor, probe_speed: Tensor) -> Tensor:
+            return self._counterfactual_plan(patches, probe_waypoints, probe_speed)
 
         out: dict[str, tuple[Tensor, int]] = {}
         if (moving := speed_now >= self._GOAL_PROBE_MIN_SPEED_KMH).any():
-            yaw, lateral = goal_sensitivity(
-                plan_fn(moving), waypoints[moving], speed[moving]
-            )
+            yaw, lateral = goal_sensitivity(plan_fn, waypoints, speed)
             n = int(moving.sum())
-            out["goal_sensitivity_yaw"] = (yaw.mean(), n)
-            out["goal_sensitivity_lateral"] = (lateral.mean(), n)
+            out["goal_sensitivity_yaw"] = (yaw[moving].mean(), n)
+            out["goal_sensitivity_lateral"] = (lateral[moving].mean(), n)
         if (stopped := speed_now < self._STOPPED_MAX_SPEED_KMH).any():
-            echo = speed_echo(plan_fn(stopped), waypoints[stopped], speed[stopped])
+            echo = speed_echo(plan_fn, waypoints, speed)
             n = int(stopped.sum())
-            out["speed_echo"] = (echo.mean(), n)
+            out["speed_echo"] = (echo[stopped].mean(), n)
             out["speed_echo_real"] = (inputs["plan"][stopped, -1, 1].mean(), n)
         return out
 
