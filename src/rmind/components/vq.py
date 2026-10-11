@@ -1,8 +1,11 @@
+import math
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast, final
 
 import torch
 from torch import Tensor
 from torch.nn import Module
+from vector_quantize_pytorch import FSQ as _FSQ
 from vector_quantize_pytorch import ResidualVQ as RVQ  # noqa: N817
 
 if TYPE_CHECKING:
@@ -169,3 +172,96 @@ class GroupedResidualVQ(Module):
                 self.quantizers, codes.split(self.depth, dim=-1), strict=True
             )
         ])
+
+
+@final
+class FiniteScalarQuantizer(Module):
+    """Finite scalar quantization (FSQ, https://arxiv.org/abs/2309.15505), a drop-in
+    alternative to `ResidualVQ` for `NeroChunkTokenizer`.
+
+    The latent `(n, dim)` is linearly projected to `num_quantizers x len(levels)`
+    scalars, each bounded with tanh to its level count and rounded with a
+    straight-through estimator; the projection back to `dim` gives `z_q`. The
+    codebook is IMPLICIT (`codebook_size = prod(levels)`), so there is no codebook
+    or commitment loss, no EMA and no dead-code reset. `num_quantizers > 1` gives
+    that many PARALLEL tokens (vector_quantize_pytorch `num_codebooks`), each an
+    index in `[0, codebook_size)`, so a patch-policy code head over
+    `num_quantizers x codebook_size` logits works unchanged.
+
+    `z_q` returned by `forward` already carries the straight-through gradient
+    (through the tanh bound and both projections): `straight_through = True` tells
+    the tokenizer NOT to re-apply `z + (z_q - z).detach()`, which would cut the
+    projections out of the graph.
+    """
+
+    straight_through = True
+
+    def __init__(
+        self,
+        *,
+        dim: int,
+        levels: Sequence[int],
+        num_quantizers: int = 1,
+        codebook_size: int | None = None,
+    ) -> None:
+        """`codebook_size` (optional) is only CHECKED against `prod(levels)`: the
+        experiment configs share one `codebook_size` with the policy's code head.
+
+        Raises:
+            ValueError: if `codebook_size` is given and differs from `prod(levels)`.
+        """
+        super().__init__()
+        self.dim = dim
+        self.levels = tuple(int(level) for level in levels)
+        self.num_quantizers = num_quantizers
+        self.codebook_size = math.prod(self.levels)
+        if codebook_size is not None and codebook_size != self.codebook_size:
+            msg = f"codebook_size {codebook_size} != prod(levels {self.levels}) = {self.codebook_size}"
+            raise ValueError(msg)
+        self.fsq = _FSQ(
+            levels=list(self.levels),
+            dim=dim,
+            num_codebooks=num_quantizers,
+            keep_num_codebooks_dim=True,
+        )
+
+    @property
+    def codebook_sizes(self) -> tuple[int, ...]:
+        return (self.codebook_size,) * self.num_quantizers
+
+    def forward(self, z: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
+        *batch, d = z.shape
+        z_q, codes = self.fsq(z.reshape(-1, 1, d))  # library wants (b, n, d)
+        zero = z.new_zeros(())
+        return (
+            codes.reshape(*batch, self.num_quantizers).long(),
+            z_q.reshape(*batch, d),
+            {"codebook": zero, "commit": zero},
+        )
+
+    def lookup(self, codes: Tensor) -> Tensor:
+        *batch, g = codes.shape
+        z_q = self.fsq.indices_to_codes(codes.reshape(-1, 1, g))
+        return z_q.reshape(*batch, self.dim)
+
+    def codebook(self, level: int) -> Tensor:
+        """All `codebook_size` implicit codes of token `level`, decoded to `dim`
+        with the other tokens at index 0 (exact for `num_quantizers == 1`)."""
+        device = next(self.parameters()).device
+        idx = torch.zeros(
+            self.codebook_size, self.num_quantizers, dtype=torch.long, device=device
+        )
+        idx[:, level] = torch.arange(self.codebook_size, device=idx.device)
+        return self.lookup(idx)
+
+    @torch.no_grad()
+    def perplexity(self, codes: Tensor) -> Tensor:
+        out: list[Tensor] = []
+        for q in range(self.num_quantizers):
+            counts = torch.bincount(
+                codes[..., q].reshape(-1), minlength=self.codebook_size
+            ).float()
+            p = counts / counts.sum().clamp_min(1.0)
+            entropy = -(p * p.clamp_min(1e-10).log()).sum()
+            out.append(entropy.exp())
+        return torch.stack(out)

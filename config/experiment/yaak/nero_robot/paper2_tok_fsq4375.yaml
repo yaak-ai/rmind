@@ -1,0 +1,17 @@
+# @package _global_
+#
+# patch/token-overfit: paper2_tok_fsq1000 with FSQ levels [7, 5, 5, 5, 5]: one
+# token, implicit codebook 4375 (12.1 bits per side-chunk, the FSQ paper's
+# recommended level set for ~2^12 codes; matches cb64's 12 bits). Note
+# [8, 8, 8, 5, 5] would be 12800 codes = 13.6 bits, not ~12.6.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_fsq1000
+  - _self_
+
+run_name: paper2_tok_fsq4375
+codebook_size: 4375
+num_quantizers: 1
+
+model:
+  quantizer:
+    levels: [7, 5, 5, 5, 5]
