@@ -1,0 +1,16 @@
+# @package _global_
+#
+# patch/token-overfit LONG-HORIZON track (cube): the L1 head (paper2_pp_l1_handoff)
+# at the same chunk length and on the lever-matrix short schedule (32 epochs,
+# cosine, val + ckpt every 4th epoch). Launch-time: chunk_size / max_pad_steps,
+# NERO_STATS_DIR = stats_c<H>_v3, NERO_TOKENIZER_CKPT = any chunk-<H> tokenizer
+# (the L1 head only uses its prepare(): relative transform + standardizer).
+defaults:
+  - /experiment/yaak/nero_robot/paper2_pp_l1_handoff
+  - _self_
+
+run_name: paper2s_lh_l1
+lr_total_steps: 9536
+trainer:
+  max_epochs: 32
+  check_val_every_n_epoch: 4
