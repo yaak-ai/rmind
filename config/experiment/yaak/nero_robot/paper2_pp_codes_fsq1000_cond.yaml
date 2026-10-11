@@ -1,0 +1,19 @@
+# @package _global_
+#
+# patch/token-overfit: paper2_pp_codes_cond (VQ-BeT head with the per-code
+# offset TABLE, argmax codes, v3, paper2 recipe) on the single-token FSQ
+# tokenizer paper2_tok_fsq1000 ([8, 5, 5, 5] = 1000 implicit codes, ~10 bits):
+# the code head classifies 1 x 1000, the offset table is 1000 x (10 x 13)
+# (offset head MLP [1024, 1024, 130000]). One token, so no level factorization
+# to fix (the parallel-level failure the toy found does not exist here).
+# Launch: NERO_TOKENIZER_CKPT = paper2_tok_fsq1000's last checkpoint, v3 env.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_pp_codes_cond
+  - _self_
+
+run_name: paper2_pp_codes_fsq1000_cond
+codebook_size: 1000
+num_quantizers: 1
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, c10, offset_cond, token_overfit, fsq]
