@@ -100,8 +100,10 @@ class SelectiveAdamW(AdamW):
 
                 # https://github.com/pytorch/pytorch/blob/v2.7.0/torch/nn/modules/activation.py#L1091
                 # `pos_embed`/`gamma` (timm ViT positional embedding / LayerScale,
-                # e.g. DINOv2): keep weight decay off, matching Embedding/LayerNorm
-                case "pos_embed" | "gamma":
+                # e.g. DINOv2): keep weight decay off, matching Embedding/LayerNorm.
+                # `code_ar_level`: NeroPatchPolicy code_ar's per-RVQ-level
+                # position embedding (an embedding, so no decay either)
+                case "pos_embed" | "gamma" | "code_ar_level":
                     weight_decay_param_blacklist.add(param_name)
 
                 case (

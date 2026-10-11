@@ -283,6 +283,14 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # label_smoothing > 0 (= the weight of the soft target).
         code_loss_weights: Sequence[float] | None = None,
         code_soft_tau: float | None = None,
+        # `code_ar`: predict the RVQ levels AUTOREGRESSIVELY instead of in
+        # parallel. Level q's logits come from the SAME code_head applied to
+        # `readout + level_emb[q] + sum_{j<q} code_emb[j][c_j]`, with c_j the
+        # target codes in training (teacher forcing) and the argmax codes at
+        # inference, so the code_head must output `codebook_size` logits (not
+        # g * codebook_size). The toy (token-overfit) showed parallel per-level
+        # heads predicting mutually inconsistent level tuples.
+        code_ar: bool = False,
         optimizer: HydraConfig[Optimizer] | None = None,
         lr_scheduler: LRSchedulerHydraConfig | None = None,
         prediction_config: Annotated[
@@ -423,6 +431,18 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.code_head: Module | None = init_hydra_param(
             hparams, "code_head", code_head
         )
+        self.code_ar = code_ar
+        if code_ar:
+            if action_head != "codes" or sample_codes:
+                msg = "code_ar needs action_head='codes' and argmax codes"
+                raise ValueError(msg)
+            g_ar = int(self.tokenizer.quantizer.num_quantizers)
+            c_ar = int(self.tokenizer.quantizer.codebook_size)
+            # zero-init code embeddings: at init every level sees the plain readout
+            self.code_ar_embedding = nn.Embedding(g_ar * c_ar, policy_embedding_dim)
+            nn.init.zeros_(self.code_ar_embedding.weight)
+            self.code_ar_level = nn.Parameter(torch.zeros(g_ar, policy_embedding_dim))
+            nn.init.trunc_normal_(self.code_ar_level, std=0.02)
         self.offset_head: Module | None = init_hydra_param(
             hparams, "offset_head", offset_head
         )
@@ -659,6 +679,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "offset_scale": offset_scale,
             "code_loss_weights": self.code_loss_weights,
             "code_soft_tau": code_soft_tau,
+            "code_ar": code_ar,
             "image_embedding_dim": image_embedding_dim,
             "policy_embedding_dim": policy_embedding_dim,
             "action_space": action_space,
@@ -1442,7 +1463,36 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         sides = torch.arange(NUM_SIDES, device=features.device)
         return features.unsqueeze(-2) + self.side_embedding(sides)
 
-    def _heads(self, features: Tensor) -> tuple[Tensor, Tensor]:
+    def _ar_code_logits(
+        self, features: Tensor, prev_codes: Tensor | None = None
+    ) -> Tensor:
+        """Autoregressive code logits `(..., g, c)` (see `code_ar`).
+
+        `prev_codes (..., g)` given: teacher forcing, one parallel pass (level q
+        conditioned on prev_codes[..., :q]). None: greedy, level by level, each
+        conditioned on the argmax of the previous ones, so that
+        `logits.argmax(-1)` are exactly the decoded codes.
+        """
+        assert self.code_head is not None  # noqa: S101
+        g, c = self.code_ar_level.shape[0], self.tokenizer.quantizer.codebook_size
+        offsets = torch.arange(g, device=features.device) * c
+        base = features[..., None, :] + self.code_ar_level.to(features.dtype)
+        if prev_codes is not None:
+            emb = self.code_ar_embedding(prev_codes + offsets).to(features.dtype)
+            context = emb.cumsum(dim=-2) - emb  # exclusive: levels < q
+            return self.code_head(base + context)
+        logits: list[Tensor] = []
+        context = torch.zeros_like(features)
+        for q in range(g):
+            lq = self.code_head(base[..., q, :] + context)
+            logits.append(lq)
+            code = lq.argmax(dim=-1)
+            context += self.code_ar_embedding(code + q * c).to(features.dtype)
+        return torch.stack(logits, dim=-2)
+
+    def _heads(
+        self, features: Tensor, prev_codes: Tensor | None = None
+    ) -> tuple[Tensor, Tensor]:
         """Code logits `(..., g, c)` and the offset table `(..., g, c, action_dim)`.
 
         `offset_mode='latent'`: the second output is the offset CONTEXT (the
@@ -1453,9 +1503,12 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         assert self.code_head is not None  # noqa: S101  (action_head codes)
         quantizer = self.tokenizer.quantizer
         g, c = quantizer.num_quantizers, quantizer.codebook_size
-        code_logits = rearrange(
-            self.code_head(features), "... (g c) -> ... g c", g=g, c=c
-        )
+        if self.code_ar:
+            code_logits = self._ar_code_logits(features, prev_codes)
+        else:
+            code_logits = rearrange(
+                self.code_head(features), "... (g c) -> ... g c", g=g, c=c
+            )
         if self.offset_mode == "latent":
             # ONE offset in the tokenizer's latent space `(..., L)`, decoded
             # through the frozen tokenizer decoder (`_decode`)
@@ -1667,8 +1720,10 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         with torch.no_grad():
             target, real = tokenizer.prepare(batch)  # (n, H, A), (n, H)
             target_codes = tokenizer.encode(target)  # (n, g)
-        code_logits, offsets = self._heads(side_features)
-        return {
+        code_logits, offsets = self._heads(
+            side_features, target_codes if self.code_ar else None
+        )
+        rows = {
             "row_valid": row_valid,
             "side": side,
             "target": target,
@@ -1677,6 +1732,12 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "code_logits": code_logits,
             "offsets": offsets,
         }
+        if self.code_ar:
+            # code_logits are TEACHER-FORCED (loss, conditional accuracy); every
+            # prediction / metric that decodes uses the free-running argmax codes
+            with torch.no_grad():
+                rows["pred_codes"] = self._ar_code_logits(side_features).argmax(dim=-1)
+        return rows
 
     def rows_prediction(self, rows: Mapping[str, Tensor]) -> Tensor:
         """The SERVING prediction for `_robot_rows` output: STANDARDIZED `(n, H, A)`.
@@ -1685,7 +1746,10 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """
         if self.action_head == "l1":
             return rows["pred"]
-        return self._decode(rows["offsets"], rows["code_logits"].argmax(dim=-1))
+        codes = rows.get("pred_codes")
+        if codes is None:
+            codes = rows["code_logits"].argmax(dim=-1)
+        return self._decode(rows["offsets"], codes)
 
     @staticmethod
     def _masked_l1(pred: Tensor, target: Tensor, real: Tensor) -> Tensor:
@@ -1740,7 +1804,9 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         g = tokenizer.quantizer.num_quantizers
 
         losses = self._robot_code_losses(code_logits, target_codes)
-        codes = self._sample_codes(code_logits)
+        codes = rows.get("pred_codes")
+        if codes is None:
+            codes = self._sample_codes(code_logits)
         if self.teacher_force_offset:
             predicted = self._decode(offsets, target_codes)
         else:
@@ -1751,7 +1817,7 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "valid_rows": rows["row_valid"].sum().to(features.dtype)
         }
         with torch.no_grad():
-            argmax = code_logits.argmax(dim=-1)
+            argmax = rows.get("pred_codes", code_logits.argmax(dim=-1))
             decoded = self._decode(offsets, argmax)
             metrics["offset_argmax_recon"] = self._masked_offset_loss(
                 decoded, target, real
