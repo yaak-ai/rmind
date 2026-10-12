@@ -1,0 +1,14 @@
+# @package _global_
+#
+# patch/token-overfit lever matrix: paper2s_codes_cond (short cb64 cond baseline) with ONE change: training-only image augmentation: DrQ random shift +-6 px at 224 + colour jitter 0.2 (brightness / contrast / saturation), one draw per sample shared by its 2-frame window.
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_codes_cond
+  - _self_
+
+run_name: paper2s_codes_cond_aug
+model:
+  image_augmentation:
+    shift_px: 6
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2

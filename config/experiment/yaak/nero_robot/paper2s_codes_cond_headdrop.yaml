@@ -1,0 +1,11 @@
+# @package _global_
+#
+# patch/token-overfit lever matrix: paper2s_codes_cond (short cb64 cond baseline) with ONE change: dropout 0.2 inside the code-head MLP [1024, 1024, g x c] (the head itself is small: ~1.5M params).
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_codes_cond
+  - _self_
+
+run_name: paper2s_codes_cond_headdrop
+model:
+  code_head:
+    dropout: 0.2
