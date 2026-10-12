@@ -77,7 +77,7 @@ from structlog import get_logger
 from torch import Tensor
 
 from rmind.components.transformer.causal_frame import CausalFrameTransformer
-from rmind.data import nero_image
+from rmind.data import nero_image, nero_image_stretch
 from rmind.data.nero_robot import (
     RELATIVE_ANCHOR,
     AxisStandardizer,
@@ -115,6 +115,32 @@ OUTPUT_ORDER_L1 = ("actions", "new_k", "new_v")
 
 def output_order(policy: NeroPatchPolicy) -> tuple[str, ...]:
     return OUTPUT_ORDER_L1 if policy.action_head == "l1" else OUTPUT_ORDER
+
+
+#: the image op the policy was TRAINED through (the dataset's `image_preprocessing`):
+#: `letterbox` (`rmind.data.nero_image`, the contract default) or `stretch`
+#: (`rmind.data.nero_image_stretch`, the patch/paper 224x224 runs). The checkpoint
+#: does not record it, so the export is told; the manifest pins the op's id + sha256
+#: and the per-camera geometry serving must reproduce.
+PREPROCESSING = {"letterbox": nero_image, "stretch": nero_image_stretch}
+
+
+def camera_geometry(
+    preprocessing: str, native_wh: tuple[int, int], hw: tuple[int, int]
+) -> dict[str, list[int]]:
+    """The contract `cameras[]` geometry of `preprocessing` for one camera.
+
+    stretch: one anisotropic resize straight to the grid -- resize_wh is the grid,
+    no padding (`nero_image_stretch` has no letterbox).
+    """
+    if preprocessing == "stretch":
+        return {
+            "native_wh": [int(native_wh[0]), int(native_wh[1])],
+            "resize_wh": [int(hw[1]), int(hw[0])],
+            "pad_ltrb": [0, 0, 0, 0],
+            "input_hw": [int(hw[0]), int(hw[1])],
+        }
+    return nero_image.geometry(native_wh, hw).as_dict()
 
 
 # mac_factory refuses a checkpoint the export did not pin, unless this is "1"
@@ -474,13 +500,15 @@ def manifest(  # noqa: PLR0913
     min_start_index: int,
     onnx_io: dict[str, dict[str, dict[str, Any]]],
     files: dict[str, str],
+    preprocessing: str = "letterbox",
 ) -> dict[str, Any]:
     trunk = step.trunk
+    op = PREPROCESSING[preprocessing]
     tokenizer = policy.tokenizer
     window = trunk_window(trunk)
     layout = token_layout(policy, hw, patch_size)
     cameras = [
-        {"name": c} | nero_image.geometry(NATIVE_WH[c], hw).as_dict()
+        {"name": c} | camera_geometry(preprocessing, NATIVE_WH[c], hw)
         for c in policy.cameras
     ]
     sides = ["left", "right"]
@@ -502,8 +530,8 @@ def manifest(  # noqa: PLR0913
             "token_layout": layout,
             "cameras": cameras,
             "image": {
-                "preprocessing_id": nero_image.PREPROCESSING_ID,
-                "preprocessing_sha256": nero_image.preprocessing_sha256(),
+                "preprocessing_id": op.PREPROCESSING_ID,
+                "preprocessing_sha256": op.preprocessing_sha256(),
                 "patch_size": patch_size,
                 "value_range": "unit",
                 "channel_order": "rgb",
@@ -934,6 +962,14 @@ def main() -> None:
         action="store_true",
         help="a skipped gate 3 (no nutron-cli checkout) is a failure",
     )
+    parser.add_argument(
+        "--preprocessing",
+        choices=sorted(PREPROCESSING),
+        default=None,
+        help="the image op the policy trained through (the dataset's "
+        "image_preprocessing): letterbox (default) | stretch (patch/paper 224x224). "
+        "Required for a square grid, where both are plausible",
+    )
     parser.add_argument("--no-latency", action="store_true")
     parser.add_argument(
         "--gate-device", default="cuda" if torch.cuda.is_available() else "cpu"
@@ -975,6 +1011,14 @@ def main() -> None:
         msg = f"--patch-size {args.patch_size} but the encoder tiles {hw} at {derived}"
         raise SystemExit(msg)
     args.patch_size = derived
+    if args.preprocessing is None:
+        if hw[0] == hw[1]:
+            msg = (
+                f"image grid {hw[0]}x{hw[1]} is square: pass --preprocessing "
+                "letterbox|stretch (the checkpoint does not record which op it trained on)"
+            )
+            raise SystemExit(msg)
+        args.preprocessing = "letterbox"
     report = run(args, policy, hw=hw)
     if report["failures"]:
         raise SystemExit(1)
@@ -1144,7 +1188,9 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         min_start_index=args.min_start_index,
         onnx_io=onnx_io(onnx_path),
         files=files,
+        preprocessing=getattr(args, "preprocessing", None) or "letterbox",
     )
+    report["preprocessing"] = payload["image"]["preprocessing_id"]
     manifest_path = args.out / "policy_manifest.json"
     manifest_path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
     report["files"] = {name: sha256(args.out / f) for name, f in files.items()}
