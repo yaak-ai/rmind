@@ -1,0 +1,34 @@
+# @package _global_
+#
+# patch/decisive: the codes head with the BEST LEVERS combined, at a long plan
+# (chunk 30 / 50): depth-scaled RVQ tokenizer (H/10 levels x 16 codes, e.g. 3x16
+# at H30, 5x16 at H50) predicted AUTOREGRESSIVELY (code_ar; the toy cut long-
+# horizon error ~50% with H/10 AR tokens), trunk dropout 0.1 + drop_path 0.1,
+# training image augmentation (DrQ shift +-6 px + colour jitter 0.2); offset table
+# conditioned on the code, teacher-forced (paper2). Same 48-epoch cosine schedule
+# as paper2d_lh_l1 (its twin). Launch-time: chunk_size / max_pad_steps,
+# NERO_STATS_DIR = stats_c<H>_v3, NERO_TOKENIZER_CKPT + codebook_size /
+# num_quantizers of the depth-scaled tokenizer.
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_lh_codes_cond_ar
+  - _self_
+
+run_name: paper2d_lh_codes_combo
+lr_total_steps: 14304
+trainer:
+  max_epochs: 48
+  check_val_every_n_epoch: 4
+attn_dropout: 0.1
+drop_path_rate: 0.1
+model:
+  encoder:
+    resid_dropout: 0.1
+    mlp_dropout: 0.1
+  image_augmentation:
+    shift_px: 6
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, offset_cond, code_ar, token_overfit, decisive, long_horizon]
