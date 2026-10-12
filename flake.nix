@@ -15,7 +15,8 @@
           ffmpeg
         ];
         uvWrapped = writeShellScriptBin "uv" ''
-          export LD_LIBRARY_PATH="${uvLibraryPath}''${NIX_LD_LIBRARY_PATH:+:''${NIX_LD_LIBRARY_PATH}}"
+          # driver libs only: nix-ld's dir also ships the system glibc, which clashes with this nixpkgs' glibc
+          export LD_LIBRARY_PATH="${uvLibraryPath}:/run/opengl-driver/lib"
           exec ${lib.getExe uv} "$@"
         '';
       in
