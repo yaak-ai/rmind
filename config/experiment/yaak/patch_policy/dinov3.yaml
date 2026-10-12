@@ -54,6 +54,9 @@ trajectory_weight: 0.0
 # gated). Lower it to keep the mode classifier from competing with the
 # code/offset heads for the shared readout feature.
 mode_weight: 1.0
+# VQ-BeT action losses (code_*/offset) scale. 1.0 = unchanged; 0.0 drops
+# the action head's gradient for trajectory-only arms (see PatchPolicy).
+action_weight: 1.0
 
 # frozen encoders
 image_encoder_name: vit_small_patch16_dinov3.lvd1689m
@@ -139,3 +142,4 @@ model:
     in_channels: ${policy_embedding_dim}
     hidden_channels: [256, "${num_trajectory_hypotheses}"]
   mode_weight: ${mode_weight}
+  action_weight: ${action_weight}

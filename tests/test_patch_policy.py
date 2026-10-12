@@ -1419,6 +1419,45 @@ def test_mode_head_metrics_and_gradients() -> None:
     )
 
 
+def test_action_weight_scales_the_action_losses() -> None:
+    """`action_weight` scales every `code_*` and `offset` loss linearly and
+    leaves the other heads' losses alone; `0.0` leaves code_head/offset_head
+    with no gradient while the trajectory head still trains.
+    """
+    model = _make_model(with_trajectory_head=True, with_mode_head=True)
+    model.eval()  # no trunk dropout, so repeated calls match
+    batch = _make_batch(with_trajectory_target=True)
+
+    def losses() -> dict[str, Tensor]:
+        metrics = model._compute_metrics(batch)  # noqa: SLF001
+        return dict(cast("dict[str, Tensor]", metrics["policy", "loss"]).items())
+
+    def is_action(key: str) -> bool:
+        return key == "offset" or key.startswith("code_")
+
+    unweighted = losses()
+    assert any(is_action(k) for k in unweighted)
+
+    model.action_weight = 0.25
+    weighted = losses()
+    assert weighted.keys() == unweighted.keys()
+    for key, value in weighted.items():
+        expected = 0.25 * unweighted[key] if is_action(key) else unweighted[key]
+        torch.testing.assert_close(value, expected)
+
+    model.action_weight = 0.0
+    model.zero_grad()
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    cast("TensorDict", metrics["policy", "loss"]).sum(reduce=True).backward()
+    for head in (model.code_head, model.offset_head):
+        assert all(p.grad is None or p.grad.abs().sum() == 0 for p in head.parameters())
+    assert model.trajectory_head is not None
+    assert any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.trajectory_head.parameters()
+    )
+
+
 def test_mode_weight_scales_the_mode_loss() -> None:
     """`mode_weight` scales `losses["mode"]` linearly, and `0.0` zeroes both
     the term and mode_head's gradient while leaving `mode_accuracy` (a
