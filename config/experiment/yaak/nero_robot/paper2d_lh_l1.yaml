@@ -1,0 +1,23 @@
+# @package _global_
+#
+# patch/decisive (VQ-BeT viability at robot-feasible horizons): the L1 head at a
+# LONG plan (chunk 30 = 1.0 s or 50 = 1.7 s at 30 Hz; window 2 / frame_stride 3 as
+# paper2) on a ROBOT-CANDIDATE schedule: 48 epochs cosine (the paper2 L1 replay
+# best was e39), val + checkpoint every 4th epoch (12 checkpoints, all kept).
+# The chunk-10 paper L1 froze the arms on the rig (install age ~245 ms = chunk
+# index 7-9 of 10); a 30/50-step plan leaves 20+ steps after the install.
+# Launch-time: chunk_size / max_pad_steps, NERO_STATS_DIR = stats_c<H>_v3,
+# NERO_TOKENIZER_CKPT = a chunk-<H> tokenizer (prepare() only).
+# lr_total_steps (nero_steps): 298 batches of 128 x 48 = 14304.
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_lh_l1
+  - _self_
+
+run_name: paper2d_lh_l1
+lr_total_steps: 14304
+trainer:
+  max_epochs: 48
+  check_val_every_n_epoch: 4
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, l1, token_overfit, decisive, long_horizon]
