@@ -1,0 +1,17 @@
+# @package _global_
+#
+# patch/token-overfit bits sweep, low end: paper2_tok_fsq1000 with FSQ levels
+# [5, 5, 5]: one token, implicit codebook 125 (~7 bits per side-chunk). The cube
+# lever matrix found 8 bits (c16) beat 12 bits (cb64) on replay; the toy's
+# small-N optimum was a single small code.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_fsq1000
+  - _self_
+
+run_name: paper2_tok_fsq125
+codebook_size: 125
+num_quantizers: 1
+
+model:
+  quantizer:
+    levels: [5, 5, 5]

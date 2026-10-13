@@ -1,0 +1,27 @@
+# @package _global_
+#
+# patch/token-overfit: paper2_tok_cb64 (MLP encoder/decoder, latent 512, 10 x 13
+# per side, v3 corpus, 1000 epochs) with FINITE SCALAR QUANTIZATION instead of
+# the learned residual VQ: the 512-d latent is projected to 4 scalars bounded by
+# tanh to levels [8, 5, 5, 5] and rounded (straight-through), ONE token with an
+# implicit codebook of 1000 codes (~10 bits per side-chunk; cb64: 12, c16: 8).
+# No codebook / commitment loss, no EMA, no dead-code reset
+# (rmind.components.vq.FiniteScalarQuantizer). The policy's code head sees
+# num_quantizers 1 x codebook_size 1000.
+# Toy evidence: single-token FSQ [8,5,5,5] was the best non-AR tokenizer
+# (held-out mode-L1 0.153 / 0.118 at N=512 / 4096 vs 0.186 / 0.165 for RVQ 2x16).
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_cb64
+  - _self_
+
+run_name: paper2_tok_fsq1000
+codebook_size: 1000
+num_quantizers: 1
+
+model:
+  quantizer:
+    _target_: rmind.components.vq.FiniteScalarQuantizer
+    levels: [8, 5, 5, 5]
+
+wandb:
+  tags: [nero_robot, chunk_tokenizer, bimanual, paper, paper2, c10, token_overfit, fsq]

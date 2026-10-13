@@ -1,0 +1,13 @@
+# @package _global_
+#
+# patch/token-overfit: paper2_pp_codes_c16_cond_ar (autoregressive RVQ levels) on
+# the round-2 cb64 tokenizer (2 x 64, NERO_TOKENIZER_CKPT = paper2_tok_cb64):
+# the clean A/B of paper2_pp_codes_cond (same tokenizer, data, recipe, offset
+# table; only the level factorization differs).
+defaults:
+  - /experiment/yaak/nero_robot/paper2_pp_codes_c16_cond_ar
+  - _self_
+
+run_name: paper2_pp_codes_cb64_cond_ar
+codebook_size: 64
+num_quantizers: 2

@@ -1,0 +1,10 @@
+# @package _global_
+#
+# patch/token-overfit lever matrix: paper2s_codes_cond (short cb64 cond baseline) with ONE change: primary/secondary RVQ level loss weights 5.0 / 0.5 (VQ-BeT).
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_codes_cond
+  - _self_
+
+run_name: paper2s_codes_cond_lw
+model:
+  code_loss_weights: [5.0, 0.5]

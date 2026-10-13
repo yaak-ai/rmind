@@ -1,0 +1,12 @@
+# @package _global_
+#
+# patch/token-overfit LONG-HORIZON track (cube): the lever-matrix short baseline
+# paper2s_codes_cond (cb64-style VQ-BeT head, offset table, 32 epochs) on a
+# LONGER chunk. Launch-time: chunk_size / max_pad_steps (H, H-1), codebook_size /
+# num_quantizers of the paper2_tok_h<H>_q<Q>k64 tokenizer (NERO_TOKENIZER_CKPT),
+# NERO_STATS_DIR = stats_c<H>_v3. The offset table is Q x 64 x (H x 13).
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_codes_cond
+  - _self_
+
+run_name: paper2s_lh_codes_cond

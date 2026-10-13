@@ -1,0 +1,14 @@
+# @package _global_
+#
+# patch/token-overfit lever matrix: paper2s_codes_cond (short cb64 cond baseline) with ONE change: autoregressive RVQ levels (code_ar; shared head emits codebook_size logits per level).
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_codes_cond
+  - _self_
+
+run_name: paper2s_codes_cond_ar
+model:
+  code_ar: true
+  code_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels: [1024, 1024, "${codebook_size}"]

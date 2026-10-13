@@ -1,0 +1,14 @@
+# @package _global_
+#
+# patch/token-overfit lever matrix: paper2s_codes_cond (short cb64 cond baseline) with ONE change: distance-aware soft code targets, tau 0.05 (standardized action units), weight 0.3 (FocalLoss label_smoothing = the soft-target weight).
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_codes_cond
+  - _self_
+
+run_name: paper2s_codes_cond_soft_t005
+model:
+  code_soft_tau: 0.05
+  losses:
+    modules:
+      code:
+        label_smoothing: 0.3

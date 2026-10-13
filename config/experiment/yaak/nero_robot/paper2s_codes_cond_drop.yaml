@@ -1,0 +1,14 @@
+# @package _global_
+#
+# patch/token-overfit lever matrix: paper2s_codes_cond (short cb64 cond baseline) with ONE change: trunk regularization: resid / mlp / attention dropout 0.1 + drop_path 0.1 (paper regime: all 0).
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_codes_cond
+  - _self_
+
+run_name: paper2s_codes_cond_drop
+attn_dropout: 0.1
+drop_path_rate: 0.1
+model:
+  encoder:
+    resid_dropout: 0.1
+    mlp_dropout: 0.1

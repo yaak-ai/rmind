@@ -1,0 +1,19 @@
+# @package _global_
+#
+# patch/decisive: paper2d_lh_l1 (L1 head, 48 epochs cosine) at chunk 100 (3.3 s at
+# 30 Hz, ACT's chunk). The L1 head uses the tokenizer only for prepare() (relative
+# transform + action standardizer + is_pad) and action_horizon, so no chunk-100 v3
+# tokenizer is trained: NERO_TOKENIZER_CKPT = bimanual_tokenizer_v2 (action_horizon
+# 100, relative_mode all, 13 features). Its action standardizer is the one stored in
+# that checkpoint (stats_v1, chunk 100; restored from the state dict, a constructor
+# override does not take): targets are standardized and predictions unstandardized
+# with the same affine map, so this only rescales the per-axis L1 weights (v1 std
+# 0.177 vs v3 0.152 rad on joint 1). NERO_STATS_DIR = stats_c100_v3 (state
+# standardizer). Launch-time: chunk_size=100 max_pad_steps=99.
+defaults:
+  - /experiment/yaak/nero_robot/paper2d_lh_l1
+  - _self_
+
+run_name: paper2d_lh100_l1
+chunk_size: 100
+max_pad_steps: 99

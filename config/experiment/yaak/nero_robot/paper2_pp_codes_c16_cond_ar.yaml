@@ -1,0 +1,27 @@
+# @package _global_
+#
+# patch/token-overfit mitigation: paper2_pp_codes_c16_cond with the RVQ levels
+# predicted AUTOREGRESSIVELY (NeroPatchPolicy code_ar): level q's logits come
+# from the shared code head on readout + level embedding + embeddings of the
+# levels < q (teacher-forced target codes in training, greedy argmax at
+# inference). Toy evidence (token-overfit toy, 3 seeds, held-out decoded mode-L1
+# at the val-selected checkpoint): AR over levels cut it by 5-14% at N=512 and
+# 14-47% at N=4096 (2x16 / 2x64 / 4x16) -- with AR the deepest tokenizer became
+# the best -- while label smoothing, 5/0.5 level weights and distance-soft
+# targets changed it by <= 2% (they only fix the NLL blow-up).
+# Launch as paper2_pp_codes_c16_cond (NERO_TOKENIZER_CKPT = paper2_tok_c16).
+defaults:
+  - /experiment/yaak/nero_robot/paper2_pp_codes_c16_cond
+  - _self_
+
+run_name: paper2_pp_codes_c16_cond_ar
+
+model:
+  code_ar: true
+  code_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels: [1024, 1024, "${codebook_size}"]
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, c10, offset_cond, token_overfit, code_ar]

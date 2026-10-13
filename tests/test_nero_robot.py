@@ -54,7 +54,7 @@ from rmind.data.nero_robot import (
 )
 from rmind.datamodules.nero_robot_random import nero_robot_batch
 from rmind.models.nero_chunk_tokenizer import NeroChunkTokenizer
-from rmind.models.nero_patch_policy import NeroPatchPolicy
+from rmind.models.nero_patch_policy import NeroPatchPolicy, augment_images
 from rmind.models.nero_patch_policy_decoder import NeroPatchPolicyDecoderStep
 
 PATCH_GRID = (2, 3)
@@ -1444,3 +1444,58 @@ def test_export_camera_geometry_follows_the_preprocessing() -> None:
     assert tuple(nero_image_stretch.preprocess(frame, hw).shape[-2:]) == tuple(
         g["input_hw"]
     )
+
+
+# ------------------------------------------------------------- image augmentation
+
+AUG = {"shift_px": 4, "brightness": 0.2, "contrast": 0.2, "saturation": 0.2}
+
+
+def test_augment_images_keeps_dtype_shape_and_window_consistency() -> None:
+    torch.manual_seed(0)
+    frame = torch.randint(0, 256, (3, 3, 16, 16), dtype=torch.uint8)
+    window = frame[:, None].expand(3, 2, 3, 16, 16).clone()  # identical frames
+    out = augment_images(window, **AUG)
+    assert out.dtype == torch.uint8
+    assert out.shape == window.shape
+    torch.testing.assert_close(out[:, 0], out[:, 1])  # one draw per sample
+    assert not torch.equal(out, window)
+    # zero strength is the identity
+    torch.testing.assert_close(augment_images(window), window)
+
+
+def test_augment_images_shift_is_a_pure_translation() -> None:
+    torch.manual_seed(0)
+    img = torch.randint(0, 256, (1, 1, 3, 32, 32), dtype=torch.uint8)
+    out = augment_images(img, shift_px=4)
+    # the interior of the shifted frame is a crop of the original
+    inner = out[0, 0, :, 4:-4, 4:-4]
+    found = any(
+        torch.equal(inner, img[0, 0, :, 4 + dy : 28 + dy, 4 + dx : 28 + dx])
+        for dy in range(-4, 5)
+        for dx in range(-4, 5)
+    )
+    assert found
+
+
+def test_image_augmentation_is_train_only() -> None:
+    batch = _batch(t=3)
+    plain = _policy()
+    augmented = _policy(image_augmentation=AUG)
+    # eval / inference: bit-identical to the un-augmented policy
+    torch.testing.assert_close(
+        augmented(batch)["policy", "action"], plain(batch)["policy", "action"]
+    )
+    torch.testing.assert_close(
+        augmented._features(batch),  # noqa: SLF001
+        plain._features(batch),  # noqa: SLF001
+    )
+    # training: the observation features change
+    augmented.train()
+    plain.train()
+    torch.manual_seed(0)
+    a = augmented._features(batch)  # noqa: SLF001
+    torch.manual_seed(0)
+    p = plain._features(batch)  # noqa: SLF001
+    assert not torch.allclose(a, p)
+    assert augmented.hparams["image_augmentation"] == AUG

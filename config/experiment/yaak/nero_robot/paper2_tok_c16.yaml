@@ -1,0 +1,19 @@
+# @package _global_
+#
+# patch/token-overfit: paper2_tok_cb64 (MLP RVQ-VAE, 10 x 13 per side, depth 2,
+# latent 512, v3 corpus, 1000 epochs) with codebook 16 = paper_tok_c10's 2 x 16
+# (8 bits per side-chunk) retrained on v3. The token-overfit diagnosis
+# (codes policies memorize obs -> code; the val penalty grows with code bits:
+# 8b v1 < 12b cb64 < 16b q4) needs a v3 2 x 16 point without the v1-corpus
+# confound. Launch: as paper2_tok_cb64 (NERO_STATS_DIR = stats_c10_v3, v3 takes,
+# +nero_split_file=<repo>/config/splits/nero_cube_bimanual_v3.json).
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_cb64
+  - _self_
+
+run_name: paper2_tok_c16
+codebook_size: 16
+num_quantizers: 2
+
+wandb:
+  tags: [nero_robot, chunk_tokenizer, bimanual, paper, paper2, c10, token_overfit]

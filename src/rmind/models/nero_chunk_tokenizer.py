@@ -59,6 +59,7 @@ from torch.optim import Optimizer  # noqa: TC002 (pydantic validate_call)
 from rmind.components import optimizers
 from rmind.components.nn import KeyframeInterpolation
 from rmind.components.vq import (  # noqa: TC001 (pydantic validate_call)
+    FiniteScalarQuantizer,
     GroupedResidualVQ,
     ResidualVQ,
 )
@@ -154,8 +155,8 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
 
         hparams: dict[str, Any] = {}
         self.encoder = init_hydra_param(hparams, "encoder", encoder)
-        self.quantizer: ResidualVQ | GroupedResidualVQ = init_hydra_param(
-            hparams, "quantizer", quantizer
+        self.quantizer: ResidualVQ | GroupedResidualVQ | FiniteScalarQuantizer = (
+            init_hydra_param(hparams, "quantizer", quantizer)
         )
         self.decoder = init_hydra_param(hparams, "decoder", decoder)
         std = init_hydra_param(hparams, "standardizer", standardizer)
@@ -386,7 +387,9 @@ class NeroChunkTokenizer(pl.LightningModule, LoadableFromArtifact):
 
         z = self.encode_latent(target)
         codes, z_q, vq = self.quantizer(z)
-        recon = self.decode_latent(z + (z_q - z).detach())  # straight-through
+        if not getattr(self.quantizer, "straight_through", False):
+            z_q = z + (z_q - z).detach()  # straight-through (VQ: z_q = lookup(codes))
+        recon = self.decode_latent(z_q)
 
         w = self.weights(target, real)
         recon_loss = (self._elementwise(recon, target) * w).sum() / w.sum().clamp_min(

@@ -1,0 +1,15 @@
+# @package _global_
+#
+# patch/token-overfit bits sweep, low end: paper2_tok_cb64 with RVQ 2 x 8
+# (6 bits per side-chunk), to show the too-few-bits side of the bits curve
+# (c16 8 b beat cb64 12 b on replay).
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_cb64
+  - _self_
+
+run_name: paper2_tok_q2k8
+codebook_size: 8
+num_quantizers: 2
+
+wandb:
+  tags: [nero_robot, chunk_tokenizer, bimanual, paper, paper2, c10, token_overfit]

@@ -1,0 +1,15 @@
+# @package _global_
+#
+# patch/token-overfit bits sweep: paper2_tok_cb64 with a SINGLE residual level of
+# 256 codes (8 bits per side-chunk, one token: no level factorization), the
+# learned-VQ counterpart of the single-token FSQ tokenizers.
+defaults:
+  - /experiment/yaak/nero_robot/paper2_tok_cb64
+  - _self_
+
+run_name: paper2_tok_q1k256
+codebook_size: 256
+num_quantizers: 1
+
+wandb:
+  tags: [nero_robot, chunk_tokenizer, bimanual, paper, paper2, c10, token_overfit]

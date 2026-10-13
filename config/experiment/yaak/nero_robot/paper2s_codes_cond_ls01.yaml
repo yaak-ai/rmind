@@ -1,0 +1,13 @@
+# @package _global_
+#
+# patch/token-overfit lever matrix: paper2s_codes_cond (short cb64 cond baseline) with ONE change: label smoothing 0.1 on the focal code loss.
+defaults:
+  - /experiment/yaak/nero_robot/paper2s_codes_cond
+  - _self_
+
+run_name: paper2s_codes_cond_ls01
+model:
+  losses:
+    modules:
+      code:
+        label_smoothing: 0.1
