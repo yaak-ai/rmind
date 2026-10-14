@@ -19,12 +19,13 @@ I/O (bound BY NAME; shapes are nutron-cli `policy_contract.patch_io_shapes`):
 | `past_k/v`   | `(L, 1, heads, cache_frames*T, head_dim)` | read-only ring, oldest first |
 | `cache_bias` | `(1, 1, 1, cache_frames*T)`             | 0 = filled, `-1e4` = empty |
 | `rope_cos/sin` | `(1, head_dim)` float32               | host-computed (float64) from the int64 frames-since-reset counter |
+| `fm_x0`      | `(1, S, H*A)` float32                   | flow-matching head only (`action_head: fm`): the Euler start noise per side, STANDARDIZED action space (row-major `(H, A)` per side); the host draws it (N(0, I) or zeros). The `fm_inference_steps` Euler steps are unrolled in the graph |
 
 | output    | shape                    | notes |
 |-----------|--------------------------|-------|
 | `actions` | `(1, 100, 26)` float32   | in the ACTION STANDARDIZER's (relative-mode) space; the host unstandardizes and adds the anchor (`relative_mask`, anchor = the state of THIS observation) |
 | `new_k/v` | `(L, 1, heads, T, head_dim)` | the host shifts them into its ring |
-| `codes`   | `(1, num_quantizers)` int64 | the first VALID side's argmax codes (diagnostic), also with two sides; every side's codes come from `forward_all_codes` (eager only, the export's streaming gate). ABSENT for a continuous (`action_head: l1`) policy: the graph then has three outputs |
+| `codes`   | `(1, num_quantizers)` int64 | the first VALID side's argmax codes (diagnostic), also with two sides; every side's codes come from `forward_all_codes` (eager only, the export's streaming gate). ABSENT for a continuous (`action_head: l1` / `fm`) policy: the graph then has three outputs |
 
 Goal: none (`goal_mode` no_goal/none) -- there is no goal input. `camera_cond` is
 a CONSTANT of the graph (the contract carries the same array verbatim).
@@ -174,6 +175,7 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         rope_cos: Tensor,
         rope_sin: Tensor,
         hand_token: Tensor | None = None,
+        fm_x0: Tensor | None = None,
     ) -> tuple[Tensor, ...]:
         actions, new_k, new_v, codes = self.forward_all_codes(
             images,
@@ -185,6 +187,7 @@ class NeroPatchPolicyDecoderStep(nn.Module):
             rope_cos,
             rope_sin,
             hand_token,
+            fm_x0,
         )
         if codes is None:
             # continuous head: no codes output
@@ -207,6 +210,7 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         rope_cos: Tensor,
         rope_sin: Tensor,
         hand_token: Tensor | None = None,
+        fm_x0: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor | None]:
         """`forward`, but with EVERY side's argmax codes `(1, S, Q)` (None: l1 head).
 
@@ -214,10 +218,21 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         side's codes against the windowed forward); the exported graph binds
         `forward`'s first-valid `(1, Q)`.
 
+        `fm_x0 (1, S, H*A)`: the flow-matching start noise (required for an
+        `action_head: fm` policy, refused otherwise).
+
         Raises:
-            ValueError: when the policy has a hand token and `hand_token` is None.
+            ValueError: when the policy has a hand token and `hand_token` is None,
+                or `fm_x0` is missing for an fm policy / given for another head.
         """
         policy = self.policy
+        if (fm_x0 is None) == (policy.action_head == "fm"):
+            msg = (
+                "an action_head 'fm' policy needs `fm_x0` (1, S, H*A)"
+                if fm_x0 is None
+                else f"`fm_x0` given but action_head is {policy.action_head!r}"
+            )
+            raise ValueError(msg)
         n_sides = side_valid.shape[-1]
         valid = side_valid > 0.5  # noqa: PLR2004
         batch: dict[str, Tensor] = {
@@ -249,7 +264,7 @@ class NeroPatchPolicyDecoderStep(nn.Module):
         features = out[:, -1]
         if policy.norm is not None:
             features = policy.norm(features)
-        chunk, codes = policy._predict_chunk_and_codes(features)  # noqa: SLF001
+        chunk, codes = policy._predict_chunk_and_codes(features, fm_x0)  # noqa: SLF001
         # (1, S, H, A) -> (1, H, S*A): the contract's side-major flat layout
         actions = chunk.permute(0, 2, 1, 3).reshape(1, chunk.shape[2], -1)
         return actions, new_k, new_v, codes

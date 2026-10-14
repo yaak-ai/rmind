@@ -1421,6 +1421,31 @@ def test_l1_export_flags_the_head_and_serves_without_the_flag(tmp_path: Path) ->
     assert report["streaming_vs_windowed"]["code_agreement"] is None
 
 
+def test_export_camera_geometry_follows_the_preprocessing() -> None:
+    """letterbox = nero_image's isotropic fit; stretch = resize to the grid, no pads
+    (what nutron-cli's stretch contract check requires)."""
+    from rmind.data import nero_image, nero_image_stretch  # noqa: PLC0415
+    from rmind.scripts import nero_export  # noqa: PLC0415
+
+    hw = (224, 224)
+    assert nero_export.camera_geometry("stretch", (1920, 1080), hw) == {
+        "native_wh": [1920, 1080],
+        "resize_wh": [224, 224],
+        "pad_ltrb": [0, 0, 0, 0],
+        "input_hw": [224, 224],
+    }
+    assert (
+        nero_export.camera_geometry("letterbox", (1920, 1080), hw)
+        == nero_image.geometry((1920, 1080), hw).as_dict()
+    )
+    assert nero_export.PREPROCESSING["stretch"] is nero_image_stretch
+    frame = torch.randint(0, 256, (3, 1080, 1920), dtype=torch.uint8)
+    g = nero_export.camera_geometry("stretch", (1920, 1080), hw)
+    assert tuple(nero_image_stretch.preprocess(frame, hw).shape[-2:]) == tuple(
+        g["input_hw"]
+    )
+
+
 # ------------------------------------------------------------- image augmentation
 
 AUG = {"shift_px": 4, "brightness": 0.2, "contrast": 0.2, "saturation": 0.2}
