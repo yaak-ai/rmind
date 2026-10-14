@@ -39,6 +39,16 @@ unknown `action_head` key today, so gate 3 is run twice for an l1 bundle: as
 written (the refusal is recorded as `expected_refusal`, a warning) and on a copy
 without the key (`nutron_cli_compat`, which must pass: proof that the graph,
 bindings and every other field already serve).
+FLOW-MATCHING HEAD (`action_head: fm`): continuous like l1 (three outputs), plus
+one more INPUT, `fm_x0 (1, S, H*A)`: the Euler start noise per side in the
+standardized action space. The host draws it (N(0, I) from a seeded RNG, or
+zeros) so serving and the offline replay can feed the SAME noise; the
+`--fm-steps` (default: the checkpoint's `fm_inference_steps`) Euler steps are
+unrolled in the graph, after ONE trunk pass. The manifest carries
+`action_head: "fm"` and `fm: {steps, x0, seed}` (`x0`: the serving default
+`sample|zero`, `seed`: the producer's base seed). Gates 1-2 run with a FIXED
+seeded x0 per frame (`fm_gate_x0`), so they compare the same deterministic
+function. nutron-cli must know the head (rig/pp-fm-serving or later).
 3. nutron-cli's own `patch_contract_from_manifest` validates the manifest and
    `binding_problems` checks the REAL ONNX bindings -- what serving runs before
    the first step. The checkout is `--nutron-cli` (default `$NUTRON_CLI_ROOT`).
@@ -107,14 +117,40 @@ INPUT_ORDER = (
     "rope_cos",
     "rope_sin",
     "hand_token",
+    "fm_x0",
 )
 OUTPUT_ORDER = ("actions", "new_k", "new_v", "codes")
-#: the continuous (`action_head: l1`) graph: no codes output
+#: the continuous (`action_head: l1` / `fm`) graph: no codes output
 OUTPUT_ORDER_L1 = ("actions", "new_k", "new_v")
+CONTINUOUS_HEADS = ("l1", "fm")
+#: the export gates' fixed flow-matching noise: frame f draws from seed BASE + f
+FM_GATE_SEED = 20261014
 
 
 def output_order(policy: NeroPatchPolicy) -> tuple[str, ...]:
-    return OUTPUT_ORDER_L1 if policy.action_head == "l1" else OUTPUT_ORDER
+    return OUTPUT_ORDER_L1 if policy.action_head in CONTINUOUS_HEADS else OUTPUT_ORDER
+
+
+def positional(named: dict[str, Any]) -> tuple[Any, ...]:
+    """The decoder step's positional arguments for `named` inputs (INPUT_ORDER),
+    None for an absent optional one before a present one (`hand_token` before
+    `fm_x0` on a policy without a hand token)."""
+    present = [i for i, n in enumerate(INPUT_ORDER) if n in named]
+    return tuple(named.get(n) for n in INPUT_ORDER[: max(present) + 1])
+
+
+def fm_x0_shape(policy: NeroPatchPolicy, n_sides: int) -> tuple[int, int, int]:
+    """`(1, S, H*A)`: one standardized start chunk per side, row-major (H, A)."""
+    tokenizer = policy.tokenizer
+    return (1, n_sides, int(tokenizer.action_horizon) * int(tokenizer.action_features))
+
+
+def fm_gate_x0(policy: NeroPatchPolicy, n_sides: int, frame: int) -> Tensor | None:
+    """The gates' fixed N(0, I) noise for `frame` (None: not an fm policy)."""
+    if policy.action_head != "fm":
+        return None
+    gen = torch.Generator().manual_seed(FM_GATE_SEED + frame)
+    return torch.randn(fm_x0_shape(policy, n_sides), generator=gen)
 
 
 #: the image op the policy was TRAINED through (the dataset's `image_preprocessing`):
@@ -261,8 +297,15 @@ def streaming_gate(  # noqa: PLR0914
     output against the first valid side.
     """
     features = policy._features(batch)  # noqa: SLF001
-    windowed, windowed_codes = policy._predict_chunk_and_codes(features[0])  # noqa: SLF001
     device = step.camera_cond.device
+    n_sides = batch[policy.side_valid[0]].shape[-1]
+    fm_x0 = None
+    if policy.action_head == "fm":
+        x0s = [fm_gate_x0(policy, n_sides, f) for f in range(frames)]
+        fm_x0 = torch.cat([x for x in x0s if x is not None]).to(
+            device
+        )  # (frames, S, H*A)
+    windowed, windowed_codes = policy._predict_chunk_and_codes(features[0], fm_x0)  # noqa: SLF001
     past = step.empty_cache(device=device)
     worst, agree, total, bound_agree = 0.0, 0, 0, 0
     for frame in range(frames):
@@ -276,6 +319,7 @@ def streaming_gate(  # noqa: PLR0914
             cos,
             sin,
             inputs.get("hand_token"),
+            None if fm_x0 is None else fm_x0[frame : frame + 1],
         )
         actions, new_k, new_v, codes = step.forward_all_codes(*args)
         bound_out = step(*args)
@@ -302,7 +346,7 @@ def streaming_gate(  # noqa: PLR0914
             "code_agreement": None,
             "bound_code_agreement": None,
             "frames": frames,
-            "action_head": "l1",
+            "action_head": policy.action_head,
         }
     return {
         "max_abs": worst,
@@ -328,6 +372,9 @@ def ort_inputs(
         "rope_cos": cos,
         "rope_sin": sin,
     }
+    x0 = fm_gate_x0(step.policy, inputs["side_valid"].shape[-1], frame)
+    if x0 is not None:
+        named["fm_x0"] = x0
     return named
 
 
@@ -336,7 +383,7 @@ def export_onnx(
 ) -> None:
     order = output_order(step.policy)
     names = [n for n in INPUT_ORDER if n in example]
-    args = tuple(example[n] for n in names)
+    args = positional(example)
     exported = torch.export.export(step, args=args, strict=False)
     torch.onnx.export(
         model=exported,
@@ -372,7 +419,7 @@ def ort_gate(
     codes_equal: bool | None = True if has_codes else None
     for frame in range(frames):
         named = ort_inputs(step, step.frame_inputs(batch, frame), past, frame)
-        eager = step(*(named[n] for n in INPUT_ORDER if n in named))
+        eager = step(*positional(named))
         feeds = {k: v.numpy() for k, v in named.items() if k in bound}
         outputs = dict(zip(order, session.run(list(order), feeds), strict=True))
         for i, name in enumerate(("actions", "new_k", "new_v")):
@@ -399,7 +446,7 @@ def latency(
     if torch.cuda.is_available():
         device = torch.device("cuda")
         gpu_step = step.to(device)
-        args = [example[n].to(device) for n in names]
+        args = [None if a is None else a.to(device) for a in positional(example)]
         times = []
         for i in range(iters + 10):
             torch.cuda.synchronize()
@@ -501,6 +548,7 @@ def manifest(  # noqa: PLR0913
     onnx_io: dict[str, dict[str, dict[str, Any]]],
     files: dict[str, str],
     preprocessing: str = "letterbox",
+    fm: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     trunk = step.trunk
     op = PREPROCESSING[preprocessing]
@@ -601,6 +649,13 @@ def manifest(  # noqa: PLR0913
             # the continuous head: the graph's `actions` come from the L1 head
             # (no codes output, no tokenizer decode). Absent for the codes head.
             {"action_head": "l1"} if policy.action_head == "l1" else {}
+        )
+        | (
+            # the flow-matching head: continuous like l1, plus the fm_x0 input and
+            # the Euler steps unrolled at export (fixed: a new N is a new export)
+            {"action_head": "fm", "fm": dict(fm or {})}
+            if policy.action_head == "fm"
+            else {}
         )
         | {
             # the graph has no goal input whether the policy trained "no_goal"
@@ -747,7 +802,9 @@ class RoleDecoderStep(torch.nn.Module):
         self.step = step
 
     def forward(self, inputs: dict[str, Tensor]) -> dict[str, Tensor]:
-        outputs = self.step(*(inputs[n].float() for n in INPUT_ORDER if n in inputs))
+        outputs = self.step(
+            *(None if v is None else v.float() for v in positional(inputs))
+        )
         return dict(zip(output_order(self.step.policy), outputs, strict=True))
 
 
@@ -970,6 +1027,26 @@ def main() -> None:
         "image_preprocessing): letterbox (default) | stretch (patch/paper 224x224). "
         "Required for a square grid, where both are plausible",
     )
+    parser.add_argument(
+        "--fm-steps",
+        type=int,
+        default=None,
+        help="fm head: Euler steps unrolled in the graph (default: the checkpoint's "
+        "fm_inference_steps)",
+    )
+    parser.add_argument(
+        "--fm-x0",
+        choices=("sample", "zero"),
+        default=None,
+        help="fm head: the serving default start noise, recorded in the manifest "
+        "(default: the checkpoint's fm_x0)",
+    )
+    parser.add_argument(
+        "--fm-seed",
+        type=int,
+        default=0,
+        help="fm head: the producer's base seed for sampled x0 (recorded in the manifest)",
+    )
     parser.add_argument("--no-latency", action="store_true")
     parser.add_argument(
         "--gate-device", default="cuda" if torch.cuda.is_available() else "cpu"
@@ -1033,9 +1110,20 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         RuntimeError: when the shipped hand standardizer does not round-trip.
             Or when a sided hand token (`hand_sides`) meets stats whose
             side_valid sides differ (contract v3: hand_sides == valid sides).
+        ValueError: on a bad --fm-steps / --fm-seed for an fm policy.
     """
     policy = policy.cpu().eval()
     policy.sample_codes = False
+    fm: dict[str, Any] | None = None
+    if policy.action_head == "fm":
+        steps = getattr(args, "fm_steps", None) or policy.fm_inference_steps
+        x0_mode = getattr(args, "fm_x0", None) or policy.fm_x0
+        seed = int(getattr(args, "fm_seed", 0) or 0)
+        if int(steps) < 1 or seed < 0:
+            msg = f"--fm-steps {steps} must be >= 1 and --fm-seed {seed} >= 0"
+            raise ValueError(msg)
+        policy.fm_inference_steps = int(steps)  # what the graph unrolls
+        fm = {"steps": int(steps), "x0": str(x0_mode), "seed": seed}
 
     cond = (
         torch.tensor(json.loads(args.camera_cond.read_text()), dtype=torch.float32)
@@ -1050,6 +1138,8 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         "window": window,
         "tokens_per_frame": step.tokens_per_frame,
     }
+    if fm is not None:
+        report["fm"] = fm | {"gate_x0": f"N(0, I), seed {FM_GATE_SEED} + frame"}
     warnings: list[str] = []
     nutron_cli = getattr(args, "nutron_cli", None)
     if nutron_cli is not None and not Path(nutron_cli).exists():
@@ -1189,6 +1279,7 @@ def run(  # noqa: C901, PLR0912, PLR0914, PLR0915
         onnx_io=onnx_io(onnx_path),
         files=files,
         preprocessing=getattr(args, "preprocessing", None) or "letterbox",
+        fm=fm,
     )
     report["preprocessing"] = payload["image"]["preprocessing_id"]
     manifest_path = args.out / "policy_manifest.json"

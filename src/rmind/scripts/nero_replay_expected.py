@@ -19,6 +19,12 @@ standardizer and the relative mode is undone with each frame's RAW state as the
 anchor, giving `expected_actions (N, 100, 26)` ABSOLUTE and side-major, plus
 `expected_codes (N, Q)` of the first valid side (the graph's `codes` output).
 
+Flow-matching head (`action_head: fm`): the bundle MUST carry `fm_x0 (N, S, H*A)`,
+the start noise serving fed each tick (nutron-cli's bundle builder draws it with
+the producer's own seeded generator, or zeros); it is passed to the windowed
+forward unchanged, with the manifest's `fm.steps` Euler steps, so the replay is
+the same deterministic function the graph computes.
+
 Hand token: the bundle's `hand_token` is `(N, dim)` for one untagged token and
 `(N, S, dim)` for a model with `hand_sides` (bimanual: one row per side in
 `hand_sides` order, each with its own `hand_valid`), exactly as serving feeds it.
@@ -73,7 +79,12 @@ def expected(  # noqa: PLR0914
     *,
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """(N, chunk, S*A) ABSOLUTE chunks and (N, Q) first-valid-side codes."""
+    """(N, chunk, S*A) ABSOLUTE chunks and (N, Q) first-valid-side codes.
+
+    Raises:
+        ValueError: when an fm checkpoint's bundle has no (or a mis-shaped)
+            `fm_x0`, or a non-fm checkpoint's bundle has one.
+    """
     n_sides = len(manifest["sides"])
     side_valid = torch.tensor(manifest["side_valid"], dtype=torch.bool, device=device)
     cond = torch.tensor(
@@ -83,6 +94,25 @@ def expected(  # noqa: PLR0914
     images = bundle["images_u8"]  # (N, n_cams, 3, H, W) uint8
     state = torch.from_numpy(bundle["state"]).float()
     out_actions, out_codes = [], []
+    fm_x0 = None
+    if policy.action_head == "fm":
+        if "fm_x0" not in bundle:
+            msg = "an action_head 'fm' replay needs the bundle's fm_x0 (N, S, H*A)"
+            raise ValueError(msg)
+        fm_x0 = torch.from_numpy(np.asarray(bundle["fm_x0"], dtype=np.float32))
+        want = (
+            len(bundle["state"]),
+            n_sides,
+            int(policy.tokenizer.action_horizon)
+            * int(policy.tokenizer.action_features),
+        )
+        if tuple(fm_x0.shape) != want:
+            msg = f"bundle fm_x0 is {tuple(fm_x0.shape)}, the policy reads {want}"
+            raise ValueError(msg)
+        policy.fm_inference_steps = int(manifest["fm"]["steps"])
+    elif "fm_x0" in bundle:
+        msg = f"bundle has fm_x0 but the checkpoint's action_head is {policy.action_head!r}"
+        raise ValueError(msg)
     for start, stop in streams(bundle["reset"]):
         t = stop - start
         raw = state[start:stop].reshape(t, n_sides, -1)
@@ -105,7 +135,9 @@ def expected(  # noqa: PLR0914
                 .to(device)
             )
         features = policy._features(batch)  # noqa: SLF001  (1, t, d)
-        chunk, codes = policy._predict_chunk_and_codes(features[0])  # noqa: SLF001
+        chunk, codes = policy._predict_chunk_and_codes(  # noqa: SLF001
+            features[0], None if fm_x0 is None else fm_x0[start:stop].to(device)
+        )
         # (t, S, H, A) standardized -> raw -> absolute (anchor = this frame's raw state)
         unstd = policy.tokenizer.standardizer.unstandardize(
             chunk.permute(0, 2, 1, 3)
