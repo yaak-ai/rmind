@@ -81,6 +81,10 @@ def test_fm_parity_with_the_toy_verified_head(name: str) -> None:  # noqa: PLR09
             worst[f"euler{s}_x0zero"] = (
                 (zero.flatten(1) - ref[f"euler{s}_x0zero"]).abs().max()
             )
+        assert torch.equal(x0, fx["inputs"]["x0"])
+        x0_copy = x0.clone()
+        NeroPatchPolicy.fm_sample(me, f, x0=x0, steps=4)
+        assert torch.equal(x0, x0_copy), "fm_sample wrote into the caller's x0"
         # the CFM loss at the fixture's fixed (x0, t): unmasked and with its pad mask
         xt = (1 - t[:, None]) * x0 + t[:, None] * target
         err = (head.velocity(f, xt, t) - (target - x0)).pow(2)

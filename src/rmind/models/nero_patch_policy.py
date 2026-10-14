@@ -1759,11 +1759,13 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             if self.fm_x0 == "sample":
                 x = torch.randn_like(x)
         else:
-            x = x0.reshape(f.shape[0], h * a).to(f.dtype)
+            # a copy: the loop must never write into the caller's noise
+            x = x0.reshape(f.shape[0], h * a).to(f.dtype).clone()
         n = int(self.fm_inference_steps if steps is None else steps)
         for i in range(n):
             t = torch.full((f.shape[0],), i / n, device=f.device, dtype=f.dtype)
-            x += head.velocity(f, x, t) / n  # ty:ignore[call-non-callable]
+            # out-of-place, exactly as ActionHead.act (no `+=`)
+            x = x + head.velocity(f, x, t) / n  # noqa: PLR6104  # ty:ignore[call-non-callable]
         return x.reshape(*lead, h, a)
 
     def _predict_chunk_and_codes(
