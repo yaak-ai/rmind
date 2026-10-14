@@ -29,7 +29,8 @@ bundle tick it finds rbyte's `NeroRobotReader` row with the same base
 groups, `rmind.data.nero_robot.compose_hand_token`; per side,
 `compose_hand_tokens`, for a model with `hand_sides`), and the three images decoded
 by rbyte's `TorchCodecVideoSource` at the row's `frame_index.<camera>` and mapped
-by `rmind.data.nero_image.preprocess` -- the training data path. Non-zero exit when
+by the artifact's image op (`rmind.data.nero_image.preprocess`, or
+`nero_image_stretch.preprocess` for a stretch artifact) -- the training data path. Non-zero exit when
 any input differs (state/hand: exactly; images: `--image-atol` uint8 levels).
 """
 
@@ -122,12 +123,13 @@ def expected(  # noqa: PLR0914
     return np.concatenate(out_actions), np.concatenate(out_codes)
 
 
-def input_parity(  # noqa: PLR0914
+def input_parity(  # noqa: PLR0914, PLR0915
     policy: NeroPatchPolicy,
     bundle: dict[str, np.ndarray],
     episode: Path,
     *,
     image_atol: int,
+    preprocessing_id: str | None = None,
 ) -> dict[str, Any]:
     """Bundle inputs (serving's producer) vs rbyte's training rows for the same frames.
 
@@ -137,7 +139,14 @@ def input_parity(  # noqa: PLR0914
     from rbyte.samples.nero import NeroRobotReader  # noqa: PLC0415
     from rbyte.streams.video import TorchCodecVideoSource  # noqa: PLC0415
 
-    from rmind.data.nero_image import preprocess  # noqa: PLC0415
+    from rmind.data import nero_image, nero_image_stretch  # noqa: PLC0415
+
+    # the artifact's own op (manifest image.preprocessing_id): letterbox or stretch
+    ops = {m.PREPROCESSING_ID: m for m in (nero_image, nero_image_stretch)}
+    if (preprocessing_id or nero_image.PREPROCESSING_ID) not in ops:
+        msg = f"unknown image.preprocessing_id {preprocessing_id!r}"
+        raise ValueError(msg)
+    preprocess = ops[preprocessing_id or nero_image.PREPROCESSING_ID].preprocess
 
     df = NeroRobotReader(chunk_size=100)(episode / "data.mcap")
     t_rows = df["t_ns"].to_numpy()
@@ -280,10 +289,15 @@ def main() -> None:
     failed = not summary["finite"]
     if args.episode is not None:
         parity = input_parity(
-            policy.cpu(), bundle, args.episode, image_atol=args.image_atol
+            policy.cpu(),
+            bundle,
+            args.episode,
+            image_atol=args.image_atol,
+            preprocessing_id=manifest["image"]["preprocessing_id"],
         )
         summary["input_parity"] = parity
         failed |= not parity["ok"]
+    print(json.dumps(summary, indent=1, default=str))  # noqa: T201
     if failed:
         sys.exit(1)
 
