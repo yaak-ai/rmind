@@ -1753,7 +1753,8 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         tokenizer = self.tokenizer
         h, a = int(tokenizer.action_horizon), int(tokenizer.action_features)
         lead = side_features.shape[:-1]
-        f = side_features.reshape(-1, side_features.shape[-1])
+        # the Euler state is integrated in fp32 (bf16 readouts under autocast)
+        f = side_features.reshape(-1, side_features.shape[-1]).float()
         if x0 is None:
             x = f.new_zeros(f.shape[0], h * a)
             if self.fm_x0 == "sample":
