@@ -1366,7 +1366,7 @@ def test_l1_head_config_is_checked() -> None:
         _policy(l1=True, l1_head=nn.Linear(POLICY_DIM, 7))
     with pytest.raises(ValueError, match="needs code_head"):
         _policy(code_head=None)
-    with pytest.raises(ValueError, match="'codes' or 'l1'"):
+    with pytest.raises(ValueError, match="'l1' or 'fm'"):
         _policy(action_head="mse")
 
 

@@ -22,7 +22,7 @@ rev = "v3.21.2"
 hooks = [
   {
     id = "pyupgrade",
-    exclude = "^src/rmind/data/nero_image(_stretch)?\\.py$"
+    exclude = "^src/rmind/(data/nero_image(_stretch)?|components/fm_action_head)\\.py$"
   },
 ]
 
