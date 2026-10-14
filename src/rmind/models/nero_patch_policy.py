@@ -449,10 +449,20 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         #: `prepare` (relative transform + action standardizer, the serving
         #: contract's `standardizers.action`); it never encodes or decodes, and
         #: `code_head` / `offset_head` must be None.
-        action_head: Literal["codes", "l1"] = "codes",
+        #: "fm": a CONTINUOUS flow-matching head (rectified flow, linear-interpolation
+        #: CFM; `fm_head` = `rmind.components.fm_action_head.ActionHead(kind="fm")`,
+        #: the toy-verified bimod-study head vendored byte-for-byte). Same action
+        #: space, standardizer and `action.is_pad` mask as "l1"; the loss is the
+        #: masked CFM velocity MSE. Serving: `fm_inference_steps` Euler steps from
+        #: x0 ~ N(0, I) (`fm_x0: sample`) or x0 = 0 (`fm_x0: zero`); x0 can also be
+        #: passed explicitly (`fm_sample(..., x0=...)`, `forward(batch, fm_x0=...)`).
+        action_head: Literal["codes", "l1", "fm"] = "codes",
         code_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
         offset_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
         l1_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        fm_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        fm_inference_steps: int = 4,
+        fm_x0: Literal["sample", "zero"] = "sample",
     ) -> None:
         super().__init__()
 
@@ -487,9 +497,25 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             hparams, "state_embedding", state_embedding
         )
         self.encoder: Module = init_hydra_param(hparams, "encoder", encoder)
-        if action_head not in {"codes", "l1"}:
-            msg = f"action_head {action_head!r} not in ('codes', 'l1')"
+        if action_head not in {"codes", "l1", "fm"}:
+            msg = f"action_head {action_head!r} not in ('codes', 'l1', 'fm')"
             raise ValueError(msg)
+        if action_head == "fm" and (
+            code_head is not None
+            or offset_head is not None
+            or l1_head is not None
+            or fm_head is None
+        ):
+            msg = "action_head='fm' needs fm_head and no code_head / offset_head / l1_head"
+            raise ValueError(msg)
+        if action_head != "fm" and fm_head is not None:
+            msg = "fm_head needs action_head='fm'"
+            raise ValueError(msg)
+        if fm_inference_steps < 1 or fm_x0 not in {"sample", "zero"}:
+            msg = f"bad fm_inference_steps {fm_inference_steps} / fm_x0 {fm_x0!r}"
+            raise ValueError(msg)
+        self.fm_inference_steps = int(fm_inference_steps)
+        self.fm_x0 = fm_x0
         if action_head == "codes" and (code_head is None or offset_head is None):
             msg = "action_head='codes' needs code_head and offset_head"
             raise ValueError(msg)
@@ -788,6 +814,8 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "image_encoder_trainable": image_encoder_trainable,
             "image_encoder_trainable_blocks": image_encoder_trainable_blocks,
             "action_head": action_head,
+            "fm_inference_steps": fm_inference_steps,
+            "fm_x0": fm_x0,
         }
 
         if optimizer is not None:
@@ -829,6 +857,23 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 msg = (
                     f"l1_head outputs {last[-1].out_features}, the tokenizer's chunk "
                     f"is {want} (action_horizon x action_features)"
+                )
+                raise ValueError(msg)
+
+        # the flow-matching head: CONSTRUCTED LAST and ONLY for action_head fm (as l1)
+        self.fm_head: Module | None = None
+        if action_head == "fm":
+            if not self.robot:
+                msg = "action_head='fm' is robot action space only"
+                raise ValueError(msg)
+            self.fm_head = init_hydra_param(hparams, "fm_head", fm_head)
+            want = self._chunk_numel()
+            got = int(getattr(self.fm_head, "D", -1))
+            if getattr(self.fm_head, "kind", None) != "fm" or got != want:
+                msg = (
+                    f"fm_head must be an ActionHead(kind='fm') with out_dim {want} "
+                    f"(action_horizon x action_features), got kind "
+                    f"{getattr(self.fm_head, 'kind', None)!r} out_dim {got}"
                 )
                 raise ValueError(msg)
 
@@ -1693,15 +1738,46 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             -1, (int(tokenizer.action_horizon), int(tokenizer.action_features))
         )
 
+    def fm_sample(
+        self, side_features: Tensor, x0: Tensor | None = None, steps: int | None = None
+    ) -> Tensor:
+        """Flow-matching head: per-side features `(..., d)` -> STANDARDIZED `(..., H, A)`.
+
+        Euler integration of the head's velocity field from t=0 to 1 in `steps`
+        (default `fm_inference_steps`) steps -- the same loop as
+        `ActionHead.act` (pinned by tests/test_fm_head.py). `x0 (..., H*A)` is the
+        start noise; None draws it per `fm_x0` (N(0, I) or zeros).
+        """
+        head = self.fm_head
+        assert head is not None  # noqa: S101
+        tokenizer = self.tokenizer
+        h, a = int(tokenizer.action_horizon), int(tokenizer.action_features)
+        lead = side_features.shape[:-1]
+        f = side_features.reshape(-1, side_features.shape[-1])
+        if x0 is None:
+            x = f.new_zeros(f.shape[0], h * a)
+            if self.fm_x0 == "sample":
+                x = torch.randn_like(x)
+        else:
+            x = x0.reshape(f.shape[0], h * a).to(f.dtype)
+        n = int(self.fm_inference_steps if steps is None else steps)
+        for i in range(n):
+            t = torch.full((f.shape[0],), i / n, device=f.device, dtype=f.dtype)
+            x += head.velocity(f, x, t) / n  # ty:ignore[call-non-callable]
+        return x.reshape(*lead, h, a)
+
     def _predict_chunk_and_codes(
-        self, features: Tensor
+        self, features: Tensor, fm_x0: Tensor | None = None
     ) -> tuple[Tensor, Tensor | None]:
         """`(..., d)` -> (STANDARDISED `(..., 2, H, A)` chunk, `(..., 2, g)` codes).
 
-        The l1 head has no codes: `(chunk, None)`.
+        The l1 / fm heads have no codes: `(chunk, None)`. `fm_x0 (..., 2, H*A)`:
+        explicit flow-matching start noise (fm head only).
         """
         if self.action_head == "l1":
             return self._l1_chunk(self._per_side_features(features)), None
+        if self.action_head == "fm":
+            return self.fm_sample(self._per_side_features(features), x0=fm_x0), None
         code_logits, offsets = self._heads(self._per_side_features(features))
         codes = self._sample_codes(code_logits)
         if self.robot:
@@ -1800,6 +1876,19 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         side_features = self._per_side_features(features).reshape(
             -1, features.shape[-1]
         )[row_valid]
+        if self.action_head == "fm":
+            # as l1: `prepare` only. "pred" is the SERVING sample (no grad).
+            with torch.no_grad():
+                target, real = tokenizer.prepare(batch)  # (n, H, A), (n, H)
+                pred = self.fm_sample(side_features.detach())
+            return {
+                "row_valid": row_valid,
+                "side": side,
+                "target": target,
+                "real": real,
+                "side_features": side_features,
+                "pred": pred,
+            }
         if self.action_head == "l1":
             # no tokenizer encode/decode: `prepare` only (relative transform +
             # action standardizer + the `action.is_pad` mask)
@@ -1837,9 +1926,10 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
     def rows_prediction(self, rows: Mapping[str, Tensor]) -> Tensor:
         """The SERVING prediction for `_robot_rows` output: STANDARDIZED `(n, H, A)`.
 
-        l1: the continuous chunk; codes: the argmax codes decoded with their offset.
+        l1: the continuous chunk; fm: the flow-matching sample; codes: the argmax
+        codes decoded with their offset.
         """
-        if self.action_head == "l1":
+        if self.action_head in {"l1", "fm"}:
             return rows["pred"]
         codes = rows.get("pred_codes")
         if codes is None:
@@ -1885,6 +1975,51 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             batch_size=[],
         )
 
+    def _fm_loss(self, rows: Mapping[str, Tensor]) -> Tensor:
+        """Masked CFM loss of the fm head: `ActionHead.loss` with the `is_pad` mask
+        expanded over the action features (sum / count of real elements, as l1)."""
+        head = self.fm_head
+        assert head is not None  # noqa: S101
+        target, real = rows["target"], rows["real"]
+        mask = real.unsqueeze(-1).to(target.dtype).expand_as(target).flatten(1)
+        loss, _ = head.loss(rows["side_features"], None, target.flatten(1), mask=mask)  # ty:ignore[call-non-callable]
+        return loss
+
+    def _compute_fm_metrics(
+        self,
+        batch: Any,
+        features: Tensor,
+        rows: dict[str, Tensor],
+        token_norms: dict[str, Tensor] | None,
+    ) -> TensorDict:
+        """The flow-matching head's loss (masked CFM) + the l1 head's metrics on
+        its serving sample (`fm_inference_steps`, `fm_x0`)."""
+        target, real, pred = rows["target"], rows["real"], rows["pred"]
+        losses = {"action_fm": self._fm_loss(rows)}
+        metrics: dict[str, Tensor] = {
+            "valid_rows": rows["row_valid"].sum().to(features.dtype)
+        }
+        with torch.no_grad():
+            metrics["real_frac"] = real.float().mean()
+            metrics["action_l1_sample"] = self._masked_l1(pred, target, real)
+            if self.quality_metrics:
+                anchor = self._anchor_rows(batch, rows["row_valid"])
+                pred_abs = self._absolute(pred, anchor, rows["side"])
+                gt_abs = self._absolute(target, anchor, rows["side"])
+                metrics |= horizon_ev_metrics(pred_abs, gt_abs, real)
+                metrics |= grasp_event_metrics(pred_abs, gt_abs, real)
+                metrics |= alarm_metrics(
+                    pred=pred_abs,
+                    target=gt_abs,
+                    real=real,
+                    token_norms=token_norms,
+                    features=features,
+                )
+        return TensorDict(
+            {"policy": {"loss": losses, "metric": metrics}},  # ty:ignore[invalid-argument-type]
+            batch_size=[],
+        )
+
     def _compute_robot_metrics(  # ruff: ignore[too-many-locals]
         self, batch: Any, *, token_norms: dict[str, Tensor] | None = None
     ) -> TensorDict:
@@ -1893,6 +2028,8 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         rows = self._robot_rows(batch, features)
         if self.action_head == "l1":
             return self._compute_l1_metrics(batch, features, rows, token_norms)
+        if self.action_head == "fm":
+            return self._compute_fm_metrics(batch, features, rows, token_norms)
         target, real = rows["target"], rows["real"]
         target_codes, code_logits = rows["target_codes"], rows["code_logits"]
         offsets = rows["offsets"]
@@ -2003,8 +2140,9 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
         features = self._features(batch)
         rows = self._robot_rows(batch, features)
         decoded = self.rows_prediction(rows)
-        if self.action_head == "l1":
-            # no code distribution: the L1 loss stands in for the code NLL
+        if self.action_head in {"l1", "fm"}:
+            # no code distribution: the L1 loss (fm: of the serving sample) stands
+            # in for the code NLL
             nll = self._masked_l1(decoded, rows["target"], rows["real"])
         else:
             logits, target_codes = rows["code_logits"], rows["target_codes"]
@@ -2184,9 +2322,12 @@ class NeroPatchPolicy(pl.LightningModule, LoadableFromArtifact):
             self.lr_steps_mismatch = True
 
     @override
-    def forward(self, batch: Any) -> TensorDict:
-        """Newest frame's bimanual action chunk, `(b, 2, horizon, action_features)`."""
-        chunk = self._predict_chunk(self._features(batch)[:, -1])
+    def forward(self, batch: Any, fm_x0: Tensor | None = None) -> TensorDict:
+        """Newest frame's bimanual action chunk, `(b, 2, horizon, action_features)`.
+
+        `fm_x0 (b, 2, H*A)`: explicit flow-matching start noise (fm head only).
+        """
+        chunk = self._predict_chunk_and_codes(self._features(batch)[:, -1], fm_x0)[0]
         return TensorDict({"policy": {"action": chunk}}, batch_size=[])  # ty:ignore[invalid-argument-type]
 
     @override

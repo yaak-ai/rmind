@@ -122,6 +122,9 @@ DEP004 = [
 
 [tool.deptry.package_module_name_map]
 hydra-core = "hydra"
+# the linux tensorrt dependency is tensorrt-cu12 (module `tensorrt`); deptry cannot
+# derive the module name when the wheel is not installed in the hook's env
+tensorrt-cu12 = "tensorrt"
 tensordict-nightly = "tensordict"
 pytorch-lightning = [
   "pytorch_lightning",
@@ -138,8 +141,13 @@ fix = true
 unsafe-fixes = true
 # nero_image.py is pinned by SHA256 in the serving contract (image.preprocessing_sha256)
 # and vendored verbatim by nutron-cli: no tool may rewrite it, even when a hook
-# passes it explicitly (hence force-exclude).
-extend-exclude = ["src/rmind/data/nero_image.py"]
+# passes it explicitly (hence force-exclude). fm_action_head.py is the toy-verified
+# flow-matching head (bimod study tag fm-toy-verified-v1.1), vendored byte-for-byte
+# and pinned by SHA256 in tests/test_fm_head.py.
+extend-exclude = [
+  "src/rmind/data/nero_image.py",
+  "src/rmind/components/fm_action_head.py"
+]
 force-exclude = true
 
 [tool.ruff.lint]
@@ -181,6 +189,13 @@ include = ["src/rmind/inference/backends/tensorrt.py"]
 
 [tool.ty.overrides.analysis]
 allowed-unresolved-imports = ["tensorrt"]
+
+# vendored byte-for-byte (SHA256-pinned in tests/test_fm_head.py): no edits to satisfy ty
+[[tool.ty.overrides]]
+include = ["src/rmind/components/fm_action_head.py"]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"
 
 # Orin-only parity script: cv2 exists on the Orin, not in the rmind venv
 [[tool.ty.overrides]]

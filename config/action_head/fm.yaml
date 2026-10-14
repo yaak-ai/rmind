@@ -1,0 +1,23 @@
+# @package _global_
+# action_head=fm (`+action_head=fm`): the CONTINUOUS flow-matching head in place of
+# the VQ-BeT codes + offset (or the l1 head). Same action space, standardizer and
+# `action.is_pad` mask as action_head=l1; the head is the toy-verified bimod-study
+# ActionHead(kind="fm") (rectified flow / linear-interpolation CFM; velocity MLP over
+# the per-side readout, x_t and a sinusoidal t embedding, 2 x 1024 hidden like the
+# l1 head), vendored byte-for-byte as rmind.components.fm_action_head (study tag
+# fm-toy-verified-v1.1, 472e3a7). Serving: `fm_inference_steps` Euler steps from
+# x0 ~ N(0, I). No export graph yet (nero_export knows codes / l1 only).
+action_features: 13
+model:
+  action_head: fm
+  code_head: null
+  offset_head: null
+  l1_head: null
+  fm_inference_steps: 4
+  fm_x0: sample
+  fm_head:
+    _target_: rmind.components.fm_action_head.ActionHead
+    kind: fm
+    feat_dim: ${policy_embedding_dim}
+    cond_dim: 1
+    out_dim: "${eval:'${chunk_size} * ${action_features}'}"

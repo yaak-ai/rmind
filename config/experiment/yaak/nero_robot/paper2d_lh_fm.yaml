@@ -1,0 +1,17 @@
+# @package _global_
+#
+# patch/fm-head: paper2d_lh_l1 (L1 head, 48 epochs cosine, window 2 / frame_stride 3,
+# 8L/8H/384, the robot-candidate schedule) with ONLY the action head swapped for the
+# toy-verified flow-matching head (config/action_head/fm.yaml). Launch-time exactly
+# as paper2d_lh_l1: chunk_size / max_pad_steps, NERO_STATS_DIR = stats_c<H>_v3,
+# NERO_TOKENIZER_CKPT = a chunk-<H> tokenizer (prepare() only). Run name
+# paper2d_lh50_fm at chunk_size=50 max_pad_steps=49.
+defaults:
+  - /experiment/yaak/nero_robot/paper2d_lh_l1
+  - override /action_head: fm
+  - _self_
+
+run_name: paper2d_lh_fm
+
+wandb:
+  tags: [nero_robot, causal_patch_policy, bimanual, hand_off, paper, paper2, window2, fm, flow_matching, token_overfit, decisive, long_horizon]
