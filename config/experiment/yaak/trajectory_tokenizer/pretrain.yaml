@@ -26,3 +26,8 @@ trajectory_latent_dim: 384
 
 codebook_size: 16
 num_quantizers: 4
+
+# ~1239 steps/epoch at batch 2048: 40 epochs ~= the 50k-step cosine schedule in
+# model/yaak/trajectory_tokenizer/raw.yaml, so the LR actually anneals
+trainer:
+  max_epochs: 40
