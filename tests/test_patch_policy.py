@@ -12,7 +12,7 @@ import pytest
 import torch
 from tensordict import TensorDict
 from torch import Tensor
-from torch.nn import Identity, L1Loss, Linear, Module, Sequential
+from torch.nn import GELU, Identity, L1Loss, Linear, Module, Sequential
 from torchvision.ops import MLP
 
 from rmind.components.base import Modality
@@ -34,6 +34,7 @@ from rmind.models.patch_policy import (
     PatchPolicy,
     block_causal_mask,
 )
+from rmind.models.trajectory_tokenizer import TrajectoryTokenizer
 from rmind.scripts.warm_start_ckpt import (
     INTRA_POSITION_KEY,
     _backfill_preprocessing_buffers,  # noqa: PLC2701
@@ -160,7 +161,16 @@ def _make_model(  # noqa: PLR0913
     nulls: bool = False,
     trunk_dropout: float = 0.1,
     counterfactual_val_frames: int = 0,
+    with_trajectory_vqbet: bool = False,
+    # which VQ-BeT parts to build; None = all three iff with_trajectory_vqbet
+    trajectory_vqbet_parts: frozenset[str] | None = None,
+    trajectory_masked_codes: tuple[int, ...] = (),
 ) -> PatchPolicy:
+    parts = (
+        trajectory_vqbet_parts
+        if trajectory_vqbet_parts is not None
+        else frozenset({"tokenizer", "code", "offset"} if with_trajectory_vqbet else ())
+    )
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
         tokens_per_frame += num_register_tokens + 1
@@ -176,6 +186,9 @@ def _make_model(  # noqa: PLR0913
         default_loss_modules["trajectory"] = WinnerTakesAllPoseLoss()
     if with_mode_head:
         default_loss_modules["mode"] = torch.nn.CrossEntropyLoss()
+    if with_trajectory_vqbet:
+        default_loss_modules["trajectory_code"] = FocalLoss()
+        default_loss_modules["trajectory_offset"] = WinnerTakesAllPoseLoss()
     return PatchPolicy(
         fusion_norm=fusion_norm,
         neighbor_smoothing_tau=neighbor_smoothing_tau,
@@ -238,7 +251,37 @@ def _make_model(  # noqa: PLR0913
                 ObjectivePredictionKey.SCORE_SIGNED_ERROR,
             }
         ),
+        # constructed LAST so the RNG stream every other module draws from is
+        # unchanged with or without the head (bit-for-bit gate tests)
+        trajectory_tokenizer=_make_trajectory_tokenizer()
+        if "tokenizer" in parts
+        else None,
+        trajectory_code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE])
+        if "code" in parts
+        else None,
+        trajectory_offset_head=MLP(
+            POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * TRAJECTORY_HORIZON * 3]
+        )
+        if "offset" in parts
+        else None,
+        trajectory_masked_codes=trajectory_masked_codes,
     ).eval()
+
+
+def _make_trajectory_tokenizer() -> TrajectoryTokenizer:
+    dim = TRAJECTORY_HORIZON * 3
+    return TrajectoryTokenizer(
+        input_transform=Identity(),
+        encoder=Sequential(Linear(dim, 16), GELU(), Linear(16, LATENT_DIM)),
+        quantizer=ResidualVQ(
+            dim=LATENT_DIM,
+            codebook_size=CODEBOOK_SIZE,
+            num_quantizers=NUM_QUANTIZERS,
+            kmeans_init=False,
+        ),
+        decoder=Sequential(Linear(LATENT_DIM, 16), GELU(), Linear(16, dim)),
+        num_poses=TRAJECTORY_HORIZON,
+    )
 
 
 def _make_batch(
@@ -1716,3 +1759,189 @@ def test_counterfactual_probes_keep_the_batch_shape() -> None:
     probe_reruns = len(("left route", "right route", "speed probe"))
     assert len(shapes) == probe_reruns
     assert {shape[0] for shape in shapes} == {BATCH_SIZE}
+
+
+# VQ-BeT trajectory head (docs/trajectory_vqbet_head_plan.md)
+# --------------------------------------------------------------------------- #
+
+
+def test_trajectory_vqbet_parts_must_be_set_together() -> None:
+    with pytest.raises(ValueError, match="set together"):
+        _make_model(
+            with_trajectory_vqbet=True,
+            trajectory_vqbet_parts=frozenset({"tokenizer", "code"}),
+        )
+
+
+def test_trajectory_vqbet_replaces_the_mlp_head() -> None:
+    with pytest.raises(ValueError, match="replaces trajectory_head"):
+        _make_model(with_trajectory_head=True, with_trajectory_vqbet=True)
+
+
+def test_trajectory_vqbet_requires_its_losses() -> None:
+    with pytest.raises(ValueError, match="trajectory_code"):
+        _make_model(
+            with_trajectory_vqbet=True,
+            losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
+        )
+
+
+def test_trajectory_masked_codes_are_validated() -> None:
+    with pytest.raises(ValueError, match="requires the VQ-BeT"):
+        _make_model(trajectory_masked_codes=(0,))
+    with pytest.raises(ValueError, match="must lie in"):
+        _make_model(
+            with_trajectory_vqbet=True, trajectory_masked_codes=(CODEBOOK_SIZE,)
+        )
+    with pytest.raises(ValueError, match="every level-0 code"):
+        _make_model(
+            with_trajectory_vqbet=True,
+            trajectory_masked_codes=tuple(range(CODEBOOK_SIZE)),
+        )
+
+
+def test_trajectory_vqbet_absent_by_default() -> None:
+    model = _make_model()
+    assert model.trajectory_code_head is None
+    assert model.trajectory_tokenizer is None
+
+    losses = cast(
+        "dict[str, Tensor]",
+        model._compute_metrics(_make_batch())["policy", "loss"],  # noqa: SLF001
+    )
+    assert not any(key.startswith("trajectory") for key in losses.keys())  # noqa: SIM118
+
+
+def test_trajectory_vqbet_metrics_and_gradients() -> None:
+    model = _make_model(with_trajectory_vqbet=True)
+    model.train()
+    batch = _make_batch(with_trajectory_target=True)
+
+    weighted: dict[str, tuple[Tensor, Tensor]] = {}
+    metrics = model._compute_metrics(batch, weighted_metrics_out=weighted)  # noqa: SLF001
+    losses = cast("dict[str, Tensor]", metrics["policy", "loss"])
+    expected = {
+        *(f"trajectory_code_{q}" for q in range(NUM_QUANTIZERS)),
+        "trajectory_offset",
+    }
+    assert expected <= set(losses.keys())
+    for key in expected:
+        assert losses[key].isfinite(), key
+
+    readout = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    for key in (
+        "trajectory_ade",
+        "trajectory_fde",
+        "trajectory_heading_err_deg",
+        "trajectory_ade_last",
+        "trajectory_turn_share_pred",
+        "trajectory_code_acc_joint_last",
+        "trajectory_masked_frac",
+    ):
+        assert readout[key].isfinite(), key
+    assert set(weighted) == {
+        "trajectory_turn_ade",
+        "trajectory_turn_recall",
+        "trajectory_false_turn_rate",
+    }
+    frames = BATCH_SIZE * EPISODE_LENGTH
+    for total, count in weighted.values():
+        assert total.isfinite()
+        assert 0 <= count <= frames
+
+    cast("Tensor", cast("TensorDict", losses).sum(reduce=True)).backward()
+    for head in (model.trajectory_code_head, model.trajectory_offset_head):
+        assert head is not None
+        assert any(
+            p.grad is not None and p.grad.abs().sum() > 0 for p in head.parameters()
+        )
+    assert model.trajectory_tokenizer is not None
+    assert all(p.grad is None for p in model.trajectory_tokenizer.parameters())
+    assert not model.trajectory_tokenizer.training  # re-forced to eval in train()
+
+
+def test_trajectory_vqbet_weight_zero_reproduces_baseline_bit_for_bit() -> None:
+    torch.manual_seed(0)
+    baseline = _make_model()
+    torch.manual_seed(0)
+    with_head = _make_model(with_trajectory_vqbet=True, trajectory_weight=0.0)
+    _fill_deterministic(baseline)
+    _fill_deterministic(with_head)
+
+    baseline_metrics = baseline._compute_metrics(_make_batch())  # noqa: SLF001
+    with_head_metrics = with_head._compute_metrics(  # noqa: SLF001
+        _make_batch(with_trajectory_target=True)
+    )
+
+    for kind in ("loss", "metric"):
+        before = cast("dict[str, Tensor]", baseline_metrics["policy", kind])
+        after = cast("dict[str, Tensor]", with_head_metrics["policy", kind])
+        for key, value in before.items():
+            torch.testing.assert_close(after[key], value, rtol=0, atol=0)
+    after_losses = cast("dict[str, Tensor]", with_head_metrics["policy", "loss"])
+    for key, value in after_losses.items():
+        if key.startswith("trajectory"):
+            torch.testing.assert_close(value, torch.zeros_like(value), rtol=0, atol=0)
+
+
+def test_trajectory_masked_codes_are_never_decoded() -> None:
+    allowed = CODEBOOK_SIZE - 1
+    model = _make_model(
+        with_trajectory_vqbet=True, trajectory_masked_codes=tuple(range(allowed))
+    )
+    predictions = model.predict_step(_make_batch(with_trajectory_target=True))
+
+    assert (predictions["trajectory", "codes"][:, 0] == allowed).all()
+    probs = predictions["trajectory", "level0_probs"]
+    assert (probs[:, :allowed] == 0).all()
+    torch.testing.assert_close(probs.sum(-1), torch.ones(BATCH_SIZE))
+
+
+def test_trajectory_vqbet_predict_step() -> None:
+    model = _make_model(with_trajectory_vqbet=True)
+    predictions = model.predict_step(_make_batch(with_trajectory_target=True))
+
+    pose = (TRAJECTORY_HORIZON, 3)
+    assert predictions["trajectory", "prediction"].shape == (BATCH_SIZE, 1, *pose)
+    assert predictions["trajectory", "best_prediction"].shape == (BATCH_SIZE, *pose)
+    assert predictions["trajectory", "ground_truth"].shape == (BATCH_SIZE, *pose)
+    assert predictions["trajectory", "codes"].shape == (BATCH_SIZE, NUM_QUANTIZERS)
+    assert predictions["trajectory", "level0_probs"].shape == (
+        BATCH_SIZE,
+        CODEBOOK_SIZE,
+    )
+    assert predictions["trajectory", "per_candidate_loss"].shape == (BATCH_SIZE, 1)
+
+
+def test_trajectory_vqbet_decodes_in_fp32_under_autocast() -> None:
+    model = _make_model(with_trajectory_vqbet=True)
+    features = torch.randn(BATCH_SIZE, POLICY_DIM)
+    reference = model._predict_trajectory_vqbet(features)  # noqa: SLF001
+
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        plan = model._predict_trajectory_vqbet(features)  # noqa: SLF001
+
+    assert plan.dtype == torch.float32
+    # only the bf16 heads differ; the tokenizer decode itself stays fp32
+    torch.testing.assert_close(plan, reference, atol=0.1, rtol=0.05)
+
+
+def test_trajectory_vqbet_counterfactual_probes() -> None:
+    model = _make_model(with_trajectory_vqbet=True, counterfactual_val_frames=8)
+    inputs = _probe_batch_inputs(model)
+
+    with torch.no_grad():
+        plan = model._counterfactual_plan(  # noqa: SLF001
+            inputs["patches"], inputs["waypoints"], inputs["speed"]
+        )
+    torch.testing.assert_close(plan, inputs["plan"])
+
+    metrics = model.counterfactual_metrics(inputs)
+    assert set(metrics) == {
+        "goal_sensitivity_yaw",
+        "goal_sensitivity_lateral",
+        "speed_echo",
+        "speed_echo_real",
+    }
+    for name, (value, _) in metrics.items():
+        assert value.isfinite(), name

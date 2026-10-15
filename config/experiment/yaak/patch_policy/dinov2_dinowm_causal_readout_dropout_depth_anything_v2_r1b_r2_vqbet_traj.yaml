@@ -1,0 +1,73 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1b_r2
+  - _self_
+
+# r1b_r2 with the VQ-BeT trajectory head in place of the MLP trajectory_head
+# and mode_head (docs/trajectory_vqbet_head_plan.md). Launch with the T2b
+# overrides (W&B 3pvjq3i6, the matched baseline) so only the head differs.
+#
+# The tokenizer must be the yaw-augmented one: the policy trains on
+# YawShiftCrop-rotated targets, and 403b4rrh:v26 breaks on any rotation
+# (plan step 0). Its geometry must match trajectory_num_quantizers /
+# trajectory_codebook_size below.
+trajectory_tokenizer_artifact: ???
+trajectory_num_quantizers: 4
+trajectory_codebook_size: 16
+# level-0 glitch-outlier codes of that artifact (its codebook audit)
+trajectory_masked_codes: []
+
+model:
+  trajectory_head: null
+  mode_head: null
+  trajectory_tokenizer:
+    _target_: rmind.models.trajectory_tokenizer.TrajectoryTokenizer.load_from_wandb_artifact
+    artifact: ${trajectory_tokenizer_artifact}
+    weights_only: false
+  # LayerNorm + GELU hidden layers, as the r2 MLP heads
+  trajectory_code_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels:
+      [1024, 1024, "${eval:'${trajectory_num_quantizers} * ${trajectory_codebook_size}'}"]
+    norm_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+    activation_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.GELU
+  trajectory_offset_head:
+    _target_: torchvision.ops.MLP
+    in_channels: ${policy_embedding_dim}
+    hidden_channels:
+      [
+        1024,
+        1024,
+        "${eval:'${trajectory_num_quantizers} * ${trajectory_codebook_size} * ${trajectory_horizon} * 3'}",
+      ]
+    norm_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+    activation_layer:
+      _target_: hydra.utils.get_class
+      path: torch.nn.GELU
+  trajectory_masked_codes: ${trajectory_masked_codes}
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm_causal,
+      neighbor_smoothing,
+      readout_registers,
+      retile,
+      trajectory_vqbet,
+      turn_signal_head,
+      dropout,
+      depth_anything_v2,
+      yaw_aug,
+      frame_mask,
+      photometric,
+      head_ln_gelu,
+    ]

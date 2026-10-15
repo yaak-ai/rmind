@@ -154,6 +154,25 @@ From `outputs/traj-audit/audit_403b4rrh_v26.json` (`usage.q0`,
 
 ### 3.5 Baseline runs and cost
 
+> **Matched baseline (found 2026-10-15): T2b `3pvjq3i6`** (`alex-tmp`,
+> finished on renate, commit `508f5b0a`, i.e. this branch's route-matched
+> waypoints). It is T1's recipe with `action_weight=0.0`:
+>
+> ```
+> experiment=yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1b_r2
+> ++model.neighbor_smoothing_tau=0.012 datamodule.train.num_workers=2
+> ++lr=2e-4 ++lr_warmup_steps=7660 ++lr_total_steps=95800 ++trainer.max_epochs=4
+> ++trajectory_weight=1.0 ++trajectory_xy_weight=4.0 ++trajectory_heading_weight=0.5
+> ++mode_weight=0.2 ++action_weight=0.0 ++speed_dropout=0.5 ++goal_dropout=0.1
+> ++window=2 ++episode_length=16 ++episode_stride=17
+> paths.rbyte.cache=.rbyte_cache_16step_traj_t2
+> ```
+>
+> The VQ-BeT arm uses exactly these overrides (minus `mode_weight`) with
+> experiment `..._r1b_r2_vqbet_traj`. Note **`episode_length=16`**: the
+> policy's yaw walk spans 16 frames, not the experiment file's 32. The
+> T1-based notes below are kept for history.
+
 - **Trunk / feature source:**
   - T1 `uqvyzh38` (`alex-tmp` project). Its settings: goal dropout 0.1,
     speed dropout 0.5, a 4-epoch screen, `lr_total_steps 95800`, warmup 7660.
@@ -358,13 +377,14 @@ Behaviour:
     that takes per-sample weights, see below).
 - **Targets:** `trajectory_tokenizer(trajectory_target)` under `no_grad`
   gives `(b, t, 4)` codes, computed once per step.
-- **Masking:**
-  - Set level-0 logits of `trajectory_masked_codes` to `-inf` everywhere:
-    loss, argmax and predict.
-  - Drop frames whose ground-truth level-0 code is masked from **all**
-    trajectory losses: code levels 0–3 and the offset. Their deeper codes and
-    targets are garbage too.
-  - Log the dropped share as `trajectory_masked_frac`.
+- **Masking (as built, 2026-10-15):**
+  - Level-0 logits of `trajectory_masked_codes` are set to `-inf` at
+    **decode** time only: argmax for metrics, predict, and the
+    counterfactual plan.
+  - Masked frames are **still supervised**. Dropping them needs boolean
+    indexing (a host sync every training step) for ~0.02% of frames, and
+    they only train offset entries of codes that are never decoded.
+  - The masked share is logged as `trajectory_masked_frac`.
 - **Code loss:** for each level q, apply the loss to
   `logits_q + τ · log prior_q` (τ = 0 → raw logits). Apply per-sample weights
   `w[target]` when the power p > 0.
@@ -386,6 +406,15 @@ Behaviour:
   `trajectory_turn_recall`, `trajectory_turn_share_pred`, plus the existing
   `trajectory_loss_xy` / `_heading` names where they apply. Keep ECE out of
   the training step; it is probe-only.
+  - **As built:** `trajectory_turn_ade`, `trajectory_turn_recall` and
+    `trajectory_false_turn_rate` are logged in **val only**, weighted by
+    their frame count. Their per-batch denominators can be zero (val batches
+    are drive-contiguous), and the count needs one host sync. The MLP head's
+    `trajectory_loss_xy` / `_heading` names are **not** reused: those are
+    min-over-hypotheses oracles, not comparable to a single argmax plan.
+  - All trajectory-tokenizer calls run in fp32, outside autocast. Its
+    standardization has tiny stds and it decodes ~40 m positions, both of
+    which bf16 would wreck.
 - **`predict_step`:** emit `result["trajectory"]` with the same keys as
   today (:1697-1735):
   - `prediction`: `(b, 1, p, 3)`, a single hypothesis, so existing
@@ -533,9 +562,18 @@ Then mark this brief's status line DONE with the date.
 ## 7. Status
 
 - 2026-10-15: brief written. Focal loss chosen and §4 shelved (owner).
-  Step 0 failed for `v26`; `YawRotateTrajectory` added and the
-  `pretrain_yaw` tokenizer run launched (run id: see the commit/launch notes
-  below).
+- 2026-10-15: step 0 failed for `v26` (§5 step 0). `YawRotateTrajectory`
+  added (commit `7e36ef84`). Tokenizer retrain launched: W&B `yaak/rmind`
+  `1v9s3p6z`, experiment `trajectory_tokenizer/pretrain_yaw`, container
+  `rmind-traj-tok-yaw`, code in `outputs/traj-tok-yaw-7e36ef84`. Its walk
+  uses 32 frames against the policy's 16 (§3.5). Both reach the ±4.7°
+  clip, so the 16-frame distribution is covered. Re-audit at
+  `--frames 16`.
+- 2026-10-15: step 1 implemented (`PatchPolicy` VQ-BeT trajectory head,
+  tests, `raw.yaml` blocks, experiment `..._r1b_r2_vqbet_traj.yaml`). Steps
+  2 and 3 are reduced or shelved (above). Docker smoke run on the T2 cache
+  (`~/.rbyte_cache_16step_traj_t2`) is in progress, with `v26` as a
+  geometry-compatible stand-in tokenizer.
 
 ## 8. Risk register
 

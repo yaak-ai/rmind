@@ -173,6 +173,16 @@ num_trajectory_hypotheses: ${num_trajectory_hypotheses}
 # num_trajectory_hypotheses.
 mode_head: null
 
+# VQ-BeT trajectory head (docs/trajectory_vqbet_head_plan.md): a frozen
+# TrajectoryTokenizer plus code/offset heads, REPLACING trajectory_head and
+# mode_head (PatchPolicy rejects both at once). null = off; an experiment that
+# wants it sets all three (see *_vqbet_traj.yaml) and the losses below.
+trajectory_tokenizer: null
+trajectory_code_head: null
+trajectory_offset_head: null
+# level-0 codes never decoded (the tokenizer's glitch-outlier modes)
+trajectory_masked_codes: []
+
 losses:
   _target_: rmind.components.containers.ModuleDict
   modules:
@@ -192,6 +202,16 @@ losses:
     # only fires when mode_head is not None
     mode:
       _target_: torch.nn.CrossEntropyLoss
+    # safe to always define -- only read when the VQ-BeT trajectory head is set.
+    # Focal gamma=2 like the action code head (project owner, 2026-10-15)
+    trajectory_code:
+      _target_: rmind.components.loss.FocalLoss
+    # the teacher-forced plan's pose error, single hypothesis; same weights
+    # as the MLP head's winner-takes-all loss so magnitudes compare
+    trajectory_offset:
+      _target_: rmind.components.loss.WinnerTakesAllPoseLoss
+      xy_weight: ${trajectory_xy_weight}
+      heading_weight: ${trajectory_heading_weight}
 
 teacher_force_offset: ${teacher_force_offset}
 

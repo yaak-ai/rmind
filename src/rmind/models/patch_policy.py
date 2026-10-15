@@ -1,7 +1,7 @@
 import math
 from collections.abc import Mapping
 from itertools import chain
-from typing import Annotated, Any, ClassVar, cast, final, override
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast, final, override
 
 import pytorch_lightning as pl
 import torch
@@ -30,6 +30,9 @@ from rmind.models.control_transformer import PredictionConfig
 from rmind.utils._wandb import LoadableFromArtifact
 from rmind.utils.profiling import maybe_profile
 from rmind.utils.pytree import key_get_default
+
+if TYPE_CHECKING:
+    from rmind.models.trajectory_tokenizer import TrajectoryTokenizer
 
 type Path = tuple[str, ...]
 
@@ -253,6 +256,24 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     `trajectory_head`, this is training-time only and never feeds
     `joint_actions` or any served/exported output.
 
+    VQ-BeT trajectory head (opt-in, `None` = off,
+    `docs/trajectory_vqbet_head_plan.md`): `trajectory_code_head` +
+    `trajectory_offset_head` over a frozen `trajectory_tokenizer`
+    (`rmind.models.trajectory_tokenizer.TrajectoryTokenizer`), the trajectory
+    counterpart of the action head -- one categorical per residual-VQ level
+    (`losses["trajectory_code"]`, a `FocalLoss`) plus a code-conditioned pose
+    offset in meters/radians, teacher-forced at the ground-truth codes and
+    scored with `losses["trajectory_offset"]` (a `WinnerTakesAllPoseLoss`,
+    used at a single hypothesis). The plan is `invert(argmax codes) +
+    offset`. It REPLACES `trajectory_head`/`mode_head` (configuring both is an
+    error), is scaled by the same `trajectory_weight`, and is training-time
+    and offline only, like `trajectory_head`. `trajectory_masked_codes` are
+    level-0 codes that can never be decoded (glitch-outlier modes of the
+    tokenizer); they are still supervised, since dropping their frames would
+    cost a host sync per step for ~0.02% of frames. All tokenizer calls run
+    in fp32: its standardization has tiny stds and it decodes ~40 m
+    positions, both of which bf16 would wreck.
+
     `action_weight` (default `1.0`, the unweighted behaviour) scales the
     VQ-BeT action losses (`code_*` and `offset`) before they enter the total.
     `0.0` keeps `code_head`/`offset_head` constructed and their diagnostics
@@ -274,9 +295,16 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     unaffected.
     """
 
+    trajectory_code_mask: Tensor  # (g, c) bool buffer, VQ-BeT trajectory head only
+
     _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
     _GOAL_PROBE_MIN_SPEED_KMH: ClassVar[float] = 5.0
     _STOPPED_MAX_SPEED_KMH: ClassVar[float] = 1.0
+    # VQ-BeT trajectory metrics: a frame "turns" when its final heading is past
+    # _TURN_MIN_DEG and is "straight" under _STRAIGHT_MAX_DEG (the tokenizer
+    # audit's straight speed-bin codes sit inside +-4 deg)
+    _TURN_MIN_DEG: ClassVar[float] = 10.0
+    _STRAIGHT_MAX_DEG: ClassVar[float] = 4.0
 
     @validate_call
     def __init__(  # noqa: C901, PLR0912, PLR0913, PLR0915
@@ -306,6 +334,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         # opt-in trajectory-mode classifier (see class docstring); requires
         # trajectory_head. None (default) leaves this model unchanged.
         mode_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        # opt-in VQ-BeT trajectory head (see class docstring); all three or none
+        trajectory_tokenizer: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        trajectory_code_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        trajectory_offset_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        trajectory_masked_codes: tuple[int, ...] = (),
         cameras: tuple[str, ...] = ("cam_front_left",),
         null_speed: HydraConfig[Module] | InstanceOf[Module] | None = None,
         null_goal: HydraConfig[Module] | InstanceOf[Module] | None = None,
@@ -409,8 +442,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     "torch.nn.CrossEntropyLoss) to supervise it"
                 )
                 raise ValueError(msg)
-        if counterfactual_val_frames and self.trajectory_head is None:
-            msg = "counterfactual_val_frames > 0 requires a trajectory_head to probe"
+        self._init_trajectory_vqbet(
+            hparams,
+            trajectory_tokenizer=trajectory_tokenizer,
+            trajectory_code_head=trajectory_code_head,
+            trajectory_offset_head=trajectory_offset_head,
+            trajectory_masked_codes=trajectory_masked_codes,
+        )
+        if counterfactual_val_frames and not self._has_trajectory:
+            msg = (
+                "counterfactual_val_frames > 0 requires a trajectory_head or the "
+                "VQ-BeT trajectory head to probe"
+            )
             raise ValueError(msg)
         self.counterfactual_val_frames = counterfactual_val_frames
 
@@ -545,12 +588,91 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
 
         self.save_hyperparameters(hparams)
 
+    def _init_trajectory_vqbet(
+        self,
+        hparams: dict[str, Any],
+        *,
+        trajectory_tokenizer: HydraConfig[Module] | Module | None,
+        trajectory_code_head: HydraConfig[Module] | Module | None,
+        trajectory_offset_head: HydraConfig[Module] | Module | None,
+        trajectory_masked_codes: tuple[int, ...],
+    ) -> None:
+        """Build and validate the opt-in VQ-BeT trajectory head (class docstring).
+
+        Raises:
+            ValueError: on a partial head, a head combined with
+                `trajectory_head`/`mode_head`, missing losses, or invalid
+                `trajectory_masked_codes`.
+        """
+        parts = (trajectory_tokenizer, trajectory_code_head, trajectory_offset_head)
+        if any(p is None for p in parts) and not all(p is None for p in parts):
+            msg = (
+                "trajectory_tokenizer, trajectory_code_head and "
+                "trajectory_offset_head must be set together"
+            )
+            raise ValueError(msg)
+
+        self.trajectory_tokenizer: TrajectoryTokenizer | None = None
+        self.trajectory_code_head: Module | None = None
+        self.trajectory_offset_head: Module | None = None
+        self.trajectory_masked_codes = trajectory_masked_codes
+        hparams["trajectory_masked_codes"] = trajectory_masked_codes
+        if trajectory_tokenizer is None:
+            if trajectory_masked_codes:
+                msg = "trajectory_masked_codes requires the VQ-BeT trajectory head"
+                raise ValueError(msg)
+            return
+
+        if self.trajectory_head is not None or self.mode_head is not None:
+            msg = (
+                "the VQ-BeT trajectory head replaces trajectory_head/mode_head; "
+                "configure one or the other"
+            )
+            raise ValueError(msg)
+        for key in ("trajectory_code", "trajectory_offset"):
+            if key not in self.losses:
+                msg = f"the VQ-BeT trajectory head requires losses[{key!r}]"
+                raise ValueError(msg)
+
+        self.trajectory_tokenizer = cast(
+            "TrajectoryTokenizer",
+            init_hydra_param(hparams, "trajectory_tokenizer", trajectory_tokenizer)
+            .requires_grad_(False)  # noqa: FBT003
+            .eval(),
+        )
+        self.trajectory_code_head = init_hydra_param(
+            hparams, "trajectory_code_head", trajectory_code_head
+        )
+        self.trajectory_offset_head = init_hydra_param(
+            hparams, "trajectory_offset_head", trajectory_offset_head
+        )
+
+        quantizer = self.trajectory_tokenizer.quantizer
+        num_codes = quantizer.codebook_size
+        if any(not 0 <= c < num_codes for c in trajectory_masked_codes):
+            msg = f"trajectory_masked_codes must lie in [0, {num_codes})"
+            raise ValueError(msg)
+        if len(set(trajectory_masked_codes)) >= num_codes:
+            msg = "trajectory_masked_codes would mask every level-0 code"
+            raise ValueError(msg)
+        # (g, c) bool, True = never decoded; derived from hparams, so not saved
+        mask = torch.zeros(quantizer.num_quantizers, num_codes, dtype=torch.bool)
+        mask[0, list(trajectory_masked_codes)] = True
+        self.register_buffer("trajectory_code_mask", mask, persistent=False)
+
+    @property
+    def _has_trajectory(self) -> bool:
+        """Whether any trajectory head (MLP or VQ-BeT) is configured."""
+        return self.trajectory_head is not None or self.trajectory_code_head is not None
+
     @override
     def train(self, mode: bool = True) -> "PatchPolicy":
         super().train(mode)
         self.image_encoder.eval()
         self.goal_encoder.eval()
         self.tokenizer.eval()
+        if self.trajectory_tokenizer is not None:
+            self.trajectory_tokenizer.eval()
         return self
 
     @staticmethod
@@ -834,7 +956,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             turn_signal_chunk["turn_signal"] = cast(
                 "Tensor", self._get(inputs, self.turn_signal, required=require_chunk)
             )
-        if trajectory_target_out is not None and self.trajectory_head is not None:
+        if trajectory_target_out is not None and self._has_trajectory:
             trajectory_target_out["trajectory_target"] = cast(
                 "Tensor",
                 self._get(inputs, self.trajectory_target, required=require_chunk),
@@ -902,10 +1024,14 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """Probability-weighted plan `(b, p, 3)` at each clip's newest frame, from
         cached frozen image features and (possibly substituted) conditioning.
 
-        Caller must check `self.trajectory_head is not None` first.
+        Caller must check `self._has_trajectory` first. With the VQ-BeT
+        trajectory head the plan is its argmax decode (there are no
+        hypotheses to weight).
         """
         tokens = self._frame_tokens(None, speed, waypoints, patches=patches)
         features = self._readout(tokens)[:, -1]
+        if self.trajectory_code_head is not None:
+            return self._predict_trajectory_vqbet(features)
         return expected_plan(
             self._predict_trajectory(features),
             self._predict_mode(features) if self.mode_head is not None else None,
@@ -965,6 +1091,159 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         """
         assert self.mode_head is not None  # noqa: S101
         return self.mode_head(features)
+
+    def _trajectory_vqbet_heads(self, features: Tensor) -> tuple[Tensor, Tensor]:
+        """VQ-BeT trajectory code logits `(*b, g, c)` and the full pose-offset
+        table `(*b, g, c, num_poses * 3)`, fp32.
+
+        Caller must check `self.trajectory_code_head is not None` first.
+        """
+        assert self.trajectory_tokenizer is not None  # noqa: S101
+        assert self.trajectory_code_head is not None  # noqa: S101
+        assert self.trajectory_offset_head is not None  # noqa: S101
+        quantizer = self.trajectory_tokenizer.quantizer
+        g, c = quantizer.num_quantizers, quantizer.codebook_size
+
+        code_logits = rearrange(
+            self.trajectory_code_head(features), "... (g c) -> ... g c", g=g, c=c
+        )
+        offsets = rearrange(
+            self.trajectory_offset_head(features), "... (g c a) -> ... g c a", g=g, c=c
+        )
+        return code_logits.float(), offsets.float()
+
+    def _trajectory_argmax_codes(self, code_logits: Tensor) -> Tensor:
+        """Per-level argmax `(*b, g)` with `trajectory_masked_codes` excluded."""
+        return code_logits.masked_fill(self.trajectory_code_mask, -math.inf).argmax(
+            dim=-1
+        )
+
+    def _decode_trajectory(self, codes: Tensor, offsets: Tensor) -> Tensor:
+        """`invert(codes) + offset` gathered at `codes` -> `(*b, num_poses, 3)`
+        poses, theta re-wrapped; fp32 (see class docstring)."""
+        assert self.trajectory_tokenizer is not None  # noqa: S101
+        with torch.autocast(device_type=offsets.device.type, enabled=False):
+            poses = self.trajectory_tokenizer.invert(codes)
+            poses += self._gather_offset(offsets.float(), codes).unflatten(
+                -1, poses.shape[-2:]
+            )
+        theta = poses[..., 2]
+        return torch.cat(
+            [poses[..., :2], torch.atan2(theta.sin(), theta.cos())[..., None]], dim=-1
+        )
+
+    def _trajectory_target_codes(self, trajectory_target: Tensor) -> Tensor:
+        """Frozen-tokenizer codes `(*b, g)` of the target poses, fp32."""
+        assert self.trajectory_tokenizer is not None  # noqa: S101
+        with (
+            torch.no_grad(),
+            torch.autocast(device_type=trajectory_target.device.type, enabled=False),
+        ):
+            return self.trajectory_tokenizer(trajectory_target.float())
+
+    def _predict_trajectory_vqbet(self, features: Tensor) -> Tensor:
+        """Deployment-aligned plan `(*b, num_poses, 3)`: argmax codes (masked
+        codes excluded) plus their offset."""
+        code_logits, offsets = self._trajectory_vqbet_heads(features)
+        return self._decode_trajectory(
+            self._trajectory_argmax_codes(code_logits), offsets
+        )
+
+    def _trajectory_vqbet_losses(
+        self,
+        features: Tensor,
+        trajectory_target: Tensor,
+        weighted_metrics_out: dict[str, tuple[Tensor, Tensor]] | None = None,
+    ) -> tuple[dict[str, Tensor], dict[str, Tensor], Tensor]:
+        """`(losses, metrics, argmax plan (b, t, p, 3))` of the VQ-BeT
+        trajectory head; losses scaled by `trajectory_weight`, metrics raw.
+        `weighted_metrics_out`: see `_trajectory_vqbet_metrics`."""
+        target = trajectory_target.float()
+        target_codes = self._trajectory_target_codes(target)  # (b, t, g)
+        code_logits, offsets = self._trajectory_vqbet_heads(features)
+
+        losses: dict[str, Tensor] = {}
+        for q in range(target_codes.shape[-1]):
+            losses[f"trajectory_code_{q}"] = self.losses["trajectory_code"](
+                rearrange(code_logits[..., q, :], "b t c -> (b t) c"),
+                rearrange(target_codes[..., q], "b t -> (b t)"),
+            )
+        # teacher-forced at the ground-truth codes, like the action head's offset
+        teacher_forced = self._decode_trajectory(target_codes, offsets)
+        losses["trajectory_offset"] = self.losses["trajectory_offset"](
+            teacher_forced.unsqueeze(-3), target
+        )
+        # x * 1.0 is exact, so trajectory_weight=1 is the unweighted loss
+        losses = {k: self.trajectory_weight * v for k, v in losses.items()}
+
+        with torch.no_grad():
+            argmax_codes = self._trajectory_argmax_codes(code_logits)
+            plan = self._decode_trajectory(argmax_codes, offsets)
+            metrics = self._trajectory_vqbet_metrics(
+                plan, target, argmax_codes, target_codes, weighted_metrics_out
+            )
+        return losses, metrics, plan
+
+    def _trajectory_vqbet_metrics(
+        self,
+        plan: Tensor,
+        target: Tensor,
+        codes: Tensor,
+        target_codes: Tensor,
+        weighted_metrics_out: dict[str, tuple[Tensor, Tensor]] | None = None,
+    ) -> dict[str, Tensor]:
+        """Raw-unit diagnostics of the argmax plan (docs/trajectory_vqbet_head_plan.md
+        §4.3), over all frames and at the newest frame (`_last`). Turn and
+        straight frames are defined on final heading, decoded vs ground truth,
+        so they do not depend on which code a frame lands in.
+
+        The turn-conditional metrics (`trajectory_turn_ade`,
+        `trajectory_turn_recall`, `trajectory_false_turn_rate`) have a
+        per-batch denominator that can be zero (val batches are
+        drive-contiguous), so they are not returned: when
+        `weighted_metrics_out` is given they go there as `(sum, count)`, for
+        the caller to log weighted by `count`."""
+        xy_err = (plan[..., :2] - target[..., :2]).norm(dim=-1)  # (b, t, p)
+        heading_err = torch.rad2deg(
+            torch.atan2(
+                (plan[..., 2] - target[..., 2]).sin(),
+                (plan[..., 2] - target[..., 2]).cos(),
+            ).abs()
+        )
+        final_pred = torch.rad2deg(plan[..., -1, 2])  # (b, t)
+        final_gt = torch.rad2deg(target[..., -1, 2])
+        gt_turn = final_gt.abs() > self._TURN_MIN_DEG
+        gt_straight = final_gt.abs() < self._STRAIGHT_MAX_DEG
+        pred_turn = final_pred.abs() > self._TURN_MIN_DEG
+        turn_hit = pred_turn & (final_pred.sign() == final_gt.sign())
+        ade = xy_err.mean(dim=-1)  # (b, t)
+
+        if weighted_metrics_out is not None:
+            for name, value, mask in (
+                ("trajectory_turn_ade", ade, gt_turn),
+                ("trajectory_turn_recall", turn_hit.float(), gt_turn),
+                ("trajectory_false_turn_rate", pred_turn.float(), gt_straight),
+            ):
+                weighted_metrics_out[name] = ((value * mask).sum(), mask.sum())
+
+        correct = codes == target_codes
+        metrics = {
+            "trajectory_ade": ade.mean(),
+            "trajectory_fde": xy_err[..., -1].mean(),
+            "trajectory_heading_err_deg": heading_err.mean(),
+            "trajectory_ade_last": ade[:, -1].mean(),
+            "trajectory_fde_last": xy_err[:, -1, -1].mean(),
+            "trajectory_turn_share_pred": pred_turn.float().mean(),
+            "trajectory_turn_share_gt": gt_turn.float().mean(),
+            "trajectory_code_acc_joint_last": correct[:, -1].all(dim=-1).float().mean(),
+            "trajectory_masked_frac": self
+            .trajectory_code_mask[0][target_codes[..., 0]]
+            .float()
+            .mean(),
+        }
+        for q in range(codes.shape[-1]):
+            metrics[f"trajectory_code_acc_{q}_last"] = correct[:, -1, q].float().mean()
+        return metrics
 
     @staticmethod
     def _gather_offset(offsets: Tensor, codes: Tensor) -> Tensor:
@@ -1099,12 +1378,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
         return losses
 
-    def _compute_metrics(  # noqa: PLR0914
+    def _compute_metrics(  # noqa: C901, PLR0914, PLR0915
         self,
         batch: Any,
         *,
         token_norms: dict[str, Tensor] | None = None,
         counterfactual_inputs: dict[str, Tensor] | None = None,
+        weighted_metrics_out: dict[str, tuple[Tensor, Tensor]] | None = None,
     ) -> TensorDict:
         turn_signal_chunk: dict[str, Tensor] = {}
         trajectory_target_out: dict[str, Tensor] = {}
@@ -1181,6 +1461,19 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                     None if mode_logits is None else mode_logits[:, -1].detach(),
                 )
 
+        trajectory_vqbet_metrics: dict[str, Tensor] = {}
+        if self.trajectory_code_head is not None:
+            vqbet_losses, trajectory_vqbet_metrics, plan = (
+                self._trajectory_vqbet_losses(
+                    features,
+                    trajectory_target_out["trajectory_target"],
+                    weighted_metrics_out,
+                )
+            )
+            losses |= vqbet_losses
+            if counterfactual_inputs is not None:
+                counterfactual_inputs["plan"] = plan[:, -1]
+
         turn_signal_logits: Tensor | None = None
         turn_signal_target: Tensor | None = None
         if self.turn_signal_head is not None:
@@ -1206,6 +1499,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             trajectory_target=trajectory_target,
             best_index_out=best_index_out,
         )
+        metrics |= trajectory_vqbet_metrics
 
         # trajectory-mode classifier: cross-entropy against the winner-takes-all
         # oracle's best_index (computed above, inside _readout_metrics, from the
@@ -1390,12 +1684,20 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         )
         # Optional profiling: set environment variable `TORCH_PROFILER` to enable.
         # If `TORCH_PROFILER_DIR` is set, a chrome trace will be written there.
+        # count-weighted metrics: val only, since logging them needs the counts
+        # on the host (one sync per batch) -- see _trajectory_vqbet_metrics
+        weighted_metrics: dict[str, tuple[Tensor, Tensor]] | None = (
+            {} if prefix == "val" else None
+        )
         with maybe_profile(f"{prefix}_step"):
             metrics = self._compute_metrics(
                 batch,
                 token_norms=token_norms,
                 counterfactual_inputs=counterfactual_inputs,
+                weighted_metrics_out=weighted_metrics,
             )
+        if weighted_metrics:
+            self._log_weighted_metrics(weighted_metrics, prefix)
         if counterfactual_inputs and self._probe_batch(
             cast("int", batch_idx), counterfactual_inputs["speed"].shape[0]
         ):
@@ -1427,6 +1729,21 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
 
         return {"loss": metrics["loss", "total"]}
+
+    def _log_weighted_metrics(
+        self, weighted: Mapping[str, tuple[Tensor, Tensor]], prefix: str
+    ) -> None:
+        """Log `{name: (sum, count)}` as `sum / count` weighted by `count`, so the
+        epoch value is the pooled per-frame mean; a zero count is skipped."""
+        counts = torch.stack([count for _, count in weighted.values()]).tolist()
+        for (name, (total, _)), count in zip(weighted.items(), counts, strict=True):
+            if count:
+                self.log(
+                    f"{prefix}/policy/metric/{name}",
+                    total / count,
+                    batch_size=int(count),
+                    sync_dist=True,
+                )
 
     def _probe_batch(self, batch_idx: int, batch_size: int) -> bool:
         """Whether val batch `batch_idx` is one of the ~`counterfactual_val_frames
@@ -1731,6 +2048,35 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 mode_logits = self._predict_mode(features)  # (b, q)
                 result["trajectory"]["mode_logits"] = mode_logits
                 result["trajectory"]["predicted_index"] = mode_logits.argmax(dim=-1)
+
+        if self.trajectory_code_head is not None:
+            trajectory_target = trajectory_target_out["trajectory_target"][:, -1]
+            code_logits, offsets = self._trajectory_vqbet_heads(features)
+            codes = self._trajectory_argmax_codes(code_logits)  # (b, g)
+            plan = self._decode_trajectory(codes, offsets)  # (b, p, 3)
+            trajectory_loss_module = self.losses["trajectory_offset"]
+            _, _, per_candidate_loss = winner_takes_all_pose_l1(
+                plan.unsqueeze(1),
+                trajectory_target.float(),
+                xy_weight=getattr(trajectory_loss_module, "xy_weight", 1.0),
+                heading_weight=getattr(trajectory_loss_module, "heading_weight", 0.1),
+            )
+            # the trajectory_head layout with a single hypothesis, so consumers
+            # of `prediction`/`best_prediction` work unchanged
+            result["trajectory"] = TensorDict(
+                {
+                    "prediction": plan.unsqueeze(1),
+                    "best_prediction": plan,
+                    "best_index": torch.zeros_like(codes[:, 0]),
+                    "per_candidate_loss": per_candidate_loss,
+                    "ground_truth": trajectory_target,
+                    "codes": codes,
+                    "level0_probs": code_logits[:, 0]
+                    .masked_fill(self.trajectory_code_mask[0], -math.inf)
+                    .softmax(dim=-1),
+                },
+                batch_size=[plan.shape[0]],
+            )
 
         return TensorDict(result).auto_batch_size_(2)
 
