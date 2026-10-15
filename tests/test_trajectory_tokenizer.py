@@ -171,3 +171,24 @@ def test_input_transform_matches_config_pipeline() -> None:
 
     total, _ = tokenizer._step(batch)  # noqa: SLF001
     assert torch.isfinite(total)
+
+
+@pytest.mark.parametrize("k", range(1, NUM_QUANTIZERS + 1))
+def test_prefix_decode_masks_later_levels(k: int) -> None:
+    """Setting levels k.. to -1 decodes the sum of the first k levels' codebook
+    vectors (docs/trajectory_tokenizer_codebook_plan.md §3.4)."""
+    tokenizer = _make_tokenizer("absolute")
+    tokenizer.train()
+    tokenizer._step({"context": {"trajectory_target": _random_poses(128)}})  # noqa: SLF001
+    tokenizer.eval()
+
+    codes = tokenizer(_random_poses(32))
+    masked = codes.clone()
+    masked[..., k:] = -1
+    z_q = tokenizer.quantizer.lookup(masked)
+
+    reference = torch.stack([
+        tokenizer.quantizer.codebook(level)[codes[:, level]] for level in range(k)
+    ]).sum(dim=0)
+    torch.testing.assert_close(z_q, reference)
+    torch.testing.assert_close(tokenizer.decode(z_q), tokenizer.decode(reference))
