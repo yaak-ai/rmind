@@ -1,0 +1,28 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/trajectory_tokenizer/raw
+  - /datamodule: yaak/trajectory_train
+  - /trainer: default
+  - /trainer/callbacks: action_tokenizer
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+# matches patch_policy (dinov3.yaml): poses every episode_step=10 frames
+# (~1/3 s at 30 fps), trajectory_horizon=5 future poses (~1.67 s)
+trajectory_horizon: 5
+trajectory_step: 10
+trajectory_stride: 10
+trajectory_clip: "${eval:'${trajectory_horizon} + 1'}"
+trajectory_clip_period: "${eval:'${trajectory_step} * ${trajectory_clip}'}i"
+
+# absolute | delta -- see TrajectoryTokenizer's docstring
+trajectory_representation: absolute
+
+trajectory_dim: "${eval:'3 * ${trajectory_horizon}'}"
+trajectory_hidden_dim: 128
+trajectory_latent_dim: 384
+
+codebook_size: 16
+num_quantizers: 4
