@@ -25,6 +25,21 @@ input_transform:
       episode_length: 1
       num_poses: ${trajectory_horizon}
 
+    # train-only yaw rotation of the target, the label half of patch_policy's
+    # YawShiftCrop (same sampler, margin and pixel realisation), so the
+    # tokenizer sees the rotated targets the policy trains on. Without it the
+    # tokenizer breaks on ANY rotation: pose 0's x is identically 0 in the
+    # dead-reckoned target, so its std is ~0 (docs/trajectory_vqbet_head_plan.md
+    # step 0). probability 0 = off, bit-for-bit (no RNG consumed).
+    - _target_: rmind.components.augment.YawRotateTrajectory
+      trajectory_target: [context, trajectory_target]
+      fx: ${trajectory_yaw_fx}
+      margin_px: ${trajectory_yaw_margin_px}
+      walk_frames: ${trajectory_yaw_walk_frames}
+      probability: ${trajectory_yaw_probability}
+      init_max_deg: ${trajectory_yaw_init_max_deg}
+      step_std_deg: ${trajectory_yaw_step_std_deg}
+
 trajectory: [context, trajectory_target]
 num_poses: ${trajectory_horizon}
 representation: ${trajectory_representation}

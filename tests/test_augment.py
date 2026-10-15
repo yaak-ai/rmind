@@ -10,6 +10,7 @@ from torchvision.transforms.v2 import CenterCrop, Resize
 from rmind.components.augment import (
     ClipPhotometric,
     FixedFrameMask,
+    YawRotateTrajectory,
     YawShiftCrop,
     rotate_ego_frame,
 )
@@ -225,3 +226,59 @@ def test_frame_mask_hides_hood_and_arcs_at_any_shift(psi_deg: float) -> None:
     assert torch.equal(out[..., ~keep], torch.zeros_like(out[..., ~keep]))
     assert (out[..., keep] > 0.49).all()  # noqa: PLR2004
     assert 0.2 < (~keep).float().mean() < 0.35  # noqa: PLR2004
+
+
+def _rotator(*, probability: float = 0.5, walk_frames: int = 32) -> YawRotateTrajectory:
+    return YawRotateTrajectory(
+        fx=FX, margin_px=32, walk_frames=walk_frames, probability=probability
+    )
+
+
+def test_rotate_trajectory_eval_and_zero_probability_are_identity() -> None:
+    batch = _batch()
+
+    assert _rotator(probability=1.0).eval()(batch) is batch
+    torch.manual_seed(0)
+    state = torch.get_rng_state()
+    assert _rotator(probability=0.0).train()(batch) is batch
+    assert torch.equal(torch.get_rng_state(), state)  # no RNG consumed
+
+
+def test_rotate_trajectory_labels_match_yaw_shift_crop() -> None:
+    batch = _batch()
+    psi = torch.full((4, 6), math.radians(2.0))
+    psi[0] = 0.0  # unperturbed clips keep their labels
+    rotator = _rotator(probability=1.0).train()
+    rotator.sample_psi = lambda *_a, **_k: psi  # ty:ignore[invalid-assignment]
+
+    out = rotator(batch)
+
+    expected = _module().rotate_labels(batch, psi)
+    assert torch.equal(
+        out["context"]["trajectory_target"], expected["context"]["trajectory_target"]
+    )
+    assert out["context"]["waypoints"] is batch["context"]["waypoints"]
+
+
+def test_rotate_trajectory_psi_is_realised_bounded_and_spread() -> None:
+    """t = 1 draws a random frame of a walk_frames-long walk, so psi spreads
+    past init_max_deg up to the crop margin, in whole-pixel steps."""
+    rotator = _rotator(probability=1.0)
+    torch.manual_seed(0)
+
+    psi = rotator.sample_psi(8192, 1, device=torch.device("cpu"))
+
+    assert psi.shape == (8192, 1)
+    assert psi.abs().max() <= 32 / FX + 1e-6
+    assert_close(psi * FX, (psi * FX).round())
+    assert (psi.abs() > math.radians(4.0)).float().mean() > 0.05  # noqa: PLR2004
+
+
+def test_rotate_trajectory_window_is_a_smooth_walk() -> None:
+    rotator = _rotator(probability=1.0, walk_frames=32)
+    torch.manual_seed(0)
+
+    psi = rotator.sample_psi(1024, 8, device=torch.device("cpu"))
+
+    assert psi.shape == (1024, 8)
+    assert psi.diff(dim=1).abs().max() < math.radians(0.5) * 6

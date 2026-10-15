@@ -6,6 +6,7 @@ import torch
 from torch import Tensor
 from torch.nn import GELU, Identity, Sequential
 
+from rmind.components.augment import YawRotateTrajectory
 from rmind.components.nn import Linear, Remapper, TrajectoryTarget
 from rmind.components.vq import ResidualVQ
 from rmind.models.trajectory_tokenizer import TrajectoryTokenizer
@@ -192,3 +193,23 @@ def test_prefix_decode_masks_later_levels(k: int) -> None:
     ]).sum(dim=0)
     torch.testing.assert_close(z_q, reference)
     torch.testing.assert_close(tokenizer.decode(z_q), tokenizer.decode(reference))
+
+
+def test_yaw_rotation_gives_lateral_first_pose_variance() -> None:
+    """Dead-reckoned targets have x == 0 at pose 0 (std 0 -> clamped to 1e-6),
+    so an unaugmented tokenizer blows up on rotated targets. Training through
+    `YawRotateTrajectory` gives that feature real variance."""
+    poses = _random_poses(512)
+    poses[:, 0, 0] = 0.0
+    batch = {"context": {"trajectory_target": poses[:, None]}}
+    rotator = YawRotateTrajectory(fx=389.4, margin_px=32, walk_frames=32)
+
+    plain = _make_tokenizer("absolute", input_transform=Identity()).train()
+    plain._step({"context": {"trajectory_target": poses}})  # noqa: SLF001
+    assert plain._norm_stats[1][0] <= 1e-6  # noqa: PLR2004, SLF001
+
+    augmented = _make_tokenizer("absolute", input_transform=rotator).train()
+    torch.manual_seed(0)
+    total, _ = augmented._step(batch)  # noqa: SLF001
+    assert torch.isfinite(total)
+    assert augmented._norm_stats[1][0] > 0.01  # noqa: PLR2004, SLF001

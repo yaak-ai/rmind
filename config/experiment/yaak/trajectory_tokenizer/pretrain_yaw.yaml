@@ -1,0 +1,11 @@
+# @package _global_
+
+# pretrain.yaml with patch_policy's yaw augmentation applied to the target
+# (YawRotateTrajectory, same distribution as the r1a_yaw arm's YawShiftCrop:
+# p = 0.5). The tokenizer the VQ-BeT trajectory head freezes must encode the
+# rotated targets that head trains on (docs/trajectory_vqbet_head_plan.md).
+defaults:
+  - /experiment/yaak/trajectory_tokenizer/pretrain
+  - _self_
+
+trajectory_yaw_probability: 0.5

@@ -1,7 +1,12 @@
 """Train-time augmentations for `PatchPolicy` against trajectory-head lateral
 drift (`/nasa/alex/docs/traj_drift_rmind_experiments_plan.md`, task R1).
 
-`YawShiftCrop` and `ClipPhotometric` are identity in eval mode, so val and
+`YawRotateTrajectory` is the label-only half of `YawShiftCrop`, for models
+that see the trajectory target but no image (the trajectory tokenizer), so
+they train on the same rotated targets the policy does.
+
+`YawShiftCrop`, `YawRotateTrajectory` and `ClipPhotometric` are identity in
+eval mode, so val and
 the export graph (which swaps the image `ModuleDict` entry for
 `Normalize`/`Identity`) never see them. `FixedFrameMask` is applied in train
 and eval alike and is part of the export graph.
@@ -54,6 +59,40 @@ def rotate_ego_frame(xy: Tensor, psi: Tensor) -> Tensor:
     cos, sin = psi.cos()[..., None], psi.sin()[..., None]
     x, y = xy[..., 0], xy[..., 1]
     return torch.stack([x * cos - y * sin, x * sin + y * cos], dim=-1)
+
+
+def sample_yaw_walk(  # noqa: PLR0913
+    b: int,
+    t: int,
+    *,
+    init_max_deg: float,
+    step_std_deg: float,
+    probability: float,
+    max_rad: float,
+    device: torch.device,
+) -> Tensor:
+    """`(b, t)` radians: per clip, with probability `probability`, a smooth
+    random walk (`psi_0 ~ U(-init_max_deg, init_max_deg)`, increments
+    `N(0, step_std_deg)` per frame, clipped to `max_rad`); zero otherwise."""
+    init = math.radians(init_max_deg)
+    psi0 = torch.empty(b, 1, device=device).uniform_(-init, init)
+    steps = torch.randn(b, t - 1, device=device) * math.radians(step_std_deg)
+    psi = torch.cat([psi0, psi0 + steps.cumsum(dim=1)], dim=1)
+    psi = psi.clamp(-max_rad, max_rad)
+    selected = torch.rand(b, 1, device=device) < probability
+    return psi * selected
+
+
+def rotate_trajectory(target: Tensor, psi: Tensor) -> Tensor:
+    """`(*b, P, 3)` ego-frame `(x, y, theta)` poses re-expressed in a frame
+    yawed by `psi` `(*b,)` radians: `(x, y)` via `rotate_ego_frame`, theta
+    minus psi (re-wrapped). Poses with `psi == 0` are returned bit-for-bit
+    (the theta re-wrap is not exact at zero)."""
+    xy = rotate_ego_frame(target[..., :2], psi)
+    theta = target[..., 2] - psi[..., None]
+    theta = torch.atan2(theta.sin(), theta.cos())
+    rotated = torch.cat([xy, theta[..., None]], dim=-1)
+    return torch.where(psi.ne(0)[..., None, None], rotated, target)
 
 
 @final
@@ -117,13 +156,15 @@ class YawShiftCrop(Module):
         self, b: int, t: int, *, max_rad: float, device: torch.device
     ) -> Tensor:
         """`(b, t)` radians, zero for clips not selected."""
-        init = math.radians(self.init_max_deg)
-        psi0 = torch.empty(b, 1, device=device).uniform_(-init, init)
-        steps = torch.randn(b, t - 1, device=device) * math.radians(self.step_std_deg)
-        psi = torch.cat([psi0, psi0 + steps.cumsum(dim=1)], dim=1)
-        psi = psi.clamp(-max_rad, max_rad)
-        selected = torch.rand(b, 1, device=device) < self.probability
-        return psi * selected
+        return sample_yaw_walk(
+            b,
+            t,
+            init_max_deg=self.init_max_deg,
+            step_std_deg=self.step_std_deg,
+            probability=self.probability,
+            max_rad=max_rad,
+            device=device,
+        )
 
     def crop(self, image: Tensor, shift: Tensor) -> Tensor:
         """`image` `(b, t, h, w, c)`, `shift` `(b, t)` integer pixels."""
@@ -167,12 +208,8 @@ class YawShiftCrop(Module):
 
         target = _get(output, self._trajectory_target)
         if target is not None:
-            xy = rotate_ego_frame(target[..., :2], psi)
-            theta = target[..., 2] - psi[..., None]
-            theta = torch.atan2(theta.sin(), theta.cos())
-            rotated = torch.cat([xy, theta[..., None]], dim=-1)
             output = _assoc(
-                output, self._trajectory_target, torch.where(perturbed, rotated, target)
+                output, self._trajectory_target, rotate_trajectory(target, psi)
             )
 
         waypoints = _get(output, self._waypoints)
@@ -183,6 +220,76 @@ class YawShiftCrop(Module):
             )
 
         return output
+
+
+@final
+class YawRotateTrajectory(Module):
+    """The label half of `YawShiftCrop`: rotate `trajectory_target` `(b, t, P,
+    3)` by a yaw drawn from the SAME distribution, with no image to crop.
+
+    `YawShiftCrop` draws one walk per clip over the policy's `t` frames; a
+    model that sees shorter clips (the trajectory tokenizer has `t = 1`)
+    would otherwise only ever see the walk's first frame, i.e. `U(-init,
+    init)`. So the walk is drawn over `walk_frames` (the policy's episode
+    length) and a random window of `t` frames of it is used. `fx` and
+    `margin_px` are `YawShiftCrop`'s `fx` and `(frame_width - crop_width) //
+    2`: psi is clipped to that margin and realised to whole pixels exactly
+    as `YawShiftCrop.forward` does, so the label distribution matches.
+    Identity in eval and at `probability = 0`.
+    """
+
+    @validate_call
+    def __init__(  # noqa: PLR0913
+        self,
+        *,
+        fx: float,
+        margin_px: int,
+        walk_frames: int,
+        trajectory_target: tuple[str, ...] = ("context", "trajectory_target"),
+        probability: float = 0.5,
+        init_max_deg: float = 4.0,
+        step_std_deg: float = 0.5,
+    ) -> None:
+        super().__init__()
+
+        self.fx = fx
+        self.margin_px = margin_px
+        self.walk_frames = walk_frames
+        self._trajectory_target = trajectory_target
+        self.probability = probability
+        self.init_max_deg = init_max_deg
+        self.step_std_deg = step_std_deg
+
+    def sample_psi(self, b: int, t: int, *, device: torch.device) -> Tensor:
+        """`(b, t)` realised radians, zero for clips not selected."""
+        length = max(t, self.walk_frames)
+        walk = sample_yaw_walk(
+            b,
+            length,
+            init_max_deg=self.init_max_deg,
+            step_std_deg=self.step_std_deg,
+            probability=self.probability,
+            max_rad=self.margin_px / self.fx,
+            device=device,
+        )
+        start = torch.randint(0, length - t + 1, (b, 1), device=device)
+        psi = walk.gather(1, start + torch.arange(t, device=device))
+        shift = (psi * self.fx).round().clamp(-self.margin_px, self.margin_px)
+        return shift / self.fx
+
+    @override
+    def forward(self, input: PyTree) -> PyTree:
+        # probability 0 returns before touching the RNG, so a config carrying
+        # this module switched off trains exactly as one without it
+        if not self.training or not self.probability:
+            return input
+
+        target = _get(input, self._trajectory_target)
+        if target is None:
+            return input
+        b, t = target.shape[:2]
+        psi = self.sample_psi(b, t, device=target.device)
+        return _assoc(input, self._trajectory_target, rotate_trajectory(target, psi))
 
 
 @final

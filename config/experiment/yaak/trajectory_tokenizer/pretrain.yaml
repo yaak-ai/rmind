@@ -24,6 +24,16 @@ trajectory_dim: "${eval:'3 * ${trajectory_horizon}'}"
 trajectory_hidden_dim: 128
 trajectory_latent_dim: 384
 
+# YawRotateTrajectory (model raw.yaml); off here, see pretrain_yaw.yaml. The
+# other values mirror patch_policy's r1a_yaw arm: fx and the 576 -> 512 crop
+# margin ((576 - 512) / 2 px), and its 32-frame causal episode for the walk.
+trajectory_yaw_probability: 0.0
+trajectory_yaw_fx: 389.4
+trajectory_yaw_margin_px: 32
+trajectory_yaw_walk_frames: 32
+trajectory_yaw_init_max_deg: 4.0
+trajectory_yaw_step_std_deg: 0.5
+
 codebook_size: 16
 num_quantizers: 4
 
