@@ -50,6 +50,11 @@ rmind-predict = "rmind.scripts.predict:main"
 rmind-train = "rmind.scripts.train:main"
 
 [project.optional-dependencies]
+eval = [
+  "matplotlib>=3.10.3",
+  "rerun-sdk==0.33.1",
+  "wandb>=0.27.2",
+]
 export = [
   "onnx>=1.22.0",
   "onnxruntime>=1.27.0",
@@ -135,6 +140,7 @@ pytorch-lightning = [
 allow-direct-references = true
 
 [tool.ruff]
+extend-exclude = ["src/rmind/components/fm_action_head.py"]
 preview = true
 fix = true
 unsafe-fixes = true

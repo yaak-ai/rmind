@@ -49,7 +49,7 @@ def main(cfg: DictConfig) -> None:
         paths = {
             Path(path).resolve()
             for path in check_output(
-                ["git", "ls-files"],  # ruff: ignore[start-process-with-partial-path]
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],  # ruff: ignore[start-process-with-partial-path]
                 universal_newlines=True,
             ).splitlines()
         }

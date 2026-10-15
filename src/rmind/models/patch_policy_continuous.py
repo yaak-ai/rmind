@@ -1,6 +1,6 @@
 import operator
 from collections.abc import Mapping
-from typing import Annotated, Any, final, override
+from typing import Annotated, Any, Literal, final, override
 
 import pytorch_lightning as pl
 import torch
@@ -18,6 +18,7 @@ from torch.utils._pytree import (  # ruff: ignore[import-private-name]
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
+from rmind.components.fm_action_head import ActionHead
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
 from rmind.models.control_transformer import PredictionConfig
@@ -54,7 +55,7 @@ def _pre_merge_trunk[T](encoder: "HydraConfig[T] | T") -> "HydraConfig[T] | T":
 
 @final
 class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
-    """Patch-policy trunk with one continuous Gaussian head per actuation.
+    """Patch-policy trunk with continuous Gaussian heads or a joint flow head.
 
     The trunk is `patch_policy.PatchPolicy`'s, unchanged in shape: frozen ViT
     patch features `(P, D)` - concatenated along the patch axis across `cameras`,
@@ -106,7 +107,15 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
     uses, the first `near_horizon` steps separately (what is executed before
     re-planning). With the default `H == 1` nothing - heads, loss, metrics,
     checkpoints - differs from the single-step model.
+
+    Supplying `fm_head` replaces the Gaussian heads and NLL with rectified-flow
+    matching over the joint flattened action chunk. Training uses train-only
+    action standardization; predictions are converted back to raw command units.
+    Serving uses explicit Gaussian start noise and fixed-step Euler integration.
     """
+
+    action_mean: Tensor
+    action_std: Tensor
 
     @validate_call
     def __init__(  # ruff: ignore[too-many-arguments]
@@ -118,8 +127,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         speed_tokenizer: HydraConfig[Module] | InstanceOf[Module],
         speed_embedding: HydraConfig[Module] | InstanceOf[Module],
         encoder: HydraConfig[Module] | InstanceOf[Module],
-        heads: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
-        losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict],
+        heads: HydraConfig[ModuleDict] | InstanceOf[ModuleDict] | None,
+        losses: HydraConfig[ModuleDict] | InstanceOf[ModuleDict] | None,
         targets: Mapping[str, Mapping[str, Path]],
         norm: HydraConfig[Module] | InstanceOf[Module] | None = None,
         cameras: tuple[str, ...] = ("cam_left_backward",),
@@ -135,6 +144,12 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         ],
         action_horizon: Annotated[int, Field(ge=1)] = 1,
         near_horizon: Annotated[int, Field(ge=1)] = 3,
+        fm_head: HydraConfig[ActionHead] | InstanceOf[ActionHead] | None = None,
+        fm_inference_steps: Annotated[int, Field(ge=1)] = 4,
+        fm_x0: Literal["sample", "zero"] = "sample",
+        action_mean: tuple[float, ...] | None = None,
+        action_std: tuple[float, ...] | None = None,
+        fm_action_weights: tuple[float, ...] | None = None,
     ) -> None:
         super().__init__()
 
@@ -154,8 +169,18 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
             hparams, "speed_embedding", speed_embedding
         )
         self.encoder = init_hydra_param(hparams, "encoder", _pre_merge_trunk(encoder))
-        self.heads = init_hydra_param(hparams, "heads", heads)
-        self.losses = init_hydra_param(hparams, "losses", losses)
+        self.heads = (
+            init_hydra_param(hparams, "heads", heads) if heads is not None else None
+        )
+        self.losses = (
+            init_hydra_param(hparams, "losses", losses) if losses is not None else None
+        )
+        if fm_head is None and (heads is None or losses is None):
+            raise ValueError(
+                "Gaussian heads and losses are required without a flow head"
+            )
+        hparams.setdefault("heads", None)
+        hparams.setdefault("losses", None)
         self.norm = (
             init_hydra_param(hparams, "norm", norm) if norm is not None else None
         )
@@ -175,6 +200,61 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         self.observations: Mapping[str, Path] = observations or {}
         self.action_horizon: int = action_horizon
         self.near_horizon: int = min(near_horizon, action_horizon)
+        self.fm_head = (
+            init_hydra_param(hparams, "fm_head", fm_head)
+            if fm_head is not None
+            else None
+        )
+        self.fm_inference_steps = fm_inference_steps
+        self.fm_x0 = fm_x0
+        self.action_names = tuple(
+            (modality, name) for modality, names in targets.items() for name in names
+        )
+        if self.fm_head is not None:
+            action_count = len(self.action_names)
+            mean = torch.tensor(
+                action_mean if action_mean is not None else [0.0] * action_count
+            )
+            std = torch.tensor(
+                action_std if action_std is not None else [1.0] * action_count
+            )
+            if mean.shape != (action_count,) or std.shape != (action_count,):
+                raise ValueError("action statistics must match the target count")
+            if (
+                not mean.isfinite().all()
+                or not std.isfinite().all()
+                or not (std > 0).all()
+            ):
+                raise ValueError(
+                    "action statistics must be finite with positive standard deviations"
+                )
+            if (
+                self.fm_head.kind != "fm"
+                or self.fm_head.D != action_horizon * action_count
+            ):
+                raise ValueError(
+                    "flow head output must match horizon times target count"
+                )
+            self.register_buffer("action_mean", mean)
+            self.register_buffer("action_std", std)
+            self.fm_action_weights = tuple(fm_action_weights or [1.0] * action_count)
+            weights = torch.tensor(self.fm_action_weights)
+            if (
+                weights.shape != (action_count,)
+                or not torch.isfinite(weights).all()
+                or (weights <= 0).any()
+            ):
+                raise ValueError(
+                    "FM weights must be finite positive values, one per action"
+                )
+            self.fm_head.fm_steps = fm_inference_steps
+            hparams.update(
+                fm_inference_steps=fm_inference_steps,
+                fm_x0=fm_x0,
+                action_mean=mean.tolist(),
+                action_std=std.tolist(),
+                fm_action_weights=self.fm_action_weights,
+            )
 
         # an observation with no embedding would be read and silently discarded,
         # and an embedding with no observation never called; both are config bugs
@@ -343,6 +423,9 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         A chunk head's flat `2 * H` output is split to `(..., H, 2)`, so the loss
         and the mean readout index the last axis exactly as for one step.
         """
+        if self.heads is None:
+            message = "Gaussian heads are not configured"
+            raise ValueError(message)
         logits = self.heads(features)
         if self.action_horizon == 1:
             return logits
@@ -351,6 +434,14 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
 
     def _predict(self, features: Tensor) -> TensorDict:
         """Gaussian mean per actuation: `features`' leading axes, `+ (H,)` if chunked."""
+        if self.fm_head is not None:
+            chunk = self.fm_sample(features) * self.action_std + self.action_mean
+            return TensorDict({
+                key: chunk[..., index]
+                if self.action_horizon > 1
+                else chunk[..., 0, index]
+                for index, key in enumerate(self.action_names)
+            })
         logits = self._heads(features)
 
         return TensorDict(logits).apply(operator.itemgetter((..., 0)))  # ty:ignore[invalid-return-type]
@@ -363,6 +454,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         return TensorDict({"policy": self._predict(features)})
 
     def _step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
+        if self.fm_head is not None:
+            return self._fm_step(batch, prefix)
         inputs = self.input_transform(batch)
         features = self._features(batch)
         logits = self._heads(features)
@@ -379,6 +472,9 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         chunk_metrics = (
             self._chunk_metrics(logits, targets) if self.action_horizon > 1 else None
         )
+        if self.losses is None:
+            message = "Gaussian losses are not configured"
+            raise ValueError(message)
         losses = self.losses(logits, targets)
 
         metrics = TensorDict({"loss": losses})
@@ -398,6 +494,96 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         )
 
         return {"loss": total}
+
+    def fm_sample(
+        self, features: Tensor, x0: Tensor | None = None, steps: int | None = None
+    ) -> Tensor:
+        """Integrate the vendored velocity field in standardized chunk space."""
+        if self.fm_head is None:
+            raise ValueError("flow head is not configured")
+        count = self.fm_inference_steps if steps is None else steps
+        if count < 1:
+            raise ValueError("Euler steps must be positive")
+        flattened = features.reshape(-1, features.shape[-1]).float()
+        width = self.action_horizon * len(self.action_names)
+        if x0 is None:
+            state = flattened.new_zeros(flattened.shape[0], width)
+            if self.fm_x0 == "sample":
+                state = torch.randn_like(state)
+        else:
+            if x0.shape != (*features.shape[:-1], width):
+                raise ValueError(
+                    "initial noise shape must match features and chunk width"
+                )
+            state = (
+                x0
+                .to(device=features.device, dtype=torch.float32)
+                .reshape(-1, width)
+                .clone()
+            )
+        for index in range(count):
+            time = flattened.new_full((flattened.shape[0],), index / count)
+            state = state + self.fm_head.velocity(flattened, state, time) / count
+        return state.reshape(
+            *features.shape[:-1], self.action_horizon, len(self.action_names)
+        )
+
+    def _fm_step(self, batch: Any, prefix: str) -> STEP_OUTPUT:
+        if self.fm_head is None:
+            message = "flow head is not configured"
+            raise ValueError(message)
+        inputs = self.input_transform(batch)
+        features = self._features(batch)
+        target = torch.stack(
+            [
+                self._get(inputs, self.targets[modality][name])
+                for modality, name in self.action_names
+            ],
+            dim=-1,
+        ).float()
+        expected = (*features.shape[:-1], self.action_horizon, len(self.action_names))
+        if target.shape != expected:
+            raise ValueError(f"action chunk shape {target.shape} != {expected}")
+        normalized = (target - self.action_mean) / self.action_std
+        flattened = features.reshape(-1, features.shape[-1]).float()
+        loss_mask = None
+        if any(weight != 1.0 for weight in self.fm_action_weights):
+            loss_mask = (
+                normalized
+                .new_tensor(self.fm_action_weights)
+                .repeat(self.action_horizon)
+                .expand(flattened.shape[0], -1)
+            )
+        loss, _ = self.fm_head.loss(
+            flattened,
+            None,
+            normalized.flatten(-2).reshape(flattened.shape[0], -1),
+            mask=loss_mask,
+        )
+        metrics = {
+            f"{prefix}/loss/fm_mse": loss.detach(),
+            f"{prefix}/loss/total": loss.detach(),
+        }
+        if prefix == "val":
+            with torch.no_grad():
+                prediction = (
+                    self.fm_sample(features) * self.action_std + self.action_mean
+                )
+                errors = (prediction - target).abs()
+                metrics.update({
+                    "val/metric/chunk_l1": errors.mean(),
+                    "val/metric/chunk_l1_last": errors[:, -1].mean(),
+                    "val/metric/chunk_l1_near": errors[
+                        :, :, : self.near_horizon
+                    ].mean(),
+                    "val/metric/chunk_l1_near_last": errors[
+                        :, -1, : self.near_horizon
+                    ].mean(),
+                })
+                for index, (_, name) in enumerate(self.action_names):
+                    metrics[f"val/metric/chunk_l1/{name}"] = errors[..., index].mean()
+        self.log_dict(metrics, sync_dist=True, batch_size=features.shape[0])
+        return {"loss": loss}
 
     def _chunk_metrics(
         self,

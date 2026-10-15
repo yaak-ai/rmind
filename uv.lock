@@ -2279,6 +2279,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+eval = [
+    { name = "matplotlib" },
+    { name = "rerun-sdk" },
+    { name = "wandb" },
+]
 export = [
     { name = "onnx" },
     { name = "onnxruntime" },
@@ -2339,6 +2344,7 @@ requires-dist = [
     { name = "kornia", specifier = ">=0.8.2" },
     { name = "m2df", marker = "extra == 'yaak'", git = "ssh://git@github.com/yaak-ai/ydks.git?subdirectory=crates%2Fm2df" },
     { name = "makefun", specifier = ">=1.16.0" },
+    { name = "matplotlib", marker = "extra == 'eval'", specifier = ">=3.10.3" },
     { name = "matplotlib", marker = "extra == 'train'", specifier = ">=3.10.3" },
     { name = "more-itertools", specifier = ">=10.4.0" },
     { name = "numpy", specifier = ">2.3.0" },
@@ -2355,6 +2361,7 @@ requires-dist = [
     { name = "rbyte", extras = ["geo", "jpeg", "mcap", "video"], specifier = "==0.40.0" },
     { name = "rbyte", extras = ["jpeg", "yaak"], marker = "extra == 'yaak'" },
     { name = "rbyte", extras = ["video", "visualize"], marker = "extra == 'predict'" },
+    { name = "rerun-sdk", marker = "extra == 'eval'", specifier = "==0.33.1" },
     { name = "structlog", specifier = ">=26.1.0" },
     { name = "tensordict", specifier = ">=0.13.0" },
     { name = "tensorrt-cu12", marker = "sys_platform == 'linux' and extra == 'predict'", specifier = "==11.1.0.106" },
@@ -2369,12 +2376,13 @@ requires-dist = [
     { name = "torchvision", marker = "sys_platform != 'linux'", specifier = ">=0.27.1", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchvision", marker = "sys_platform == 'linux'", specifier = ">=0.27.1", index = "https://download.pytorch.org/whl/cu130" },
     { name = "vector-quantize-pytorch", specifier = ">=1.29.1" },
+    { name = "wandb", marker = "extra == 'eval'", specifier = ">=0.27.2" },
     { name = "wandb", marker = "extra == 'export'", specifier = ">=0.27.2" },
     { name = "wandb", marker = "extra == 'predict'", specifier = ">=0.27.2" },
     { name = "wandb", marker = "extra == 'train'", specifier = ">=0.27.2" },
     { name = "ymmv", marker = "extra == 'yaak'", git = "ssh://git@github.com/yaak-ai/ydks.git?subdirectory=crates%2Fymmv" },
 ]
-provides-extras = ["export", "predict", "train", "yaak"]
+provides-extras = ["eval", "export", "predict", "train", "yaak"]
 
 [package.metadata.requires-dev]
 check = [
