@@ -173,6 +173,11 @@ num_trajectory_hypotheses: ${num_trajectory_hypotheses}
 # num_trajectory_hypotheses.
 mode_head: null
 
+# action-conditioned world-model auxiliary loss (docs/wm_aux_loss_plan.md):
+# null = off; an experiment that wants it instantiates
+# rmind.components.world_model.WorldModelPredictor and sets model.wm_weight.
+wm_head: null
+
 losses:
   _target_: rmind.components.containers.ModuleDict
   modules:
@@ -192,6 +197,10 @@ losses:
     # only fires when mode_head is not None
     mode:
       _target_: torch.nn.CrossEntropyLoss
+    # safe to always define -- the validation gate in PatchPolicy.__init__
+    # only fires when wm_head is not None
+    wm:
+      _target_: torch.nn.MSELoss
 
 teacher_force_offset: ${teacher_force_offset}
 

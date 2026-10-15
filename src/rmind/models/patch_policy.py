@@ -10,6 +10,7 @@ from pydantic import Field, InstanceOf, validate_call
 from pytorch_lightning.utilities.types import STEP_OUTPUT, OptimizerLRScheduler
 from tensordict import TensorDict
 from torch import Tensor, nn
+from torch._functorch import config as functorch_config  # noqa: PLC2701
 from torch.nn import Module
 from torch.nn import functional as F
 from torch.optim import Optimizer
@@ -17,6 +18,7 @@ from torch.utils._pytree import MappingKey  # noqa: PLC2701
 from torch.utils.checkpoint import checkpoint
 
 from rmind.components import optimizers
+from rmind.components.augment import YawShiftCrop
 from rmind.components.containers import ModuleDict
 from rmind.components.counterfactual import expected_plan, goal_sensitivity, speed_echo
 from rmind.components.loss import (
@@ -24,6 +26,7 @@ from rmind.components.loss import (
     winner_takes_all_pose_l1_components,
 )
 from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
+from rmind.components.world_model import pool_patch_grid
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
 from rmind.models.control_transformer import PredictionConfig
@@ -272,11 +275,38 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     (plan-end forward distance at frames stopped < `_STOPPED_MAX_SPEED_KMH`,
     speed input forced to 10 km/h vs the real one). Logging only; training is
     unaffected.
+
+    `wm_head` (opt-in, `None` = off, docs/wm_aux_loss_plan.md): an
+    action-conditioned latent world-model predictor
+    (`rmind.components.world_model.WorldModelPredictor`, after AD-E2E-JEPA
+    arXiv:2609.34085) trained on top of the trunk's own PATCH-position
+    outputs. For anchor `t` and each horizon `k` in `wm_horizons` it maps the
+    pooled trunk patch tokens of frame `t` (block-causal: they have seen
+    frames `<= t` only) plus the dead-reckoned relative poses `P_1..P_k`
+    (`trajectory_target[:, t, :k]`) to the pooled, parameter-free
+    LayerNorm'd frozen `image_encoder` patches of frame `t+k` (`_wm_target`;
+    in-window targets only, no extra ViT pass, no gradient). Its gradient
+    shapes the trunk (unless `wm_detach_trunk`), never the frozen encoders.
+    The poses enter the predictor only, never the trunk, so `forward`,
+    `predict_step`, the decoder step and export are untouched. `wm_weight`
+    (default `0.0`) follows the `trajectory_weight` convention: the head is
+    built and exercised every step but adds exactly zero loss/gradient.
+    `wm_min_heading_change_frac > 0` masks clips whose `context.heading`
+    changes between fewer than that fraction of consecutive moving frames --
+    the 1 Hz-heading drives, whose staircase heading corrupts the
+    dead-reckoned poses fed to the predictor. `wm_grad_cos_every > 0` logs
+    `train/policy/metric/wm_grad_cos` (gradient cosine, policy losses vs the
+    unweighted WM loss, on the shared trunk) every that many train steps.
     """
 
     _TURN_SIGNAL_CLASSES: ClassVar[int] = 3  # OFF, LEFT, RIGHT
     _GOAL_PROBE_MIN_SPEED_KMH: ClassVar[float] = 5.0
     _STOPPED_MAX_SPEED_KMH: ClassVar[float] = 1.0
+    # heading-validity mask (`wm_min_heading_change_frac`): only frame pairs
+    # where the ego moves count, and a clip with fewer such pairs is kept --
+    # its poses are ~0 whatever the heading says
+    _WM_HEADING_MIN_SPEED_KMH: ClassVar[float] = 5.0
+    _WM_HEADING_MIN_MOVING_PAIRS: ClassVar[int] = 4
 
     @validate_call
     def __init__(  # noqa: C901, PLR0912, PLR0913, PLR0915
@@ -321,6 +351,15 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         mode_weight: float = 1.0,
         action_weight: float = 1.0,
         counterfactual_val_frames: Annotated[int, Field(ge=0)] = 0,
+        # opt-in world-model auxiliary loss (see class docstring); None
+        # (default) reproduces the old behaviour bit-for-bit
+        wm_head: HydraConfig[Module] | InstanceOf[Module] | None = None,
+        wm_weight: float = 0.0,
+        wm_horizons: tuple[Annotated[int, Field(ge=1)], ...] = (1, 2, 4),
+        wm_detach_trunk: bool = False,
+        wm_grad_cos_every: Annotated[int, Field(ge=0)] = 0,
+        wm_min_heading_change_frac: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        wm_heading: Path = ("context", "heading"),
         sample_codes: bool = True,
         teacher_force_offset: bool = True,
         offset_scale: float | None = None,
@@ -492,6 +531,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             "mode_weight": mode_weight,
             "action_weight": action_weight,
             "counterfactual_val_frames": counterfactual_val_frames,
+            "wm_weight": wm_weight,
+            "wm_horizons": wm_horizons,
+            "wm_detach_trunk": wm_detach_trunk,
+            "wm_grad_cos_every": wm_grad_cos_every,
+            "wm_min_heading_change_frac": wm_min_heading_change_frac,
+            "wm_heading": wm_heading,
             "sample_codes": sample_codes,
             "teacher_force_offset": teacher_force_offset,
             "neighbor_smoothing_channels": neighbor_smoothing_channels,
@@ -533,6 +578,27 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             self.fusion_patch_gain = None
             self.fusion_goal_gain = None
 
+        # NOTE: built LAST, after every pre-existing module, so their
+        # initialization RNG draws are the same with and without it (the
+        # wm_weight=0 parity gate)
+        self.wm_head: Module | None = init_hydra_param(hparams, "wm_head", wm_head)
+        self.wm_weight = wm_weight
+        self.wm_horizons = wm_horizons
+        self.wm_detach_trunk = wm_detach_trunk
+        self.wm_grad_cos_every = wm_grad_cos_every
+        self.wm_min_heading_change_frac = wm_min_heading_change_frac
+        self.wm_heading: Path = wm_heading
+        if self.wm_head is not None:
+            self._validate_wm_head()
+            if wm_grad_cos_every:
+                # `_wm_grad_cos` backpropagates twice through the same graph
+                # (`retain_graph=True`); a compiled backward with donated
+                # buffers (CausalFrameTransformer's flex attention) refuses
+                # that. Process-global, read when that kernel is compiled
+                # (first forward, after this). Measured at b=24/T=32/260
+                # tokens on an RTX 5090: no step-time or peak-memory change.
+                functorch_config.donated_buffer = False  # ty:ignore[invalid-assignment]
+
         if optimizer is not None:
             hparams["optimizer"] = optimizer.model_dump()
         self.optimizer: HydraConfig[Optimizer] | None = optimizer
@@ -544,6 +610,41 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         self.prediction_config = prediction_config
 
         self.save_hyperparameters(hparams)
+
+    def _validate_wm_head(self) -> None:
+        """Constructor-time checks for `wm_head` (see class docstring).
+
+        Raises:
+            ValueError: on a missing `losses["wm"]`, a horizon the head cannot
+                embed, a camera-count mismatch, or a `YawShiftCrop` in
+                `input_transform` (its per-frame synthetic yaw would need a
+                `+psi_{t+k}` heading correction this loss does not apply).
+        """
+        if "wm" not in self.losses:
+            msg = (
+                "wm_head requires losses['wm'] (e.g. torch.nn.MSELoss) to supervise it"
+            )
+            raise ValueError(msg)
+        max_horizon = getattr(self.wm_head, "max_horizon", None)
+        if max_horizon is not None and max(self.wm_horizons) > max_horizon:
+            msg = (
+                f"wm_horizons {self.wm_horizons} exceed the wm_head's "
+                f"max_horizon={max_horizon}"
+            )
+            raise ValueError(msg)
+        num_cameras = getattr(self.wm_head, "num_cameras", None)
+        if num_cameras is not None and num_cameras != len(self.cameras):
+            msg = (
+                f"wm_head built for {num_cameras} cameras, model has "
+                f"{len(self.cameras)} ({self.cameras})"
+            )
+            raise ValueError(msg)
+        if any(isinstance(m, YawShiftCrop) for m in self.input_transform.modules()):
+            msg = (
+                "wm_head with YawShiftCrop is not supported: frames t and t+k "
+                "carry different synthetic yaw (docs/wm_aux_loss_plan.md 4.3)"
+            )
+            raise ValueError(msg)
 
     @override
     def train(self, mode: bool = True) -> "PatchPolicy":
@@ -796,6 +897,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         turn_signal_chunk: dict[str, Tensor] | None = None,
         trajectory_target_out: dict[str, Tensor] | None = None,
         counterfactual_inputs: dict[str, Tensor] | None = None,
+        wm_inputs: dict[str, Tensor] | None = None,
     ) -> tuple[Tensor, Tensor | None]:
         """Per-frame readout features `(b, t, d)` and the action chunks `(b, t, h, a)`.
 
@@ -821,6 +923,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         `counterfactual_inputs`, same convention: filled with the frozen image
         features (`"patches"`) and the conditioning inputs (`"speed"`,
         `"waypoints"`) that `_counterfactual_plan` reruns from.
+
+        `wm_inputs`, same convention: when given and `wm_head` is configured,
+        filled with what the world-model loss needs -- the frozen image
+        features (`"patches"`), the full trunk output (`"embedding"`, `(b, t,
+        k, d)`), the relative poses (`"relative_poses"`, the trajectory
+        target) and, with `wm_min_heading_change_frac > 0`, the per-clip
+        validity mask (`"valid"`, `(b,)` bool).
 
         The trunk itself runs in `_readout`, which validates the frame geometry.
         """
@@ -856,10 +965,28 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         tokens = self._frame_tokens(
             images, speed, waypoints, token_norms=token_norms, patches=patches
         )
-        return self._readout(tokens), chunk
+        if wm_inputs is None or self.wm_head is None:
+            return self._readout(tokens), chunk
 
-    def _readout(self, tokens: Tensor) -> Tensor:
+        wm_inputs["patches"] = patches
+        wm_inputs["relative_poses"] = cast(
+            "Tensor", self._get(inputs, self.trajectory_target)
+        )
+        if self.wm_min_heading_change_frac > 0.0:
+            wm_inputs["valid"] = self._wm_heading_valid(
+                cast("Tensor", self._get(inputs, self.wm_heading)),
+                cast("Tensor", speed),
+            )
+        return self._readout(tokens, embedding_out=wm_inputs), chunk
+
+    def _readout(
+        self, tokens: Tensor, *, embedding_out: dict[str, Tensor] | None = None
+    ) -> Tensor:
         """Trunk over frame token blocks `(b, t, k, d)` -> readout features `(b, t, d)`.
+
+        `embedding_out`, if given, is filled under `"embedding"` with the full
+        trunk output `(b, t, k, d)` (every position, before `norm`) -- the
+        world-model loss reads the patch positions from it.
 
         Raises:
             ValueError: if the encoder was built for a different
@@ -883,13 +1010,18 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
             raise ValueError(msg)
 
-        embedding = self.encoder(
-            rearrange(tokens, "b t k d -> b (t k) d"), num_frames=num_frames
+        embedding = rearrange(
+            self.encoder(
+                rearrange(tokens, "b t k d -> b (t k) d"), num_frames=num_frames
+            ),
+            "b (t k) d -> b t k d",
+            t=num_frames,
         )
-        features = rearrange(embedding, "b (t k) d -> b t k d", t=num_frames)[
-            :, :, -1
-        ]  # last token per frame: the learned readout token when
+        if embedding_out is not None:
+            embedding_out["embedding"] = embedding
+        # last token per frame: the learned readout token when
         # `use_readout_token`, else the last patch token
+        features = embedding[:, :, -1]
 
         if self.norm is not None:
             features = self.norm(features)
@@ -1099,21 +1231,32 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             )
         return losses
 
-    def _compute_metrics(  # noqa: PLR0914
+    def _compute_metrics(  # noqa: C901, PLR0914, PLR0915
         self,
         batch: Any,
         *,
         token_norms: dict[str, Tensor] | None = None,
         counterfactual_inputs: dict[str, Tensor] | None = None,
+        wm_out: dict[str, Tensor] | None = None,
     ) -> TensorDict:
+        """`wm_out`, if given and `wm_head` is set, is filled under `"loss"`
+        with the UNWEIGHTED world-model loss (still in the graph) -- what
+        `_wm_grad_cos` differentiates.
+
+        Raises:
+            RuntimeError: if no decoded chunk exists to supervise the offset
+                (unreachable, see below).
+        """
         turn_signal_chunk: dict[str, Tensor] = {}
         trajectory_target_out: dict[str, Tensor] = {}
+        wm_inputs: dict[str, Tensor] = {}
         features, chunk = self._features(
             batch,
             token_norms=token_norms,
             turn_signal_chunk=turn_signal_chunk,
             trajectory_target_out=trajectory_target_out,
             counterfactual_inputs=counterfactual_inputs,
+            wm_inputs=wm_inputs,
         )  # (b, t, d), (b, t, h, a)
         tokenizer = self.tokenizer
 
@@ -1222,7 +1365,166 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 (mode_logits.argmax(dim=-1) == best_index).float().mean()
             )
 
+        # LAST, after every policy head (incl. the sampled-code decode above),
+        # so the forward RNG stream is unchanged by the WM (parity gate)
+        if self.wm_head is not None:
+            wm_loss, wm_metrics = self._wm_losses(wm_inputs)
+            losses["wm"] = self.wm_weight * wm_loss
+            metrics |= wm_metrics
+            if wm_out is not None:
+                wm_out["loss"] = wm_loss
+
         return TensorDict({"policy": {"loss": losses, "metric": metrics}})
+
+    # world-model auxiliary loss (docs/wm_aux_loss_plan.md)
+
+    def _wm_heading_valid(self, heading: Tensor, speed: Tensor) -> Tensor:
+        """Per-clip `(b,)` mask: False for clips whose heading is a staircase.
+
+        The 1 Hz-heading drives repeat the same heading value over ~3
+        consecutive clip frames, so it changes between only ~1/3 of
+        consecutive frame pairs where a 10 Hz EKF heading changes between
+        ~all of them. Counted over pairs where the ego moves
+        (`_WM_HEADING_MIN_SPEED_KMH`); clips with fewer than
+        `_WM_HEADING_MIN_MOVING_PAIRS` such pairs are kept.
+        """
+        moving = speed.reshape(heading.shape) >= self._WM_HEADING_MIN_SPEED_KMH
+        pairs = moving[:, 1:] & moving[:, :-1]
+        changed = (heading[:, 1:] != heading[:, :-1]) & pairs
+        num_pairs = pairs.sum(dim=1)
+        frac = changed.sum(dim=1) / num_pairs.clamp(min=1)
+        return (num_pairs < self._WM_HEADING_MIN_MOVING_PAIRS) | (
+            frac >= self.wm_min_heading_change_frac
+        )
+
+    def _wm_num_cameras(self) -> int:
+        return getattr(self.wm_head, "num_cameras", len(self.cameras))
+
+    def _wm_pool(self, x: Tensor) -> Tensor:
+        return pool_patch_grid(
+            x,
+            num_cameras=self._wm_num_cameras(),
+            pool_size=getattr(self.wm_head, "pool_size", 4),
+        )
+
+    @torch.no_grad()
+    def _wm_target(self, patches: Tensor) -> Tensor:
+        """Frozen patches `(b, t, cam, p, d_img)` -> pooled, parameter-free
+        LayerNorm'd target `(b, t, S, d_img)`. The ONE space the WM loss and
+        every WM baseline metric are measured in."""
+        pooled = self._wm_pool(rearrange(patches, "b t cam p d -> b t (cam p) d"))
+        return F.layer_norm(pooled.float(), pooled.shape[-1:])
+
+    def _wm_loss(self, pred: Tensor, target: Tensor, valid: Tensor | None) -> Tensor:
+        """`losses["wm"]` over the valid rows of `(b, n, S, d)` tensors.
+
+        Invalid clips get `target := pred.detach()` (zero loss and gradient
+        for any loss with `L(x, x) = 0`) and the mean is rescaled to the valid
+        count -- no data-dependent shapes, no host sync.
+        """
+        if valid is None:
+            return self.losses["wm"](pred, target)
+        keep = valid.reshape(-1, *(1,) * (pred.ndim - 1))
+        loss = self.losses["wm"](pred, torch.where(keep, target, pred.detach()))
+        return loss * valid.numel() / valid.sum().clamp(min=1)
+
+    def _wm_predict(self, tokens: Tensor, relative_poses: Tensor, k: int) -> Tensor:
+        """Predict the frame-`t+k` target for every anchor `t in [0, T-k)`:
+        `tokens` `(b, T, S, d)`, `relative_poses` `(b, T, P, 3)` -> `(b, T-k,
+        S, d_img)`."""
+        assert self.wm_head is not None  # noqa: S101
+        b, num_frames = tokens.shape[:2]
+        anchors = num_frames - k
+        pred = self.wm_head(
+            tokens[:, :anchors].flatten(0, 1),
+            relative_poses[:, :anchors, :k].flatten(0, 1),
+        )
+        return pred.unflatten(0, (b, anchors))
+
+    def _wm_losses(
+        self, wm_inputs: Mapping[str, Tensor]
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        """Unweighted WM loss (mean over horizons of the per-horizon mean, so
+        longer horizons with fewer anchors are not under-weighted) and the
+        `wm_*_k{k}` diagnostics (see docs/wm_aux_loss_plan.md 4.4).
+
+        Raises:
+            ValueError: if a horizon has no in-window target (`k >= T`) or no
+                pose (`k > trajectory_target`'s `num_poses`).
+        """
+        patches = wm_inputs["patches"]  # (b, T, cam, p, d_img)
+        relative_poses = wm_inputs["relative_poses"]  # (b, T, P, 3)
+        valid = wm_inputs.get("valid")  # (b,) or None
+        num_frames, num_patches = patches.shape[1], patches.shape[2] * patches.shape[3]
+
+        tokens = self._wm_pool(wm_inputs["embedding"][:, :, 1 : 1 + num_patches])
+        if self.wm_detach_trunk:
+            tokens = tokens.detach()
+        target = self._wm_target(patches)  # (b, T, S, d_img), no grad
+
+        per_horizon: list[Tensor] = []
+        metrics: dict[str, Tensor] = {}
+        for k in self.wm_horizons:
+            if k >= num_frames or k > relative_poses.shape[2]:
+                msg = (
+                    f"wm horizon {k} needs k < episode_length ({num_frames}) and "
+                    f"k <= num_poses ({relative_poses.shape[2]})"
+                )
+                raise ValueError(msg)
+            future = target[:, k:]
+            loss = self._wm_loss(
+                self._wm_predict(tokens, relative_poses, k), future, valid
+            )
+            per_horizon.append(loss)
+
+            with torch.no_grad():
+                metrics[f"wm_loss_k{k}"] = loss.detach()
+                metrics[f"wm_persistence_k{k}"] = self._wm_loss(
+                    target[:, :-k], future, valid
+                )
+                if not self.training:
+                    # fixed roll-by-1 permutation across the batch, so the
+                    # gaps are deterministic; ~0 = that input is ignored
+                    shifted_poses = self._wm_predict(
+                        tokens, relative_poses.roll(1, dims=0), k
+                    )
+                    shifted_tokens = self._wm_predict(
+                        tokens.roll(1, dims=0), relative_poses, k
+                    )
+                    metrics[f"wm_action_gap_k{k}"] = (
+                        self._wm_loss(shifted_poses, future, valid) - loss
+                    )
+                    metrics[f"wm_visual_gap_k{k}"] = (
+                        self._wm_loss(shifted_tokens, future, valid) - loss
+                    )
+        if valid is not None:
+            metrics["wm_valid_frac"] = valid.float().mean()
+
+        return torch.stack(per_horizon).mean(), metrics
+
+    def _wm_grad_cos(self, policy_loss: Tensor, wm_loss: Tensor) -> Tensor:
+        """Cosine between the gradients of `policy_loss` and the unweighted
+        `wm_loss` w.r.t. the shared trunk (`encoder` + `patch_projection`).
+        `torch.autograd.grad` with `retain_graph=True`: no `.grad` is touched,
+        so the optimizer step is unchanged."""
+        params = [
+            p
+            for p in chain(
+                self.encoder.parameters(), self.patch_projection.parameters()
+            )
+            if p.requires_grad
+        ]
+
+        def flat_grad(loss: Tensor) -> Tensor:
+            grads = torch.autograd.grad(
+                loss, params, retain_graph=True, allow_unused=True
+            )
+            return torch.cat([
+                (torch.zeros_like(p) if g is None else g).flatten().float()
+                for g, p in zip(grads, params, strict=True)
+            ])
+
+        return F.cosine_similarity(flat_grad(policy_loss), flat_grad(wm_loss), dim=0)
 
     def _readout_metrics(  # noqa: C901, PLR0913
         self,
@@ -1390,16 +1692,30 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         )
         # Optional profiling: set environment variable `TORCH_PROFILER` to enable.
         # If `TORCH_PROFILER_DIR` is set, a chrome trace will be written there.
+        wm_out: dict[str, Tensor] = {}
         with maybe_profile(f"{prefix}_step"):
             metrics = self._compute_metrics(
                 batch,
                 token_norms=token_norms,
                 counterfactual_inputs=counterfactual_inputs,
+                wm_out=wm_out,
             )
         if counterfactual_inputs and self._probe_batch(
             cast("int", batch_idx), counterfactual_inputs["speed"].shape[0]
         ):
             self._log_counterfactual_metrics(counterfactual_inputs, prefix)
+
+        if (
+            prefix == "train"
+            and "loss" in wm_out
+            and self.wm_grad_cos_every
+            and self.global_step % self.wm_grad_cos_every == 0
+        ):
+            policy_losses = cast("dict[str, Tensor]", metrics["policy", "loss"])
+            metrics["policy", "metric", "wm_grad_cos"] = self._wm_grad_cos(
+                torch.stack([v for k, v in policy_losses.items() if k != "wm"]).sum(),
+                wm_out["loss"],
+            )
 
         losses = metrics.select(*((k, "loss") for k in metrics.keys()))  # noqa: SIM118
         metrics["loss", "total"] = losses.sum(reduce=True)

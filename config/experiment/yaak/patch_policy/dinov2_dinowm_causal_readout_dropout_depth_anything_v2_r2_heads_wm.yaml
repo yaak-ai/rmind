@@ -1,0 +1,69 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r2_heads
+  - _self_
+
+# Action-conditioned world-model auxiliary loss (docs/wm_aux_loss_plan.md,
+# after AD-E2E-JEPA arXiv:2609.34085). A small predictor maps the pooled trunk
+# patch tokens of frame t + the dead-reckoned relative poses P_1..P_k to the
+# pooled (16x16 -> 4x4), LayerNorm'd frozen DINO patches of frame t+k. The WM
+# is training-only: forward / predict_step / decoder step / export are
+# untouched.
+#
+# wm_weight=0.0 is the SAFE default (same gate as trajectory_weight): the
+# predictor is built and exercised every step, `wm_loss_k*` etc. are logged,
+# but the loss contributes exactly zero gradient. Arms (override on the CLI,
+# keep trajectory_weight at the base arm's value):
+#   wm_weight=0.0 | 0.1 | 0.5
+#   wm_weight=0.5 wm_detach_trunk=true   (probe-only: the predictor learns on
+#     the UNCHANGED trunk; says nothing about policy improvement)
+# Closed-loop (rsim) route completion before any weight > 0.5 or a longer run.
+wm_weight: 0.0
+wm_detach_trunk: false
+# in clip steps (episode_step 10 @ 30 fps -> ~0.33 / 0.67 / 1.33 s). Hard limit
+# k <= trajectory_horizon (the predictor needs poses up to t+k) and
+# k < episode_length (in-window targets only).
+wm_horizons: [1, 2, 4]
+wm_pool_size: 4
+wm_num_layers: 2
+
+model:
+  wm_head:
+    _target_: rmind.components.world_model.WorldModelPredictor
+    dim_model: ${policy_embedding_dim}
+    image_dim: ${image_embedding_dim}
+    num_cameras: ${oc.select:num_cameras,1}
+    pool_size: ${wm_pool_size}
+    max_horizon: ${trajectory_horizon}
+    num_layers: ${wm_num_layers}
+    num_heads: ${num_heads}
+  wm_weight: ${wm_weight}
+  wm_horizons: ${wm_horizons}
+  wm_detach_trunk: ${wm_detach_trunk}
+  # gradient cosine (policy losses vs unweighted WM loss) on the shared trunk,
+  # every N train steps -- two extra autograd.grad passes when it fires
+  wm_grad_cos_every: 500
+  # 57/654 train drives (Niro101/102/104, 2022-11..2023-01) have 1 Hz
+  # headings_denoised: their heading changes between only ~1/3 of consecutive
+  # (0.33 s) frames, which makes staircase dead-reckoned poses -- the
+  # predictor's INPUT. Clips below this fraction (over moving frames) are
+  # dropped from the WM loss; `wm_valid_frac` logs how many survive.
+  wm_min_heading_change_frac: 0.6
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm_causal,
+      neighbor_smoothing,
+      readout_registers,
+      retile,
+      trajectory_head,
+      mode_head,
+      turn_signal_head,
+      dropout,
+      depth_anything_v2,
+      head_ln_gelu,
+      world_model,
+    ]

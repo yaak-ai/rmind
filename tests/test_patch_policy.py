@@ -15,6 +15,7 @@ from torch import Tensor
 from torch.nn import Identity, L1Loss, Linear, Module, Sequential
 from torchvision.ops import MLP
 
+from rmind.components.augment import YawShiftCrop
 from rmind.components.base import Modality
 from rmind.components.containers import ModuleDict
 from rmind.components.loss import FocalLoss, WinnerTakesAllPoseLoss
@@ -27,6 +28,7 @@ from rmind.components.transformer.causal_frame import (
     frame_rope_cos_sin,
 )
 from rmind.components.vq import ResidualVQ
+from rmind.components.world_model import WorldModelPredictor, pool_patch_grid
 from rmind.models.action_tokenizer import ActionTokenizer
 from rmind.models.control_transformer import PredictionConfig
 from rmind.models.patch_policy import (
@@ -55,6 +57,10 @@ CODEBOOK_SIZE = 4
 SPEED_BINS = 8
 TRAJECTORY_HORIZON = 4
 NUM_TRAJECTORY_HYPOTHESES = 3
+# NUM_PATCHES = 4 is a 2x2 grid per camera; pool it to 1x1 so the WM pooling
+# actually averages
+WM_POOL_SIZE = 1
+WM_HORIZONS = (1, 2)  # k < EPISODE_LENGTH and k <= TRAJECTORY_HORIZON
 
 
 def _make_tokenizer() -> ActionTokenizer:
@@ -160,6 +166,14 @@ def _make_model(  # noqa: PLR0913
     nulls: bool = False,
     trunk_dropout: float = 0.1,
     counterfactual_val_frames: int = 0,
+    with_wm_head: bool = False,
+    # test-only nonzero default, like trajectory_weight above
+    wm_weight: float = 1.0,
+    wm_detach_trunk: bool = False,
+    wm_min_heading_change_frac: float = 0.0,
+    wm_max_horizon: int = TRAJECTORY_HORIZON,
+    wm_num_cameras: int | None = None,
+    input_transform: Module | None = None,
 ) -> PatchPolicy:
     tokens_per_frame = len(cameras) * NUM_PATCHES + 1
     if use_readout_token:
@@ -176,12 +190,14 @@ def _make_model(  # noqa: PLR0913
         default_loss_modules["trajectory"] = WinnerTakesAllPoseLoss()
     if with_mode_head:
         default_loss_modules["mode"] = torch.nn.CrossEntropyLoss()
+    if with_wm_head:
+        default_loss_modules["wm"] = torch.nn.MSELoss()
     return PatchPolicy(
         fusion_norm=fusion_norm,
         neighbor_smoothing_tau=neighbor_smoothing_tau,
         use_readout_token=use_readout_token,
         num_register_tokens=num_register_tokens,
-        input_transform=Identity(),
+        input_transform=input_transform if input_transform is not None else Identity(),
         # tests feed pre-extracted patch features (b, t, p, d) directly
         image_encoder=Identity(),
         goal_encoder=_GoalEncoderStub(),
@@ -220,6 +236,21 @@ def _make_model(  # noqa: PLR0913
         else None,
         mode_weight=mode_weight,
         counterfactual_val_frames=counterfactual_val_frames,
+        wm_head=WorldModelPredictor(
+            dim_model=POLICY_DIM,
+            image_dim=IMAGE_DIM,
+            num_cameras=wm_num_cameras or len(cameras),
+            pool_size=WM_POOL_SIZE,
+            max_horizon=wm_max_horizon,
+            num_layers=1,
+            num_heads=2,
+        )
+        if with_wm_head
+        else None,
+        wm_weight=wm_weight,
+        wm_horizons=WM_HORIZONS,
+        wm_detach_trunk=wm_detach_trunk,
+        wm_min_heading_change_frac=wm_min_heading_change_frac,
         losses=losses
         if losses is not None
         else ModuleDict(modules=default_loss_modules),
@@ -1716,3 +1747,361 @@ def test_counterfactual_probes_keep_the_batch_shape() -> None:
     probe_reruns = len(("left route", "right route", "speed probe"))
     assert len(shapes) == probe_reruns
     assert {shape[0] for shape in shapes} == {BATCH_SIZE}
+
+
+# --------------------------------------------------------------------------- #
+# world-model auxiliary loss (docs/wm_aux_loss_plan.md)
+# --------------------------------------------------------------------------- #
+
+
+def _wm_tokens_and_poses(
+    model: PatchPolicy, batch: dict
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Pooled trunk patch tokens, relative poses and target, as `_wm_losses`
+    builds them."""
+    wm_inputs: dict[str, Tensor] = {}
+    model._features(batch, wm_inputs=wm_inputs)  # noqa: SLF001
+    patches = wm_inputs["patches"]
+    num_patches = patches.shape[2] * patches.shape[3]
+    tokens = model._wm_pool(  # noqa: SLF001
+        wm_inputs["embedding"][:, :, 1 : 1 + num_patches]
+    )
+    return tokens, wm_inputs["relative_poses"], model._wm_target(patches)  # noqa: SLF001
+
+
+def _is_trained(module: Module) -> bool:
+    return any(
+        p.grad is not None and p.grad.abs().sum() > 0 for p in module.parameters()
+    )
+
+
+def test_wm_head_absent_by_default() -> None:
+    model = _make_model()
+    assert model.wm_head is None
+
+    metrics = model._compute_metrics(_make_batch())  # noqa: SLF001
+    assert "wm" not in cast("dict[str, Tensor]", metrics["policy", "loss"])
+    assert not any(
+        key.startswith("wm_")
+        for key in cast("dict[str, Tensor]", metrics["policy", "metric"]).keys()  # noqa: SIM118
+    )
+
+
+def test_wm_head_requires_a_wm_loss() -> None:
+    with pytest.raises(ValueError, match="wm_head"):
+        _make_model(
+            with_wm_head=True,
+            losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
+        )
+
+
+def test_wm_head_rejects_bad_geometry() -> None:
+    with pytest.raises(ValueError, match="max_horizon"):
+        _make_model(with_wm_head=True, wm_max_horizon=1)
+    with pytest.raises(ValueError, match="cameras"):
+        _make_model(with_wm_head=True, wm_num_cameras=3)
+    with pytest.raises(ValueError, match="YawShiftCrop"):
+        _make_model(
+            with_wm_head=True,
+            input_transform=Sequential(
+                YawShiftCrop(crop_width=8, fx=10.0, cameras=["cam_front_left"])
+            ),
+        )
+
+
+def test_wm_weight_zero_reproduces_baseline_bit_for_bit() -> None:
+    """`wm_weight=0.0` is the gate (docs/wm_aux_loss_plan.md 5): identical
+    initialization of every pre-existing parameter/buffer (wm_head is built
+    last), identical losses, metrics and gradients -- with `sample_codes=True`
+    and train-mode trunk dropout, so the forward RNG ordering (WM after every
+    policy head) is exercised too. No `_fill_deterministic`: the construction
+    order itself is under test."""
+    torch.manual_seed(0)
+    baseline = _make_model(sample_codes=True)
+    torch.manual_seed(0)
+    with_wm = _make_model(sample_codes=True, with_wm_head=True, wm_weight=0.0)
+
+    with_wm_state = with_wm.state_dict()
+    for key, value in baseline.state_dict().items():
+        torch.testing.assert_close(with_wm_state[key], value, rtol=0, atol=0)
+    assert {k for k in with_wm_state if k not in baseline.state_dict()} == {
+        k for k in with_wm_state if k.startswith("wm_head.")
+    }
+
+    baseline.train()
+    with_wm.train()
+    torch.manual_seed(1)
+    baseline_metrics = baseline._compute_metrics(_make_batch())  # noqa: SLF001
+    torch.manual_seed(1)
+    with_wm_metrics = with_wm._compute_metrics(  # noqa: SLF001
+        _make_batch(with_trajectory_target=True)
+    )
+
+    baseline_losses = cast("TensorDict", baseline_metrics["policy", "loss"])
+    with_wm_losses = cast("TensorDict", with_wm_metrics["policy", "loss"])
+    for key, value in baseline_losses.items():
+        torch.testing.assert_close(with_wm_losses[key], value, rtol=0, atol=0)
+    torch.testing.assert_close(
+        with_wm_losses["wm"], torch.zeros_like(with_wm_losses["wm"]), rtol=0, atol=0
+    )
+    baseline_metric_vals = cast(
+        "dict[str, Tensor]", baseline_metrics["policy", "metric"]
+    )
+    with_wm_metric_vals = cast("dict[str, Tensor]", with_wm_metrics["policy", "metric"])
+    for key, value in baseline_metric_vals.items():
+        torch.testing.assert_close(with_wm_metric_vals[key], value, rtol=0, atol=0)
+    # the WM itself still ran, unweighted diagnostics included
+    assert with_wm_metric_vals["wm_loss_k1"] > 0
+
+    baseline_losses.sum(reduce=True).backward()
+    with_wm_losses.sum(reduce=True).backward()
+    with_wm_params = dict(with_wm.named_parameters())
+    for name, p in baseline.named_parameters():
+        other = with_wm_params[name].grad
+        if p.grad is None:
+            assert other is None or not other.any(), name
+        else:
+            assert other is not None, name
+            torch.testing.assert_close(other, p.grad, rtol=0, atol=0)
+
+
+def test_wm_loss_trains_the_trunk_not_the_frozen_encoders() -> None:
+    model = _make_model(
+        with_wm_head=True, use_readout_token=True, num_register_tokens=1
+    )
+    batch = _make_batch(with_trajectory_target=True)
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    cast("Tensor", metrics["policy", "loss", "wm"]).backward()
+
+    assert model.wm_head is not None
+    assert _is_trained(model.wm_head)
+    assert _is_trained(model.encoder)
+    assert _is_trained(model.patch_projection)
+    assert model.readout_token is not None
+    assert model.readout_token.grad is not None
+    assert model.readout_token.grad.abs().sum() > 0
+    assert all(p.grad is None for p in model.goal_encoder.parameters())
+    assert all(p.grad is None for p in model.tokenizer.parameters())
+    # the WM loss alone reaches no policy head
+    assert not _is_trained(model.code_head)
+    assert not _is_trained(model.offset_head)
+
+    wm_inputs: dict[str, Tensor] = {}
+    model._features(batch, wm_inputs=wm_inputs)  # noqa: SLF001
+    target = model._wm_target(wm_inputs["patches"])  # noqa: SLF001
+    assert not target.requires_grad
+    assert target.grad_fn is None
+
+
+def test_wm_detach_trunk_only_trains_the_predictor() -> None:
+    model = _make_model(with_wm_head=True, wm_detach_trunk=True)
+    metrics = model._compute_metrics(  # noqa: SLF001
+        _make_batch(with_trajectory_target=True)
+    )
+    cast("Tensor", metrics["policy", "loss", "wm"]).backward()
+
+    assert model.wm_head is not None
+    assert _is_trained(model.wm_head)
+    for name, p in model.named_parameters():
+        if not name.startswith("wm_head."):
+            assert p.grad is None or not p.grad.any(), name
+
+
+def test_wm_grad_cos_leaves_grads_unchanged() -> None:
+    model = _make_model(with_wm_head=True, with_trajectory_head=True)
+    model.train()
+    wm_out: dict[str, Tensor] = {}
+    metrics = model._compute_metrics(  # noqa: SLF001
+        _make_batch(with_trajectory_target=True), wm_out=wm_out
+    )
+    losses = cast("TensorDict", metrics["policy", "loss"])
+    policy_loss = torch.stack([v for k, v in losses.items() if k != "wm"]).sum()
+
+    cos = model._wm_grad_cos(policy_loss, wm_out["loss"])  # noqa: SLF001
+    assert cos.isfinite()
+    assert -1.0 <= cos.item() <= 1.0
+    assert all(p.grad is None for p in model.parameters())
+
+    # the graph survives for the real backward
+    losses.sum(reduce=True).backward()
+    assert _is_trained(model.encoder)
+
+
+def test_wm_metrics() -> None:
+    model = _make_model(with_wm_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    metric = cast(
+        "dict[str, Tensor]",
+        model._compute_metrics(batch)["policy", "metric"],  # noqa: SLF001
+    )
+    for k in WM_HORIZONS:
+        for name in ("loss", "persistence", "action_gap", "visual_gap"):
+            assert metric[f"wm_{name}_k{k}"].isfinite(), (name, k)
+        assert metric[f"wm_persistence_k{k}"] > 0
+    # the loss is the per-horizon mean, equally weighted across horizons
+    losses = cast("dict[str, Tensor]", model._compute_metrics(batch)["policy", "loss"])  # noqa: SLF001
+    torch.testing.assert_close(
+        losses["wm"], torch.stack([metric[f"wm_loss_k{k}"] for k in WM_HORIZONS]).mean()
+    )
+
+    # the shuffle-gap metrics are val-only
+    model.train()
+    metric = cast(
+        "dict[str, Tensor]",
+        model._compute_metrics(batch)["policy", "metric"],  # noqa: SLF001
+    )
+    assert "wm_loss_k1" in metric
+    assert "wm_action_gap_k1" not in metric
+    assert "wm_visual_gap_k1" not in metric
+
+
+def test_wm_prediction_is_causally_valid() -> None:
+    """The predictor for anchor t sees the trunk at frame t only, which has
+    attended to frames <= t: perturbing the last frame must not move any
+    earlier anchor's prediction."""
+    model = _make_model(with_wm_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+    perturbed = _make_batch(with_trajectory_target=True)
+    perturbed["image"]["cam_front_left"][:, -1] += 1.0
+    perturbed["continuous"]["speed"][:, -1] = 100.0
+    perturbed["context"]["waypoints"][:, -1] += 1.0
+
+    tokens, poses, _ = _wm_tokens_and_poses(model, batch)
+    perturbed_tokens, _, _ = _wm_tokens_and_poses(model, perturbed)
+
+    # k = 1: anchors 0 .. T-2 all precede the perturbed frame
+    pred = model._wm_predict(tokens, poses, 1)  # noqa: SLF001
+    perturbed_pred = model._wm_predict(perturbed_tokens, poses, 1)  # noqa: SLF001
+    torch.testing.assert_close(pred, perturbed_pred)
+    assert not torch.allclose(tokens[:, -1], perturbed_tokens[:, -1])
+
+
+def test_pool_patch_grid_averages_per_camera_cells() -> None:
+    num_cameras, side, pool, dim = 2, 4, 2, 3
+    x = torch.randn(5, num_cameras * side * side, dim)
+
+    pooled = pool_patch_grid(x, num_cameras=num_cameras, pool_size=pool)
+
+    assert pooled.shape == (5, num_cameras * pool * pool, dim)
+    grid = x.reshape(5, num_cameras, side, side, dim)
+    for cam in range(num_cameras):
+        for i in range(pool):
+            for j in range(pool):
+                cell = grid[:, cam, 2 * i : 2 * i + 2, 2 * j : 2 * j + 2].mean(
+                    dim=(1, 2)
+                )
+                torch.testing.assert_close(
+                    pooled[:, cam * pool * pool + i * pool + j], cell
+                )
+
+    with pytest.raises(ValueError, match="square"):
+        pool_patch_grid(x[:, :-1], num_cameras=num_cameras, pool_size=pool)
+
+
+def test_wm_multi_camera_shapes() -> None:
+    cameras = ("cam_front_left", "cam_left_forward", "cam_right_forward")
+    model = _make_model(cameras=cameras, with_wm_head=True)
+    batch = _make_batch(cameras=cameras, with_trajectory_target=True)
+
+    tokens, poses, target = _wm_tokens_and_poses(model, batch)
+    num_cells = len(cameras) * WM_POOL_SIZE**2
+    assert tokens.shape == (BATCH_SIZE, EPISODE_LENGTH, num_cells, POLICY_DIM)
+    assert target.shape == (BATCH_SIZE, EPISODE_LENGTH, num_cells, IMAGE_DIM)
+    assert model._wm_predict(tokens, poses, 2).shape == (  # noqa: SLF001
+        BATCH_SIZE,
+        EPISODE_LENGTH - 2,
+        num_cells,
+        IMAGE_DIM,
+    )
+    # target cell c of camera i is the LayerNorm'd mean of camera i's patches
+    camera = batch["image"]["cam_right_forward"]
+    expected = torch.nn.functional.layer_norm(camera.mean(dim=2), (IMAGE_DIM,))
+    torch.testing.assert_close(target[:, :, 2], expected)
+
+    losses = cast("dict[str, Tensor]", model._compute_metrics(batch)["policy", "loss"])  # noqa: SLF001
+    assert losses["wm"].isfinite()
+
+
+def test_wm_heading_mask_drops_staircase_clips() -> None:
+    model = _make_model(with_wm_head=True, wm_min_heading_change_frac=0.6)
+    num_frames = 13
+    speed = torch.full((3, num_frames, 1), 50.0)
+    smooth = torch.linspace(0.0, 10.0, num_frames)
+    staircase = (
+        smooth
+        .reshape(-1, 1)
+        .repeat(1, 3)
+        .flatten()[:num_frames:3]
+        .repeat_interleave(3)[:num_frames]
+    )
+    heading = torch.stack([smooth, staircase, staircase])
+    speed[2] = 0.0  # stopped: poses ~0, kept whatever the heading says
+
+    valid = model._wm_heading_valid(heading, speed)  # noqa: SLF001
+    assert valid.tolist() == [True, False, True]
+
+
+def test_wm_heading_mask_excludes_invalid_clips_from_the_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch.manual_seed(0)
+    masked = _make_model(with_wm_head=True, wm_min_heading_change_frac=0.6)
+    batch = _make_batch(with_trajectory_target=True)
+    # clip 0 changes heading every frame, clip 1 is a staircase
+    batch["context"]["heading"] = torch.tensor([[0.0, 1.0, 2.0], [0.0, 0.0, 0.0]])
+    batch["continuous"]["speed"] = torch.full((BATCH_SIZE, EPISODE_LENGTH, 1), 50.0)
+    # below _WM_HEADING_MIN_MOVING_PAIRS everything is kept; lower it so this
+    # 3-frame clip is judged
+    monkeypatch.setattr(PatchPolicy, "_WM_HEADING_MIN_MOVING_PAIRS", 1)
+
+    metrics = masked._compute_metrics(batch)  # noqa: SLF001
+    torch.testing.assert_close(
+        metrics["policy", "metric", "wm_valid_frac"], torch.tensor(0.5)
+    )
+
+    # same loss as on clip 0 alone (eval mode: rows are independent)
+    clip0 = {
+        "image": {k: v[:1] for k, v in batch["image"].items()},
+        "continuous": {"speed": batch["continuous"]["speed"][:1]},
+        "context": {k: v[:1] for k, v in batch["context"].items()},
+        "joint_actions": batch["joint_actions"][:1],
+    }
+    clip0_metrics = masked._compute_metrics(clip0)  # noqa: SLF001
+    torch.testing.assert_close(
+        metrics["policy", "loss", "wm"], clip0_metrics["policy", "loss", "wm"]
+    )
+
+
+def test_wm_head_leaves_the_deploy_path_unchanged() -> None:
+    """forward/predict_step identical with and without wm_head (built last, so
+    the shared weights are identical), and a WM checkpoint's state dict loads
+    strictly into a model rebuilt from the same hparams, as load_for_export's
+    `load_from_checkpoint` does."""
+    torch.manual_seed(0)
+    baseline = _make_model()
+    torch.manual_seed(0)
+    with_wm = _make_model(with_wm_head=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    torch.testing.assert_close(
+        with_wm.forward(batch)["policy", "joint_actions"],
+        baseline.forward(batch)["policy", "joint_actions"],
+        rtol=0,
+        atol=0,
+    )
+    with_wm_pred = with_wm.predict_step(batch)
+    baseline_pred = baseline.predict_step(batch)
+    for key in baseline_pred.keys(include_nested=True, leaves_only=True):
+        torch.testing.assert_close(
+            with_wm_pred[key], baseline_pred[key], rtol=0, atol=0
+        )
+
+    reloaded = _make_model(with_wm_head=True)
+    reloaded.load_state_dict(with_wm.state_dict(), strict=True)
+    reloaded.sample_codes = False
+    torch.testing.assert_close(
+        reloaded.forward(batch)["policy", "joint_actions"],
+        with_wm.forward(batch)["policy", "joint_actions"],
+    )
