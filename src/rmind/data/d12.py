@@ -267,6 +267,7 @@ def row_table(
     reference: str,
     traction_source: str,
     max_skew_s: float,
+    include_fork_height: bool = False,
 ) -> pl.DataFrame:
     """One row per reference-camera frame: frame indices, signals, WORLD positions.
 
@@ -332,10 +333,69 @@ def row_table(
         table = table.join_asof(series, on="log_time", strategy="nearest")
 
     table = _world_positions(table, topics, job_dir)
+    if include_fork_height:
+        table = join_fork_height(table, read_fork_height(job_dir))
 
     return _drop_invalid(table, validity).rename({
         "frame_idx": f"{reference}/frame_idx"
     })
+
+
+def read_fork_height(job_dir: Path) -> pl.DataFrame | None:
+    """Read live height, falling back to a unique retrofit sidecar."""
+    from mcap.reader import make_reader
+    from rbyte.samples.mcap import McapReader, ProtobufDecoderFactory
+
+    path = job_dir / MCAP_FILE
+    with path.open("rb") as stream:
+        summary = make_reader(stream).get_summary()
+        if summary is None:
+            message = f"missing MCAP summary in {path}"
+            raise ValueError(message)
+        topics = {channel.topic for channel in summary.channels.values()}
+    topic = "fork/height"
+    if topic not in topics:
+        sidecars = sorted(job_dir.glob("height--*.mcap"))
+        if not sidecars:
+            return None
+        if len(sidecars) != 1:
+            raise ValueError(f"ambiguous height sidecars in {job_dir}: {sidecars}")
+        path = sidecars[0]
+        topic = "fork/height_retrofit"
+    reader = McapReader(
+        decoder_factories=[ProtobufDecoderFactory],
+        fields={
+            topic: {
+                "log_time": pl.Datetime("ns"),
+                "height_m": pl.Float32(),
+                "sigma_m": pl.Float32(),
+                "valid": pl.Boolean(),
+            }
+        },
+    )
+    return reader(path)[topic].sort("log_time")
+
+
+def join_fork_height(table: pl.DataFrame, height: pl.DataFrame | None) -> pl.DataFrame:
+    """Add [height/2.3, uncertainty/2.3, valid], using only recent past samples."""
+    if height is None or height.is_empty():
+        return table.with_columns(pl.lit([0.0, 0.0, 0.0]).alias("fork_height"))
+    joined = table.join_asof(
+        height, on="log_time", strategy="backward", tolerance="250ms"
+    )
+    valid = (
+        pl.col("valid").fill_null(False)
+        & pl.col("height_m").is_finite().fill_null(False)
+        & pl.col("sigma_m").is_finite().fill_null(False)
+        & (pl.col("sigma_m") >= 0).fill_null(False)
+    )
+    return joined.with_columns(
+        pl.concat_list(
+            pl.when(valid).then(pl.col("height_m") / 2.3).otherwise(0.0),
+            pl.when(valid).then(pl.col("sigma_m") / 2.3).otherwise(0.0),
+            valid.cast(pl.Float32),
+        ).alias("fork_height")
+    ).drop("height_m", "sigma_m", "valid")
 
 
 def _read_dropoff(job_dir: Path) -> pl.DataFrame:
@@ -457,6 +517,8 @@ def episodes(  # ruff: ignore[too-many-arguments]
     step: int,
     stride: int,
     horizon: int = 1,
+    action_step: int | None = None,
+    require_contiguous: bool = False,
 ) -> pl.DataFrame:
     """Sliding windows over a positioned row table, on the RAW frame grid.
 
@@ -479,19 +541,32 @@ def episodes(  # ruff: ignore[too-many-arguments]
         ValueError: if the job is too short for one episode.
     """
     clip = episode_length + horizon - 1
-    span = (clip - 1) * step + 1
+    if action_step is not None and action_step < 1:
+        raise ValueError("action_step must be positive")
+    span = (
+        (clip - 1) * step + 1
+        if action_step is None
+        else (episode_length - 1) * step + (horizon - 1) * action_step + 1
+    )
     if len(table) < span:
         msg = f"{len(table)} usable frames < one clip of {span} raw frames"
         raise ValueError(msg)
 
     starts = np.arange(0, len(table) - span + 1, stride)
+    if require_contiguous:
+        frame_indices = table[f"{cameras[0]}/frame_idx"].to_numpy()
+        starts = starts[
+            frame_indices[starts + span - 1] - frame_indices[starts] == span - 1
+        ]
+        if not len(starts):
+            raise ValueError("no contiguous action windows remain")
     input_id = table["input_id"][0]  # constant within a job
 
     history = [f"{c}/frame_idx" for c in cameras] + [
         name for name in SIGNALS if name not in ACTIONS or horizon == 1
     ]
     chunked = list(ACTIONS) if horizon > 1 else []
-    lists = [c for c in (*POSITIONS, GOAL) if c in table.columns]
+    lists = [c for c in (*POSITIONS, GOAL, "fork_height") if c in table.columns]
 
     def gather(column: str, n: int) -> np.ndarray:
         values = table[column]
@@ -508,8 +583,18 @@ def episodes(  # ruff: ignore[too-many-arguments]
         )
         columns[column] = pl.Series(column, array, pl.Array(dtype, episode_length))
     for column in chunked:
-        array = gather(column, clip).astype(np.float32)
-        columns[column] = pl.Series(column, array, pl.Array(pl.Float32(), clip))
+        if action_step is None:
+            array = gather(column, clip).astype(np.float32)
+        else:
+            indices = (
+                starts[:, None, None]
+                + step * np.arange(episode_length)[None, :, None]
+                + action_step * np.arange(horizon)[None, None, :]
+            )
+            array = table[column].to_numpy()[indices].astype(np.float32)
+        columns[column] = pl.Series(
+            column, array, pl.Array(pl.Float32(), array.shape[1:])
+        )
     for column in lists:
         array = gather(column, episode_length).astype(np.float32)
         columns[column] = pl.Series(
@@ -537,6 +622,7 @@ class D12RowTableBuilder:
         reference: str = "cam_fork",
         traction_source: str = "command",
         max_skew_s: float = 1.0,
+        include_fork_height: bool = False,
     ) -> None:
         if reference not in cameras:
             msg = f"reference {reference!r} not in cameras {cameras}"
@@ -549,6 +635,7 @@ class D12RowTableBuilder:
         self._reference = reference
         self._traction_source = traction_source
         self._max_skew_s = max_skew_s
+        self._include_fork_height = include_fork_height
 
     @validate_call
     def __call__(self, *, job_dir: Path) -> pl.DataFrame:
@@ -558,6 +645,7 @@ class D12RowTableBuilder:
             reference=self._reference,
             traction_source=self._traction_source,
             max_skew_s=self._max_skew_s,
+            include_fork_height=self._include_fork_height,
         ).with_columns(pl.lit(job_dir.name).alias("input_id"))
 
         logger.info(
@@ -630,12 +718,16 @@ class D12EpisodeWindower:
         step: int = 3,
         stride: int = 3,
         horizon: int = 1,
+        action_step: int | None = None,
+        require_contiguous: bool = False,
     ) -> None:
         self._cameras = cameras
         self._episode_length = episode_length
         self._step = step
         self._stride = stride
         self._horizon = horizon
+        self._action_step = action_step
+        self._require_contiguous = require_contiguous
 
     @validate_call
     def __call__(self, *, frames: InstanceOf[pl.DataFrame]) -> pl.DataFrame:
@@ -646,6 +738,8 @@ class D12EpisodeWindower:
             step=self._step,
             stride=self._stride,
             horizon=self._horizon,
+            action_step=self._action_step,
+            require_contiguous=self._require_contiguous,
         )
         logger.info("windowed d12 episodes", episodes=len(samples))
 

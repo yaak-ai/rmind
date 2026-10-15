@@ -1,0 +1,78 @@
+# @package _global_
+defaults:
+  - /experiment/palletjack/patch_policy/d12_gauss_chunk
+  - override /model: palletjack/patch_policy/flow_matching
+  - override /datamodule: palletjack/d12_fm
+  - override /trainer/callbacks: palletjack_flow_matching
+  - _self_
+
+cameras: [cam_fork, cam_left_forward, cam_right_forward]
+num_cameras: 3
+image_remap:
+  cam_fork: [data, cam_fork]
+  cam_left_forward: [data, cam_left_forward]
+  cam_right_forward: [data, cam_right_forward]
+
+include_fork_height: true
+action_step: 1
+action_horizon: 50
+near_horizon: 6
+require_contiguous: true
+observations:
+  fork_height: [continuous, fork_height]
+observation_embeddings:
+  fork_height:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: rmind.components.nn.Linear
+        in_features: 3
+        out_features: ${policy_embedding_dim}
+      - _target_: einops.layers.torch.Rearrange
+        pattern: "b t d -> b t 1 d"
+num_observations: 4
+
+action_mean: ???
+action_std: ???
+model:
+  input_transform:
+    _args_:
+      - _target_: rmind.components.nn.Remapper
+        paths:
+          image: ${image_remap}
+          continuous:
+            speed: [data, speed]
+            fork_above_300: [data, fork_above_300]
+            fork_height: [data, fork_height]
+            relative_ego_pos: [data, relative_ego_pos]
+            relative_dropoff_pos: [data, relative_dropoff_pos]
+            traction: [data, traction]
+            steering: [data, steering]
+            fork1: [data, fork1]
+      - _target_: rmind.components.containers.ModuleDict
+        modules:
+          image: ${image_transform}
+          continuous:
+            _target_: rmind.components.nn.AtLeast3D
+  encoder:
+    checkpoint: true
+
+datamodule:
+  train:
+    batch_size: 2
+  val:
+    batch_size: 2
+trainer:
+  enable_progress_bar: false
+  accumulate_grad_batches: 4
+  val_check_interval: 4000
+  check_val_every_n_epoch: null
+
+wandb:
+  tags: [palletjack, d12, patch_policy, flow_matching, end2end, three_cameras, fork_height, missing_height_mask]
+  notes: >-
+    Direct 30Hz action chunks [traction, steering, fork1], H${action_horizon}, history 6 at 5Hz,
+    three-camera frozen DINOv3 and trainable causal trunk, pickup/dropoff endpoint
+    inputs, no subgoal prediction. Toy-verified FM head from PR286, 2x1024 ReLU,
+    standardized train-only actions, sample x0, 4 Euler steps. Continuous fork
+    height and uncertainty with validity mask; unavailable height is zero-masked.
+    Whole-job holdouts, one per recording date. Effective batch 8, 35000 steps.
