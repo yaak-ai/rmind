@@ -84,7 +84,7 @@ class SelectiveAdamW(AdamW):
                 # https://github.com/pytorch/pytorch/blob/v2.7.0/torch/nn/modules/activation.py#L1091
                 # `pos_embed`/`gamma` (timm ViT positional embedding / LayerScale,
                 # e.g. DINOv2): keep weight decay off, matching Embedding/LayerNorm
-                case "pos_embed" | "gamma":
+                case "pos_embed" | "gamma" | "spatial_embedding":
                     weight_decay_param_blacklist.add(param_name)
 
                 case (
