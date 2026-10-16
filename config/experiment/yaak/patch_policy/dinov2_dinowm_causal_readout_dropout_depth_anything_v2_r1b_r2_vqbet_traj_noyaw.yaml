@@ -1,0 +1,36 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1b_r2_vqbet_traj
+  - _self_
+
+# vqbet_traj with the frozen tokenizer 403b4rrh:v26 and YawShiftCrop off
+# (docs/trajectory_vqbet_head_plan.md §2, decided 2026-10-16). v26 was trained
+# on unrotated targets and breaks on any rotation (plan step 0), so the policy
+# trains on unrotated targets too. At probability 0 YawShiftCrop draws psi = 0:
+# the centre 512-wide window (as in eval) and a bit-for-bit unrotated target.
+# The 512 crop, FixedFrameMask and ClipPhotometric stay, so yaw aug is the only
+# difference from r1b_r2. NOTE: the T2b baseline 3pvjq3i6 trained WITH yaw aug.
+trajectory_tokenizer_artifact: yaak/rmind/model-403b4rrh:v26
+# v26 level-0 codes holding ~180 deg heading-glitch outliers (codebook audit,
+# outputs/traj-audit/audit_403b4rrh_v26.json); code 2 is unused, not masked
+trajectory_masked_codes: [7, 10, 12]
+yaw_aug_probability: 0.0
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm_causal,
+      neighbor_smoothing,
+      readout_registers,
+      retile,
+      trajectory_vqbet,
+      turn_signal_head,
+      dropout,
+      depth_anything_v2,
+      no_yaw_aug,
+      frame_mask,
+      photometric,
+      head_ln_gelu,
+    ]

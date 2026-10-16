@@ -28,13 +28,17 @@ is to measure that concern before building it into the full run** (§4).
 
 ## 2. Decisions already made: do not revisit
 
-- **Tokenizer: the yaw-augmented retrain of `403b4rrh`** (experiment
-  `trajectory_tokenizer/pretrain_yaw`, same recipe, 4 levels × 16 codes,
-  `representation=absolute`; run id and version in §7). Decided by the
-  project owner on 2026-10-15, after step 0 showed that `model-403b4rrh:v26`
-  breaks on yaw-rotated targets (§5 step 0). The codebook-size arms
-  (B1/C8/C32/D20) of the tokenizer brief stay SHELVED. Do not resize the
-  tokenizer.
+- **Tokenizer: `model-403b4rrh:v26`, with the policy's yaw augmentation
+  off** (decided by the project owner on 2026-10-16). Step 0 showed that
+  `v26` breaks on yaw-rotated targets (§5 step 0), so the policy trains with
+  `yaw_aug_probability=0.0` and its targets are never rotated. Experiment:
+  `..._r1b_r2_vqbet_traj_noyaw.yaml`, with `trajectory_masked_codes: [7, 10, 12]` (v26's glitch codes, §3.2). This supersedes the 2026-10-15
+  decision to use the yaw-augmented retrain (`1v9s3p6z`, §7), which is
+  dropped and was never audited. **Confound:** the T2b baseline `3pvjq3i6`
+  (§3.5) trained with yaw aug at p = 0.5, so the step 5 comparison changes
+  both the head and the augmentation. A no-yaw MLP baseline would isolate
+  the head. The codebook-size arms (B1/C8/C32/D20) of the tokenizer brief
+  stay SHELVED. Do not resize the tokenizer.
 - **Code loss: `FocalLoss` with γ = 2**, the action head's loss, at every
   level. Decided by the project owner on 2026-10-15. Class weighting and
   logit adjustment are not used, and the §4 loss probe is SHELVED.
@@ -574,6 +578,14 @@ Then mark this brief's status line DONE with the date.
   2 and 3 are reduced or shelved (above). Docker smoke run on the T2 cache
   (`~/.rbyte_cache_16step_traj_t2`) is in progress, with `v26` as a
   geometry-compatible stand-in tokenizer.
+- 2026-10-16: the smoke run (`rmind-vqbet-smoke`, 30 train / 5 val batches,
+  `v26`, yaw aug on) finished cleanly. The owner chose `v26` with yaw aug
+  off (§2), so the yaw-retrained tokenizer `1v9s3p6z` is dropped. Added
+  experiment `..._r1b_r2_vqbet_traj_noyaw.yaml`: `v26`, masked codes
+  `[7, 10, 12]`, `yaw_aug_probability=0.0`. Launch it with the T2b
+  overrides (§3.5, minus `mode_weight`). No new Docker image is needed: no
+  dependency changes since `508f5b0a`, so mount `src`/`config` as the smoke
+  run did.
 
 ## 8. Risk register
 
