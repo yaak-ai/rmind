@@ -72,3 +72,12 @@ schema:
         names: gt/(@=key@)
   #@   end
   #@ end
+  #! input speed (km/h) of every frame of the window, as the model receives it
+  batch/meta/VehicleMotion/speed:
+    - _target_: rerun.Scalars.columns
+      columns:
+        scalars: [batch, data, meta/VehicleMotion/speed]
+    - static: true
+      _target_: rerun.SeriesLines
+      fields:
+        names: gt/speed_kmh

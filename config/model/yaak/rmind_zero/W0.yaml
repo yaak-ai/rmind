@@ -6,10 +6,14 @@ episode_builder:
   _target_: rmind.components.episode.EpisodeBuilder
   _recursive_: true
   _convert_: all
+  # Observation = images only; condition = speed, route waypoints and current actions.
+  # Speed and waypoints are typed `action` so the factorised mask groups them with the
+  # actions: the observation summary (OS) sees only the image, and the `action_summary`
+  # slot is the condition summary (CS) over speed + waypoints + actions.
   timestep:
     - [observation, image, cam_front_left]
-    - [observation, continuous, speed]
-    - [observation, context, waypoints]
+    - [action, continuous, speed]
+    - [action, context, waypoints]
     - [special, summary, observation_summary]
     - [action, continuous, gas_pedal]
     - [action, continuous, brake_pedal]
@@ -451,13 +455,14 @@ lr_scheduler:
 
 latent:
   _target_: rmind.components.world_latent.WorldModelLatent
-  # Conditional Self-Attention: AS conditions/updates OS -> OS'; the latent reads
-  # K=V=OS' (action reweights observation tokens, never enters their content).
-  conditioner:
-    _target_: rmind.components.conditional_attention.ConditionalSelfAttention
+  # The learnable latent queries read the image-only observation summary (K = V = OS);
+  # the condition summary CS (speed, waypoints, actions) only biases their cross-attention
+  # logits, b_j = <W OS_j, U CS>: it decides where L reads, never what. INV and POLICY
+  # read L and never see CS.
+  condition_bias:
+    _target_: rmind.components.condition_bias.ConditionBias
     dim: ${encoder_embedding_dim}
-    num_heads: ${num_heads}
-    attn_dropout: 0.1
+    num_heads: 4  # = latent decoder heads
   latent:
     _target_: rmind.components.transformer.CrossAttentionDecoderHead
     decoder:

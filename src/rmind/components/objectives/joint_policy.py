@@ -88,6 +88,35 @@ class PolicyObjective(Objective):
         features = self.decoder({"query": queries, "key": key, "value": value})
         return features[:, :, self.readout].squeeze(1)  # (b, d)
 
+    @override
+    def forward(
+        self, *, episode: Episode, embedding: Tensor, latent: Tensor | None = None
+    ) -> TensorDict:
+        """Deployment output (ONNX export): the predicted action chunk a(t+1) .. a(t+H).
+
+        Same decode as `predict(PREDICTION_VALUE)`: continuous channels in raw action units,
+        turn_signal as a class id (0 off, 1 left, 2 right).
+        """
+        assert latent is not None
+        features = self._features(episode=episode, latent=latent)
+        _, codes, offset = self._predict(features)
+        chunk = (self.tokenizer.invert(codes) + offset).unflatten(
+            -1,
+            (-1, self.tokenizer._action_features),  # noqa: SLF001
+        )  # (b, action_clip, action_space)
+        return TensorDict({
+            "continuous": TensorDict({
+                "gas_pedal": chunk[..., 0],
+                "brake_pedal": chunk[..., 1],
+                "steering_angle": chunk[..., 2],
+            }),
+            "discrete": TensorDict({
+                "turn_signal": torch.bucketize(
+                    chunk[..., 3] * 2, torch.tensor([0.5, 1.5], device=chunk.device)
+                )
+            }),
+        })
+
     def _gather_offset(self, features: Tensor, codes: Tensor) -> Tensor:
         """Select each quantizer's offset at `codes` and sum over quantizers."""
         quantizer = self.tokenizer.quantizer

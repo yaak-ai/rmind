@@ -1,9 +1,9 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable?shallow=1";
-    flake-parts.url = "github:hercules-ci/flake-parts?shallow=1";
+    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
     nix-gl-host = {
-      url = "github:numtide/nix-gl-host?shallow=1";
+      url = "github:numtide/nix-gl-host";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

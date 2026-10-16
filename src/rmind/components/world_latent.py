@@ -6,23 +6,20 @@ from torch.nn import Module
 
 from rmind.components.base import Modality
 from rmind.components.episode import Episode
-from rmind.components.objectives.base import (
-    world_latent_context,
-    world_latent_os_as,
-)
+from rmind.components.objectives.base import world_latent_context, world_latent_os_as
 
 
 @final
 class WorldModelLatent(Module):
     """The model's latent stage.
 
-    With a ``conditioner`` (Conditional Self-Attention), the action summary AS
-    *updates* the observation summary OS -> OS', and the latent reads only the
-    updated observations:  L = latent(Q=[MASK]+PE, K=V=OS').  The action enters
-    solely as a condition that reweights which OS tokens matter; it never becomes
-    key/value content.
+    With a ``condition_bias``, the learnable latent queries read the observation
+    summary, K = V = OS, and the condition summary CS (the ``action_summary`` slot:
+    speed, waypoints, actions) enters only as an additive bias on their cross-attention
+    logits:  L = latent(Q=[MASK]+PE, K=V=OS, bias=b(OS, CS)).  L is scene content
+    gathered where the condition makes it relevant.
 
-    Without a ``conditioner`` it falls back to the original K=V=[OS; AS].
+    Without it the latent reads K=V=[OS; AS].
     """
 
     @validate_call
@@ -30,21 +27,29 @@ class WorldModelLatent(Module):
         self,
         *,
         latent: InstanceOf[Module],
-        conditioner: InstanceOf[Module] | None = None,
+        condition_bias: InstanceOf[Module] | None = None,
     ) -> None:
         super().__init__()
         self.latent = latent
-        self.conditioner: Module | None = conditioner
+        self.condition_bias: Module | None = condition_bias
 
     @override
     def forward(self, *, episode: Episode, embedding: Tensor) -> Tensor:
         query = episode.embeddings.get((Modality.UTILITY, "latent"))
 
-        if self.conditioner is not None:
-            observation_summary, action_summary = world_latent_os_as(episode, embedding)
-            # AS conditions OS -> updated observation summary OS'
-            context = self.conditioner(observation_summary, action_summary)
-        else:
-            context = world_latent_context(episode, embedding)  # [OS; AS]
+        if self.condition_bias is not None:
+            observation_summary, condition_summary = world_latent_os_as(
+                episode, embedding
+            )
+            bias = self.condition_bias(
+                observation_summary, condition_summary, num_queries=query.shape[-2]
+            )
+            return self.latent({
+                "query": query,
+                "key": observation_summary,
+                "value": observation_summary,
+                "attn_bias": bias,
+            })
 
+        context = world_latent_context(episode, embedding)  # [OS; AS]
         return self.latent({"query": query, "key": context, "value": context})

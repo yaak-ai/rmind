@@ -51,14 +51,20 @@ class CrossAttentionDecoderBlock(nn.Module):
 
     @override
     def forward(
-        self, x: Tensor, key: Tensor, value: Tensor | None = None
+        self,
+        x: Tensor,
+        key: Tensor,
+        value: Tensor | None = None,
+        attn_bias: Tensor | None = None,
     ) -> Tensor:
         residual = x
         x_norm = self.cross_attn_norm(x)
+        # attn_bias: additive cross-attention logit bias, (batch * num_heads, queries, keys)
         cross_attn_out, _ = self.cross_attn(
             query=x_norm,
             key=key,
             value=key if value is None else value,
+            attn_mask=attn_bias,
             need_weights=False,
         )
         x = residual + self.cross_attn_resid_drop(cross_attn_out)
@@ -104,10 +110,14 @@ class CrossAttentionDecoder(nn.Module):
 
     @override
     def forward(
-        self, query: Tensor, key: Tensor, value: Tensor | None = None
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor | None = None,
+        attn_bias: Tensor | None = None,
     ) -> Tensor:
         return run_layer_stack(
-            self.layers, query, key, value, training=self.training
+            self.layers, query, key, value, attn_bias, training=self.training
         )
 
 
@@ -119,6 +129,8 @@ class CrossAttentionDecoderHead(nn.Module):
         query: Tensor
         key: Tensor
         value: Tensor | None = None
+        # additive cross-attention logit bias: (b, heads, q, k), or (b, t, heads, q, k) for 4D inputs
+        attn_bias: Tensor | None = None
 
         @model_validator(mode="after")
         def _validate_shapes(self) -> Self:
@@ -145,9 +157,10 @@ class CrossAttentionDecoderHead(nn.Module):
     def forward(self, input: Input | dict[str, Tensor]) -> Tensor:
         if isinstance(input, dict):
             query, key = input["query"], input["key"]
-            value = input.get("value")
+            value, attn_bias = input.get("value"), input.get("attn_bias")
         else:
             query, key, value = input.query, input.key, input.value
+            attn_bias = input.attn_bias
 
         if query.ndim == 4:  # noqa: PLR2004
             b, t, sq, d = query.shape
@@ -155,12 +168,15 @@ class CrossAttentionDecoderHead(nn.Module):
             def flatten(x: Tensor | None) -> Tensor | None:
                 return None if x is None else x.reshape(b * t, x.shape[2], x.shape[3])
 
+            # (b, t, heads, q, k) -> (b * t * heads, q, k): nn.MultiheadAttention's batch-major order
+            bias = None if attn_bias is None else attn_bias.flatten(0, 2)
             decoded = self.decoder(
-                query.reshape(b * t, sq, d), flatten(key), flatten(value)
+                query.reshape(b * t, sq, d), flatten(key), flatten(value), bias
             )
             output = self.output_projection(self.final_norm(decoded))
 
             return output.reshape(b, t, sq, -1)
 
-        decoded = self.decoder(query, key, value)
+        bias = None if attn_bias is None else attn_bias.flatten(0, 1)
+        decoded = self.decoder(query, key, value, bias)
         return self.output_projection(self.final_norm(decoded))

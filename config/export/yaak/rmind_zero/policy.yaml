@@ -1,0 +1,118 @@
+# @package _global_
+---
+# ONNX export of the rmind_zero (Zero) policy — works for both W0 and W1 checkpoints
+# (the PolicyObjective reads latent_decoder / key_source from the checkpoint).
+#
+# Same input interface as yaak/control_transformer/finetuned: 6 observed frames, images
+# already resized to 256x256, float in [0, 1], channels first. The inference hparams_jq
+# (as config/model/yaak/rmind_zero/drahve.yaml) strips the future-chunk build and the
+# FWD / INV objectives, then replaces the image transform
+# (Rearrange -> CenterCrop -> Resize -> ToDtype -> Normalize) by Normalize only. It also drops
+# the past-action `joint_actions` stack + VQ tokenizer: those tokens have no embedding and
+# only fed the (removed) INV target, and the VQ's data-dependent init branch is not traceable.
+#
+# Outputs (b, H=6) each: policy.continuous.{gas_pedal,brake_pedal,steering_angle} in raw
+# action units and policy.discrete.turn_signal as a class id (0 off, 1 left, 2 right).
+model:
+  _target_: rmind.models.zero.Zero.load_from_wandb_artifact
+  artifact: ???
+  filename: model.ckpt
+  map_location: cpu
+  strict: false
+  hparams_jq: |
+    .episode_builder.input_transform._args_ |= [.[0], .[3], .[4], .[5]]
+    | del(.episode_builder.input_transform._args_[2].modules.joint_actions_chunk)
+    | del(.episode_builder.tokenizers.modules.joint_actions_chunk)
+    | del(.episode_builder.embeddings.modules.joint_actions_chunk)
+    | del(.episode_builder.projections.modules.joint_actions_chunk)
+    | delpaths([paths | select(.. | type == "string" and endswith("_diff"))])
+    | del(.objectives.modules.forward_dynamics)
+    | del(.objectives.modules.inverse_dynamics)
+    | .objectives.modules.policy.sample_codes = false
+    | .episode_builder.input_transform._args_[2].modules.image = {"_target_": "torchvision.transforms.v2.Normalize", "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
+    | .episode_builder.input_transform._args_ |= [.[0], .[1], .[2]]
+    | del(.episode_builder.tokenizers.modules.joint_actions)
+    | del(.episode_builder.embeddings.modules.joint_actions)
+    | del(.episode_builder.projections.modules.joint_actions)
+
+input:
+  data:
+    cam_front_left:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 3, 256, 256]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float
+      device: cpu
+      low: 0
+      high: 1
+
+    # Zero's scalar transforms are AtLeast3D: scalars go in as (b, T), not (b, T, 1)
+    meta/VehicleMotion/brake_pedal_normalized:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 1
+
+    meta/VehicleMotion/gas_pedal_normalized:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 1
+
+    meta/VehicleMotion/steering_angle_normalized:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: -1
+      high: 1
+
+    meta/VehicleMotion/speed:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 130
+
+    meta/VehicleState/turn_signal:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.int32
+      device: cpu
+      low: 0
+      high: 3
+
+    waypoints/xy_normalized:
+      _target_: torch.testing.make_tensor
+      _args_: [1, 6, 10, 2]
+      dtype:
+        _target_: hydra.utils.get_object
+        path: torch.float32
+      device: cpu
+      low: 0
+      high: 20
+
+input_names:
+  - cam_front_left
+  - brake_pedal_normalized
+  - gas_pedal_normalized
+  - steering_angle_normalized
+  - speed
+  - turn_signal
+  - waypoints_xy_normalized
