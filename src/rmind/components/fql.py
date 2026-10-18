@@ -297,8 +297,12 @@ class FQLPolicy(nn.Module):
             torch.cat((observations, noise.distillation), dim=-1)
         )
         distillation_loss = (actor_actions - flow_actions).square().mean()
+        actor_actions = torch.minimum(
+            torch.maximum(actor_actions, actor_actions.new_tensor(-1.0)),
+            actor_actions.new_tensor(1.0),
+        )
         action_values = self.values(
-            observations, actor_actions.clamp(-1, 1), detached_parameters=True
+            observations, actor_actions, detached_parameters=True
         ).mean(0)
         q_loss = -action_values.mean()
         if self.config.normalize_q_loss:

@@ -270,3 +270,47 @@ def test_complex_transition_values_are_not_silently_truncated(
     )
     with pytest.raises(ValueError, match="nonnumeric"):
         FQLTransitions(str(path))
+
+
+def test_actor_q_gradient_matches_reference_half_tie_at_action_boundary() -> None:
+    policy = FQLPolicy(config())
+    final = policy.actor[-1]
+    with torch.no_grad():
+        final.weight.zero_()
+        final.bias.copy_(torch.tensor([-1.0, 1.0]))
+    transitions = batch()
+    losses = policy.losses(transitions, FQLNoise.draw(transitions["actions"]))[1]
+    boundary_gradient = torch.autograd.grad(losses["q_loss"], final.bias)[0]
+    actions = (
+        final.bias
+        .detach()
+        .expand(len(transitions["actions"]), -1)
+        .clone()
+        .requires_grad_()
+    )
+    unclipped_loss = -policy.values(
+        transitions["observations"], actions, detached_parameters=True
+    ).mean()
+    unclipped_gradient = torch.autograd.grad(unclipped_loss, actions)[0].sum(0)
+    torch.testing.assert_close(
+        boundary_gradient, unclipped_gradient / 2, atol=1e-7, rtol=1e-6
+    )
+
+
+def test_physical_endpoint_rounding_does_not_reject_valid_actions() -> None:
+    model = FQLModel(
+        asdict(config()),
+        normalization={
+            "action_low": [-0.7706642150878906] * 2,
+            "action_high": [-0.10992531478404999] * 2,
+        },
+    )
+    transitions = batch()
+    transitions["actions"] = model.action_high.expand_as(transitions["actions"]).clone()
+    canonical = model.normalized_batch(transitions)["actions"]
+    assert torch.equal(canonical, torch.ones_like(canonical))
+    transitions["actions"][0, 0] = torch.nextafter(
+        model.action_high[0], torch.tensor(float("inf"))
+    )
+    with pytest.raises(ValueError, match="Physical actions"):
+        model.normalized_batch(transitions)

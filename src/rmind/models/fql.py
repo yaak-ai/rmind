@@ -74,13 +74,22 @@ class FQLModel(pl.LightningModule):
         })
 
     def normalized_batch(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        actions = batch["actions"]
+        if (
+            not actions.is_floating_point()
+            or ((actions < self.action_low) | (actions > self.action_high)).any()
+        ):
+            message = "Physical actions must be floating tensors inside the configured action bounds"
+            raise ValueError(message)
+        canonical = (actions - (self.action_low / 2 + self.action_high / 2)) / (
+            self.action_high / 2 - self.action_low / 2
+        )
         return {
             "observations": (batch["observations"] - self.observation_mean)
             / self.observation_std,
             "next_observations": (batch["next_observations"] - self.observation_mean)
             / self.observation_std,
-            "actions": (batch["actions"] - (self.action_low / 2 + self.action_high / 2))
-            / (self.action_high / 2 - self.action_low / 2),
+            "actions": canonical.clamp(-1, 1),
             "rewards": batch["rewards"],
             "masks": batch["masks"],
         }
@@ -89,11 +98,12 @@ class FQLModel(pl.LightningModule):
         canonical = self.policy.sample_actions(
             (observations - self.observation_mean) / self.observation_std, noise
         )
-        return (
+        physical = (
             self.action_low / 2
             + self.action_high / 2
             + canonical * (self.action_high / 2 - self.action_low / 2)
         )
+        return physical.clamp(min=self.action_low, max=self.action_high)
 
     def configure_optimizers(self) -> torch.optim.Adam:
         parameters = (
