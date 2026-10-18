@@ -4,9 +4,12 @@ import argparse
 import hashlib
 import json
 import operator
+import shutil
 import subprocess
 from collections import defaultdict
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from mcap.reader import make_reader
@@ -19,9 +22,13 @@ AUX_NAMES = (
     "relative_dropoff_pos",
     "fork_height",
 )
+ACTION_HORIZON = 50
+OFFSET_PAIR_LENGTH = 2
 
 
-def read_recording(directory):
+def read_recording(
+    directory: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     inputs, predictions, frames, skipped = [], [], {}, []
     files = sorted(
         directory.glob("sensor--*.mcap"),
@@ -82,7 +89,7 @@ def read_recording(directory):
     return inputs, predictions, skipped
 
 
-def resize_bilinear_u8(image, height, width):
+def resize_bilinear_u8(image: np.ndarray, height: int, width: int) -> np.ndarray:
     source_height, source_width = image.shape[:2]
     horizontal = (np.arange(width, dtype=np.float32) + 0.5) * source_width / width - 0.5
     vertical = (
@@ -107,19 +114,26 @@ def resize_bilinear_u8(image, height, width):
     )
 
 
-def video_images(directory, rows, frames_per_video):
+def video_images(
+    directory: Path, rows: list[dict[str, Any]], frames_per_video: int
+) -> Iterator[tuple[int, np.ndarray]]:
+    ffprobe = shutil.which("ffprobe")
+    ffmpeg = shutil.which("ffmpeg")
+    if ffprobe is None or ffmpeg is None:
+        msg = "Video replay requires ffprobe and ffmpeg on PATH"
+        raise FileNotFoundError(msg)
     selected = defaultdict(list)
     for row in rows:
         selected[row["frame"] // frames_per_video].append(
             row["frame"] % frames_per_video
         )
-    for chunk, indices in sorted(selected.items()):
+    for chunk, selected_indices in sorted(selected.items()):
         path = directory / f"cam_fork--{chunk}.mp4"
         if not path.exists():
             raise FileNotFoundError(path)
         probe = json.loads(
             subprocess.check_output([
-                "ffprobe",
+                str(Path(ffprobe).resolve()),
                 "-v",
                 "error",
                 "-select_streams",
@@ -134,10 +148,10 @@ def video_images(directory, rows, frames_per_video):
         if int(probe["nb_frames"]) != frames_per_video:
             msg = f"Cannot assume fixed video index mapping: {path} has {probe['nb_frames']} frames"
             raise ValueError(msg)
-        indices = sorted(set(indices))
+        indices = sorted(set(selected_indices))
         select = "+".join(f"eq(n\\,{index})" for index in indices)
         command = [
-            "ffmpeg",
+            str(Path(ffmpeg).resolve()),
             "-v",
             "error",
             "-threads",
@@ -174,14 +188,18 @@ def video_images(directory, rows, frames_per_video):
                 raise RuntimeError(msg)
 
 
-def candidate_execution_indices(predictions, row, rate=30):
+def candidate_execution_indices(
+    predictions: list[dict[str, Any]], row: dict[str, Any], rate: int = 30
+) -> np.ndarray:
     timestamps = np.asarray(
         [prediction["wall_ns"] for prediction in predictions], dtype=np.int64
     )
     return np.floor((timestamps - row["frame_wall_ns"]) * rate / 1e9).astype(int)
 
 
-def noise_index(request_index, initial_offset, changes):
+def noise_index(
+    request_index: int, initial_offset: int, changes: Sequence[tuple[int, int]]
+) -> int:
     offset = initial_offset
     for boundary, changed_offset in sorted(changes):
         if request_index >= boundary:
@@ -189,9 +207,12 @@ def noise_index(request_index, initial_offset, changes):
     return request_index + offset
 
 
-def selected_video_hashes(directory, rows, frames_per_video):
+def selected_video_hashes(
+    directory: Path, rows: list[dict[str, Any]], frames_per_video: int
+) -> dict[str, str]:
     if frames_per_video <= 0:
-        raise ValueError("frames_per_video must be positive")
+        msg = "frames_per_video must be positive"
+        raise ValueError(msg)
     result = {}
     for chunk in sorted({row["frame"] // frames_per_video for row in rows}):
         path = directory / f"cam_fork--{chunk}.mp4"
@@ -202,11 +223,11 @@ def selected_video_hashes(directory, rows, frames_per_video):
     return result
 
 
-def feature_array_digest(features):
+def feature_array_digest(features: np.ndarray) -> str:
     return hashlib.sha256(np.ascontiguousarray(features).tobytes()).hexdigest()
 
 
-def noise_provenance(path):
+def noise_provenance(path: Path) -> dict[str, Any]:
     with path.open("rb") as stream:
         checksum = hashlib.file_digest(stream, "sha256").hexdigest()
     return {
@@ -217,21 +238,24 @@ def noise_provenance(path):
     }
 
 
-def load_feature_cache(path, fingerprint, expected_sha256=None):
+def load_feature_cache(
+    path: Path, fingerprint: str, expected_sha256: str | None = None
+) -> np.ndarray:
     if expected_sha256 is not None:
         with path.open("rb") as stream:
             if hashlib.file_digest(stream, "sha256").hexdigest() != expected_sha256:
-                raise ValueError("External feature cache checksum changed")
+                msg = "External feature cache checksum changed"
+                raise ValueError(msg)
     with np.load(path, allow_pickle=False) as saved:
         if "fingerprint" not in saved or str(saved["fingerprint"]) != fingerprint:
-            raise ValueError("Feature provenance changed or absent; rebuild explicitly")
+            msg = "Feature provenance changed or absent; rebuild explicitly"
+            raise ValueError(msg)
         features = saved["features"]
         if "features_sha256" not in saved or str(
             saved["features_sha256"]
         ) != feature_array_digest(features):
-            raise ValueError(
-                "Feature array checksum changed or absent; rebuild explicitly"
-            )
+            msg = "Feature array checksum changed or absent; rebuild explicitly"
+            raise ValueError(msg)
         return features
 
 
@@ -271,7 +295,7 @@ def main() -> None:
     changes = [
         tuple(map(int, value.split(":"))) for value in arguments.noise_offset_change
     ]
-    if any(len(change) != 2 for change in changes):
+    if any(len(change) != OFFSET_PAIR_LENGTH for change in changes):
         msg = "Noise offset changes must be REQUEST:OFFSET"
         raise ValueError(msg)
     arguments.output.mkdir(parents=True, exist_ok=True)
@@ -323,8 +347,12 @@ def main() -> None:
         .eval()
         .to(arguments.device)
     )
-    if tuple(policy.cameras) != ("cam_fork",) or policy.action_horizon != 50:
-        raise ValueError("This replay contract requires the fork-only H50 model")
+    if (
+        tuple(policy.cameras) != ("cam_fork",)
+        or policy.action_horizon != ACTION_HORIZON
+    ):
+        msg_0 = "This replay contract requires the fork-only H50 model"
+        raise ValueError(msg_0)
     decoder = D12FlowDecoderStep(policy).eval().to(arguments.device)
     features_path = arguments.features_from or arguments.output / "features.npz"
     if arguments.features_from is not None and not features_path.is_file():
@@ -438,7 +466,7 @@ def main() -> None:
                 candidates = []
                 for shift in (-1, 0, 1):
                     slots = nominal + shift
-                    valid = (slots >= 0) & (slots < 50)
+                    valid = (slots >= 0) & (slots < ACTION_HORIZON)
                     if valid.any():
                         residual = actions[slots[valid]].clip(-1, 1) - observed[valid]
                         candidates.append({
@@ -466,7 +494,7 @@ def main() -> None:
                     .cpu()
                     .numpy()
                 )
-                valid = (nominal >= 0) & (nominal < 50)
+                valid = (nominal >= 0) & (nominal < ACTION_HORIZON)
                 errors = np.abs(
                     alternatives[:, nominal[valid]].clip(-1, 1) - observed[None, valid]
                 ).mean(axis=(1, 2))
@@ -481,12 +509,14 @@ def main() -> None:
                     ),
                 })
     if noise_provenance(arguments.rust_noise) != noise_input:
-        raise ValueError("Noise source changed during replay")
+        msg_0 = "Noise source changed during replay"
+        raise ValueError(msg_0)
     if (
         selected_video_hashes(arguments.job, rows, arguments.frames_per_video)
         != video_hashes
     ):
-        raise ValueError("Video source changed during replay")
+        msg_0 = "Video source changed during replay"
+        raise ValueError(msg_0)
     np.savez_compressed(
         arguments.output / "chunks.npz",
         actions=np.stack(historical),

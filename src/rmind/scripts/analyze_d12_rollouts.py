@@ -6,17 +6,18 @@ import html
 import json
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 from mcap.reader import make_reader
 from mcap_protobuf.decoder import DecoderFactory
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
-
 
 TOPICS = (
     "policy/prediction",
@@ -32,13 +33,22 @@ TOPICS = (
     "fork/height",
     "cam_fork/frame",
 )
+IDLE_COMMAND_THRESHOLD = 0.05
+STATIONARY_SPEED_THRESHOLD = 0.15
+CONSOLE_RELEASE_TOLERANCE_S = 0.35
+POSE_STALENESS_THRESHOLD_S = 0.9
+OPERATOR_COMMAND_THRESHOLD = 0.1
 
 
-def utc(timestamp):
-    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+def utc(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).isoformat()
 
 
-def intervals(times, enabled, max_gap=0.5):
+def intervals(
+    times: Sequence[float] | np.ndarray,
+    enabled: Sequence[bool] | np.ndarray,
+    max_gap: float = 0.5,
+) -> list[tuple[float, float, str]]:
     result = []
     start = None
     for index, timestamp in enumerate(times):
@@ -54,7 +64,7 @@ def intervals(times, enabled, max_gap=0.5):
     return result
 
 
-def quantiles(values):
+def quantiles(values: Sequence[float] | np.ndarray) -> dict[str, float] | None:
     values = np.asarray(values)
     values = values[np.isfinite(values)]
     return (
@@ -70,7 +80,7 @@ def quantiles(values):
     )
 
 
-def past(table, times):
+def past(table: np.ndarray, times: Sequence[float] | np.ndarray) -> np.ndarray:
     if not len(table):
         return np.full((len(times), table.shape[1]), np.nan)
     indices = np.searchsorted(table[:, 0], times, side="right") - 1
@@ -79,13 +89,13 @@ def past(table, times):
     return result
 
 
-def pallet_goal_distance(inputs):
+def pallet_goal_distance(inputs: np.ndarray) -> np.ndarray:
     distance = np.linalg.norm(inputs[:, 6:8] - inputs[:, 8:10], axis=1) * 10
     distance[(np.abs(inputs[:, 6:10]) >= 1).any(axis=1)] = np.nan
     return distance
 
 
-def read_job(directory):
+def read_job(directory: Path) -> tuple[dict[str, np.ndarray], list[str], int]:
     tables = defaultdict(list)
     skipped = []
     files = sorted(
@@ -161,7 +171,7 @@ def read_job(directory):
                     row = [timestamp, decoded.fork1_pct / 100]
                 elif topic == "lindelot/vehicle_state":
                     row = [timestamp, decoded.operator_on, decoded.operator_on_valid]
-                elif topic in ("rtls/pose", "rtls/pallet_pose"):
+                elif topic in {"rtls/pose", "rtls/pallet_pose"}:
                     if not decoded.selected:
                         continue
                     row = [
@@ -184,7 +194,7 @@ def read_job(directory):
     return result, skipped, len(files)
 
 
-def journal_events(path):
+def journal_events(path: Path | None) -> list[tuple[float, str]]:
     if path is None:
         return []
     events = []
@@ -200,7 +210,9 @@ def journal_events(path):
     return events
 
 
-def analyze(directory, output, events):
+def analyze(
+    directory: Path, output: Path, events: list[tuple[float, str]]
+) -> dict[str, Any]:
     tables, skipped, files = read_job(directory)
     nonempty = [table for table in tables.values() if len(table)]
     if not nonempty:
@@ -212,7 +224,6 @@ def analyze(directory, output, events):
     status = tables["lindelot/status"]
     applied = tables["lindelot/applied"]
     speed = tables["linde/speed"]
-    pose = tables["rtls/pose"]
     pallet = tables["rtls/pallet_pose"]
     height = tables["fork/height"]
     segments = intervals(status[:, 0], status[:, 1] > 0)
@@ -271,20 +282,28 @@ def analyze(directory, output, events):
             if not len(values):
                 continue
             report["actions"][name].update({
-                "all_idle_fraction": float((np.abs(values) < 0.05).all(axis=1).mean())
+                "all_idle_fraction": float(
+                    (np.abs(values) < IDLE_COMMAND_THRESHOLD).all(axis=1).mean()
+                )
             })
             for index, action in enumerate(("traction", "steering", "fork1")):
                 report["actions"][name][action] = {
                     "distribution": quantiles(values[:, index]),
-                    "idle_fraction": float((np.abs(values[:, index]) < 0.05).mean()),
-                    "positive_fraction": float((values[:, index] > 0.05).mean()),
-                    "negative_fraction": float((values[:, index] < -0.05).mean()),
+                    "idle_fraction": float(
+                        (np.abs(values[:, index]) < IDLE_COMMAND_THRESHOLD).mean()
+                    ),
+                    "positive_fraction": float(
+                        (values[:, index] > IDLE_COMMAND_THRESHOLD).mean()
+                    ),
+                    "negative_fraction": float(
+                        (values[:, index] < -IDLE_COMMAND_THRESHOLD).mean()
+                    ),
                     "over_range_fraction": float((np.abs(values[:, index]) > 1).mean()),
                 }
     active_speed = past(status, speed[:, 0])[:, 1] > 0
     report["override_speed_native"] = quantiles(np.abs(speed[active_speed, 1]))
     report["override_speed_zero_fraction"] = (
-        float((np.abs(speed[active_speed, 1]) < 0.15).mean())
+        float((np.abs(speed[active_speed, 1]) < STATIONARY_SPEED_THRESHOLD).mean())
         if active_speed.any()
         else None
     )
@@ -319,16 +338,16 @@ def analyze(directory, output, events):
         pallet_age = end - latest["rtls/pallet_pose"][0]
         pose_age = end - latest["rtls/pose"][0]
         console_release = any(
-            event == "RELEASE" and abs(timestamp - end) < 0.35
+            event == "RELEASE" and abs(timestamp - end) < CONSOLE_RELEASE_TOLERANCE_S
             for timestamp, event in events
         )
         if boundary != "off":
             reason = "recording_boundary_or_status_gap"
         elif console_release:
             reason = "console_release"
-        elif pallet_age >= 0.9:
+        elif pallet_age >= POSE_STALENESS_THRESHOLD_S:
             reason = "pallet_stale_aligned"
-        elif pose_age >= 0.9 or latest["rtls/pose"][4] > 0:
+        elif pose_age >= POSE_STALENESS_THRESHOLD_S or latest["rtls/pose"][4] > 0:
             reason = "pose_stale_or_rejected_aligned"
         elif (
             latest["lindelot/vehicle_state"][2] > 0
@@ -336,7 +355,8 @@ def analyze(directory, output, events):
         ):
             reason = "driver_absent_snapshot"
         elif (
-            abs(latest["linde/traction"][1]) > 0.1 or abs(latest["linde/fork"][1]) > 0.1
+            abs(latest["linde/traction"][1]) > OPERATOR_COMMAND_THRESHOLD
+            or abs(latest["linde/fork"][1]) > OPERATOR_COMMAND_THRESHOLD
         ):
             reason = "operator_input_aligned"
         else:
@@ -367,7 +387,9 @@ def analyze(directory, output, events):
         ]
         if len(selected_predictions):
             record["all_idle_fraction"] = float(
-                (np.abs(selected_predictions[:, 4:7]) < 0.05).all(axis=1).mean()
+                (np.abs(selected_predictions[:, 4:7]) < IDLE_COMMAND_THRESHOLD)
+                .all(axis=1)
+                .mean()
             )
             for column, action in enumerate(("traction", "steering", "fork1"), 4):
                 record[f"{action}_median"] = float(
@@ -378,7 +400,7 @@ def analyze(directory, output, events):
                 )
         if len(selected_speed):
             record["speed_zero_fraction"] = float(
-                (np.abs(selected_speed[:, 1]) < 0.15).mean()
+                (np.abs(selected_speed[:, 1]) < STATIONARY_SPEED_THRESHOLD).mean()
             )
         for name, columns in (("pickup", (6, 8)), ("dropoff", (8, 10))):
             if len(selected):
@@ -454,7 +476,7 @@ def analyze(directory, output, events):
     return report
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--jobs", type=Path, nargs="+", required=True)
     parser.add_argument("--journal", type=Path)
@@ -504,11 +526,15 @@ def main():
         sections.append(
             f"<h2>{name}</h2><a href='{name}/segments.csv'>Per-bout CSV</a> | <a href='{name}/signals.npz'>Extracted signals</a>"
         )
-        for filename in ("timeline.png", "camera_samples.jpg", "delivery_samples.jpg"):
-            if (arguments.output / report["job"] / filename).exists():
-                sections.append(
-                    f"<p><img src='{name}/{filename}' alt='{name} {filename}'></p>"
-                )
+        sections.extend(
+            f"<p><img src='{name}/{filename}' alt='{name} {filename}'></p>"
+            for filename in (
+                "timeline.png",
+                "camera_samples.jpg",
+                "delivery_samples.jpg",
+            )
+            if (arguments.output / report["job"] / filename).exists()
+        )
     (arguments.output / "report.html").write_text("\n".join(sections))
     for report in reports:
         print(
@@ -516,7 +542,7 @@ def main():
                 {
                     key: value
                     for key, value in report.items()
-                    if key not in ("segments", "actions")
+                    if key not in {"segments", "actions"}
                 },
                 allow_nan=False,
             ),

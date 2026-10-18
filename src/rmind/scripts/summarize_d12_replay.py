@@ -13,7 +13,9 @@ mpl.use("Agg")
 import matplotlib.pyplot as plt
 
 
-def traction_statistics(chunks, threshold, duration):
+def traction_statistics(
+    chunks: np.ndarray, threshold: float, duration: int
+) -> dict[str, float]:
     traction = np.asarray(chunks)[..., 0].reshape(-1, chunks.shape[-2])
     suffix = traction[:, 8:]
     windows = np.lib.stride_tricks.sliding_window_view(suffix, duration, axis=-1)
@@ -50,8 +52,8 @@ def main() -> None:
         squeeze=False,
     )
     results = []
-    for index, (name, directory, start, end) in enumerate(arguments.segment):
-        directory = Path(directory)
+    for index, (name, directory_name, start, end) in enumerate(arguments.segment):
+        directory = Path(directory_name)
         recording = np.load(directory / "chunks.npz")
         report = json.loads((directory / "report.json").read_text())
         start_ns = datetime.fromisoformat(start).timestamp() * 1e9

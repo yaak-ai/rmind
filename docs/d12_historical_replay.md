@@ -143,3 +143,16 @@ Older caches without these fields must be rebuilt. Supplying `--features-from`
 requires its independently recorded `--features-sha256`; external caches cannot
 be rebuilt in place. Noise-input path and SHA256 are recorded, but the generator
 algorithm/seed are only declared unless independently verified from a receipt.
+# Lint scope
+
+The three historical replay CLIs retain their validated sequential parsing and
+replay loops through narrowly named complexity exceptions in `pyproject.toml`.
+Splitting those loops solely for lint would obscure timestamp, cache, and RNG
+ordering. Their stdout progress/JSON output is intentional. Corrupt MCAP summary
+exceptions are recorded in the explicit skipped-file evidence, never accepted as
+successful inputs. Replay keeps Torch imports lazy so CPU-only provenance helpers
+remain usable, and deliberately calls the policy's existing `_frame_tokens`
+instead of duplicating model preprocessing. Video subprocesses use resolved
+ffmpeg/ffprobe executables and fixed argument arrays without a shell. These
+exceptions do not disable tests, checksum checks, numerical gates, or outcome
+criteria; diagnostic thresholds are named without changing their values.

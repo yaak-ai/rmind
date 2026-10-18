@@ -1,11 +1,12 @@
-import numpy as np
 import hashlib
 import json
-import pytest
+from pathlib import Path
 from types import SimpleNamespace
 
-from rmind.scripts import replay_d12_rollouts
+import numpy as np
+import pytest
 
+from rmind.scripts import replay_d12_rollouts
 from rmind.scripts.replay_d12_rollouts import (
     candidate_execution_indices,
     noise_index,
@@ -14,7 +15,7 @@ from rmind.scripts.replay_d12_rollouts import (
 from rmind.scripts.summarize_d12_replay import traction_statistics
 
 
-def test_changed_source_video_invalidates_cached_features(tmp_path):
+def test_changed_source_video_invalidates_cached_features(tmp_path: Path) -> None:
     video = tmp_path / "cam_fork--0.mp4"
     video.write_bytes(b"first recording")
     rows = [{"frame": 4}]
@@ -35,7 +36,7 @@ def test_changed_source_video_invalidates_cached_features(tmp_path):
         replay_d12_rollouts.load_feature_cache(cache, json.dumps(changed))
 
 
-def test_external_cache_and_feature_array_digests_are_checked(tmp_path):
+def test_external_cache_and_feature_array_digests_are_checked(tmp_path: Path) -> None:
     cache = tmp_path / "features.npz"
     features = np.zeros((1, 512), dtype=np.float32)
     checksum = replay_d12_rollouts.feature_array_digest(features)
@@ -51,7 +52,9 @@ def test_external_cache_and_feature_array_digests_are_checked(tmp_path):
         replay_d12_rollouts.load_feature_cache(cache, "source")
 
 
-def test_supplied_noise_identity_is_recorded_without_generator_claim(tmp_path):
+def test_supplied_noise_identity_is_recorded_without_generator_claim(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "noise.f32"
     path.write_bytes(b"arbitrary bytes")
     record = replay_d12_rollouts.noise_provenance(path)
@@ -79,9 +82,11 @@ def test_execution_indices_reference_camera_not_submission() -> None:
 
 
 def test_noise_alignment_is_explicit_and_piecewise() -> None:
-    assert noise_index(353, 0, [(356, -1)]) == 353
-    assert noise_index(356, 0, [(356, -1)]) == 355
-    assert noise_index(999, 0, [(356, -1)]) == 998
+    expected_indices = (353, 355, 998)
+    assert (
+        tuple(noise_index(index, 0, [(356, -1)]) for index in (353, 356, 999))
+        == expected_indices
+    )
 
 
 def test_suffix_requires_sustained_direction_not_alternating_magnitude() -> None:
@@ -90,11 +95,11 @@ def test_suffix_requires_sustained_direction_not_alternating_magnitude() -> None
     chunks[1, 8:, 0] = np.tile([0.2, -0.2], 21)
     statistics = traction_statistics(chunks, threshold=0.15, duration=15)
     assert statistics["early_mean_absolute"] == 0
-    assert statistics["fraction_chunks_sustained_suffix"] == 0.5
+    assert statistics["fraction_chunks_sustained_suffix"].hex() == (0.5).hex()
 
 
 def test_frame_identity_joins_on_pts_not_independent_counters(
-    tmp_path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "sensor--0.mcap").write_bytes(b"fixture")
     reference = SimpleNamespace(camera="cam_fork", frame_index=104, pts_ns=1000)
@@ -121,13 +126,16 @@ def test_frame_identity_joins_on_pts_not_independent_counters(
         ),
     ]
     reader = SimpleNamespace(
-        get_summary=lambda: True, iter_decoded_messages=lambda **kwargs: iter(messages)
+        get_summary=lambda: True, iter_decoded_messages=lambda **_kwargs: iter(messages)
     )
     monkeypatch.setattr(
-        replay_d12_rollouts, "make_reader", lambda *args, **kwargs: reader
+        replay_d12_rollouts, "make_reader", lambda *_args, **_kwargs: reader
     )
     rows, _, skipped = replay_d12_rollouts.read_recording(tmp_path)
-    assert rows[0]["input_frame"] == 104
-    assert rows[0]["frame"] == 68
-    assert rows[0]["frame_wall_ns"] == 3000
+    expected_identity = (104, 68, 3000)
+    assert (
+        rows[0]["input_frame"],
+        rows[0]["frame"],
+        rows[0]["frame_wall_ns"],
+    ) == expected_identity
     assert not skipped
