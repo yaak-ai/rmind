@@ -42,12 +42,16 @@ certification. The generic Hydra scaffold inherits its camera/data selection;
 it is not the exact fork-only launcher recipe.
 
 ```sh
+just generate-config
 python -m rmind.scripts.train_d12_rtc --help
 python -m rmind.scripts.export_d12_fm --checkpoint CHECKPOINT --config CONFIG \
   --output NEW_DIRECTORY --test-only
 pytest -q tests/test_rtc_native_time_embedding.py tests/test_rtc_time_frequency.py \
   tests/test_rtc_token_time.py tests/test_d12_rtc_launch.py
 ```
+
+Hydra configuration-composition tests require generated datasets from the
+tracked ytt templates; `just generate-config` creates those ignored files.
 
 Use only trusted Lightning checkpoints: loading them uses Python pickle.
 Keep verification artifacts `test_only`; the Coppernic live app rejects them.
