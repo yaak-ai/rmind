@@ -1,15 +1,19 @@
-import os
 import json
+import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
 import torch
-from types import SimpleNamespace
 
 from rmind.components.rtc_flow_head import TokenTimeFlowHead
+from rmind.scripts import evaluate_d12_rtc, replay_d12_rtc
+from rmind.scripts.audit_d12_rtc import require
 from rmind.scripts.evaluate_d12_rtc import explicit_noise, sha256, verify
 from rmind.scripts.replay_d12_rtc import (
     Controller,
@@ -17,13 +21,33 @@ from rmind.scripts.replay_d12_rtc import (
     sample_plan,
     tick_ns,
 )
-from rmind.scripts import replay_d12_rtc
-from rmind.scripts import evaluate_d12_rtc
+
+
+def test_audit_predicate_never_accepts_failed_evidence() -> None:
+    require(condition=True, context="valid")
+    with pytest.raises(ValueError, match="D12 evidence audit failed: corrupted"):
+        require(condition=False, context="corrupted")
+
+
+def test_audit_predicate_survives_python_optimized_mode() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-O",
+            "-c",
+            "from rmind.scripts.audit_d12_rtc import require\nimport sys\ntry:\n require(False, 'corrupt')\nexcept ValueError:\n sys.exit(0)\nsys.exit(1)\n",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_loader_uses_verified_protocol_artifacts_not_default_model_path(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     checkpoint = tmp_path / "alternate.ckpt"
     checkpoint.write_bytes(b"selected")
     config = tmp_path / "alternate.yaml"
@@ -41,9 +65,9 @@ def test_loader_uses_verified_protocol_artifacts_not_default_model_path(
     loaded = []
     policy = SimpleNamespace()
     policy.eval = lambda: policy
-    policy.to = lambda device: policy
+    policy.to = lambda _device: policy
 
-    def loader(path, **kwargs):
+    def loader(path: str, **_kwargs: Any) -> SimpleNamespace:
         loaded.append(path)
         return policy
 
@@ -62,7 +86,9 @@ def test_loader_uses_verified_protocol_artifacts_not_default_model_path(
 
 
 @pytest.mark.parametrize("changed", ["array", "model", "missing_model"])
-def test_token_cache_rejects_changed_array_or_model(tmp_path, changed):
+def test_token_cache_rejects_changed_array_or_model(
+    tmp_path: Path, changed: str
+) -> None:
     path = tmp_path / "tokens.npy"
     np.save(path, np.zeros((2, 3)))
     model = {"sha256": "checkpoint", "config_sha256": "config"}
@@ -80,7 +106,7 @@ def test_token_cache_rejects_changed_array_or_model(tmp_path, changed):
         replay_d12_rtc.load_tokens(path, model)
 
 
-def test_token_integrity_check_survives_python_optimized_mode(tmp_path):
+def test_token_integrity_check_survives_python_optimized_mode(tmp_path: Path) -> None:
     path = tmp_path / "tokens.npy"
     np.save(path, np.zeros((2, 3)))
     path.with_suffix(".json").write_text(
@@ -97,12 +123,13 @@ def test_token_integrity_check_survives_python_optimized_mode(tmp_path):
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("changed", ["checkpoint", "config", "latency"])
-def test_provenance_rejects_changed_inputs(tmp_path, changed):
+def test_provenance_rejects_changed_inputs(tmp_path: Path, changed: str) -> None:
     paths = {name: tmp_path / name for name in ("checkpoint", "config", "latency")}
     for path in paths.values():
         path.write_bytes(b"original")
@@ -125,7 +152,7 @@ def test_provenance_rejects_changed_inputs(tmp_path, changed):
         verify(tmp_path)
 
 
-def test_noise_is_explicit_paired_and_identity_bound():
+def test_noise_is_explicit_paired_and_identity_bound() -> None:
     first = explicit_noise(131, "recording", 4)
     np.testing.assert_array_equal(first, explicit_noise(131, "recording", 4))
     assert first.dtype == np.float32
@@ -133,31 +160,43 @@ def test_noise_is_explicit_paired_and_identity_bound():
     assert not np.array_equal(first, explicit_noise(131, "other", 4))
 
 
-def test_rational_action_boundaries():
+def test_rational_action_boundaries() -> None:
     assert [tick_ns(tick) for tick in range(4)] == [0, 33333334, 66666667, 100000000]
-    assert tick_ns(6) == 200000000
+    expected_six_ticks = 200000000
+    assert tick_ns(6) == expected_six_ticks
 
 
-def test_raw_committed_prefix_normalized_once_then_preserved():
+def test_raw_committed_prefix_normalized_once_then_preserved() -> None:
     head = TokenTimeFlowHead(4, 3, 50, channel_dim=16, num_layers=1, max_prefix=6)
     policy = SimpleNamespace(
         action_mean=torch.tensor([0.1, -0.2, 0.3]),
         action_std=torch.tensor([0.4, 0.5, 0.6]),
     )
-    policy.fm_sample = lambda features, x0, clean_prefix, prefix_mask: head.sample(
-        features, x0, clean_prefix, prefix_mask
-    )
+
+    def sample(
+        features: torch.Tensor,
+        x0: torch.Tensor,
+        clean_prefix: torch.Tensor,
+        prefix_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        return head.sample(features, x0, clean_prefix, prefix_mask)
+
+    policy.fm_sample = sample
     prefix = np.zeros((50, 3), dtype=np.float32)
     prefix[:6] = [0.3, 0.2, -0.4]
     request = {"prefix": prefix.tolist(), "mask": [1.0] * 6 + [0.0] * 44}
     with torch.inference_mode():
         actions = sample_plan(
-            policy, torch.zeros(1, 4), explicit_noise(131, "test", 1)[0], request, True
+            policy,
+            torch.zeros(1, 4),
+            explicit_noise(131, "test", 1)[0],
+            request,
+            conditional=True,
         )
     np.testing.assert_allclose(actions[:6], prefix[:6], atol=1e-7, rtol=0)
 
 
-def test_metrics_keep_gaps_separate_from_zero_commands():
+def test_metrics_keep_gaps_separate_from_zero_commands() -> None:
     arrays = {
         "commands": np.asarray(
             [[0.0, 0.0, 0.0], [np.nan] * 3, [0.2, 0.1, 0.0], [0.3, 0.4, 0.0]],
@@ -167,13 +206,13 @@ def test_metrics_keep_gaps_separate_from_zero_commands():
         "plan_ids": np.asarray([1, -1, 2, 3]),
     }
     metrics = command_metrics(arrays)
-    assert metrics["command_coverage"] == 0.75
+    assert metrics["command_coverage"].hex() == (0.75).hex()
     assert metrics["seams"] == 1
     assert metrics["per_action"]["steering"]["seam_delta_mean"] == pytest.approx(0.3)
 
 
 @pytest.fixture
-def controller():
+def controller() -> Iterator[Controller]:
     binary = os.environ.get("D12_RTC_STREAM_BINARY")
     if binary is None:
         pytest.skip("Build the unchanged Coppernic controller wrapper first")
@@ -182,14 +221,15 @@ def controller():
     instance.close()
 
 
-def test_actual_controller_commits_old_aligned_prefix(controller):
+def test_actual_controller_commits_old_aligned_prefix(controller: Controller) -> None:
     request = controller.call({
         "op": "request",
         "now_ns": 0,
         "observation_ns": 0,
         "generation": 0,
     })["ok"]
-    assert request["bootstrap"] and request["forecast"] == 0
+    assert request["bootstrap"]
+    assert request["forecast"] == 0
     actions = [[index / 100, 0.0, 0.0] for index in range(50)]
     complete = controller.call({
         "op": "complete",
@@ -198,24 +238,28 @@ def test_actual_controller_commits_old_aligned_prefix(controller):
         "request_id": request["id"],
         "actions": actions,
     })
-    assert complete["ok"] == 2
+    expected_start_tick = 2
+    assert complete["ok"] == expected_start_tick
     output = controller.call({"op": "action", "now_ns": tick_ns(2), "generation": 0})[
         "ok"
     ]
-    assert output["action_index"] == 2
+    assert output["action_index"] == expected_start_tick
     request = controller.call({
         "op": "request",
         "now_ns": tick_ns(6),
         "observation_ns": tick_ns(6),
         "generation": 0,
     })["ok"]
-    assert request["forecast"] == 3
+    expected_forecast = 3
+    assert request["forecast"] == expected_forecast
     np.testing.assert_allclose(request["prefix"][:3], actions[6:9])
-    assert sum(request["mask"]) == 3
+    assert sum(request["mask"]) == expected_forecast
     assert np.count_nonzero(np.asarray(request["prefix"])[3:]) == 0
 
 
-def test_actual_controller_expired_observation_fails_closed(controller):
+def test_actual_controller_expired_observation_fails_closed(
+    controller: Controller,
+) -> None:
     request = controller.call({
         "op": "request",
         "now_ns": 0,
@@ -245,29 +289,31 @@ def test_actual_controller_expired_observation_fails_closed(controller):
     })
 
 
-def test_paced_replay_rebases_rational_clock_after_generation_reset(monkeypatch):
+def test_paced_replay_rebases_rational_clock_after_generation_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     binary = os.environ.get("D12_RTC_STREAM_BINARY")
     if binary is None:
         pytest.skip("Build the unchanged Coppernic controller wrapper first")
     decoder = SimpleNamespace(
-        to=lambda device: decoder,
+        to=lambda _device: decoder,
         eval=lambda: decoder,
         empty_cache=lambda: (torch.zeros(1, 1),) * 3,
-        rope=lambda counter: (torch.zeros(1), torch.zeros(1)),
+        rope=lambda _counter: (torch.zeros(1), torch.zeros(1)),
     )
-    monkeypatch.setattr(replay_d12_rtc, "D12FlowDecoderStep", lambda policy: decoder)
+    monkeypatch.setattr(replay_d12_rtc, "D12FlowDecoderStep", lambda _policy: decoder)
     monkeypatch.setattr(
-        replay_d12_rtc.PatchPolicyDecoderStep, "advance", lambda cache, *args: cache
+        replay_d12_rtc.PatchPolicyDecoderStep, "advance", lambda cache, *_args: cache
     )
     monkeypatch.setattr(
         replay_d12_rtc,
         "sample_plan",
-        lambda *args: np.full((50, 3), 0.2, dtype=np.float32),
+        lambda *_args: np.full((50, 3), 0.2, dtype=np.float32),
     )
     policy = SimpleNamespace(
         norm=None,
         encoder=SimpleNamespace(
-            step=lambda *args, **kwargs: (
+            step=lambda *_args, **_kwargs: (
                 torch.zeros(1, 2, 4),
                 torch.zeros(1, 1),
                 torch.zeros(1, 1),

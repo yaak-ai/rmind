@@ -10,7 +10,13 @@ from rmind.scripts.evaluate_d12_rtc import SEEDS, SEGMENTS, sha256, verify, writ
 from rmind.scripts.replay_d12_rtc import Controller
 
 
-def main():
+def require(condition: bool, context: object) -> None:
+    if not condition:
+        msg = f"D12 evidence audit failed: {context}"
+        raise ValueError(msg)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--controller", type=Path, required=True)
@@ -20,14 +26,18 @@ def main():
     root = args.output
     protocol = verify(root)
     provenance = json.loads((root / "provenance.json").read_text())
-    assert sha256(args.controller) == provenance["controller_binary"]["sha256"]
+    require(
+        sha256(args.controller) == provenance["controller_binary"]["sha256"],
+        "controller checksum",
+    )
     for name, expected in provenance["source_files"].items():
-        assert sha256(root / "source_snapshot" / name) == expected, name
+        require(sha256(root / "source_snapshot" / name) == expected, name)
     expected_jobs = {f"{Path(job).name}.npz" for job in protocol["expert_jobs"]}
     for model in ("baseline", "rtc"):
         actual_jobs = {path.name for path in (root / "expert" / model).glob("*.npz")}
         if actual_jobs != expected_jobs:
-            raise ValueError(f"Incomplete or unexpected expert cohort: {model}")
+            msg = f"Incomplete or unexpected expert cohort: {model}"
+            raise ValueError(msg)
     for path in sorted((root / "expert/baseline").glob("*.npz")):
         baseline = np.load(path)
         rtc = np.load(root / "expert/rtc" / path.name)
@@ -43,8 +53,11 @@ def main():
             (root / "tokens/baseline" / f"{segment[1]}.json").read_text()
         )
         rtc_meta = json.loads((root / "tokens/rtc" / f"{segment[1]}.json").read_text())
-        assert baseline_meta["rows"] == rtc_meta["rows"]
-        assert baseline_meta["images_sha256"] == rtc_meta["images_sha256"]
+        require(baseline_meta["rows"] == rtc_meta["rows"], "paired input rows")
+        require(
+            baseline_meta["images_sha256"] == rtc_meta["images_sha256"],
+            "paired image checksum",
+        )
         rows = baseline_meta["rows"]
         for profile in ("zero", "measured", "overrun"):
             for seed in SEEDS:
@@ -71,7 +84,7 @@ def main():
                     if paired_requests is None:
                         paired_requests = requests
                     else:
-                        assert paired_requests == requests, path
+                        require(paired_requests == requests, path)
                     if paired_noise is None:
                         paired_noise = arrays["noise"]
                     else:
@@ -83,11 +96,11 @@ def main():
                     }
                     for event in trace["events"]:
                         actual = controller.call(event["input"])
-                        assert actual == event["output"], (path, event["input"])
+                        require(actual == event["output"], (path, event["input"]))
                         if event["input"]["op"] == "action" and "ok" in actual:
                             if args.folder == "async-paced":
-                                assert actual["ok"] is not None, (
-                                    "duplicate emitted tick"
+                                require(
+                                    actual["ok"] is not None, "duplicate emitted tick"
                                 )
                             if actual["ok"] is not None:
                                 index = wall_indices[event["input"]["now_ns"]]
@@ -97,23 +110,35 @@ def main():
                                         actual["ok"]["values"], dtype=np.float32
                                     ),
                                 )
-                                assert (
+                                require(
                                     arrays["plan_ids"][index]
-                                    == actual["ok"]["request_id"]
+                                    == actual["ok"]["request_id"],
+                                    "request identity",
                                 )
-                                assert (
+                                require(
                                     arrays["action_indices"][index]
-                                    == actual["ok"]["action_index"]
+                                    == actual["ok"]["action_index"],
+                                    "action alignment",
                                 )
                     controller.close()
                     for plan in trace["plans"]:
                         request = plan["request"]
                         row = rows[plan["row"]]
-                        assert row["wall_ns"] <= request["requested_ns"]
-                        assert row["frame_wall_ns"] == request["observation_ns"]
-                        assert request["forecast"] <= (6 if arm == "rtc" else 0)
+                        require(
+                            row["wall_ns"] <= request["requested_ns"],
+                            "future observation",
+                        )
+                        require(
+                            row["frame_wall_ns"] == request["observation_ns"],
+                            "observation timestamp",
+                        )
+                        require(
+                            request["forecast"] <= (6 if arm == "rtc" else 0),
+                            "prefix bound",
+                        )
                         actions = np.asarray(plan["actions"])
-                        assert actions.shape == (50, 3) and np.isfinite(actions).all()
+                        require(actions.shape == (50, 3), "action shape")
+                        require(np.isfinite(actions).all(), "finite actions")
                         count = request["forecast"]
                         np.testing.assert_allclose(
                             actions[:count],
@@ -129,7 +154,8 @@ def main():
                     files[str(path.with_suffix(".npz").relative_to(root))] = sha256(
                         path.with_suffix(".npz")
                     )
-    assert cells == 81
+    expected_cells = len(SEGMENTS) * 3 * len(SEEDS) * 3
+    require(cells == expected_cells, "complete cohort")
     write_json(
         args.report or root / f"{args.folder}-audit.json",
         {

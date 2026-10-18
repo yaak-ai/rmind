@@ -3,22 +3,37 @@
 import argparse
 import html
 import json
-from pathlib import Path
+import shutil
 import subprocess
+from pathlib import Path
+from typing import Any
 
-import matplotlib
+import matplotlib as mpl
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image, ImageDraw
 
 from rmind.scripts.eval_d12_fm import action_metrics
-from rmind.scripts.evaluate_d12_rtc import SEEDS, SEGMENTS, write_json
+from rmind.scripts.evaluate_d12_rtc import (
+    HEIGHT_VALID_THRESHOLD,
+    SEEDS,
+    SEGMENTS,
+    write_json,
+)
 from rmind.scripts.replay_d12_rtc import command_metrics
 
 
-def experts(root, destination=None):
+def video_executable() -> str:
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        msg = "Video rendering requires ffmpeg on PATH"
+        raise FileNotFoundError(msg)
+    return str(Path(executable).resolve())
+
+
+def experts(root: Path, destination: Path | None = None) -> dict[str, Any]:
     destination = root if destination is None else destination
     report = {}
     all_arrays = {}
@@ -35,8 +50,8 @@ def experts(root, destination=None):
         report[model] = {}
         for stratum, mask in (
             ("all", np.ones(len(merged["target"]), dtype=bool)),
-            ("height_valid", merged["height"][:, 2] > 0.5),
-            ("height_missing", merged["height"][:, 2] <= 0.5),
+            ("height_valid", merged["height"][:, 2] > HEIGHT_VALID_THRESHOLD),
+            ("height_missing", merged["height"][:, 2] <= HEIGHT_VALID_THRESHOLD),
         ):
             report[model][stratum] = {
                 "windows": int(mask.sum()),
@@ -69,7 +84,9 @@ def experts(root, destination=None):
     return report
 
 
-def async_report(root, video, folder="async", destination=None):
+def async_report(
+    root: Path, video: bool, folder: str = "async", destination: Path | None = None
+) -> dict[str, Any]:
     destination = root if destination is None else destination
     report = {}
     for segment in SEGMENTS:
@@ -138,7 +155,7 @@ def async_report(root, video, folder="async", destination=None):
                 )
                 observed = np.asarray([row["wall_ns"] for row in metadata["rows"]])
                 command = [
-                    "ffmpeg",
+                    video_executable(),
                     "-v",
                     "error",
                     "-y",
@@ -197,12 +214,13 @@ def async_report(root, video, folder="async", destination=None):
                         encoder.stdin.write(np.asarray(canvas).tobytes())
                     encoder.stdin.close()
                     if encoder.wait() != 0:
-                        raise RuntimeError("video encoder failed")
+                        msg = "video encoder failed"
+                        raise RuntimeError(msg)
             plt.close(figure)
     return report
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--video", action="store_true")

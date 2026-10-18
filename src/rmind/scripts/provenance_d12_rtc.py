@@ -1,27 +1,31 @@
 """Archive the exact dirty source and verify immutable D12 evaluation inputs."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 import importlib.metadata
 import json
-from pathlib import Path
 import subprocess
 import tarfile
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 from rmind.scripts.evaluate_d12_rtc import MODELS, sha256, verify, write_json
+from rmind.scripts.train_d12_rtc import resolved_executable
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--controller-source", type=Path, required=True)
     parser.add_argument("--controller-binary", type=Path, required=True)
     args = parser.parse_args()
     protocol = verify(args.output)
+    git = resolved_executable("git")
+    nvidia_smi = resolved_executable("nvidia-smi")
     root = Path(__file__).resolve().parents[3]
     paths = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        [git, "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=root,
         text=True,
     ).splitlines()
@@ -38,11 +42,12 @@ def main():
     original_manifest = MODELS["rtc"] / "inputs.json"
     expected = json.loads(original_manifest.read_text())["dataset"]
 
-    def checked(record):
+    def checked(record: dict[str, Any]) -> dict[str, Any]:
         path = Path(record["path"])
         actual = sha256(path)
         if actual != record["sha256"] or path.stat().st_size != record["bytes"]:
-            raise ValueError(f"Training/evaluation data drift: {path}")
+            msg = f"Training/evaluation data drift: {path}"
+            raise ValueError(msg)
         return record
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -50,7 +55,7 @@ def main():
     write_json(
         args.output / "provenance.json",
         {
-            "captured_utc": datetime.now(timezone.utc).isoformat(),
+            "captured_utc": datetime.now(UTC).isoformat(),
             "scope": "Source captured after expert/extraction stages; asynchronous replay executes this snapshot. This record describes this reproduction only; original historical failed attempts remain in their separate immutable evidence directory.",
             "source_archive": {"path": str(archive), "sha256": sha256(archive)},
             "source_files": {
@@ -79,14 +84,14 @@ def main():
                 )
             },
             "git_head": subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+                [git, "rev-parse", "HEAD"], cwd=root, text=True
             ).strip(),
             "git_status": subprocess.check_output(
-                ["git", "status", "--short"], cwd=root, text=True
+                [git, "status", "--short"], cwd=root, text=True
             ),
             "gpu_inventory": subprocess.check_output(
                 [
-                    "nvidia-smi",
+                    nvidia_smi,
                     "--query-gpu=index,name,uuid,driver_version",
                     "--format=csv,noheader",
                 ],

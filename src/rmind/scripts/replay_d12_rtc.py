@@ -1,21 +1,23 @@
 """Recorded images with the actual Coppernic RTC controller, without actuation."""
 
 import argparse
+import json
+import subprocess
 from collections import Counter
 from datetime import datetime
-import json
 from pathlib import Path
-import subprocess
+from typing import Any
 
 import numpy as np
 import torch
 
 from rmind.models.d12_flow_decoder import D12FlowDecoderStep
+from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 from rmind.scripts.evaluate_d12_rtc import (
     BASE,
-    SEGMENTS,
     SEEDS,
+    SEGMENTS,
     explicit_noise,
     load_policy,
     setup,
@@ -25,51 +27,57 @@ from rmind.scripts.evaluate_d12_rtc import (
 )
 from rmind.scripts.replay_d12_rollouts import AUX_NAMES, video_images
 
+OVERRUN_CADENCE = 50
+LONG_OVERRUN_CADENCE = 100
+TRACTION_THRESHOLD = 0.15
 
-def tick_ns(tick):
+
+def tick_ns(tick: int) -> int:
     return (int(tick) * 1_000_000_000 + 29) // 30
 
 
 class Controller:
-    def __init__(self, binary, max_prefix):
+    def __init__(self, binary: Path, max_prefix: int) -> None:
         self.process = subprocess.Popen(
-            [str(binary)],
+            [str(binary.resolve())],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
-        config = dict(
-            horizon=50,
-            execution_horizon=6,
-            action_hz=30,
-            action_dim=3,
-            max_prefix=max_prefix,
-            initial_forecast=min(3, max_prefix),
-            observation_max_age_ns=400_000_000,
-            gains=[1.0, 1.0, 1.0],
-        )
+        config = {
+            "horizon": 50,
+            "execution_horizon": 6,
+            "action_hz": 30,
+            "action_dim": 3,
+            "max_prefix": max_prefix,
+            "initial_forecast": min(3, max_prefix),
+            "observation_max_age_ns": 400_000_000,
+            "gains": [1.0, 1.0, 1.0],
+        }
         self.process.stdin.write(json.dumps(config) + "\n")
         self.process.stdin.flush()
         self.events = []
 
-    def call(self, event):
+    def call(self, event: dict[str, Any]) -> dict[str, Any]:
         self.process.stdin.write(json.dumps(event, allow_nan=False) + "\n")
         self.process.stdin.flush()
         response = self.process.stdout.readline()
         if not response:
-            raise RuntimeError("RTC subprocess terminated")
+            msg = "RTC subprocess terminated"
+            raise RuntimeError(msg)
         result = json.loads(response)
         self.events.append({"input": event, "output": result})
         return result
 
-    def close(self):
+    def close(self) -> None:
         self.process.stdin.close()
         if self.process.wait(timeout=5):
-            raise RuntimeError("RTC subprocess failed")
+            msg = "RTC subprocess failed"
+            raise RuntimeError(msg)
 
 
-def extract(directory, model, device):
+def extract(directory: Path, model: str, device: str) -> None:
     protocol = verify(directory)
     policy = load_policy(protocol, model, device)
     decoder = D12FlowDecoderStep(policy).to(device).eval()
@@ -100,7 +108,8 @@ def extract(directory, model, device):
                 if cached_frame != row["frame"]:
                     cached_frame, cached_image = next(images)
                 if cached_frame != row["frame"]:
-                    raise ValueError("PTS video ordering mismatch")
+                    msg = "PTS video ordering mismatch"
+                    raise ValueError(msg)
                 image_array[index] = cached_image
                 image = (
                     torch.as_tensor(
@@ -151,18 +160,26 @@ def extract(directory, model, device):
         )
 
 
-def load_tokens(path, model_artifacts):
+def load_tokens(
+    path: Path, model_artifacts: dict[str, Any]
+) -> tuple[np.ndarray, dict[str, Any]]:
     metadata = json.loads(path.with_suffix(".json").read_text())
     if metadata.get("model_artifacts") != model_artifacts:
-        raise ValueError(
-            "Token model provenance differs or is missing; re-extract tokens"
-        )
+        msg = "Token model provenance differs or is missing; re-extract tokens"
+        raise ValueError(msg)
     if sha256(path) != metadata["tokens_sha256"]:
-        raise ValueError("Token array changed")
+        msg = "Token array changed"
+        raise ValueError(msg)
     return np.load(path, mmap_mode="r"), metadata
 
 
-def sample_plan(policy, feature, noise, request, conditional):
+def sample_plan(
+    policy: PatchPolicyContinuous,
+    feature: torch.Tensor,
+    noise: np.ndarray,
+    request: dict[str, Any],
+    conditional: bool,
+) -> np.ndarray:
     kwargs = {}
     if conditional:
         prefix = torch.tensor(request["prefix"], device=feature.device)[None]
@@ -178,18 +195,18 @@ def sample_plan(policy, feature, noise, request, conditional):
 
 
 def replay_one(
-    policy,
-    tokens,
-    rows,
-    segment,
-    arm,
-    profile,
-    seed,
-    latency,
-    binary,
-    device,
-    clock="fixed",
-):
+    policy: PatchPolicyContinuous,
+    tokens: np.ndarray,
+    rows: list[dict[str, Any]],
+    segment: tuple[str, str, str, str],
+    arm: str,
+    profile: str,
+    seed: int,
+    latency: np.ndarray,
+    binary: Path,
+    device: str,
+    clock: str = "fixed",
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     start = int(datetime.fromisoformat(segment[2]).timestamp() * 1e9)
     end = int(datetime.fromisoformat(segment[3]).timestamp() * 1e9)
     origin = start - 1_000_000_000
@@ -214,7 +231,7 @@ def replay_one(
         )
         timestamps.append(now)
         if pending is not None and pending[0] <= now:
-            completed, event = pending
+            _completed, event = pending
             result = controller.call(event)
             if "error" in result:
                 errors.append({"tick": tick, "op": "complete", **result})
@@ -236,10 +253,10 @@ def replay_one(
                     "observation_ns": int(row["frame_wall_ns"]),
                     "generation": generation,
                 })
-                if clock == "fixed" or request_result.get("error") not in (
+                if clock == "fixed" or request_result.get("error") not in {
                     "busy",
                     "not_due",
-                ):
+                }:
                     previous_row = index
                 if "ok" in request_result:
                     request = request_result["ok"]
@@ -270,8 +287,16 @@ def replay_one(
                         if profile == "zero"
                         else float(latency[(call_index + seed) % len(latency)])
                     )
-                    if profile == "overrun" and call_index % 50 == 49:
-                        delay = 0.45 if call_index % 100 == 99 else 0.25
+                    if (
+                        profile == "overrun"
+                        and call_index % OVERRUN_CADENCE == OVERRUN_CADENCE - 1
+                    ):
+                        delay = (
+                            0.45
+                            if call_index % LONG_OVERRUN_CADENCE
+                            == LONG_OVERRUN_CADENCE - 1
+                            else 0.25
+                        )
                     completion = now + int(np.ceil(delay * 1e9))
                     event = {
                         "op": "complete",
@@ -320,7 +345,7 @@ def replay_one(
     }, {"events": controller.events, "errors": errors, "plans": plans}
 
 
-def command_metrics(arrays):
+def command_metrics(arrays: dict[str, np.ndarray]) -> dict[str, Any]:
     values = arrays["commands"][arrays["scored"]]
     ids = arrays["plan_ids"][arrays["scored"]]
     valid = np.isfinite(values).all(axis=1)
@@ -359,7 +384,10 @@ def command_metrics(arrays):
         sustained.append(
             bool(
                 np.isfinite(window).all()
-                and ((window > 0.15).all() or (window < -0.15).all())
+                and (
+                    (window > TRACTION_THRESHOLD).all()
+                    or (window < -TRACTION_THRESHOLD).all()
+                )
             )
         )
     result["sustained_traction_500ms_fraction"] = (
@@ -368,7 +396,7 @@ def command_metrics(arrays):
     return result
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("extract", "replay"))
     parser.add_argument("--output", type=Path, required=True)
@@ -384,7 +412,9 @@ def main():
     protocol = verify(args.output)
     if args.controller is None:
         parser.error("replay requires --controller")
-    latency = json.loads(Path(protocol["latency_source"]).read_text())["seconds"]
+    latency = json.loads(Path(protocol["latency_source"]).read_text(encoding="utf-8"))[
+        "seconds"
+    ]
     policy = load_policy(protocol, args.model, args.device)
     output = (
         args.output / ("async" if args.clock == "fixed" else "async-paced") / args.model

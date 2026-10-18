@@ -4,15 +4,18 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 from rmind.scripts.eval_d12_fm import action_metrics, predict_job
 
 SEEDS = (131, 137, 139)
+HEIGHT_VALID_THRESHOLD = 0.5
+ACTIVE_COMMAND_THRESHOLD = 0.05
 BASE = Path("/nasa/max/d12/flow_matching")
 MODELS = {
     "baseline": BASE / "2026-10-14-h50-1cam",
@@ -41,28 +44,31 @@ SEGMENTS = (
 )
 
 
-def sha256(path):
+def sha256(path: Path | str) -> str:
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def write_json(path, value):
+def write_json(path: Path | str, value: Any) -> None:
     with Path(path).open("x", encoding="utf-8") as stream:
         json.dump(value, stream, indent=2, allow_nan=False)
         stream.write("\n")
 
 
-def setup():
+def setup() -> None:
     torch.set_num_threads(4)
     torch.set_float32_matmul_precision("highest")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
 
 
-def load_policy(protocol, name, device):
+def load_policy(
+    protocol: dict[str, Any], name: str, device: str
+) -> PatchPolicyContinuous:
     record = protocol["models"][name]
     if sha256(record["checkpoint"]) != record["sha256"]:
-        raise ValueError("Checkpoint changed before loading")
+        msg = "Checkpoint changed before loading"
+        raise ValueError(msg)
     return (
         PatchPolicyContinuous
         .load_from_checkpoint(
@@ -73,14 +79,15 @@ def load_policy(protocol, name, device):
     )
 
 
-def load_config(protocol, name):
+def load_config(protocol: dict[str, Any], name: str) -> DictConfig:
     record = protocol["models"][name]
     if sha256(record["config"]) != record["config_sha256"]:
-        raise ValueError("Configuration changed before loading")
+        msg = "Configuration changed before loading"
+        raise ValueError(msg)
     return OmegaConf.load(record["config"])
 
 
-def explicit_noise(seed, identity, count):
+def explicit_noise(seed: int, identity: str, count: int) -> np.ndarray:
     identity_seed = int.from_bytes(
         hashlib.sha256(identity.encode()).digest()[:4], "little"
     )
@@ -89,7 +96,7 @@ def explicit_noise(seed, identity, count):
     ).standard_normal((count, 50, 3), dtype=np.float32)
 
 
-def freeze(directory):
+def freeze(directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     config = OmegaConf.load(MODELS["rtc"] / "resolved.yaml")
     write_json(
@@ -136,21 +143,25 @@ def freeze(directory):
     )
 
 
-def verify(directory):
+def verify(directory: Path) -> dict[str, Any]:
     if not __debug__:
-        raise RuntimeError("Evaluation audits require Python without -O")
+        msg = "Evaluation audits require Python without -O"
+        raise RuntimeError(msg)
     protocol = json.loads((directory / "protocol.json").read_text())
     for model in protocol["models"].values():
         if sha256(model["checkpoint"]) != model["sha256"]:
-            raise ValueError(f"Checkpoint changed: {model['checkpoint']}")
+            msg = f"Checkpoint changed: {model['checkpoint']}"
+            raise ValueError(msg)
         if sha256(model["config"]) != model["config_sha256"]:
-            raise ValueError(f"Configuration changed: {model['config']}")
+            msg = f"Configuration changed: {model['config']}"
+            raise ValueError(msg)
     if sha256(protocol["latency_source"]) != protocol["latency_sha256"]:
-        raise ValueError("Latency source changed")
+        msg = "Latency source changed"
+        raise ValueError(msg)
     return protocol
 
 
-def expert(directory, name, device):
+def expert(directory: Path, name: str, device: str) -> None:
     protocol = verify(directory)
     output = directory / "expert" / name
     output.mkdir(parents=True, exist_ok=True)
@@ -185,7 +196,7 @@ def expert(directory, name, device):
                 )
                 noise = torch.as_tensor(noises[start:stop], device=device).flatten(0, 1)
                 times = torch.full((len(features),), 0.5, device=device)
-                for prefix in predictions:
+                for prefix, prefix_predictions in predictions.items():
                     mask = (
                         (torch.arange(50, device=device)[None] < prefix)
                         .expand(len(features), -1)
@@ -200,7 +211,7 @@ def expert(directory, name, device):
                         features, x0=noise.flatten(1), **kwargs
                     )
                     raw = prediction * policy.action_std + policy.action_mean
-                    predictions[prefix].append(
+                    prefix_predictions.append(
                         raw.reshape(stop - start, len(SEEDS), 50, 3).cpu().numpy()
                     )
                     if name == "rtc":
@@ -226,16 +237,20 @@ def expert(directory, name, device):
                 prefix: np.concatenate(values) for prefix, values in predictions.items()
             }
             metrics = {}
-            height_valid = arrays["height"][:, 2] > 0.5
+            height_valid = arrays["height"][:, 2] > HEIGHT_VALID_THRESHOLD
             strata = {
                 "all": np.ones(count, dtype=bool),
                 "height_valid": height_valid,
                 "height_missing": ~height_valid,
-                "hold_command": (np.abs(arrays["target"][:, :6, [0, 2]]) <= 0.05).all(
-                    axis=(1, 2)
-                ),
-                "lift_command": (arrays["target"][:, :6, 2] > 0.05).any(axis=1),
-                "lower_command": (arrays["target"][:, :6, 2] < -0.05).any(axis=1),
+                "hold_command": (
+                    np.abs(arrays["target"][:, :6, [0, 2]]) <= ACTIVE_COMMAND_THRESHOLD
+                ).all(axis=(1, 2)),
+                "lift_command": (
+                    arrays["target"][:, :6, 2] > ACTIVE_COMMAND_THRESHOLD
+                ).any(axis=1),
+                "lower_command": (
+                    arrays["target"][:, :6, 2] < -ACTIVE_COMMAND_THRESHOLD
+                ).any(axis=1),
             }
             for prefix, values in predictions.items():
                 for stratum, selection in strata.items():
@@ -277,7 +292,7 @@ def expert(directory, name, device):
     write_json(output / "report.json", report)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("freeze", "expert"))
     parser.add_argument("--output", type=Path, required=True)

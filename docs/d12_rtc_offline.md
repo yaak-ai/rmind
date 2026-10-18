@@ -180,3 +180,16 @@ new-K3.62e-5, new-V4.15e-5. ONNX Runtime passes the stricter1e-4 export gate.
 This artifact is explicitly `test_only`; it is not deployed. A single fixed
 fixture does not replace a trained-model stateful sequence test, Orin/TensorRT
 version compatibility, real-kit latency measurements or shadow validation.
+# Lint and integrity scope
+
+The offline CLIs keep their reviewed sequential scheduler, paired-noise, and
+cohort-audit loops through explicitly named per-file complexity exceptions.
+Existing positional replay interfaces remain compatible with archived callers;
+the audit predicate accepts a positional condition like the assertion it replaces.
+Production audit predicates now raise `ValueError` explicitly, including under
+`python -O`; no integrity check is disabled. CLI stdout is intentional. External
+commands use resolved executable paths and fixed argument arrays without shells;
+the test's Python subprocess proves optimized-mode checksum rejection. Private
+frame-token access deliberately reuses production preprocessing rather than a
+second implementation. These exceptions do not relax tests, evidence checks,
+model numerical gates, or outcome criteria.
