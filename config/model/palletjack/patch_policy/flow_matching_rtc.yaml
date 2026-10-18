@@ -1,0 +1,21 @@
+defaults:
+  - /model/palletjack/patch_policy/policy_chunk@_here_
+  - _self_
+
+heads: null
+losses: null
+fm_head:
+  _target_: rmind.components.rtc_flow_head.TokenTimeFlowHead
+  feat_dim: ${policy_embedding_dim}
+  action_dim: 3
+  action_horizon: ${action_horizon}
+  channel_dim: 256
+  channel_hidden_dim: 512
+  token_hidden_dim: 64
+  num_layers: 4
+  max_prefix: 4
+  time_embedding_mode: native
+fm_inference_steps: 5
+fm_x0: sample
+action_mean: ${action_mean}
+action_std: ${action_std}

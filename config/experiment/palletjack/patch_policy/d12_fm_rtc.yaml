@@ -1,0 +1,17 @@
+# @package _global_
+defaults:
+  - /experiment/palletjack/patch_policy/d12_fm
+  - override /model: palletjack/patch_policy/flow_matching_rtc
+  - _self_
+
+trainer:
+  precision: 32-true
+
+wandb:
+  tags: [palletjack, d12, patch_policy, flow_matching, token_time_rtc, opt_in]
+  notes: >-
+    Experimental token-time clean-prefix flow head, final prefix clamp,
+    suffix element-normalized loss, five Euler steps. FP32 is the validated
+    numerical path; mixed precision is not certified. Camera/data choices
+    remain inherited and must be explicitly reviewed before any D12 run.
+    No trained D12 RTC policy or robot-readiness claim is implied.

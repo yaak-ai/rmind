@@ -29,10 +29,20 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--test-only", action="store_true")
+    parser.add_argument("--rtc-execution-horizon", type=int, default=6)
+    parser.add_argument("--rtc-initial-forecast", type=int, default=3)
+    parser.add_argument("--rtc-observation-max-age-ns", type=int, default=400000000)
     arguments = parser.parse_args()
     arguments.output.mkdir(parents=True, exist_ok=True)
     torch.set_float32_matmul_precision("highest")
     torch.manual_seed(arguments.seed)
+    checkpoint_metadata = torch.load(
+        arguments.checkpoint, map_location="meta", weights_only=False
+    )
+    fixture_metadata = checkpoint_metadata.get("rtc_test_fixture", {})
+    test_only = arguments.test_only or fixture_metadata.get("deployable") is False
+    del checkpoint_metadata
     policy = (
         PatchPolicyContinuous
         .load_from_checkpoint(
@@ -42,6 +52,19 @@ def main() -> None:
         .to(arguments.device)
     )
     decoder = D12FlowDecoderStep(policy).eval().to(arguments.device)
+    if decoder.rtc_enabled:
+        if not 0 <= arguments.rtc_initial_forecast <= policy.fm_head.max_prefix:
+            raise ValueError("initial forecast is outside the trained prefix range")
+        if (
+            not 1
+            <= arguments.rtc_execution_horizon
+            <= policy.action_horizon - policy.fm_head.max_prefix
+        ):
+            raise ValueError(
+                "RTC horizon does not cover execution plus the trained latency prefix"
+            )
+        if arguments.rtc_observation_max_age_ns <= 0:
+            raise ValueError("observation freshness bound must be positive")
     config = OmegaConf.load(arguments.config)
     stages = config.datamodule.val.dataset.samples.pipeline.functions
     builder, positioner, windower = (instantiate(stage.func) for stage in stages[:3])
@@ -71,6 +94,21 @@ def main() -> None:
         tuple(value.to(arguments.device) for value in decoder.empty_cache()),
     )
     noise = torch.randn(1, policy.action_horizon * 3, device=arguments.device)
+    prefix_arguments = {}
+    rtc_inputs = ()
+    if decoder.rtc_enabled:
+        clean_prefix = (
+            torch.randn(1, policy.action_horizon, 3, device=arguments.device) * 0.1
+        )
+        prefix_mask = (
+            torch.arange(policy.action_horizon, device=arguments.device)[None]
+            < arguments.rtc_initial_forecast
+        ).float()
+        rtc_inputs = (clean_prefix, prefix_mask)
+        prefix_arguments = {
+            "clean_prefix": (clean_prefix - policy.action_mean) / policy.action_std,
+            "prefix_mask": prefix_mask,
+        }
     with torch.no_grad():
         transformed = policy.input_transform(batch)
         for index in range(6):
@@ -92,19 +130,21 @@ def main() -> None:
             rotation = tuple(
                 value.to(arguments.device) for value in decoder.rope(index)
             )
-            inputs = (*images, *observations, *cache, *rotation, noise)
+            inputs = (*images, *observations, *cache, *rotation, noise, *rtc_inputs)
             outputs = decoder(*inputs)
             cache = PatchPolicyDecoderStep.advance(cache, outputs[1], outputs[2])
         features = policy.features(batch)[:, -1]
         reference = (
-            policy.fm_sample(features, x0=noise) * policy.action_std
+            policy.fm_sample(features, x0=noise, **prefix_arguments) * policy.action_std
             + policy.action_mean
         )
         eager_error = float((outputs[0] - reference).abs().max())
         if eager_error > PARITY_MAX_ABS:
             message = f"window/streaming parity failed: {eager_error}"
             raise RuntimeError(message)
-        changed = decoder(*inputs[:-1], -noise)[0]
+        changed_inputs = list(inputs)
+        changed_inputs[decoder.input_names.index("fm_x0")] = -noise
+        changed = decoder(*changed_inputs)[0]
         if torch.equal(outputs[0], changed):
             message = "flow start noise does not affect actions"
             raise RuntimeError(message)
@@ -154,7 +194,10 @@ def main() -> None:
     with arguments.checkpoint.open("rb") as checkpoint_stream:
         checkpoint_sha256 = hashlib.file_digest(checkpoint_stream, "sha256").hexdigest()
     manifest = {
-        "schema": "d12_flow_matching_v1",
+        "test_only": test_only,
+        "schema": "d12_flow_matching_rtc_v1"
+        if decoder.rtc_enabled
+        else "d12_flow_matching_v1",
         "action_head": "fm",
         "onnx": "model.onnx",
         "checkpoint": str(arguments.checkpoint.resolve()),
@@ -204,6 +247,19 @@ def main() -> None:
         },
         "parity": {"window_vs_streaming_max_abs": eager_error, "onnx_max_abs": errors},
     }
+    if decoder.rtc_enabled:
+        manifest["rtc"] = {
+            "variant": policy.fm_head.rtc_variant,
+            "prefix_space": "raw_normalized_commands",
+            "noise_space": "normalized_actions",
+            "time_conditioning": "per_token",
+            "final_prefix_clamp": True,
+            "forecast_strategy": "last_completed",
+            "initial_forecast": arguments.rtc_initial_forecast,
+            "max_prefix": policy.fm_head.max_prefix,
+            "execution_horizon": arguments.rtc_execution_horizon,
+            "observation_max_age_ns": arguments.rtc_observation_max_age_ns,
+        }
     (arguments.output / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n"
     )
