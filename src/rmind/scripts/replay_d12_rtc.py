@@ -70,8 +70,8 @@ class Controller:
 
 
 def extract(directory, model, device):
-    verify(directory)
-    policy = load_policy(model, device)
+    protocol = verify(directory)
+    policy = load_policy(protocol, model, device)
     decoder = D12FlowDecoderStep(policy).to(device).eval()
     root = BASE / "rollouts/2026-10-15"
     output = directory / "tokens" / model
@@ -138,6 +138,7 @@ def extract(directory, model, device):
                 "rows_sha256": sha256(root / "replay" / replay / "inputs.json"),
                 "tokens_sha256": sha256(output / f"{replay}.npy"),
                 "model": model,
+                "model_artifacts": protocol["models"][model],
                 "images_sha256": sha256(output / f"{replay}-images.npy"),
                 "videos": {
                     str(root / "raw" / job / f"cam_fork--{chunk}.mp4"): sha256(
@@ -148,6 +149,17 @@ def extract(directory, model, device):
                 "preprocessing": "Existing PTS mapping, lossy MP4, half-pixel uint8 576x324 then256x144; approximate serving images",
             },
         )
+
+
+def load_tokens(path, model_artifacts):
+    metadata = json.loads(path.with_suffix(".json").read_text())
+    if metadata.get("model_artifacts") != model_artifacts:
+        raise ValueError(
+            "Token model provenance differs or is missing; re-extract tokens"
+        )
+    if sha256(path) != metadata["tokens_sha256"]:
+        raise ValueError("Token array changed")
+    return np.load(path, mmap_mode="r"), metadata
 
 
 def sample_plan(policy, feature, noise, request, conditional):
@@ -373,7 +385,7 @@ def main():
     if args.controller is None:
         parser.error("replay requires --controller")
     latency = json.loads(Path(protocol["latency_source"]).read_text())["seconds"]
-    policy = load_policy(args.model, args.device)
+    policy = load_policy(protocol, args.model, args.device)
     output = (
         args.output / ("async" if args.clock == "fixed" else "async-paced") / args.model
     )
@@ -382,9 +394,7 @@ def main():
     with torch.inference_mode():
         for segment in SEGMENTS:
             token_path = args.output / "tokens" / args.model / f"{segment[1]}.npy"
-            metadata = json.loads(token_path.with_suffix(".json").read_text())
-            assert sha256(token_path) == metadata["tokens_sha256"]
-            tokens = np.load(token_path, mmap_mode="r")
+            tokens, metadata = load_tokens(token_path, protocol["models"][args.model])
             for arm in (
                 ("baseline",)
                 if args.model == "baseline"

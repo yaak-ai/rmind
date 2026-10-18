@@ -1,5 +1,7 @@
 import os
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +18,87 @@ from rmind.scripts.replay_d12_rtc import (
     tick_ns,
 )
 from rmind.scripts import replay_d12_rtc
+from rmind.scripts import evaluate_d12_rtc
+
+
+def test_loader_uses_verified_protocol_artifacts_not_default_model_path(
+    tmp_path, monkeypatch
+):
+    checkpoint = tmp_path / "alternate.ckpt"
+    checkpoint.write_bytes(b"selected")
+    config = tmp_path / "alternate.yaml"
+    config.write_text("selected: true\n")
+    protocol = {
+        "models": {
+            "rtc": {
+                "checkpoint": str(checkpoint),
+                "sha256": sha256(checkpoint),
+                "config": str(config),
+                "config_sha256": sha256(config),
+            }
+        }
+    }
+    loaded = []
+    policy = SimpleNamespace()
+    policy.eval = lambda: policy
+    policy.to = lambda device: policy
+
+    def loader(path, **kwargs):
+        loaded.append(path)
+        return policy
+
+    monkeypatch.setattr(
+        evaluate_d12_rtc.PatchPolicyContinuous, "load_from_checkpoint", loader
+    )
+    assert evaluate_d12_rtc.load_policy(protocol, "rtc", "cpu") is policy
+    assert loaded == [str(checkpoint)]
+    assert evaluate_d12_rtc.load_config(protocol, "rtc").selected is True
+    checkpoint.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="Checkpoint changed"):
+        evaluate_d12_rtc.load_policy(protocol, "rtc", "cpu")
+    config.write_text("selected: false\n")
+    with pytest.raises(ValueError, match="Configuration changed"):
+        evaluate_d12_rtc.load_config(protocol, "rtc")
+
+
+@pytest.mark.parametrize("changed", ["array", "model", "missing_model"])
+def test_token_cache_rejects_changed_array_or_model(tmp_path, changed):
+    path = tmp_path / "tokens.npy"
+    np.save(path, np.zeros((2, 3)))
+    model = {"sha256": "checkpoint", "config_sha256": "config"}
+    metadata = {"model_artifacts": model, "tokens_sha256": sha256(path)}
+    path.with_suffix(".json").write_text(json.dumps(metadata))
+    replay_d12_rtc.load_tokens(path, model)
+    if changed == "array":
+        np.save(path, np.ones((2, 3)))
+    elif changed == "model":
+        model = {"sha256": "other", "config_sha256": "config"}
+    else:
+        del metadata["model_artifacts"]
+        path.with_suffix(".json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="Token"):
+        replay_d12_rtc.load_tokens(path, model)
+
+
+def test_token_integrity_check_survives_python_optimized_mode(tmp_path):
+    path = tmp_path / "tokens.npy"
+    np.save(path, np.zeros((2, 3)))
+    path.with_suffix(".json").write_text(
+        json.dumps({"model_artifacts": {}, "tokens_sha256": "not-the-array-hash"})
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-O",
+            "-c",
+            "from pathlib import Path\nimport sys\nfrom rmind.scripts.replay_d12_rtc import load_tokens\ntry:\n load_tokens(Path(sys.argv[1]), {})\nexcept ValueError:\n sys.exit(0)\nsys.exit(1)\n",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("changed", ["checkpoint", "config", "latency"])

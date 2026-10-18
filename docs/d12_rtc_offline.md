@@ -5,6 +5,12 @@ It does not control the truck or estimate counterfactual closed-loop success.
 The models differ in architecture and training; their difference is not a
 controlled estimate of the effect of prefix conditioning alone.
 
+Model and preprocessing configuration are loaded from the exact hash-verified
+protocol records, not separately selected defaults. Newly extracted token caches
+bind those records and their array checksum; older unbound caches must be
+re-extracted before a new replay. Integrity checks are explicit exceptions, not
+assertions that can disappear under optimized Python.
+
 ## Protocol
 
 The frozen protocol and evidence live at

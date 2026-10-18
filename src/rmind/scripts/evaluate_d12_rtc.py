@@ -59,15 +59,25 @@ def setup():
     torch.backends.cudnn.allow_tf32 = False
 
 
-def load_policy(name, device):
+def load_policy(protocol, name, device):
+    record = protocol["models"][name]
+    if sha256(record["checkpoint"]) != record["sha256"]:
+        raise ValueError("Checkpoint changed before loading")
     return (
         PatchPolicyContinuous
         .load_from_checkpoint(
-            MODELS[name] / CHECKPOINT, map_location="cpu", weights_only=False
+            record["checkpoint"], map_location="cpu", weights_only=False
         )
         .eval()
         .to(device)
     )
+
+
+def load_config(protocol, name):
+    record = protocol["models"][name]
+    if sha256(record["config"]) != record["config_sha256"]:
+        raise ValueError("Configuration changed before loading")
+    return OmegaConf.load(record["config"])
 
 
 def explicit_noise(seed, identity, count):
@@ -144,8 +154,8 @@ def expert(directory, name, device):
     protocol = verify(directory)
     output = directory / "expert" / name
     output.mkdir(parents=True, exist_ok=True)
-    policy = load_policy(name, device)
-    config = OmegaConf.load(MODELS[name] / "resolved.yaml")
+    policy = load_policy(protocol, name, device)
+    config = load_config(protocol, name)
     report = {}
     with torch.inference_mode():
         for job_name in protocol["expert_jobs"]:
