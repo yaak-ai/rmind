@@ -9,7 +9,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import matplotlib as mpl
 import numpy as np
@@ -228,7 +228,7 @@ def analyze(
     height = tables["fork/height"]
     segments = intervals(status[:, 0], status[:, 1] > 0)
     model_steps = inputs[inputs[:, 3] > 0]
-    report = {
+    report: dict[str, Any] = {
         "job": directory.name,
         "start_utc": utc(start),
         "end_utc": utc(stop),
@@ -431,7 +431,10 @@ def analyze(
             writer.writerows(records)
     np.savez_compressed(
         output / "signals.npz",
-        **{name.replace("/", "__"): table for name, table in tables.items()},
+        **cast(
+            "dict[str, Any]",
+            {name.replace("/", "__"): table for name, table in tables.items()},
+        ),
     )
     figure, axes = plt.subplots(6, 1, figsize=(18, 15), sharex=True)
     for index, action in enumerate(("traction", "steering", "fork1")):

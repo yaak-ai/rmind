@@ -9,7 +9,7 @@ import subprocess
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from mcap.reader import make_reader
@@ -169,6 +169,9 @@ def video_images(
             "pipe:1",
         ]
         with subprocess.Popen(command, stdout=subprocess.PIPE) as process:
+            if process.stdout is None:
+                msg = "ffmpeg stdout pipe was not created"
+                raise RuntimeError(msg)
             for index in indices:
                 byte_count = probe["width"] * probe["height"] * 3
                 raw = process.stdout.read(byte_count)
@@ -328,7 +331,9 @@ def main() -> None:
     noise_input = noise_provenance(arguments.rust_noise)
     noise = np.fromfile(arguments.rust_noise, dtype="<f4").reshape(-1, 150)
     noise_indices = np.asarray([
-        noise_index(index, arguments.noise_offset, changes)
+        noise_index(
+            index, arguments.noise_offset, cast("list[tuple[int, int]]", changes)
+        )
         for index in range(len(rows))
     ])
     if (noise_indices < 0).any() or (noise_indices >= len(noise)).any():
@@ -373,10 +378,17 @@ def main() -> None:
                     msg = "Video/input frame order mismatch"
                     raise ValueError(msg)
                 if row["generation"] != previous_generation:
-                    cache = tuple(
-                        value.to(arguments.device) for value in decoder.empty_cache()
+                    cache = cast(
+                        "tuple[torch.Tensor, torch.Tensor, torch.Tensor]",
+                        tuple(
+                            value.to(arguments.device)
+                            for value in decoder.empty_cache()
+                        ),
                     )
                     previous_generation, frame_counter = row["generation"], 0
+                if cached_image is None or cache is None:
+                    msg = "Replay requires an image and initialized generation cache"
+                    raise ValueError(msg)
                 image = (
                     torch.tensor(
                         cached_image.transpose(2, 0, 1).copy(), device=arguments.device
