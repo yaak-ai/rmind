@@ -4,7 +4,58 @@ import pytest
 from omegaconf import OmegaConf
 
 from rmind.components.rtc_flow_head import TokenTimeFlowHead
-from rmind.scripts.train_d12_rtc import build_config, warmstart
+from rmind.scripts.export_d12_fm import checkpoint_export_safety
+from rmind.scripts.train_d12_rtc import (
+    SmokeCheckpointQuarantine,
+    build_config,
+    warmstart,
+)
+
+
+def test_smoke_checkpoint_stays_quarantined_after_reload_and_default_export(tmp_path):
+    checkpoint = {"state_dict": {"weight": torch.ones(1)}}
+    SmokeCheckpointQuarantine().on_save_checkpoint(None, None, checkpoint)
+    path = tmp_path / "renamed.ckpt"
+    torch.save(checkpoint, path)
+    metadata = torch.load(path, weights_only=True, map_location="meta")
+    assert checkpoint_export_safety(metadata, False) == {
+        "test_only": True,
+        "head_trained": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"test_only": True},
+        {"rtc_test_fixture": {"deployable": False}},
+        {"rtc_test_fixture": {"head_trained": False}},
+    ],
+)
+def test_each_quarantine_marker_survives_default_export(metadata):
+    assert checkpoint_export_safety(metadata, False)["test_only"] is True
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"test_only": "false"},
+        {"rtc_test_fixture": []},
+        {"rtc_test_fixture": {"deployable": 0}},
+        {"rtc_test_fixture": {"head_trained": "true"}},
+    ],
+)
+def test_malformed_quarantine_metadata_rejected(metadata):
+    with pytest.raises(ValueError):
+        checkpoint_export_safety(metadata, False)
+
+
+def test_legacy_export_and_explicit_test_only_behavior_remain_available():
+    assert checkpoint_export_safety({}, False) == {
+        "test_only": False,
+        "head_trained": None,
+    }
+    assert checkpoint_export_safety({}, True)["test_only"] is True
 
 
 @pytest.fixture

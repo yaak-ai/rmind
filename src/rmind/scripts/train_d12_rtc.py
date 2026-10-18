@@ -29,6 +29,16 @@ def write_json(path: Path, document: dict) -> None:
         stream.write(json.dumps(document, indent=2) + "\n")
 
 
+class SmokeCheckpointQuarantine(pl.Callback):
+    def on_save_checkpoint(self, trainer, pl_module, checkpoint) -> None:
+        checkpoint["test_only"] = True
+        checkpoint["rtc_test_fixture"] = {
+            "deployable": False,
+            "head_trained": False,
+            "purpose": "three-step training smoke, not a deployment candidate",
+        }
+
+
 def build_config(baseline: Path, directory: Path):
     config = OmegaConf.load(baseline / "resolved.yaml")
     if list(config.model.cameras) != ["cam_fork"] or config.model.action_horizon != 50:
@@ -285,7 +295,10 @@ def smoke(config, checkpoint: Path, directory: Path) -> None:
         enable_checkpointing=False,
         enable_progress_bar=False,
         enable_model_summary=False,
-        callbacks=[TrainingHealth(directory, early_steps=())],
+        callbacks=[
+            TrainingHealth(directory, early_steps=()),
+            SmokeCheckpointQuarantine(),
+        ],
     )
     trainer.fit(model, datamodule=data)
     path = directory / "smoke.ckpt"

@@ -234,13 +234,23 @@ class TokenTimeFlowHead(ActionHead):
         prefix_mask: Tensor,
         steps: int = 5,
     ) -> Tensor:
-        """Exportable Euler sampler; caller validates binary contiguous masks."""
+        """Euler sampler; exported graphs require host-validated prefix inputs."""
         if steps < 1:
             msg = "Euler steps must be positive"
             raise ValueError(msg)
         state = noise.reshape(-1, self.action_horizon, self.action_dim)
         clean_prefix = clean_prefix.reshape_as(state)
-        mask = prefix_mask.reshape(-1, self.action_horizon).to(torch.bool)
+        raw_mask = prefix_mask.reshape(-1, self.action_horizon)
+        if not torch.compiler.is_compiling():
+            if not torch.isfinite(clean_prefix).all():
+                raise ValueError("RTC prefix actions must be finite")
+            if not ((raw_mask == 0) | (raw_mask == 1)).all():
+                raise ValueError("RTC prefix mask must be binary")
+            if (raw_mask[:, 1:] > raw_mask[:, :-1]).any():
+                raise ValueError("RTC prefix mask must be contiguous from token zero")
+            if (raw_mask.sum(dim=-1) > self.max_prefix).any():
+                raise ValueError("RTC prefix exceeds the trained maximum")
+        mask = raw_mask.to(torch.bool)
         time = state.new_zeros((state.shape[0], self.action_horizon))
         for _ in range(steps):
             state = torch.where(mask[..., None], clean_prefix, state)

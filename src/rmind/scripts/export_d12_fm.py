@@ -22,6 +22,24 @@ from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 PARITY_MAX_ABS = 1e-4
 
 
+def checkpoint_export_safety(metadata: dict, requested_test_only: bool) -> dict:
+    fixture = metadata.get("rtc_test_fixture", {})
+    if not isinstance(fixture, dict):
+        raise ValueError("rtc_test_fixture metadata must be a mapping")
+    for field in ("deployable", "head_trained"):
+        if field in fixture and type(fixture[field]) is not bool:
+            raise ValueError(f"rtc_test_fixture.{field} must be boolean")
+    if "test_only" in metadata and type(metadata["test_only"]) is not bool:
+        raise ValueError("checkpoint test_only must be boolean")
+    return {
+        "test_only": requested_test_only
+        or metadata.get("test_only", False)
+        or fixture.get("deployable") is False
+        or fixture.get("head_trained") is False,
+        "head_trained": fixture.get("head_trained"),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -40,8 +58,7 @@ def main() -> None:
     checkpoint_metadata = torch.load(
         arguments.checkpoint, map_location="meta", weights_only=False
     )
-    fixture_metadata = checkpoint_metadata.get("rtc_test_fixture", {})
-    test_only = arguments.test_only or fixture_metadata.get("deployable") is False
+    safety = checkpoint_export_safety(checkpoint_metadata, arguments.test_only)
     del checkpoint_metadata
     policy = (
         PatchPolicyContinuous
@@ -194,7 +211,7 @@ def main() -> None:
     with arguments.checkpoint.open("rb") as checkpoint_stream:
         checkpoint_sha256 = hashlib.file_digest(checkpoint_stream, "sha256").hexdigest()
     manifest = {
-        "test_only": test_only,
+        **safety,
         "schema": "d12_flow_matching_rtc_v1"
         if decoder.rtc_enabled
         else "d12_flow_matching_v1",

@@ -69,6 +69,27 @@ def test_legacy_head_cannot_be_conditioned() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "failure", ["fractional", "hole", "long", "nan_mask", "nan_prefix"]
+)
+def test_sampler_rejects_invalid_eager_prefix(failure) -> None:
+    head = small_head()
+    prefix = torch.zeros(1, 8, 3)
+    mask = torch.zeros(1, 8)
+    if failure == "fractional":
+        mask[0, 0] = 0.5
+    elif failure == "hole":
+        mask[0, 1] = 1
+    elif failure == "long":
+        mask[0, :5] = 1
+    elif failure == "nan_mask":
+        mask[0, 0] = float("nan")
+    else:
+        prefix[0, 0, 0] = float("nan")
+    with pytest.raises(ValueError, match="RTC prefix"):
+        head.sample(torch.zeros(1, 8), torch.zeros(1, 8, 3), prefix, mask)
+
+
 def test_token_times_change_the_vector_field() -> None:
     head = small_head()
     features = torch.randn(2, 8)

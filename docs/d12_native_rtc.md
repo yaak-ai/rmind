@@ -55,6 +55,10 @@ tracked ytt templates; `just generate-config` creates those ignored files.
 
 Use only trusted Lightning checkpoints: loading them uses Python pickle.
 Keep verification artifacts `test_only`; the Coppernic live app rejects them.
+Smoke checkpoints carry durable quarantine metadata that the exporter preserves,
+even without `--test-only` or after renaming the file. Eager sampling rejects
+nonfinite prefixes and nonbinary, noncontiguous or overlong prefix masks. Exported
+graphs retain the host-validation contract; the live controller constructs masks.
 The launcher creates exclusive provenance records and does not resume runs.
 
 ## Evidence and limits
