@@ -69,7 +69,10 @@ class FQLTransitions(Dataset[dict[str, Tensor]]):
         self.tensors = {}
         for name, array in arrays.items():
             if (
-                not np.issubdtype(array.dtype, np.number)
+                not (
+                    np.issubdtype(array.dtype, np.integer)
+                    or np.issubdtype(array.dtype, np.floating)
+                )
                 or not np.isfinite(array).all()
             ):
                 message = f"Nonfinite or nonnumeric transition field {name}"

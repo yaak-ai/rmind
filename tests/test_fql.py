@@ -256,3 +256,17 @@ def test_identity_normalization_preserves_small_canonical_actions_exactly() -> N
         model(transitions["observations"], noise),
         model.policy.sample_actions(transitions["observations"], noise),
     )
+
+
+@pytest.mark.parametrize("field", ["observations", "actions", "rewards"])
+def test_complex_transition_values_are_not_silently_truncated(
+    tmp_path: Path, field: str
+) -> None:
+    arrays = {name: tensor.numpy() for name, tensor in batch().items()}
+    arrays[field] = arrays[field].astype(np.complex64) + 1j
+    path = tmp_path / "complex.npz"
+    np.savez(
+        path, **arrays, episode_ids=np.ones(len(arrays["actions"]), dtype=np.int64)
+    )
+    with pytest.raises(ValueError, match="nonnumeric"):
+        FQLTransitions(str(path))
