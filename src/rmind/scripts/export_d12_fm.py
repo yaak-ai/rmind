@@ -5,7 +5,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import onnx
@@ -20,6 +20,9 @@ from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 
 PARITY_MAX_ABS = 1e-4
+
+if TYPE_CHECKING:
+    from rmind.components.rtc_flow_head import TokenTimeFlowHead
 
 
 def checkpoint_export_safety(metadata: dict, *, requested_test_only: bool) -> dict:
@@ -48,13 +51,14 @@ def rtc_export_metadata(
 ) -> dict:
     if not enabled:
         return {"schema": "d12_flow_matching_v1"}
-    if not 0 <= arguments.rtc_initial_forecast <= policy.fm_head.max_prefix:
+    head = cast("TokenTimeFlowHead", policy.fm_head)
+    if not 0 <= arguments.rtc_initial_forecast <= head.max_prefix:
         msg = "initial forecast is outside the trained prefix range"
         raise ValueError(msg)
     if (
         not 1
         <= arguments.rtc_execution_horizon
-        <= policy.action_horizon - policy.fm_head.max_prefix
+        <= policy.action_horizon - head.max_prefix
     ):
         msg = "RTC horizon does not cover execution plus the trained latency prefix"
         raise ValueError(msg)
@@ -64,14 +68,14 @@ def rtc_export_metadata(
     return {
         "schema": "d12_flow_matching_rtc_v1",
         "rtc": {
-            "variant": policy.fm_head.rtc_variant,
+            "variant": head.rtc_variant,
             "prefix_space": "raw_normalized_commands",
             "noise_space": "normalized_actions",
             "time_conditioning": "per_token",
             "final_prefix_clamp": True,
             "forecast_strategy": "last_completed",
             "initial_forecast": arguments.rtc_initial_forecast,
-            "max_prefix": policy.fm_head.max_prefix,
+            "max_prefix": head.max_prefix,
             "execution_horizon": arguments.rtc_execution_horizon,
             "observation_max_age_ns": arguments.rtc_observation_max_age_ns,
         },
@@ -139,7 +143,7 @@ def main() -> None:
         tuple(value.to(arguments.device) for value in decoder.empty_cache()),
     )
     noise = torch.randn(1, policy.action_horizon * 3, device=arguments.device)
-    prefix_arguments = {}
+    prefix_arguments: dict[str, Any] = {}
     rtc_inputs = ()
     if decoder.rtc_enabled:
         clean_prefix = (

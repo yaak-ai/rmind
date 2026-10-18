@@ -1,5 +1,7 @@
 """One-frame D12 inference with external KV state and explicit flow start noise."""
 
+from typing import Any
+
 import torch
 from torch import Tensor, nn
 
@@ -77,7 +79,7 @@ class D12FlowDecoderStep(nn.Module):
         features = encoded[:, -1]
         if self.policy.norm is not None:
             features = self.policy.norm(features)
-        prefix_arguments = {}
+        prefix_arguments: dict[str, Any] = {}
         if self.rtc_enabled:
             prefix_arguments = {
                 "clean_prefix": (tensors["clean_prefix"] - self.policy.action_mean)
