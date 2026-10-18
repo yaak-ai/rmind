@@ -83,3 +83,12 @@ Clean-source verification evidence is kept under
 `/nasa/max/d12/flow_matching/rtc-production-cleanup-20261018`.
 Historical frozen research artifacts remain separate; this production change
 does not silently reclassify failed proxy studies or promote a model.
+# Typed compatibility boundary
+
+The RTC head implements the existing ActionHead protocol through the tested
+positional loss/velocity/act calls. It intentionally retains descriptive public
+argument names rather than the untyped legacy head's f/c/x/t keyword names; those
+legacy keyword aliases are not advertised for RTC. A single-file type-checker
+override suppresses only that inherited keyword-name mismatch. Buffer types and
+launcher config/callback interfaces are explicit; numerical, state-load, export,
+and runtime checks remain active.

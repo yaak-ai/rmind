@@ -272,6 +272,12 @@ files.exclude = ["uv.lock"]
 unused-ignore-comment = "warn"
 
 [[tool.ty.overrides]]
+include = ["src/rmind/components/rtc_flow_head.py"]
+
+[tool.ty.overrides.rules]
+invalid-method-override = "ignore"
+
+[[tool.ty.overrides]]
 include = ["src/rmind/inference/backends/tensorrt.py"]
 
 [tool.ty.overrides.analysis]

@@ -10,7 +10,7 @@ import tarfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytorch_lightning as pl
 import torch
@@ -19,6 +19,9 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
+
+if TYPE_CHECKING:
+    from rmind.components.rtc_flow_head import TokenTimeFlowHead
 
 ACTION_HORIZON = 50
 TRAIN_JOB_COUNT = 34
@@ -52,7 +55,7 @@ class SmokeCheckpointQuarantine(pl.Callback):
 
 
 def build_config(baseline: Path, directory: Path) -> DictConfig:
-    config = OmegaConf.load(baseline / "resolved.yaml")
+    config = cast("DictConfig", OmegaConf.load(baseline / "resolved.yaml"))
     if (
         list(config.model.cameras) != ["cam_fork"]
         or config.model.action_horizon != ACTION_HORIZON
@@ -171,9 +174,10 @@ class TrainingHealth(pl.Callback):
     def on_before_optimizer_step(
         self,
         trainer: pl.Trainer,
-        model: pl.LightningModule,
+        pl_module: pl.LightningModule,
         optimizer: torch.optim.Optimizer,
     ) -> None:
+        model = pl_module
         norms = {}
         for group, prefix in (("head", "fm_head."), ("trunk", "encoder.")):
             gradients = [
@@ -187,7 +191,12 @@ class TrainingHealth(pl.Callback):
                 msg = f"Missing or nonfinite {group} gradients"
                 raise FloatingPointError(msg)
             norm = float(
-                torch.sqrt(sum(value.float().square().sum() for value in gradients))
+                torch.sqrt(
+                    cast(
+                        "torch.Tensor",
+                        sum(value.float().square().sum() for value in gradients),
+                    )
+                )
             )
             if not norm > 0:
                 msg = f"Zero {group} gradient norm"
@@ -207,7 +216,7 @@ class TrainingHealth(pl.Callback):
     def on_train_batch_end(
         self,
         trainer: pl.Trainer,
-        model: pl.LightningModule,
+        pl_module: pl.LightningModule,
         outputs: Any,
         batch: Any,
         batch_idx: int,
@@ -376,7 +385,9 @@ def smoke(config: DictConfig, checkpoint: Path, directory: Path) -> None:
     )
     with torch.inference_mode():
         expected = model.fm_head.sample(features, noise, prefix, mask)
-        actual = restored.fm_head.sample(features, noise, prefix, mask)
+        actual = cast("TokenTimeFlowHead", restored.fm_head).sample(
+            features, noise, prefix, mask
+        )
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
     write_json(
         directory / "passed.json",
@@ -386,7 +397,9 @@ def smoke(config: DictConfig, checkpoint: Path, directory: Path) -> None:
             "head_and_trunk_gradients_checked": True,
             "checkpoint_sha256": digest(path),
             "explicit_noise_reload_max_error": float((actual - expected).abs().max()),
-            "native_time_mode": restored.fm_head.time_embedding_mode,
+            "native_time_mode": cast(
+                "TokenTimeFlowHead", restored.fm_head
+            ).time_embedding_mode,
             "peak_gpu_gb": torch.cuda.max_memory_allocated() / 1e9,
         },
     )
@@ -409,7 +422,7 @@ def main() -> None:
         OmegaConf.save(config, directory / "resolved.yaml", resolve=True)
         archive_inputs(config, args.baseline, directory, checkpoint)
         return
-    config = OmegaConf.load(directory / "resolved.yaml")
+    config = cast("DictConfig", OmegaConf.load(directory / "resolved.yaml"))
     inputs = json.loads((directory / "inputs.json").read_text())
     if (
         digest(checkpoint) != inputs["checkpoint"]["sha256"]
@@ -436,7 +449,8 @@ def main() -> None:
     )
     write_json(directory / "warmstart.json", audit)
     run = wandb.init(
-        config=OmegaConf.to_container(config, resolve=True), **config.wandb
+        config=cast("dict[str, Any]", OmegaConf.to_container(config, resolve=True)),
+        **config.wandb,
     )
     write_json(
         directory / "run.json",

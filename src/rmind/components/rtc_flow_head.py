@@ -77,6 +77,7 @@ class TokenTimeFlowHead(ActionHead):
     preserves the former per-forward FP32 arithmetic only when requested.
     """
 
+    time_frequency: Tensor | None
     rtc_variant = "token_time_clean_prefix_v1"
 
     @override
@@ -360,7 +361,7 @@ def load_kinetix_state(head: TokenTimeFlowHead, source: Mapping) -> None:
         if path[0] == "time_mlp":
             path.insert(1, "layers")
         path[-1] = "kernel" if path[-1] == "weight" else path[-1]
-        value = source
+        value: Any = source
         for component in path:
             key = int(component) if component.isdigit() else component
             value = value[key]

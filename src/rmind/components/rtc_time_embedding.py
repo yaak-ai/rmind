@@ -49,6 +49,8 @@ def native_time_frequencies(
 class NativeTimeEmbedding(nn.Module):
     """Sin/cos embedding for arbitrary leading time axes, with derived state."""
 
+    frequency: Tensor
+
     def __init__(
         self, channel_dim: int, min_period: float = 4e-3, max_period: float = 4.0
     ) -> None:
