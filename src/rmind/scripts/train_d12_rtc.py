@@ -1,22 +1,28 @@
 """Launch the experimental native D12 RTC head from an audited fork-only baseline."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, override
 
 import pytorch_lightning as pl
 import torch
+import wandb
 from hydra.utils import instantiate
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
+
+ACTION_HORIZON = 50
+TRAIN_JOB_COUNT = 34
+VALIDATION_JOB_COUNT = 4
 
 
 def digest(path: Path) -> str:
@@ -25,12 +31,18 @@ def digest(path: Path) -> str:
 
 
 def write_json(path: Path, document: dict) -> None:
-    with path.open("x") as stream:
+    with path.open("x", encoding="utf-8") as stream:
         stream.write(json.dumps(document, indent=2) + "\n")
 
 
 class SmokeCheckpointQuarantine(pl.Callback):
-    def on_save_checkpoint(self, trainer, pl_module, checkpoint) -> None:
+    @override
+    def on_save_checkpoint(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        checkpoint: dict[str, Any],
+    ) -> None:
         checkpoint["test_only"] = True
         checkpoint["rtc_test_fixture"] = {
             "deployable": False,
@@ -39,15 +51,21 @@ class SmokeCheckpointQuarantine(pl.Callback):
         }
 
 
-def build_config(baseline: Path, directory: Path):
+def build_config(baseline: Path, directory: Path) -> DictConfig:
     config = OmegaConf.load(baseline / "resolved.yaml")
-    if list(config.model.cameras) != ["cam_fork"] or config.model.action_horizon != 50:
-        raise ValueError("The baseline must be fork-only H50")
     if (
-        len(config.datamodule.train.dataset.samples.inputs.job_dir) != 34
-        or len(config.datamodule.val.dataset.samples.inputs.job_dir) != 4
+        list(config.model.cameras) != ["cam_fork"]
+        or config.model.action_horizon != ACTION_HORIZON
     ):
-        raise ValueError("Expected the original34/4 whole-job split")
+        msg = "The baseline must be fork-only H50"
+        raise ValueError(msg)
+    if (
+        len(config.datamodule.train.dataset.samples.inputs.job_dir) != TRAIN_JOB_COUNT
+        or len(config.datamodule.val.dataset.samples.inputs.job_dir)
+        != VALIDATION_JOB_COUNT
+    ):
+        msg = "Expected the original34/4 whole-job split"
+        raise ValueError(msg)
     config.model.fm_head = {
         "_target_": "rmind.components.rtc_flow_head.TokenTimeFlowHead",
         "feat_dim": 512,
@@ -88,7 +106,7 @@ def build_config(baseline: Path, directory: Path):
     return config
 
 
-def warmstart(model, source_state: dict) -> dict:
+def warmstart(model: Any, source_state: dict) -> dict:
     destination = model.state_dict()
     shared = {
         name: value
@@ -97,15 +115,16 @@ def warmstart(model, source_state: dict) -> dict:
     }
     expected = {name for name in destination if not name.startswith("fm_head.")}
     if set(shared) != expected:
-        raise ValueError(
-            f"Non-head state mismatch: missing={sorted(expected - set(shared))}, extra={sorted(set(shared) - expected)}"
-        )
+        msg = f"Non-head state mismatch: missing={sorted(expected - set(shared))}, extra={sorted(set(shared) - expected)}"
+        raise ValueError(msg)
     for name, value in shared.items():
         if value.shape != destination[name].shape:
-            raise ValueError(f"Warmstart tensor shape mismatch: {name}")
+            msg = f"Warmstart tensor shape mismatch: {name}"
+            raise ValueError(msg)
     for name in ("action_mean", "action_std"):
         if not torch.equal(shared[name], destination[name]):
-            raise ValueError(f"Action normalization changed: {name}")
+            msg = f"Action normalization changed: {name}"
+            raise ValueError(msg)
     fresh_head = {
         name: value.clone()
         for name, value in destination.items()
@@ -113,12 +132,15 @@ def warmstart(model, source_state: dict) -> dict:
     }
     result = model.load_state_dict(shared, strict=False)
     if set(result.missing_keys) != set(fresh_head) or result.unexpected_keys:
-        raise ValueError("Unexpected partial-load result")
+        msg = "Unexpected partial-load result"
+        raise ValueError(msg)
     loaded = model.state_dict()
     if any(not torch.equal(loaded[name], value) for name, value in shared.items()):
-        raise ValueError("A shared tensor did not load exactly")
+        msg = "A shared tensor did not load exactly"
+        raise ValueError(msg)
     if any(not torch.equal(loaded[name], value) for name, value in fresh_head.items()):
-        raise ValueError("The new RTC head was modified by warmstart")
+        msg = "The new RTC head was modified by warmstart"
+        raise ValueError(msg)
     return {
         "loaded_nonhead_tensors": len(shared),
         "loaded_nonhead_elements": sum(value.numel() for value in shared.values()),
@@ -137,13 +159,21 @@ def warmstart(model, source_state: dict) -> dict:
 
 
 class TrainingHealth(pl.Callback):
-    def __init__(self, directory: Path, early_steps=(1, 100)) -> None:
+    def __init__(
+        self, directory: Path, early_steps: tuple[int, ...] = (1, 100)
+    ) -> None:
         super().__init__()
         self.directory = directory
         self.early_steps = set(early_steps)
         self.saved = set()
 
-    def on_before_optimizer_step(self, trainer, model, optimizer) -> None:
+    @override
+    def on_before_optimizer_step(
+        self,
+        trainer: pl.Trainer,
+        model: pl.LightningModule,
+        optimizer: torch.optim.Optimizer,
+    ) -> None:
         norms = {}
         for group, prefix in (("head", "fm_head."), ("trunk", "encoder.")):
             gradients = [
@@ -154,15 +184,17 @@ class TrainingHealth(pl.Callback):
             if not gradients or any(
                 not torch.isfinite(value).all() for value in gradients
             ):
-                raise FloatingPointError(f"Missing or nonfinite {group} gradients")
+                msg = f"Missing or nonfinite {group} gradients"
+                raise FloatingPointError(msg)
             norm = float(
                 torch.sqrt(sum(value.float().square().sum() for value in gradients))
             )
             if not norm > 0:
-                raise FloatingPointError(f"Zero {group} gradient norm")
+                msg = f"Zero {group} gradient norm"
+                raise FloatingPointError(msg)
             norms[group + "_grad_norm"] = norm
         row = {
-            "utc": datetime.now(timezone.utc).isoformat(),
+            "utc": datetime.now(UTC).isoformat(),
             "optimizer_step": trainer.global_step + 1,
             **norms,
             "learning_rate": optimizer.param_groups[0]["lr"],
@@ -171,10 +203,19 @@ class TrainingHealth(pl.Callback):
         with (self.directory / "health.jsonl").open("a", buffering=1) as stream:
             stream.write(json.dumps(row) + "\n")
 
-    def on_train_batch_end(self, trainer, model, outputs, batch, batch_idx) -> None:
+    @override
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        model: pl.LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
         loss = outputs["loss"] if isinstance(outputs, dict) else outputs
         if loss is None or not torch.isfinite(loss).all():
-            raise FloatingPointError("Nonfinite training loss")
+            msg = "Nonfinite training loss"
+            raise FloatingPointError(msg)
         step = trainer.global_step
         if step in self.early_steps and step not in self.saved:
             directory = self.directory / "checkpoints"
@@ -186,7 +227,7 @@ class TrainingHealth(pl.Callback):
                 path.with_suffix(".json"),
                 {
                     "step": step,
-                    "utc": datetime.now(timezone.utc).isoformat(),
+                    "utc": datetime.now(UTC).isoformat(),
                     "path": str(path),
                     "sha256": digest(path),
                     "loss": float(loss.detach()),
@@ -195,10 +236,25 @@ class TrainingHealth(pl.Callback):
             )
 
 
-def archive_inputs(config, baseline: Path, directory: Path, checkpoint: Path) -> None:
+def resolved_executable(name: str) -> str:
+    if name not in {"git", "nvidia-smi"}:
+        msg = "Only the fixed git and nvidia-smi provenance commands are supported"
+        raise ValueError(msg)
+    executable = shutil.which(name)
+    if executable is None:
+        msg = f"Required provenance executable is missing: {name}"
+        raise FileNotFoundError(msg)
+    return str(Path(executable).resolve())
+
+
+def archive_inputs(
+    config: DictConfig, baseline: Path, directory: Path, checkpoint: Path
+) -> None:
     root = Path(__file__).resolve().parents[3]
+    git = resolved_executable("git")
+    nvidia_smi = resolved_executable("nvidia-smi")
     paths = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        [git, "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=root,
         text=True,
     ).splitlines()
@@ -217,9 +273,10 @@ def archive_inputs(config, baseline: Path, directory: Path, checkpoint: Path) ->
             records.update(folder.glob("cam_*/frame_info_*.txt"))
             records.update(folder.glob("cam_*/video.mp4"))
     if any(not path.is_file() for path in records):
-        raise FileNotFoundError("A required dataset input is missing")
+        msg = "A required dataset input is missing"
+        raise FileNotFoundError(msg)
 
-    def record(path):
+    def record(path: Path) -> dict[str, Any]:
         return {"path": str(path), "bytes": path.stat().st_size, "sha256": digest(path)}
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -227,7 +284,7 @@ def archive_inputs(config, baseline: Path, directory: Path, checkpoint: Path) ->
     write_json(
         directory / "inputs.json",
         {
-            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "created_utc": datetime.now(UTC).isoformat(),
             "dataset": dataset,
             "dataset_scope": "All38 jobs: trainingMCAP, dropoff, height sidecars, camera frame indexes and MP4s; standarddata.mcap is not consumed",
             "checkpoint": record(checkpoint),
@@ -238,14 +295,15 @@ def archive_inputs(config, baseline: Path, directory: Path, checkpoint: Path) ->
             "source_archive": record(directory / "source.tar.gz"),
             "resolved_config": record(directory / "resolved.yaml"),
             "git_head": subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+                [git, "rev-parse", "HEAD"], cwd=root, text=True
             ).strip(),
+            "provenance_executables": {"git": git, "nvidia-smi": nvidia_smi},
             "git_status": subprocess.check_output(
-                ["git", "status", "--short"], cwd=root, text=True
+                [git, "status", "--short"], cwd=root, text=True
             ),
             "gpu_inventory": subprocess.check_output(
                 [
-                    "nvidia-smi",
+                    nvidia_smi,
                     "--query-gpu=index,name,uuid,driver_version",
                     "--format=csv,noheader",
                 ],
@@ -260,7 +318,7 @@ def archive_inputs(config, baseline: Path, directory: Path, checkpoint: Path) ->
         shutil.copy2(baseline / name, directory / name)
 
 
-def smoke(config, checkpoint: Path, directory: Path) -> None:
+def smoke(config: DictConfig, checkpoint: Path, directory: Path) -> None:
     smoke_config = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
     smoke_config.datamodule.train.dataset.samples.inputs.job_dir = [
         str(Path(config.paths.d12) / name)
@@ -357,7 +415,8 @@ def main() -> None:
         digest(checkpoint) != inputs["checkpoint"]["sha256"]
         or digest(directory / "resolved.yaml") != inputs["resolved_config"]["sha256"]
     ):
-        raise ValueError("Frozen checkpoint/config changed")
+        msg = "Frozen checkpoint/config changed"
+        raise ValueError(msg)
     if args.phase == "smoke":
         smoke_directory = directory / "smoke"
         smoke_directory.mkdir(exist_ok=False)
@@ -367,9 +426,8 @@ def main() -> None:
         not (directory / "smoke/passed.json").is_file()
         or (directory / "run.json").exists()
     ):
-        raise ValueError("Requires successful smoke and no existing full run")
-    import wandb
-
+        msg = "Requires successful smoke and no existing full run"
+        raise ValueError(msg)
     pl.seed_everything(config.seed, workers=True)
     model = instantiate(config.model)
     audit = warmstart(
@@ -386,7 +444,7 @@ def main() -> None:
             "id": run.id,
             "url": run.url,
             "pid": os.getpid(),
-            "started_utc": datetime.now(timezone.utc).isoformat(),
+            "started_utc": datetime.now(UTC).isoformat(),
             "experimental_not_deployed": True,
             "launcher": str(Path(__file__).resolve()),
             "launcher_sha256": digest(Path(__file__).resolve()),

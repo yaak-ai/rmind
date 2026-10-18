@@ -3,8 +3,8 @@
 import torch
 from torch import Tensor, nn
 
-from rmind.components.transformer.causal_frame import frame_rope_cos_sin
 from rmind.components.rtc_flow_head import TokenTimeFlowHead
+from rmind.components.transformer.causal_frame import frame_rope_cos_sin
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 
 

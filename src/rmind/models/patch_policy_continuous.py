@@ -568,9 +568,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
             )
         if isinstance(self.fm_head, TokenTimeFlowHead):
             if (clean_prefix is None) != (prefix_mask is None):
-                raise ValueError(
-                    "RTC prefix actions and mask must be supplied together"
-                )
+                message = "RTC prefix actions and mask must be supplied together"
+                raise ValueError(message)
             chunk_shape = (
                 flattened.shape[0],
                 self.action_horizon,
@@ -591,7 +590,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
                 *features.shape[:-1], self.action_horizon, len(self.action_names)
             )
         if clean_prefix is not None or prefix_mask is not None:
-            raise ValueError("RTC conditioning requires a trained token-time head")
+            message = "RTC conditioning requires a trained token-time head"
+            raise ValueError(message)
         for index in range(count):
             time = flattened.new_full((flattened.shape[0],), index / count)
             state = torch.add(

@@ -22,21 +22,59 @@ from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 PARITY_MAX_ABS = 1e-4
 
 
-def checkpoint_export_safety(metadata: dict, requested_test_only: bool) -> dict:
+def checkpoint_export_safety(metadata: dict, *, requested_test_only: bool) -> dict:
     fixture = metadata.get("rtc_test_fixture", {})
     if not isinstance(fixture, dict):
-        raise ValueError("rtc_test_fixture metadata must be a mapping")
+        msg = "rtc_test_fixture metadata must be a mapping"
+        raise TypeError(msg)
     for field in ("deployable", "head_trained"):
         if field in fixture and type(fixture[field]) is not bool:
-            raise ValueError(f"rtc_test_fixture.{field} must be boolean")
+            msg = f"rtc_test_fixture.{field} must be boolean"
+            raise TypeError(msg)
     if "test_only" in metadata and type(metadata["test_only"]) is not bool:
-        raise ValueError("checkpoint test_only must be boolean")
+        msg = "checkpoint test_only must be boolean"
+        raise TypeError(msg)
     return {
         "test_only": requested_test_only
         or metadata.get("test_only", False)
         or fixture.get("deployable") is False
         or fixture.get("head_trained") is False,
         "head_trained": fixture.get("head_trained"),
+    }
+
+
+def rtc_export_metadata(
+    policy: PatchPolicyContinuous, arguments: argparse.Namespace, *, enabled: bool
+) -> dict:
+    if not enabled:
+        return {"schema": "d12_flow_matching_v1"}
+    if not 0 <= arguments.rtc_initial_forecast <= policy.fm_head.max_prefix:
+        msg = "initial forecast is outside the trained prefix range"
+        raise ValueError(msg)
+    if (
+        not 1
+        <= arguments.rtc_execution_horizon
+        <= policy.action_horizon - policy.fm_head.max_prefix
+    ):
+        msg = "RTC horizon does not cover execution plus the trained latency prefix"
+        raise ValueError(msg)
+    if arguments.rtc_observation_max_age_ns <= 0:
+        msg = "observation freshness bound must be positive"
+        raise ValueError(msg)
+    return {
+        "schema": "d12_flow_matching_rtc_v1",
+        "rtc": {
+            "variant": policy.fm_head.rtc_variant,
+            "prefix_space": "raw_normalized_commands",
+            "noise_space": "normalized_actions",
+            "time_conditioning": "per_token",
+            "final_prefix_clamp": True,
+            "forecast_strategy": "last_completed",
+            "initial_forecast": arguments.rtc_initial_forecast,
+            "max_prefix": policy.fm_head.max_prefix,
+            "execution_horizon": arguments.rtc_execution_horizon,
+            "observation_max_age_ns": arguments.rtc_observation_max_age_ns,
+        },
     }
 
 
@@ -58,7 +96,9 @@ def main() -> None:
     checkpoint_metadata = torch.load(
         arguments.checkpoint, map_location="meta", weights_only=False
     )
-    safety = checkpoint_export_safety(checkpoint_metadata, arguments.test_only)
+    safety = checkpoint_export_safety(
+        checkpoint_metadata, requested_test_only=arguments.test_only
+    )
     del checkpoint_metadata
     policy = (
         PatchPolicyContinuous
@@ -69,19 +109,7 @@ def main() -> None:
         .to(arguments.device)
     )
     decoder = D12FlowDecoderStep(policy).eval().to(arguments.device)
-    if decoder.rtc_enabled:
-        if not 0 <= arguments.rtc_initial_forecast <= policy.fm_head.max_prefix:
-            raise ValueError("initial forecast is outside the trained prefix range")
-        if (
-            not 1
-            <= arguments.rtc_execution_horizon
-            <= policy.action_horizon - policy.fm_head.max_prefix
-        ):
-            raise ValueError(
-                "RTC horizon does not cover execution plus the trained latency prefix"
-            )
-        if arguments.rtc_observation_max_age_ns <= 0:
-            raise ValueError("observation freshness bound must be positive")
+    rtc_metadata = rtc_export_metadata(policy, arguments, enabled=decoder.rtc_enabled)
     config = OmegaConf.load(arguments.config)
     stages = config.datamodule.val.dataset.samples.pipeline.functions
     builder, positioner, windower = (instantiate(stage.func) for stage in stages[:3])
@@ -212,9 +240,7 @@ def main() -> None:
         checkpoint_sha256 = hashlib.file_digest(checkpoint_stream, "sha256").hexdigest()
     manifest = {
         **safety,
-        "schema": "d12_flow_matching_rtc_v1"
-        if decoder.rtc_enabled
-        else "d12_flow_matching_v1",
+        **rtc_metadata,
         "action_head": "fm",
         "onnx": "model.onnx",
         "checkpoint": str(arguments.checkpoint.resolve()),
@@ -264,19 +290,6 @@ def main() -> None:
         },
         "parity": {"window_vs_streaming_max_abs": eager_error, "onnx_max_abs": errors},
     }
-    if decoder.rtc_enabled:
-        manifest["rtc"] = {
-            "variant": policy.fm_head.rtc_variant,
-            "prefix_space": "raw_normalized_commands",
-            "noise_space": "normalized_actions",
-            "time_conditioning": "per_token",
-            "final_prefix_clamp": True,
-            "forecast_strategy": "last_completed",
-            "initial_forecast": arguments.rtc_initial_forecast,
-            "max_prefix": policy.fm_head.max_prefix,
-            "execution_horizon": arguments.rtc_execution_horizon,
-            "observation_max_age_ns": arguments.rtc_observation_max_age_ns,
-        }
     (arguments.output / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n"
     )

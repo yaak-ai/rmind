@@ -1,18 +1,19 @@
 import io
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
+from rmind.components.rtc_flow_head import TokenTimeFlowHead
 from rmind.components.rtc_time_embedding import (
     NativeTimeEmbedding,
     native_time_frequencies,
 )
-from rmind.components.rtc_flow_head import TokenTimeFlowHead
 
 
-def test_actual_head_defaults_to_native_without_external_vector():
+def test_actual_head_defaults_to_native_without_external_vector() -> None:
     head = TokenTimeFlowHead(8, 3, 8, channel_dim=16)
     assert head.time_embedding_mode == "native"
     torch.testing.assert_close(
@@ -26,7 +27,7 @@ def test_actual_head_defaults_to_native_without_external_vector():
         restored.load_state_dict(changed, strict=True)
 
 
-def test_reference_compatibility_and_native_modes_are_not_interchangeable():
+def test_reference_compatibility_and_native_modes_are_not_interchangeable() -> None:
     supplied = [float(index + 1) for index in range(8)]
     legacy = TokenTimeFlowHead(8, 3, 8, channel_dim=16, time_frequency=supplied)
     assert legacy.time_embedding_mode == "reference_compatibility"
@@ -47,7 +48,9 @@ def test_reference_compatibility_and_native_modes_are_not_interchangeable():
 
 @pytest.mark.parametrize("channels", [2, 16, 64, 128, 256, 512])
 @pytest.mark.parametrize("periods", [(0.004, 4.0), (0.125, 0.125), (0.01, 100.0)])
-def test_native_frequencies_match_independent_analytical_formula(channels, periods):
+def test_native_frequencies_match_independent_analytical_formula(
+    channels: int, periods: tuple[float, float]
+) -> None:
     minimum, maximum = periods
     count = channels // 2
     expected = torch.tensor(
@@ -68,33 +71,39 @@ def test_native_frequencies_match_independent_analytical_formula(channels, perio
 
 
 @pytest.mark.parametrize("channels", [True, 0, -2, 3, 16.0])
-def test_invalid_channel_dimensions_rejected(channels):
-    with pytest.raises(ValueError, match="positive even integer"):
+def test_invalid_channel_dimensions_rejected(channels: float) -> None:
+    error_type = (
+        TypeError
+        if isinstance(channels, bool) or not isinstance(channels, int)
+        else ValueError
+    )
+    with pytest.raises(error_type, match="positive even integer"):
         native_time_frequencies(channels)
 
 
 @pytest.mark.parametrize(
     "periods", [(0, 4), (-1, 4), (4, 1), (math.nan, 4), (1, math.inf)]
 )
-def test_invalid_periods_rejected(periods):
+def test_invalid_periods_rejected(periods: tuple[float, float]) -> None:
     with pytest.raises(ValueError, match="periods must"):
         native_time_frequencies(16, *periods)
 
 
 @pytest.mark.parametrize("shape", [(), (5,), (2, 8), (2, 3, 50), (1, 100)])
-def test_arbitrary_time_axes_and_gradients(shape):
+def test_arbitrary_time_axes_and_gradients(shape: tuple[int, ...]) -> None:
     module = NativeTimeEmbedding(64)
     time = torch.rand(shape, requires_grad=True)
     actual = module(time)
     assert actual.shape == (*shape, 64)
     assert torch.isfinite(actual).all()
     actual.square().mean().backward()
-    assert time.grad is not None and torch.isfinite(time.grad).all()
+    assert time.grad is not None
+    assert torch.isfinite(time.grad).all()
     flattened = module(time.detach().reshape(-1)).reshape(*shape, 64)
     torch.testing.assert_close(actual, flattened, atol=0, rtol=0)
 
 
-def test_serialization_and_horizon_independence():
+def test_serialization_and_horizon_independence() -> None:
     module = NativeTimeEmbedding(256)
     stream = io.BytesIO()
     torch.save(module.state_dict(), stream)
@@ -111,7 +120,7 @@ def test_serialization_and_horizon_independence():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
 @pytest.mark.parametrize("channels", [16, 64, 128, 256, 512])
-def test_cuda_uses_identical_native_frequency_state(channels):
+def test_cuda_uses_identical_native_frequency_state(channels: int) -> None:
     module = NativeTimeEmbedding(channels)
     frequency = module.frequency.clone()
     time = torch.linspace(0, 1, 150).reshape(3, 50)
@@ -124,7 +133,7 @@ def test_cuda_uses_identical_native_frequency_state(channels):
 
 
 @pytest.mark.parametrize("channels", [16, 64, 128, 256, 512])
-def test_onnx_dynamic_time_axes(channels, tmp_path):
+def test_onnx_dynamic_time_axes(channels: int, tmp_path: Path) -> None:
     ort = pytest.importorskip("onnxruntime")
     module = NativeTimeEmbedding(channels).eval()
     path = tmp_path / "native_time.onnx"

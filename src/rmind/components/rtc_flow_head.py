@@ -7,7 +7,7 @@ The legacy flat-MLP ActionHead is deliberately unchanged.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, override
 
 import torch
 from torch import Tensor, nn
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 class RTCNorm(nn.Module):
     """Flax LayerNorm's non-affine, fast-variance convention."""
 
+    @override
     def forward(self, value: Tensor) -> Tensor:
         mean = value.mean(dim=-1, keepdim=True)
         variance = (
@@ -55,7 +56,7 @@ class RTCMixerBlock(nn.Module):
         mixed = self.token_mix_out(
             functional.gelu(self.token_mix_in(mixed), approximate="tanh")
         )
-        value = value + gate_1 * mixed.transpose(1, 2)
+        value = torch.add(value, gate_1 * mixed.transpose(1, 2))
         mixed = self.norm_2(value) * (1 + scale_2) + shift_2
         mixed = self.channel_mix_out(
             functional.gelu(self.channel_mix_in(mixed), approximate="tanh")
@@ -78,6 +79,7 @@ class TokenTimeFlowHead(ActionHead):
 
     rtc_variant = "token_time_clean_prefix_v1"
 
+    @override
     def __init__(
         self,
         feat_dim: int,
@@ -122,13 +124,13 @@ class TokenTimeFlowHead(ActionHead):
             "reference_compatibility",
             "legacy_dynamic",
         }:
-            raise ValueError("invalid time_embedding_mode")
+            msg_0 = "invalid time_embedding_mode"
+            raise ValueError(msg_0)
         if (time_embedding_mode == "reference_compatibility") != (
             time_frequency is not None
         ):
-            raise ValueError(
-                "only reference_compatibility accepts a supplied time_frequency"
-            )
+            msg_0 = "only reference_compatibility accepts a supplied time_frequency"
+            raise ValueError(msg_0)
         self.time_embedding_mode = time_embedding_mode
         self.time_min_period = time_min_period
         self.time_max_period = time_max_period
@@ -164,15 +166,16 @@ class TokenTimeFlowHead(ActionHead):
         nn.init.zeros_(self.final_adaln.bias)
         self.out_proj = nn.Linear(channel_dim, action_dim)
 
+    @override
     def _load_from_state_dict(
         self,
-        state_dict,
-        prefix,
-        local_metadata,
-        strict,
-        missing_keys,
-        unexpected_keys,
-        error_msgs,
+        state_dict: Mapping[str, Tensor],
+        prefix: str,
+        local_metadata: dict[str, Any],
+        strict: bool,
+        missing_keys: list[str],
+        unexpected_keys: list[str],
+        error_msgs: list[str],
     ) -> None:
         if self.time_embedding_mode == "native":
             incoming = state_dict.get(prefix + "time_frequency")
@@ -197,7 +200,8 @@ class TokenTimeFlowHead(ActionHead):
         )
 
     def velocity(self, features: Tensor, state: Tensor, time: Tensor) -> Tensor:
-        flattened = state.ndim == 2
+        flattened_dimensions = 2
+        flattened = state.ndim == flattened_dimensions
         state = state.reshape(-1, self.action_horizon, self.action_dim)
         if time.ndim == 1:
             time = time[:, None]
@@ -234,7 +238,11 @@ class TokenTimeFlowHead(ActionHead):
         prefix_mask: Tensor,
         steps: int = 5,
     ) -> Tensor:
-        """Euler sampler; exported graphs require host-validated prefix inputs."""
+        """Euler sampler; exported graphs require host-validated prefix inputs.
+
+        Raises:
+            ValueError: Steps or eager prefix inputs violate the trained contract.
+        """
         if steps < 1:
             msg = "Euler steps must be positive"
             raise ValueError(msg)
@@ -243,20 +251,26 @@ class TokenTimeFlowHead(ActionHead):
         raw_mask = prefix_mask.reshape(-1, self.action_horizon)
         if not torch.compiler.is_compiling():
             if not torch.isfinite(clean_prefix).all():
-                raise ValueError("RTC prefix actions must be finite")
+                msg_0 = "RTC prefix actions must be finite"
+                raise ValueError(msg_0)
             if not ((raw_mask == 0) | (raw_mask == 1)).all():
-                raise ValueError("RTC prefix mask must be binary")
+                msg_0 = "RTC prefix mask must be binary"
+                raise ValueError(msg_0)
             if (raw_mask[:, 1:] > raw_mask[:, :-1]).any():
-                raise ValueError("RTC prefix mask must be contiguous from token zero")
+                msg_0 = "RTC prefix mask must be contiguous from token zero"
+                raise ValueError(msg_0)
             if (raw_mask.sum(dim=-1) > self.max_prefix).any():
-                raise ValueError("RTC prefix exceeds the trained maximum")
+                msg_0 = "RTC prefix exceeds the trained maximum"
+                raise ValueError(msg_0)
         mask = raw_mask.to(torch.bool)
         time = state.new_zeros((state.shape[0], self.action_horizon))
         for _ in range(steps):
             state = torch.where(mask[..., None], clean_prefix, state)
             token_time = torch.where(mask, 1.0, time)
-            state = state + self.velocity(features, state, token_time) * (1.0 / steps)
-            time = time + 1.0 / steps
+            state = torch.add(
+                state, self.velocity(features, state, token_time) * (1.0 / steps)
+            )
+            time = torch.add(time, 1.0 / steps)
         return torch.where(mask[..., None], clean_prefix, state)
 
     def loss_explicit(
@@ -279,11 +293,12 @@ class TokenTimeFlowHead(ActionHead):
         prediction = self.velocity(features, state, token_time)
         weights = (~prefix)[..., None].expand_as(target).to(target.dtype)
         if mask is not None:
-            weights = weights * mask.reshape_as(target)
+            weights = torch.mul(weights, mask.reshape_as(target))
         return (
             (prediction - (target - noise)).square() * weights
         ).sum() / weights.sum().clamp_min(1e-8)
 
+    @override
     def loss(
         self,
         features: Tensor,
@@ -304,7 +319,7 @@ class TokenTimeFlowHead(ActionHead):
             torch.randn_like(target),
             torch.rand(target.shape[0], device=target.device, dtype=target.dtype),
             lengths,
-            mask,
+            mask=mask,
         )
         return loss, {"fm_mse": loss.detach()}
 
@@ -331,7 +346,11 @@ class TokenTimeFlowHead(ActionHead):
 
 
 def load_kinetix_state(head: TokenTimeFlowHead, source: Mapping) -> None:
-    """Load a trusted, already-deserialized Flax parameter dictionary exactly."""
+    """Load a trusted, already-deserialized Flax parameter dictionary exactly.
+
+    Raises:
+        ValueError: A source parameter shape differs from the destination.
+    """
     converted = {}
     for name, destination in head.state_dict().items():
         if name in {"progress", "time_frequency"}:

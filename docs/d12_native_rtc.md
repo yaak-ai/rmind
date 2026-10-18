@@ -61,6 +61,12 @@ nonfinite prefixes and nonbinary, noncontiguous or overlong prefix masks. Export
 graphs retain the host-validation contract; the live controller constructs masks.
 The launcher creates exclusive provenance records and does not resume runs.
 
+Two narrowly scoped lint exceptions preserve the audited design: the head's
+explicit-randomness loss API retains its six tensor arguments rather than hiding
+them in a packed object; the provenance launcher imports `subprocess` for fixed
+commands with resolved executables. These exceptions do not disable tests,
+input-integrity checks, numerical gates or quality acceptance criteria.
+
 ## Evidence and limits
 
 The local native D12 checkpoint passes eager/ONNX/ORT and FP32 TensorRT 11.1

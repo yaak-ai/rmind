@@ -1,5 +1,6 @@
 import io
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -9,7 +10,9 @@ from torch import nn
 from rmind.components.rtc_flow_head import TokenTimeFlowHead
 
 
-def make_head(frequency=None, mode=None):
+def make_head(
+    frequency: list[float] | None = None, mode: str | None = None
+) -> TokenTimeFlowHead:
     return TokenTimeFlowHead(
         8,
         3,
@@ -23,7 +26,7 @@ def make_head(frequency=None, mode=None):
     )
 
 
-def test_explicit_legacy_frequency_preserves_original_arithmetic_and_state():
+def test_explicit_legacy_frequency_preserves_original_arithmetic_and_state() -> None:
     head = make_head(mode="legacy_dynamic")
     assert head.time_frequency is None
     assert "time_frequency" not in head.state_dict()
@@ -34,7 +37,7 @@ def test_explicit_legacy_frequency_preserves_original_arithmetic_and_state():
     expected = torch.cat((angle.sin(), angle.cos()), dim=-1)
     captured = []
     handle = head.time_mlp.register_forward_pre_hook(
-        lambda module, arguments: captured.append(arguments[0].detach().clone())
+        lambda _module, arguments: captured.append(arguments[0].detach().clone())
     )
     head.velocity(torch.randn(1, 8), torch.randn(1, 8, 3), times)
     handle.remove()
@@ -43,12 +46,12 @@ def test_explicit_legacy_frequency_preserves_original_arithmetic_and_state():
 
 
 @pytest.mark.parametrize("frequency", [[1.0] * 7, [float("nan")] * 8, [-1.0] * 8])
-def test_invalid_source_frequencies_rejected(frequency):
+def test_invalid_source_frequencies_rejected(frequency: list[float]) -> None:
     with pytest.raises(ValueError, match="finite positive"):
         make_head(frequency)
 
 
-def test_source_frequency_is_serialized_nontrainable_state():
+def test_source_frequency_is_serialized_nontrainable_state() -> None:
     frequency = [float(value) for value in range(1, 9)]
     head = make_head(frequency)
     assert not head.time_frequency.requires_grad
@@ -76,11 +79,13 @@ def test_source_frequency_is_serialized_nontrainable_state():
     assert head.time_frequency.grad is None
 
 
-def test_source_frequency_onnx_preserves_normalization_and_prefix(tmp_path):
+def test_source_frequency_onnx_preserves_normalization_and_prefix(
+    tmp_path: Path,
+) -> None:
     ort = pytest.importorskip("onnxruntime")
 
     class RawHead(nn.Module):
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.head = make_head([1.5, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0])
             with torch.no_grad():
@@ -89,7 +94,13 @@ def test_source_frequency_onnx_preserves_normalization_and_prefix(tmp_path):
             self.register_buffer("mean", torch.tensor([0.1, -0.2, 0.3]))
             self.register_buffer("std", torch.tensor([0.2, 0.3, 0.4]))
 
-        def forward(self, features, noise, prefix, mask):
+        def forward(
+            self,
+            features: torch.Tensor,
+            noise: torch.Tensor,
+            prefix: torch.Tensor,
+            mask: torch.Tensor,
+        ) -> torch.Tensor:
             return (
                 self.head.sample(features, noise, (prefix - self.mean) / self.std, mask)
                 * self.std

@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -10,7 +11,7 @@ from rmind.components.rtc_flow_head import TokenTimeFlowHead
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 
 
-def small_head(horizon=8):
+def small_head(horizon: int = 8) -> TokenTimeFlowHead:
     return TokenTimeFlowHead(
         8,
         3,
@@ -23,7 +24,7 @@ def small_head(horizon=8):
 
 
 @pytest.mark.parametrize("length", [0, 1, 2, 4])
-def test_explicit_sampling_prefix_and_policy_api(length) -> None:
+def test_explicit_sampling_prefix_and_policy_api(length: int) -> None:
     torch.manual_seed(3)
     head = small_head()
     features = torch.randn(2, 3, 8)
@@ -72,7 +73,7 @@ def test_legacy_head_cannot_be_conditioned() -> None:
 @pytest.mark.parametrize(
     "failure", ["fractional", "hole", "long", "nan_mask", "nan_prefix"]
 )
-def test_sampler_rejects_invalid_eager_prefix(failure) -> None:
+def test_sampler_rejects_invalid_eager_prefix(failure: str) -> None:
     head = small_head()
     prefix = torch.zeros(1, 8, 3)
     mask = torch.zeros(1, 8)
@@ -131,7 +132,9 @@ def test_suffix_element_normalization_and_padding() -> None:
 
 
 @pytest.mark.parametrize("weighted", [False, True])
-def test_actual_patch_policy_training_updates_head_and_trunk(weighted) -> None:
+def test_actual_patch_policy_training_updates_head_and_trunk(
+    *, weighted: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     policy = PatchPolicyContinuous(
         input_transform=nn.Identity(),
         image_encoder=nn.Identity(),
@@ -151,8 +154,8 @@ def test_actual_patch_policy_training_updates_head_and_trunk(weighted) -> None:
         fm_action_weights=(1.0, 2.0, 1.0) if weighted else None,
     )
     trunk = nn.Linear(5, 8)
-    policy._features = lambda batch: trunk(torch.ones(2, 3, 5))
-    policy.log_dict = lambda *args, **kwargs: None
+    monkeypatch.setattr(policy, "_features", lambda _batch: trunk(torch.ones(2, 3, 5)))
+    policy.log_dict = lambda *_args, **_kwargs: None
     result = policy.training_step(
         {name: torch.randn(2, 3, 8) for name in ("traction", "steering", "fork1")}, 0
     )
@@ -162,7 +165,7 @@ def test_actual_patch_policy_training_updates_head_and_trunk(weighted) -> None:
     assert policy.fm_head.in_proj.weight.grad.abs().sum() > 0
 
 
-def test_exported_head_onnx_preserves_raw_prefix(tmp_path) -> None:
+def test_exported_head_onnx_preserves_raw_prefix(tmp_path: Path) -> None:
     ort = pytest.importorskip("onnxruntime")
 
     class RawHead(nn.Module):
@@ -172,7 +175,13 @@ def test_exported_head_onnx_preserves_raw_prefix(tmp_path) -> None:
             self.register_buffer("mean", torch.tensor([0.1, -0.2, 0.3]))
             self.register_buffer("std", torch.tensor([0.2, 0.3, 0.4]))
 
-        def forward(self, features, noise, clean_prefix, prefix_mask):
+        def forward(
+            self,
+            features: torch.Tensor,
+            noise: torch.Tensor,
+            clean_prefix: torch.Tensor,
+            prefix_mask: torch.Tensor,
+        ) -> torch.Tensor:
             return (
                 self.head.sample(
                     features, noise, (clean_prefix - self.mean) / self.std, prefix_mask
