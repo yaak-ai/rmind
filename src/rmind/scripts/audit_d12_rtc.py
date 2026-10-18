@@ -138,7 +138,7 @@ def main() -> None:
                         )
                         actions = np.asarray(plan["actions"])
                         require(actions.shape == (50, 3), "action shape")
-                        require(np.isfinite(actions).all(), "finite actions")
+                        require(bool(np.isfinite(actions).all()), "finite actions")
                         count = request["forecast"]
                         np.testing.assert_allclose(
                             actions[:count],

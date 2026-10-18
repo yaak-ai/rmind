@@ -6,7 +6,7 @@ import subprocess
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -45,6 +45,13 @@ class Controller:
             text=True,
             bufsize=1,
         )
+        input_stream = self.process.stdin
+        output_stream = self.process.stdout
+        if input_stream is None or output_stream is None:
+            msg = "RTC controller pipes were not created"
+            raise RuntimeError(msg)
+        self.input_stream = input_stream
+        self.output_stream = output_stream
         config = {
             "horizon": 50,
             "execution_horizon": 6,
@@ -55,14 +62,14 @@ class Controller:
             "observation_max_age_ns": 400_000_000,
             "gains": [1.0, 1.0, 1.0],
         }
-        self.process.stdin.write(json.dumps(config) + "\n")
-        self.process.stdin.flush()
+        self.input_stream.write(json.dumps(config) + "\n")
+        self.input_stream.flush()
         self.events = []
 
     def call(self, event: dict[str, Any]) -> dict[str, Any]:
-        self.process.stdin.write(json.dumps(event, allow_nan=False) + "\n")
-        self.process.stdin.flush()
-        response = self.process.stdout.readline()
+        self.input_stream.write(json.dumps(event, allow_nan=False) + "\n")
+        self.input_stream.flush()
+        response = self.output_stream.readline()
         if not response:
             msg = "RTC subprocess terminated"
             raise RuntimeError(msg)
@@ -71,7 +78,7 @@ class Controller:
         return result
 
     def close(self) -> None:
-        self.process.stdin.close()
+        self.input_stream.close()
         if self.process.wait(timeout=5):
             msg = "RTC subprocess failed"
             raise RuntimeError(msg)
@@ -107,7 +114,7 @@ def extract(directory: Path, model: str, device: str) -> None:
             for index, row in enumerate(rows):
                 if cached_frame != row["frame"]:
                     cached_frame, cached_image = next(images)
-                if cached_frame != row["frame"]:
+                if cached_frame != row["frame"] or cached_image is None:
                     msg = "PTS video ordering mismatch"
                     raise ValueError(msg)
                 image_array[index] = cached_image
@@ -180,7 +187,7 @@ def sample_plan(
     request: dict[str, Any],
     conditional: bool,
 ) -> np.ndarray:
-    kwargs = {}
+    kwargs: dict[str, Any] = {}
     if conditional:
         prefix = torch.tensor(request["prefix"], device=feature.device)[None]
         mask = torch.tensor(request["mask"], device=feature.device)[None]
@@ -244,7 +251,10 @@ def replay_one(
                     generation = row["generation"]
                     controller.call({"op": "reset", "generation": generation})
                     clock_origin, clock_tick = now, 0
-                    cache = tuple(value.to(device) for value in decoder.empty_cache())
+                    cache = cast(
+                        "tuple[torch.Tensor, torch.Tensor, torch.Tensor]",
+                        tuple(value.to(device) for value in decoder.empty_cache()),
+                    )
                     counter = 0
                     pending = None
                 request_result = controller.call({
@@ -259,6 +269,9 @@ def replay_one(
                 }:
                     previous_row = index
                 if "ok" in request_result:
+                    if cache is None:
+                        msg = "RTC request requires an initialized generation cache"
+                        raise ValueError(msg)
                     request = request_result["ok"]
                     frame = torch.tensor(np.asarray(tokens[index]), device=device)[None]
                     cosine, sine = (value.to(device) for value in decoder.rope(counter))
@@ -446,7 +459,9 @@ def main() -> None:
                             args.device,
                             args.clock,
                         )
-                        np.savez_compressed(output / f"{identity}.npz", **arrays)
+                        np.savez_compressed(
+                            output / f"{identity}.npz", **cast("dict[str, Any]", arrays)
+                        )
                         write_json(output / f"{identity}.json", trace)
                         summary[identity] = {
                             **command_metrics(arrays),

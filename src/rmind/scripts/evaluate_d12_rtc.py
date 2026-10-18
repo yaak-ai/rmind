@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -84,7 +84,7 @@ def load_config(protocol: dict[str, Any], name: str) -> DictConfig:
     if sha256(record["config"]) != record["config_sha256"]:
         msg = "Configuration changed before loading"
         raise ValueError(msg)
-    return OmegaConf.load(record["config"])
+    return cast("DictConfig", OmegaConf.load(record["config"]))
 
 
 def explicit_noise(seed: int, identity: str, count: int) -> np.ndarray:
@@ -166,6 +166,9 @@ def expert(directory: Path, name: str, device: str) -> None:
     output = directory / "expert" / name
     output.mkdir(parents=True, exist_ok=True)
     policy = load_policy(protocol, name, device)
+    if policy.fm_head is None:
+        msg = "D12 expert evaluation requires a flow-matching head"
+        raise ValueError(msg)
     config = load_config(protocol, name)
     report = {}
     with torch.inference_mode():

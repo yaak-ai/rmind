@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 import matplotlib as mpl
 
@@ -31,6 +31,13 @@ def video_executable() -> str:
         msg = "Video rendering requires ffmpeg on PATH"
         raise FileNotFoundError(msg)
     return str(Path(executable).resolve())
+
+
+def encoder_input(encoder: subprocess.Popen[bytes]) -> IO[bytes]:
+    if encoder.stdin is None:
+        msg = "Video encoder stdin pipe was not created"
+        raise RuntimeError(msg)
+    return encoder.stdin
 
 
 def experts(root: Path, destination: Path | None = None) -> dict[str, Any]:
@@ -181,6 +188,7 @@ def async_report(
                     str(destination / f"{segment[0]}-comparison.mp4"),
                 ]
                 with subprocess.Popen(command, stdin=subprocess.PIPE) as encoder:
+                    video_stream = encoder_input(encoder)
                     for position in range(0, len(walls), 6):
                         frame = int(
                             np.searchsorted(observed, walls[position], side="right") - 1
@@ -211,8 +219,8 @@ def async_report(
                                 fill="red",
                                 width=2,
                             )
-                        encoder.stdin.write(np.asarray(canvas).tobytes())
-                    encoder.stdin.close()
+                        video_stream.write(np.asarray(canvas).tobytes())
+                    video_stream.close()
                     if encoder.wait() != 0:
                         msg = "video encoder failed"
                         raise RuntimeError(msg)
