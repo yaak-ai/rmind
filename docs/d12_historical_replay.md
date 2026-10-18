@@ -137,3 +137,9 @@ cargo run --release --locked --manifest-path tools/d12_noise_stream/Cargo.toml -
    0.55 MB/s before compression. Include exact auxiliary input snapshots.
 
 No serving code, truck services, actuation settings or deployment was changed.
+
+Feature caches bind the selected MP4 content hashes and feature-array digest.
+Older caches without these fields must be rebuilt. Supplying `--features-from`
+requires its independently recorded `--features-sha256`; external caches cannot
+be rebuilt in place. Noise-input path and SHA256 are recorded, but the generator
+algorithm/seed are only declared unless independently verified from a receipt.

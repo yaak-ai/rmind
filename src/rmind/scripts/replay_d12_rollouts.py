@@ -189,6 +189,52 @@ def noise_index(request_index, initial_offset, changes):
     return request_index + offset
 
 
+def selected_video_hashes(directory, rows, frames_per_video):
+    if frames_per_video <= 0:
+        raise ValueError("frames_per_video must be positive")
+    result = {}
+    for chunk in sorted({row["frame"] // frames_per_video for row in rows}):
+        path = directory / f"cam_fork--{chunk}.mp4"
+        with path.open("rb") as stream:
+            result[str(path.resolve())] = hashlib.file_digest(
+                stream, "sha256"
+            ).hexdigest()
+    return result
+
+
+def feature_array_digest(features):
+    return hashlib.sha256(np.ascontiguousarray(features).tobytes()).hexdigest()
+
+
+def noise_provenance(path):
+    with path.open("rb") as stream:
+        checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+    return {
+        "path": str(path.resolve()),
+        "sha256": checksum,
+        "generator_verified": False,
+        "declared_generator": "Rust StdRng seed287, rand0.9.5/rand_distr0.5.1; not verified from these supplied bytes",
+    }
+
+
+def load_feature_cache(path, fingerprint, expected_sha256=None):
+    if expected_sha256 is not None:
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != expected_sha256:
+                raise ValueError("External feature cache checksum changed")
+    with np.load(path, allow_pickle=False) as saved:
+        if "fingerprint" not in saved or str(saved["fingerprint"]) != fingerprint:
+            raise ValueError("Feature provenance changed or absent; rebuild explicitly")
+        features = saved["features"]
+        if "features_sha256" not in saved or str(
+            saved["features_sha256"]
+        ) != feature_array_digest(features):
+            raise ValueError(
+                "Feature array checksum changed or absent; rebuild explicitly"
+            )
+        return features
+
+
 def main() -> None:
     import torch
 
@@ -208,11 +254,20 @@ def main() -> None:
         "--noise-offset-change", action="append", default=[], metavar="REQUEST:OFFSET"
     )
     parser.add_argument("--features-from", type=Path)
+    parser.add_argument("--features-sha256")
     parser.add_argument("--rebuild-features", action="store_true")
     parser.add_argument("--samples", type=int, default=16)
     parser.add_argument("--noise-audit-radius", type=int, default=4)
     parser.add_argument("--frames-per-video", type=int, default=300)
     arguments = parser.parse_args()
+    if arguments.features_from is not None and (
+        arguments.features_sha256 is None or arguments.rebuild_features
+    ):
+        parser.error(
+            "--features-from requires --features-sha256 and cannot be rebuilt in place"
+        )
+    if arguments.features_sha256 is not None and arguments.features_from is None:
+        parser.error("--features-sha256 requires --features-from")
     changes = [
         tuple(map(int, value.split(":"))) for value in arguments.noise_offset_change
     ]
@@ -227,11 +282,15 @@ def main() -> None:
         raise ValueError(msg)
     with arguments.checkpoint.open("rb") as handle:
         checkpoint_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+    video_hashes = selected_video_hashes(
+        arguments.job, rows, arguments.frames_per_video
+    )
     fingerprint = hashlib.sha256(
         json.dumps(
             {
                 "checkpoint": checkpoint_sha256,
                 "rows": rows,
+                "videos": video_hashes,
                 "image_pipeline": "PTS-matched compressed RGB; half-pixel uint8 576x324 then 256x144 v1",
                 "frames_per_video": arguments.frames_per_video,
                 "cache": "all submitted inputs, generation resets, five-frame streaming v1",
@@ -242,6 +301,7 @@ def main() -> None:
     by_step = defaultdict(list)
     for prediction in predictions:
         by_step[prediction["step_ns"]].append(prediction)
+    noise_input = noise_provenance(arguments.rust_noise)
     noise = np.fromfile(arguments.rust_noise, dtype="<f4").reshape(-1, 150)
     noise_indices = np.asarray([
         noise_index(index, arguments.noise_offset, changes)
@@ -267,12 +327,12 @@ def main() -> None:
         raise ValueError("This replay contract requires the fork-only H50 model")
     decoder = D12FlowDecoderStep(policy).eval().to(arguments.device)
     features_path = arguments.features_from or arguments.output / "features.npz"
+    if arguments.features_from is not None and not features_path.is_file():
+        raise FileNotFoundError(features_path)
     if features_path.exists() and not arguments.rebuild_features:
-        saved = np.load(features_path)
-        if "fingerprint" not in saved or str(saved["fingerprint"]) != fingerprint:
-            msg = "Feature provenance changed or absent; use --rebuild-features explicitly"
-            raise ValueError(msg)
-        features = saved["features"]
+        features = load_feature_cache(
+            features_path, fingerprint, arguments.features_sha256
+        )
     else:
         images = iter(video_images(arguments.job, rows, arguments.frames_per_video))
         cached_frame, cached_image = None, None
@@ -337,6 +397,7 @@ def main() -> None:
             features=features,
             step_ns=[row["step_ns"] for row in rows],
             fingerprint=fingerprint,
+            features_sha256=feature_array_digest(features),
         )
     historical, variants, matches = [], [], []
     with torch.inference_mode():
@@ -419,6 +480,13 @@ def main() -> None:
                         zip(offsets.astype(str), errors.tolist(), strict=True)
                     ),
                 })
+    if noise_provenance(arguments.rust_noise) != noise_input:
+        raise ValueError("Noise source changed during replay")
+    if (
+        selected_video_hashes(arguments.job, rows, arguments.frames_per_video)
+        != video_hashes
+    ):
+        raise ValueError("Video source changed during replay")
     np.savez_compressed(
         arguments.output / "chunks.npz",
         actions=np.stack(historical),
@@ -433,7 +501,8 @@ def main() -> None:
         "historical_exactness": "UNVERIFIED: candidate reconstruction, not historical ground truth",
         "images": "Compressed recorded RGB, half-pixel bilinear uint8 1920x1080 -> 576x324 -> 256x144; original UYVY absent",
         "video_mapping": f"Assumed frame_index // {arguments.frames_per_video}; selected videos checked for frame count",
-        "noise": "Rust StdRng seed 287, rand 0.9.5/rand_distr 0.5.1; candidate request-to-inference mapping, not directly logged",
+        "noise": "Supplied explicit noise bytes; candidate request-to-inference mapping, not directly logged",
+        "noise_input": noise_input,
         "noise_offset": arguments.noise_offset,
         "noise_offset_changes": changes,
         "feature_cache": str(features_path),
@@ -445,6 +514,8 @@ def main() -> None:
         "skipped_mcaps": skipped,
         "checkpoint_sha256": checkpoint_sha256,
         "feature_fingerprint": fingerprint,
+        "source_video_sha256": video_hashes,
+        "feature_array_sha256": feature_array_digest(features),
         "first_prediction_seq": predictions[0]["seq"] if predictions else None,
         "matches": matches,
     }

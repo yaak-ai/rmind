@@ -1,4 +1,7 @@
 import numpy as np
+import hashlib
+import json
+import pytest
 from types import SimpleNamespace
 
 from rmind.scripts import replay_d12_rollouts
@@ -9,6 +12,52 @@ from rmind.scripts.replay_d12_rollouts import (
     resize_bilinear_u8,
 )
 from rmind.scripts.summarize_d12_replay import traction_statistics
+
+
+def test_changed_source_video_invalidates_cached_features(tmp_path):
+    video = tmp_path / "cam_fork--0.mp4"
+    video.write_bytes(b"first recording")
+    rows = [{"frame": 4}]
+    first = replay_d12_rollouts.selected_video_hashes(tmp_path, rows, 300)
+    features = np.zeros((1, 512), dtype=np.float32)
+    cache = tmp_path / "features.npz"
+    np.savez(
+        cache,
+        features=features,
+        fingerprint=json.dumps(first),
+        features_sha256=replay_d12_rollouts.feature_array_digest(features),
+    )
+    replay_d12_rollouts.load_feature_cache(cache, json.dumps(first))
+    video.write_bytes(b"replacement recording")
+    changed = replay_d12_rollouts.selected_video_hashes(tmp_path, rows, 300)
+    assert first != changed
+    with pytest.raises(ValueError, match="provenance changed"):
+        replay_d12_rollouts.load_feature_cache(cache, json.dumps(changed))
+
+
+def test_external_cache_and_feature_array_digests_are_checked(tmp_path):
+    cache = tmp_path / "features.npz"
+    features = np.zeros((1, 512), dtype=np.float32)
+    checksum = replay_d12_rollouts.feature_array_digest(features)
+    np.savez(cache, features=features, fingerprint="source", features_sha256=checksum)
+    archive_sha = hashlib.sha256(cache.read_bytes()).hexdigest()
+    replay_d12_rollouts.load_feature_cache(cache, "source", archive_sha)
+    np.savez(
+        cache, features=features + 1, fingerprint="source", features_sha256=checksum
+    )
+    with pytest.raises(ValueError, match="External feature cache"):
+        replay_d12_rollouts.load_feature_cache(cache, "source", archive_sha)
+    with pytest.raises(ValueError, match="Feature array"):
+        replay_d12_rollouts.load_feature_cache(cache, "source")
+
+
+def test_supplied_noise_identity_is_recorded_without_generator_claim(tmp_path):
+    path = tmp_path / "noise.f32"
+    path.write_bytes(b"arbitrary bytes")
+    record = replay_d12_rollouts.noise_provenance(path)
+    assert record["path"] == str(path.resolve())
+    assert record["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert record["generator_verified"] is False
 
 
 def test_bilinear_identity_and_constant() -> None:
