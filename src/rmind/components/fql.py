@@ -28,6 +28,16 @@ class FQLConfig:
     normalize_q_loss: bool = False
 
     def __post_init__(self) -> None:
+        if any(
+            type(value) is not bool
+            for value in (
+                self.actor_layer_norm,
+                self.critic_layer_norm,
+                self.normalize_q_loss,
+            )
+        ):
+            message = "FQL boolean settings must be actual booleans"
+            raise ValueError(message)
         dimensions = (
             self.observation_dim,
             self.action_dim,
@@ -44,7 +54,9 @@ class FQLConfig:
         if not self.actor_hidden_dims or not self.value_hidden_dims:
             message = "FQL networks require hidden layers"
             raise ValueError(message)
-        if not all(
+        if any(
+            isinstance(value, bool) for value in (self.alpha, self.discount, self.tau)
+        ) or not all(
             math.isfinite(value) for value in (self.alpha, self.discount, self.tau)
         ):
             message = "FQL coefficients must be finite"

@@ -36,7 +36,7 @@ class FQLModel(pl.LightningModule):
         super().__init__()
         policy_config = FQLConfig(**config)
         self.policy = FQLPolicy(policy_config)
-        if not 0 < learning_rate < float("inf"):
+        if isinstance(learning_rate, bool) or not 0 < learning_rate < float("inf"):
             message = "Learning rate must be finite and positive"
             raise ValueError(message)
         self.learning_rate = learning_rate
@@ -59,9 +59,12 @@ class FQLModel(pl.LightningModule):
                 message = f"Invalid {name} normalization"
                 raise ValueError(message)
             self.register_buffer(name, tensor)
-        if (self.observation_std <= 0).any() or (
-            self.action_high <= self.action_low
-        ).any():
+        if (
+            (self.observation_std <= 0).any()
+            or (self.action_high <= self.action_low).any()
+            or not torch.isfinite(self.action_high - self.action_low).all()
+            or (self.action_high / 2 - self.action_low / 2 <= 0).any()
+        ):
             message = "Normalization scales and action ranges must be positive"
             raise ValueError(message)
         self.save_hyperparameters({
@@ -76,10 +79,8 @@ class FQLModel(pl.LightningModule):
             / self.observation_std,
             "next_observations": (batch["next_observations"] - self.observation_mean)
             / self.observation_std,
-            "actions": 2
-            * (batch["actions"] - self.action_low)
-            / (self.action_high - self.action_low)
-            - 1,
+            "actions": (batch["actions"] - (self.action_low / 2 + self.action_high / 2))
+            / (self.action_high / 2 - self.action_low / 2),
             "rewards": batch["rewards"],
             "masks": batch["masks"],
         }
@@ -89,7 +90,9 @@ class FQLModel(pl.LightningModule):
             (observations - self.observation_mean) / self.observation_std, noise
         )
         return (
-            self.action_low + (canonical + 1) * (self.action_high - self.action_low) / 2
+            self.action_low / 2
+            + self.action_high / 2
+            + canonical * (self.action_high / 2 - self.action_low / 2)
         )
 
     def configure_optimizers(self) -> torch.optim.Adam:

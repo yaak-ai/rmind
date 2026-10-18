@@ -110,13 +110,10 @@ def test_normalization_explicit_noise_and_lightning_checkpoint(tmp_path: Path) -
     transitions = batch()
     noise = torch.randn(5, 2)
     expected = (
-        model.action_low
-        + (
-            model.policy.sample_actions((transitions["observations"] - 1) / 2, noise)
-            + 1
-        )
-        * (model.action_high - model.action_low)
-        / 2
+        model.action_low / 2
+        + model.action_high / 2
+        + model.policy.sample_actions((transitions["observations"] - 1) / 2, noise)
+        * (model.action_high / 2 - model.action_low / 2)
     )
     assert torch.equal(expected, model(transitions["observations"], noise))
     rows = [
@@ -213,3 +210,49 @@ def test_optional_hydra_configuration_instantiates_without_default_changes() -> 
     assert isinstance(module, FQLDataModule)
     assert composed.trainer.precision == "32-true"
     assert composed.matmul_precision == "highest"
+
+
+@pytest.mark.parametrize(
+    "identities", [np.full(5, np.nan), np.full(5, ""), np.full(5, " "), np.ones(5)]
+)
+def test_invalid_episode_id_cannot_evade_disjoint_split(
+    tmp_path: Path, identities: np.ndarray
+) -> None:
+    arrays = {name: tensor.numpy() for name, tensor in batch().items()}
+    train, validation = tmp_path / "train.npz", tmp_path / "validation.npz"
+    for path in (train, validation):
+        np.savez(path, **arrays, episode_ids=identities)
+    with pytest.raises(ValueError, match="Episode IDs"):
+        FQLDataModule(str(train), str(validation), batch_size=5).setup()
+
+
+def test_action_range_overflow_fails() -> None:
+    with pytest.raises(ValueError, match="Normalization"):
+        FQLModel(
+            asdict(config()),
+            normalization={"action_low": [-3e38] * 2, "action_high": [3e38] * 2},
+        )
+
+
+@pytest.mark.parametrize(
+    "field", ["actor_layer_norm", "critic_layer_norm", "normalize_q_loss"]
+)
+def test_boolean_config_does_not_accept_strings(field: str) -> None:
+    parameters = asdict(config())
+    parameters[field] = "false"
+    with pytest.raises(ValueError, match="booleans"):
+        FQLConfig(**parameters)
+
+
+def test_identity_normalization_preserves_small_canonical_actions_exactly() -> None:
+    model = FQLModel(asdict(config()))
+    transitions = batch()
+    transitions["actions"][0] = torch.tensor([1e-8, -1e-8])
+    normalized = model.normalized_batch(transitions)
+    for name, value in transitions.items():
+        assert torch.equal(value, normalized[name])
+    noise = torch.randn_like(transitions["actions"])
+    assert torch.equal(
+        model(transitions["observations"], noise),
+        model.policy.sample_actions(transitions["observations"], noise),
+    )

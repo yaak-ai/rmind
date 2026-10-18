@@ -11,6 +11,21 @@ from torch.utils.data import DataLoader, Dataset
 MATRIX_RANK = 2
 
 
+def episode_identities(values: np.ndarray) -> frozenset[str]:
+    if values.dtype.kind not in {"U", "S"} and not np.issubdtype(
+        values.dtype, np.integer
+    ):
+        message = (
+            "Episode IDs must be stable strings or integer identities, not floats/NaN"
+        )
+        raise ValueError(message)
+    identities = values.astype(str).tolist()
+    if any(not value.strip() for value in identities):
+        message = "Episode IDs must be nonempty stable strings"
+        raise ValueError(message)
+    return frozenset(identities)
+
+
 class FQLTransitions(Dataset[dict[str, Tensor]]):
     def __init__(self, path: str) -> None:
         with np.load(path, allow_pickle=False) as archive:
@@ -50,7 +65,7 @@ class FQLTransitions(Dataset[dict[str, Tensor]]):
         if not np.isin(arrays["masks"], (0, 1)).all():
             message = "Bootstrap masks must be explicitly binary"
             raise ValueError(message)
-        self.episode_ids = frozenset(arrays.pop("episode_ids").tolist())
+        self.episode_ids = episode_identities(arrays.pop("episode_ids"))
         self.tensors = {}
         for name, array in arrays.items():
             if (
