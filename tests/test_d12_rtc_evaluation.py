@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 
 import numpy as np
@@ -7,7 +8,7 @@ import torch
 from types import SimpleNamespace
 
 from rmind.components.rtc_flow_head import TokenTimeFlowHead
-from rmind.scripts.evaluate_d12_rtc import explicit_noise
+from rmind.scripts.evaluate_d12_rtc import explicit_noise, sha256, verify
 from rmind.scripts.replay_d12_rtc import (
     Controller,
     command_metrics,
@@ -15,6 +16,30 @@ from rmind.scripts.replay_d12_rtc import (
     tick_ns,
 )
 from rmind.scripts import replay_d12_rtc
+
+
+@pytest.mark.parametrize("changed", ["checkpoint", "config", "latency"])
+def test_provenance_rejects_changed_inputs(tmp_path, changed):
+    paths = {name: tmp_path / name for name in ("checkpoint", "config", "latency")}
+    for path in paths.values():
+        path.write_bytes(b"original")
+    protocol = {
+        "models": {
+            "baseline": {
+                "checkpoint": str(paths["checkpoint"]),
+                "sha256": sha256(paths["checkpoint"]),
+                "config": str(paths["config"]),
+                "config_sha256": sha256(paths["config"]),
+            }
+        },
+        "latency_source": str(paths["latency"]),
+        "latency_sha256": sha256(paths["latency"]),
+    }
+    (tmp_path / "protocol.json").write_text(json.dumps(protocol))
+    assert verify(tmp_path) == protocol
+    paths[changed].write_bytes(b"changed")
+    with pytest.raises(ValueError, match="changed"):
+        verify(tmp_path)
 
 
 def test_noise_is_explicit_paired_and_identity_bound():
