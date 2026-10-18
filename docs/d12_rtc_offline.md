@@ -56,14 +56,26 @@ change in response to hypothetical commands: this remains open-loop replay.
 
 ## Reproduce
 
-The new evaluation files depend on the existing native RTC production changes
-and historical replay utilities. Those pre-existing dirty changes are not
-silently bundled into the evaluation commit. The archived source snapshot in
-the evidence directory is the complete tested dependency state.
+The branch includes the focused dependencies from PR #289 (native RTC) and
+PR #290 (historical replay); no dirty checkout is required. Install the locked
+rmind environment and select this checkout's `src` on PYTHONPATH. Coppernic's
+`feat/d12-rtc-serving` branch provides the actual controller; initialize its
+pinned iondrive submodule when building the full serving binaries. The small
+evaluation wrapper only compiles that controller source and its locked Rust
+dependencies, not a duplicate Python scheduler.
+
+This is an exact, private-data reproduction, not a portable public dataset.
+It requires NAS access to both model directories, their original 38 MCAP jobs,
+the historical recording videos and extracted PTS-joined input JSONs under
+`/nasa/max/d12/flow_matching/rollouts/2026-10-15`, and the measured latency JSON
+under `rtc-robustness-20261016`. `freeze` hashes the selected model/config and
+recording inputs; provenance additionally verifies all original dataset files.
+Existing evidence directories are immutable; choose a new output directory.
 
 ```sh
-ROOT=/nasa/max/d12/flow_matching/d12-rtc-offline-20261018
-CONTROLLER=/home/max/Code/coppernic-d12-fm/crates/copper/cu-infer/src/d12_rtc.rs
+ROOT=/nasa/max/d12/flow_matching/d12-rtc-offline-reproduction-NEW
+CONTROLLER=/path/to/coppernic/crates/copper/cu-infer/src/d12_rtc.rs
+export PYTHONPATH="$PWD/src"
 export CUDA_VISIBLE_DEVICES=GPU-d0a539a2-35e4-0445-be7e-969b1698d61c
 export OMP_NUM_THREADS=4 POLARS_MAX_THREADS=4
 
@@ -95,6 +107,11 @@ done
   --folder async-paced --controller "$BINARY"
 D12_RTC_STREAM_BINARY="$BINARY" .venv/bin/pytest -q tests/test_d12_rtc_evaluation.py
 ```
+
+The measured profile remains the older deployed model's latency, not a new
+Jetson measurement. Local TensorRT engine parity and target/shadow requirements
+are documented separately in `docs/d12_native_rtc.md` and Coppernic's
+`crates/copper/cu-infer/D12_RTC_VALIDATION.md`.
 
 `report.html` links action plots and paired camera/action videos. Raw NPZs retain
 explicit noise, commands, plan IDs, action indices and timestamps; JSON traces

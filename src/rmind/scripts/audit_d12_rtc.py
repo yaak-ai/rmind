@@ -15,13 +15,19 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--controller", type=Path, required=True)
     parser.add_argument("--folder", choices=("async", "async-paced"), default="async")
+    parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     root = args.output
-    verify(root)
+    protocol = verify(root)
     provenance = json.loads((root / "provenance.json").read_text())
     assert sha256(args.controller) == provenance["controller_binary"]["sha256"]
     for name, expected in provenance["source_files"].items():
         assert sha256(root / "source_snapshot" / name) == expected, name
+    expected_jobs = {f"{Path(job).name}.npz" for job in protocol["expert_jobs"]}
+    for model in ("baseline", "rtc"):
+        actual_jobs = {path.name for path in (root / "expert" / model).glob("*.npz")}
+        if actual_jobs != expected_jobs:
+            raise ValueError(f"Incomplete or unexpected expert cohort: {model}")
     for path in sorted((root / "expert/baseline").glob("*.npz")):
         baseline = np.load(path)
         rtc = np.load(root / "expert/rtc" / path.name)
@@ -125,7 +131,7 @@ def main():
                     )
     assert cells == 81
     write_json(
-        root / f"{args.folder}-audit.json",
+        args.report or root / f"{args.folder}-audit.json",
         {
             "passed": True,
             "cells": cells,

@@ -127,11 +127,16 @@ def freeze(directory):
 
 
 def verify(directory):
+    if not __debug__:
+        raise RuntimeError("Evaluation audits require Python without -O")
     protocol = json.loads((directory / "protocol.json").read_text())
     for model in protocol["models"].values():
-        assert sha256(model["checkpoint"]) == model["sha256"]
-        assert sha256(model["config"]) == model["config_sha256"]
-    assert sha256(protocol["latency_source"]) == protocol["latency_sha256"]
+        if sha256(model["checkpoint"]) != model["sha256"]:
+            raise ValueError(f"Checkpoint changed: {model['checkpoint']}")
+        if sha256(model["config"]) != model["config_sha256"]:
+            raise ValueError(f"Configuration changed: {model['config']}")
+    if sha256(protocol["latency_source"]) != protocol["latency_sha256"]:
+        raise ValueError("Latency source changed")
     return protocol
 
 

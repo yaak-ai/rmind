@@ -51,7 +51,7 @@ def main():
         args.output / "provenance.json",
         {
             "captured_utc": datetime.now(timezone.utc).isoformat(),
-            "scope": "Expert runs completed before archive capture; unchanged semantic source retained. Async runs execute this snapshot. Original failed FP64 diagnostic attempt retained separately.",
+            "scope": "Source captured after expert/extraction stages; asynchronous replay executes this snapshot. This record describes this reproduction only; original historical failed attempts remain in their separate immutable evidence directory.",
             "source_archive": {"path": str(archive), "sha256": sha256(archive)},
             "source_files": {
                 str(path.relative_to(root)): sha256(path) for path in source
