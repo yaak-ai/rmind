@@ -7,7 +7,13 @@ import pytorch_lightning as pl
 import torch
 from torch import Tensor
 
-from rmind.components.fql import FQLConfig, FQLNoise, FQLPolicy, fql_optimizer
+from rmind.components.fql import (
+    FQLConfig,
+    FQLNoise,
+    FQLPolicy,
+    fql_optimizer,
+    validate_fql_gradients,
+)
 
 if TYPE_CHECKING:
     from pytorch_lightning.core.optimizer import LightningOptimizer
@@ -143,12 +149,7 @@ class FQLModel(pl.LightningModule):
             message = "Nonfinite FQL loss; refusing optimizer/target update"
             raise ValueError(message)
         self.manual_backward(loss)
-        if any(
-            parameter.grad is not None and not torch.isfinite(parameter.grad).all()
-            for parameter in self.policy.parameters()
-        ):
-            message = "Nonfinite FQL gradient; refusing optimizer/target update"
-            raise ValueError(message)
+        validate_fql_gradients(self.policy)
         self.policy.update_targets()
         optimizer.step()
         self.log_dict(

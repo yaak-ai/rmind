@@ -10,7 +10,13 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from torch.utils.data import DataLoader
 
-from rmind.components.fql import FQLConfig, FQLNoise, FQLPolicy, fql_optimizer
+from rmind.components.fql import (
+    FQLConfig,
+    FQLNoise,
+    FQLPolicy,
+    fql_optimizer,
+    validate_fql_gradients,
+)
 from rmind.datamodules.fql import FQLDataModule, FQLTransitions
 from rmind.models.fql import FQLModel
 
@@ -379,3 +385,21 @@ def test_legacy_optimizer_contract_requires_matching_constructor() -> None:
     ):
         with pytest.raises(ValueError, match="contract"):
             replacement.on_load_checkpoint(checkpoint)
+
+
+@pytest.mark.parametrize("component", ["prior", "actor", "critics", "target_critics"])
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])
+def test_gradient_guard_rejects_nonfinite_in_every_component(
+    component: str, invalid: float
+) -> None:
+    policy = FQLPolicy(config())
+    validate_fql_gradients(policy)
+    for parameter in policy.parameters():
+        parameter.grad = torch.zeros_like(parameter)
+    validate_fql_gradients(policy)
+    selected = list(getattr(policy, component).parameters())[-1]
+    selected.grad.flatten()[-1] = invalid
+    with pytest.raises(ValueError, match="Nonfinite FQL gradient"):
+        validate_fql_gradients(policy)
+    selected.grad = None
+    validate_fql_gradients(policy)

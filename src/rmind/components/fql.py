@@ -353,3 +353,23 @@ def fql_optimizer(
         foreach=execution == "foreach",
         fused=False,
     )
+
+
+def validate_fql_gradients(policy: FQLPolicy) -> None:
+    """Check every present gradient with one host synchronization per device.
+
+    Raises:
+        ValueError: If any present parameter gradient is nonfinite.
+    """
+    finite_by_device: dict[torch.device, list[Tensor]] = {}
+    for parameter in policy.parameters():
+        if parameter.grad is not None:
+            gradient = parameter.grad
+            finite_by_device.setdefault(gradient.device, []).append(
+                torch.isfinite(gradient).all()
+            )
+    if any(
+        not torch.stack(predicates).all() for predicates in finite_by_device.values()
+    ):
+        message = "Nonfinite FQL gradient; refusing optimizer/target update"
+        raise ValueError(message)
