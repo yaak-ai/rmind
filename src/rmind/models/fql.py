@@ -1,0 +1,229 @@
+"""Opt-in Lightning training boundary for explicitly labeled offline transitions."""
+
+from dataclasses import asdict
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+import pytorch_lightning as pl
+import torch
+from torch import Tensor
+
+from rmind.components.fql import (
+    FQLConfig,
+    FQLNoise,
+    FQLPolicy,
+    fql_optimizer,
+    validate_fql_gradients,
+)
+
+if TYPE_CHECKING:
+    from pytorch_lightning.core.optimizer import LightningOptimizer
+
+
+class FQLModel(pl.LightningModule):
+    """Single-transition FQL; rewards and bootstrap masks are supplied, never inferred.
+
+    Public observations/actions are physical units. Normalization is checkpointed;
+    the component operates on standardized observations and bounded canonical actions.
+    This model deliberately does not implement the D12/RTC serving interface.
+    """
+
+    observation_mean: Tensor
+    observation_std: Tensor
+    action_low: Tensor
+    action_high: Tensor
+
+    def __init__(
+        self,
+        config: dict[str, Any],
+        *,
+        learning_rate: float = 3e-4,
+        normalization: dict[str, list[float]] | None = None,
+        optimizer_execution: Literal["single_tensor", "foreach"] = "single_tensor",
+    ) -> None:
+        super().__init__()
+        policy_config = FQLConfig(**config)
+        self.policy = FQLPolicy(policy_config)
+        if isinstance(learning_rate, bool) or not 0 < learning_rate < float("inf"):
+            message = "Learning rate must be finite and positive"
+            raise ValueError(message)
+        self.learning_rate = learning_rate
+        if optimizer_execution not in {"single_tensor", "foreach"}:
+            message = "FQL Adam execution must be single_tensor or foreach"
+            raise ValueError(message)
+        self.optimizer_execution = optimizer_execution
+        self.automatic_optimization = False
+        normalization = normalization or {}
+        defaults = {
+            "observation_mean": (policy_config.observation_dim, 0.0),
+            "observation_std": (policy_config.observation_dim, 1.0),
+            "action_low": (policy_config.action_dim, -1.0),
+            "action_high": (policy_config.action_dim, 1.0),
+        }
+        if normalization.keys() - defaults.keys():
+            message = "Unknown normalization field"
+            raise ValueError(message)
+        for name, (size, default) in defaults.items():
+            tensor = torch.tensor(
+                normalization.get(name, [default] * size), dtype=torch.float32
+            )
+            if tensor.shape != (size,) or not torch.isfinite(tensor).all():
+                message = f"Invalid {name} normalization"
+                raise ValueError(message)
+            self.register_buffer(name, tensor)
+        if (
+            (self.observation_std <= 0).any()
+            or (self.action_high <= self.action_low).any()
+            or not torch.isfinite(self.action_high - self.action_low).all()
+            or (self.action_high / 2 - self.action_low / 2 <= 0).any()
+        ):
+            message = "Normalization scales and action ranges must be positive"
+            raise ValueError(message)
+        self.save_hyperparameters({
+            "config": asdict(policy_config),
+            "learning_rate": learning_rate,
+            "optimizer_execution": optimizer_execution,
+            "normalization": {name: getattr(self, name).tolist() for name in defaults},
+        })
+
+    def normalized_batch(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        actions = batch["actions"]
+        if (
+            not actions.is_floating_point()
+            or ((actions < self.action_low) | (actions > self.action_high)).any()
+        ):
+            message = "Physical actions must be floating tensors inside the configured action bounds"
+            raise ValueError(message)
+        canonical = (actions - (self.action_low / 2 + self.action_high / 2)) / (
+            self.action_high / 2 - self.action_low / 2
+        )
+        return {
+            "observations": (batch["observations"] - self.observation_mean)
+            / self.observation_std,
+            "next_observations": (batch["next_observations"] - self.observation_mean)
+            / self.observation_std,
+            "actions": canonical.clamp(-1, 1),
+            "rewards": batch["rewards"],
+            "masks": batch["masks"],
+        }
+
+    def forward(self, observations: Tensor, noise: Tensor) -> Tensor:
+        canonical = self.policy.sample_actions(
+            (observations - self.observation_mean) / self.observation_std, noise
+        )
+        physical = (
+            self.action_low / 2
+            + self.action_high / 2
+            + canonical * (self.action_high / 2 - self.action_low / 2)
+        )
+        return physical.clamp(min=self.action_low, max=self.action_high)
+
+    def configure_optimizers(self) -> torch.optim.Adam:
+        return fql_optimizer(
+            self.policy,
+            learning_rate=self.learning_rate,
+            execution=self.optimizer_execution,
+        )
+
+    def on_fit_start(self) -> None:
+        if str(self.trainer.precision) not in {"32", "32-true"}:
+            message = (
+                "FQL currently requires FP32 training; mixed precision is not validated"
+            )
+            raise ValueError(message)
+        if (
+            self.trainer.accumulate_grad_batches != 1
+            or self.trainer.gradient_clip_val not in {None, 0}
+        ):
+            message = "FQL manual updates require accumulation1 and no external gradient clipping"
+            raise ValueError(message)
+
+    def training_step(self, batch: dict[str, Tensor], batch_idx: int) -> Tensor:
+        del batch_idx
+        normalized = self.normalized_batch(batch)
+        optimizer = cast("LightningOptimizer", self.optimizers())
+        optimizer.zero_grad(set_to_none=True)
+        loss, metrics = self.policy.losses(
+            normalized, FQLNoise.draw(normalized["actions"])
+        )
+        if not torch.isfinite(loss):
+            message = "Nonfinite FQL loss; refusing optimizer/target update"
+            raise ValueError(message)
+        self.manual_backward(loss)
+        validate_fql_gradients(self.policy)
+        self.policy.update_targets()
+        optimizer.step()
+        self.log_dict(
+            {f"train/{name}": value.detach() for name, value in metrics.items()},
+            batch_size=len(normalized["actions"]),
+        )
+        return loss.detach()
+
+    def validation_step(self, batch: dict[str, Tensor], batch_idx: int) -> Tensor:
+        del batch_idx
+        normalized = self.normalized_batch(batch)
+        loss, metrics = self.policy.losses(
+            normalized, FQLNoise.draw(normalized["actions"])
+        )
+        self.log_dict(
+            {f"validation/{name}": value for name, value in metrics.items()},
+            batch_size=len(normalized["actions"]),
+        )
+        return loss
+
+    def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        checkpoint["fql_contract"] = {
+            "schema": "rmind_fql_v1",
+            "architecture": "official_low_dim_raw_time",
+            "config": asdict(self.policy.config),
+            "action_horizon": 1,
+            "rtc_compatible": False,
+            "observation_space": "physical",
+            "output_action_space": "physical",
+            "noise_space": "standard_normal",
+            "target_update": "pre_optimizer_critic",
+            "optimizer": {
+                "execution": self.optimizer_execution,
+                "learning_rate": self.learning_rate,
+            },
+        }
+
+    def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        expected: dict[str, Any] = {}
+        self.on_save_checkpoint(expected)
+        saved_contract = dict(checkpoint.get("fql_contract") or {})
+        if "optimizer" not in saved_contract:
+            saved_parameters = checkpoint.get("hyper_parameters", {})
+            saved_contract["optimizer"] = {
+                "execution": saved_parameters.get(
+                    "optimizer_execution", "single_tensor"
+                ),
+                "learning_rate": saved_parameters.get("learning_rate"),
+            }
+        if saved_contract != expected["fql_contract"]:
+            message = "Missing or incompatible FQL checkpoint contract"
+            raise ValueError(message)
+        optimizer_states = checkpoint.get("optimizer_states", [])
+        if optimizer_states:
+            defaults = self.configure_optimizers().defaults
+            if (
+                len(optimizer_states) != 1
+                or len(optimizer_states[0]["param_groups"]) != 1
+            ):
+                message = "Incompatible FQL checkpoint optimizer groups"
+                raise ValueError(message)
+            saved_group = optimizer_states[0]["param_groups"][0]
+            if any(saved_group.get(name) != value for name, value in defaults.items()):
+                message = "Checkpoint optimizer differs from constructor metadata"
+                raise ValueError(message)
+        for name in (
+            "observation_mean",
+            "observation_std",
+            "action_low",
+            "action_high",
+        ):
+            saved = checkpoint["state_dict"].get(name)
+            if not isinstance(saved, Tensor) or not torch.equal(
+                saved.cpu(), getattr(self, name).cpu()
+            ):
+                message = "Checkpoint normalization differs from constructor metadata"
+                raise ValueError(message)

@@ -1,0 +1,5 @@
+_target_: rmind.datamodules.fql.FQLDataModule
+train_path: ???
+validation_path: ???
+batch_size: 256
+seed: ${seed}

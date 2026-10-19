@@ -1,0 +1,17 @@
+_target_: rmind.models.fql.FQLModel
+config:
+  observation_dim: ???
+  action_dim: ???
+  actor_hidden_dims: [512, 512, 512, 512]
+  value_hidden_dims: [512, 512, 512, 512]
+  actor_layer_norm: false
+  critic_layer_norm: true
+  flow_steps: 10
+  alpha: 10.0
+  discount: 0.99
+  tau: 0.005
+  q_aggregation: mean
+  normalize_q_loss: false
+learning_rate: 0.0003
+optimizer_execution: single_tensor
+normalization: null
