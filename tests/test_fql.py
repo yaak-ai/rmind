@@ -1,6 +1,7 @@
 import copy
 from dataclasses import asdict
 from pathlib import Path
+from typing import Literal, cast
 
 import numpy as np
 import pytest
@@ -8,7 +9,7 @@ import pytorch_lightning as pl
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from rmind.components.fql import (
     FQLConfig,
@@ -105,7 +106,7 @@ def test_reject_invalid_transition(field: str, value: float) -> None:
 
 @pytest.mark.parametrize("execution", ["single_tensor", "foreach"])
 def test_normalization_explicit_noise_and_lightning_checkpoint(
-    tmp_path: Path, execution: str
+    tmp_path: Path, execution: Literal["single_tensor", "foreach"]
 ) -> None:
     model = FQLModel(
         asdict(config()),
@@ -137,7 +138,12 @@ def test_normalization_explicit_noise_and_lightning_checkpoint(
         enable_progress_bar=False,
         num_sanity_val_steps=0,
     )
-    trainer.fit(model, train_dataloaders=DataLoader(rows, batch_size=5))
+    trainer.fit(
+        model,
+        train_dataloaders=DataLoader(
+            cast("Dataset[dict[str, torch.Tensor]]", rows), batch_size=5
+        ),
+    )
     path = tmp_path / "model.ckpt"
     trainer.save_checkpoint(path)
     restored = FQLModel.load_from_checkpoint(path, weights_only=True)
@@ -289,6 +295,7 @@ def test_complex_transition_values_are_not_silently_truncated(
 def test_actor_q_gradient_matches_reference_half_tie_at_action_boundary() -> None:
     policy = FQLPolicy(config())
     final = policy.actor[-1]
+    assert isinstance(final, torch.nn.Linear)
     with torch.no_grad():
         final.weight.zero_()
         final.bias.copy_(torch.tensor([-1.0, 1.0]))
@@ -332,7 +339,7 @@ def test_physical_endpoint_rounding_does_not_reject_valid_actions() -> None:
 
 @pytest.mark.parametrize("execution", ["single_tensor", "foreach"])
 def test_shared_optimizer_preserves_contract_and_excludes_targets(
-    execution: str,
+    execution: Literal["single_tensor", "foreach"],
 ) -> None:
     model = FQLModel(asdict(config()), optimizer_execution=execution)
     optimizer = model.configure_optimizers()
@@ -351,7 +358,10 @@ def test_shared_optimizer_preserves_contract_and_excludes_targets(
 
 def test_fused_optimizer_is_not_silently_enabled() -> None:
     with pytest.raises(ValueError, match="single_tensor or foreach"):
-        fql_optimizer(FQLPolicy(config()), execution="fused")
+        fql_optimizer(
+            FQLPolicy(config()),
+            execution=cast("Literal['single_tensor', 'foreach']", "fused"),
+        )
 
 
 @pytest.mark.parametrize(("field", "value"), [("foreach", True), ("lr", 1e-4)])
@@ -377,7 +387,9 @@ def test_legacy_optimizer_contract_requires_matching_constructor() -> None:
         "optimizer_states": [model.configure_optimizers().state_dict()],
     }
     model.on_save_checkpoint(checkpoint)
-    checkpoint["fql_contract"].pop("optimizer")
+    contract = checkpoint["fql_contract"]
+    assert isinstance(contract, dict)
+    contract.pop("optimizer")
     model.on_load_checkpoint(checkpoint)
     for replacement in (
         FQLModel(asdict(config()), optimizer_execution="foreach"),
