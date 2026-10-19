@@ -11,6 +11,13 @@ one-step distilled actor, two LayerNorm critics and two lagged target critics.
 Actor Q gradients pass through actions but not critic parameters. BC and target
 actions are detached. The target EMA uses **pre-optimizer** critic parameters.
 Adam uses the reference beta/epsilon settings without weight decay or clipping.
+The shared `fql_optimizer` defaults to single-tensor Adam; optional
+`model.optimizer_execution=foreach` changes only standard Adam kernel execution.
+Both choices preserve all input validation and are recorded in checkpoint
+hyperparameters. Fused Adam is deliberately rejected: it failed the original
+strict moment/parameter preflight bound. The foreach performance experiment
+passed three actual updates and an identical-gradient optimizer control;
+this is numerical/performance evidence, not a learned-quality result.
 Native Torch initialization has the same Xavier-uniform distribution, not the
 same PRNG bits as JAX. Explicit `FQLNoise` supports matched numerical comparison.
 

@@ -10,7 +10,7 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from torch.utils.data import DataLoader
 
-from rmind.components.fql import FQLConfig, FQLNoise, FQLPolicy
+from rmind.components.fql import FQLConfig, FQLNoise, FQLPolicy, fql_optimizer
 from rmind.datamodules.fql import FQLDataModule, FQLTransitions
 from rmind.models.fql import FQLModel
 
@@ -97,9 +97,13 @@ def test_reject_invalid_transition(field: str, value: float) -> None:
         policy.losses(transitions, FQLNoise.draw(transitions["actions"]))
 
 
-def test_normalization_explicit_noise_and_lightning_checkpoint(tmp_path: Path) -> None:
+@pytest.mark.parametrize("execution", ["single_tensor", "foreach"])
+def test_normalization_explicit_noise_and_lightning_checkpoint(
+    tmp_path: Path, execution: str
+) -> None:
     model = FQLModel(
         asdict(config()),
+        optimizer_execution=execution,
         normalization={
             "observation_mean": [1.0] * 4,
             "observation_std": [2.0] * 4,
@@ -131,6 +135,10 @@ def test_normalization_explicit_noise_and_lightning_checkpoint(tmp_path: Path) -
     path = tmp_path / "model.ckpt"
     trainer.save_checkpoint(path)
     restored = FQLModel.load_from_checkpoint(path, weights_only=True)
+    assert restored.optimizer_execution == execution
+    assert restored.configure_optimizers().defaults["foreach"] == (
+        execution == "foreach"
+    )
     assert torch.equal(
         model(transitions["observations"], noise),
         restored(transitions["observations"], noise),
@@ -314,3 +322,27 @@ def test_physical_endpoint_rounding_does_not_reject_valid_actions() -> None:
     )
     with pytest.raises(ValueError, match="Physical actions"):
         model.normalized_batch(transitions)
+
+
+@pytest.mark.parametrize("execution", ["single_tensor", "foreach"])
+def test_shared_optimizer_preserves_contract_and_excludes_targets(
+    execution: str,
+) -> None:
+    model = FQLModel(asdict(config()), optimizer_execution=execution)
+    optimizer = model.configure_optimizers()
+    assert optimizer.defaults["foreach"] == (execution == "foreach")
+    assert optimizer.defaults["fused"] is False
+    assert optimizer.defaults["betas"] == (0.9, 0.999)
+    assert float(optimizer.defaults["eps"]).hex() == (1e-8).hex()
+    selected = {
+        id(value) for group in optimizer.param_groups for value in group["params"]
+    }
+    assert selected == {
+        id(value) for value in model.policy.parameters() if value.requires_grad
+    }
+    assert model.hparams["optimizer_execution"] == execution
+
+
+def test_fused_optimizer_is_not_silently_enabled() -> None:
+    with pytest.raises(ValueError, match="single_tensor or foreach"):
+        fql_optimizer(FQLPolicy(config()), execution="fused")

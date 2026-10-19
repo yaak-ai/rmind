@@ -13,4 +13,5 @@ config:
   q_aggregation: mean
   normalize_q_loss: false
 learning_rate: 0.0003
+optimizer_execution: single_tensor
 normalization: null

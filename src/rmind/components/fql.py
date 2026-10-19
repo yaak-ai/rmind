@@ -325,3 +325,31 @@ class FQLPolicy(nn.Module):
             self.target_critics.parameters(), self.critics.parameters(), strict=True
         ):
             target.copy_(source * self.config.tau + target * (1 - self.config.tau))
+
+
+def fql_optimizer(
+    policy: FQLPolicy,
+    *,
+    learning_rate: float = 3e-4,
+    execution: Literal["single_tensor", "foreach"] = "single_tensor",
+) -> torch.optim.Adam:
+    """Shared production optimizer; fused execution is intentionally unsupported.
+
+    Raises:
+        ValueError: If execution or learning rate violates the optimizer contract.
+    """
+    if execution not in {"single_tensor", "foreach"}:
+        message = "FQL Adam execution must be single_tensor or foreach"
+        raise ValueError(message)
+    if isinstance(learning_rate, bool) or not 0 < learning_rate < float("inf"):
+        message = "Learning rate must be finite and positive"
+        raise ValueError(message)
+    return torch.optim.Adam(
+        (parameter for parameter in policy.parameters() if parameter.requires_grad),
+        lr=learning_rate,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=0,
+        foreach=execution == "foreach",
+        fused=False,
+    )

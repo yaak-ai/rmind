@@ -1,13 +1,13 @@
 """Opt-in Lightning training boundary for explicitly labeled offline transitions."""
 
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pytorch_lightning as pl
 import torch
 from torch import Tensor
 
-from rmind.components.fql import FQLConfig, FQLNoise, FQLPolicy
+from rmind.components.fql import FQLConfig, FQLNoise, FQLPolicy, fql_optimizer
 
 if TYPE_CHECKING:
     from pytorch_lightning.core.optimizer import LightningOptimizer
@@ -32,6 +32,7 @@ class FQLModel(pl.LightningModule):
         *,
         learning_rate: float = 3e-4,
         normalization: dict[str, list[float]] | None = None,
+        optimizer_execution: Literal["single_tensor", "foreach"] = "single_tensor",
     ) -> None:
         super().__init__()
         policy_config = FQLConfig(**config)
@@ -40,6 +41,10 @@ class FQLModel(pl.LightningModule):
             message = "Learning rate must be finite and positive"
             raise ValueError(message)
         self.learning_rate = learning_rate
+        if optimizer_execution not in {"single_tensor", "foreach"}:
+            message = "FQL Adam execution must be single_tensor or foreach"
+            raise ValueError(message)
+        self.optimizer_execution = optimizer_execution
         self.automatic_optimization = False
         normalization = normalization or {}
         defaults = {
@@ -70,6 +75,7 @@ class FQLModel(pl.LightningModule):
         self.save_hyperparameters({
             "config": asdict(policy_config),
             "learning_rate": learning_rate,
+            "optimizer_execution": optimizer_execution,
             "normalization": {name: getattr(self, name).tolist() for name in defaults},
         })
 
@@ -106,19 +112,10 @@ class FQLModel(pl.LightningModule):
         return physical.clamp(min=self.action_low, max=self.action_high)
 
     def configure_optimizers(self) -> torch.optim.Adam:
-        parameters = (
-            parameter
-            for parameter in self.policy.parameters()
-            if parameter.requires_grad
-        )
-        return torch.optim.Adam(
-            parameters,
-            lr=self.learning_rate,
-            betas=(0.9, 0.999),
-            eps=1e-8,
-            weight_decay=0,
-            foreach=False,
-            fused=False,
+        return fql_optimizer(
+            self.policy,
+            learning_rate=self.learning_rate,
+            execution=self.optimizer_execution,
         )
 
     def on_fit_start(self) -> None:
