@@ -346,3 +346,36 @@ def test_shared_optimizer_preserves_contract_and_excludes_targets(
 def test_fused_optimizer_is_not_silently_enabled() -> None:
     with pytest.raises(ValueError, match="single_tensor or foreach"):
         fql_optimizer(FQLPolicy(config()), execution="fused")
+
+
+@pytest.mark.parametrize(("field", "value"), [("foreach", True), ("lr", 1e-4)])
+def test_checkpoint_rejects_optimizer_state_metadata_mismatch(
+    field: str, *, value: bool | float
+) -> None:
+    model = FQLModel(asdict(config()))
+    checkpoint = {
+        "state_dict": model.state_dict(),
+        "optimizer_states": [model.configure_optimizers().state_dict()],
+    }
+    model.on_save_checkpoint(checkpoint)
+    checkpoint["optimizer_states"][0]["param_groups"][0][field] = value
+    with pytest.raises(ValueError, match="optimizer differs"):
+        model.on_load_checkpoint(checkpoint)
+
+
+def test_legacy_optimizer_contract_requires_matching_constructor() -> None:
+    model = FQLModel(asdict(config()))
+    checkpoint = {
+        "state_dict": model.state_dict(),
+        "hyper_parameters": {"learning_rate": model.learning_rate},
+        "optimizer_states": [model.configure_optimizers().state_dict()],
+    }
+    model.on_save_checkpoint(checkpoint)
+    checkpoint["fql_contract"].pop("optimizer")
+    model.on_load_checkpoint(checkpoint)
+    for replacement in (
+        FQLModel(asdict(config()), optimizer_execution="foreach"),
+        FQLModel(asdict(config()), learning_rate=1e-4),
+    ):
+        with pytest.raises(ValueError, match="contract"):
+            replacement.on_load_checkpoint(checkpoint)

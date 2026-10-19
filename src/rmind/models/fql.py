@@ -180,14 +180,40 @@ class FQLModel(pl.LightningModule):
             "output_action_space": "physical",
             "noise_space": "standard_normal",
             "target_update": "pre_optimizer_critic",
+            "optimizer": {
+                "execution": self.optimizer_execution,
+                "learning_rate": self.learning_rate,
+            },
         }
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         expected: dict[str, Any] = {}
         self.on_save_checkpoint(expected)
-        if checkpoint.get("fql_contract") != expected["fql_contract"]:
+        saved_contract = dict(checkpoint.get("fql_contract") or {})
+        if "optimizer" not in saved_contract:
+            saved_parameters = checkpoint.get("hyper_parameters", {})
+            saved_contract["optimizer"] = {
+                "execution": saved_parameters.get(
+                    "optimizer_execution", "single_tensor"
+                ),
+                "learning_rate": saved_parameters.get("learning_rate"),
+            }
+        if saved_contract != expected["fql_contract"]:
             message = "Missing or incompatible FQL checkpoint contract"
             raise ValueError(message)
+        optimizer_states = checkpoint.get("optimizer_states", [])
+        if optimizer_states:
+            defaults = self.configure_optimizers().defaults
+            if (
+                len(optimizer_states) != 1
+                or len(optimizer_states[0]["param_groups"]) != 1
+            ):
+                message = "Incompatible FQL checkpoint optimizer groups"
+                raise ValueError(message)
+            saved_group = optimizer_states[0]["param_groups"][0]
+            if any(saved_group.get(name) != value for name, value in defaults.items()):
+                message = "Checkpoint optimizer differs from constructor metadata"
+                raise ValueError(message)
         for name in (
             "observation_mean",
             "observation_std",
