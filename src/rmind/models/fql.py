@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class FQLModel(pl.LightningModule):
-    """Single-transition FQL; rewards and bootstrap masks are supplied, never inferred.
+    """FQL with explicit rewards and bootstrap weights, never inferred.
 
     Public observations/actions are physical units. Normalization is checkpointed;
     the component operates on standardized observations and bounded canonical actions.
@@ -96,7 +96,7 @@ class FQLModel(pl.LightningModule):
         canonical = (actions - (self.action_low / 2 + self.action_high / 2)) / (
             self.action_high / 2 - self.action_low / 2
         )
-        return {
+        normalized = {
             "observations": (batch["observations"] - self.observation_mean)
             / self.observation_std,
             "next_observations": (batch["next_observations"] - self.observation_mean)
@@ -105,6 +105,9 @@ class FQLModel(pl.LightningModule):
             "rewards": batch["rewards"],
             "masks": batch["masks"],
         }
+        if "bootstrap_discounts" in batch:
+            normalized["bootstrap_discounts"] = batch["bootstrap_discounts"]
+        return normalized
 
     def forward(self, observations: Tensor, noise: Tensor) -> Tensor:
         canonical = self.policy.sample_actions(
@@ -115,7 +118,16 @@ class FQLModel(pl.LightningModule):
             + self.action_high / 2
             + canonical * (self.action_high / 2 - self.action_low / 2)
         )
-        return physical.clamp(min=self.action_low, max=self.action_high)
+        physical = physical.clamp(min=self.action_low, max=self.action_high)
+        if self.policy.config.action_horizon > 1:
+            return physical.unflatten(
+                -1,
+                (
+                    self.policy.config.action_horizon,
+                    self.policy.config.action_dim // self.policy.config.action_horizon,
+                ),
+            )
+        return physical
 
     def configure_optimizers(self) -> torch.optim.Adam:
         return fql_optimizer(
@@ -171,11 +183,18 @@ class FQLModel(pl.LightningModule):
         return loss
 
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        contract_config = asdict(self.policy.config)
+        if self.policy.config.action_horizon == 1:
+            contract_config.pop("action_horizon")
         checkpoint["fql_contract"] = {
-            "schema": "rmind_fql_v1",
-            "architecture": "official_low_dim_raw_time",
-            "config": asdict(self.policy.config),
-            "action_horizon": 1,
+            "schema": "rmind_fql_v1"
+            if self.policy.config.action_horizon == 1
+            else "rmind_fql_macro_v1",
+            "architecture": "official_low_dim_raw_time"
+            if self.policy.config.action_horizon == 1
+            else "flat_macro_raw_time",
+            "config": contract_config,
+            "action_horizon": self.policy.config.action_horizon,
             "rtc_compatible": False,
             "observation_space": "physical",
             "output_action_space": "physical",

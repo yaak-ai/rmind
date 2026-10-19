@@ -26,6 +26,41 @@ def episode_identities(values: np.ndarray) -> frozenset[str]:
     return frozenset(identities)
 
 
+def validate_bootstrap_discounts(arrays: dict[str, np.ndarray]) -> None:
+    if "bootstrap_discounts" not in arrays:
+        return
+    discounts = arrays["bootstrap_discounts"]
+    if (
+        not np.isfinite(discounts).all()
+        or not ((discounts >= 0) & (discounts <= 1)).all()
+        or (discounts[arrays["masks"] == 0] != 0).any()
+    ):
+        message = "Invalid explicit macro bootstrap discounts"
+        raise ValueError(message)
+
+
+def validate_transition_fields(arrays: dict[str, np.ndarray], count: int) -> None:
+    if (
+        arrays["observations"].ndim != MATRIX_RANK
+        or arrays["actions"].ndim != MATRIX_RANK
+    ):
+        message = "FQL accepts vector observations and flat action vectors only"
+        raise ValueError(message)
+    if arrays["next_observations"].shape != arrays["observations"].shape:
+        message = "Current/next observation shape mismatch"
+        raise ValueError(message)
+    scalar_fields = ["rewards", "masks", "episode_ids"]
+    if "bootstrap_discounts" in arrays:
+        scalar_fields.append("bootstrap_discounts")
+    if any(arrays[name].shape != (count,) for name in scalar_fields):
+        message = "Rewards, masks and episode IDs must be one-dimensional"
+        raise ValueError(message)
+    if not np.isin(arrays["masks"], (0, 1)).all():
+        message = "Bootstrap masks must be explicitly binary"
+        raise ValueError(message)
+    validate_bootstrap_discounts(arrays)
+
+
 class FQLTransitions(Dataset[dict[str, Tensor]]):
     def __init__(self, path: str) -> None:
         with np.load(path, allow_pickle=False) as archive:
@@ -41,30 +76,15 @@ class FQLTransitions(Dataset[dict[str, Tensor]]):
                 message = "Transition archive requires explicit observations/actions/rewards/masks/episode_ids"
                 raise ValueError(message)
             arrays = {name: np.array(archive[name], copy=True) for name in required}
+            if "bootstrap_discounts" in archive.files:
+                arrays["bootstrap_discounts"] = np.array(
+                    archive["bootstrap_discounts"], copy=True
+                )
         count = len(arrays["actions"])
         if count == 0 or any(len(array) != count for array in arrays.values()):
             message = "Transition arrays must have equal nonzero lengths"
             raise ValueError(message)
-        if (
-            arrays["observations"].ndim != MATRIX_RANK
-            or arrays["actions"].ndim != MATRIX_RANK
-        ):
-            message = (
-                "FQL currently accepts vector observations and single actions only"
-            )
-            raise ValueError(message)
-        if arrays["next_observations"].shape != arrays["observations"].shape:
-            message = "Current/next observation shape mismatch"
-            raise ValueError(message)
-        if any(
-            arrays[name].shape != (count,)
-            for name in ("rewards", "masks", "episode_ids")
-        ):
-            message = "Rewards, masks and episode IDs must be one-dimensional"
-            raise ValueError(message)
-        if not np.isin(arrays["masks"], (0, 1)).all():
-            message = "Bootstrap masks must be explicitly binary"
-            raise ValueError(message)
+        validate_transition_fields(arrays, count)
         self.episode_ids = episode_identities(arrays.pop("episode_ids"))
         self.tensors = {}
         for name, array in arrays.items():

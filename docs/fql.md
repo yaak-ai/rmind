@@ -70,8 +70,27 @@ without the FQL contract or with conflicting normalization fails to load.
 Initial CPU tests cover explicit-noise repeatability, gradient isolation,
 pre-optimizer target updates, component optimizer-state continuation, actual
 Lightning fit/checkpoint reload, normalization and malformed/disjoint data.
-Independent full upstream loss/gradient/update and closed-loop validation is
-pending. The previously validated eight-seed published reference is not evidence
-that this new production implementation has already matched its quality.
-No D12 training, model promotion, robot deployment or actuation is authorized by
-this implementation. Those require the separate production-port and data gates.
+The independent H1 native production audit reaches 96.25% on the frozen
+eight-seed OGBench cube-single task1 protocol, versus 96.33% for the upstream
+reference. This certifies only the H1 low-dimensional case; it is not a D12
+training or deployment gate.
+
+## Experimental macro-action extension
+
+Set `config.action_horizon > 1` and `config.action_dim` to the **flattened**
+chunk width (physical action dimensions times horizon). The one-pass actor and
+BC flow prior both predict the whole chunk; `FQLModel.forward` returns
+`[batch, horizon, physical_action_dim]`. A macro NPZ must contain discounted
+reward over the actually executed physical ticks and an explicit
+`bootstrap_discounts` vector (for a full nonterminal H-step chunk,
+`gamma ** H`; for termination, zero). `masks` remain binary termination flags.
+The critic uses the supplied semi-MDP bootstrap weight rather than silently
+applying the H1 discount once. The H1 path and its checkpoint contract remain
+unchanged; macro checkpoints carry a separate contract.
+
+The first scene-task5 comparison accepts only **full, contiguous, executed H5
+chunks**. Partial terminal chunks and execution masks need a separately tested
+adapter; they must not be padded and treated as ordinary full actions. This
+extension is still low-dimensional, not image/H50/RTC training, and it has no
+validated D12 serving path. Paper-anchored RQL and matched FQL H5 closed-loop
+training/evaluation remain pending.

@@ -1,7 +1,7 @@
 import copy
 from dataclasses import asdict
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import pytest
@@ -199,6 +199,77 @@ def test_zero_bootstrap_masks_remove_next_state_dependence() -> None:
     transitions["next_observations"] *= 19
     after = policy.losses(transitions, noise)[1]["critic_loss"]
     assert torch.equal(before, after)
+
+
+def test_macro_actions_use_executed_horizon_discount(tmp_path: Path) -> None:
+    macro_config = FQLConfig(
+        observation_dim=4,
+        action_dim=10,
+        action_horizon=5,
+        actor_hidden_dims=(8, 8),
+        value_hidden_dims=(8, 8),
+    )
+    transitions = batch()
+    transitions["actions"] = transitions["actions"].repeat(1, 5)
+    transitions["bootstrap_discounts"] = torch.where(
+        transitions["masks"] == 0,
+        torch.tensor(0.0),
+        torch.tensor(macro_config.discount**macro_config.action_horizon),
+    )
+    model = FQLModel(asdict(macro_config))
+    noise = FQLNoise.draw(transitions["actions"], torch.Generator().manual_seed(11))
+    normalized = model.normalized_batch(transitions)
+    loss, metrics = model.policy.losses(normalized, noise)
+    assert torch.isfinite(loss)
+    with torch.no_grad():
+        next_actions = model.policy.sample_actions(
+            normalized["next_observations"], noise.next_actions
+        )
+        next_value = model.policy.values(
+            normalized["next_observations"], next_actions, target=True
+        ).mean(0)
+        targets = normalized["rewards"] + normalized["bootstrap_discounts"] * next_value
+        expected_critic = (
+            (
+                model.policy.values(normalized["observations"], normalized["actions"])
+                - targets
+            )
+            .square()
+            .mean()
+        )
+    torch.testing.assert_close(metrics["critic_loss"], expected_critic)
+    assert model(transitions["observations"], noise.next_actions).shape == (5, 5, 2)
+    checkpoint: dict[str, Any] = {}
+    model.on_save_checkpoint(checkpoint)
+    assert checkpoint["fql_contract"]["action_horizon"] == macro_config.action_horizon
+
+    del normalized["bootstrap_discounts"]
+    with pytest.raises(ValueError, match="bootstrap_discounts"):
+        model.policy.losses(normalized, noise)
+
+    path = tmp_path / "macro.npz"
+    np.savez(
+        path,
+        **{name: tensor.numpy() for name, tensor in transitions.items()},
+        episode_ids=np.arange(5),
+    )
+    loaded = FQLTransitions(str(path))
+    assert loaded[2]["bootstrap_discounts"] == 0
+
+
+def test_macro_config_rejects_nondivisible_action_vector() -> None:
+    with pytest.raises(ValueError, match="divisible"):
+        FQLConfig(observation_dim=4, action_dim=9, action_horizon=5)
+
+
+def test_h1_checkpoint_contract_keeps_original_config_shape() -> None:
+    model = FQLModel(asdict(config()))
+    checkpoint: dict[str, Any] = {}
+    model.on_save_checkpoint(checkpoint)
+    contract = checkpoint["fql_contract"]
+    assert contract["schema"] == "rmind_fql_v1"
+    assert contract["action_horizon"] == 1
+    assert "action_horizon" not in contract["config"]
 
 
 def test_checkpoint_normalization_metadata_disagreement_fails() -> None:

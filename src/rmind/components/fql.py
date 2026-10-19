@@ -26,6 +26,7 @@ class FQLConfig:
     tau: float = 0.005
     q_aggregation: Literal["mean", "min"] = "mean"
     normalize_q_loss: bool = False
+    action_horizon: int = 1
 
     def __post_init__(self) -> None:
         if any(
@@ -41,6 +42,7 @@ class FQLConfig:
         dimensions = (
             self.observation_dim,
             self.action_dim,
+            self.action_horizon,
             self.flow_steps,
             *self.actor_hidden_dims,
             *self.value_hidden_dims,
@@ -53,6 +55,9 @@ class FQLConfig:
             raise ValueError(message)
         if not self.actor_hidden_dims or not self.value_hidden_dims:
             message = "FQL networks require hidden layers"
+            raise ValueError(message)
+        if self.action_dim % self.action_horizon:
+            message = "FQL flat action dimension must be divisible by action horizon"
             raise ValueError(message)
         if any(
             isinstance(value, bool) for value in (self.alpha, self.discount, self.tau)
@@ -222,8 +227,10 @@ class FQLPolicy(nn.Module):
             "rewards": (len(actions),),
             "masks": (len(actions),),
         }
+        if self.config.action_horizon > 1 or "bootstrap_discounts" in batch:
+            expected["bootstrap_discounts"] = (len(actions),)
         for name, shape in expected.items():
-            if batch[name].shape != shape:
+            if name not in batch or batch[name].shape != shape:
                 message = f"Invalid FQL {name} shape"
                 raise ValueError(message)
         tensors = [
@@ -249,6 +256,7 @@ class FQLPolicy(nn.Module):
         ).any():
             message = "Actions must be canonical [-1,1]; masks must explicitly specify binary bootstrapping"
             raise ValueError(message)
+        self.validate_bootstrap_discounts(batch)
         if (
             noise.times.shape != (len(actions), 1)
             or ((noise.times < 0) | (noise.times > 1)).any()
@@ -261,6 +269,22 @@ class FQLPolicy(nn.Module):
         ):
             message = "FQL action noise shape mismatch"
             raise ValueError(message)
+
+    @staticmethod
+    def validate_bootstrap_discounts(batch: dict[str, Tensor]) -> None:
+        if "bootstrap_discounts" not in batch:
+            return
+        discounts = batch["bootstrap_discounts"]
+        if ((discounts < 0) | (discounts > 1)).any() or (
+            (batch["masks"] == 0) & (discounts != 0)
+        ).any():
+            message = "Bootstrap discounts must be in [0,1] and zero for terminal masks"
+            raise ValueError(message)
+
+    def bootstrap_weights(self, batch: dict[str, Tensor]) -> Tensor:
+        if "bootstrap_discounts" in batch:
+            return batch["bootstrap_discounts"]
+        return self.config.discount * batch["masks"]
 
     def losses(
         self, batch: dict[str, Tensor], noise: FQLNoise
@@ -279,9 +303,7 @@ class FQLPolicy(nn.Module):
                 if self.config.q_aggregation == "min"
                 else next_values.mean(0)
             )
-            targets = (
-                batch["rewards"] + self.config.discount * batch["masks"] * next_value
-            )
+            targets = batch["rewards"] + self.bootstrap_weights(batch) * next_value
             flow_actions = self.compute_flow_actions(observations, noise.distillation)
         critic_loss = (self.values(observations, actions) - targets).square().mean()
         interpolated = (1 - noise.times) * noise.prior + noise.times * actions
