@@ -111,9 +111,11 @@ tokens_per_frame: "${eval:'${num_cameras} * ${num_patches} + 3'}"   # was + 1
 Model (`_frame_tokens`):
 
 ```python
-pickup_tok  = self.pickup_embedding(self._get(inputs, self.relative_pickup))   # (b,t,1,d)
-dropoff_tok = self.dropoff_embedding(self._get(inputs, self.relative_dropoff)) # (b,t,1,d)
-speed_tok   = self.speed_embedding(self.speed_tokenizer(speed))                # (b,t,1,d)
+pickup_tok = self.pickup_embedding(self._get(inputs, self.relative_pickup))  # (b,t,1,d)
+dropoff_tok = self.dropoff_embedding(
+    self._get(inputs, self.relative_dropoff)
+)  # (b,t,1,d)
+speed_tok = self.speed_embedding(self.speed_tokenizer(speed))  # (b,t,1,d)
 # goal + speed first so the block ends on a patch token (the readout position)
 return torch.cat([pickup_tok, dropoff_tok, speed_tok, patches], dim=-2)
 ```
