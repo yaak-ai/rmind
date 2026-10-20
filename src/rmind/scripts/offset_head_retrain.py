@@ -113,7 +113,7 @@ def _policy_parts(ckpt: str | Path, device: str) -> tuple[ActionTokenizer, Modul
     """Checkpoint's frozen tokenizer and offset head; the rest of the model is freed."""
     model = load_policy(ckpt, device)
     policy = cast("JointPolicyObjective", model.objectives["policy"])
-    tokenizer = cast("ActionTokenizer", policy.tokenizer)
+    tokenizer = policy.tokenizer
     offset_head = policy.offset_head
     del model, policy  # drop encoder/episode_builder/code_head references
     gc.collect()

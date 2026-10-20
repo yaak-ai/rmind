@@ -22,20 +22,24 @@ dependencies = [
   "jq>=1.11.0",
   "kornia>=0.8.2",
   "makefun>=1.16.0",
+  "mcap",
   "more-itertools>=10.4.0",
   "numpy>2.3.0",
   "omegaconf>=2.3.0",
   "orjson>=3.10.12",
   "pillow>=11.0.0",
   "polars>=1.41.2",
+  "protobuf",
   "pydantic>=2.13.4",
   "pytorch-lightning>=2.6.5",
   "rbyte[geo,jpeg,mcap,video]==0.40.0",
+  "simplejpeg",
   "structlog>=26.1.0",
   "tensordict>=0.13.0",
   "timm>=1.0.22",
   "torch>=2.12.1",
   "torchaudio>=2.11.0",
+  "torchdata",
   "torchvision>=0.27.1",
   "vector-quantize-pytorch>=1.29.1",
 ]
@@ -99,6 +103,9 @@ test = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.codespell]
+ignore-words-list = "drivr,fpr"
 
 [tool.deptry.per_rule_ignores]
 DEP001 = ["rmind"]

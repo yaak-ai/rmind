@@ -23,7 +23,7 @@ setup: sync
 check:
     uv format --check
     uv run ruff check
-    uv check
+    uv check --all-extras
 
 check-git:
     uv run rmind-check-git

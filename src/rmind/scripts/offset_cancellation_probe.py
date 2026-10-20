@@ -230,7 +230,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     pl.seed_everything(args.seed, workers=True)
     model = load_policy(args.ckpt, args.device)
     policy = cast("JointPolicyObjective", model.objectives["policy"])
-    tokenizer = cast("ActionTokenizer", policy.tokenizer)
+    tokenizer = policy.tokenizer
     loader = build_dataloader(
         args.split, batch_size=args.batch_size, num_workers=args.num_workers
     )

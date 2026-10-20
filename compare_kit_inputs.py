@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Does the kit build the policy's non-image inputs the way rmind's d12 dataset does?
 
 For every window the kit sent to the engine (`policy/inputs`), recompute its four aux
@@ -17,7 +16,7 @@ The recording's pose topics are `rtls/pose` / `rtls/pallet_pose` (renamed from t
 
     . env; python compare_kit_inputs.py /path/to/2026-09-29--14-36-16
 """
-# ruff: noqa: T201, PLC0415, ANN001, ANN201, PLR0914, PLR0915
+# ruff: file-ignore[print, too-many-locals]
 
 import argparse
 from pathlib import Path
@@ -31,6 +30,7 @@ from compare_kit_predictions import CAMERA, numbered, read_kit
 from rmind.data import d12
 
 POSE_TOPICS = {"POSE_TOPIC": "rtls/pose", "PALLET_TOPIC": "rtls/pallet_pose"}
+EXACT_TOLERANCE = 1e-6
 
 
 def rmind_topics(session: Path) -> dict[str, pl.DataFrame]:
@@ -121,7 +121,7 @@ def main() -> None:
     ours = {
         "speed": rm["speed"].to_numpy()[:, None],
         "fork_above_300": rm["fork_above_300"].to_numpy()[:, None],
-        "relative_ego_pos": np.stack(rm["relative_ego_pos"].to_numpy()),
+        "relative_ego_pos": np.stack(list(rm["relative_ego_pos"].to_numpy())),
     }
 
     print(f"{len(steps)} windows · {len(rm)} frames\n")
@@ -132,10 +132,10 @@ def main() -> None:
         err = np.abs(value - kit[name])
         print(
             f"  {name:<22}{err.mean():>11.5f}{np.percentile(err, 95):>10.5f}{err.max():>10.5f}"
-            f"{(err < 1e-6).mean():>8.1%}"
+            f"{(err < EXACT_TOLERANCE).mean():>8.1%}"
             f"   [{kit[name].min():+.3f}, {kit[name].max():+.3f}]"
         )
-    invalid = (~rm["fork_above_300/valid"].fill_null(False)).sum()
+    invalid = (~rm["fork_above_300/valid"].fill_null(value=False)).sum()
     print(f"\n  frames rmind would drop (fork_above_300 not valid): {invalid}")
 
     # the kit's dropoff tokens, back into the world with rmind's ego pose (inverse of the query)

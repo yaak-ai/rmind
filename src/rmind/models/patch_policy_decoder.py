@@ -57,7 +57,7 @@ most fp16-fragile part of this model family (see the trt-export skill §2).
 """
 
 from collections.abc import Mapping
-from typing import final, override
+from typing import Any, cast, final, override
 
 import torch
 from tensordict import TensorDict
@@ -159,7 +159,8 @@ class PatchPolicyDecoderStep(nn.Module):
         # `patch_projection` saw), not just how the inputs happen to be named.
         images = torch.stack(
             [
-                (inputs[f"image_{camera}"] - self.image_mean) / self.image_std
+                (inputs[f"image_{camera}"] - cast("Tensor", self.image_mean))
+                / cast("Tensor", self.image_std)
                 for camera in policy.cameras
             ],
             dim=2,
@@ -184,8 +185,13 @@ class PatchPolicyDecoderStep(nn.Module):
         if policy.norm is not None:
             features = policy.norm(features)
 
-        return TensorDict({
-            "policy": {"joint_actions": policy._predict_chunk(features)},  # ruff: ignore[private-member-access]
-            "new_k": new_k,
-            "new_v": new_v,
-        })
+        return TensorDict(
+            cast(
+                "Any",
+                {
+                    "policy": {"joint_actions": policy._predict_chunk(features)},  # ruff: ignore[private-member-access]
+                    "new_k": new_k,
+                    "new_v": new_v,
+                },
+            )
+        )

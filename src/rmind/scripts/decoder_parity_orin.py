@@ -51,7 +51,9 @@ from __future__ import annotations
 
 import argparse
 import json
+from importlib import import_module
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 
@@ -78,7 +80,7 @@ def rope_cos_sin(frame_index: int, head_dim: int, base: float = 1000.0):
 
 
 def real_frames(spec: str, size: int) -> list[np.ndarray]:
-    import cv2
+    cv2 = cast("Any", import_module("cv2"))
 
     out = []
     for name in (s.strip() for s in spec.split(",") if s.strip()):
@@ -123,7 +125,7 @@ class TRTRunner:
     """
 
     def __init__(self, path: Path):
-        import tensorrt as trt
+        trt = cast("Any", import_module("tensorrt"))
         import torch
 
         self.torch = torch
@@ -294,7 +296,9 @@ def main() -> int:
                 "inputs_rope_cos": cos,
                 "inputs_rope_sin": sin,
             }
-            reference[trial] = sess.run(["policy.joint_actions"], feed)[0][0]
+            reference[trial] = cast(
+                "np.ndarray", sess.run(["policy.joint_actions"], feed)[0]
+            )[0]
             for label, runner in runners.items():
                 got[label][trial] = runner({k: v for k, v in feed.items()})[
                     "policy.joint_actions"

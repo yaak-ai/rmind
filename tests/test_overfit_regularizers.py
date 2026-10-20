@@ -1,13 +1,20 @@
 """The anti-overfitting package for the causal arms: stochastic depth,
 label-smoothed focal code loss, and per-module weight-decay overrides."""
 
+from typing import TYPE_CHECKING, Any, cast
+
 import pytest
 import torch
 from torch import nn
 
 from rmind.components.loss import FocalLoss
 from rmind.components.optimizers.selective_adamw import SelectiveAdamW
-from rmind.components.transformer.causal_frame import CausalFrameTransformer, DropPath
+from rmind.components.transformer.causal_frame import (
+    AttentionImpl,
+    CausalFrameTransformer,
+    CausalFrameTransformerBlock,
+    DropPath,
+)
 from rmind.models.patch_policy import PatchPolicy
 from tests.test_patch_policy import (
     EPISODE_LENGTH,
@@ -16,6 +23,9 @@ from tests.test_patch_policy import (
     _make_batch,
     _make_model,
 )
+
+if TYPE_CHECKING:
+    from tensordict import TensorDict
 
 RESCALED = 2.0  # 1 / keep for drop_prob 0.5
 DROP_RATE_BAND = (0.35, 0.65)
@@ -57,19 +67,24 @@ def test_drop_path_invalid_rate_raises() -> None:
 
 
 def test_trunk_ramp_is_linear_and_eval_output_unchanged() -> None:
-    kwargs = {
-        "dim_model": 64,
-        "num_layers": 4,
-        "num_heads": 4,
-        "tokens_per_frame": 5,
-        "window": 2,
-    }
     torch.manual_seed(7)
-    plain = CausalFrameTransformer(**kwargs)
+    plain = CausalFrameTransformer(
+        dim_model=64, num_layers=4, num_heads=4, tokens_per_frame=5, window=2
+    )
     torch.manual_seed(7)
-    reg = CausalFrameTransformer(**kwargs, drop_path_rate=0.1)
+    reg = CausalFrameTransformer(
+        dim_model=64,
+        num_layers=4,
+        num_heads=4,
+        tokens_per_frame=5,
+        window=2,
+        drop_path_rate=0.1,
+    )
 
-    rates = [blk.drop_path.drop_prob for blk in reg.layers]
+    rates = [
+        cast("CausalFrameTransformerBlock", blk).drop_path.drop_prob
+        for blk in reg.layers
+    ]
     assert rates == pytest.approx([0.0, 0.1 / 3, 0.2 / 3, 0.1])
 
     # same seed -> same weights; in eval, drop-path must be invisible
@@ -140,13 +155,13 @@ class _Toy(nn.Module):
         self.norm = nn.LayerNorm(4)
 
 
-def _opt(**kw: object) -> SelectiveAdamW:
+def _opt(weight_decay_overrides: dict[str, float] | None = None) -> SelectiveAdamW:
     return SelectiveAdamW(
         _Toy(),
         lr=1e-4,
         weight_decay=0.1,
         weight_decay_module_blacklist=(nn.LayerNorm, nn.Embedding),
-        **kw,
+        weight_decay_overrides=weight_decay_overrides,
     )
 
 
@@ -187,7 +202,7 @@ def test_overlapping_override_prefixes_raise() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _causal_regularized_model(attention_impl: str) -> PatchPolicy:
+def _causal_regularized_model(attention_impl: AttentionImpl) -> PatchPolicy:
     model = _make_model()
     model.encoder = CausalFrameTransformer(
         dim_model=POLICY_DIM,
@@ -199,7 +214,7 @@ def _causal_regularized_model(attention_impl: str) -> PatchPolicy:
         window=2,
         max_sequence_length=EPISODE_LENGTH * (NUM_PATCHES + 1),
         attn_dropout=0.0,
-        attention_impl=attention_impl,  # type: ignore[arg-type]
+        attention_impl=attention_impl,
         drop_path_rate=0.1,
     )
     model.losses["code"] = FocalLoss(label_smoothing=0.1)
@@ -215,16 +230,21 @@ def _train_step(model: PatchPolicy, device: str) -> None:
         weight_decay_overrides={"code_head": 0.2},
         weight_decay_module_blacklist=(nn.LayerNorm, nn.Embedding),
     )
-    batch = {}
     src = _make_batch()
 
-    def _to(x: object) -> object:
+    def _to(x: Any) -> Any:
         return (
             {k: _to(v) for k, v in x.items()} if isinstance(x, dict) else x.to(device)
-        )  # type: ignore[union-attr]
+        )
 
     batch = _to(src)
-    loss = model._compute_metrics(batch)["policy", "loss"].sum(reduce=True)  # ruff: ignore[private-member-access]
+    loss = cast(
+        "torch.Tensor",
+        cast(
+            "TensorDict",
+            model._compute_metrics(batch)["policy", "loss"],  # ruff: ignore[private-member-access]
+        ).sum(reduce=True),
+    )
     assert torch.isfinite(loss)
     loss.backward()
     grads = {

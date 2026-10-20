@@ -44,7 +44,7 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
 from types import MethodType
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytorch_lightning as pl
 import torch
@@ -70,7 +70,10 @@ from rmind.utils.pytree import key_get_default
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
-    from rmind.components.transformer.causal_frame import CausalSelfAttention
+    from rmind.components.transformer.causal_frame import (
+        CausalFrameTransformerBlock,
+        CausalSelfAttention,
+    )
 
 # §4.5's revised gate: fires if Delta(A,B)/Delta(A,C) < this, on the swap arm's
 # readout rel_diff -- see `_report_swap`.
@@ -167,7 +170,7 @@ def _load_model(*, artifact: str | None, ckpt: str | None) -> PatchPolicy:
     loader = (
         (lambda **kw: PatchPolicy.load_from_wandb_artifact(artifact, **kw))
         if artifact
-        else (lambda **kw: PatchPolicy.load_from_checkpoint(ckpt, **kw))
+        else (lambda **kw: PatchPolicy.load_from_checkpoint(cast("str", ckpt), **kw))
     )
     try:
         return loader(**kwargs)
@@ -405,21 +408,21 @@ def _bootstrap_mean_ci(
 
 
 def _bootstrap_ratio_ci(
-    numer: Tensor,
+    numerator: Tensor,
     denom: Tensor,
     *,
     n_boot: int,
     alpha: float,
     generator: torch.Generator,
 ) -> tuple[float, float, float]:
-    """Paired bootstrap of `mean(numer) / mean(denom)`: resamples the SAME
+    """Paired bootstrap of `mean(numerator) / mean(denom)`: resamples the SAME
     clip indices for both arrays every replicate, since they come from the
     same batches/samples (§4.4.2's headline `Δ(A,B) / Δ(A,C)`)."""
-    n = numer.shape[0]
+    n = numerator.shape[0]
     idx = torch.randint(0, n, (n_boot, n), generator=generator)
-    ratios = numer[idx].mean(dim=1) / denom[idx].mean(dim=1).clamp_min(1e-12)
+    ratios = numerator[idx].mean(dim=1) / denom[idx].mean(dim=1).clamp_min(1e-12)
     lo, hi = torch.quantile(ratios, torch.tensor([alpha / 2, 1 - alpha / 2]))
-    point = (numer.mean() / denom.mean().clamp_min(1e-12)).item()
+    point = (numerator.mean() / denom.mean().clamp_min(1e-12)).item()
     return point, lo.item(), hi.item()
 
 
@@ -568,14 +571,14 @@ class _AttentionMassCapture:
 
     def __enter__(self) -> Self:
         for i, layer in enumerate(self._encoder.layers):
-            attn = layer.attn
+            attn = cast("CausalFrameTransformerBlock", layer).attn
             self._originals[i] = attn.forward
             attn.forward = MethodType(self._build(i), attn)  # ty:ignore[invalid-assignment]
         return self
 
     def __exit__(self, *exc: object) -> None:
         for i, layer in enumerate(self._encoder.layers):
-            layer.attn.forward = self._originals[i]  # ty:ignore[invalid-assignment]
+            cast("CausalFrameTransformerBlock", layer).attn.forward = self._originals[i]  # ty:ignore[invalid-assignment]
 
     def _build(self, layer_idx: int) -> Callable[..., Tensor]:
         bands = self._bands
@@ -684,7 +687,7 @@ def _trunk_input(  # ruff: ignore[too-many-locals]
 
 
 def _run_layer_sdpa(
-    layer: nn.Module,  # actually CausalFrameTransformerBlock -- see `_layer_outputs`
+    layer: CausalFrameTransformerBlock,
     h: Tensor,
     cos: Tensor,
     sin: Tensor,
@@ -731,7 +734,9 @@ def _layer_outputs(
     h = x
     yield h
     for layer in encoder.layers:
-        h = _run_layer_sdpa(layer, h, cos, sin, bool_mask)
+        h = _run_layer_sdpa(
+            cast("CausalFrameTransformerBlock", layer), h, cos, sin, bool_mask
+        )
         yield h
     yield encoder.norm(h)
 
@@ -917,12 +922,12 @@ def run_probe(  # ruff: ignore[too-many-arguments, too-many-locals]
         for depth, vectors in enumerate(xs):
             x = torch.stack(vectors)
             tr = torch.tensor(sorted(train_idx), dtype=torch.long)
-            te = torch.tensor(sorted(test_idx), dtype=torch.long)
+            test_indices = torch.tensor(sorted(test_idx), dtype=torch.long)
             depth_acc[depth] = _fit_linear_probe(
                 x[tr],
                 y[tr],
-                x[te],
-                y[te],
+                x[test_indices],
+                y[test_indices],
                 num_classes=num_classes,
                 steps=steps,
                 lr=0.05,

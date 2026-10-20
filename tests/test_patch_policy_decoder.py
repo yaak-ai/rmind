@@ -13,7 +13,7 @@ float32 residual can flip an argmax and blow up `joint_actions` while the
 underlying features were fine. At float64 that's not a practical risk.
 """
 
-from typing import get_args
+from typing import cast, get_args
 
 import pytest
 import torch
@@ -33,6 +33,7 @@ from rmind.components.transformer.causal_frame import (
 )
 from rmind.components.vq import ResidualVQ
 from rmind.models.action_tokenizer import ActionTokenizer
+from rmind.models.control_transformer import PredictionConfig
 from rmind.models.patch_policy import PatchPolicy
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 
@@ -165,6 +166,7 @@ def _make_model(
         code_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE]),
         offset_head=MLP(POLICY_DIM, [16, NUM_QUANTIZERS * CODEBOOK_SIZE * ACTION_DIM]),
         losses=ModuleDict(modules={"code": FocalLoss(), "offset": L1Loss()}),
+        prediction_config=PredictionConfig(),
         norm=torch.nn.LayerNorm(POLICY_DIM),
         sample_codes=False,  # argmax: deterministic, and required for the float64
         # equivalence check below to be meaningful (see module docstring)
@@ -203,7 +205,8 @@ def test_streamed_decode_matches_full_windowed_forward(  # ruff: ignore[too-many
     # reusing them (rather than re-deriving the ImageNet constants) guarantees
     # this is exactly the normalization the streamed path applies internally.
     normalized_images = {
-        camera: (raw_images[camera] - step.image_mean) / step.image_std
+        camera: (raw_images[camera] - cast("Tensor", step.image_mean))
+        / cast("Tensor", step.image_std)
         for camera in CAMERAS
     }
     batch = {

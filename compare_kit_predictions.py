@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Does the kit's TensorRT engine predict what this checkpoint predicts, on the same inputs?
 
 Replays a palleter recording through the rmind checkpoint and diffs every output head
@@ -23,7 +22,10 @@ best with the kit's on a subset of windows.
 
     . env; python compare_kit_predictions.py /path/to/2026-09-29--14-36-16 [--image kit]
 """
-# ruff: noqa: T201, PLC0415, ANN001, ANN201, C901, PLR0912, PLR0914, PLR0915, S603, S607
+# ruff: file-ignore[print, import-outside-top-level, missing-type-function-argument]
+# ruff: file-ignore[missing-return-type-undocumented-public-function, too-many-locals]
+# ruff: file-ignore[subprocess-without-shell-equals-true, start-process-with-partial-path]
+# ruff: file-ignore[suspicious-subprocess-import]
 
 import argparse
 import os
@@ -31,6 +33,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -43,6 +46,7 @@ NATIVE_W, NATIVE_H = 1920, 1080
 CAPTURE_W, CAPTURE_H = 576, 324  # cu-drivr nvmm.rs CAPTURE_WIDTH/HEIGHT
 AUX = ("speed", "fork_above_300", "relative_ego_pos", "relative_dropoff_pos")
 HEADS = ("traction", "steering", "fork1")
+CORR_MIN_STD = 1e-8
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
 SCRIPTS = Path(__file__).parent / "src/rmind/scripts"
@@ -56,12 +60,13 @@ def numbered(paths) -> list[Path]:
 
 def read_kit(session: Path):
     """Windows the kit sent to the engine, its predictions, and each frame record's log time."""
-    classes: dict[str, type] = {}
+    classes: dict[str, Any] = {}
 
-    def decode(schema, data):
+    def decode(schema, data) -> Any:
         if schema.name not in classes:
-            pool = descriptor_pool.DescriptorPool()
-            for fd in descriptor_pb2.FileDescriptorSet.FromString(schema.data).file:
+            pool = cast("Any", descriptor_pool.DescriptorPool)()
+            descriptor_set_type = vars(descriptor_pb2)["FileDescriptorSet"]
+            for fd in descriptor_set_type.FromString(schema.data).file:
                 pool.Add(fd)
             desc = pool.FindMessageTypeByName(schema.name)
             classes[schema.name] = message_factory.GetMessageClass(desc)
@@ -102,8 +107,13 @@ def kit_resize(rgb: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
     ys = (np.arange(out_h, dtype=np.float32) + 0.5) * in_h / out_h - 0.5
     x0, y0 = np.floor(xs).astype(int), np.floor(ys).astype(int)
     dx, dy = (xs - x0)[None, :, None], (ys - y0)[:, None, None]
-    cx = lambda x: np.clip(x, 0, in_w - 1)  # ruff: ignore[lambda-assignment]
-    cy = lambda y: np.clip(y, 0, in_h - 1)  # ruff: ignore[lambda-assignment]
+
+    def cx(x: np.ndarray) -> np.ndarray:
+        return np.clip(x, 0, in_w - 1)
+
+    def cy(y: np.ndarray) -> np.ndarray:
+        return np.clip(y, 0, in_h - 1)
+
     src = rgb.astype(np.float32)
     p00 = src[cy(y0)][:, cx(x0)]
     p10 = src[cy(y0)][:, cx(x0 + 1)]
@@ -173,7 +183,11 @@ def frames_kit(videos: list[Path]) -> np.ndarray:
             "-",
         ]
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, env=FFMPEG_ENV) as proc:
-            while chunk := proc.stdout.read(frame_bytes):
+            stdout = proc.stdout
+            if stdout is None:
+                msg = "ffmpeg stdout pipe was not created"
+                raise RuntimeError(msg)
+            while chunk := stdout.read(frame_bytes):
                 raw = np.frombuffer(chunk, np.uint8)
                 capture = kit_resize(kit_rgb(raw), CAPTURE_W, CAPTURE_H)
                 out.append(kit_resize(capture, W, H))
@@ -203,15 +217,12 @@ def frames_train(videos: list[Path]) -> np.ndarray:
             )
             if res.stderr.strip():
                 print(f"  {video.name}: {res.stderr.strip()}")
-            for jpg in sorted(d.glob("*.jpg")):
-                out.append(
-                    simplejpeg.decode_jpeg(
-                        jpg.read_bytes(),
-                        colorspace="rgb",
-                        fastdct=True,
-                        fastupsample=True,
-                    )
+            out.extend(
+                simplejpeg.decode_jpeg(
+                    jpg.read_bytes(), colorspace="rgb", fastdct=True, fastupsample=True
                 )
+                for jpg in sorted(d.glob("*.jpg"))
+            )
     return np.stack(out)
 
 
@@ -239,18 +250,6 @@ def batch(windows, steps, frames, offset, device):
     return {"data": {k: v.to(device) for k, v in data.items()}}
 
 
-def predict(model, windows, steps, frames, offset, device, bs=32):
-    out = {h: [] for h in HEADS}
-    with torch.inference_mode():
-        for i in range(0, len(steps), bs):
-            o = model(batch(windows, steps[i : i + bs], frames, offset, device))
-            for h in HEADS:
-                out[h].append(
-                    o["policy", "continuous", h].flatten().float().cpu().numpy()
-                )
-    return {h: np.concatenate(v) for h, v in out.items()}
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=Path)
@@ -272,6 +271,31 @@ def main() -> None:
     windows, kit_heads, _ = read_kit(args.session)
     steps = sorted(s for s in windows if s in kit_heads)
     frames = load_frames(args.session, args.image)
+
+    def predict(selected_steps: list[int], offset: int) -> dict[str, np.ndarray]:
+        out: dict[str, list[np.ndarray]] = {head: [] for head in HEADS}
+        batch_size = 32
+        with torch.inference_mode():
+            for start in range(0, len(selected_steps), batch_size):
+                policy_output = model(
+                    batch(
+                        windows,
+                        selected_steps[start : start + batch_size],
+                        frames,
+                        offset,
+                        device,
+                    )
+                )
+                for head in HEADS:
+                    out[head].append(
+                        policy_output["policy", "continuous", head]
+                        .flatten()
+                        .float()
+                        .cpu()
+                        .numpy()
+                    )
+        return {head: np.concatenate(values) for head, values in out.items()}
+
     kit = {
         h: np.array([kit_heads[s][f"policy.continuous.{h}"] for s in steps])
         for h in HEADS
@@ -282,7 +306,7 @@ def main() -> None:
         f"frame records {records.min()}..{records.max()}"
     )
 
-    def error(pred, idx):
+    def error(pred: dict[str, np.ndarray], idx: np.ndarray) -> float:
         return float(np.mean([np.abs(pred[h] - kit[h][idx]).mean() for h in HEADS]))
 
     if args.offset == "auto":
@@ -293,8 +317,8 @@ def main() -> None:
             lo, hi = records.min() + off, records.max() + off
             if lo < 0 or hi >= len(frames):
                 continue
-            scores[off] = error(predict(model, windows, sub, frames, off, device), idx)
-        ranked = sorted(scores, key=scores.get)
+            scores[off] = error(predict(sub, off), idx)
+        ranked = sorted(scores, key=lambda candidate: scores[candidate])
         print(
             "offset search (mean |rmind - kit| over the heads):",
             ", ".join(f"{o:+d}: {scores[o]:.4f}" for o in ranked[:5]),
@@ -304,7 +328,7 @@ def main() -> None:
     else:
         offset = int(args.offset)
 
-    pred = predict(model, windows, steps, frames, offset, device)
+    pred = predict(steps, offset)
     print(
         f"\ncheckpoint {args.ckpt}\nimage path '{args.image}', frame offset {offset:+d}\n"
     )
@@ -313,7 +337,11 @@ def main() -> None:
     )
     for h in HEADS:
         err = np.abs(pred[h] - kit[h])
-        c = np.corrcoef(pred[h], kit[h])[0, 1] if kit[h].std() > 1e-8 else float("nan")
+        c = (
+            np.corrcoef(pred[h], kit[h])[0, 1]
+            if kit[h].std() > CORR_MIN_STD
+            else float("nan")
+        )
         print(
             f"  {h:<10}{kit[h].std():>9.4f}{err.mean():>11.5f}"
             f"{np.percentile(err, 95):>10.5f}{err.max():>10.5f}{c:>8.4f}"

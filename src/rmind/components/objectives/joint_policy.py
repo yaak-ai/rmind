@@ -1,5 +1,5 @@
 from collections.abc import Set as AbstractSet
-from typing import Any, final, override
+from typing import TYPE_CHECKING, Any, cast, final, override
 
 import torch
 from einops import rearrange
@@ -17,6 +17,9 @@ from rmind.components.objectives.base import (
     ObjectivePredictionKey,
     Prediction,
 )
+
+if TYPE_CHECKING:
+    from rmind.models.action_tokenizer import ActionTokenizer
 
 type Path = tuple[str, ...]
 
@@ -47,7 +50,9 @@ class JointPolicyObjective(Objective):
         super().__init__()
 
         self.norm: Module | None = norm
-        self.tokenizer = tokenizer.requires_grad_(False).eval()  # ruff: ignore[boolean-positional-value-in-call]
+        self.tokenizer: ActionTokenizer = cast(
+            "ActionTokenizer", tokenizer.requires_grad_(requires_grad=False).eval()
+        )
         self.code_head = code_head  # features -> (G*C) code logits
         self.offset_head = (
             offset_head  # features -> (G*C*action_dim): offset per (quantizer, code)
@@ -253,4 +258,4 @@ class JointPolicyObjective(Objective):
             })
             predictions[key] = Prediction(value=actions, time_index=time_index)
 
-        return TensorDict(predictions).auto_batch_size_(2)
+        return TensorDict(cast("Any", predictions)).auto_batch_size_(2)

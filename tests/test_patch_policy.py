@@ -5,11 +5,10 @@ teacher-forced offset semantics inherited from `JointPolicyObjective` (#258),
 and equivalence of the batched `_gather_offset` with the joint-policy original.
 """
 
-from typing import Any, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 import torch
-from tensordict import TensorDict
 from torch import Tensor
 from torch.nn import Identity, L1Loss, Linear, Module, Sequential
 from torchvision.ops import MLP
@@ -19,7 +18,7 @@ from rmind.components.containers import ModuleDict
 from rmind.components.loss import FocalLoss
 from rmind.components.nn import Embedding
 from rmind.components.norm import ImageNormalize, Scaler, UniformBinner
-from rmind.components.objectives.base import ObjectivePredictionKey
+from rmind.components.objectives.base import ObjectivePredictionKey, Prediction
 from rmind.components.objectives.joint_policy import JointPolicyObjective
 from rmind.components.transformer.causal_frame import (
     CausalFrameTransformer,
@@ -38,6 +37,9 @@ from rmind.scripts.warm_start_ckpt import (
     _backfill_preprocessing_buffers,  # ruff: ignore[import-private-name]
     tile_intra_position_embedding,
 )
+
+if TYPE_CHECKING:
+    from tensordict import TensorDict
 
 BATCH_SIZE = 2
 EPISODE_LENGTH = 3
@@ -257,7 +259,9 @@ def test_non_teacher_forced_offset_loss_without_sampling() -> None:
 def test_multi_camera_stacks_patches_in_camera_order() -> None:
     cameras = ("cam_front_left", "cam_left_forward", "cam_right_forward")
     model = _make_model(cameras=cameras)
-    assert model.encoder.position_embedding.num_embeddings == EPISODE_LENGTH * (
+    assert cast(
+        "BlockCausalTransformer", model.encoder
+    ).position_embedding.num_embeddings == EPISODE_LENGTH * (
         len(cameras) * NUM_PATCHES + 1
     )
 
@@ -371,9 +375,12 @@ def test_frozen_modules_receive_no_grad() -> None:
     assert not model.image_encoder.training
 
     loss = cast(
-        "TensorDict",
-        model._compute_metrics(_make_batch())["policy", "loss"],  # ruff: ignore[private-member-access]
-    ).sum(reduce=True)
+        "Tensor",
+        cast(
+            "TensorDict",
+            model._compute_metrics(_make_batch())["policy", "loss"],  # ruff: ignore[private-member-access]
+        ).sum(reduce=True),
+    )
     loss.backward()
 
     assert all(p.grad is None for p in model.tokenizer.parameters())
@@ -468,7 +475,7 @@ def test_forward_and_predict_step() -> None:
         ObjectivePredictionKey.SCORE_L1,
         ObjectivePredictionKey.SCORE_SIGNED_ERROR,
     ):
-        prediction = predictions["policy", key]
+        prediction = cast("Prediction", predictions["policy", key])
         assert prediction.value["continuous", "gas_pedal"].shape == (
             BATCH_SIZE,
             ACTION_HORIZON,
@@ -478,7 +485,7 @@ def test_forward_and_predict_step() -> None:
             ACTION_HORIZON,
         )
 
-    score = predictions["policy", ObjectivePredictionKey.SCORE_L1]
+    score = cast("Prediction", predictions["policy", ObjectivePredictionKey.SCORE_L1])
     assert (score.value["continuous", "gas_pedal"] >= 0).all()
 
 
@@ -513,6 +520,9 @@ def test_fusion_norm_balances_sources() -> None:
     patches = model.image_encoder(inputs["image"]["cam_front_left"])
     goal = model.goal_encoder.encode(inputs["context"]["waypoints"])
 
+    assert model.fusion_patch_norm is not None
+    assert model.fusion_patch_gain is not None
+    assert model.fusion_goal_gain is not None
     normed = model.fusion_patch_norm(patches) * model.fusion_patch_gain
     goal * model.fusion_goal_gain
 
@@ -530,9 +540,12 @@ def test_fusion_norm_balances_sources() -> None:
     assert model.fusion_patch_gain.requires_grad
     assert model.fusion_goal_gain.requires_grad
     loss = cast(
-        "TensorDict",
-        model._compute_metrics(batch)["policy", "loss"],  # ruff: ignore[private-member-access]
-    ).sum(reduce=True)
+        "Tensor",
+        cast(
+            "TensorDict",
+            model._compute_metrics(batch)["policy", "loss"],  # ruff: ignore[private-member-access]
+        ).sum(reduce=True),
+    )
     loss.backward()
     assert model.fusion_goal_gain.grad is not None
 
@@ -563,7 +576,10 @@ def test_argmax_decode_metrics_are_the_deployment_path() -> None:
     model.sample_codes = True  # make the sampled path genuinely differ from argmax
     batch = _make_batch()
 
-    metrics = model._compute_metrics(batch)["policy", "metric"]  # ruff: ignore[private-member-access]
+    metrics = cast(
+        "dict[str, Tensor]",
+        model._compute_metrics(batch)["policy", "metric"],  # ruff: ignore[private-member-access]
+    )
 
     expected_keys = {
         "offset_argmax_recon",
@@ -571,8 +587,8 @@ def test_argmax_decode_metrics_are_the_deployment_path() -> None:
         "code_acc_joint_last",
         *(f"code_acc_{q}_last" for q in range(NUM_QUANTIZERS)),
     }
-    assert expected_keys <= set(cast("dict[str, Tensor]", metrics).keys()), (
-        f"missing: {expected_keys - set(cast('dict[str, Tensor]', metrics).keys())}"
+    assert expected_keys <= set(metrics.keys()), (
+        f"missing: {expected_keys - set(metrics.keys())}"
     )
     for key in expected_keys:
         assert metrics[key].isfinite()
@@ -588,7 +604,7 @@ def test_argmax_decode_metrics_are_the_deployment_path() -> None:
 
 
 def _assert_argmax_decode_matches(
-    model: PatchPolicy, batch: dict[str, Any], metrics: TensorDict
+    model: PatchPolicy, batch: dict[str, Any], metrics: dict[str, Tensor]
 ) -> None:
     """Recompute the argmax decode independently -- it must match exactly."""
     with torch.no_grad():
@@ -687,7 +703,10 @@ def test_teacher_forcing_routes_the_offset_loss_through_ground_truth_codes() -> 
     free = _make_model(teacher_force_offset=False)
     free.load_state_dict(model.state_dict())
     free.sample_codes = True
-    free_loss = free._compute_metrics(batch)["policy", "loss", "offset"]  # ruff: ignore[private-member-access]
+    free_loss = cast(
+        "Tensor",
+        free._compute_metrics(batch)["policy", "loss", "offset"],  # ruff: ignore[private-member-access]
+    )
     assert not torch.allclose(free_loss, expected)
 
 
@@ -900,9 +919,12 @@ def test_readout_and_register_tokens_receive_gradient() -> None:
     model = _make_model(use_readout_token=True, num_register_tokens=NUM_REGISTERS)
     model.train()
     loss = cast(
-        "TensorDict",
-        model._compute_metrics(_make_batch())["policy", "loss"],  # ruff: ignore[private-member-access]
-    ).sum(reduce=True)
+        "Tensor",
+        cast(
+            "TensorDict",
+            model._compute_metrics(_make_batch())["policy", "loss"],  # ruff: ignore[private-member-access]
+        ).sum(reduce=True),
+    )
     loss.backward()
     assert model.readout_token is not None
     assert model.register_tokens is not None

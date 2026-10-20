@@ -15,7 +15,8 @@ Usage (from a repo checkout with the val rbyte cache built):
 """
 
 import argparse
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, cast
 
 import pytorch_lightning as pl
 import torch
@@ -30,9 +31,13 @@ if TYPE_CHECKING:
     from rmind.utils import RuleBasedCluster
 
 
-def _to_device(batch: object, device: torch.device) -> object:
-    return tree_map(
-        lambda x: x.to(device, non_blocking=True) if isinstance(x, Tensor) else x, batch
+def _to_device[T](batch: T, device: torch.device) -> T:
+    return cast(
+        "T",
+        tree_map(
+            lambda x: x.to(device, non_blocking=True) if isinstance(x, Tensor) else x,
+            batch,
+        ),
     )
 
 
@@ -102,7 +107,7 @@ def _default_cluster_fn() -> "RuleBasedCluster":
 @torch.no_grad()
 def evaluate(  # ruff: ignore[complex-structure, too-many-locals]
     model: PatchPolicy,
-    loader: object,
+    loader: Iterable[Any],
     *,
     device: torch.device,
     max_batches: int,

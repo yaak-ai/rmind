@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Run the trained checkpoint over its own data and report what the heads actually emit.
 
 The question this answers: the kit sees policy outputs under 0.1 and the truck barely moves.
@@ -14,7 +13,7 @@ predictions are also scored against what a human actually did at those frames.
 
     nix develop --command uv run python head_distribution.py [--batches N] [--split val]
 """
-# ruff: noqa: T201, PLC0415, ANN001, ANN201
+# ruff: file-ignore[print]
 
 import argparse
 
@@ -24,13 +23,73 @@ from hydra.utils import instantiate
 
 import rmind  # ruff: ignore[unused-import]  — registers the `eval:` omegaconf resolver the configs use
 
+SMALL_ACTION_THRESHOLD = 0.1
+HEADS = ("traction", "steering", "fork1")
+
 
 def quantiles(v: torch.Tensor) -> str:
     q = torch.tensor([0.01, 0.25, 0.5, 0.75, 0.99])
     p = torch.quantile(v, q)
     return "  ".join(
-        f"p{int(x * 100):02d}={y:+.3f}" for x, y in zip(q.tolist(), p.tolist())
+        f"p{int(x * 100):02d}={y:+.3f}"
+        for x, y in zip(q.tolist(), p.tolist(), strict=True)
     )
+
+
+def report_predictions(
+    predictions: dict[str, list[torch.Tensor]], heads: tuple[str, ...]
+) -> None:
+    print(
+        "PREDICTED (Gaussian mean — the tensor the .trt export emits and the kit acts on)"
+    )
+    for head in heads:
+        values = torch.cat(predictions[head])
+        print(
+            f"  {head:<9} mean={values.mean():+.4f}  sd={values.std():.4f}  |max|={values.abs().max():.4f}"
+        )
+        print(f"  {'':<9} {quantiles(values)}")
+        print(
+            f"  {'':<9} share with |value| < 0.1: {(values.abs() < SMALL_ACTION_THRESHOLD).float().mean():.1%}"
+        )
+
+
+def report_ground_truth(
+    predictions: dict[str, list[torch.Tensor]],
+    targets: dict[str, list[torch.Tensor]],
+    heads: tuple[str, ...],
+) -> None:
+    if not any(targets[head] for head in heads):
+        return
+    print("\nGROUND TRUTH (what the operator actually did at those frames)")
+    for head in heads:
+        if not targets[head]:
+            continue
+        target = torch.cat(targets[head])
+        prediction = torch.cat(predictions[head])
+        print(
+            f"  {head:<9} mean={target.mean():+.4f}  sd={target.std():.4f}  |max|={target.abs().max():.4f}"
+        )
+        print(f"  {'':<9} {quantiles(target)}")
+        if (
+            target.numel() == prediction.numel()
+            and target.std() > 0
+            and prediction.std() > 0
+        ):
+            correlation = torch.corrcoef(torch.stack([prediction, target]))[0, 1]
+            print(
+                f"  {'':<9} corr(pred, true)={correlation:+.3f}   sd ratio pred/true={prediction.std() / target.std():.3f}"
+            )
+
+
+def report_aux_inputs(aux: dict[str, list[torch.Tensor]]) -> None:
+    if not aux:
+        return
+    print("\nAUX INPUTS (the same tensors the kit builds — for comparison against it)")
+    for name, tensors in aux.items():
+        values = torch.cat(tensors)
+        print(
+            f"  {name:<22} mean={values.mean():+.4f}  sd={values.std():.4f}  |max|={values.abs().max():.4f}"
+        )
 
 
 def main() -> None:
@@ -65,22 +124,20 @@ def main() -> None:
     ds = instantiate(cfg.datamodule[args.split].dataset)
     print(f"  dataset: {len(ds)} samples")
 
-    heads = ("traction", "steering", "fork1")
-    pred: dict[str, list[torch.Tensor]] = {h: [] for h in heads}
-    true: dict[str, list[torch.Tensor]] = {h: [] for h in heads}
+    pred: dict[str, list[torch.Tensor]] = {h: [] for h in HEADS}
+    true: dict[str, list[torch.Tensor]] = {h: [] for h in HEADS}
     aux: dict[str, list[torch.Tensor]] = {}
 
-    step = max(1, len(ds) // args.batches)
     with torch.inference_mode():
-        for i, idx in enumerate(range(0, len(ds), step)):
+        for i, idx in enumerate(range(0, len(ds), max(1, len(ds) // args.batches))):
             if i >= args.batches:
                 break
             batch = ds.get_batch([idx]).to_dict()
             out = model(batch)["policy"]["continuous"]
-            for h in heads:
+            for h in HEADS:
                 pred[h].append(out[h].flatten().float().cpu())
             data = batch["data"]
-            for h in heads:
+            for h in HEADS:
                 if h in data:
                     # last frame of the window: the one the readout acts on
                     true[h].append(data[h][:, -1].flatten().float().cpu())
@@ -96,47 +153,13 @@ def main() -> None:
                     )
             print(f"  batch {i + 1}/{args.batches}", end="\r", flush=True)
 
-    n = sum(len(t) for t in pred["traction"])
-    print(f"\n\n{n} samples from the {args.split} split, checkpoint {args.ckpt}\n")
-
     print(
-        "PREDICTED (Gaussian mean — the tensor the .trt export emits and the kit acts on)"
+        f"\n\n{sum(len(t) for t in pred['traction'])} samples from the {args.split} split, checkpoint {args.ckpt}\n"
     )
-    for h in heads:
-        v = torch.cat(pred[h])
-        print(
-            f"  {h:<9} mean={v.mean():+.4f}  sd={v.std():.4f}  |max|={v.abs().max():.4f}"
-        )
-        print(f"  {'':<9} {quantiles(v)}")
-        print(
-            f"  {'':<9} share with |value| < 0.1: {(v.abs() < 0.1).float().mean():.1%}"
-        )
 
-    if any(true[h] for h in heads):
-        print("\nGROUND TRUTH (what the operator actually did at those frames)")
-        for h in heads:
-            if not true[h]:
-                continue
-            t, p = torch.cat(true[h]), torch.cat(pred[h])
-            print(
-                f"  {h:<9} mean={t.mean():+.4f}  sd={t.std():.4f}  |max|={t.abs().max():.4f}"
-            )
-            print(f"  {'':<9} {quantiles(t)}")
-            if t.numel() == p.numel() and t.std() > 0 and p.std() > 0:
-                r = torch.corrcoef(torch.stack([p, t]))[0, 1]
-                print(
-                    f"  {'':<9} corr(pred, true)={r:+.3f}   sd ratio pred/true={p.std() / t.std():.3f}"
-                )
-
-    if aux:
-        print(
-            "\nAUX INPUTS (the same tensors the kit builds — for comparison against it)"
-        )
-        for k, vs in aux.items():
-            v = torch.cat(vs)
-            print(
-                f"  {k:<22} mean={v.mean():+.4f}  sd={v.std():.4f}  |max|={v.abs().max():.4f}"
-            )
+    report_predictions(pred, HEADS)
+    report_ground_truth(pred, true, HEADS)
+    report_aux_inputs(aux)
 
 
 if __name__ == "__main__":

@@ -142,6 +142,8 @@ def model_yaak_control_transformer_raw(
             overrides=[
                 "+num_heads=1",
                 "+num_layers=1",
+                "+episode_length=6",
+                "+action_horizon=1",
                 f"+encoder_embedding_dim={embedding_dims.encoder}",
                 f"+image_embedding_dim={embedding_dims.image}",
                 f"+speed_bins={num_bins.speed}",

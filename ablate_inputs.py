@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Which input is the policy actually using? Permutation ablation over the real inputs.
 
 Past actions are not observed by this model (they are targets only), so it cannot copy the
@@ -18,7 +17,7 @@ Read the result as: how much of the prediction survives when this input is made 
 
     nix develop --command uv run python ablate_inputs.py [--samples N]
 """
-# ruff: noqa: T201, PLC0415, ANN001, ANN201, C901, PLR0912, PLR0914, PLR0915
+# ruff: file-ignore[print, missing-type-function-argument, complex-structure, too-many-locals]
 
 import argparse
 import copy
@@ -30,6 +29,7 @@ from hydra.utils import instantiate
 import rmind  # ruff: ignore[unused-import]  — registers the `eval:` omegaconf resolver the configs use
 
 HEADS = ("traction", "steering", "fork1")
+CORR_MIN_STD = 1e-8
 GROUPS = {
     "image (cam_fork)": ["cam_fork"],
     "speed": ["speed"],
@@ -46,7 +46,7 @@ GROUPS = {
 
 
 def corr(a: torch.Tensor, b: torch.Tensor) -> float:
-    if a.std() < 1e-8 or b.std() < 1e-8:
+    if a.std() < CORR_MIN_STD or b.std() < CORR_MIN_STD:
         return float("nan")
     return torch.corrcoef(torch.stack([a, b]))[0, 1].item()
 

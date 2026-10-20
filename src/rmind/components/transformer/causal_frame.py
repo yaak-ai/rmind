@@ -790,7 +790,6 @@ class CausalFrameTransformerBlock(nn.Module):
         return h + self.mlp(self.mlp_norm(h)), k, v
 
 
-@final
 class CausalFrameTransformer(nn.Module):
     """Decoder over frame blocks: bidirectional intra-frame, causal inter-frame.
 
@@ -1041,7 +1040,9 @@ class CausalFrameTransformer(nn.Module):
             )
 
         if scaling in {"norm_gain", "patch_norm_gain"}:
-            self.intra_position_norm = nn.LayerNorm(dim, elementwise_affine=False)
+            self.intra_position_norm: nn.Module = nn.LayerNorm(
+                dim, elementwise_affine=False
+            )
         if scaling in {"norm_gain", "patch_norm_gain", "gain"}:
             self.intra_position_gain = nn.Parameter(torch.tensor(1.0))
 
@@ -1180,7 +1181,7 @@ class CausalFrameTransformer(nn.Module):
             # an embedding lookup on `arange(n)` is an exact gather of the whole
             # weight, so returning `.weight` is bit-identical and drops an
             # arange+gather pair from the exported decode graph
-            return cast("nn.Embedding", self.intra_position_embedding).weight
+            return self.intra_position_embedding.weight
 
         num_cameras, (rows, cols) = self._patch_geometry()
         num_patches = rows * cols
@@ -1198,9 +1199,9 @@ class CausalFrameTransformer(nn.Module):
 
         if patch is not None:
             # camera-major: camera c owns rows [c*P, (c+1)*P)
-            band = view.repeat_interleave(num_patches, dim=0) + patch.repeat(
-                num_cameras, 1
-            )
+            band = view.repeat_interleave(num_patches, dim=0) + cast(
+                "Tensor", patch
+            ).repeat(num_cameras, 1)
         else:
             row = cast(
                 "PatchPositionEmbedding2D", self.patch_position_embedding
@@ -1275,7 +1276,7 @@ class CausalFrameTransformer(nn.Module):
             case _:
                 return table
 
-    def _position_norm(self) -> nn.LayerNorm:
+    def _position_norm(self) -> nn.Module:
         return self.intra_position_norm
 
     def _position_gain(self) -> nn.Parameter:
@@ -1448,7 +1449,7 @@ class CausalFrameTransformer(nn.Module):
         new_v: list[Tensor] = []
         last = self.num_layers - 1
         for i, layer in enumerate(self.layers):
-            x, k, v = layer.step(
+            x, k, v = cast("CausalFrameTransformerBlock", layer).step(
                 x,
                 cos,
                 sin,

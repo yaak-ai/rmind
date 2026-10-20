@@ -1,5 +1,5 @@
 from functools import cache
-from typing import TYPE_CHECKING, cast, final
+from typing import TYPE_CHECKING, Any, cast, final
 
 import torch
 from torch import Tensor
@@ -43,7 +43,7 @@ def _patch_vq_loss_init() -> None:
     `tensor(...)` call in that module (kmeans-init flags, buffer inits,
     etc.) is passed through unchanged.
     """
-    real_tensor = _vqp.tensor
+    real_tensor = cast("Callable[..., Tensor]", _vqp.tensor)
 
     def patched_tensor(*args: object, **kwargs: object) -> Tensor:
         if (
@@ -56,7 +56,7 @@ def _patch_vq_loss_init() -> None:
             return zero.requires_grad_(bool(kwargs.get("requires_grad")))
         return real_tensor(*args, **kwargs)
 
-    _vqp.tensor = patched_tensor
+    _vqp.tensor = cast("Any", patched_tensor)
 
 
 _patch_vq_loss_init()
@@ -110,7 +110,7 @@ class ResidualVQ(Module):
             if codebook.training:
                 init_embed_(*args, **kwargs)
 
-        codebook.init_embed_ = guarded  # ty:ignore[unresolved-attribute]
+        codebook.init_embed_ = cast("Any", guarded)
 
     @property
     def codebook_sizes(self) -> tuple[int, ...]:
@@ -125,9 +125,10 @@ class ResidualVQ(Module):
         return self.vq.get_output_from_indices(codes)
 
     def codebook(self, level: int) -> Tensor:
-        return self.vq.layers[level]._codebook.embed.reshape(  # ruff: ignore[private-member-access]
-            -1, self.dim
-        )
+        return cast(
+            "Tensor",
+            cast("Any", self.vq.layers[level]._codebook).embed,  # ruff: ignore[private-member-access]
+        ).reshape(-1, self.dim)
 
     @torch.no_grad()
     def perplexity(self, codes: Tensor) -> Tensor:

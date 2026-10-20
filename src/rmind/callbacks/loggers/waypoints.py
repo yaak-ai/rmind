@@ -14,10 +14,10 @@ from torch.utils._pytree import (  # ruff: ignore[import-private-name]
     key_get,
     tree_map,
 )
+from wandb import Image
 
 from rmind.callbacks.safe import SafeCallback
 from rmind.utils.pytree import key_get_default
-from wandb import Image
 
 from .common import (
     BATCH_HOOKS,

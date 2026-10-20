@@ -1,5 +1,5 @@
 from math import isqrt, prod
-from typing import override
+from typing import Any, cast, override
 
 import torch
 from timm import create_model
@@ -56,7 +56,7 @@ class TimmBackbone(nn.Module):
         x = input.view(prod(b), c, h, w)
 
         if self.norm_indices is not None:
-            feats = self.model.forward_intermediates(
+            feats = cast("Any", self.model).forward_intermediates(
                 x,
                 indices=self.norm_indices,
                 norm=True,
@@ -66,7 +66,7 @@ class TimmBackbone(nn.Module):
             x = torch.cat(feats, dim=1)
         elif self.norm_patch_tokens:
             # (B, prefix + P, D), final norm applied by timm's forward_features
-            tokens = self.model.forward_features(x)
+            tokens = cast("Any", self.model).forward_features(x)
             tokens = tokens[:, self.model.num_prefix_tokens :]
             grid = isqrt(tokens.shape[1])
             x = tokens.transpose(1, 2).reshape(-1, tokens.shape[-1], grid, grid)

@@ -23,7 +23,7 @@ variant of the same trunk, run through the same harness, so a pass is
 falsifiable rather than vacuous.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, cast, get_args, override
 
 import pytest
@@ -37,6 +37,7 @@ from rmind.components.transformer.causal_frame import (
     MASK_BIAS,
     AttentionImpl,
     CausalFrameTransformer,
+    CausalFrameTransformerBlock,
     IntraPositionFactorization,
     IntraPositionScaling,
     apply_rope,
@@ -71,6 +72,21 @@ PROD_TOKENS_PER_FRAME = 257
 # `test_flex_is_no_further_from_exact_than_sdpa` shows that residual IS the fp32
 # noise: flex sits 1.4x sdpa's own distance from a float64 reference, not 10x.
 FLEX_TOL = 1e-5
+
+
+@pytest.fixture
+def _without_tf32() -> Iterator[None]:
+    previous_precision = torch.get_float32_matmul_precision()
+    previous_cudnn_tf32 = torch.backends.cudnn.allow_tf32
+    torch.set_float32_matmul_precision("highest")
+    torch.backends.cudnn.allow_tf32 = False
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(previous_precision)
+        torch.backends.cudnn.allow_tf32 = previous_cudnn_tf32
+
+
 # 128-block tiling of a 257-token frame: the boundary waste must stay far below the
 # 2.23x that padding frames to 384 (3 exact blocks) would cost
 MAX_TILE_WASTE = 1.3
@@ -213,7 +229,9 @@ class WindowAbsoluteTrunk(CausalFrameTransformer):
         new_k: list[Tensor] = []
         new_v: list[Tensor] = []
         for i, layer in enumerate(self.layers):
-            x, k, v = layer.step(x, cos, sin, past_k[i], past_v[i], cache_bias)
+            x, k, v = cast("CausalFrameTransformerBlock", layer).step(
+                x, cos, sin, past_k[i], past_v[i], cache_bias
+            )
             new_k.append(k)
             new_v.append(v)
         return self.norm(x), torch.stack(new_k), torch.stack(new_v)
@@ -748,12 +766,25 @@ def test_cold_cache_ignores_unfilled_slots() -> None:
         batch_size=2, cache_frames=5, dtype=tokens.dtype
     )
     cos, sin = frame_rope_cos_sin(torch.tensor(0), head_dim=trunk.head_dim)
-    kwargs = {"cos": cos.double(), "sin": sin.double(), "cache_bias": bias}
-    clean, *_ = trunk.step(tokens[:, 0], past_k=past_k, past_v=past_v, **kwargs)
+    clean, *_ = trunk.step(
+        tokens[:, 0],
+        past_k=past_k,
+        past_v=past_v,
+        cos=cos.double(),
+        sin=sin.double(),
+        cache_bias=bias,
+    )
     g = torch.Generator().manual_seed(7)
     garbage_k = torch.randn(past_k.shape, generator=g, dtype=torch.float64) * 100
     garbage_v = torch.randn(past_v.shape, generator=g, dtype=torch.float64) * 100
-    dirty, *_ = trunk.step(tokens[:, 0], past_k=garbage_k, past_v=garbage_v, **kwargs)
+    dirty, *_ = trunk.step(
+        tokens[:, 0],
+        past_k=garbage_k,
+        past_v=garbage_v,
+        cos=cos.double(),
+        sin=sin.double(),
+        cache_bias=bias,
+    )
     torch.testing.assert_close(dirty, clean, rtol=0, atol=TOL)
     assert bias.min().item() == MASK_BIAS
 
@@ -772,16 +803,22 @@ def test_readout_only_final_block_matches_full_final_block() -> None:
     past_v = torch.randn(past_v.shape, generator=g, dtype=torch.float64)
     bias = torch.zeros_like(bias)
     cos, sin = frame_rope_cos_sin(torch.tensor(5), head_dim=trunk.head_dim)
-    kwargs = {
-        "past_k": past_k,
-        "past_v": past_v,
-        "cos": cos.double(),
-        "sin": sin.double(),
-        "cache_bias": bias,
-    }
-    full, full_k, full_v = trunk.step(tokens[:, 0], **kwargs)
+    full, full_k, full_v = trunk.step(
+        tokens[:, 0],
+        past_k=past_k,
+        past_v=past_v,
+        cos=cos.double(),
+        sin=sin.double(),
+        cache_bias=bias,
+    )
     gathered, gath_k, gath_v = trunk.step(
-        tokens[:, 0], readout_only_final_block=True, **kwargs
+        tokens[:, 0],
+        past_k=past_k,
+        past_v=past_v,
+        cos=cos.double(),
+        sin=sin.double(),
+        cache_bias=bias,
+        readout_only_final_block=True,
     )
     assert gathered.shape[1] == 1
     torch.testing.assert_close(gathered[:, 0], full[:, -1], rtol=0, atol=TOL)
@@ -795,9 +832,9 @@ def test_multihead_attention_state_dict_is_loadable() -> None:
     """
     ref = nn.MultiheadAttention(embed_dim=DIM, num_heads=HEADS, batch_first=True)
     trunk = _trunk(window=6)
-    missing, unexpected = trunk.layers[0].attn.load_state_dict(
-        ref.state_dict(), strict=False
-    )
+    missing, unexpected = cast(
+        "CausalFrameTransformerBlock", trunk.layers[0]
+    ).attn.load_state_dict(ref.state_dict(), strict=False)
     assert not missing
     assert not unexpected
 
@@ -1012,6 +1049,7 @@ def test_flex_forward_matches_sdpa_on_cpu() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+@pytest.mark.usefixtures("_without_tf32")
 @pytest.mark.parametrize(("dim", "heads"), [(512, 8), (768, 12)])
 @pytest.mark.parametrize("window", [6, 16])
 def test_flex_matches_sdpa_forward_and_backward(
@@ -1023,8 +1061,6 @@ def test_flex_matches_sdpa_forward_and_backward(
     case, where nothing is skipped by the window and only causality is sparse. tf32
     is disabled so this measures the kernels, not the tensor cores' mantissa.
     """
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
     sdpa, flex = _pair(window=window, dim=dim, heads=heads, device="cuda")
     g = torch.Generator(device="cuda").manual_seed(9)
     x = torch.randn(1, window * PROD_TOKENS_PER_FRAME, dim, generator=g, device="cuda")
@@ -1037,6 +1073,7 @@ def test_flex_matches_sdpa_forward_and_backward(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+@pytest.mark.usefixtures("_without_tf32")
 @pytest.mark.parametrize("factorization", ["flat", "pano_bearing"])
 def test_flex_matches_sdpa_across_position_arms(
     factorization: IntraPositionFactorization,
@@ -1051,8 +1088,6 @@ def test_flex_matches_sdpa_across_position_arms(
     deepest of those paths, so it bounds the rest; one `(dim, heads)` and one
     window keep the cost of that coverage flat.
     """
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
     window = 6
     sdpa, flex = _pair(
         window=window, dim=512, heads=8, device="cuda", factorization=factorization
@@ -1068,6 +1103,7 @@ def test_flex_matches_sdpa_across_position_arms(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+@pytest.mark.usefixtures("_without_tf32")
 @pytest.mark.parametrize("window", [6, 16])
 def test_flex_matches_sdpa_under_gradient_checkpointing(window: int) -> None:
     """The same parity in `.train()`, which is a different code path.
@@ -1079,7 +1115,6 @@ def test_flex_matches_sdpa_under_gradient_checkpointing(window: int) -> None:
     regression -- a `BlockMask` is not a tensor, and `checkpoint` has to carry it
     through to the recompute unchanged.
     """
-    torch.backends.cuda.matmul.allow_tf32 = False
     sdpa, flex = _pair(window=window, dim=512, heads=8, device="cuda")
     sdpa.train()
     flex.train()
@@ -1094,6 +1129,7 @@ def test_flex_matches_sdpa_under_gradient_checkpointing(window: int) -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+@pytest.mark.usefixtures("_without_tf32")
 def test_flex_is_no_further_from_exact_than_sdpa() -> None:  # ruff: ignore[too-many-locals]
     """Why FLEX_TOL is not an arbitrary number.
 
@@ -1108,7 +1144,6 @@ def test_flex_is_no_further_from_exact_than_sdpa() -> None:  # ruff: ignore[too-
     One layer, `window=6`: enough to be exact, cheap enough to run in float64 on a
     CPU.
     """
-    torch.backends.cuda.matmul.allow_tf32 = False
     dim, heads, window = 512, 8, 6
     sdpa, flex = _pair(window=window, dim=dim, heads=heads, device="cuda", layers=1)
     exact = _prod_trunk(
@@ -1132,11 +1167,11 @@ def test_flex_is_no_further_from_exact_than_sdpa() -> None:  # ruff: ignore[too-
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="FlexAttention needs CUDA")
+@pytest.mark.usefixtures("_without_tf32")
 def test_flex_is_invariant_to_frame_offset() -> None:
     """RoPE is applied to q/k *before* attention, so it is orthogonal to the
     kernel: the flex path keeps the shift-invariance that makes the cache valid.
     """
-    torch.backends.cuda.matmul.allow_tf32 = False
     _, flex = _pair(window=4, dim=512, heads=8, device="cuda")
     flex.eval()
     g = torch.Generator(device="cuda").manual_seed(17)

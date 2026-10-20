@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
-from typing import final, override
+from typing import Any, cast, final, override
 
 import torch
 from einops import rearrange
@@ -122,4 +122,4 @@ class JointInverseDynamicsObjective(Objective):
                 value=TensorDict(value), timestep_indices=slice(1, None)
             )
 
-        return TensorDict(predictions).auto_batch_size_(2)
+        return TensorDict(cast("Any", predictions)).auto_batch_size_(2)
