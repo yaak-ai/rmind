@@ -1,0 +1,18 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2
+  - _self_
+
+# anti-overfitting arm: the paper's own small trunk (Table 9, LIBERO -- their
+# most multi-task benchmark): 6 layers / 120 dim, vs 8/8/512 elsewhere.
+# Everything else (encoder, data, batch, LR schedule) identical to the dinov2 arm.
+# NOTE: 5 heads instead of the paper's 6 -- head_dim must be a multiple of 8
+# (120/6=20 forces SDPA onto the math kernel, which materializes the full
+# (B, H, 1542, 1542) attention matrix and OOMs; 120/5=24 keeps fused kernels).
+policy_embedding_dim: 120
+num_layers: 6
+num_heads: 5
+
+wandb:
+  tags: [patch_policy, dinov2_smalltrunk]

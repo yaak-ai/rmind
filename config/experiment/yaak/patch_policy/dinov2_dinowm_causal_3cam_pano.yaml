@@ -1,0 +1,53 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_3cam
+  - _self_
+
+# Panoramic, factorized intra-frame position embedding (opt-in arm).
+#
+# The sibling 3cam arm gives every one of the 769 intra-frame slots its own
+# independent row in a flat table. That is the weakest possible encoding of
+# camera identity: "I am the left camera" is not a parameter, it is a property
+# the trunk has to infer from 768 mutually-unrelated rows, no vector receives
+# gradient from all 256 tokens of a camera at once, and nothing is shared
+# between slot `1+j` and slot `1+256+j`, so spatial structure learned on the
+# front camera does not transfer to the sides.
+#
+# This arm changes all three axes at once (see
+# task-intra-position-factorization.md; every axis is a flag, so any single-axis
+# ablation is a CLI override at zero code cost):
+#
+#   1. `pano_bearing` factorizes each patch row as `view[c] + row[r] +
+#      interp(bearing(c, j))`. Camera identity becomes ONE vector per camera fed
+#      by all 256 of its tokens; rows are shared across views; and the column
+#      term indexes a single bearing table spanning the rig's whole ~226 deg
+#      strip, so the ~16 deg two adjacent cameras genuinely SEE IN COMMON hits
+#      the same bins and literally shares a learned code. 769 free rows become
+#      3 + 16 + 48.
+#   2. `intra_position_scaling: none` backs out `b846a4f`'s LayerNorm+gain. It
+#      is not a clean ablation against a factorized table -- the LayerNorm
+#      renormalizes every composed row, so the relative weight of the `view`
+#      term against the patch term inside a row is not controllable -- and it
+#      also forced every row to a common norm, which cost the speed token ~84%
+#      of its content (content/position 1.74x -> 0.19x).
+#   3. `intra_position_target_norm` replaces the LayerNorm's amplitude control
+#      with an init-time one, so "scaling off" does not silently also mean "back
+#      to a 0.45 row norm, 50x below content". 11.15 is the applied row norm
+#      `kughoqfi` actually settled on (0.494 * sqrt(512)); 23.0 would be parity
+#      with the content patch tokens.
+#
+# GEOMETRY IS UNCHANGED: the composed table is still (769, 512), so the
+# KV-cache layout, the ONNX bindings and the export/parity path are identical to
+# the sibling arm. Only the parameterization behind it differs.
+#
+# TRAINS FROM SCRATCH -- `warm_start_ckpt.py` refuses a factorized target, and
+# never `ckpt_path`-full-resume from a flat run (SelectiveAdamW maps optimizer
+# state positionally, so a change to the position parameters silently
+# mis-assigns Adam moments).
+intra_position_factorization: pano_bearing
+intra_position_scaling: none
+intra_position_target_norm: 11.15
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm_causal, 3cam, pos_emb_factorized, pano_bearing]

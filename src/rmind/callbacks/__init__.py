@@ -8,6 +8,7 @@ from .loggers import (
     WandbWaypointsLogger,
 )
 from .logit_bias import LogitBiasSetter
+from .memory_stats import GpuMemoryStatsCallback
 from .predict_metrics import PredictMetricsCallback
 from .prediction import (
     DataFramePredictionWriter,
@@ -16,10 +17,14 @@ from .prediction import (
 )
 from .prediction_config import PredictionConfigSetter
 from .safe import SafeCallback
+from .training_quality import TrainingQualityLogger
+from .weights import CheckpointWeightLoader
 
 __all__ = [
+    "CheckpointWeightLoader",
     "DataFramePredictionWriter",
     "FeaturePermutator",
+    "GpuMemoryStatsCallback",
     "LogitBiasSetter",
     "ModuleFreezer",
     "PredictMetricsCallback",
@@ -27,6 +32,7 @@ __all__ = [
     "RerunPredictionWriter",
     "SafeCallback",
     "TensorDictPredictionWriter",
+    "TrainingQualityLogger",
     "WandbAttentionMaskLogger",
     "WandbForesightMetricsLogger",
     "WandbImageParamLogger",

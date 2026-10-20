@@ -1,0 +1,172 @@
+---
+# Palletjack policy on the car's VQ-BeT `PatchPolicy`: every frame predicts the
+# next `action_horizon` steps of [traction, steering, fork1] as one chunk, coded
+# by a frozen residual-VQ action tokenizer (code head) plus a continuous residual
+# (offset head).
+#
+# Same trunk as the car's causal arm - frozen ViT patches, an embedded speed
+# token, a causal-over-frames CausalFrameTransformer, a learned readout token per
+# frame - with the palletjack goal fused into every patch: the 5-vector
+# [ego fwd, ego lat, dropoff fwd, dropoff lat, fork_above_300] the dataset builds
+# (`goal`). It is already normalized, so its "encoder" is the identity
+# (`components.nn.GoalVector`); the car's is a frozen waypoint RVQ.
+_target_: rmind.models.patch_policy.PatchPolicy
+_recursive_: false
+_convert_: all
+
+cameras: ${cameras}
+speed: [continuous, speed]
+waypoints: [context, goal]
+chunk: [joint_actions]
+
+input_transform:
+  _target_: torch.nn.Sequential
+  _convert_: all
+  _args_:
+    - _target_: rmind.components.nn.Remapper
+      paths:
+        image: ${image_remap}
+        continuous:
+          speed: [data, speed]
+          traction: [data, traction]
+          steering: [data, steering]
+          fork1: [data, fork1]
+        context:
+          goal: [data, goal]
+
+    # the action columns arrive `episode_length + action_horizon - 1` long; unfold
+    # them into the chunk starting at every frame
+    - _target_: rmind.components.nn.ChunkFields
+      episode_length: ${episode_length}
+      action_horizon: ${action_horizon}
+      unfold_paths:
+        - [continuous, traction]
+        - [continuous, steering]
+        - [continuous, fork1]
+
+    - _target_: rmind.components.containers.ModuleDict
+      modules:
+        image: ${image_transform}
+        continuous:
+          _target_: rmind.components.nn.AtLeast3D
+        context:
+          _target_: torch.nn.Identity
+
+    # (b, t, horizon, 3) in the tokenizer's per-step order
+    - _target_: rmind.components.nn.StackFields
+      out_key: joint_actions
+      paths:
+        traction: [continuous, traction]
+        steering: [continuous, steering]
+        fork1: [continuous, fork1]
+
+image_encoder:
+  _target_: torch.nn.Sequential
+  _args_:
+    - _target_: rmind.components.timm_backbone.TimmBackbone
+      model_name: ${image_encoder_name}
+      out_indices: [10]
+      img_size: ${image_resize}
+    - _target_: einops.layers.torch.Rearrange
+      pattern: "... c h w -> ... (h w) c"
+
+goal_encoder:
+  _target_: rmind.components.nn.GoalVector
+  dim: ${goal_dim}
+
+# T x P x (D + G) -> policy width (https://arxiv.org/pdf/2607.18236 section 2.1)
+patch_projection:
+  _target_: rmind.components.nn.Linear
+  in_features: "${eval:'${image_embedding_dim} + ${goal_dim}'}"
+  out_features: ${policy_embedding_dim}
+
+# signed: the truck reverses
+speed_tokenizer:
+  _target_: rmind.components.norm.UniformBinner
+  range: [-15.0, 15.0]
+  bins: ${speed_bins}
+
+speed_embedding:
+  _target_: rmind.components.nn.Embedding
+  num_embeddings: ${speed_bins}
+  embedding_dim: ${policy_embedding_dim}
+
+# frame layout [speed, patches..., readout]
+encoder:
+  _target_: rmind.components.transformer.causal_frame.CausalFrameTransformer
+  dim_model: ${policy_embedding_dim}
+  num_layers: ${num_layers}
+  num_heads: ${num_heads}
+  tokens_per_frame: "${eval:'${num_cameras} * ${num_patches} + 2'}"
+  window: ${window}
+  attention_impl: ${attention_impl}
+  attn_dropout: 0.0
+  drop_path_rate: 0.1
+  rope_base: 1000.0
+  checkpoint: false
+  num_prefix_tokens: 1 # speed
+  num_suffix_tokens: 1 # readout
+
+use_readout_token: true
+
+tokenizer:
+  _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
+  artifact: ${action_tokenizer_artifact}
+  weights_only: false
+
+norm:
+  _target_: torch.nn.LayerNorm
+  normalized_shape: ${policy_embedding_dim}
+
+code_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels:
+    - 512
+    - 512
+    - "${eval:'${tokenizer_num_quantizers} * ${tokenizer_codebook_size}'}"
+
+offset_head:
+  _target_: torchvision.ops.MLP
+  in_channels: ${policy_embedding_dim}
+  hidden_channels:
+    - 512
+    - 512
+    - "${eval:'${tokenizer_num_quantizers} * ${tokenizer_codebook_size} * 3 * ${action_horizon}'}"
+
+losses:
+  _target_: rmind.components.containers.ModuleDict
+  modules:
+    code:
+      _target_: rmind.components.loss.FocalLoss
+      label_smoothing: 0.1
+    offset:
+      _target_: torch.nn.L1Loss
+
+# argmax codes at eval/serving, as the car's causal arm
+sample_codes: false
+teacher_force_offset: true
+
+# scale-balanced fusion (see PatchPolicy): LayerNorm + gain on the patches, a
+# gain of 1/`goal_rms` on the goal, so neither swamps the other in the projection
+fusion_norm: true
+fusion_goal_rms: ${goal_rms}
+
+optimizer:
+  _target_: rmind.components.optimizers.SelectiveAdamW
+  _recursive_: true
+  lr: ${lr}
+  betas: [0.9, 0.95]
+  weight_decay: 0.1
+  weight_decay_module_blacklist:
+    - _target_: hydra.utils.get_class
+      path: torch.nn.Embedding
+    - _target_: hydra.utils.get_class
+      path: torch.nn.LayerNorm
+
+lr_scheduler:
+  interval: step
+  scheduler:
+    _target_: rmind.components.lr_schedulers.get_cosine_schedule_with_warmup
+    num_warmup_steps: ${lr_warmup_steps}
+    num_training_steps: ${lr_total_steps}

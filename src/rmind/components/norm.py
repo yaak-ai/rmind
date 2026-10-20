@@ -78,13 +78,19 @@ class UniformBinner(Module, Invertible):
 
         self.register_buffer("range", torch.tensor(range))
         self.register_buffer("bins", torch.tensor(bins))
+        # Plain Python int (not a GPU buffer): `.clamp` below needs a scalar
+        # upper bound, and a Tensor bound forces PyTorch to pull it back to
+        # host via `.item()`/`aten::_local_scalar_dense` on every forward
+        # call. Precomputing it as an int sidesteps the device entirely.
+        # (see PROFILING_NOTES.md §7)
+        self._max_bin: int = bins - 1
 
     @override
     def forward(self, input: Tensor) -> Tensor:
         input_min, input_max = self.range
         x_norm = (input - input_min) / (input_max - input_min)
 
-        return (x_norm * self.bins).to(torch.long).clamp(0, self.bins - 1)
+        return (x_norm * self.bins).to(torch.long).clamp(0, self._max_bin)
 
     @override
     def invert(self, input: Tensor) -> Tensor:
@@ -120,6 +126,40 @@ class Normalize(Module):
     @override
     def forward(self, input: Tensor) -> Tensor:
         return torch.nn.functional.normalize(input, p=self.p, dim=self.dim)
+
+
+@final
+class ImageNormalize(Module):
+    """Per-channel image normalization with pre-registered GPU buffers.
+
+    A drop-in replacement for `torchvision.transforms.v2.Normalize` (same
+    `mean`/`std` kwargs, channel dim assumed to be `-3`). The torchvision
+    version isn't an `nn.Module` with buffers -- it rebuilds `mean`/`std` via
+    `torch.as_tensor(...)` on *every* call, which for a GPU input means a
+    fresh host-allocated tensor copied to device, synchronously, every
+    forward pass. Here `mean`/`std` are registered buffers, so they move to
+    the model's device exactly once (as part of the surrounding `Module`'s
+    normal `.to(device)`), and `forward` never touches the host.
+    (see PROFILING_NOTES.md §7)
+    """
+
+    mean: Tensor
+    std: Tensor
+
+    @validate_call
+    def __init__(self, *, mean: tuple[float, ...], std: tuple[float, ...]) -> None:
+        super().__init__()
+
+        self.register_buffer("mean", torch.tensor(mean).view(-1, 1, 1))
+        self.register_buffer("std", torch.tensor(std).view(-1, 1, 1))
+
+    @override
+    def forward(self, input: Tensor) -> Tensor:
+        return (input - self.mean) / self.std
+
+    @override
+    def extra_repr(self) -> str:
+        return f"mean={self.mean.flatten().tolist()}, std={self.std.flatten().tolist()}"
 
 
 @final

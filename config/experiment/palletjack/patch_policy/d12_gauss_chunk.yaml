@@ -1,0 +1,58 @@
+# @package _global_
+
+# D12 on the Gaussian PatchPolicyContinuous with a CHUNK head: the d12_vqbet
+# episode exactly - 1 camera (cam_fork), 5Hz, the next 2s of actions predicted at
+# every frame from the last 1s - but each chunk step an independent Gaussian
+# instead of residual-VQ codes + offsets. Answers whether VQ-BeT's discrete
+# multimodal head beats a per-step Gaussian over the same chunk; compare
+# `val/metric/chunk_l1*` here with `val/policy/metric/offset_argmax_recon*` there
+# (both L1 in raw action units over the same chunk).
+#
+#   just train experiment=palletjack/patch_policy/d12_gauss_chunk
+#
+# Inherits cameras, image pipeline, trunk size, observation tokens and paths from
+# `d12`; only the heads (2 * horizon outputs each) and the chunked targets change.
+defaults:
+  - /experiment/palletjack/patch_policy/d12
+  - override /model: palletjack/patch_policy/policy_chunk
+  - _self_
+
+# EPISODE, in raw (~30Hz) reference frames - kept in step with d12_vqbet
+episode_step: 6 # 5Hz
+# a clip at EVERY raw frame (val stays on one grid, see d12_val)
+episode_stride: 1
+episode_length: 6 # 1.0s of history
+window: 6
+action_horizon: 10 # 2.0s of future: steps t .. t+9
+near_horizon: 3 # 0.6s, executed before re-planning
+
+lr: 1e-4
+# the d12_vqbet optimizer budget: 35000 steps at batch 8
+lr_warmup_steps: 1000
+lr_total_steps: 35000
+
+# Runs keep wandb's generated names; what a run IS lives in its tags (filterable)
+# and notes (readable). Both interpolate the config, so an override on the
+# command line shows up in them.
+wandb:
+  tags:
+    - palletjack
+    - patch_policy
+    - gaussian
+    - chunk
+    - d12
+    - "cams:${num_cameras}"
+    - "hz:${eval:'30 // ${episode_step}'}"
+    - "hist:${episode_length}f"
+    - "horizon:${action_horizon}"
+    - "stride:${episode_stride}"
+  notes: >-
+    Chunked Gaussian PatchPolicyContinuous on D12, cameras ${cameras}.
+    Every ${episode_step} raw frames (${eval:'30 // ${episode_step}'}Hz): ${episode_length}
+    frames of history, predicting the next ${action_horizon} steps
+    (${eval:'${action_horizon} * ${episode_step} / 30'}s) of [traction, steering, fork1]
+    per frame as an independent Gaussian per step (the d12_vqbet chunk, no
+    tokenizer); a train clip every ${episode_stride} raw frame(s), val on a fixed
+    grid. Intention as two ego-frame tokens plus fork_above_300. chunk_l1_near over
+    the first ${near_horizon} steps. ${lr_total_steps} steps, lr ${lr}, batch
+    ${datamodule.train.batch_size}.

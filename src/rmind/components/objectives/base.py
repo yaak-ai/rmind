@@ -41,9 +41,14 @@ class Prediction(TensorClass["autocast"]):  # ty:ignore[unsupported-base]
     time_index: Tensor | None = None  # for timestep-wise sparse values
 
 
+type MetricTree = Mapping[str, Tensor | TensorTree]
+
+
 class Metrics(TypedDict):
-    loss: TensorTree | None
-    _artifacts: NotRequired[TensorTree]
+    loss: MetricTree | None
+    # logged (train/<objective>/metric/...) but excluded from the total loss
+    metric: NotRequired[MetricTree]
+    _artifacts: NotRequired[MetricTree]
 
 
 def _not_implemented(*_args: Any, **_kwargs: Any) -> Never:

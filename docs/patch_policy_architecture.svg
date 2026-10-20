@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 1560" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+  </defs>
+
+  <rect width="1180" height="1560" fill="#fcfcfd"/>
+  <text x="590" y="38" text-anchor="middle" font-size="24" font-weight="bold" fill="#1a1a2e">Patch Policy (arXiv:2607.18236) — rmind variant with VQ-BeT chunk head</text>
+
+  <!-- legend -->
+  <rect x="820" y="56" width="14" height="14" rx="3" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="840" y="68" font-size="13" fill="#333">frozen ("PT", not trained)</text>
+  <rect x="1000" y="56" width="14" height="14" rx="3" fill="#ffedd5" stroke="#f97316"/>
+  <text x="1020" y="68" font-size="13" fill="#333">trained ("FT")</text>
+
+  <!-- ===================== BAND 1: per-frame encoding ===================== -->
+  <text x="30" y="95" font-size="16" font-weight="bold" fill="#1a1a2e">1 · Per-frame packing  Z_t   (each of T = 6 history frames, every 10th video frame)</text>
+
+  <!-- camera column -->
+  <rect x="40" y="115" width="230" height="52" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="155" y="137" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">camera frame t</text>
+  <text x="155" y="155" text-anchor="middle" font-size="12" fill="#555">cam_front_left · 576×324</text>
+
+  <line x1="155" y1="167" x2="155" y2="192" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="40" y="194" width="230" height="46" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="155" y="213" text-anchor="middle" font-size="12" fill="#333">CenterCrop 320×576 → Resize</text>
+  <text x="155" y="230" text-anchor="middle" font-size="12" fill="#333">256² (v3) / 224² (v2) + norm</text>
+
+  <line x1="155" y1="240" x2="155" y2="265" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="40" y="267" width="230" height="64" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="155" y="288" text-anchor="middle" font-size="14" font-weight="bold" fill="#1e3a8a">❄ DINO ViT-S (layer 10)</text>
+  <text x="155" y="306" text-anchor="middle" font-size="12" fill="#1e3a8a">dinov3 /16 @256²  |  dinov2 /14 @224²</text>
+  <text x="155" y="322" text-anchor="middle" font-size="12" fill="#1e3a8a">→ 16×16 grid, both arms</text>
+
+  <line x1="155" y1="331" x2="155" y2="356" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- patch tokens graphic -->
+  <g>
+    <rect x="60" y="358" width="190" height="58" rx="8" fill="#fff" stroke="#64748b"/>
+    <g fill="#93c5fd" stroke="#3b82f6" stroke-width="0.6">
+      <rect x="72" y="368" width="9" height="9"/><rect x="83" y="368" width="9" height="9"/><rect x="94" y="368" width="9" height="9"/><rect x="105" y="368" width="9" height="9"/>
+      <rect x="72" y="379" width="9" height="9"/><rect x="83" y="379" width="9" height="9"/><rect x="94" y="379" width="9" height="9"/><rect x="105" y="379" width="9" height="9"/>
+      <rect x="72" y="390" width="9" height="9"/><rect x="83" y="390" width="9" height="9"/><rect x="94" y="390" width="9" height="9"/><rect x="105" y="390" width="9" height="9"/>
+      <rect x="72" y="401" width="9" height="9"/><rect x="83" y="401" width="9" height="9"/><rect x="94" y="401" width="9" height="9"/><rect x="105" y="401" width="9" height="9"/>
+    </g>
+    <text x="125" y="384" font-size="13" font-weight="bold" fill="#333">P = 256 patch</text>
+    <text x="125" y="401" font-size="13" fill="#333">tokens × 384</text>
+  </g>
+
+  <!-- waypoints column -->
+  <rect x="330" y="115" width="230" height="52" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="445" y="137" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">waypoints t (goal)</text>
+  <text x="445" y="155" text-anchor="middle" font-size="12" fill="#555">10 × (x,y) · ego frame · /100</text>
+
+  <line x1="445" y1="167" x2="445" y2="265" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="330" y="267" width="230" height="64" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="445" y="288" text-anchor="middle" font-size="14" font-weight="bold" fill="#1e3a8a">❄ Waypoints RVQ tokenizer</text>
+  <text x="445" y="306" text-anchor="middle" font-size="12" fill="#1e3a8a">MLP enc → RVQ (4 × 32 codes)</text>
+  <text x="445" y="322" text-anchor="middle" font-size="12" fill="#1e3a8a">gzxgumtf:v9 · z_q post-quant</text>
+
+  <line x1="445" y1="331" x2="445" y2="356" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="365" y="358" width="160" height="40" rx="8" fill="#fff" stroke="#64748b"/>
+  <text x="445" y="383" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">g_t ∈ ℝ³⁸⁴</text>
+
+  <!-- speed column -->
+  <rect x="620" y="115" width="200" height="52" rx="8" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="720" y="137" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">speed t</text>
+  <text x="720" y="155" text-anchor="middle" font-size="12" fill="#555">0–130 km/h</text>
+
+  <line x1="720" y1="167" x2="720" y2="265" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="620" y="267" width="200" height="64" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="720" y="291" text-anchor="middle" font-size="13" font-weight="bold" fill="#7c2d12">UniformBinner (512 bins)</text>
+  <text x="720" y="311" text-anchor="middle" font-size="13" fill="#7c2d12">+ Embedding → 512</text>
+
+  <line x1="720" y1="331" x2="720" y2="356" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="645" y="358" width="150" height="40" rx="8" fill="#fff" stroke="#64748b"/>
+  <text x="720" y="383" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">speed token (512)</text>
+
+  <!-- concat + projection -->
+  <line x1="155" y1="416" x2="155" y2="452" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="445" y1="398" x2="445" y2="430" stroke="#555" stroke-width="1.5"/>
+  <line x1="445" y1="430" x2="300" y2="430" stroke="#555" stroke-width="1.5"/>
+  <line x1="300" y1="430" x2="300" y2="465" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="460" y="424" font-size="12" fill="#555">broadcast g_t to all 256 patch tokens</text>
+
+  <rect x="40" y="454" width="450" height="60" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="265" y="478" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">T × P × (D + G):  [patch (384) ⊕ g_t (384)] = 768</text>
+  <text x="265" y="500" text-anchor="middle" font-size="13" fill="#7c2d12">Linear 768 → 512   (single projection, paper §2.1)</text>
+
+  <!-- frame block -->
+  <line x1="265" y1="514" x2="265" y2="540" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="720" y1="398" x2="720" y2="527" stroke="#555" stroke-width="1.5"/>
+  <line x1="720" y1="527" x2="560" y2="555" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <g>
+    <rect x="40" y="542" width="520" height="52" rx="8" fill="#fff" stroke="#334155" stroke-width="1.5"/>
+    <rect x="52" y="552" width="70" height="32" rx="5" fill="#fed7aa" stroke="#f97316"/>
+    <text x="87" y="572" text-anchor="middle" font-size="12" fill="#7c2d12">speed</text>
+    <rect x="128" y="552" width="380" height="32" rx="5" fill="#bfdbfe" stroke="#3b82f6"/>
+    <text x="318" y="572" text-anchor="middle" font-size="12" fill="#1e3a8a">patch₁ … patch₂₅₆   (goal-conditioned, 512-d)</text>
+    <text x="530" y="573" font-size="13" fill="#333">= K</text>
+  </g>
+  <text x="40" y="614" font-size="13" fill="#555">frame block: K = 257 tokens · speed first, so the block <tspan font-weight="bold">ends on a patch token = readout position</tspan></text>
+
+  <!-- ===================== BAND 2: sequence + transformer ===================== -->
+  <text x="30" y="668" font-size="16" font-weight="bold" fill="#1a1a2e">2 · Flattened sequence + block-causal transformer</text>
+
+  <!-- sequence of 6 frame blocks -->
+  <g>
+    <rect x="40" y="688" width="700" height="56" rx="8" fill="#fff" stroke="#334155" stroke-width="1.5"/>
+    <rect x="52"  y="698" width="106" height="36" rx="5" fill="#e2e8f0" stroke="#64748b"/><text x="105" y="721" text-anchor="middle" font-size="12" fill="#333">frame t−5</text>
+    <rect x="164" y="698" width="106" height="36" rx="5" fill="#e2e8f0" stroke="#64748b"/><text x="217" y="721" text-anchor="middle" font-size="12" fill="#333">t−4</text>
+    <rect x="276" y="698" width="106" height="36" rx="5" fill="#e2e8f0" stroke="#64748b"/><text x="329" y="721" text-anchor="middle" font-size="12" fill="#333">t−3</text>
+    <rect x="388" y="698" width="106" height="36" rx="5" fill="#e2e8f0" stroke="#64748b"/><text x="441" y="721" text-anchor="middle" font-size="12" fill="#333">t−2</text>
+    <rect x="500" y="698" width="106" height="36" rx="5" fill="#e2e8f0" stroke="#64748b"/><text x="553" y="721" text-anchor="middle" font-size="12" fill="#333">t−1</text>
+    <rect x="612" y="698" width="116" height="36" rx="5" fill="#cbd5e1" stroke="#334155"/><text x="670" y="721" text-anchor="middle" font-size="12" font-weight="bold" fill="#111">t (newest)</text>
+  </g>
+  <text x="40" y="766" font-size="13" fill="#555">6 × 257 = <tspan font-weight="bold">1542 tokens</tspan>  +  learned 1D positional embedding (index in flattened sequence)</text>
+
+  <line x1="390" y1="776" x2="390" y2="800" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- transformer -->
+  <rect x="120" y="802" width="540" height="130" rx="10" fill="#ffedd5" stroke="#f97316" stroke-width="1.5"/>
+  <text x="390" y="828" text-anchor="middle" font-size="15" font-weight="bold" fill="#7c2d12">Transformer trunk — 8 layers · 8 heads · 512 dim</text>
+  <text x="390" y="852" text-anchor="middle" font-size="13" fill="#7c2d12">pre-LN GPT block: LN → MHA (block-causal mask) → +res → LN → MLP 4× GELU → +res</text>
+  <text x="390" y="874" text-anchor="middle" font-size="13" fill="#7c2d12">gradient checkpointing per layer · final LayerNorm</text>
+  <text x="390" y="912" text-anchor="middle" font-size="13" font-weight="bold" fill="#7c2d12">31.5M trainable / 51.5M total (paper: 29.5M / 51.6M)</text>
+
+  <!-- block-causal mask graphic -->
+  <g transform="translate(790, 780)">
+    <text x="120" y="0" text-anchor="middle" font-size="14" font-weight="bold" fill="#1a1a2e">block-causal mask</text>
+    <g stroke="#94a3b8" stroke-width="0.5">
+      <rect x="30"  y="12"  width="30" height="30" fill="#475569"/><rect x="60" y="12" width="30" height="30" fill="#f1f5f9"/><rect x="90" y="12" width="30" height="30" fill="#f1f5f9"/><rect x="120" y="12" width="30" height="30" fill="#f1f5f9"/><rect x="150" y="12" width="30" height="30" fill="#f1f5f9"/><rect x="180" y="12" width="30" height="30" fill="#f1f5f9"/>
+      <rect x="30"  y="42"  width="30" height="30" fill="#475569"/><rect x="60" y="42" width="30" height="30" fill="#475569"/><rect x="90" y="42" width="30" height="30" fill="#f1f5f9"/><rect x="120" y="42" width="30" height="30" fill="#f1f5f9"/><rect x="150" y="42" width="30" height="30" fill="#f1f5f9"/><rect x="180" y="42" width="30" height="30" fill="#f1f5f9"/>
+      <rect x="30"  y="72"  width="30" height="30" fill="#475569"/><rect x="60" y="72" width="30" height="30" fill="#475569"/><rect x="90" y="72" width="30" height="30" fill="#475569"/><rect x="120" y="72" width="30" height="30" fill="#f1f5f9"/><rect x="150" y="72" width="30" height="30" fill="#f1f5f9"/><rect x="180" y="72" width="30" height="30" fill="#f1f5f9"/>
+      <rect x="30"  y="102" width="30" height="30" fill="#475569"/><rect x="60" y="102" width="30" height="30" fill="#475569"/><rect x="90" y="102" width="30" height="30" fill="#475569"/><rect x="120" y="102" width="30" height="30" fill="#475569"/><rect x="150" y="102" width="30" height="30" fill="#f1f5f9"/><rect x="180" y="102" width="30" height="30" fill="#f1f5f9"/>
+      <rect x="30"  y="132" width="30" height="30" fill="#475569"/><rect x="60" y="132" width="30" height="30" fill="#475569"/><rect x="90" y="132" width="30" height="30" fill="#475569"/><rect x="120" y="132" width="30" height="30" fill="#475569"/><rect x="150" y="132" width="30" height="30" fill="#475569"/><rect x="180" y="132" width="30" height="30" fill="#f1f5f9"/>
+      <rect x="30"  y="162" width="30" height="30" fill="#475569"/><rect x="60" y="162" width="30" height="30" fill="#475569"/><rect x="90" y="162" width="30" height="30" fill="#475569"/><rect x="120" y="162" width="30" height="30" fill="#475569"/><rect x="150" y="162" width="30" height="30" fill="#475569"/><rect x="180" y="162" width="30" height="30" fill="#475569"/>
+    </g>
+    <text x="120" y="212" text-anchor="middle" font-size="12" fill="#555">bidirectional within a frame,</text>
+    <text x="120" y="228" text-anchor="middle" font-size="12" fill="#555">causal across frames (dark = attends)</text>
+    <text x="18" y="110" text-anchor="middle" font-size="11" fill="#777" transform="rotate(-90 18 110)">query frame →</text>
+  </g>
+
+  <!-- ===================== BAND 3: head ===================== -->
+  <text x="30" y="990" font-size="16" font-weight="bold" fill="#1a1a2e">3 · VQ-BeT joint chunk head (bug-fixed, PR #258) — at every frame's last patch token</text>
+
+  <line x1="390" y1="932" x2="390" y2="1008" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="240" y="1010" width="300" height="44" rx="8" fill="#fff" stroke="#334155"/>
+  <text x="390" y="1030" text-anchor="middle" font-size="13" font-weight="bold" fill="#333">readout: last patch token per frame</text>
+  <text x="390" y="1047" text-anchor="middle" font-size="12" fill="#555">(B, 6, 512) → LayerNorm</text>
+
+  <line x1="320" y1="1054" x2="230" y2="1090" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="460" y1="1054" x2="550" y2="1090" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- code head -->
+  <rect x="60" y="1092" width="340" height="88" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="230" y="1114" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">code head  MLP 512→1024→1024→64</text>
+  <text x="230" y="1136" text-anchor="middle" font-size="13" fill="#7c2d12">logits (4 quantizers × 16 codes)</text>
+  <text x="230" y="1158" text-anchor="middle" font-size="13" fill="#7c2d12">focal loss vs target codes</text>
+
+  <!-- offset head -->
+  <rect x="440" y="1092" width="360" height="88" rx="8" fill="#ffedd5" stroke="#f97316"/>
+  <text x="620" y="1114" text-anchor="middle" font-size="14" font-weight="bold" fill="#7c2d12">offset head  MLP 512→1024→1024→1536</text>
+  <text x="620" y="1136" text-anchor="middle" font-size="13" fill="#7c2d12">offset table (4 × 16 × 24), gather at codes, Σ quantizers</text>
+  <text x="620" y="1158" text-anchor="middle" font-size="13" font-weight="bold" fill="#7c2d12">L1 · teacher-forced at target codes (#258 fix)</text>
+
+  <!-- action tokenizer -->
+  <rect x="860" y="1030" width="280" height="96" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="1000" y="1054" text-anchor="middle" font-size="14" font-weight="bold" fill="#1e3a8a">❄ Action chunk tokenizer</text>
+  <text x="1000" y="1076" text-anchor="middle" font-size="12" fill="#1e3a8a">RVQ 4 × 16 codes · y74asdtd:v9</text>
+  <text x="1000" y="1094" text-anchor="middle" font-size="12" fill="#1e3a8a">chunk (6 steps × 4 fields = 24-d)</text>
+  <text x="1000" y="1112" text-anchor="middle" font-size="12" fill="#1e3a8a">targets: codes + normalized chunk</text>
+
+  <line x1="1000" y1="1126" x2="1000" y2="1215" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+  <text x="1010" y="1170" font-size="12" fill="#3b82f6">decode: invert(codes)</text>
+
+  <!-- combine -->
+  <line x1="230" y1="1180" x2="380" y2="1218" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="620" y1="1180" x2="560" y2="1218" stroke="#555" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="240" y="1220" width="700" height="52" rx="8" fill="#fff" stroke="#334155" stroke-width="1.5"/>
+  <text x="590" y="1242" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">action chunk  =  decode(codes)  +  offset</text>
+  <text x="590" y="1262" text-anchor="middle" font-size="13" fill="#555">(B, 6 steps, 4) — gas · brake · steering · turn signal   (current + 5 future actions)</text>
+
+  <!-- loss / inference note -->
+  <rect x="240" y="1296" width="700" height="70" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="6 4"/>
+  <text x="590" y="1322" text-anchor="middle" font-size="13" fill="#333"><tspan font-weight="bold">training:</tspan> loss at all 6 frames' readouts (each frame predicts its own chunk, paper §2.2)</text>
+  <text x="590" y="1344" text-anchor="middle" font-size="13" fill="#333"><tspan font-weight="bold">inference:</tspan> decode only the newest frame's chunk (sampled codes)</text>
+
+  <!-- footer: training setup -->
+  <line x1="40" y1="1400" x2="1140" y2="1400" stroke="#e2e8f0"/>
+  <text x="40" y="1430" font-size="13" fill="#555"><tspan font-weight="bold" fill="#333">Data:</tspan> clip_length 11 = 6 obs frames + 5 future actions · ~1.97M train samples · single camera</text>
+  <text x="40" y="1454" font-size="13" fill="#555"><tspan font-weight="bold" fill="#333">Training:</tspan> batch 128 · AdamW lr 1e-4 (no wd on Emb/LN/pos_embed) · cosine 12.5k warmup / 154k steps (= 10 epochs) · bf16</text>
+  <text x="40" y="1478" font-size="13" fill="#555"><tspan font-weight="bold" fill="#333">Ablation:</tspan> DINOv3 ViT-S/16 @256² (run 8crjqzii) vs DINOv2 ViT-S/14 @224² (run wxyp0bzq) — identical 16×16×384 patch grid</text>
+  <text x="40" y="1502" font-size="13" fill="#555"><tspan font-weight="bold" fill="#333">Deviations from paper:</tspan> vector goal g_t is per-frame (ego-relative waypoints) · +1 speed token per frame (paper is vision-only)</text>
+</svg>

@@ -1,0 +1,23 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2
+  - _self_
+
+# Norm-vs-layer disentangling arm: SAME layer-10 features as the dinov2 arm,
+# but with DINOv2's final LayerNorm applied (forward_intermediates norm=true).
+# If this matches dinov2_dinowm in closed loop, the norm was the decisive
+# factor; if it matches plain dinov2, it was the layer.
+model:
+  image_encoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: rmind.components.timm_backbone.TimmBackbone
+        model_name: ${image_encoder_name}
+        img_size: ${image_resize}
+        norm_indices: [10]
+      - _target_: einops.layers.torch.Rearrange
+        pattern: "... c h w -> ... (h w) c"
+
+wandb:
+  tags: [patch_policy, dinov2_l10norm]

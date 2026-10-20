@@ -1,0 +1,16 @@
+# @package _global_
+
+# H3 clean test: dinov3 layer-10 RAW features (the ~90x patch/goal imbalance
+# worst case) + fusion_norm — patch LN + learnable gains, goal gain init
+# 1/RMS(z_q). If this alone recovers most of stellar-hill's rdev gap, the
+# dinowm win was conditioning (scale), not feature content. Ladder-comparable:
+# stock batch-128 @ 1e-4 recipe, same as stellar-hill (8crjqzii).
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov3
+  - _self_
+
+fusion_norm: true
+
+wandb:
+  tags: [patch_policy, dinov3, fusion_norm]

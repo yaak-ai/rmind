@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from subprocess import check_output  # ruff: ignore[suspicious-subprocess-import]
 
@@ -31,7 +32,9 @@ def _train(cfg: DictConfig) -> None:
 
     logger.debug("starting training")
 
-    return trainer.fit(model=model, datamodule=datamodule)
+    return trainer.fit(
+        model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path")
+    )
 
 
 @hydra.main(version_base=None)
@@ -41,7 +44,8 @@ def main(cfg: DictConfig) -> None:
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),  # ty:ignore[invalid-argument-type]
             **cfg.wandb,
         )
-    ) is not None:
+    ) is not None and not os.environ.get("WANDB_GIT_COMMIT"):
+        # inside docker there is no .git; the run is tied to a commit via WANDB_GIT_COMMIT
         paths = {
             Path(path).resolve()
             for path in check_output(

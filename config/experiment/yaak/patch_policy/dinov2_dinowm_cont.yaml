@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm
+  - override /model: yaak/patch_policy/continuation
+  - _self_
+
+# Continuation of the dinov2_dinowm arm (solar-universe-517 / ifuusvwq) after
+# its 10-epoch cosine run: another 10 epochs at CONSTANT lr 3e-5, no warmup,
+# fresh optimizer state. NOTE: the parent run's epoch-9 checkpoint was lost to
+# a full disk (ENOSPC) -- v8 (epoch 8) is the newest surviving checkpoint.
+continuation_artifact: ???
+lr: 3e-5
+
+# NOTE: pass seed=1338 on the CLI for a fresh data order -- setting it here is
+# ineffective (train.yaml's _self_ overrides experiment values for `seed`).
+
+wandb:
+  tags: [patch_policy, dinov2_dinowm, continuation, from-solar-universe-517, from-ifuusvwq]

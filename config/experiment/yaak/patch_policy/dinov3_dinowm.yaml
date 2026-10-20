@@ -1,0 +1,22 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov3
+  - _self_
+
+# DINO-WM-style features (final layer + final norm) on DINOv3: tests whether
+# the dinov2_dinowm arm's closed-loop win transfers across encoder families
+# (and whether it resurrects the wandering DINOv3 arms).
+model:
+  image_encoder:
+    _target_: torch.nn.Sequential
+    _args_:
+      - _target_: rmind.components.timm_backbone.TimmBackbone
+        model_name: ${image_encoder_name}
+        img_size: ${image_resize}
+        norm_patch_tokens: true
+      - _target_: einops.layers.torch.Rearrange
+        pattern: "... c h w -> ... (h w) c"
+
+wandb:
+  tags: [patch_policy, dinov3_dinowm]

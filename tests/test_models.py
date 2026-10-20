@@ -26,6 +26,7 @@ from rmind.components.objectives import (
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
+from rmind.models.action_tokenizer import ActionTokenizer
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
 
 if TYPE_CHECKING:
@@ -131,17 +132,29 @@ def control_transformer(
 
 @pytest.fixture
 def model_yaak_control_transformer_raw(
-    request: pytest.FixtureRequest,
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> ControlTransformer:
     embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
     num_bins: NumBins = request.getfixturevalue("num_bins")
 
     with initialize(version_base=None, config_path=CONFIG_PATH):
+        tokenizer_cfg = compose(
+            "model/yaak/action_tokenizer/raw",
+            overrides=[
+                "+action_dim=4",
+                "+action_hidden_dim=8",
+                "+action_latent_dim=8",
+                "+codebook_size=16",
+                "+num_quantizers=4",
+            ],
+        )
         cfg = compose(
             "model/yaak/control_transformer/raw",
             overrides=[
                 "+num_heads=1",
                 "+num_layers=1",
+                "+episode_length=6",
+                "+action_horizon=1",
                 f"+encoder_embedding_dim={embedding_dims.encoder}",
                 f"+image_embedding_dim={embedding_dims.image}",
                 f"+speed_bins={num_bins.speed}",
@@ -151,7 +164,66 @@ def model_yaak_control_transformer_raw(
             ],
         )
 
+    def load_local_tokenizer(
+        _cls: type[ActionTokenizer], **_kwargs: Any
+    ) -> ActionTokenizer:
+        return instantiate(tokenizer_cfg.model.yaak.action_tokenizer)
+
+    monkeypatch.setattr(
+        ActionTokenizer, "load_from_wandb_artifact", classmethod(load_local_tokenizer)
+    )
     return instantiate(cfg.model.yaak.control_transformer)
+
+
+def _palletjack_model(name: str, overrides: list[str]) -> ControlTransformer:
+    with initialize(version_base=None, config_path=CONFIG_PATH):
+        cfg = compose(
+            f"model/palletjack/control_transformer/{name}",
+            overrides=[
+                "+num_heads=1",
+                "+num_layers=1",
+                "+encoder_embedding_dim=8",
+                "+image_embedding_dim=384",
+                "+traction_bins=255",
+                "+steering_bins=511",
+                "+fork1_bins=127",
+                # the real transform is supplied by the experiment config
+                "+image_transform={_target_:torch.nn.Identity}",
+                *overrides,
+            ],
+        )
+
+    return instantiate(cfg.model.palletjack.control_transformer)
+
+
+@pytest.fixture
+def model_palletjack_control_transformer_raw() -> ControlTransformer:
+    return _palletjack_model("raw", [])
+
+
+@pytest.fixture
+def model_palletjack_control_transformer_policy() -> ControlTransformer:
+    return _palletjack_model(
+        "policy", ["+policy_in_channels=16", "+warmup_steps=1", "+training_steps=2"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("model", "objectives"),
+    [
+        (
+            lf("model_palletjack_control_transformer_raw"),
+            {"inverse_dynamics", "forward_dynamics", "memory_extraction"},
+        ),
+        (lf("model_palletjack_control_transformer_policy"), {"policy"}),
+    ],
+)
+def test_palletjack_config(model: ControlTransformer, objectives: set[str]) -> None:
+    assert set(model.objectives.keys()) == objectives
+
+    parameters = set(model.state_dict())
+    for action in ("traction", "steering", "fork1"):
+        assert any(action in key for key in parameters), action
 
 
 @pytest.mark.parametrize("model", [lf("control_transformer")])

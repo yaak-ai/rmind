@@ -1,5 +1,4 @@
-"""
-Counts episodes with simultaneous non-zero brake + gas pedal signals.
+"""Counts episodes with simultaneous non-zero brake + gas pedal signals.
 
 A frame where both gas_pedal_normalized > GAS_THRESH and
 brake_pedal_normalized > BRAKE_THRESH simultaneously is physically
@@ -33,7 +32,7 @@ import polars as pl
 from rbyte.samples.yaak import YaakMetadataReader
 
 DATA_ROOT = Path("/nasa/drives/yaak/data")
-CONFIG_ROOT = Path(__file__).parents[4] / "rmind-main/config/_templates/dataset/yaak"
+CONFIG_ROOT = Path(__file__).parents[3] / "config/_templates/dataset/yaak"
 
 # One quantisation step above zero — matches existing idle-filter thresholds
 GAS_THRESH: float = 1.0 / 255 + 0.001  # ≈ 0.0049
@@ -127,8 +126,7 @@ def _mark_conflicts(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _episode_conflict_rate(df: pl.DataFrame, window: int = 6) -> tuple[int, int]:
-    """
-    Estimate how many sliding 6-frame episodes contain at least one conflict frame.
+    """Estimate how many sliding 6-frame episodes contain at least one conflict frame.
 
     The rbyte Stage-7 grouping creates windows of `window` consecutive camera
     frames. A window is flagged if any of its frames has a conflict.
@@ -200,14 +198,22 @@ def main(splits: dict[str, list[str]], workers: int = 8) -> None:
         n_drives = s.height
         n_conflict_drives = int(s["has_conflict"].sum())
         total_frames = int(s["frames"].sum())
-        int(s["conflict_frames"].sum())
+        conflict_frames = int(s["conflict_frames"].sum())
         total_ep = int(s["estimated_episodes"].sum())
-        int(s["estimated_conflict_episodes"].sum())
+        conflict_ep = int(s["estimated_conflict_episodes"].sum())
 
         print(f"\n[{split}]")  # ruff: ignore[print]
         print(f"  Drives with any conflict : {n_conflict_drives:>5} / {n_drives}")  # ruff: ignore[print]
         print(f"  Frames (quality-filtered): {total_frames:>10,}")  # ruff: ignore[print]
+        print(  # ruff: ignore[print]
+            f"  Conflict frames          : {conflict_frames:>10,}"
+            f"  ({conflict_frames / total_frames if total_frames else 0.0:.4%})"
+        )
         print(f"  Estimated episodes       : {total_ep:>10,}")  # ruff: ignore[print]
+        print(  # ruff: ignore[print]
+            f"  Conflict episodes        : {conflict_ep:>10,}"
+            f"  ({conflict_ep / total_ep if total_ep else 0.0:.4%})"
+        )
 
     print(f"\n{'Per-drive breakdown (conflict drives only)'!s}")  # ruff: ignore[print]
     conflicting = (

@@ -35,9 +35,7 @@ def _subscript(n: int) -> str:
 def visualize_attention_mask(  # ruff: ignore[too-many-locals]
     mask: Tensor, timestep_meta: tuple[TokenMeta, ...], index: dict, num_timesteps: int
 ) -> plt.Figure:
-    """
-    CODEX GENERATED
-    """
+    """CODEX GENERATED."""
     # Build block definitions: (label, token_type, num_tokens)
     blocks: list[tuple[str, TokenType, int]] = []
     for t in range(num_timesteps):
