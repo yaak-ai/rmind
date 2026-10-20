@@ -26,6 +26,7 @@ from rmind.components.objectives import (
 from rmind.components.objectives.base import ObjectivePredictionKey
 from rmind.config import HydraConfig
 from rmind.datamodules import GenericDataModule
+from rmind.models.action_tokenizer import ActionTokenizer
 from rmind.models.control_transformer import ControlTransformer, PredictionConfig
 
 if TYPE_CHECKING:
@@ -131,12 +132,22 @@ def control_transformer(
 
 @pytest.fixture
 def model_yaak_control_transformer_raw(
-    request: pytest.FixtureRequest,
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> ControlTransformer:
     embedding_dims: EmbeddingDims = request.getfixturevalue("embedding_dims")
     num_bins: NumBins = request.getfixturevalue("num_bins")
 
     with initialize(version_base=None, config_path=CONFIG_PATH):
+        tokenizer_cfg = compose(
+            "model/yaak/action_tokenizer/raw",
+            overrides=[
+                "+action_dim=4",
+                "+action_hidden_dim=8",
+                "+action_latent_dim=8",
+                "+codebook_size=16",
+                "+num_quantizers=4",
+            ],
+        )
         cfg = compose(
             "model/yaak/control_transformer/raw",
             overrides=[
@@ -153,6 +164,14 @@ def model_yaak_control_transformer_raw(
             ],
         )
 
+    def load_local_tokenizer(
+        _cls: type[ActionTokenizer], **_kwargs: Any
+    ) -> ActionTokenizer:
+        return instantiate(tokenizer_cfg.model.yaak.action_tokenizer)
+
+    monkeypatch.setattr(
+        ActionTokenizer, "load_from_wandb_artifact", classmethod(load_local_tokenizer)
+    )
     return instantiate(cfg.model.yaak.control_transformer)
 
 
