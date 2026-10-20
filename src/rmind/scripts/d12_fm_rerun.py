@@ -1,9 +1,14 @@
 """Offline Rerun recording with synchronized cameras, recorded poses and FM samples."""
 
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+
 import numpy as np
 
 
-def render_rerun(directory, job, arrays, cameras):
+def render_rerun(
+    directory: Path, job: Path, arrays: Mapping[str, np.ndarray], cameras: Sequence[str]
+) -> None:
     import rerun as rr
     import rerun.blueprint as rrb
 

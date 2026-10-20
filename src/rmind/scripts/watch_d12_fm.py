@@ -7,8 +7,16 @@ import sys
 import time
 from pathlib import Path
 
+COMPARISON_VARIANTS = 5
 
-def main():
+
+def _require_complete(comparison: dict[str, object], output: Path) -> None:
+    if len(comparison) != COMPARISON_VARIANTS:
+        msg = f"incomplete prior evaluation at {output}; use a fresh output"
+        raise ValueError(msg)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dirs", type=Path, nargs="+", required=True)
     parser.add_argument("--step", type=int, default=20000)
@@ -24,7 +32,8 @@ def main():
             if not checkpoints:
                 continue
             if len(checkpoints) != 1:
-                raise ValueError(f"ambiguous checkpoint in {directory}")
+                msg = f"ambiguous checkpoint in {directory}"
+                raise ValueError(msg)
             checkpoint = checkpoints[0]
             initial = checkpoint.stat()
             time.sleep(5)
@@ -55,10 +64,7 @@ def main():
                         check=True,
                     )
                 comparison = json.loads((output / "comparison.json").read_text())
-                if len(comparison) != 5:
-                    raise ValueError(
-                        f"incomplete prior evaluation at {output}; use a fresh output"
-                    )
+                _require_complete(comparison, output)
                 if not (sensitivity / "report.json").exists():
                     subprocess.run(
                         [

@@ -3,19 +3,25 @@
 import argparse
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import numpy.typing as npt
 import polars as pl
 from rbyte.samples.mcap import McapReader, ProtobufDecoderFactory
 
 from rmind.scripts.eval_d12_fm import DEFAULT_JOBS
 
+if TYPE_CHECKING:
+    from polars.datatypes import DataType
 
-def nearest_offsets(reference, source):
+
+def nearest_offsets(reference: npt.ArrayLike, source: npt.ArrayLike) -> np.ndarray:
     reference = np.asarray(reference, dtype=np.int64)
     source = np.asarray(source, dtype=np.int64)
     if not len(reference) or not len(source):
-        raise ValueError("empty clock")
+        msg = "empty clock"
+        raise ValueError(msg)
     following = np.searchsorted(source, reference).clip(0, len(source) - 1)
     preceding = (following - 1).clip(0, len(source) - 1)
     choice = np.where(
@@ -26,13 +32,13 @@ def nearest_offsets(reference, source):
     return source[choice] - reference
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=Path("/nasa/data/d12/yaak"))
     parser.add_argument("--jobs", nargs="+", default=DEFAULT_JOBS)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
-    fields = {
+    fields: dict[str, dict[str, DataType | None]] = {
         "cam_fork/frame": {"log_time": pl.Datetime("ns"), "pts_ns": pl.Int64()},
         "lindelot/adc": {
             "log_time": pl.Datetime("ns"),
@@ -45,7 +51,7 @@ def main():
         "linde/fork": {"log_time": pl.Datetime("ns"), "fork1_pct": pl.Float32()},
     }
     reader = McapReader(decoder_factories=[ProtobufDecoderFactory], fields=fields)
-    results = {}
+    results: dict[str, Any] = {}
     for job_name in arguments.jobs:
         job = arguments.data_root / job_name
         tables = reader(job / "data_for_training.mcap")
@@ -55,7 +61,7 @@ def main():
             .cast(pl.Int64)
             .to_numpy()
         )
-        result = {"signals": {}}
+        result: dict[str, Any] = {"signals": {}}
         for topic in fields:
             if topic == "cam_fork/frame":
                 continue

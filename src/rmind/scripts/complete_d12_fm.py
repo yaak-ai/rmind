@@ -4,12 +4,21 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import torch
 from omegaconf import OmegaConf
+
+
+def _executable(name: str) -> str:
+    path = shutil.which(name)
+    if path is None:
+        msg = f"{name} executable not found"
+        raise RuntimeError(msg)
+    return path
 
 
 def main() -> None:
@@ -21,6 +30,8 @@ def main() -> None:
     parser.add_argument("--training-host")
     parser.add_argument("--ssh-identity", type=Path)
     arguments = parser.parse_args()
+    if arguments.wait_pid <= 0:
+        parser.error("wait-pid must be positive")
     directory = arguments.run_dir.resolve()
     status = directory / "completion.json"
     status.write_text(json.dumps({"state": "waiting_for_training"}) + "\n")
@@ -29,7 +40,14 @@ def main() -> None:
         if arguments.ssh_identity
         else []
     )
-    ssh_base = ["ssh", *identity, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
+    ssh_base = [
+        _executable("ssh"),
+        *identity,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=8",
+    ]
     try:
         while True:
             if arguments.training_host:
@@ -37,16 +55,16 @@ def main() -> None:
                     [
                         *ssh_base,
                         arguments.training_host,
-                        f"kill -0 {arguments.wait_pid}",
+                        shlex.join(["kill", "-0", str(arguments.wait_pid)]),
                     ],
                     capture_output=True,
+                    check=False,
                 )
                 if result.returncode == 1:
                     break
-                if result.returncode not in (0, 255):
-                    raise RuntimeError(
-                        f"unexpected remote training check: {result.stderr.decode()}"
-                    )
+                if result.returncode not in {0, 255}:
+                    msg = f"unexpected remote training check: {result.stderr.decode()}"
+                    raise RuntimeError(msg)
             else:
                 try:
                     os.kill(arguments.wait_pid, 0)
@@ -58,7 +76,8 @@ def main() -> None:
         saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
         step = saved["global_step"]
         if step < config.trainer.max_steps:
-            raise RuntimeError(f"Training stopped early at step {step}; not exporting")
+            msg = f"Training stopped early at step {step}; not exporting"
+            raise RuntimeError(msg)
         del saved
         output = directory / "export-final"
         subprocess.run(
@@ -108,7 +127,7 @@ def main() -> None:
             subprocess.run([*ssh, shlex.join(["mkdir", "-p", remote])], check=True)
             subprocess.run(
                 [
-                    "rsync",
+                    _executable("rsync"),
                     "-av",
                     "-e",
                     shlex.join(ssh_base),
@@ -121,7 +140,7 @@ def main() -> None:
             verifier = Path(__file__).with_name("verify_d12_trt.py")
             subprocess.run(
                 [
-                    "scp",
+                    _executable("scp"),
                     *identity,
                     "-o",
                     "BatchMode=yes",
@@ -149,7 +168,7 @@ def main() -> None:
             validation.mkdir(exist_ok=True)
             subprocess.run(
                 [
-                    "rsync",
+                    _executable("rsync"),
                     "-av",
                     "-e",
                     shlex.join(ssh_base),
@@ -165,7 +184,8 @@ def main() -> None:
             result.check_returncode()
             validation_report = json.loads((validation / "trt-parity.json").read_text())
             if not validation_report["passed"]:
-                raise RuntimeError("validation-kit parity failed")
+                msg = "validation-kit parity failed"
+                raise RuntimeError(msg)
         status.write_text(
             json.dumps(
                 {

@@ -82,7 +82,9 @@ from typing import Final, NamedTuple, final
 
 import numpy as np
 import polars as pl
+from mcap.reader import make_reader
 from pydantic import InstanceOf, validate_call
+from rbyte.samples.mcap import McapReader, ProtobufDecoderFactory
 from structlog import get_logger
 
 logger = get_logger(__name__)
@@ -342,9 +344,11 @@ def row_table(
 
 
 def read_fork_height(job_dir: Path) -> pl.DataFrame | None:
-    """Read live height, falling back to a unique retrofit sidecar."""
-    from mcap.reader import make_reader
-    from rbyte.samples.mcap import McapReader, ProtobufDecoderFactory
+    """Read live height, falling back to a unique retrofit sidecar.
+
+    Raises:
+        ValueError: If the MCAP lacks a summary or sidecars are ambiguous.
+    """
 
     path = job_dir / MCAP_FILE
     with path.open("rb") as stream:
@@ -359,7 +363,8 @@ def read_fork_height(job_dir: Path) -> pl.DataFrame | None:
         if not sidecars:
             return None
         if len(sidecars) != 1:
-            raise ValueError(f"ambiguous height sidecars in {job_dir}: {sidecars}")
+            message = f"ambiguous height sidecars in {job_dir}: {sidecars}"
+            raise ValueError(message)
         path = sidecars[0]
         topic = "fork/height_retrofit"
     reader = McapReader(
@@ -384,10 +389,10 @@ def join_fork_height(table: pl.DataFrame, height: pl.DataFrame | None) -> pl.Dat
         height, on="log_time", strategy="backward", tolerance="250ms"
     )
     valid = (
-        pl.col("valid").fill_null(False)
-        & pl.col("height_m").is_finite().fill_null(False)
-        & pl.col("sigma_m").is_finite().fill_null(False)
-        & (pl.col("sigma_m") >= 0).fill_null(False)
+        pl.col("valid").fill_null(value=False)
+        & pl.col("height_m").is_finite().fill_null(value=False)
+        & pl.col("sigma_m").is_finite().fill_null(value=False)
+        & (pl.col("sigma_m") >= 0).fill_null(value=False)
     )
     return joined.with_columns(
         pl.concat_list(
@@ -509,7 +514,7 @@ def _drop_invalid(table: pl.DataFrame, validity: list[str]) -> pl.DataFrame:
     return kept
 
 
-def episodes(  # ruff: ignore[too-many-arguments]
+def episodes(
     table: pl.DataFrame,
     *,
     cameras: tuple[str, ...],
@@ -542,7 +547,8 @@ def episodes(  # ruff: ignore[too-many-arguments]
     """
     clip = episode_length + horizon - 1
     if action_step is not None and action_step < 1:
-        raise ValueError("action_step must be positive")
+        message = "action_step must be positive"
+        raise ValueError(message)
     span = (
         (clip - 1) * step + 1
         if action_step is None
@@ -559,7 +565,8 @@ def episodes(  # ruff: ignore[too-many-arguments]
             frame_indices[starts + span - 1] - frame_indices[starts] == span - 1
         ]
         if not len(starts):
-            raise ValueError("no contiguous action windows remain")
+            message = "no contiguous action windows remain"
+            raise ValueError(message)
     input_id = table["input_id"][0]  # constant within a job
 
     history = [f"{c}/frame_idx" for c in cameras] + [

@@ -2,7 +2,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from hydra import compose, initialize_config_dir
+from torch import Tensor
 
 from rmind.data.d12_sampling import sampling_weights
 from rmind.scripts.audit_d12_actions import nearest_offsets
@@ -15,25 +17,29 @@ from rmind.scripts.probe_d12_fm import (
     world_offset_token,
 )
 
+MIN_UNIFORM_WEIGHT = 0.005
+STEERING_CHANGE = 0.5
+HOLD_PAIRS_AFTER_RESETS = 4
 
-def test_balancing_preserves_uniform_mass_and_upsamples_holds():
+
+def test_balancing_preserves_uniform_mass_and_upsamples_holds() -> None:
     actions = np.ones((100, 50, 3)) * 0.4
     actions[:5] = 0
     weights, labels = sampling_weights(actions)
     assert weights.sum() == pytest.approx(1)
     assert weights[:5].sum() == pytest.approx(0.275)
-    assert weights.min() >= 0.005
+    assert weights.min() >= MIN_UNIFORM_WEIGHT
     assert np.all(labels[:5] == 1)
 
 
-def test_hold_does_not_require_centered_steering():
+def test_hold_does_not_require_centered_steering() -> None:
     actions = np.zeros((1, 50, 3))
     actions[..., 1] = 0.7
     _, labels = sampling_weights(actions)
     assert labels.tolist() == [1]
 
 
-def test_transition_category_precedes_lift_category():
+def test_transition_category_precedes_lift_category() -> None:
     actions = np.zeros((2, 50, 3))
     actions[0, 4:, 2] = 0.9
     actions[1, :, 2] = 0.9
@@ -41,7 +47,7 @@ def test_transition_category_precedes_lift_category():
     assert labels.tolist() == [4, 2]
 
 
-def test_world_offsets_rotate_and_scale_for_each_observation():
+def test_world_offsets_rotate_and_scale_for_each_observation() -> None:
     np.testing.assert_allclose(
         world_offset_token((1, 0), [0, 90, 180]),
         [[0.1, 0], [0, -0.1], [-0.1, 0]],
@@ -49,7 +55,7 @@ def test_world_offsets_rotate_and_scale_for_each_observation():
     )
 
 
-def test_paired_sensitivity_detects_idle_collapse_not_just_difference():
+def test_paired_sensitivity_detects_idle_collapse_not_just_difference() -> None:
     baseline = np.ones((2, 8, 50, 3)) * 0.5
     assert paired_metrics(baseline, baseline)["paired_near_abs_change"] == 0
     assert (
@@ -60,11 +66,11 @@ def test_paired_sensitivity_detects_idle_collapse_not_just_difference():
     )
 
 
-def test_nearest_offsets_expose_future_joins():
+def test_nearest_offsets_expose_future_joins() -> None:
     np.testing.assert_array_equal(nearest_offsets([1, 6, 11], [0, 10]), [-1, 4, -1])
 
 
-def test_sensitivity_separates_actions_and_only_scores_near_commands():
+def test_sensitivity_separates_actions_and_only_scores_near_commands() -> None:
     baseline = np.zeros((2, 8, 50, 3))
     baseline[..., 0] = 0.4
     baseline[..., 1] = -0.5
@@ -80,7 +86,9 @@ def test_sensitivity_separates_actions_and_only_scores_near_commands():
     assert metrics["fork1"]["baseline_active_count"] == 0
 
 
-def test_sensitivity_summary_keeps_splits_and_plot_handles_no_active(tmp_path):
+def test_sensitivity_summary_keeps_splits_and_plot_handles_no_active(
+    tmp_path: Path,
+) -> None:
     baseline = np.zeros((2, 8, 50, 3))
     changed = baseline.copy()
     changed[0, ..., 0] = 0.5
@@ -88,12 +96,9 @@ def test_sensitivity_summary_keeps_splits_and_plot_handles_no_active(tmp_path):
     contexts = [{"split": split, "category": "hold"} for split in ("train", "val")]
     metrics = summarize_probes(stacked, contexts)
     assert metrics["val/all"]["pickup/0.1/+x"]["paired_near_abs_change"] == 0
-    assert (
-        metrics["train/hold"]["pickup/0.1/+x"]["per_action"]["traction"][
-            "paired_abs_change"
-        ]
-        == 0.5
-    )
+    assert metrics["train/hold"]["pickup/0.1/+x"]["per_action"]["traction"][
+        "paired_abs_change"
+    ] == pytest.approx(STEERING_CHANGE)
     plot_goal_sensitivity(
         {
             "metrics": metrics,
@@ -104,14 +109,14 @@ def test_sensitivity_summary_keeps_splits_and_plot_handles_no_active(tmp_path):
     assert (tmp_path / "goal_sensitivity.png").is_file()
 
 
-def test_hold_events_do_not_cross_cache_resets():
+def test_hold_events_do_not_cross_cache_resets() -> None:
     arrays = {
         "target": np.zeros((2, 50, 3)),
         "stream": np.ones((2, 2, 50, 3)),
         "reset": np.array([True, True]),
     }
     metrics = hold_events(arrays)["traction"]
-    assert metrics["hold_sample_pairs"] == 4
+    assert metrics["hold_sample_pairs"] == HOLD_PAIRS_AFTER_RESETS
     assert metrics["false_activation_duration_seconds_p50_p95_max"] == pytest.approx([
         0.2,
         0.2,
@@ -119,15 +124,16 @@ def test_hold_events_do_not_cross_cache_resets():
     ])
 
 
-def test_cached_feature_resampling_couples_noise_and_resets(monkeypatch):
-    import torch
-
+def test_cached_feature_resampling_couples_noise_and_resets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class NoisePolicy:
         action_horizon = 50
         action_std = torch.ones(3)
         action_mean = torch.zeros(3)
 
-        def fm_sample(self, features, x0):
+        @staticmethod
+        def fm_sample(features: Tensor, x0: Tensor) -> Tensor:
             return x0.reshape(len(features), 50, 3)
 
     monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
@@ -146,7 +152,7 @@ def test_cached_feature_resampling_couples_noise_and_resets(monkeypatch):
     np.testing.assert_array_equal(fixed["window"], fixed["stream"])
 
 
-def test_replan_metric_excludes_reset_and_aligns_overlap():
+def test_replan_metric_excludes_reset_and_aligns_overlap() -> None:
     chunks = np.zeros((3, 2, 50, 3))
     chunks[0, :, 6] = 0.4
     chunks[1, :, 0] = 0.4
@@ -162,7 +168,7 @@ def test_replan_metric_excludes_reset_and_aligns_overlap():
 
 
 @pytest.mark.parametrize("layout", ["fork", "forward", "backward"])
-def test_camera_layout_config(layout):
+def test_camera_layout_config(layout: str) -> None:
     with initialize_config_dir(
         config_dir=str(Path(__file__).resolve().parents[1] / "config"),
         version_base=None,

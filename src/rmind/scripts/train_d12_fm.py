@@ -2,18 +2,20 @@
 
 import argparse
 import json
+import shutil
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from typing import Any, cast
 
 import pytorch_lightning as pl
 import torch
+import wandb
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-import wandb
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 from rmind.scripts.d12_fm_config import configure_cameras, dataset_overrides
 from rmind.scripts.train import _train
@@ -39,7 +41,8 @@ def main() -> None:
         "fork" if arguments.camera_count == 1 else audit.get("camera_layout", "forward")
     )
     if (layout == "backward") != (audit.get("camera_layout") == "backward"):
-        raise ValueError("backward cameras require a matching data audit")
+        msg = "backward cameras require a matching data audit"
+        raise ValueError(msg)
     with initialize_config_dir(config_dir=str(source / "config"), version_base=None):
         config = compose(
             config_name="train",
@@ -55,7 +58,8 @@ def main() -> None:
     if "data_root" in audit:
         config.paths.d12 = audit["data_root"]
     if arguments.steering_weight <= 0:
-        raise ValueError("steering weight must be positive")
+        msg = "steering weight must be positive"
+        raise ValueError(msg)
     OmegaConf.update(
         config,
         "model.fm_action_weights",
@@ -124,18 +128,22 @@ def main() -> None:
             actual = restored(batch)
         for key, value in expected.items(include_nested=True, leaves_only=True):
             torch.testing.assert_close(value, actual[key])
-        print(
+        sys.stdout.write(
             json.dumps({
                 "smoke": "passed",
                 "steps": trainer.global_step,
                 "peak_gpu_gb": torch.cuda.max_memory_allocated() / 1e9,
-            }),
-            flush=True,
+            })
+            + "\n"
         )
         return
     OmegaConf.save(config, directory / "resolved.yaml", resolve=True)
+    git = shutil.which("git")
+    if git is None:
+        msg = "git executable not found"
+        raise RuntimeError(msg)
     paths = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        [git, "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=source,
         text=True,
     ).splitlines()
@@ -143,7 +151,7 @@ def main() -> None:
         for path in paths:
             if (source / path).is_file():
                 archive.add(source / path, arcname=path)
-    resolved = cast(dict[str, Any], OmegaConf.to_container(config, resolve=True))
+    resolved = cast("dict[str, Any]", OmegaConf.to_container(config, resolve=True))
     run = wandb.init(config=resolved, **config.wandb)
     run.log_code(
         root=str(source),

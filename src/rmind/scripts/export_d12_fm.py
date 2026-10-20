@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -18,6 +19,8 @@ from rmind.models.d12_flow_decoder import OUTPUT_NAMES, D12FlowDecoderStep
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 
+PARITY_MAX_ABS = 1e-4
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -29,8 +32,6 @@ def main() -> None:
     arguments = parser.parse_args()
     arguments.output.mkdir(parents=True, exist_ok=True)
     torch.set_float32_matmul_precision("highest")
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
     torch.manual_seed(arguments.seed)
     policy = (
         PatchPolicyContinuous
@@ -43,7 +44,7 @@ def main() -> None:
     decoder = D12FlowDecoderStep(policy).eval().to(arguments.device)
     config = OmegaConf.load(arguments.config)
     stages = config.datamodule.val.dataset.samples.pipeline.functions
-    builder, positioner, windower = [instantiate(stage.func) for stage in stages[:3]]
+    builder, positioner, windower = (instantiate(stage.func) for stage in stages[:3])
     job = Path(config.datamodule.val.dataset.samples.inputs.job_dir[-1])
     rows = builder(job_dir=job)
     samples = windower(frames=positioner(row_table=rows))
@@ -66,7 +67,7 @@ def main() -> None:
         ).unsqueeze(0)
     batch = {"data": batch_data}
     cache = cast(
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        "tuple[torch.Tensor, torch.Tensor, torch.Tensor]",
         tuple(value.to(arguments.device) for value in decoder.empty_cache()),
     )
     noise = torch.randn(1, policy.action_horizon * 3, device=arguments.device)
@@ -94,17 +95,19 @@ def main() -> None:
             inputs = (*images, *observations, *cache, *rotation, noise)
             outputs = decoder(*inputs)
             cache = PatchPolicyDecoderStep.advance(cache, outputs[1], outputs[2])
-        features = policy._features(batch)[:, -1]
+        features = policy.features(batch)[:, -1]
         reference = (
             policy.fm_sample(features, x0=noise) * policy.action_std
             + policy.action_mean
         )
         eager_error = float((outputs[0] - reference).abs().max())
-        if eager_error > 1e-4:
-            raise RuntimeError(f"window/streaming parity failed: {eager_error}")
+        if eager_error > PARITY_MAX_ABS:
+            message = f"window/streaming parity failed: {eager_error}"
+            raise RuntimeError(message)
         changed = decoder(*inputs[:-1], -noise)[0]
         if torch.equal(outputs[0], changed):
-            raise RuntimeError("flow start noise does not affect actions")
+            message = "flow start noise does not affect actions"
+            raise RuntimeError(message)
     graph = arguments.output / "model.onnx"
     torch.onnx.export(
         decoder,
@@ -131,8 +134,9 @@ def main() -> None:
         name: float(np.max(np.abs(value - expected.detach().cpu().numpy())))
         for name, value, expected in zip(OUTPUT_NAMES, actual, outputs, strict=True)
     }
-    if max(errors.values()) > 1e-4:
-        raise RuntimeError(f"ONNX parity failed: {errors}")
+    if max(errors.values()) > PARITY_MAX_ABS:
+        message = f"ONNX parity failed: {errors}"
+        raise RuntimeError(message)
     fixtures = {"inputs": [], "outputs": []}
     for section, names, tensors in [
         ("inputs", decoder.input_names, inputs),
@@ -147,14 +151,14 @@ def main() -> None:
                 "dtype": "float32",
                 "file": filename,
             })
+    with arguments.checkpoint.open("rb") as checkpoint_stream:
+        checkpoint_sha256 = hashlib.file_digest(checkpoint_stream, "sha256").hexdigest()
     manifest = {
         "schema": "d12_flow_matching_v1",
         "action_head": "fm",
         "onnx": "model.onnx",
         "checkpoint": str(arguments.checkpoint.resolve()),
-        "checkpoint_sha256": hashlib.file_digest(
-            arguments.checkpoint.open("rb"), "sha256"
-        ).hexdigest(),
+        "checkpoint_sha256": checkpoint_sha256,
         "cameras": list(policy.cameras),
         "image": {
             "height": 144,
@@ -203,7 +207,8 @@ def main() -> None:
     (arguments.output / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n"
     )
-    print(json.dumps(manifest["parity"]), flush=True)
+    sys.stdout.write(json.dumps(manifest["parity"]) + "\n")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

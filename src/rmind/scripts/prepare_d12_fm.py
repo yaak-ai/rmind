@@ -2,8 +2,10 @@
 
 import argparse
 import json
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from hydra import compose, initialize_config_dir
@@ -13,7 +15,7 @@ from omegaconf import OmegaConf
 from rmind.scripts.d12_fm_config import configure_cameras, dataset_overrides
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--horizon", type=int, default=50)
@@ -43,30 +45,40 @@ def main():
         dataset = config.datamodule[split].dataset
         splits[split] = [Path(path) for path in dataset.samples.inputs.job_dir]
     if set(splits["train"]) & set(splits["val"]):
-        raise ValueError("training and validation jobs overlap")
+        msg = "training and validation jobs overlap"
+        raise ValueError(msg)
     manifest = {"action_order": ["traction", "steering", "fork1"], "jobs": []}
     train_actions = []
     for split, jobs in splits.items():
         stages = config.datamodule[split].dataset.samples.pipeline.functions
-        builder, positioner, windower = [
+        builder, positioner, windower = (
             instantiate(stage.func) for stage in stages[:3]
-        ]
+        )
 
-        def inspect_job(job):
+        def inspect_job(
+            job: Path,
+            builder: Any = builder,
+            positioner: Any = positioner,
+            windower: Any = windower,
+            split: str = split,
+        ) -> tuple[dict[str, Any], np.ndarray]:
             rows = builder(job_dir=job)
             positioned = positioner(row_table=rows)
             samples = windower(frames=positioned)
             if rows.select(manifest["action_order"]).null_count().to_numpy().sum():
-                raise ValueError(f"null actions in {job}")
+                msg = f"null actions in {job}"
+                raise ValueError(msg)
             actions = rows.select(manifest["action_order"]).to_numpy()
             if not np.isfinite(actions).all():
-                raise ValueError(f"nonfinite actions in {job}")
+                msg = f"nonfinite actions in {job}"
+                raise ValueError(msg)
             for camera in config.cameras:
                 indices = samples[f"{camera}/frame_idx"].to_numpy()
                 for frame_index in np.unique(indices):
                     image = job / camera / "frames/256x144" / f"{frame_index:06d}.jpg"
                     if not image.is_file():
-                        raise ValueError(f"missing image: {image}")
+                        msg = f"missing image: {image}"
+                        raise ValueError(msg)
             heights = np.stack(rows["fork_height"].to_list())
             audit = {
                 "job": job.name,
@@ -85,7 +97,7 @@ def main():
                 manifest["jobs"].append(audit)
                 if split == "train":
                     train_actions.append(actions)
-                print(json.dumps(audit), flush=True)
+                sys.stdout.write(json.dumps(audit) + "\n")
     actions = np.concatenate(train_actions).astype(np.float64)
     statistics = {
         "action_mean": actions.mean(axis=0).tolist(),
@@ -100,7 +112,7 @@ def main():
     manifest["observation_hz"] = 5
     (arguments.output / "audit.json").write_text(json.dumps(manifest, indent=2) + "\n")
     OmegaConf.save(OmegaConf.create(statistics), arguments.output / "action_stats.yaml")
-    print(json.dumps(statistics), flush=True)
+    sys.stdout.write(json.dumps(statistics) + "\n")
 
 
 if __name__ == "__main__":

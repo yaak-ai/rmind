@@ -3,7 +3,9 @@
 import argparse
 import html
 import json
+import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -17,7 +19,9 @@ RUNS = {
 }
 
 
-def assert_paired(reference, candidate):
+def assert_paired(
+    reference: dict[str, np.ndarray], candidate: dict[str, np.ndarray]
+) -> None:
     for key in ("target", "seconds", "reset", "height"):
         np.testing.assert_array_equal(
             reference[key], candidate[key], err_msg=f"unpaired {key}"
@@ -25,7 +29,7 @@ def assert_paired(reference, candidate):
     np.testing.assert_array_equal(reference["frames"][:, 0], candidate["frames"][:, 0])
 
 
-def steering_slices(arrays):
+def steering_slices(arrays: dict[str, np.ndarray]) -> dict[str, dict[str, float]]:
     prediction = arrays["stream"][:, :, :6, 1]
     target = np.broadcast_to(arrays["target"][:, None, :6, 1], prediction.shape)
     result = {}
@@ -44,7 +48,7 @@ def steering_slices(arrays):
     return result
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -77,9 +81,11 @@ def main():
             if noise_settings is None:
                 noise_settings = settings
             if settings != noise_settings:
-                raise ValueError("unmatched sampling protocol")
+                msg = "unmatched sampling protocol"
+                raise ValueError(msg)
             if report["checkpoint_sha256"] != reports[0][1]["checkpoint_sha256"]:
-                raise ValueError("mixed checkpoint versions")
+                msg = "mixed checkpoint versions"
+                raise ValueError(msg)
             for job, metadata in report["jobs"].items():
                 if metadata["split"] != "val":
                     continue
@@ -89,11 +95,13 @@ def main():
                     assert_paired(references[job], arrays)
                 else:
                     if name != "forward_3cam":
-                        raise ValueError("different validation jobs")
+                        msg = "different validation jobs"
+                        raise ValueError(msg)
                     references[job] = arrays
                 loaded[job] = arrays
         if set(loaded) != set(references):
-            raise ValueError("missing validation jobs")
+            msg = "missing validation jobs"
+            raise ValueError(msg)
         pooled = {
             key: np.concatenate([arrays[key] for arrays in loaded.values()])
             for key in (
@@ -111,7 +119,7 @@ def main():
             (directory / "sensitivity-step35000/report.json").read_text()
         )
         probe_metrics = sensitivity["metrics"]["val/all"]
-        goal_sensitivity = {}
+        goal_sensitivity: dict[str, Any] = {}
         for field in ("pickup", "dropoff"):
             for radius in (0.1, 0.5, 1.0, 2.0):
                 variants = [
@@ -188,7 +196,10 @@ def main():
             + "".join(f"<td>{html.escape(value)}</td>" for value in values)
             + "</tr>"
         )
-        print(" | ".join(values), flush=True)
+        sys.stdout.write(" | ".join(values) + "\n")
+    if noise_settings is None:
+        msg = "no comparison runs configured"
+        raise ValueError(msg)
     result["protocol"] = {
         "seed": noise_settings[0],
         "samples": noise_settings[1],

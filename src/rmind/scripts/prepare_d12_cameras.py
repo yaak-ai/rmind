@@ -2,12 +2,14 @@
 
 import argparse
 import json
+import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
-def prepare_camera(job, camera):
+def prepare_camera(job: Path, camera: str) -> None:
     destination = job / camera
     destination.mkdir(exist_ok=True)
     prefix = (job / "job-prefix.txt").read_text().strip()
@@ -15,9 +17,13 @@ def prepare_camera(job, camera):
         output = destination / filename
         if not output.exists():
             temporary = output.with_suffix(output.suffix + ".partial")
+            aws = shutil.which("aws")
+            if aws is None:
+                msg = "aws executable not found"
+                raise RuntimeError(msg)
             subprocess.run(
                 [
-                    "aws",
+                    aws,
                     "s3",
                     "cp",
                     f"{prefix}/videos/{camera}/{filename}",
@@ -32,9 +38,13 @@ def prepare_camera(job, camera):
     marker = destination / "frames/complete.json"
     if not marker.exists():
         frames.mkdir(parents=True, exist_ok=True)
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            msg = "ffmpeg executable not found"
+            raise RuntimeError(msg)
         subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg,
                 "-v",
                 "error",
                 "-y",
@@ -58,16 +68,15 @@ def prepare_camera(job, camera):
         )
         actual = len(list(frames.glob("*.jpg")))
         if actual != expected:
-            raise ValueError(
-                f"{job.name}/{camera}: {actual} JPEGs != {expected} encoded frames"
-            )
+            msg = f"{job.name}/{camera}: {actual} JPEGs != {expected} encoded frames"
+            raise ValueError(msg)
         marker.write_text(json.dumps({"frames": actual, "camera": camera}) + "\n")
-    print(
-        json.dumps({"job": job.name, "camera": camera, "frames": expected}), flush=True
+    sys.stdout.write(
+        json.dumps({"job": job.name, "camera": camera, "frames": expected}) + "\n"
     )
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

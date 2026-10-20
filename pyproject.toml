@@ -136,6 +136,7 @@ DEP004 = [
 
 [tool.deptry.package_module_name_map]
 hydra-core = "hydra"
+rerun-sdk = "rerun"
 tensordict-nightly = "tensordict"
 pytorch-lightning = [
   "pytorch_lightning",
@@ -171,6 +172,84 @@ ignore = [
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
+"src/rmind/data/d12.py" = ["too-many-arguments"]
+"src/rmind/scripts/audit_d12_actions.py" = ["too-many-locals"]
+"src/rmind/scripts/compare_d12_fm.py" = [
+  "complex-structure",
+  "too-many-branches",
+  "too-many-locals",
+  "too-many-statements"
+]
+"src/rmind/scripts/complete_d12_fm.py" = [
+  "complex-structure",
+  "raise-within-try",
+  "subprocess-without-shell-equals-true",
+  "suspicious-subprocess-import",
+  "too-many-locals",
+  "too-many-statements"
+]
+"src/rmind/scripts/d12_fm_rerun.py" = ["import-outside-top-level"]
+"src/rmind/scripts/eval_d12_fm.py" = [
+  "complex-structure",
+  "import-outside-top-level",
+  "subprocess-without-shell-equals-true",
+  "suspicious-subprocess-import",
+  "too-many-arguments",
+  "too-many-branches",
+  "too-many-locals",
+  "too-many-positional-arguments",
+  "too-many-statements"
+]
+"src/rmind/scripts/export_d12_fm.py" = [
+  "too-many-locals",
+  "too-many-statements"
+]
+"src/rmind/scripts/fixture_d12_fm_sequence.py" = [
+  "complex-structure",
+  "too-many-branches",
+  "too-many-locals",
+  "too-many-statements"
+]
+"src/rmind/scripts/prepare_d12_fm.py" = [
+  "complex-structure",
+  "too-many-statements"
+]
+"src/rmind/scripts/prepare_d12_cameras.py" = [
+  "subprocess-without-shell-equals-true",
+  "suspicious-subprocess-import"
+]
+"src/rmind/scripts/probe_d12_fm.py" = [
+  "complex-structure",
+  "import-outside-top-level",
+  "too-many-branches",
+  "too-many-locals",
+  "too-many-nested-blocks",
+  "too-many-statements"
+]
+"src/rmind/scripts/research_d12_fm.py" = [
+  "subprocess-without-shell-equals-true",
+  "suspicious-subprocess-import"
+]
+"src/rmind/scripts/train_d12_fm.py" = [
+  "complex-structure",
+  "subprocess-without-shell-equals-true",
+  "suspicious-subprocess-import",
+  "too-many-locals",
+  "too-many-statements"
+]
+"src/rmind/scripts/verify_d12_trt.py" = [
+  "complex-structure",
+  "too-many-branches",
+  "too-many-locals",
+  "too-many-statements"
+]
+"src/rmind/scripts/watch_d12_fm.py" = [
+  "blind-except",
+  "complex-structure",
+  "subprocess-without-shell-equals-true",
+  "suspicious-subprocess-import"
+]
+"tests/test_d12_flow_matching.py" = ["private-member-access"]
 "tests/**/*.py" = [
   "assert",
   "suspicious-pickle-usage",
@@ -195,6 +274,12 @@ include = ["src/rmind/inference/backends/tensorrt.py"]
 
 [tool.ty.overrides.analysis]
 allowed-unresolved-imports = ["tensorrt"]
+
+[[tool.ty.overrides]]
+include = ["src/rmind/components/fm_action_head.py"]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"
 
 [tool.uv]
 constraint-dependencies = [

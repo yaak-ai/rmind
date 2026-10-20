@@ -176,9 +176,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
             init_hydra_param(hparams, "losses", losses) if losses is not None else None
         )
         if fm_head is None and (heads is None or losses is None):
-            raise ValueError(
-                "Gaussian heads and losses are required without a flow head"
-            )
+            message = "Gaussian heads and losses are required without a flow head"
+            raise ValueError(message)
         hparams.setdefault("heads", None)
         hparams.setdefault("losses", None)
         self.norm = (
@@ -186,7 +185,7 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         )
 
         # the ViT is a feature extractor here, exactly as in PatchPolicy
-        self.image_encoder.requires_grad_(False).eval()  # ruff: ignore[boolean-positional-value-in-call]
+        self.image_encoder.requires_grad_(requires_grad=False).eval()
 
         self.observation_embeddings: ModuleDict | None = (
             init_hydra_param(hparams, "observation_embeddings", observation_embeddings)
@@ -211,49 +210,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
             (modality, name) for modality, names in targets.items() for name in names
         )
         if self.fm_head is not None:
-            action_count = len(self.action_names)
-            mean = torch.tensor(
-                action_mean if action_mean is not None else [0.0] * action_count
-            )
-            std = torch.tensor(
-                action_std if action_std is not None else [1.0] * action_count
-            )
-            if mean.shape != (action_count,) or std.shape != (action_count,):
-                raise ValueError("action statistics must match the target count")
-            if (
-                not mean.isfinite().all()
-                or not std.isfinite().all()
-                or not (std > 0).all()
-            ):
-                raise ValueError(
-                    "action statistics must be finite with positive standard deviations"
-                )
-            if (
-                self.fm_head.kind != "fm"
-                or self.fm_head.D != action_horizon * action_count
-            ):
-                raise ValueError(
-                    "flow head output must match horizon times target count"
-                )
-            self.register_buffer("action_mean", mean)
-            self.register_buffer("action_std", std)
-            self.fm_action_weights = tuple(fm_action_weights or [1.0] * action_count)
-            weights = torch.tensor(self.fm_action_weights)
-            if (
-                weights.shape != (action_count,)
-                or not torch.isfinite(weights).all()
-                or (weights <= 0).any()
-            ):
-                raise ValueError(
-                    "FM weights must be finite positive values, one per action"
-                )
-            self.fm_head.fm_steps = fm_inference_steps
-            hparams.update(
-                fm_inference_steps=fm_inference_steps,
-                fm_x0=fm_x0,
-                action_mean=mean.tolist(),
-                action_std=std.tolist(),
-                fm_action_weights=self.fm_action_weights,
+            self._configure_flow_head(
+                hparams, action_mean, action_std, fm_action_weights
             )
 
         # an observation with no embedding would be read and silently discarded,
@@ -285,6 +243,59 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         hparams["action_horizon"] = action_horizon
         hparams["near_horizon"] = near_horizon
         self.save_hyperparameters(hparams)
+
+    def _configure_flow_head(
+        self,
+        hparams: dict[str, Any],
+        action_mean: tuple[float, ...] | None,
+        action_std: tuple[float, ...] | None,
+        fm_action_weights: tuple[float, ...] | None,
+    ) -> None:
+        """Validate flow dimensions and persist action normalization.
+
+        Raises:
+            ValueError: If head dimensions or action statistics are invalid.
+        """
+        head = self.fm_head
+        if head is None:
+            return
+        action_count = len(self.action_names)
+        mean = torch.tensor(
+            action_mean if action_mean is not None else [0.0] * action_count
+        )
+        std = torch.tensor(
+            action_std if action_std is not None else [1.0] * action_count
+        )
+        if mean.shape != (action_count,) or std.shape != (action_count,):
+            message = "action statistics must match the target count"
+            raise ValueError(message)
+        if not mean.isfinite().all() or not std.isfinite().all() or not (std > 0).all():
+            message = (
+                "action statistics must be finite with positive standard deviations"
+            )
+            raise ValueError(message)
+        if head.kind != "fm" or self.action_horizon * action_count != head.D:
+            message = "flow head output must match horizon times target count"
+            raise ValueError(message)
+        self.register_buffer("action_mean", mean)
+        self.register_buffer("action_std", std)
+        self.fm_action_weights = tuple(fm_action_weights or [1.0] * action_count)
+        weights = torch.tensor(self.fm_action_weights)
+        if (
+            weights.shape != (action_count,)
+            or not torch.isfinite(weights).all()
+            or (weights <= 0).any()
+        ):
+            message = "FM weights must be finite positive values, one per action"
+            raise ValueError(message)
+        head.fm_steps = self.fm_inference_steps
+        hparams.update(
+            fm_inference_steps=self.fm_inference_steps,
+            fm_x0=self.fm_x0,
+            action_mean=mean.tolist(),
+            action_std=std.tolist(),
+            fm_action_weights=self.fm_action_weights,
+        )
 
     @classmethod
     def load_for_export(
@@ -364,6 +375,12 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
 
         return value
 
+    def frame_tokens(
+        self, images: Tensor, speed: Tensor, observations: Mapping[str, Tensor]
+    ) -> Tensor:
+        """Build a frame's tokens for export and cached decoding."""
+        return self._frame_tokens(images, speed, observations)
+
     def _frame_tokens(
         self, images: Tensor, speed: Tensor, observations: Mapping[str, Tensor]
     ) -> Tensor:
@@ -417,11 +434,18 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
 
         return self.norm(features) if self.norm is not None else features
 
+    def features(self, batch: Any) -> Tensor:
+        """Return full-window readout features for export validation."""
+        return self._features(batch)
+
     def _heads(self, features: Tensor) -> Any:
         """Per-actuation `(mean, log-variance)` on a trailing axis of 2.
 
         A chunk head's flat `2 * H` output is split to `(..., H, 2)`, so the loss
         and the mean readout index the last axis exactly as for one step.
+
+        Raises:
+            ValueError: If Gaussian heads are not configured.
         """
         if self.heads is None:
             message = "Gaussian heads are not configured"
@@ -498,12 +522,18 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
     def fm_sample(
         self, features: Tensor, x0: Tensor | None = None, steps: int | None = None
     ) -> Tensor:
-        """Integrate the vendored velocity field in standardized chunk space."""
+        """Integrate the vendored velocity field in standardized chunk space.
+
+        Raises:
+            ValueError: If the head, step count, or initial noise shape is invalid.
+        """
         if self.fm_head is None:
-            raise ValueError("flow head is not configured")
+            message = "flow head is not configured"
+            raise ValueError(message)
         count = self.fm_inference_steps if steps is None else steps
         if count < 1:
-            raise ValueError("Euler steps must be positive")
+            message = "Euler steps must be positive"
+            raise ValueError(message)
         flattened = features.reshape(-1, features.shape[-1]).float()
         width = self.action_horizon * len(self.action_names)
         if x0 is None:
@@ -512,9 +542,8 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
                 state = torch.randn_like(state)
         else:
             if x0.shape != (*features.shape[:-1], width):
-                raise ValueError(
-                    "initial noise shape must match features and chunk width"
-                )
+                message = "initial noise shape must match features and chunk width"
+                raise ValueError(message)
             state = (
                 x0
                 .to(device=features.device, dtype=torch.float32)
@@ -523,7 +552,9 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
             )
         for index in range(count):
             time = flattened.new_full((flattened.shape[0],), index / count)
-            state = state + self.fm_head.velocity(flattened, state, time) / count
+            state = torch.add(
+                state, self.fm_head.velocity(flattened, state, time) / count
+            )
         return state.reshape(
             *features.shape[:-1], self.action_horizon, len(self.action_names)
         )
@@ -543,11 +574,12 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         ).float()
         expected = (*features.shape[:-1], self.action_horizon, len(self.action_names))
         if target.shape != expected:
-            raise ValueError(f"action chunk shape {target.shape} != {expected}")
+            message = f"action chunk shape {target.shape} != {expected}"
+            raise ValueError(message)
         normalized = (target - self.action_mean) / self.action_std
         flattened = features.reshape(-1, features.shape[-1]).float()
         loss_mask = None
-        if any(weight != 1.0 for weight in self.fm_action_weights):
+        if self.fm_action_weights != (1.0,) * len(self.action_names):
             loss_mask = (
                 normalized
                 .new_tensor(self.fm_action_weights)

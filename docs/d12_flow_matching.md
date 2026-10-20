@@ -97,8 +97,7 @@ override; rerun the audit because the set of complete windows changes.
 
 ## Streaming export and serving
 
-`python -m rmind.scripts.export_d12_fm --checkpoint model.ckpt
---config resolved.yaml --output export/` exports the one-frame decoder. It gates
+`python -m rmind.scripts.export_d12_fm --checkpoint model.ckpt --config resolved.yaml --output export/` exports the one-frame decoder. It gates
 full-window versus cached inference and ONNX Runtime parity using a held-out
 real recording, then writes `manifest.json` and named float32 replay fixtures.
 The graph includes ImageNet normalization, four Euler steps and conversion back
@@ -168,8 +167,7 @@ matmul/cuDNN TF32 and TensorRT TF32 disabled for parity.
 
 ## Open-loop checkpoint evaluation
 
-`python -m rmind.scripts.eval_d12_fm --checkpoint model.ckpt --config resolved.yaml
---output eval/ --wandb-parent-run zxpkh06j` replays the usable portions of one
+`python -m rmind.scripts.eval_d12_fm --checkpoint model.ckpt --config resolved.yaml --output eval/ --wandb-parent-run zxpkh06j` replays the usable portions of one
 training recording (October 12, 15:40:43) and three held-out recordings
 (September 10, October 2, October 12). The jobs are selected before inspecting
 predictions and cover missing, retrofitted and live height. It compares ordinary
@@ -190,12 +188,12 @@ The step-20000 three-camera checkpoint evaluation is logged as W&B run
 `/nasa/max/d12/flow_matching/2026-10-14-h50/openloop-step20000`.
 KV near-horizon MAE versus literal zero-command baseline:
 
-| Recording | Split | FM MAE | Zero MAE |
-| --- | --- | ---: | ---: |
-| 2026-10-12--15-40-43 | train | 0.1033 | 0.1974 |
-| 2026-09-10--15-17-38 | val | 0.1671 | 0.3168 |
-| 2026-10-02--15-49-44 | val | 0.1485 | 0.2840 |
-| 2026-10-12--15-59-15 | val | 0.1139 | 0.2251 |
+| Recording            | Split | FM MAE | Zero MAE |
+| -------------------- | ----- | -----: | -------: |
+| 2026-10-12--15-40-43 | train | 0.1033 |   0.1974 |
+| 2026-09-10--15-17-38 | val   | 0.1671 |   0.3168 |
+| 2026-10-02--15-49-44 | val   | 0.1485 |   0.2840 |
+| 2026-10-12--15-59-15 | val   | 0.1139 |   0.2251 |
 
 Across 714 validation contexts, near MAE is 0.1432 versus 0.2753 for zero,
 and full-chunk MAE is 0.1451. All three predicted commands fall within +/-0.05
@@ -210,8 +208,7 @@ numbers are open-loop diagnostics, not permission or evidence for safe deploymen
 
 ## Repeatable research and Rerun
 
-Install with `uv sync --locked --extra train --extra export --extra eval --group
-test --group check --no-default-groups`. Video rendering also needs `ffmpeg`.
+Install with `uv sync --locked --extra train --extra export --extra eval --group test --group check --no-default-groups`. Video rendering also needs `ffmpeg`.
 All commands run from this checkout; they never connect to robot actuation.
 
 ```sh
@@ -279,13 +276,13 @@ conditioning must use latest-past measurements and avoid expert-history leakage.
 The original three-camera step-20000 checkpoint, one train and three validation
 jobs, eight samples, produces these validation near-horizon results:
 
-| Sampling | MAE | Traction overlap revision | Steering overlap revision | Fork overlap revision |
-| --- | ---: | ---: | ---: | ---: |
-| 4 steps, fresh | 0.1445 | 0.1168 | 0.0947 | 0.1054 |
-| 8 steps, fresh | 0.1506 | 0.1306 | 0.1064 | 0.1190 |
-| 16 steps, fresh | 0.1540 | 0.1382 | 0.1130 | 0.1259 |
-| 4 steps, fixed | 0.1442 | 0.0665 | 0.0379 | 0.0543 |
-| 4 steps, shifted | 0.1428 | 0.0643 | 0.0543 | 0.0552 |
+| Sampling         |    MAE | Traction overlap revision | Steering overlap revision | Fork overlap revision |
+| ---------------- | -----: | ------------------------: | ------------------------: | --------------------: |
+| 4 steps, fresh   | 0.1445 |                    0.1168 |                    0.0947 |                0.1054 |
+| 8 steps, fresh   | 0.1506 |                    0.1306 |                    0.1064 |                0.1190 |
+| 16 steps, fresh  | 0.1540 |                    0.1382 |                    0.1130 |                0.1259 |
+| 4 steps, fixed   | 0.1442 |                    0.0665 |                    0.0379 |                0.0543 |
+| 4 steps, shifted | 0.1428 |                    0.0643 |                    0.0543 |                0.0552 |
 
 More integration steps do not fix the hold issue on this checkpoint: unwanted
 idle action magnitude rises. Coupled noise reduces boundary inconsistency but
@@ -370,12 +367,12 @@ episode to the three research recordings. Predictions use streaming KV, four
 Euler steps and eight paired Gaussian starts, scored individually over the first
 six 30 Hz commands (0.2 seconds), not averaged into an ensemble action.
 
-| Model | Near MAE | Traction MAE | Steering MAE | Fork MAE | Traction false-active on idle | Fork false-active on idle |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Forward 3cam | 0.1362 | 0.1486 | 0.1701 | 0.0900 | 65.2% | 20.5% |
-| Fork-only | 0.1323 | 0.1431 | 0.1672 | 0.0865 | 63.8% | 19.0% |
-| Backward 3cam | 0.1366 | 0.1474 | 0.1709 | 0.0915 | 66.1% | 20.9% |
-| Balanced forward 3cam | 0.1409 | 0.1503 | 0.1769 | 0.0956 | 60.0% | 28.7% |
+| Model                 | Near MAE | Traction MAE | Steering MAE | Fork MAE | Traction false-active on idle | Fork false-active on idle |
+| --------------------- | -------: | -----------: | -----------: | -------: | ----------------------------: | ------------------------: |
+| Forward 3cam          |   0.1362 |       0.1486 |       0.1701 |   0.0900 |                         65.2% |                     20.5% |
+| Fork-only             |   0.1323 |       0.1431 |       0.1672 |   0.0865 |                         63.8% |                     19.0% |
+| Backward 3cam         |   0.1366 |       0.1474 |       0.1709 |   0.0915 |                         66.1% |                     20.9% |
+| Balanced forward 3cam |   0.1409 |       0.1503 |       0.1769 |   0.0956 |                         60.0% |                     28.7% |
 
 The zero-command baseline is 0.2675. These are normalized command errors, not
 task success. The 0.05 deadband is not a calibrated physical-motion threshold.

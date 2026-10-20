@@ -1,15 +1,15 @@
 """Camera-layout configuration shared by audit and training launchers."""
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
-CAMERA_LAYOUTS = {
+CAMERA_LAYOUTS: dict[str, tuple[str, ...]] = {
     "forward": ("cam_fork", "cam_left_forward", "cam_right_forward"),
     "backward": ("cam_fork", "cam_left_backward", "cam_right_backward"),
     "fork": ("cam_fork",),
 }
 
 
-def configure_cameras(config, layout):
+def configure_cameras(config: DictConfig, layout: str) -> None:
     cameras = CAMERA_LAYOUTS[layout]
     config.cameras = list(cameras)
     config.num_cameras = len(cameras)
@@ -27,5 +27,5 @@ def configure_cameras(config, layout):
         )
 
 
-def dataset_overrides(layout):
+def dataset_overrides(layout: str) -> list[str]:
     return ["datamodule=palletjack/d12_fm_backward"] if layout == "backward" else []

@@ -3,7 +3,9 @@
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import simplejpeg
@@ -15,8 +17,10 @@ from rmind.models.d12_flow_decoder import OUTPUT_NAMES, D12FlowDecoderStep
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 
+CAMERA_FRAME_STRIDE = 6
 
-def main():
+
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
@@ -38,10 +42,10 @@ def main():
     with checkpoint.open("rb") as handle:
         checksum = hashlib.file_digest(handle, "sha256").hexdigest()
     if checksum != manifest["checkpoint_sha256"]:
-        raise ValueError("checkpoint differs from exported engine")
+        msg = "checkpoint differs from exported engine"
+        raise ValueError(msg)
     torch.set_num_threads(4)
     torch.set_float32_matmul_precision("highest")
-    torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     policy = (
         PatchPolicyContinuous
@@ -53,30 +57,35 @@ def main():
     decoder = D12FlowDecoderStep(policy).eval().to(arguments.device)
     config = OmegaConf.load(arguments.config)
     stages = config.datamodule.val.dataset.samples.pipeline.functions
-    builder, positioner, windower = [instantiate(stage.func) for stage in stages[:3]]
+    builder, positioner, windower = (instantiate(stage.func) for stage in stages[:3])
     job = Path(config.datamodule.val.dataset.samples.inputs.job_dir[-1])
     samples = windower(frames=positioner(row_table=builder(job_dir=job)))
     if arguments.start + arguments.frames > len(samples):
-        raise ValueError("not enough contiguous contexts")
+        msg = "not enough contiguous contexts"
+        raise ValueError(msg)
     arguments.output.mkdir(parents=True)
     generator = torch.Generator(device=arguments.device).manual_seed(arguments.seed)
-    sequence = {
+    sequence: dict[str, Any] = {
         "schema": "d12_flow_sequence_v1",
         "checkpoint_sha256": checksum,
         "seed": arguments.seed,
         "steps": [],
         "limitations": "Recorded validation frames with explicit same-noise references. Resets are synthetic. Timing is logical 5Hz, not original camera PTS. Does not validate NVMM preprocessing, live state alignment or control dispatch.",
     }
-    cache = None
+    cache = decoder.empty_cache()
     frame_index = 0
     generation = 0
     previous_camera_frame = None
     with torch.inference_mode():
         for step in range(arguments.frames):
-            reset = step in (0, arguments.reset_at)
+            reset = step in {0, arguments.reset_at}
+            if reset and step:
+                cache = decoder.empty_cache()
             if reset:
-                cache = tuple(
-                    value.to(arguments.device) for value in decoder.empty_cache()
+                cache = (
+                    cache[0].to(arguments.device),
+                    cache[1].to(arguments.device),
+                    cache[2].to(arguments.device),
                 )
                 frame_index = 0
                 generation += 1
@@ -84,9 +93,10 @@ def main():
             camera_frame = sample["cam_fork/frame_idx"][-1]
             if (
                 previous_camera_frame is not None
-                and camera_frame - previous_camera_frame != 6
+                and camera_frame - previous_camera_frame != CAMERA_FRAME_STRIDE
             ):
-                raise ValueError("reference sequence crosses a camera gap")
+                msg = "reference sequence crosses a camera gap"
+                raise ValueError(msg)
             previous_camera_frame = camera_frame
             images = []
             for camera in policy.cameras:
@@ -144,7 +154,7 @@ def main():
             outputs = decoder(*inputs)
             directory = arguments.output / f"step{step:03d}"
             directory.mkdir()
-            fixtures = {
+            fixtures: dict[str, Any] = {
                 "job": job.name,
                 "frame_indices": [camera_frame],
                 "inputs": [],
@@ -157,7 +167,8 @@ def main():
                 for name, tensor in zip(names, tensors, strict=True):
                     array = tensor.detach().float().cpu().numpy()
                     if not np.isfinite(array).all():
-                        raise ValueError(f"nonfinite reference {step}:{name}")
+                        msg = f"nonfinite reference {step}:{name}"
+                        raise ValueError(msg)
                     array.astype("<f4").tofile(directory / f"{name}.f32")
                     fixtures[section].append({
                         "name": name,
@@ -179,9 +190,8 @@ def main():
             })
             cache = PatchPolicyDecoderStep.advance(cache, outputs[1], outputs[2])
             frame_index += 1
-            print(
-                f"step={step} frame={camera_frame} generation={generation} reset={reset}",
-                flush=True,
+            sys.stdout.write(
+                f"step={step} frame={camera_frame} generation={generation} reset={reset}\n"
             )
     (arguments.output / "sequence.json").write_text(
         json.dumps(sequence, indent=2) + "\n"

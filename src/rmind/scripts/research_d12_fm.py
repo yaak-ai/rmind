@@ -9,7 +9,7 @@ from pathlib import Path
 from rmind.scripts.eval_d12_fm import DEFAULT_JOBS
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)

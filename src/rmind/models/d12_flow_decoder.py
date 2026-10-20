@@ -15,15 +15,15 @@ class D12FlowDecoderStep(nn.Module):
     def __init__(self, policy: PatchPolicyContinuous) -> None:
         super().__init__()
         if policy.fm_head is None:
-            raise ValueError("D12 flow export requires a flow head")
-        if tuple(policy.cameras) not in (
+            message = "D12 flow export requires a flow head"
+            raise ValueError(message)
+        if tuple(policy.cameras) not in {
             ("cam_fork",),
             ("cam_fork", "cam_left_forward", "cam_right_forward"),
             ("cam_fork", "cam_left_backward", "cam_right_backward"),
-        ):
-            raise ValueError(
-                "D12 flow export requires fork-only or the configured three-camera order"
-            )
+        }:
+            message = "D12 flow export requires fork-only or the configured three-camera order"
+            raise ValueError(message)
         self.policy = policy.eval()
         self.input_names = (*policy.cameras, *INPUT_NAMES[3:])
         self.register_buffer(
@@ -51,7 +51,7 @@ class D12FlowDecoderStep(nn.Module):
         tensors = dict(zip(self.input_names, inputs, strict=True))
         images = torch.stack([tensors[camera] for camera in self.policy.cameras], dim=2)
         images = (images - self.image_mean) / self.image_std
-        tokens = self.policy._frame_tokens(
+        tokens = self.policy.frame_tokens(
             images,
             tensors["speed"],
             {

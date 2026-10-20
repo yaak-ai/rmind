@@ -3,30 +3,40 @@
 import argparse
 import hashlib
 import json
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
-import matplotlib
+import matplotlib as mpl
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from hydra.utils import instantiate
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image, ImageFilter
 
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 from rmind.scripts.eval_d12_fm import ACTIONS, DEFAULT_JOBS, load_tokens
 
+ACTIVE_DEADBAND = 0.05
+WINDOW_FRAMES = 6
+MINIMUM_SAMPLES = 2
+ProbeContext = dict[str, Any]
+ProbeReport = dict[str, Any]
 
-def world_offset_token(offset, headings):
-    headings = np.deg2rad(np.asarray(headings))
+
+def world_offset_token(
+    offset: tuple[float, float], headings: Sequence[float]
+) -> np.ndarray:
+    heading_radians = np.deg2rad(np.asarray(headings))
     world_x, world_y = offset
     return (
         np.stack(
             [
-                np.cos(headings) * world_x + np.sin(headings) * world_y,
-                -np.sin(headings) * world_x + np.cos(headings) * world_y,
+                np.cos(heading_radians) * world_x + np.sin(heading_radians) * world_y,
+                -np.sin(heading_radians) * world_x + np.cos(heading_radians) * world_y,
             ],
             axis=-1,
         )
@@ -34,17 +44,21 @@ def world_offset_token(offset, headings):
     )
 
 
-def paired_metrics(baseline, changed):
-    baseline_near = baseline[..., :6, :]
-    changed_near = changed[..., :6, :]
-    baseline_active = (np.abs(baseline_near[..., [0, 2]]) > 0.05).any(axis=-1)
-    changed_idle = (np.abs(changed_near[..., [0, 2]]) <= 0.05).all(axis=-1)
+def paired_metrics(baseline: np.ndarray, changed: np.ndarray) -> dict[str, Any]:
+    baseline_near = baseline[..., :WINDOW_FRAMES, :]
+    changed_near = changed[..., :WINDOW_FRAMES, :]
+    baseline_active = (np.abs(baseline_near[..., [0, 2]]) > ACTIVE_DEADBAND).any(
+        axis=-1
+    )
+    changed_idle = np.asarray(
+        (np.abs(changed_near[..., [0, 2]]) <= ACTIVE_DEADBAND).all(axis=-1)
+    )
     per_action = {}
     for index, action in enumerate(ACTIONS):
         original = baseline_near[..., index]
         perturbed = changed_near[..., index]
-        active = np.abs(original) > 0.05
-        neutral = np.abs(perturbed) <= 0.05
+        active = np.abs(original) > ACTIVE_DEADBAND
+        neutral = np.abs(perturbed) <= ACTIVE_DEADBAND
         per_action[action] = {
             "paired_abs_change": float(np.abs(perturbed - original).mean()),
             "baseline_abs_mean": float(np.abs(original).mean()),
@@ -84,7 +98,9 @@ def paired_metrics(baseline, changed):
     }
 
 
-def summarize_probes(stacked, contexts):
+def summarize_probes(
+    stacked: dict[str, np.ndarray], contexts: list[ProbeContext]
+) -> dict[str, Any]:
     metrics = {}
     for split in ("train", "val"):
         for category in ("all", "hold", "lift_lower", "drive_low", "drive_high"):
@@ -104,7 +120,7 @@ def summarize_probes(stacked, contexts):
     return metrics
 
 
-def plot_goal_sensitivity(report, output):
+def plot_goal_sensitivity(report: ProbeReport, output: Path) -> None:
     split = "val/all" if "val/all" in report["metrics"] else "train/all"
     metrics = report["metrics"][split]
     cases = report["cases"]
@@ -159,7 +175,7 @@ def plot_goal_sensitivity(report, output):
     plt.close(figure)
 
 
-def refresh_report(output):
+def refresh_report(output: Path) -> None:
     report_path = output / "report.json"
     report = json.loads(report_path.read_text())
     with np.load(output / "predictions.npz") as saved:
@@ -168,7 +184,7 @@ def refresh_report(output):
     plot_goal_sensitivity(report, output)
 
 
-def publish_sensitivity(output, run_path):
+def publish_sensitivity(output: Path, run_path: str) -> None:
     import wandb
 
     entity, project, run_id = run_path.split("/")
@@ -202,8 +218,10 @@ def publish_sensitivity(output, run_path):
         run.log_artifact(artifact)
 
 
-def image_probe(kind, selected_camera=None):
-    def transform(camera, images):
+def image_probe(
+    kind: str, selected_camera: str | None = None
+) -> Callable[[str, np.ndarray], np.ndarray]:
+    def transform(camera: str, images: np.ndarray) -> np.ndarray:
         if selected_camera is not None and camera != selected_camera:
             return images
         if kind == "black":
@@ -224,11 +242,11 @@ def image_probe(kind, selected_camera=None):
     return transform
 
 
-def select_contexts(samples, count):
+def select_contexts(samples: list[ProbeContext], count: int) -> list[tuple[int, str]]:
     categories = {}
     for index, sample in enumerate(samples):
-        drive = np.abs(sample["traction"][-1][:6]).max() > 0.05
-        lift = np.abs(sample["fork1"][-1][:6]).max() > 0.05
+        drive = np.abs(sample["traction"][-1][:WINDOW_FRAMES]).max() > ACTIVE_DEADBAND
+        lift = np.abs(sample["fork1"][-1][:WINDOW_FRAMES]).max() > ACTIVE_DEADBAND
         category = (
             "lift_lower"
             if lift
@@ -242,14 +260,18 @@ def select_contexts(samples, count):
     chosen = []
     per_category = max(1, count // len(categories))
     for category, indices in categories.items():
-        for offset in np.linspace(
-            0, len(indices) - 1, min(per_category, len(indices)), dtype=int
-        ):
-            chosen.append((indices[offset], category))
+        chosen.extend(
+            (indices[offset], category)
+            for offset in np.linspace(
+                0, len(indices) - 1, min(per_category, len(indices)), dtype=int
+            )
+        )
     return sorted(chosen[:count])
 
 
-def predict_tokens(policy, tokens, noise):
+def predict_tokens(
+    policy: PatchPolicyContinuous, tokens: torch.Tensor, noise: torch.Tensor
+) -> np.ndarray:
     features = policy.encoder(tokens.flatten(1, 2), num_frames=tokens.shape[1])[:, -1]
     if policy.norm is not None:
         features = policy.norm(features)
@@ -264,7 +286,7 @@ def predict_tokens(policy, tokens, noise):
     )
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--config", type=Path)
@@ -295,18 +317,22 @@ def main():
         )
     if (
         arguments.contexts_per_job < 1
-        or arguments.samples < 2
+        or arguments.samples < MINIMUM_SAMPLES
         or arguments.fm_steps < 1
     ):
-        raise ValueError("positive contexts/steps and at least two samples required")
+        msg = "positive contexts/steps and at least two samples required"
+        raise ValueError(msg)
     arguments.output.mkdir(parents=True, exist_ok=True)
     if (arguments.output / "report.json").exists():
-        raise ValueError("choose a new output directory")
+        msg = "choose a new output directory"
+        raise ValueError(msg)
     torch.set_num_threads(4)
     torch.set_float32_matmul_precision("highest")
-    torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     config = OmegaConf.load(arguments.config)
+    if not isinstance(config, DictConfig):
+        msg = "expected a mapping configuration"
+        raise TypeError(msg)
     policy = (
         PatchPolicyContinuous
         .load_from_checkpoint(
@@ -335,7 +361,7 @@ def main():
         )
     ]
     stages = config.datamodule.val.dataset.samples.pipeline.functions
-    builder, positioner, windower = [instantiate(stage.func) for stage in stages[:3]]
+    builder, positioner, windower = (instantiate(stage.func) for stage in stages[:3])
     train_jobs = {
         Path(path).name
         for path in config.datamodule.train.dataset.samples.inputs.job_dir
@@ -349,7 +375,8 @@ def main():
     with torch.inference_mode():
         for job_name in arguments.jobs:
             if job_name not in train_jobs | val_jobs:
-                raise ValueError(f"unknown split for {job_name}")
+                msg = f"unknown split for {job_name}"
+                raise ValueError(msg)
             job = Path(config.paths.d12) / job_name
             rows = builder(job_dir=job)
             samples = list(
@@ -360,7 +387,7 @@ def main():
             }
             donor = samples[len(samples) // 2]
             donor_tokens = torch.cat(
-                load_tokens(policy, job, donor, range(6), "cuda:0"), dim=1
+                load_tokens(policy, job, donor, range(WINDOW_FRAMES), "cuda:0"), dim=1
             )
             state_count = 1 + len(policy.observations)
             for sample_index, category in select_contexts(
@@ -368,7 +395,8 @@ def main():
             ):
                 sample = samples[sample_index]
                 tokens = torch.cat(
-                    load_tokens(policy, job, sample, range(6), "cuda:0"), dim=1
+                    load_tokens(policy, job, sample, range(WINDOW_FRAMES), "cuda:0"),
+                    dim=1,
                 )
                 headings = [
                     row_map[index]["ego_heading"]
@@ -412,7 +440,7 @@ def main():
                             policy,
                             job,
                             sample,
-                            range(6),
+                            range(WINDOW_FRAMES),
                             "cuda:0",
                             image_intervention=intervention,
                         ),
@@ -440,9 +468,13 @@ def main():
                             np.clip(values, -1, 1), dtype=torch.float32, device="cuda:0"
                         ).unsqueeze(0)
                         changed = tokens.clone()
-                        changed[:, :, token_index : token_index + 1] = (
-                            policy.observation_embeddings[field](values)
-                        )
+                        embeddings = policy.observation_embeddings
+                        if embeddings is None:
+                            msg = "policy has no observation embeddings"
+                            raise RuntimeError(msg)
+                        changed[:, :, token_index : token_index + 1] = embeddings[
+                            field
+                        ](values)
                         cases.setdefault(name, []).append(
                             predict_tokens(policy, changed, noise)
                         )
@@ -452,17 +484,10 @@ def main():
                             "direction": direction,
                             "world_offset_m": offset,
                         }
-                print(
-                    json.dumps({
-                        "job": job_name,
-                        "context": sample_index,
-                        "category": category,
-                        "completed_contexts": len(contexts),
-                    }),
-                    flush=True,
-                )
     stacked = {key: np.stack(values) for key, values in cases.items()}
-    np.savez_compressed(arguments.output / "predictions.npz", **stacked)
+    np.savez_compressed(
+        arguments.output / "predictions.npz", **stacked, allow_pickle=False
+    )
     metrics = summarize_probes(stacked, contexts)
     with arguments.checkpoint.open("rb") as handle:
         checksum = hashlib.file_digest(handle, "sha256").hexdigest()

@@ -5,27 +5,44 @@ import csv
 import hashlib
 import html
 import json
+import shutil
 import subprocess
+import sys
 import time
+from collections.abc import Callable, Mapping, Sequence
+from itertools import pairwise
 from pathlib import Path
+from typing import Any, Protocol
 
-import matplotlib
+import matplotlib as mpl
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 import simplejpeg
 import torch
 from hydra.utils import instantiate
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image, ImageDraw
+from torch import Tensor
 
 from rmind.models.d12_flow_decoder import D12FlowDecoderStep
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
 
 ACTIONS = ("traction", "steering", "fork1")
+ACTION_DIM = len(ACTIONS)
+PREDICTION_NDIM = 4
+WINDOW_FRAMES = 6
+ACTION_HZ = 30
+ACTIVE_DEADBAND = 0.05
+WARM_PARITY_TOLERANCE = 1e-4
+CORRELATION_STD_FLOOR = 1e-9
+REPLAN_PERIOD_SECONDS = 0.2
+REPLAN_PERIOD_TOLERANCE_SECONDS = 0.04
+STRONG_COMMAND_THRESHOLD = 0.1
+MINIMUM_SAMPLES = 2
 DEFAULT_JOBS = (
     "2026-10-12--15-40-43",
     "2026-09-10--15-17-38",
@@ -34,15 +51,25 @@ DEFAULT_JOBS = (
 )
 
 
-def action_metrics(predictions, targets):
+class FlowSampler(Protocol):
+    action_horizon: int
+    action_std: Tensor
+    action_mean: Tensor
+
+    def fm_sample(self, features: Tensor, x0: Tensor) -> Tensor: ...
+
+
+def action_metrics(predictions: np.ndarray, targets: np.ndarray) -> dict[str, Any]:
     if (
-        predictions.ndim != 4
-        or predictions.shape[-1] != 3
+        predictions.ndim != PREDICTION_NDIM
+        or predictions.shape[-1] != ACTION_DIM
         or targets.shape != predictions.shape[:1] + predictions.shape[2:]
     ):
-        raise ValueError("expected predictions N,S,H,3 and targets N,H,3")
+        msg = "expected predictions N,S,H,3 and targets N,H,3"
+        raise ValueError(msg)
     if not np.isfinite(predictions).all() or not np.isfinite(targets).all():
-        raise ValueError("non-finite predictions or targets")
+        msg = "non-finite predictions or targets"
+        raise ValueError(msg)
     reference = np.broadcast_to(targets[:, None], predictions.shape)
     errors = np.abs(predictions - reference)
     result = {
@@ -75,8 +102,8 @@ def action_metrics(predictions, targets):
     for index, name in enumerate(ACTIONS):
         predicted = predictions[..., index].reshape(-1)
         recorded = reference[..., index].reshape(-1)
-        active = np.abs(recorded) > 0.05
-        predicted_active = np.abs(predicted) > 0.05
+        active = np.abs(recorded) > ACTIVE_DEADBAND
+        predicted_active = np.abs(predicted) > ACTIVE_DEADBAND
         result["per_action"][name] = {
             "mae": float(np.abs(predicted - recorded).mean()),
             "zero_action_mae": float(np.abs(recorded).mean()),
@@ -114,14 +141,22 @@ def action_metrics(predictions, targets):
                 np.abs(recorded), [0.5, 0.9, 0.99]
             ).tolist(),
             "correlation": float(np.corrcoef(predicted, recorded)[0, 1])
-            if predicted.std() > 1e-9 and recorded.std() > 1e-9
+            if predicted.std() > CORRELATION_STD_FLOOR
+            and recorded.std() > CORRELATION_STD_FLOOR
             else None,
         }
     return result
 
 
-def load_tokens(policy, job, sample, positions, device, image_intervention=None):
-    data = {}
+def load_tokens(
+    policy: PatchPolicyContinuous,
+    job: Path,
+    sample: Mapping[str, Any],
+    positions: Sequence[int],
+    device: str | torch.device,
+    image_intervention: Callable[[str, np.ndarray], np.ndarray] | None = None,
+) -> list[Tensor]:
+    data: dict[str, Tensor] = {}
     for camera in policy.cameras:
         images = [
             simplejpeg.decode_jpeg(
@@ -153,7 +188,7 @@ def load_tokens(policy, job, sample, positions, device, image_intervention=None)
     images = torch.stack(
         [transformed["image"][camera] for camera in policy.cameras], dim=2
     )
-    tokens = policy._frame_tokens(
+    tokens = policy.frame_tokens(
         images,
         transformed["continuous"]["speed"],
         {name: transformed["continuous"][name] for name in policy.observations},
@@ -162,19 +197,19 @@ def load_tokens(policy, job, sample, positions, device, image_intervention=None)
 
 
 def predict_job(
-    policy,
-    config,
-    job,
-    samples_count,
-    seed,
-    device,
-    noise_mode="fresh",
-    max_windows=None,
-):
+    policy: PatchPolicyContinuous,
+    config: DictConfig,
+    job: Path,
+    samples_count: int,
+    seed: int,
+    device: str | torch.device,
+    noise_mode: str = "fresh",
+    max_windows: int | None = None,
+) -> dict[str, np.ndarray]:
     from mcap.reader import make_reader
 
     stages = config.datamodule.val.dataset.samples.pipeline.functions
-    builder, positioner, windower = [instantiate(stage.func) for stage in stages[:3]]
+    builder, positioner, windower = (instantiate(stage.func) for stage in stages[:3])
     rows = builder(job_dir=job)
     samples = windower(frames=positioner(row_table=rows))
     timestamps = dict(
@@ -185,7 +220,11 @@ def predict_job(
         )
     )
     with (job / "data_for_training.mcap").open("rb") as handle:
-        statistics = make_reader(handle).get_summary().statistics
+        summary = make_reader(handle).get_summary()
+    if summary is None or summary.statistics is None:
+        msg = f"MCAP summary statistics missing: {job}"
+        raise ValueError(msg)
+    statistics = summary.statistics
     start_ns = statistics.message_start_time
     world = {row["cam_fork/frame_idx"]: row for row in rows.iter_rows(named=True)}
     decoder = D12FlowDecoderStep(policy).to(device).eval()
@@ -220,7 +259,9 @@ def predict_job(
         indices = tuple(sample["cam_fork/frame_idx"])
         reset = previous is None or indices[:-1] != previous[1:]
         if reset:
-            token_window = load_tokens(policy, job, sample, range(6), device)
+            token_window = load_tokens(
+                policy, job, sample, range(WINDOW_FRAMES), device
+            )
             cache = tuple(
                 value.to(device)
                 for value in policy.encoder.empty_cache(batch_size=1, cache_frames=5)
@@ -228,7 +269,7 @@ def predict_job(
             frame_counter = 0
             fresh_tokens = token_window
         else:
-            fresh_tokens = load_tokens(policy, job, sample, [5], device)
+            fresh_tokens = load_tokens(policy, job, sample, [WINDOW_FRAMES - 1], device)
             token_window = token_window[1:] + fresh_tokens
         for tokens in fresh_tokens:
             cosine, sine = (value.to(device) for value in decoder.rope(frame_counter))
@@ -260,9 +301,19 @@ def predict_job(
                 device=device,
             )
         elif noise_mode == "shift":
-            tail = torch.randn(samples_count, 6, 3, generator=generator, device=device)
+            if noise is None:
+                msg = "shift noise requires an initial sample"
+                raise RuntimeError(msg)
+            tail = torch.randn(
+                samples_count,
+                WINDOW_FRAMES,
+                ACTION_DIM,
+                generator=generator,
+                device=device,
+            )
             noise = torch.cat(
-                [noise.reshape(samples_count, -1, 3)[:, 6:], tail], dim=1
+                [noise.reshape(samples_count, -1, ACTION_DIM)[:, WINDOW_FRAMES:], tail],
+                dim=1,
             ).flatten(1)
         predictions = {}
         for mode, features in (("window", window_feature), ("stream", stream_feature)):
@@ -278,8 +329,9 @@ def predict_job(
             collected[mode].append(predictions[mode])
         if reset:
             error = float(np.abs(predictions["window"] - predictions["stream"]).max())
-            if error > 1e-4:
-                raise RuntimeError(f"warm-cache parity failed: {error}")
+            if error > WARM_PARITY_TOLERANCE:
+                msg = f"warm-cache parity failed: {error}"
+                raise RuntimeError(msg)
             collected["warm_parity"].append(error)
         collected["target"].append(
             np.stack([sample[name][-1] for name in ACTIONS], axis=-1)
@@ -301,13 +353,13 @@ def predict_job(
         collected["reset"].append(reset)
         previous = indices
         if sample_index % 50 == 0:
-            print(
+            sys.stdout.write(
                 json.dumps({
                     "job": job.name,
                     "windows": sample_index + 1,
                     "total": len(samples),
-                }),
-                flush=True,
+                })
+                + "\n"
             )
     result = {name: np.asarray(values) for name, values in collected.items()}
     result["recording_bounds_ns"] = np.array(
@@ -316,13 +368,21 @@ def predict_job(
     return result
 
 
-def render(directory, job, arrays, cameras):
-    times = (arrays["seconds"][:, None] + np.arange(6)[None] / 30).reshape(-1)
-    target = arrays["target"][:, :6].reshape(-1, 3)
-    stream = arrays["stream"][:, 0, :6].reshape(-1, 3)
-    window = arrays["window"][:, 0, :6].reshape(-1, 3)
-    lower = np.quantile(arrays["stream"][:, :, :6], 0.1, axis=1).reshape(-1, 3)
-    upper = np.quantile(arrays["stream"][:, :, :6], 0.9, axis=1).reshape(-1, 3)
+def render(
+    directory: Path, job: Path, arrays: Mapping[str, np.ndarray], cameras: Sequence[str]
+) -> None:
+    times = (
+        arrays["seconds"][:, None] + np.arange(WINDOW_FRAMES)[None] / ACTION_HZ
+    ).reshape(-1)
+    target = arrays["target"][:, :WINDOW_FRAMES].reshape(-1, ACTION_DIM)
+    stream = arrays["stream"][:, 0, :WINDOW_FRAMES].reshape(-1, ACTION_DIM)
+    window = arrays["window"][:, 0, :WINDOW_FRAMES].reshape(-1, ACTION_DIM)
+    lower = np.quantile(arrays["stream"][:, :, :WINDOW_FRAMES], 0.1, axis=1).reshape(
+        -1, ACTION_DIM
+    )
+    upper = np.quantile(arrays["stream"][:, :, :WINDOW_FRAMES], 0.9, axis=1).reshape(
+        -1, ACTION_DIM
+    )
     figure, axes = plt.subplots(3, 1, figsize=(12, 6), sharex=True)
     for index, name in enumerate(ACTIONS):
         axis = axes[index]
@@ -348,9 +408,9 @@ def render(directory, job, arrays, cameras):
             upper[:, index],
             alpha=0.15,
             color="tab:blue",
-            label="KV sample 10–90%",
+            label="KV sample 10-90%",
         )
-        axis.axhspan(-0.05, 0.05, color="gray", alpha=0.12)
+        axis.axhspan(-ACTIVE_DEADBAND, ACTIVE_DEADBAND, color="gray", alpha=0.12)
         axis.set_ylabel(name)
         axis.set_ylim(-1.1, 1.1)
         axis.grid(alpha=0.2)
@@ -380,8 +440,12 @@ def render(directory, job, arrays, cameras):
         ])
         writer.writerows(np.column_stack([times, target, stream, window]).tolist())
     overview = Image.open(directory / "timeline.png").convert("RGB").resize((768, 384))
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        msg = "ffmpeg is required to render video"
+        raise RuntimeError(msg)
     command = [
-        "ffmpeg",
+        ffmpeg,
         "-y",
         "-loglevel",
         "error",
@@ -405,6 +469,9 @@ def render(directory, job, arrays, cameras):
         str(directory / "openloop.mp4"),
     ]
     with subprocess.Popen(command, stdin=subprocess.PIPE) as encoder:
+        if encoder.stdin is None:
+            msg = "ffmpeg stdin unavailable"
+            raise RuntimeError(msg)
         for position, stamp in enumerate(arrays["seconds"]):
             canvas = Image.new("RGB", (768, 784), "white")
             draw = ImageDraw.Draw(canvas)
@@ -439,7 +506,7 @@ def render(directory, job, arrays, cameras):
                     fill="#edfaed",
                 )
                 draw.line((90, top + 24, 755, top + 24), fill="#bbbbbb")
-                curves = [
+                curves: list[tuple[np.ndarray, str | tuple[int, ...]]] = [
                     (
                         values[:, action_index],
                         tuple(
@@ -474,11 +541,12 @@ def render(directory, job, arrays, cameras):
             encoder.stdin.write(canvas.tobytes())
         encoder.stdin.close()
         if encoder.wait() != 0:
-            raise RuntimeError("video rendering failed")
+            msg = "video rendering failed"
+            raise RuntimeError(msg)
 
 
-def summarize(arrays):
-    result = {
+def summarize(arrays: Mapping[str, np.ndarray]) -> dict[str, Any]:
+    result: dict[str, Any] = {
         "windows": len(arrays["target"]),
         "cache_resets": int(arrays["reset"].sum()),
         "height_valid_fraction": float(arrays["height"][:, 2].mean()),
@@ -504,29 +572,31 @@ def summarize(arrays):
     return result
 
 
-def hold_events(arrays):
-    result = {}
+def hold_events(arrays: Mapping[str, np.ndarray]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
     boundaries = np.r_[0, np.flatnonzero(arrays["reset"])[1:], len(arrays["target"])]
     for action_index, name in enumerate(ACTIONS):
         durations = []
         hold_count = 0
         holds_with_activation = 0
-        for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True):
-            target = arrays["target"][start:stop, :6, action_index].reshape(-1)
+        for start, stop in pairwise(boundaries):
+            target = arrays["target"][start:stop, :WINDOW_FRAMES, action_index].reshape(
+                -1
+            )
             predicted = (
-                arrays["stream"][start:stop, :, :6, action_index]
+                arrays["stream"][start:stop, :, :WINDOW_FRAMES, action_index]
                 .transpose(1, 0, 2)
                 .reshape(arrays["stream"].shape[1], -1)
             )
-            idle = np.abs(target) <= 0.05
+            idle = np.abs(target) <= ACTIVE_DEADBAND
             edges = np.diff(np.r_[False, idle, False].astype(int))
             for beginning, ending in zip(
                 np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True
             ):
-                if ending - beginning < 6:
+                if ending - beginning < WINDOW_FRAMES:
                     continue
                 for sample in predicted:
-                    false_active = np.abs(sample[beginning:ending]) > 0.05
+                    false_active = np.abs(sample[beginning:ending]) > ACTIVE_DEADBAND
                     hold_count += 1
                     holds_with_activation += int(false_active.any())
                     changes = np.diff(np.r_[False, false_active, False].astype(int))
@@ -536,7 +606,7 @@ def hold_events(arrays):
                                 np.flatnonzero(changes == -1)
                                 - np.flatnonzero(changes == 1)
                             )
-                            / 30
+                            / ACTION_HZ
                         ).tolist()
                     )
         result[name] = {
@@ -555,7 +625,14 @@ def hold_events(arrays):
     return result
 
 
-def resample_features(policy, arrays, samples_count, seed, noise_mode, device):
+def resample_features(
+    policy: FlowSampler,
+    arrays: Mapping[str, np.ndarray],
+    samples_count: int,
+    seed: int,
+    noise_mode: str,
+    device: str | torch.device,
+) -> dict[str, np.ndarray]:
     generator = torch.Generator(device=device).manual_seed(seed)
     result = dict(arrays)
     outputs = {"stream": [], "window": [], "fm_batch_ms": []}
@@ -570,12 +647,26 @@ def resample_features(policy, arrays, samples_count, seed, noise_mode, device):
                     device=device,
                 )
             elif noise_mode == "shift":
+                if noise is None:
+                    msg = "shift noise requires an initial sample"
+                    raise RuntimeError(msg)
                 tail = torch.randn(
-                    samples_count, 6, 3, generator=generator, device=device
+                    samples_count,
+                    WINDOW_FRAMES,
+                    ACTION_DIM,
+                    generator=generator,
+                    device=device,
                 )
                 noise = torch.cat(
-                    [noise.reshape(samples_count, -1, 3)[:, 6:], tail], dim=1
+                    [
+                        noise.reshape(samples_count, -1, ACTION_DIM)[:, WINDOW_FRAMES:],
+                        tail,
+                    ],
+                    dim=1,
                 ).flatten(1)
+            if noise is None:
+                msg = "noise sequence must start with a reset"
+                raise RuntimeError(msg)
             for mode in ("window", "stream"):
                 feature = torch.as_tensor(
                     arrays[mode + "_features"][position], device=device
@@ -598,15 +689,19 @@ def resample_features(policy, arrays, samples_count, seed, noise_mode, device):
         .reshape(int(arrays["reset"].sum()), -1)
         .max(axis=1)
     )
-    if reset_error.max() > 1e-4:
-        raise RuntimeError("resampled warm-cache parity failed")
+    if reset_error.max() > WARM_PARITY_TOLERANCE:
+        msg = "resampled warm-cache parity failed"
+        raise RuntimeError(msg)
     result["warm_parity"] = reset_error
     return result
 
 
-def replan_metrics(arrays):
-    valid = (~arrays["reset"][1:]) & (np.abs(np.diff(arrays["seconds"]) - 0.2) < 0.04)
-    result = {"pairs": int(valid.sum())}
+def replan_metrics(arrays: Mapping[str, np.ndarray]) -> dict[str, Any]:
+    valid = (~arrays["reset"][1:]) & (
+        np.abs(np.diff(arrays["seconds"]) - REPLAN_PERIOD_SECONDS)
+        < REPLAN_PERIOD_TOLERANCE_SECONDS
+    )
+    result: dict[str, Any] = {"pairs": int(valid.sum())}
     if not valid.any():
         return result
     for index, name in enumerate(ACTIONS):
@@ -622,15 +717,15 @@ def replan_metrics(arrays):
             "strong_sign_flip_fraction": float(
                 (
                     (current * previous < 0)
-                    & (np.abs(current) > 0.1)
-                    & (np.abs(previous) > 0.1)
+                    & (np.abs(current) > STRONG_COMMAND_THRESHOLD)
+                    & (np.abs(previous) > STRONG_COMMAND_THRESHOLD)
                 ).mean()
             ),
         }
     return result
 
 
-def publish(directory, report, parent_run):
+def publish(directory: Path, report: dict[str, Any], parent_run: str) -> dict[str, Any]:
     import wandb
 
     run = wandb.init(
@@ -649,7 +744,7 @@ def publish(directory, report, parent_run):
         config={
             key: value
             for key, value in report.items()
-            if key not in ("jobs", "aggregate")
+            if key not in {"jobs", "aggregate"}
         }
         | {"parent_run": parent_run},
     )
@@ -720,7 +815,7 @@ def publish(directory, report, parent_run):
     return location
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
@@ -739,19 +834,24 @@ def main():
     parser.add_argument("--render-only", action="store_true")
     parser.add_argument("--reuse-features", type=Path)
     arguments = parser.parse_args()
-    if arguments.samples < 2:
-        raise ValueError("at least two noise samples required")
+    if arguments.samples < MINIMUM_SAMPLES:
+        msg = "at least two noise samples required"
+        raise ValueError(msg)
     if arguments.max_windows is not None and arguments.max_windows < 1:
-        raise ValueError("max-windows must be positive")
+        msg = "max-windows must be positive"
+        raise ValueError(msg)
     if len(set(arguments.jobs)) != len(arguments.jobs):
-        raise ValueError("jobs must be unique")
+        msg = "jobs must be unique"
+        raise ValueError(msg)
     directory = arguments.output.resolve()
     directory.mkdir(parents=True, exist_ok=True)
     torch.set_float32_matmul_precision("highest")
-    torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     torch.set_num_threads(4)
     config = OmegaConf.load(arguments.config)
+    if not isinstance(config, DictConfig):
+        msg = "expected a mapping configuration"
+        raise TypeError(msg)
     if arguments.render_only:
         report = json.loads((directory / "report.json").read_text())
         for job_name in report["jobs"]:
@@ -776,9 +876,8 @@ def main():
                 )
         return
     if (directory / "report.json").exists():
-        raise ValueError(
-            "output already contains an evaluation; use a new output or --render-only"
-        )
+        msg = "output already contains an evaluation; use a new output or --render-only"
+        raise ValueError(msg)
     policy = (
         PatchPolicyContinuous
         .load_from_checkpoint(
@@ -789,7 +888,8 @@ def main():
     )
     if arguments.fm_steps is not None:
         if arguments.fm_steps < 1:
-            raise ValueError("FM steps must be positive")
+            msg = "FM steps must be positive"
+            raise ValueError(msg)
         policy.fm_inference_steps = arguments.fm_steps
     split_sets = {
         split: {
@@ -799,7 +899,8 @@ def main():
         for split in ("train", "val")
     }
     if split_sets["train"] & split_sets["val"]:
-        raise ValueError("overlapping train/validation jobs")
+        msg = "overlapping train/validation jobs"
+        raise ValueError(msg)
     with arguments.checkpoint.open("rb") as handle:
         checksum = hashlib.file_digest(handle, "sha256").hexdigest()
     if arguments.reuse_features:
@@ -809,9 +910,10 @@ def main():
         if source_report["checkpoint_sha256"] != checksum or source_report[
             "config"
         ] != OmegaConf.to_container(config, resolve=True):
-            raise ValueError(
+            msg = (
                 "cached features must match the exact checkpoint and data configuration"
             )
+            raise ValueError(msg)
     report = {
         "checkpoint": str(arguments.checkpoint.resolve()),
         "checkpoint_sha256": checksum,
@@ -833,7 +935,8 @@ def main():
     for job_name in arguments.jobs:
         split = "train" if job_name in split_sets["train"] else "val"
         if job_name not in split_sets[split]:
-            raise ValueError(f"{job_name} is not in {split}")
+            msg = f"{job_name} is not in {split}"
+            raise ValueError(msg)
         job = Path(config.paths.d12) / job_name
         destination = directory / job_name
         destination.mkdir(exist_ok=True)
@@ -864,7 +967,9 @@ def main():
                     noise_mode=arguments.noise_mode,
                     max_windows=arguments.max_windows,
                 )
-        np.savez_compressed(destination / "predictions.npz", **arrays)
+        np.savez_compressed(
+            destination / "predictions.npz", **arrays, allow_pickle=False
+        )
         summary = summarize(arrays)
         summary["split"] = split
         report["jobs"][job_name] = summary
@@ -915,29 +1020,16 @@ def main():
             f"<tr><td>{job}</td><td>{summary['split']}</td><td>{summary['window']['near']['mae']:.4f}</td><td>{near['mae']:.4f}</td><td>{near['zero_action_mae']:.4f}</td><td>{deadband['predicted_all_commands_idle']:.1%}</td><td>{deadband['recorded_all_commands_idle']:.1%}</td></tr>"
         )
     sections.append("</table>")
-    for job in report["jobs"]:
-        sections.append(
-            f'<h2>{job}</h2><video controls preload="metadata" width="768" src="{job}/openloop.mp4"></video><br><img width="1100" src="{job}/timeline.png"><p><a href="{job}/metrics.json">Metrics</a> | <a href="{job}/timeline.csv">Timeline CSV</a> | <a href="{job}/openloop.rrd">Rerun recording</a></p>'
-        )
+    sections.extend(
+        f'<h2>{job}</h2><video controls preload="metadata" width="768" src="{job}/openloop.mp4"></video><br><img width="1100" src="{job}/timeline.png"><p><a href="{job}/metrics.json">Metrics</a> | <a href="{job}/timeline.csv">Timeline CSV</a> | <a href="{job}/openloop.rrd">Rerun recording</a></p>'
+        for job in report["jobs"]
+    )
     (directory / "report.html").write_text(
         "<!doctype html><meta charset='utf-8'><title>D12 FM open-loop</title>"
         + "\n".join(sections)
     )
     if arguments.wandb_parent_run:
         publish(directory, report, arguments.wandb_parent_run)
-    print(
-        json.dumps(
-            {
-                split: {
-                    mode: report["aggregate"][split][mode]["near"]
-                    for mode in ("window", "stream")
-                }
-                for split in report["aggregate"]
-            },
-            indent=2,
-        ),
-        flush=True,
-    )
 
 
 if __name__ == "__main__":
