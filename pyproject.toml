@@ -23,6 +23,7 @@ dependencies = [
   "kornia>=0.8.2",
   "makefun>=1.16.0",
   "mcap",
+  "mcap-protobuf-support",
   "more-itertools>=10.4.0",
   "numpy>2.3.0",
   "omegaconf>=2.3.0",
@@ -172,6 +173,14 @@ ignore = [
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
+"src/rmind/scripts/analyze_d12_rollouts.py" = [
+  "complex-structure",
+  "too-many-branches",
+  "too-many-statements",
+  "too-many-locals",
+  "blind-except",
+  "print"
+]
 "src/rmind/components/rtc_flow_head.py" = [
   "too-many-arguments",
   "too-many-positional-arguments"
@@ -234,6 +243,19 @@ ignore = [
   "subprocess-without-shell-equals-true",
   "suspicious-subprocess-import"
 ]
+"src/rmind/scripts/replay_d12_rollouts.py" = [
+  "complex-structure",
+  "too-many-branches",
+  "too-many-statements",
+  "too-many-locals",
+  "blind-except",
+  "print",
+  "suspicious-subprocess-import",
+  "subprocess-without-shell-equals-true",
+  "import-outside-top-level",
+  "private-member-access"
+]
+"src/rmind/scripts/summarize_d12_replay.py" = ["too-many-locals", "print"]
 "src/rmind/scripts/train_d12_rtc.py" = [
   "suspicious-subprocess-import",
   "subprocess-without-shell-equals-true"
