@@ -130,11 +130,11 @@ not calibrated actuator deadbands or proof of physical acceleration.
 
 Unconditional first-six-action MAE, averaged over all944 windows and all seeds:
 
-| Action | Baseline | Native RTC |
-| --- | ---: | ---: |
-| Traction | .14295 | .13062 |
-| Steering | .16866 | .16019 |
-| Fork | .08620 | .04273 |
+| Action   | Baseline | Native RTC |
+| -------- | -------: | ---------: |
+| Traction |   .14295 |     .13062 |
+| Steering |   .16866 |     .16019 |
+| Fork     |   .08620 |     .04273 |
 
 The aggregate improvement is not uniform: October2 steering worsens from
 .16747 to .17889. False activation during expert idle commands falls, but
@@ -180,6 +180,7 @@ new-K3.62e-5, new-V4.15e-5. ONNX Runtime passes the stricter1e-4 export gate.
 This artifact is explicitly `test_only`; it is not deployed. A single fixed
 fixture does not replace a trained-model stateful sequence test, Orin/TensorRT
 version compatibility, real-kit latency measurements or shadow validation.
+
 # Lint and integrity scope
 
 The offline CLIs keep their reviewed sequential scheduler, paired-noise, and

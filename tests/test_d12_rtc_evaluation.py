@@ -5,7 +5,7 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pytest
@@ -21,6 +21,9 @@ from rmind.scripts.replay_d12_rtc import (
     sample_plan,
     tick_ns,
 )
+
+if TYPE_CHECKING:
+    from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 
 
 def test_audit_predicate_never_accepts_failed_evidence() -> None:
@@ -187,7 +190,7 @@ def test_raw_committed_prefix_normalized_once_then_preserved() -> None:
     request = {"prefix": prefix.tolist(), "mask": [1.0] * 6 + [0.0] * 44}
     with torch.inference_mode():
         actions = sample_plan(
-            policy,
+            cast("PatchPolicyContinuous", policy),
             torch.zeros(1, 4),
             explicit_noise(131, "test", 1)[0],
             request,
@@ -335,14 +338,14 @@ def test_paced_replay_rebases_rational_clock_after_generation_reset(
         "1970-01-01T00:00:02+00:00",
     )
     arrays, trace = replay_d12_rtc.replay_one(
-        policy,
+        cast("PatchPolicyContinuous", policy),
         np.zeros((11, 1, 1), dtype=np.float32),
         rows,
         segment,
         "baseline",
         "zero",
         131,
-        [0.05],
+        np.array([0.05]),
         Path(binary),
         "cpu",
         clock="paced",

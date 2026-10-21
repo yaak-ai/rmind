@@ -287,6 +287,7 @@ def expert(directory: Path, name: str, device: str) -> None:
                     f"prediction_prefix{prefix}": values
                     for prefix, values in predictions.items()
                 },
+                allow_pickle=False,
             )
             print(
                 json.dumps({"model": name, "job": job.name, "windows": count}),

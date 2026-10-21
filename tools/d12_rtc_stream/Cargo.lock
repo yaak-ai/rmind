@@ -6,8 +6,8 @@ version = 4
 name = "d12-rtc-stream"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
+  "serde",
+  "serde_json",
 ]
 
 [[package]]
@@ -28,7 +28,7 @@ version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
- "unicode-ident",
+  "unicode-ident",
 ]
 
 [[package]]
@@ -37,7 +37,7 @@ version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
- "proc-macro2",
+  "proc-macro2",
 ]
 
 [[package]]
@@ -46,8 +46,8 @@ version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
- "serde_core",
- "serde_derive",
+  "serde_core",
+  "serde_derive",
 ]
 
 [[package]]
@@ -56,7 +56,7 @@ version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48"
 dependencies = [
- "serde_derive",
+  "serde_derive",
 ]
 
 [[package]]
@@ -65,9 +65,9 @@ version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
- "proc-macro2",
- "quote",
- "syn",
+  "proc-macro2",
+  "quote",
+  "syn",
 ]
 
 [[package]]
@@ -76,11 +76,11 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "itoa",
- "memchr",
- "serde",
- "serde_core",
- "zmij",
+  "itoa",
+  "memchr",
+  "serde",
+  "serde_core",
+  "zmij",
 ]
 
 [[package]]
@@ -89,9 +89,9 @@ version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee"
 dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
+  "proc-macro2",
+  "quote",
+  "unicode-ident",
 ]
 
 [[package]]
