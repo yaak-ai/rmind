@@ -8,11 +8,11 @@ the entire 50-action horizon. Sixteen independent noise samples per context show
 the same pattern. Keeping a chunk longer would not generally expose a strong
 acceleration suffix in these two examples.
 
-| Interval (UTC) | Contexts | Mean absolute traction, indices 1–7 | Mean absolute traction, indices 8–49 | Chunks with a sustained stronger suffix | Emitted-action reconstruction MAE |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 09:40:19.765–09:41:00.066, stationary | 202 | 5.86% | 6.47% | 2.48% | 0.51 percentage points |
-| 09:42:27.869–09:43:06.670, stationary | 194 | 5.91% | 5.92% | 2.06% | 0.38 percentage points |
-| 12:45:05.035–12:46:22.135, successful | 386 | 26.26% | 26.19% | 65.28% | 1.83 percentage points |
+| Interval (UTC)                        | Contexts | Mean absolute traction, indices 1–7 | Mean absolute traction, indices 8–49 | Chunks with a sustained stronger suffix | Emitted-action reconstruction MAE |
+| ------------------------------------- | -------: | ----------------------------------: | -----------------------------------: | --------------------------------------: | --------------------------------: |
+| 09:40:19.765–09:41:00.066, stationary |      202 |                               5.86% |                                6.47% |                                   2.48% |            0.51 percentage points |
+| 09:42:27.869–09:43:06.670, stationary |      194 |                               5.91% |                                5.92% |                                   2.06% |            0.38 percentage points |
+| 12:45:05.035–12:46:22.135, successful |      386 |                              26.26% |                               26.19% |                                  65.28% |            1.83 percentage points |
 
 The illustrative stronger-suffix criterion is 15 consecutive actions (0.5 s)
 with the same sign and absolute traction greater than 0.15. It is **not a
@@ -125,14 +125,14 @@ cargo run --release --locked --manifest-path tools/d12_noise_stream/Cargo.toml -
 
 1. An inference-instance UUID and actual inference-call counter, separate from
    submitted input count; record rejected/dropped inputs and reasons.
-2. The complete `fm_x0` and full output action chunk, associated with frame PTS,
+1. The complete `fm_x0` and full output action chunk, associated with frame PTS,
    generation, inference start/end and model/engine identity. H50 float32 noise
    plus actions is only about 6 kB/s at 5 Hz before framing overhead.
-3. Plan adoption/replacement events and each executed `(plan_id, action_index)`
+1. Plan adoption/replacement events and each executed `(plan_id, action_index)`
    with control-clock timestamp, published command and safety-gate outcome.
-4. Cache reset reason and generation-local frame counter. Preserve engine MD5,
+1. Cache reset reason and generation-local frame counter. Preserve engine MD5,
    checkpoint hash, manifest, RNG algorithm/version and preprocessing version.
-5. For exact replay, lossless post-resize RGB inputs or exact input tensors, not
+1. For exact replay, lossless post-resize RGB inputs or exact input tensors, not
    only MP4 references. A 144×256 RGB uint8 stream at 5 Hz is approximately
    0.55 MB/s before compression. Include exact auxiliary input snapshots.
 
@@ -143,6 +143,7 @@ Older caches without these fields must be rebuilt. Supplying `--features-from`
 requires its independently recorded `--features-sha256`; external caches cannot
 be rebuilt in place. Noise-input path and SHA256 are recorded, but the generator
 algorithm/seed are only declared unless independently verified from a receipt.
+
 # Lint scope
 
 The three historical replay CLIs retain their validated sequential parsing and

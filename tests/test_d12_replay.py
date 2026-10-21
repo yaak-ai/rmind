@@ -95,7 +95,7 @@ def test_suffix_requires_sustained_direction_not_alternating_magnitude() -> None
     chunks[1, 8:, 0] = np.tile([0.2, -0.2], 21)
     statistics = traction_statistics(chunks, threshold=0.15, duration=15)
     assert statistics["early_mean_absolute"] == 0
-    assert statistics["fraction_chunks_sustained_suffix"].hex() == (0.5).hex()
+    assert float(statistics["fraction_chunks_sustained_suffix"]).hex() == (0.5).hex()
 
 
 def test_frame_identity_joins_on_pts_not_independent_counters(
