@@ -51,7 +51,7 @@
 #@ frame_size = '256x144'
 
 #! one JPEG stream per camera per job (`frame_idx` is the 0-based encoded frame)
-#@ def streams(jobs):
+#@ def streams(jobs, camera_names):
 #@   return {
 #@     camera: {
 #@       "index": camera + "/frame_idx",
@@ -70,11 +70,11 @@
 #@         for j in jobs
 #@       },
 #@     }
-#@     for camera in cameras
+#@     for camera in camera_names
 #@   }
 #@ end
 
-#@ def dataset(jobs, stride):
+#@ def dataset(jobs, stride, camera_names=cameras):
 # Real D12 recordings: actuations from `data_for_training.mcap` (steering
 # sign-corrected), frames from the JPEGs that
 # `scripts/extract_d12_frames.sh` writes beside each camera's video.
@@ -113,7 +113,7 @@
 _target_: rbyte.Dataset.from_config
 _recursive_: false
 _convert_: all
-streams: #@ streams(jobs)
+streams: #@ streams(jobs, camera_names)
 
 samples:
   # A handful of jobs, each decoded once at startup. The default pipefunc executor
@@ -138,11 +138,12 @@ samples:
         mapspec: "job_dir[i] -> row_table[i]"
         func:
           _target_: rmind.data.d12.D12RowTableBuilder
-          cameras: #@ cameras
+          cameras: #@ camera_names
           reference: #@ reference
           # signed traction command, the field the vehicle actually applies
           traction_source: command
           max_skew_s: 1.0
+          include_fork_height: "${oc.select:include_fork_height,false}"
 
       # 2. the intention transform, in the config just like the car waypoints:
       # translate each target by -ego, rotate by -heading into the vehicle frame,
@@ -202,7 +203,7 @@ samples:
           frames: positioned
         func:
           _target_: rmind.data.d12.D12EpisodeWindower
-          cameras: #@ cameras
+          cameras: #@ camera_names
           # episode shape follows the experiment; all spacings in RAW (~30Hz)
           # reference frames: `episode_step` between steps (6 -> 5Hz), a clip
           # every `stride` raw frames, `action_horizon` future steps per chunk
@@ -210,6 +211,8 @@ samples:
           step: ${episode_step}
           stride: #@ stride
           horizon: "${oc.select:action_horizon,1}"
+          action_step: "${oc.select:action_step,null}"
+          require_contiguous: "${oc.select:require_contiguous,false}"
 
       # 4. plain vertical concat: every row already carries its job's `input_id`
       - _target_: pipefunc.PipeFunc

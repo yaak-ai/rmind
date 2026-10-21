@@ -1,0 +1,17 @@
+defaults:
+  - /model/palletjack/patch_policy/policy_chunk@_here_
+  - _self_
+
+heads: null
+losses: null
+fm_head:
+  _target_: rmind.components.fm_action_head.ActionHead
+  kind: fm
+  feat_dim: ${policy_embedding_dim}
+  cond_dim: 1
+  out_dim: "${eval:'${action_horizon} * 3'}"
+  hidden: 1024
+fm_inference_steps: 4
+fm_x0: sample
+action_mean: ${action_mean}
+action_std: ${action_std}

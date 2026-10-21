@@ -50,12 +50,12 @@ Requested a general resource check on the host (A100 80GB, 117GB RAM, 22 vCPU):
 The user pointed out that `nvidia-smi`'s Util% is a coarse "was any SM active in
 this sample" signal, not throughput. Investigated with `nvidia-smi dmon`:
 
-| metric | observed | reading |
-|---|---|---|
-| SM util | 96–100% | matches the "100%" headline |
-| Memory util | **1%→55%, swinging** | bursty, not steady saturation |
-| Power draw | 280–406W (cap 400W) | **not pegged** to the limit |
-| `pviol`/`tviol` | 0/0 | not thermally/power throttled |
+| metric          | observed             | reading                       |
+| --------------- | -------------------- | ----------------------------- |
+| SM util         | 96–100%              | matches the "100%" headline   |
+| Memory util     | **1%→55%, swinging** | bursty, not steady saturation |
+| Power draw      | 280–406W (cap 400W)  | **not pegged** to the limit   |
+| `pviol`/`tviol` | 0/0                  | not thermally/power throttled |
 
 Conclusion: not throttled, but bursty — consistent with host-side stalls between
 GPU work bursts, not sustained peak throughput.
@@ -123,7 +123,7 @@ launched to attach `nsys`/run a short `torch.profiler` session. Two mistakes:
    aborted before damage, per the repo's own documented warning that concurrent
    cache builds corrupt the samples store. Re-launched against an isolated cache
    dir instead.
-2. Second attempt, even with an isolated cache dir and `--shm-size=8g`, pushed
+1. Second attempt, even with an isolated cache dir and `--shm-size=8g`, pushed
    total host memory over the edge while the live job was still running
    alongside it. The kernel OOM-killer doesn't necessarily kill the process
    causing the pressure — it killed the **live job** (`rmind-train`, container
@@ -159,11 +159,11 @@ training step. Container cleaned up immediately after; live job resumed
 
 Steady-state step: **307.8ms wall time.**
 
-| where the time went | time | % of step |
-|---|---|---|
-| **5 blocking host↔device sync copies** (`aten::to`→`_to_copy`→`copy_`→`cudaMemcpyAsync`→`cudaStreamSynchronize`) | **160.8ms** | **52%** |
-| GPU kernel execution (1,374 kernel launches, avg 171µs each, merged busy window) | 235ms | 76% |
-| actual matmuls (`aten::linear`) | 31ms | 10% |
+| where the time went                                                                                              | time        | % of step |
+| ---------------------------------------------------------------------------------------------------------------- | ----------- | --------- |
+| **5 blocking host↔device sync copies** (`aten::to`→`_to_copy`→`copy_`→`cudaMemcpyAsync`→`cudaStreamSynchronize`) | **160.8ms** | **52%**   |
+| GPU kernel execution (1,374 kernel launches, avg 171µs each, merged busy window)                                 | 235ms       | 76%       |
+| actual matmuls (`aten::linear`)                                                                                  | 31ms        | 10%       |
 
 The 5 sync stalls per step, in descending size: **112.9ms, 40.6ms, 5.1ms, 1.5ms,
 1.4ms**. Each follows the identical pattern in the trace:
@@ -203,14 +203,15 @@ in §6 — camera intrinsics/extrinsics — was wrong).** They come from exactly
 three third-party/internal call sites, confirmed identically across multiple
 steady-state training steps:
 
-| stall(s) | duration | call site |
-|---|---|---|
-| 2 largest (~123ms, ~33ms — the bulk of the 52% sync time) | `aten::copy_` → `cudaStreamSynchronize` | [`vector_quantize_pytorch/vector_quantize_pytorch.py:1263`](https://github.com/lucidrains/vector-quantize-pytorch): `loss = tensor(0., device=device, requires_grad=self.training)` inside `VectorQuantize.forward` |
-| 3 smallest (~1-1.4ms each) | `aten::copy_` → `cudaStreamSynchronize` | `torchvision/transforms/v2/functional/_misc.py:55-56`, inside `normalize_image`: `mean = torch.as_tensor(mean, ...)` / `std = torch.as_tensor(std, ...)` |
-| (occasionally, a 5th ~1ms slot) | `aten::_local_scalar_dense` (device→host `.item()`-style sync) | `rmind/components/norm.py:82`, `UniformBinner.forward`: `.clamp(0, self.bins - 1)` — `self.bins - 1` is a GPU tensor, forcing clamp's bound to be pulled back to host |
+| stall(s)                                                  | duration                                                       | call site                                                                                                                                                                                                           |
+| --------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2 largest (~123ms, ~33ms — the bulk of the 52% sync time) | `aten::copy_` → `cudaStreamSynchronize`                        | [`vector_quantize_pytorch/vector_quantize_pytorch.py:1263`](https://github.com/lucidrains/vector-quantize-pytorch): `loss = tensor(0., device=device, requires_grad=self.training)` inside `VectorQuantize.forward` |
+| 3 smallest (~1-1.4ms each)                                | `aten::copy_` → `cudaStreamSynchronize`                        | `torchvision/transforms/v2/functional/_misc.py:55-56`, inside `normalize_image`: `mean = torch.as_tensor(mean, ...)` / `std = torch.as_tensor(std, ...)`                                                            |
+| (occasionally, a 5th ~1ms slot)                           | `aten::_local_scalar_dense` (device→host `.item()`-style sync) | `rmind/components/norm.py:82`, `UniformBinner.forward`: `.clamp(0, self.bins - 1)` — `self.bins - 1` is a GPU tensor, forcing clamp's bound to be pulled back to host                                               |
 
 Call chains for the two dominant stalls, both reached from
 `patch_policy.py:494 _compute_metrics` → `patch_policy.py:634 _step`:
+
 - **123ms**: `rmind/models/action_tokenizer.py:89 forward` → `rmind/components/vq.py:66 forward` (`self.vq(z)`) → `ResidualVQ.forward` → `VectorQuantize.forward` (last/deepest quantizer level in the residual stack, hence the largest accumulated kernel-queue drain).
 - **33ms**: `rmind/models/waypoints_tokenizer.py:116 encode` → same `vq.py:66` → `ResidualVQ.forward` → `VectorQuantize.forward` (first quantizer level of a separate `ResidualVQ`).
 
@@ -231,7 +232,7 @@ fixed for the whole run.
 ## Next steps (not yet done)
 
 1. ~~Add `with_stack=True` ... get the exact Python call stack~~ — done, see §7.
-2. Fix the 3 identified sites — a ~50% per-step wall-time reduction is on the
+1. Fix the 3 identified sites — a ~50% per-step wall-time reduction is on the
    table if these are eliminated:
    - `vector_quantize_pytorch` (upstream, third-party): not easily patchable
      in-place; options are monkeypatching `VectorQuantize.forward`'s loss-init
@@ -247,11 +248,11 @@ fixed for the whole run.
      already `device`-resident `Tensor`s instead of raw Python lists re-`as_tensor`'d
      per call), or replacing torchvision's `Normalize` with a lightweight
      custom transform that holds pre-registered GPU buffers.
-3. Apply the still-open resource hygiene items from §2 (saner `--shm-size`,
+1. Apply the still-open resource hygiene items from §2 (saner `--shm-size`,
    explicit `--memory` cap, stale container cleanup).
-4. Decide on `method: "process"` — leave as `"thread"` per §4's findings unless
+1. Decide on `method: "process"` — leave as `"thread"` per §4's findings unless
    `multiprocessing_context: spawn` is also set.
-5. Relaunch the live training job (currently stopped, no checkpoint to resume
+1. Relaunch the live training job (currently stopped, no checkpoint to resume
    from — restart is a fresh run either way).
 
 ## 8. Native `nix develop` environment gaps found while reproducing §6 without docker
@@ -264,11 +265,9 @@ none of which are yet applied to the repo/flake:
    (introduced in the same commit as this profiling instrumentation) pulls in
    `rmind.callbacks.prediction._rerun`, which unconditionally imports
    `rbyte.viz.loggers.RerunLogger` — only present when `rbyte[visualize]` is
-   installed. The Docker image is built with `uv sync --all-extras
-   --all-groups`, but `just train-unsafe` only passes `--extra train`. Native
+   installed. The Docker image is built with `uv sync --all-extras --all-groups`, but `just train-unsafe` only passes `--extra train`. Native
    runs need `--extra train --extra predict` (or `--all-extras`) instead.
-2. **GPU invisible to torch (`No supported gpu backend found!`).** `nix
-   develop`'s wrapped `uv` script (`flake.nix`) unconditionally overwrites
+1. **GPU invisible to torch (`No supported gpu backend found!`).** `nix develop`'s wrapped `uv` script (`flake.nix`) unconditionally overwrites
    `LD_LIBRARY_PATH`, discarding anything set before entering the shell, but
    appends `NIX_LD_LIBRARY_PATH` if present. `libcuda.so.1` /
    `libnvidia-ml.so.1` etc. live under `/usr/lib/x86_64-linux-gnu` on this
@@ -278,7 +277,7 @@ none of which are yet applied to the repo/flake:
    (`/root/.cache/cuda-shim`) and export `NIX_LD_LIBRARY_PATH` to that dir
    *from inside* the nix shell (exporting it before `nix develop` doesn't
    survive — same clobbering issue as below).
-3. **`torch.compile`/Triton can't link CUDA kernels.** `flake.nix` hardcodes
+1. **`torch.compile`/Triton can't link CUDA kernels.** `flake.nix` hardcodes
    `TRITON_LIBCUDA_PATH = "/run/opengl-driver/lib"`, a NixOS-only path that
    doesn't exist on this host, so `gcc -L/run/opengl-driver/lib -l:libcuda.so.1`
    fails at first `torch._inductor`/`flex_attention` kernel compile. Same fix
