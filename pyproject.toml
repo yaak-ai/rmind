@@ -256,6 +256,44 @@ ignore = [
   "private-member-access"
 ]
 "src/rmind/scripts/summarize_d12_replay.py" = ["too-many-locals", "print"]
+"src/rmind/scripts/audit_d12_rtc.py" = [
+  "complex-structure",
+  "too-many-branches",
+  "too-many-statements",
+  "too-many-locals",
+  "too-many-nested-blocks",
+  "boolean-type-hint-positional-argument"
+]
+"src/rmind/scripts/evaluate_d12_rtc.py" = [
+  "too-many-locals",
+  "too-many-nested-blocks",
+  "print"
+]
+"src/rmind/scripts/provenance_d12_rtc.py" = [
+  "suspicious-subprocess-import",
+  "subprocess-without-shell-equals-true"
+]
+"src/rmind/scripts/replay_d12_rtc.py" = [
+  "complex-structure",
+  "too-many-branches",
+  "too-many-statements",
+  "too-many-locals",
+  "too-many-nested-blocks",
+  "too-many-arguments",
+  "too-many-positional-arguments",
+  "boolean-type-hint-positional-argument",
+  "suspicious-subprocess-import",
+  "subprocess-without-shell-equals-true",
+  "private-member-access",
+  "print"
+]
+"src/rmind/scripts/report_d12_rtc.py" = [
+  "too-many-locals",
+  "too-many-nested-blocks",
+  "boolean-type-hint-positional-argument",
+  "suspicious-subprocess-import",
+  "subprocess-without-shell-equals-true"
+]
 "src/rmind/scripts/train_d12_rtc.py" = [
   "suspicious-subprocess-import",
   "subprocess-without-shell-equals-true"
@@ -280,6 +318,10 @@ ignore = [
   "suspicious-subprocess-import"
 ]
 "tests/test_d12_flow_matching.py" = ["private-member-access"]
+"tests/test_d12_rtc_evaluation.py" = [
+  "suspicious-subprocess-import",
+  "subprocess-without-shell-equals-true"
+]
 "tests/**/*.py" = [
   "assert",
   "suspicious-pickle-usage",
