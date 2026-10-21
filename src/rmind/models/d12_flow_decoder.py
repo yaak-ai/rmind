@@ -1,8 +1,11 @@
 """One-frame D12 inference with external KV state and explicit flow start noise."""
 
+from typing import Any
+
 import torch
 from torch import Tensor, nn
 
+from rmind.components.rtc_flow_head import TokenTimeFlowHead
 from rmind.components.transformer.causal_frame import frame_rope_cos_sin
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 
@@ -26,6 +29,9 @@ class D12FlowDecoderStep(nn.Module):
             raise ValueError(message)
         self.policy = policy.eval()
         self.input_names = (*policy.cameras, *INPUT_NAMES[3:])
+        self.rtc_enabled = isinstance(policy.fm_head, TokenTimeFlowHead)
+        if self.rtc_enabled:
+            self.input_names = (*self.input_names, "clean_prefix", "prefix_mask")
         self.register_buffer(
             "image_mean", torch.tensor([0.485, 0.456, 0.406]).reshape(1, 1, 1, 3, 1, 1)
         )
@@ -73,7 +79,16 @@ class D12FlowDecoderStep(nn.Module):
         features = encoded[:, -1]
         if self.policy.norm is not None:
             features = self.policy.norm(features)
-        actions = self.policy.fm_sample(features, x0=tensors["fm_x0"])
+        prefix_arguments: dict[str, Any] = {}
+        if self.rtc_enabled:
+            prefix_arguments = {
+                "clean_prefix": (tensors["clean_prefix"] - self.policy.action_mean)
+                / self.policy.action_std,
+                "prefix_mask": tensors["prefix_mask"],
+            }
+        actions = self.policy.fm_sample(
+            features, x0=tensors["fm_x0"], **prefix_arguments
+        )
         actions = actions * self.policy.action_std + self.policy.action_mean
         return actions, new_k.transpose(0, 1), new_v.transpose(0, 1)
 

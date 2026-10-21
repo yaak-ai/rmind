@@ -19,6 +19,7 @@ from torch.utils._pytree import (  # ruff: ignore[import-private-name]
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
 from rmind.components.fm_action_head import ActionHead
+from rmind.components.rtc_flow_head import TokenTimeFlowHead
 from rmind.config import HydraConfig, init_hydra_param
 from rmind.models.action_tokenizer import LRSchedulerHydraConfig
 from rmind.models.control_transformer import PredictionConfig
@@ -274,7 +275,17 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
                 "action statistics must be finite with positive standard deviations"
             )
             raise ValueError(message)
-        if head.kind != "fm" or self.action_horizon * action_count != head.D:
+        if (
+            head.kind != "fm"
+            or self.action_horizon * action_count != head.D
+            or (
+                isinstance(head, TokenTimeFlowHead)
+                and (
+                    head.action_horizon != self.action_horizon
+                    or head.action_dim != action_count
+                )
+            )
+        ):
             message = "flow head output must match horizon times target count"
             raise ValueError(message)
         self.register_buffer("action_mean", mean)
@@ -520,9 +531,14 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
         return {"loss": total}
 
     def fm_sample(
-        self, features: Tensor, x0: Tensor | None = None, steps: int | None = None
+        self,
+        features: Tensor,
+        x0: Tensor | None = None,
+        steps: int | None = None,
+        clean_prefix: Tensor | None = None,
+        prefix_mask: Tensor | None = None,
     ) -> Tensor:
-        """Integrate the vendored velocity field in standardized chunk space.
+        """Integrate in standardized units, including an optional RTC prefix.
 
         Raises:
             ValueError: If the head, step count, or initial noise shape is invalid.
@@ -550,6 +566,32 @@ class PatchPolicyContinuous(pl.LightningModule, LoadableFromArtifact):
                 .reshape(-1, width)
                 .clone()
             )
+        if isinstance(self.fm_head, TokenTimeFlowHead):
+            if (clean_prefix is None) != (prefix_mask is None):
+                message = "RTC prefix actions and mask must be supplied together"
+                raise ValueError(message)
+            chunk_shape = (
+                flattened.shape[0],
+                self.action_horizon,
+                len(self.action_names),
+            )
+            prefix = (
+                state.new_zeros(chunk_shape)
+                if clean_prefix is None
+                else clean_prefix.reshape(chunk_shape)
+            )
+            mask = (
+                state.new_zeros(chunk_shape[:2])
+                if prefix_mask is None
+                else prefix_mask.reshape(chunk_shape[:2])
+            )
+            result = self.fm_head.sample(flattened, state, prefix, mask, count)
+            return result.reshape(
+                *features.shape[:-1], self.action_horizon, len(self.action_names)
+            )
+        if clean_prefix is not None or prefix_mask is not None:
+            message = "RTC conditioning requires a trained token-time head"
+            raise ValueError(message)
         for index in range(count):
             time = flattened.new_full((flattened.shape[0],), index / count)
             state = torch.add(

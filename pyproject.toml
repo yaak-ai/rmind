@@ -172,6 +172,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
+"src/rmind/components/rtc_flow_head.py" = [
+  "too-many-arguments",
+  "too-many-positional-arguments"
+]
 "src/rmind/data/d12.py" = ["too-many-arguments"]
 "src/rmind/scripts/audit_d12_actions.py" = ["too-many-locals"]
 "src/rmind/scripts/compare_d12_fm.py" = [
@@ -230,6 +234,10 @@ ignore = [
   "subprocess-without-shell-equals-true",
   "suspicious-subprocess-import"
 ]
+"src/rmind/scripts/train_d12_rtc.py" = [
+  "suspicious-subprocess-import",
+  "subprocess-without-shell-equals-true"
+]
 "src/rmind/scripts/train_d12_fm.py" = [
   "complex-structure",
   "subprocess-without-shell-equals-true",
@@ -268,6 +276,12 @@ files.exclude = ["uv.lock"]
 
 [tool.ty.rules]
 unused-ignore-comment = "warn"
+
+[[tool.ty.overrides]]
+include = ["src/rmind/components/rtc_flow_head.py"]
+
+[tool.ty.overrides.rules]
+invalid-method-override = "ignore"
 
 [[tool.ty.overrides]]
 include = ["src/rmind/inference/backends/tensorrt.py"]
