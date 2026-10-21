@@ -54,6 +54,7 @@ def test_invalid_source_frequencies_rejected(frequency: list[float]) -> None:
 def test_source_frequency_is_serialized_nontrainable_state() -> None:
     frequency = [float(value) for value in range(1, 9)]
     head = make_head(frequency)
+    assert head.time_frequency is not None
     assert not head.time_frequency.requires_grad
     assert "time_frequency" not in dict(head.named_parameters())
     stream = io.BytesIO()
@@ -61,6 +62,7 @@ def test_source_frequency_is_serialized_nontrainable_state() -> None:
     stream.seek(0)
     restored = make_head(frequency)
     restored.load_state_dict(torch.load(stream, weights_only=True), strict=True)
+    assert restored.time_frequency is not None
     torch.testing.assert_close(
         restored.time_frequency, torch.tensor(frequency), atol=0, rtol=0
     )
@@ -74,8 +76,12 @@ def test_source_frequency_is_serialized_nontrainable_state() -> None:
         torch.tensor([2, 4]),
     )
     loss.backward()
+    assert features.grad is not None
     assert torch.isfinite(features.grad).all()
-    assert all(torch.isfinite(parameter.grad).all() for parameter in head.parameters())
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        for parameter in head.parameters()
+    )
     assert head.time_frequency.grad is None
 
 
@@ -93,6 +99,8 @@ def test_source_frequency_onnx_preserves_normalization_and_prefix(
                     parameter.normal_(std=0.1)
             self.register_buffer("mean", torch.tensor([0.1, -0.2, 0.3]))
             self.register_buffer("std", torch.tensor([0.2, 0.3, 0.4]))
+            self.mean: torch.Tensor
+            self.std: torch.Tensor
 
         def forward(
             self,

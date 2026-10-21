@@ -83,6 +83,7 @@ Clean-source verification evidence is kept under
 `/nasa/max/d12/flow_matching/rtc-production-cleanup-20261018`.
 Historical frozen research artifacts remain separate; this production change
 does not silently reclassify failed proxy studies or promote a model.
+
 # Typed compatibility boundary
 
 The RTC head implements the existing ActionHead protocol through the tested

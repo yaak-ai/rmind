@@ -1,6 +1,7 @@
 import io
 import math
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
@@ -78,7 +79,7 @@ def test_invalid_channel_dimensions_rejected(channels: float) -> None:
         else ValueError
     )
     with pytest.raises(error_type, match="positive even integer"):
-        native_time_frequencies(channels)
+        native_time_frequencies(cast("int", channels))
 
 
 @pytest.mark.parametrize(

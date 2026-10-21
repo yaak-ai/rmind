@@ -1,5 +1,6 @@
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 import torch
@@ -14,6 +15,9 @@ from rmind.scripts.train_d12_rtc import (
     resolved_executable,
     warmstart,
 )
+
+if TYPE_CHECKING:
+    import pytorch_lightning as pl
 
 
 def test_provenance_executable_resolves_absolute_path(
@@ -40,7 +44,9 @@ def test_smoke_checkpoint_stays_quarantined_after_reload_and_default_export(
     tmp_path: Path,
 ) -> None:
     checkpoint = {"state_dict": {"weight": torch.ones(1)}}
-    SmokeCheckpointQuarantine().on_save_checkpoint(None, None, checkpoint)
+    SmokeCheckpointQuarantine().on_save_checkpoint(
+        cast("pl.Trainer", None), cast("pl.LightningModule", None), checkpoint
+    )
     path = tmp_path / "renamed.ckpt"
     torch.save(checkpoint, path)
     metadata = torch.load(path, weights_only=True, map_location="meta")

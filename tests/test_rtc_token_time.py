@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ from torch import nn
 
 from rmind.components.fm_action_head import ActionHead
 from rmind.components.rtc_flow_head import TokenTimeFlowHead
+from rmind.models.control_transformer import PredictionConfig
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 
 
@@ -32,12 +34,15 @@ def test_explicit_sampling_prefix_and_policy_api(length: int) -> None:
     prefix = torch.randn(2, 3, 8, 3)
     mask = (torch.arange(8) < length).expand(2, 3, -1)
     saved = [value.clone() for value in (features, noise, prefix, mask)]
-    policy = SimpleNamespace(
-        fm_head=head,
-        action_horizon=8,
-        action_names=list(range(3)),
-        fm_inference_steps=5,
-        fm_x0="sample",
+    policy = cast(
+        "PatchPolicyContinuous",
+        SimpleNamespace(
+            fm_head=head,
+            action_horizon=8,
+            action_names=list(range(3)),
+            fm_inference_steps=5,
+            fm_x0="sample",
+        ),
     )
     expected = head.sample(
         features.flatten(0, 1),
@@ -57,12 +62,15 @@ def test_explicit_sampling_prefix_and_policy_api(length: int) -> None:
 
 
 def test_legacy_head_cannot_be_conditioned() -> None:
-    policy = SimpleNamespace(
-        fm_head=ActionHead("fm", 8, 1, 24, hidden=16),
-        action_horizon=8,
-        action_names=list(range(3)),
-        fm_inference_steps=5,
-        fm_x0="zero",
+    policy = cast(
+        "PatchPolicyContinuous",
+        SimpleNamespace(
+            fm_head=ActionHead("fm", 8, 1, 24, hidden=16),
+            action_horizon=8,
+            action_names=list(range(3)),
+            fm_inference_steps=5,
+            fm_x0="zero",
+        ),
     )
     with pytest.raises(ValueError, match="trained token-time"):
         PatchPolicyContinuous.fm_sample(
@@ -128,7 +136,10 @@ def test_suffix_element_normalization_and_padding() -> None:
     )
     assert zero_loss.item() == 0
     zero_loss.backward()
-    assert all(torch.isfinite(parameter.grad).all() for parameter in head.parameters())
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        for parameter in head.parameters()
+    )
 
 
 @pytest.mark.parametrize("weighted", [False, True])
@@ -152,16 +163,23 @@ def test_actual_patch_policy_training_updates_head_and_trunk(
         action_mean=(0.1, -0.2, 0.3),
         action_std=(0.2, 0.3, 0.4),
         fm_action_weights=(1.0, 2.0, 1.0) if weighted else None,
+        prediction_config=PredictionConfig(),
     )
     trunk = nn.Linear(5, 8)
     monkeypatch.setattr(policy, "_features", lambda _batch: trunk(torch.ones(2, 3, 5)))
-    policy.log_dict = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(policy, "log_dict", lambda *_args, **_kwargs: None)
     result = policy.training_step(
         {name: torch.randn(2, 3, 8) for name in ("traction", "steering", "fork1")}, 0
     )
-    result["loss"].backward()
-    assert torch.isfinite(result["loss"])
+    assert isinstance(result, dict)
+    losses = cast("dict[str, torch.Tensor]", result)
+    loss = losses["loss"]
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert trunk.weight.grad is not None
     assert trunk.weight.grad.abs().sum() > 0
+    assert isinstance(policy.fm_head, TokenTimeFlowHead)
+    assert policy.fm_head.in_proj.weight.grad is not None
     assert policy.fm_head.in_proj.weight.grad.abs().sum() > 0
 
 
@@ -174,6 +192,8 @@ def test_exported_head_onnx_preserves_raw_prefix(tmp_path: Path) -> None:
             self.head = small_head()
             self.register_buffer("mean", torch.tensor([0.1, -0.2, 0.3]))
             self.register_buffer("std", torch.tensor([0.2, 0.3, 0.4]))
+            self.mean: torch.Tensor
+            self.std: torch.Tensor
 
         def forward(
             self,

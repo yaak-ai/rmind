@@ -13,6 +13,7 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
+from rmind.components.rtc_flow_head import TokenTimeFlowHead
 from rmind.models.d12_flow_decoder import OUTPUT_NAMES, D12FlowDecoderStep
 from rmind.models.patch_policy_continuous import PatchPolicyContinuous
 from rmind.models.patch_policy_decoder import PatchPolicyDecoderStep
@@ -154,14 +155,14 @@ def main() -> None:
             )
             rtc_inputs = ()
             if decoder.rtc_enabled:
+                head = policy.fm_head
+                if not isinstance(head, TokenTimeFlowHead):
+                    msg = "RTC decoder requires a token-time flow head"
+                    raise TypeError(msg)
                 clean_prefix = noise.new_zeros((1, policy.action_horizon, 3))
                 prefix_mask = noise.new_zeros((1, policy.action_horizon))
                 if previous_actions is not None:
-                    forecast = (
-                        1 + step % policy.fm_head.max_prefix
-                        if policy.fm_head.max_prefix
-                        else 0
-                    )
+                    forecast = 1 + step % head.max_prefix if head.max_prefix else 0
                     elapsed = manifest["rtc"]["execution_horizon"]
                     clean_prefix[:, :forecast] = previous_actions[
                         :, elapsed : elapsed + forecast
