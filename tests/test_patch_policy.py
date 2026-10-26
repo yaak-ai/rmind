@@ -16,6 +16,7 @@ from torchvision.ops import MLP
 
 from rmind.components.base import Modality
 from rmind.components.containers import ModuleDict
+from rmind.components.flow_matching import FlowMatchingTrajectoryHead
 from rmind.components.loss import FocalLoss, WinnerTakesAllPoseLoss
 from rmind.components.nn import Embedding
 from rmind.components.norm import ImageNormalize, Scaler, UniformBinner
@@ -148,6 +149,8 @@ def _make_model(  # noqa: PLR0913
     num_register_tokens: int = 0,
     turn_signal_head: bool = False,
     with_trajectory_head: bool = False,
+    # FlowMatchingTrajectoryHead instead of the multi-hypothesis MLP
+    trajectory_flow_matching: bool = False,
     # test-only default (production default in PatchPolicy is 0.0, see class
     # docstring); a nonzero weight here so trajectory-gradient tests actually
     # exercise the path -- the gate test below overrides it back to 0.0.
@@ -207,7 +210,18 @@ def _make_model(  # noqa: PLR0913
         if turn_signal_head
         else None,
         trajectory_head=(
-            MLP(POLICY_DIM, [16, NUM_TRAJECTORY_HYPOTHESES * TRAJECTORY_HORIZON * 3])
+            (
+                FlowMatchingTrajectoryHead(
+                    in_channels=POLICY_DIM,
+                    num_poses=TRAJECTORY_HORIZON,
+                    hidden_channels=(16,),
+                    num_inference_steps=2,
+                )
+                if trajectory_flow_matching
+                else MLP(
+                    POLICY_DIM, [16, NUM_TRAJECTORY_HYPOTHESES * TRAJECTORY_HORIZON * 3]
+                )
+            )
             if with_trajectory_head
             else None
         ),
@@ -1351,6 +1365,98 @@ def test_trajectory_weight_zero_reproduces_baseline_bit_for_bit() -> None:
 
 # trajectory-mode classifier (see PatchPolicy docstring, "mode_head")
 # --------------------------------------------------------------------------- #
+
+
+def test_flow_matching_trajectory_head_metrics_and_gradients() -> None:
+    model = _make_model(with_trajectory_head=True, trajectory_flow_matching=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    metrics = model._compute_metrics(batch)  # noqa: SLF001
+    losses = cast("dict[str, Tensor]", metrics["policy", "loss"])
+    assert losses["trajectory"].isfinite()
+
+    readout_metrics = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    for name in (
+        "trajectory_loss_xy",
+        "trajectory_loss_heading",
+        "trajectory_best_index_unique_frac",
+        "trajectory_deterministic_loss_xy",
+        "trajectory_deterministic_loss_heading",
+        "trajectory_sample_spread_xy",
+    ):
+        assert readout_metrics[name].isfinite(), name
+
+    cast("Tensor", cast("TensorDict", losses).sum(reduce=True)).backward()
+    assert model.trajectory_head is not None
+    assert all(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.trajectory_head.parameters()
+    )
+
+
+def test_flow_matching_trajectory_head_samples_only_outside_training() -> None:
+    """Training logs the served noise-free trajectory only; the best-of-N
+    sample diagnostics are validation-only."""
+    model = _make_model(with_trajectory_head=True, trajectory_flow_matching=True)
+    model.train()
+
+    metrics = model._compute_metrics(_make_batch(with_trajectory_target=True))  # noqa: SLF001
+    readout_metrics = cast("dict[str, Tensor]", metrics["policy", "metric"])
+    assert readout_metrics["trajectory_deterministic_loss_xy"].isfinite()
+    assert readout_metrics["trajectory_deterministic_loss_heading"].isfinite()
+    for name in (
+        "trajectory_loss_xy",
+        "trajectory_loss_heading",
+        "trajectory_best_index_unique_frac",
+        "trajectory_sample_spread_xy",
+    ):
+        assert name not in readout_metrics, name
+
+
+def test_flow_matching_trajectory_weight_scales_the_loss() -> None:
+    batch = _make_batch(with_trajectory_target=True)
+    losses = {}
+    for weight in (1.0, 0.25):
+        model = _make_model(
+            with_trajectory_head=True,
+            trajectory_flow_matching=True,
+            trajectory_weight=weight,
+        )
+        _fill_deterministic(model)
+        torch.manual_seed(0)
+        metrics = model._compute_metrics(batch)  # noqa: SLF001
+        losses[weight] = cast("Tensor", metrics["policy", "loss", "trajectory"])
+    torch.testing.assert_close(losses[0.25], 0.25 * losses[1.0])
+
+
+def test_flow_matching_trajectory_head_predict_step() -> None:
+    model = _make_model(with_trajectory_head=True, trajectory_flow_matching=True)
+    batch = _make_batch(with_trajectory_target=True)
+
+    predictions = model.predict_step(batch)
+
+    assert predictions["trajectory", "prediction"].shape == (
+        BATCH_SIZE,
+        NUM_TRAJECTORY_HYPOTHESES,
+        TRAJECTORY_HORIZON,
+        3,
+    )
+    for key in ("best_prediction", "deterministic_prediction", "ground_truth"):
+        assert predictions["trajectory", key].shape == (
+            BATCH_SIZE,
+            TRAJECTORY_HORIZON,
+            3,
+        ), key
+    assert predictions["trajectory", "best_index"].shape == (BATCH_SIZE,)
+
+
+def test_flow_matching_trajectory_head_rejects_a_mode_head() -> None:
+    with pytest.raises(ValueError, match="FlowMatchingTrajectoryHead"):
+        _make_model(
+            with_trajectory_head=True,
+            trajectory_flow_matching=True,
+            with_mode_head=True,
+        )
 
 
 def test_mode_head_requires_a_trajectory_head() -> None:

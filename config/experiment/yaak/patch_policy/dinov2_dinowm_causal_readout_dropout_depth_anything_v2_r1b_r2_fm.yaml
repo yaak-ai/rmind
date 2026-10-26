@@ -1,0 +1,43 @@
+# @package _global_
+
+defaults:
+  - /experiment/yaak/patch_policy/dinov2_dinowm_causal_readout_dropout_depth_anything_v2_r1b_r2
+  - _self_
+
+# r1b_r2 with the multi-hypothesis winner-takes-all trajectory MLP swapped for
+# a rectified-flow head (rmind.components.flow_matching). Same readout feature,
+# same LayerNorm + GELU widths, same trajectory_weight. One trajectory, no
+# selection: the served trajectory is the noise-free flow sample
+# (trajectory_deterministic_loss_*). num_trajectory_hypotheses only sets how
+# many samples validation and predict_step draw for the best-of-N and
+# trajectory_sample_spread_xy diagnostics; losses.trajectory
+# (WinnerTakesAllPoseLoss) only selects among them. The flow head has no
+# hypothesis slots to classify, so mode_head is off.
+
+model:
+  trajectory_head:
+    _target_: rmind.components.flow_matching.FlowMatchingTrajectoryHead
+    num_poses: ${trajectory_horizon}
+    hidden_channels: [1024, 1024]
+    num_inference_steps: 10
+    normalizer_warmup_steps: 1000
+  mode_head: null
+
+wandb:
+  tags:
+    [
+      patch_policy,
+      dinov2_dinowm_causal,
+      neighbor_smoothing,
+      readout_registers,
+      retile,
+      trajectory_head,
+      trajectory_fm,
+      turn_signal_head,
+      dropout,
+      depth_anything_v2,
+      yaw_aug,
+      frame_mask,
+      photometric,
+      head_ln_gelu,
+    ]

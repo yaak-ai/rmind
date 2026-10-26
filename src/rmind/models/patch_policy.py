@@ -17,6 +17,7 @@ from torch.utils.checkpoint import checkpoint
 
 from rmind.components import optimizers
 from rmind.components.containers import ModuleDict
+from rmind.components.flow_matching import FlowMatchingTrajectoryHead
 from rmind.components.loss import (
     winner_takes_all_pose_l1,
     winner_takes_all_pose_l1_components,
@@ -233,6 +234,19 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
     head is training-time-only: it never feeds `joint_actions` or any
     served/exported output, so `forward`/ONNX export are unaffected either way.
 
+    `trajectory_head` may instead be a
+    `rmind.components.flow_matching.FlowMatchingTrajectoryHead`: it is then
+    trained with its own flow-matching loss (still scaled by
+    `trajectory_weight`), and the `num_trajectory_hypotheses` "hypotheses"
+    become that many independent flow samples. The served trajectory is the
+    noise-free one (`trajectory_deterministic_loss_*`); samples are drawn
+    only outside training, for validation diagnostics and `predict_step`.
+    `losses["trajectory"]` is still required but only defines the
+    winner-takes-all oracle those diagnostics (`trajectory_loss_xy`/
+    `_heading`, now best-of-N samples) and `predict_step`'s `best_index`
+    select with. A flow head has no fixed hypothesis slots to classify, so
+    it cannot be combined with `mode_head`.
+
     `mode_head` (opt-in, `None` = off; requires `trajectory_head`): a small
     classifier reading the SAME readout feature as `trajectory_head`, trained
     (`losses["mode"]`, e.g. `torch.nn.CrossEntropyLoss`, required when the head
@@ -381,6 +395,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 msg = (
                     "mode_head requires losses['mode'] (e.g. "
                     "torch.nn.CrossEntropyLoss) to supervise it"
+                )
+                raise ValueError(msg)
+            if isinstance(self.trajectory_head, FlowMatchingTrajectoryHead):
+                msg = (
+                    "mode_head cannot be combined with a "
+                    "FlowMatchingTrajectoryHead: flow samples have no fixed "
+                    "hypothesis index to classify"
                 )
                 raise ValueError(msg)
 
@@ -867,14 +888,64 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         arXiv:2601.05083) from the SAME readout `features` as `_predict_chunk`
         -- no VQ, no cross-attention decoder, just an MLP over the trunk's
         per-frame feature vector. `(*b, num_trajectory_hypotheses, num_poses, 3)`.
+        With a `FlowMatchingTrajectoryHead` the hypotheses are independent
+        flow samples instead (no gradient: the flow trains through its own
+        loss, see `_compute_metrics`).
 
         Caller must check `self.trajectory_head is not None` first.
         """
         assert self.trajectory_head is not None  # noqa: S101
+        if isinstance(self.trajectory_head, FlowMatchingTrajectoryHead):
+            return self.trajectory_head.sample(features, self.num_trajectory_hypotheses)
         pred = self.trajectory_head(features)
         return rearrange(
             pred, "... (q p c) -> ... q p c", q=self.num_trajectory_hypotheses, c=3
         )
+
+    def _trajectory_outputs(
+        self, features: Tensor, target: Tensor
+    ) -> tuple[Tensor, Tensor | None, Tensor | None]:
+        """`(unweighted loss, trajectory_pred, trajectory_deterministic)`.
+
+        A regression head returns its `(b, t, q, p, 3)` hypotheses and no
+        deterministic trajectory. A flow head returns its own flow-matching
+        loss and the served noise-free `(b, t, p, 3)` trajectory; its
+        samples only feed diagnostics, so they are skipped in training.
+
+        Caller must check `self.trajectory_head is not None` first.
+        """
+        if isinstance(self.trajectory_head, FlowMatchingTrajectoryHead):
+            loss = self.trajectory_head.loss(features, target)
+            deterministic = self.trajectory_head(features)
+            pred = None if self.training else self._predict_trajectory(features)
+            return loss, pred, deterministic
+        pred = self._predict_trajectory(features)
+        return self.losses["trajectory"](pred, target), pred, None
+
+    @staticmethod
+    def _flow_trajectory_metrics(
+        deterministic: Tensor, target: Tensor, samples: Tensor | None
+    ) -> dict[str, Tensor]:
+        """Flow-head diagnostics: the served noise-free trajectory's errors
+        and, when `samples` `(b, t, q, p, 3)` are given, their spread."""
+        _, _, _, xy_loss, heading_loss = winner_takes_all_pose_l1_components(
+            deterministic.unsqueeze(-3), target
+        )
+        metrics = {
+            "trajectory_deterministic_loss_xy": xy_loss.mean(),
+            "trajectory_deterministic_loss_heading": heading_loss.mean(),
+        }
+        if samples is not None:
+            # mean pairwise xy distance between flow samples (meters, averaged
+            # over poses): ~0 means the flow has collapsed to one trajectory
+            # per context, larger means it spreads mass over several
+            xy = samples[..., :2]  # (b, t, q, p, 2)
+            q = xy.shape[-3]
+            pairwise = (xy.unsqueeze(-4) - xy.unsqueeze(-5)).norm(dim=-1)
+            metrics["trajectory_sample_spread_xy"] = (
+                pairwise.sum(dim=(-3, -2)) / (q * (q - 1))
+            ).mean()
+        return metrics
 
     def _predict_mode(self, features: Tensor) -> Tensor:
         """Classifier logits over trajectory hypotheses, `(*b,
@@ -1082,12 +1153,13 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         trajectory_pred: Tensor | None = None
         trajectory_target: Tensor | None = None
         mode_logits: Tensor | None = None
+        trajectory_deterministic: Tensor | None = None
         if self.trajectory_head is not None:
             trajectory_target = trajectory_target_out["trajectory_target"]
-            trajectory_pred = self._predict_trajectory(features)  # (b, t, q, p, 3)
-            losses["trajectory"] = self.trajectory_weight * self.losses["trajectory"](
-                trajectory_pred, trajectory_target
+            trajectory_loss, trajectory_pred, trajectory_deterministic = (
+                self._trajectory_outputs(features, trajectory_target)
             )
+            losses["trajectory"] = self.trajectory_weight * trajectory_loss
             if self.mode_head is not None:
                 mode_logits = self._predict_mode(features)  # (b, t, q)
 
@@ -1114,6 +1186,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
             turn_signal_target=turn_signal_target,
             trajectory_pred=trajectory_pred,
             trajectory_target=trajectory_target,
+            trajectory_deterministic=trajectory_deterministic,
             best_index_out=best_index_out,
         )
 
@@ -1148,6 +1221,7 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         turn_signal_target: Tensor | None = None,
         trajectory_pred: Tensor | None = None,
         trajectory_target: Tensor | None = None,
+        trajectory_deterministic: Tensor | None = None,
         best_index_out: dict[str, Tensor] | None = None,
     ) -> dict[str, Tensor]:
         """Gradient-free diagnostics at the deployed readout.
@@ -1167,6 +1241,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
         is unset. The metrics computed from them stay UNWEIGHTED (raw units)
         regardless of `trajectory_weight`, since they are diagnostic and
         should stay comparable across a weight sweep (see class docstring).
+        `trajectory_deterministic` `(b, t, num_poses, 3)` is a flow head's
+        noise-free trajectory (None otherwise): its errors are the single
+        trajectory one would serve. A flow head's `trajectory_pred` (flow
+        samples) is only given outside training, adding the best-of-N
+        metrics above and `trajectory_sample_spread_xy`.
 
         `best_index_out`, like `token_norms`/`turn_signal_chunk`, is an
         out-parameter: when given and `trajectory_pred` is not None, filled
@@ -1259,6 +1338,11 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 )
                 if best_index_out is not None:
                     best_index_out["best_index"] = best_index
+
+            if trajectory_deterministic is not None and trajectory_target is not None:
+                metrics |= self._flow_trajectory_metrics(
+                    trajectory_deterministic, trajectory_target, trajectory_pred
+                )
 
             # context-depth localizer for windowed causal trunks: readouts at
             # positions < window-1 train under a PARTIAL window, positions
@@ -1561,6 +1645,12 @@ class PatchPolicy(pl.LightningModule, LoadableFromArtifact):
                 },
                 batch_size=[trajectory_pred.shape[0]],
             )
+
+            if isinstance(self.trajectory_head, FlowMatchingTrajectoryHead):
+                # noise-free trajectory: what a flow head would serve
+                result["trajectory"]["deterministic_prediction"] = self.trajectory_head(
+                    features
+                )
 
             if self.mode_head is not None:
                 # the classifier's own pick, alongside the oracle `best_index`
