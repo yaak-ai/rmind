@@ -1,0 +1,18 @@
+# @package _global_
+
+defaults:
+  - /model: yaak/trajectory_tokenizer/raw
+  - /datamodule: yaak/train
+  - /trainer: default
+  - /trainer/callbacks: action_tokenizer
+  - /paths: yaak/default
+  - /wandb: yaak/rmind
+  - _self_
+
+episode_length: 6
+trajectory_horizon: 5
+trajectory_hidden_dim: 128
+trajectory_latent_dim: 384
+
+codebook_size: 16
+num_quantizers: 4
