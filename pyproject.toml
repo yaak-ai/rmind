@@ -61,6 +61,13 @@ export = [
   "onnxscript>=0.7.0",
   "wandb>=0.27.2",
 ]
+# the pallet-detector PoC: AprilTag labels, plots, the zero-shot proposer
+pallet = [
+  "matplotlib>=3.10.3",
+  "opencv-python-headless>=4.12.0",
+  # 5.15+ needs huggingface-hub 2, which the rest of the lock (timm) is not on
+  "transformers>=4.57.0,<5.15",
+]
 predict = [
   "wandb>=0.27.2",
   "rbyte[video,visualize]",
@@ -168,6 +175,21 @@ ignore = [
   "assert",
   "suspicious-pickle-usage",
   "suspicious-pickle-import"
+]
+# the pallet-detector PoC scripts: one-shot research pipelines (long main()s,
+# lazy heavy imports, literal thresholds, cv2 passed around), not library code
+"src/rmind/scripts/pallet_*.py" = [
+  "magic-value-comparison",
+  "import-outside-top-level",
+  "too-many-locals",
+  "too-many-branches",
+  "too-many-statements",
+  "too-many-arguments",
+  "too-many-positional-arguments",
+  "too-many-nested-blocks",
+  "complex-structure",
+  "missing-type-function-argument",
+  "missing-return-type-undocumented-public-function"
 ]
 
 [tool.ruff.lint.isort]
