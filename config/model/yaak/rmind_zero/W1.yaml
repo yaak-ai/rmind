@@ -6,29 +6,11 @@ episode_builder:
   _target_: rmind.components.episode.EpisodeBuilder
   _recursive_: true
   _convert_: all
-  # Observation = images only; condition = speed, route waypoints and current actions.
-  # Speed and waypoints are typed `action` so the factorised mask groups them with the
-  # actions: the observation summary (OS) sees only the image, and the `action_summary`
-  # slot is the condition summary (CS) over speed + waypoints + actions.
+  # NOTE: the latent (RouteWorldLatent) reads the raw DINO patches and waypoints
+  # directly; no objective reads the encoder / OS / AS any more.
   timestep:
     - [observation, image, cam_front_left]
-    - [action, continuous, speed]
-    - [action, context, waypoints]
-    - [special, summary, observation_summary]
-    - [action, continuous, gas_pedal]
-    - [action, continuous, brake_pedal]
-    - [action, continuous, steering_angle]
-    - [action, discrete, turn_signal]
-    - [special, summary, action_summary]
-
   special_tokens:
-    summary:
-      observation_summary:
-        _target_: builtins.range
-        _args_:
-          - 64
-      action_summary: [64]
-
     utility:
       latent:
         _target_: builtins.range
@@ -256,42 +238,19 @@ episode_builder:
             pattern: "... c h w -> ... (h w) c"
 
       continuous:
-        speed:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${speed_bins}
-          embedding_dim: ${encoder_embedding_dim}
-        gas_pedal:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${gas_pedal_bins}
-          embedding_dim: ${encoder_embedding_dim}
-        brake_pedal:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${brake_pedal_bins}
-          embedding_dim: ${encoder_embedding_dim}
-        steering_angle:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: ${steering_angle_bins}
-          embedding_dim: ${encoder_embedding_dim}
+        speed: null
+        gas_pedal: null
+        brake_pedal: null
+        steering_angle: null
         gas_pedal_diff: null
         brake_pedal_diff: null
         steering_angle_diff: null
 
       context:
-        waypoints:
-          _target_: rmind.components.nn.Linear
-          in_features: 2
-          out_features: ${encoder_embedding_dim}
+        waypoints: null
 
       discrete:
-        turn_signal:
-          _target_: rmind.components.nn.Embedding
-          num_embeddings: 3
-          embedding_dim: ${encoder_embedding_dim}
-
-      summary:
-        _target_: rmind.components.nn.Embedding
-        num_embeddings: 65
-        embedding_dim: ${encoder_embedding_dim}
+        turn_signal: null
 
       utility:
         _target_: rmind.components.nn.Embedding
@@ -314,70 +273,19 @@ episode_builder:
             out_features: ${encoder_embedding_dim}
 
       continuous:
-        speed:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${encoder_embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${encoder_embedding_dim}
-        gas_pedal:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${encoder_embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${encoder_embedding_dim}
-        brake_pedal:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${encoder_embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${encoder_embedding_dim}
-        steering_angle:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${encoder_embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${encoder_embedding_dim}
+        speed: null
+        gas_pedal: null
+        brake_pedal: null
+        steering_angle: null
         gas_pedal_diff: null
         brake_pedal_diff: null
         steering_angle_diff: null
 
       context:
-        waypoints:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${encoder_embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${encoder_embedding_dim}
+        waypoints: null
 
       discrete:
-        turn_signal:
-          _target_: torch.nn.Sequential
-          _args_:
-            - _target_: torch.nn.LayerNorm
-              normalized_shape: ${encoder_embedding_dim}
-            - _target_: rmind.components.nn.Linear
-              in_features: ${encoder_embedding_dim}
-              out_features: ${encoder_embedding_dim}
-
-      summary:
-        _target_: torch.nn.Sequential
-        _args_:
-          - _target_: torch.nn.LayerNorm
-            normalized_shape: ${encoder_embedding_dim}
-          - _target_: rmind.components.nn.Linear
-            in_features: ${encoder_embedding_dim}
-            out_features: ${encoder_embedding_dim}
+        turn_signal: null
 
       utility: # do we need it?
         _target_: torch.nn.Sequential
@@ -409,32 +317,9 @@ episode_builder:
     _target_: rmind.components.mask.FactorizedCausalAttentionMaskBuilder
 
 encoder:
-  _target_: rmind.utils.functional.compiled
-  backend: inductor
-  module:
-    _target_: rmind.components.transformer.TransformerEncoder
-    dim_model: ${encoder_embedding_dim}
-    num_layers: ${num_layers}
-    num_heads: ${num_heads}
-    attn_dropout: 0.1
-    resid_dropout: 0.1
-    mlp_dropout: 0.1
-    hidden_layer_multiplier: 1
-    emb_norm:
-      _target_: torch.nn.LayerNorm
-      normalized_shape: ${encoder_embedding_dim}
-    final_norm:
-      _target_: torch.nn.LayerNorm
-      normalized_shape: ${encoder_embedding_dim}
-    rope:
-      _target_: rmind.components.position_encoding.RotaryPositionalEmbeddings
-      dim:
-        _target_: operator.floordiv
-        _args_:
-          - ${encoder_embedding_dim}
-          - ${num_heads}
-      max_seq_len: 256
-      base: 10
+  # unused: the latent reads DINO patches + waypoints directly and no objective reads the
+  # encoder output, so the transformer encoder is replaced by a no-op
+  _target_: rmind.components.nn.NoEncoder
 
 optimizer:
   _target_: rmind.components.optimizers.SelectiveAdamW
@@ -457,15 +342,24 @@ lr_scheduler:
 
 
 latent:
-  _target_: rmind.components.world_latent.WorldModelLatent
-  # The learnable latent queries read the image-only observation summary (K = V = OS);
-  # the condition summary CS (speed, waypoints, actions) only biases their cross-attention
-  # logits, b_j = <W OS_j, U CS>: it decides where L reads, never what. INV and POLICY
-  # read L and never see CS.
-  condition_bias:
-    _target_: rmind.components.condition_bias.ConditionBias
-    dim: ${encoder_embedding_dim}
-    num_heads: 4  # = latent decoder heads
+  _target_: rmind.components.route_latent.RouteWorldLatent
+  # q_t = proj(z_q(waypoints_t)): the frozen waypoint tokenizer's latent (4 x 32 RVQ) asks the
+  # current frame's DINO patches; E_t (32 tokens) is the route-guided evidence; W = the
+  # factorized encoder over E (full within a timestep, causal across timesteps). No speed and
+  # no actions enter the latent: speed is an INV target, actions are targets / FWD input.
+  context_tokenizer:
+    _target_: rmind.models.waypoints_tokenizer.WaypointsLatentTokenizer
+    tokenizer:
+      _target_: rmind.models.waypoints_tokenizer.WaypointsTokenizer.load_from_wandb_artifact
+      artifact: yaak/waypoints-tokenizer/model-gzxgumtf:v9
+      weights_only: false
+  question_projection:
+    _target_: rmind.components.nn.Linear
+    in_features: 384  # waypoint tokenizer latent dim
+    out_features: ${encoder_embedding_dim}
+  key_norm:
+    _target_: torch.nn.LayerNorm
+    normalized_shape: ${image_embedding_dim}
   latent:
     _target_: rmind.components.transformer.CrossAttentionDecoderHead
     decoder:
@@ -479,13 +373,34 @@ latent:
       hidden_layer_multiplier: 1
       self_attn: true
     final_norm:
-      # Identity: keep L's residual-stream magnitude so the gram `sim` (absolute L2)
-      # can match raw DINOv3 targets. Keys are LN'd locally in INV/POLICY instead.
       _target_: torch.nn.Identity
     output_projection:
       _target_: rmind.components.nn.Linear
       in_features: ${image_embedding_dim}
       out_features: ${image_embedding_dim}
+  world:
+    # factorized encoder over the per-step latents: full attention among the 32 tokens
+    # within a timestep, causal attention across timesteps (per token, rotary time positions)
+    _target_: rmind.components.transformer.TransformerEncoder
+    dim_model: ${image_embedding_dim}
+    num_layers: 2
+    num_heads: 4
+    attn_dropout: 0.1
+    resid_dropout: 0.1
+    mlp_dropout: 0.1
+    hidden_layer_multiplier: 1
+    final_norm:
+      _target_: torch.nn.LayerNorm
+      normalized_shape: ${image_embedding_dim}
+    rope:
+      _target_: rmind.components.position_encoding.RotaryPositionalEmbeddings
+      dim:
+        _target_: operator.floordiv
+        _args_:
+          - ${image_embedding_dim}
+          - 4
+      max_seq_len: 256
+      base: 10
 
 objectives:
   _target_: rmind.components.containers.ModuleDict
@@ -493,6 +408,37 @@ objectives:
   modules:
     forward_dynamics:
       _target_: rmind.components.objectives.forward_dynamics.ForwardDynamicsObjective
+      # (W_t, e_t) -> I(t+1): e_t = proj(z_q(codes of a_t)), the frozen per-step tokenizer
+      action_tokenizer:
+        _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
+        artifact: yaak/rmind/model-m35hyvbp:v9
+        weights_only: false
+      action_codes: [input_tokens, joint_actions]
+      action_projection:
+        _target_: rmind.components.nn.Linear
+        in_features: 384  # tokenizer codebook dim
+        out_features: ${image_embedding_dim}
+      # speed(t+1): a separate head on [mean W_t ; e_t] (dynamics, so it lives in FWD; in INV
+      # it would bias INV to motion). Not read from the frame decoder.
+      aux_heads:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            speed:
+              _target_: torchvision.ops.MLP
+              in_channels: ${eval:'2 * ${encoder_embedding_dim}'}
+              hidden_channels:
+                - ${encoder_embedding_dim}
+                - ${speed_bins}
+      aux_losses:
+        _target_: rmind.components.containers.ModuleDict
+        modules:
+          continuous:
+            speed:
+              _target_: torch.nn.CrossEntropyLoss
+      aux_targets:
+        continuous:
+          speed: [input_tokens, continuous, speed]  # speed(t+1), binned
       heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
@@ -545,26 +491,9 @@ objectives:
               _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
               artifact: yaak/rmind/model-m35hyvbp:v9
               weights_only: false
-      # stage 1: queries read the latent (K = V = L); stage 2 (`decoder`) reads the image
-      # (K = V = I) with latent-informed queries -> no key_i <-> value_i pairing, N latents free
-      latent_decoder:
-        _target_: rmind.components.transformer.CrossAttentionDecoderHead
-        decoder:
-          _target_: rmind.components.transformer.CrossAttentionDecoder
-          dim_model: ${encoder_embedding_dim}
-          num_layers: 2
-          num_heads: 4
-          attn_dropout: 0.1
-          resid_dropout: 0.1
-          mlp_dropout: 0.1
-          hidden_layer_multiplier: 1
-          self_attn: true
-        final_norm:
-          _target_: torch.nn.LayerNorm
-          normalized_shape: ${encoder_embedding_dim}
-        output_projection:
-          _target_: torch.nn.Identity
-      key_source: image
+      # INV reads only W(t+1): W is causal over time, so W(t+1) already attends to W(t)
+      key_source: image  # key = value
+      value_source: latent  # read W(t+1), not the raw frame I(t+1)
       decoder:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:
@@ -607,26 +536,11 @@ objectives:
       key_norm:  # LN the keys (=L) locally, since L is no longer LN'd at the latent head
         _target_: torch.nn.LayerNorm
         normalized_shape: ${encoder_embedding_dim}
-      # stage 1: queries read the latent (K = V = L); stage 2 (`decoder`) reads the image
-      # (K = V = I) with latent-informed queries -> no key_i <-> value_i pairing, N latents free
-      latent_decoder:
-        _target_: rmind.components.transformer.CrossAttentionDecoderHead
-        decoder:
-          _target_: rmind.components.transformer.CrossAttentionDecoder
-          dim_model: ${encoder_embedding_dim}
-          num_layers: 2
-          num_heads: 4
-          attn_dropout: 0.1
-          resid_dropout: 0.1
-          mlp_dropout: 0.1
-          hidden_layer_multiplier: 1
-          self_attn: true
-        final_norm:
-          _target_: torch.nn.LayerNorm
-          normalized_shape: ${encoder_embedding_dim}
-        output_projection:
-          _target_: torch.nn.Identity
-      key_source: image
+      # POLICY reads ONLY the last world latent W(T-1) (K = V = W). W carries the route
+      # (via the question) and the scene, but no speed and no actions.
+      latent_index: -1
+      value_source: latent
+      key_source: latent
       decoder:
         _target_: rmind.components.transformer.CrossAttentionDecoderHead
         decoder:

@@ -50,11 +50,16 @@ class PolicyObjective(Objective):
         key_norm: InstanceOf[Module] | None = None,
         latent_decoder: InstanceOf[Module] | None = None,
         key_source: Literal["latent", "image"] = "latent",
+        value_source: Literal["image", "latent"] = "image",
+        latent_index: int = -2,
         readout: int = 0,
         sample_codes: bool = True,
     ) -> None:
         super().__init__()
         self.decoder = decoder
+        # value_source="latent", latent_index=-1: read ONLY the last latent L(T-1)
+        self.value_source: Literal["image", "latent"] = value_source
+        self.latent_index: int = latent_index
         self.latent_decoder: Module | None = latent_decoder
         self.key_source: Literal["latent", "image"] = key_source
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
@@ -74,13 +79,16 @@ class PolicyObjective(Objective):
         return self
 
     def _features(self, *, episode: Episode, latent: Tensor) -> Tensor:
-        # policy conditions on the CURRENT frame T-1: value I(T-1), key L(T-2) -- the
-        # FD-supervised latent anchored to T-1, not the unsupervised L(T-1) slot.
-        patches = episode.get(PATCHES)[:, -1:]
-        value = self.value_norm(patches) if self.value_norm is not None else patches
-        # latent is latent[T-2] which is anchored in I[T-1]
-        lat = latent[:, -2:-1]
+        # default: key L(T-2) -- the FD-supervised latent anchored to the CURRENT frame T-1 --
+        # and value I(T-1). value_source="latent" reads only the latent L(latent_index).
+        i = self.latent_index
+        lat = latent[:, i : (i + 1) or None]
         lat = self.key_norm(lat) if self.key_norm is not None else lat
+        if self.value_source == "latent":
+            value = lat
+        else:
+            patches = episode.get(PATCHES)[:, -1:]
+            value = self.value_norm(patches) if self.value_norm is not None else patches
         queries = episode.embeddings.get((Modality.UTILITY, "policy"))[:, -1:]
         if self.latent_decoder is not None:
             queries = self.latent_decoder({"query": queries, "key": lat, "value": lat})
@@ -199,7 +207,7 @@ class PolicyObjective(Objective):
         def _decision_index(h: int) -> Tensor:
             observed = t - h if t > h else t
             d = observed - 1
-            return torch.arange(t, device=embedding.device).expand(b, -1)[:, d : d + 1]
+            return torch.arange(t, device=latent.device).expand(b, -1)[:, d : d + 1]
 
         if (key := ObjectivePredictionKey.GROUND_TRUTH) in keys:
             # strictly-future GT chunk (drop the current step), matching compute_metrics

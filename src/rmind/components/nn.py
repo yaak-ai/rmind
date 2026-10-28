@@ -427,3 +427,12 @@ class OnnxOutputUnpacker(Module):
                 }
             }
         }
+
+
+@final
+class NoEncoder(Module):
+    """Stand-in encoder for models whose objectives do not read the encoder output."""
+
+    @override
+    def forward(self, *_args: Any, **_kwargs: Any) -> None:
+        return None

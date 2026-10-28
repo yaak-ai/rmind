@@ -19,7 +19,18 @@ from rmind.components.objectives.base import (
     Objective,
     ObjectivePredictionKey,
     Prediction,
+    Targets,
 )
+
+
+def _flatten_named(tree: object, prefix: str = "") -> dict[str, Tensor]:
+    if isinstance(tree, Tensor):
+        return {prefix: tree}
+    assert isinstance(tree, dict)
+    out: dict[str, Tensor] = {}
+    for k, v in tree.items():
+        out.update(_flatten_named(v, f"{prefix}/{k}" if prefix else str(k)))
+    return out
 
 
 def joint_vq_loss(
@@ -43,7 +54,7 @@ def joint_vq_loss(
 @final
 class InverseDynamicsObjective(Objective):
     @validate_call
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         tokenizer: InstanceOf[ModuleDict],
@@ -55,11 +66,21 @@ class InverseDynamicsObjective(Objective):
         key_norm: InstanceOf[Module] | None = None,
         latent_decoder: InstanceOf[Module] | None = None,
         key_source: Literal["latent", "image"] = "latent",
+        value_source: Literal["image", "latent"] = "image",
+        aux_heads: InstanceOf[ModuleDict] | None = None,
+        aux_losses: InstanceOf[ModuleDict] | None = None,
+        aux_targets: Targets | None = None,
         readout: int = 0,
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer.requires_grad_(False).eval()  # noqa: FBT003
         self.decoder = decoder
+        # value_source="latent": the second read is the NEXT latent L(t+1) instead of I(t+1)
+        self.value_source: Literal["image", "latent"] = value_source
+        # auxiliary per-step targets at t+1 (e.g. speed), read from the same features
+        self.aux_heads: ModuleDict | None = aux_heads
+        self.aux_losses: ModuleDict | None = aux_losses
+        self.aux_targets: Targets | None = aux_targets
         # W1: queries read L(t) first (K=V=L), then `decoder` reads I(t+1) with K=V=I
         self.latent_decoder: Module | None = latent_decoder
         self.key_source: Literal["latent", "image"] = key_source
@@ -81,10 +102,10 @@ class InverseDynamicsObjective(Objective):
         self, *, episode: Episode, embedding: Tensor, latent: Tensor | None = None
     ) -> Metrics:
         assert latent is not None
-        patches = episode.get(PATCHES)
-        value = self.value_norm(patches) if self.value_norm is not None else patches
+        source = latent if self.value_source == "latent" else episode.get(PATCHES)
+        value = self.value_norm(source) if self.value_norm is not None else source
         lat = self.key_norm(latent) if self.key_norm is not None else latent
-        lat, value = lat[:, :-1], value[:, 1:]  # L(t), I(t+1) actual next frame
+        lat, value = lat[:, :-1], value[:, 1:]  # L(t), next frame I(t+1) or next latent L(t+1)
         queries = episode.embeddings.get((Modality.UTILITY, "inv"))[:, :-1]  # t = 0..T-2
         if self.latent_decoder is not None:
             queries = self.latent_decoder({"query": queries, "key": lat, "value": lat})
@@ -100,15 +121,24 @@ class InverseDynamicsObjective(Objective):
                 self.targets,
                 is_leaf=lambda x: isinstance(x, tuple),
             )
-        return {
-            "loss": joint_vq_loss(
-                features=features,
-                heads=self.heads,
-                losses=self.losses,
-                codes=codes,
-                g=g,
+        losses = joint_vq_loss(
+            features=features, heads=self.heads, losses=self.losses, codes=codes, g=g
+        )
+        if self.aux_heads is not None:
+            assert self.aux_losses is not None
+            assert self.aux_targets is not None
+            aux_logits = self.aux_heads(features)
+            aux_targets = tree_map(
+                lambda path: episode.get(path)[:, 1:],
+                self.aux_targets,
+                is_leaf=lambda x: isinstance(x, tuple),
             )
-        }
+            aux = self.aux_losses(
+                tree_map(lambda lg: lg.flatten(0, 1), aux_logits),
+                tree_map(lambda tg: tg.flatten(), aux_targets),
+            )
+            losses.update(_flatten_named(aux))
+        return {"loss": losses}
 
     @override
     def predict(
