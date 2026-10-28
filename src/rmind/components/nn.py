@@ -431,7 +431,14 @@ class OnnxOutputUnpacker(Module):
 
 @final
 class NoEncoder(Module):
-    """Stand-in encoder for models whose objectives do not read the encoder output."""
+    """Stand-in encoder for models whose objectives do not read the encoder output.
+
+    Accepts and ignores constructor kwargs so generic overrides aimed at the real encoder
+    (e.g. `++model.encoder.disable=true` in `just train-debug`) still instantiate.
+    """
+
+    def __init__(self, **_kwargs: Any) -> None:
+        super().__init__()
 
     @override
     def forward(self, *_args: Any, **_kwargs: Any) -> None:
