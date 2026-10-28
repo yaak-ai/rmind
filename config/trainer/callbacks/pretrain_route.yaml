@@ -1,5 +1,6 @@
-# Same as pretrain.yaml, minus the continuous/discrete embedding similarity plots:
-# the route-latent W1 has no speed/pedal/turn-signal embeddings (they are null).
+# Same as pretrain.yaml, minus:
+#  - the continuous/discrete embedding similarity plots (those embeddings are null in W1)
+#  - WandbAttentionMaskLogger (it plots the encoder's token mask; W1 has no encoder)
 - _target_: rmind.callbacks.LogitBiasSetter
 - _target_: rmind.callbacks.ModuleFreezer
   types:
@@ -13,7 +14,6 @@
   save_on_train_epoch_end: True
 - _target_: pytorch_lightning.callbacks.LearningRateMonitor
   logging_interval: step
-- _target_: rmind.callbacks.WandbAttentionMaskLogger
 - _target_: rmind.callbacks.WandbImageParamLogger
   when: on_train_batch_end
   every_n_batch: 100
