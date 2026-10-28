@@ -135,9 +135,10 @@ class ForwardDynamicsPredictionObjective(Objective):
 class ForwardDynamicsObjective(Objective):
     """Predict the next frame from the latent and gram-anchor it (W0: direct, W1: via decoder).
 
-    With an ``action_tokenizer``, the action a_t taken at each step enters as one extra key
-    token e_t = proj(z_q(codes_t)), the frozen tokenizer's quantized embedding, so the
-    decoder predicts I(t+1) from (L_t, a_t).
+    With an ``action_tokenizer``, the action a_t taken at each step enters as
+    e_t = proj(z_q(codes_t)), the frozen tokenizer's quantized embedding, so the decoder
+    predicts I(t+1) from (L_t, a_t): fused channel-wise into every latent token with an
+    ``action_fusion`` module, else appended as one extra key/value token.
     """
 
     @validate_call
@@ -151,9 +152,11 @@ class ForwardDynamicsObjective(Objective):
         action_tokenizer: InstanceOf[Module] | None = None,
         action_codes: tuple[str, ...] | None = None,
         action_projection: InstanceOf[Module] | None = None,
+        action_fusion: InstanceOf[Module] | None = None,
         aux_heads: InstanceOf[ModuleDict] | None = None,
         aux_losses: InstanceOf[ModuleDict] | None = None,
         aux_targets: Targets | None = None,
+        aux_queries: int = 0,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -167,11 +170,17 @@ class ForwardDynamicsObjective(Objective):
         )
         self.action_codes: tuple[str, ...] | None = action_codes
         self.action_projection: Module | None = action_projection
-        # auxiliary per-step targets at t+1 (e.g. speed): a separate head on the latent,
-        # [mean_n L_t ; e_t] (or mean_n L_t without an action token), not on the decoder
+        # with action_fusion: channel-wise [L_t,k ; e_t] -> fusion -> d for every latent token k;
+        # without it, e_t is appended as one extra key/value token
+        self.action_fusion: Module | None = action_fusion
+        # auxiliary per-step targets at t+1 (e.g. speed). With aux_queries=k the decoder runs
+        # with k extra query tokens after the frame queries; the LAST one feeds aux_heads and
+        # only the first queries are frame predictions. With aux_queries=0 the aux head reads
+        # [mean_n L_t ; e_t] (or mean_n L_t without an action).
         self.aux_heads: ModuleDict | None = aux_heads
         self.aux_losses: ModuleDict | None = aux_losses
         self.aux_targets: Targets | None = aux_targets
+        self.aux_queries: int = aux_queries
 
     @override
     def train(self, mode: bool = True) -> "ForwardDynamicsObjective":
@@ -204,8 +213,15 @@ class ForwardDynamicsObjective(Objective):
             action = None
             if self.action_tokenizer is not None:
                 action = self._action_token(episode).to(latent.dtype)
-                context = torch.cat([latent, action], dim=-2)
+                if self.action_fusion is not None:
+                    tiled = action.expand(*latent.shape[:-1], action.shape[-1])
+                    context = self.action_fusion(torch.cat([latent, tiled], dim=-1))
+                else:
+                    context = torch.cat([latent, action], dim=-2)
             pred = self.decoder({"query": query, "key": context, "value": context})
+            if self.aux_queries:
+                aux_feature = pred[..., -1, :]  # (b, t, d): the last extra query
+                pred = pred[..., : -self.aux_queries, :]  # frame queries only
         else:
             pred = latent
 
@@ -222,9 +238,12 @@ class ForwardDynamicsObjective(Objective):
         if self.aux_heads is not None:
             assert self.aux_losses is not None
             assert self.aux_targets is not None
-            aux_in = latent.mean(dim=-2)  # (b, t, d)
-            if action is not None:
-                aux_in = torch.cat([aux_in, action.squeeze(-2)], dim=-1)  # (b, t, 2d)
+            if self.aux_queries:
+                aux_in = aux_feature
+            else:
+                aux_in = latent.mean(dim=-2)  # (b, t, d)
+                if action is not None:
+                    aux_in = torch.cat([aux_in, action.squeeze(-2)], dim=-1)  # (b, t, 2d)
             aux_logits = self.aux_heads(aux_in)  # from step t
             aux_targets = tree_map(
                 lambda k: episode.get(k)[:, 1:],

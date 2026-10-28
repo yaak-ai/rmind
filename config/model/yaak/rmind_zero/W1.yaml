@@ -21,9 +21,9 @@ episode_builder:
       policy:
         _target_: builtins.range
         _args_: [40, 48]
-      fwd:
+      fwd:  # 256 frame-patch queries + 1 speed query (last)
         _target_: builtins.range
-        _args_: [48, 304]
+        _args_: [48, 305]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -254,7 +254,7 @@ episode_builder:
 
       utility:
         _target_: rmind.components.nn.Embedding
-        num_embeddings: 304
+        num_embeddings: 305
         embedding_dim: ${encoder_embedding_dim}
 
       joint_actions: null
@@ -408,7 +408,8 @@ objectives:
   modules:
     forward_dynamics:
       _target_: rmind.components.objectives.forward_dynamics.ForwardDynamicsObjective
-      # (W_t, e_t) -> I(t+1): e_t = proj(z_q(codes of a_t)), the frozen per-step tokenizer
+      # (W_t, e_t) -> I(t+1): e_t = proj(z_q(codes of a_t)), the frozen per-step tokenizer,
+      # fused channel-wise into every world token (K = V = Linear([W_t ; e_t]))
       action_tokenizer:
         _target_: rmind.models.action_tokenizer.ActionTokenizer.load_from_wandb_artifact
         artifact: yaak/rmind/model-m35hyvbp:v9
@@ -418,18 +419,22 @@ objectives:
         _target_: rmind.components.nn.Linear
         in_features: 384  # tokenizer codebook dim
         out_features: ${image_embedding_dim}
-      # speed(t+1): a separate head on [mean W_t ; e_t] (dynamics, so it lives in FWD; in INV
-      # it would bias INV to motion). Not read from the frame decoder.
+      # channel-wise: every world token k becomes Linear([W_t,k ; e_t]) (2d -> d)
+      action_fusion:
+        _target_: rmind.components.nn.Linear
+        in_features: ${eval:'2 * ${image_embedding_dim}'}
+        out_features: ${image_embedding_dim}
+      # speed(t+1): the decoder's 257th (last) query over K = V = Linear([W_t ; e_t]) -> Linear.
+      # Dynamics, so it lives in FWD (in INV it would bias INV to motion).
+      aux_queries: 1
       aux_heads:
         _target_: rmind.components.containers.ModuleDict
         modules:
           continuous:
             speed:
-              _target_: torchvision.ops.MLP
-              in_channels: ${eval:'2 * ${encoder_embedding_dim}'}
-              hidden_channels:
-                - ${encoder_embedding_dim}
-                - ${speed_bins}
+              _target_: rmind.components.nn.Linear
+              in_features: ${encoder_embedding_dim}
+              out_features: ${speed_bins}
       aux_losses:
         _target_: rmind.components.containers.ModuleDict
         modules:
