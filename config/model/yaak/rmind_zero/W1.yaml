@@ -21,9 +21,12 @@ episode_builder:
       policy:
         _target_: builtins.range
         _args_: [40, 48]
-      fwd:  # 256 frame-patch queries + 1 speed query (last)
+      fwd:
         _target_: builtins.range
-        _args_: [48, 305]
+        _args_: [48, 304]
+      speed:  # query of FWD's separate speed decoder
+        _target_: builtins.range
+        _args_: [304, 305]
 
   input_transform:
     _target_: torch.nn.Sequential
@@ -424,9 +427,27 @@ objectives:
         _target_: rmind.components.nn.Linear
         in_features: ${eval:'2 * ${image_embedding_dim}'}
         out_features: ${image_embedding_dim}
-      # speed(t+1): the decoder's 257th (last) query over K = V = Linear([W_t ; e_t]) -> Linear.
-      # Dynamics, so it lives in FWD (in INV it would bias INV to motion).
-      aux_queries: 1
+      # speed(t+1): a SEPARATE decoder (1 query) over the same K = V = Linear([W_t ; e_t]) as the
+      # frame decoder, then Linear. Dynamics, so it lives in FWD (in INV it would bias INV to
+      # motion); separate so the Gram loss does not dominate it.
+      aux_query: speed
+      aux_decoder:
+        _target_: rmind.components.transformer.CrossAttentionDecoderHead
+        decoder:
+          _target_: rmind.components.transformer.CrossAttentionDecoder
+          dim_model: ${encoder_embedding_dim}
+          num_layers: 2
+          num_heads: 4
+          attn_dropout: 0.1
+          resid_dropout: 0.1
+          mlp_dropout: 0.1
+          hidden_layer_multiplier: 1
+          self_attn: false  # single query
+        final_norm:
+          _target_: torch.nn.LayerNorm
+          normalized_shape: ${encoder_embedding_dim}
+        output_projection:
+          _target_: torch.nn.Identity
       aux_heads:
         _target_: rmind.components.containers.ModuleDict
         modules:

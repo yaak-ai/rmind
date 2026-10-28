@@ -156,7 +156,8 @@ class ForwardDynamicsObjective(Objective):
         aux_heads: InstanceOf[ModuleDict] | None = None,
         aux_losses: InstanceOf[ModuleDict] | None = None,
         aux_targets: Targets | None = None,
-        aux_queries: int = 0,
+        aux_decoder: InstanceOf[Module] | None = None,
+        aux_query: str | None = None,
     ) -> None:
         super().__init__()
         self.heads = heads
@@ -173,14 +174,14 @@ class ForwardDynamicsObjective(Objective):
         # with action_fusion: channel-wise [L_t,k ; e_t] -> fusion -> d for every latent token k;
         # without it, e_t is appended as one extra key/value token
         self.action_fusion: Module | None = action_fusion
-        # auxiliary per-step targets at t+1 (e.g. speed). With aux_queries=k the decoder runs
-        # with k extra query tokens after the frame queries; the LAST one feeds aux_heads and
-        # only the first queries are frame predictions. With aux_queries=0 the aux head reads
-        # [mean_n L_t ; e_t] (or mean_n L_t without an action).
+        # auxiliary per-step targets at t+1 (e.g. speed). With an aux_decoder, its own query
+        # (utility token `aux_query`) reads the same context as the frame decoder and feeds
+        # aux_heads; otherwise aux_heads read [mean_n L_t ; e_t] (or mean_n L_t).
         self.aux_heads: ModuleDict | None = aux_heads
         self.aux_losses: ModuleDict | None = aux_losses
         self.aux_targets: Targets | None = aux_targets
-        self.aux_queries: int = aux_queries
+        self.aux_decoder: Module | None = aux_decoder
+        self.aux_query: str | None = aux_query
 
     @override
     def train(self, mode: bool = True) -> "ForwardDynamicsObjective":
@@ -219,9 +220,14 @@ class ForwardDynamicsObjective(Objective):
                 else:
                     context = torch.cat([latent, action], dim=-2)
             pred = self.decoder({"query": query, "key": context, "value": context})
-            if self.aux_queries:
-                aux_feature = pred[..., -1, :]  # (b, t, d): the last extra query
-                pred = pred[..., : -self.aux_queries, :]  # frame queries only
+            if self.aux_decoder is not None:
+                assert self.aux_query is not None
+                aux_q = episode.embeddings.get((Modality.UTILITY, self.aux_query))
+                aux_feature = self.aux_decoder({
+                    "query": aux_q,
+                    "key": context,
+                    "value": context,
+                })[..., 0, :]  # (b, t, d)
         else:
             pred = latent
 
@@ -238,7 +244,7 @@ class ForwardDynamicsObjective(Objective):
         if self.aux_heads is not None:
             assert self.aux_losses is not None
             assert self.aux_targets is not None
-            if self.aux_queries:
+            if self.aux_decoder is not None:
                 aux_in = aux_feature
             else:
                 aux_in = latent.mean(dim=-2)  # (b, t, d)
