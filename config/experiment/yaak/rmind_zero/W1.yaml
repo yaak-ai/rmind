@@ -4,7 +4,7 @@ defaults:
   - /model: yaak/rmind_zero/W1
   - /datamodule: yaak/train
   - /trainer: default
-  - /trainer/callbacks: pretrain
+  - /trainer/callbacks: pretrain_route  # no continuous/discrete embeddings in W1
   - /paths: yaak/default
   - /wandb: yaak/rmind
   - _self_
