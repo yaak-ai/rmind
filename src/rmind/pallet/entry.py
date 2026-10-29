@@ -44,13 +44,23 @@ def load_labels(path: Path) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     return out
 
 
-def crop_for_box(box: np.ndarray, rng: np.random.Generator | None) -> Crop:
+def crop_for_box(
+    box: np.ndarray, rng: np.random.Generator | None, *, wide: bool = False
+) -> Crop:
+    """Crop around a box; with `rng`, jittered in scale and position.
+
+    `wide` jitters much more (scale 0.7-2.0, shift 25 %) so the net sees loose and
+    off-centre crops, as a coarse proposer or a far pallet gives.
+    """
     crop = Crop.around(tuple(box))
     if rng is None:
         return crop
-    scale = rng.uniform(0.85, 1.35)
+    scale = rng.uniform(0.7, 2.0) if wide else rng.uniform(0.85, 1.35)
     side = crop.side * scale
-    shift = rng.uniform(-0.12, 0.12, size=2) * crop.side
+    shift = (
+        rng.uniform(-0.25 if wide else -0.12, 0.25 if wide else 0.12, size=2)
+        * crop.side
+    )
     return Crop(
         crop.x0 + (crop.side - side) / 2 + shift[0],
         crop.y0 + (crop.side - side) / 2 + shift[1],
@@ -59,7 +69,7 @@ def crop_for_box(box: np.ndarray, rng: np.random.Generator | None) -> Crop:
 
 
 class EntryKeypoints(Dataset):
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         root: Path,
         labels: dict[str, tuple[np.ndarray, np.ndarray]],
@@ -67,10 +77,13 @@ class EntryKeypoints(Dataset):
         *,
         train: bool,
         seed: int = 0,
+        quality_aug: bool = False,
     ) -> None:
         import torchvision.transforms.v2 as T  # ruff: ignore[import-outside-top-level]
 
         self.root = root
+        # crops of varied quality: loose / off-centre crops and low effective resolution
+        self.quality_aug = quality_aug
         self.items = [(n, *labels[n], detector_boxes.get(n)) for n in sorted(labels)]
         self.train = train
         self.rng = np.random.default_rng(seed)
@@ -89,7 +102,10 @@ class EntryKeypoints(Dataset):
         name, xy, labelled, det_box = self.items[i]
         image = (
             torch
-            .from_numpy(np.array(Image.open(self.root / name).convert("RGB")))
+            # "frame.jpg#i" is the i-th labelled pallet of a frame with several
+            .from_numpy(
+                np.array(Image.open(self.root / name.split("#")[0]).convert("RGB"))
+            )
             .permute(2, 0, 1)
             .float()
             / 255
@@ -104,10 +120,23 @@ class EntryKeypoints(Dataset):
             xy[:, 0] = WIDTH - 1 - xy[:, 0]
             xy, labelled = xy[list(FLIP_INDEX)], labelled[list(FLIP_INDEX)]
             box = np.array([WIDTH - 1 - box[2], box[1], WIDTH - 1 - box[0], box[3]])
-        crop = crop_for_box(box, self.rng if self.train else None)
+        crop = crop_for_box(
+            box, self.rng if self.train else None, wide=self.quality_aug
+        )
         patch = crop.extract(image)
         if self.train:
             patch = self.color(patch)
+            if self.quality_aug and self.rng.random() < 0.5:  # ruff: ignore[magic-value-comparison]
+                # as if the pallet were 1.5-5x further away: downsample, then back up
+                small = max(16, int(CROP_SIZE / self.rng.uniform(1.5, 5.0)))
+                patch = torch.nn.functional.interpolate(
+                    torch.nn.functional.interpolate(
+                        patch[None], size=small, mode="area"
+                    ),
+                    size=CROP_SIZE,
+                    mode="bilinear",
+                    align_corners=False,
+                )[0]
         local = torch.from_numpy(crop.to_crop(np.nan_to_num(xy))).float()
         inside = ((local >= 0) & (local < CROP_SIZE)).all(dim=-1)
         visible = inside & torch.from_numpy(labelled)

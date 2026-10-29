@@ -110,7 +110,12 @@ def nudge(args: argparse.Namespace) -> Path:
 
     r, z = TICK_R, TICK_Z
     im = cv2.copyMakeBorder(
-        _read(args.images / args.image), r + 2, r + 2, r + 2, r + 2, cv2.BORDER_CONSTANT
+        _read(args.images / args.image.split("#")[0]),
+        r + 2,
+        r + 2,
+        r + 2,
+        r + 2,
+        cv2.BORDER_CONSTANT,
     )
     tiles = []
     for k, (u, v) in pts.items():
@@ -136,7 +141,12 @@ def nudge(args: argparse.Namespace) -> Path:
     while len(tiles) % 4:
         tiles.append(np.zeros_like(tiles[0]))
     sheet = np.vstack([np.hstack(tiles[i : i + 4]) for i in range(0, len(tiles), 4)])
-    out = args.workspace / "renders" / f"nudge_{args.image}"
+    name, _, idx = args.image.partition("#")
+    out = (
+        args.workspace
+        / "renders"
+        / f"nudge_{name.removesuffix('.jpg')}{'_p' + idx if idx else ''}.jpg"
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out), cv2.resize(sheet, None, fx=0.6, fy=0.6))
     return out
@@ -217,6 +227,12 @@ def main() -> None:
     k.add_argument("image")
     k.add_argument("offsets", nargs="?")
     k.add_argument("--labels-version", default="v2")
+    k.add_argument(
+        "--labels-file",
+        type=Path,
+        default=None,
+        help="overrides the versioned entry labels file",
+    )
     b = sub.add_parser("boxes")
     b.add_argument("image")
     b.add_argument("json")
@@ -235,6 +251,8 @@ def main() -> None:
     args.labels = (
         args.workspace / "labels" / f"{kind}_labels_{args.labels_version}.json"
     )
+    if getattr(args, "labels_file", None) is not None:
+        args.labels = args.labels_file
     args.images = args.workspace / "images" / kind
     if args.cmd == "grid":
         args.region = args.region or None

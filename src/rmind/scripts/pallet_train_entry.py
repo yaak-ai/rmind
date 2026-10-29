@@ -106,6 +106,11 @@ def main() -> None:
     )
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--tags", nargs="*", default=[], help="extra wandb tags")
+    parser.add_argument(
+        "--quality-aug",
+        action="store_true",
+        help="loose/off-centre crops and low-resolution simulation",
+    )
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -125,7 +130,9 @@ def main() -> None:
     is_val = lambda n: any(n.startswith(j) for j in args.val_jobs)  # ruff: ignore[lambda-assignment]
     train_labels = {n: v for n, v in labels.items() if not is_val(n)}
     val_labels = {n: v for n, v in labels.items() if is_val(n)}
-    train = EntryKeypoints(args.images, train_labels, boxes, train=True)
+    train = EntryKeypoints(
+        args.images, train_labels, boxes, train=True, quality_aug=args.quality_aug
+    )
     val = EntryKeypoints(args.images, val_labels, boxes, train=False)
     logger.info("data", train=len(train), val=len(val), backbone=args.backbone)
     train_loader = DataLoader(
